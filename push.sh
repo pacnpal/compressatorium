@@ -1,1 +1,0 @@
-docker push marctv/chd-converter:latest
