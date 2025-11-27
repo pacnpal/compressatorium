@@ -8,10 +8,16 @@ RUN apt-get update && \
 
 WORKDIR /tmp/images
 
+# Use bash for all shell commands (including ENTRYPOINT)
 SHELL ["/bin/bash", "-c"]
 
+# Default mode (can be overridden when running the container)
+ENV CHDMAN_MODE=createcd
+
+# Convert all supported image files to .chd
 ENTRYPOINT for i in *.gdi *.iso *.cue; do \
     [[ -e "$i" ]] || continue; \
     [[ -e "${i%.*}.chd" ]] && continue; \
-    chdman createcd -f -i "$i" -o "${i%.*}.chd"; \
+    echo "Converting '$i' using chdman ${CHDMAN_MODE} ..."; \
+    chdman "${CHDMAN_MODE}" -f -i "$i" -o "${i%.*}.chd"; \
 done

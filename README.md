@@ -1,15 +1,39 @@
-# Docker CHD "Compressed Hunks of Data" Converter
-Compresses GDI, ISO, BIN and CUE files to CHD using CHDMAN from Mame Tools.  
+# Docker CHD "Compressed Hunks of Data" Converter  
+Compresses GDI, ISO, BIN and CUE files to CHD using **CHDMAN** from MAME Tools.
 
-* Skips existing chd files.
-* Does not delete anything.
+* Skips existing `.chd` files  
+* Does not delete or modify source files  
+* Optional: choose between `createcd` (default) or `createdvd`
 
-## Quick Start
-```
+---
+
+## Quick Start — CD Conversion (Default)
+
+```bash
   docker run \
   --rm \
-  -v "$(pwd)/images/:/tmp/images/:rw" \
+  -v "$(pwd)/isofiles/:/tmp/images/:rw" \
   -it marctv/chd-converter
 ```
-## GitHub
-https://github.com/mtoensing/Docker-chd-converter
+
+$(pwd)/images/ is the local path. Could also be:
+
+```bash
+  docker run \
+  --rm \
+  -v "/user/isofiles:/tmp/images/:rw" \
+  -it marctv/chd-converter
+```
+
+## createdvd (Optional) 
+
+This is important for PlayStation Portable (PSP) CHD files.
+
+ ```bash 
+    docker run \
+  --rm \
+  -e CHDMAN_MODE=createdvd \
+  -v "$(pwd)/isofiles/:/tmp/images/:rw" \
+  -it marctv/chd-converter
+```
+
