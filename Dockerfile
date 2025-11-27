@@ -1,23 +1,39 @@
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
+# Install modern MAME tools (includes a recent chdman with `createdvd` support)
 RUN apt-get update && \
     apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends mame-tools && \
+    apt-get install -y --no-install-recommends \
+      mame-tools \
+      bash && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Directory where your images will be mounted
 WORKDIR /tmp/images
 
-# Use bash for all shell commands (including ENTRYPOINT)
+# Use bash for the ENTRYPOINT script
 SHELL ["/bin/bash", "-c"]
 
-# Default mode (can be overridden when running the container)
+# Default mode: createcd (can be overridden at runtime)
 ENV CHDMAN_MODE=createcd
 
 # Convert all supported image files to .chd
-ENTRYPOINT for i in *.gdi *.iso *.cue; do \
+ENTRYPOINT \
+  mode="${CHDMAN_MODE:-createcd}"; \
+  case "$mode" in \
+    createcd|createdvd) ;; \
+    cd)  mode="createcd"  ;; \
+    dvd) mode="createdvd" ;; \
+    *) echo "Unsupported CHDMAN_MODE: '$mode'. Use 'createcd' or 'createdvd'." >&2; exit 1 ;; \
+  esac; \
+  shopt -s nullglob; \
+  for i in *.gdi *.iso *.cue; do \
     [[ -e "$i" ]] || continue; \
-    [[ -e "${i%.*}.chd" ]] && continue; \
-    echo "Converting '$i' using chdman ${CHDMAN_MODE} ..."; \
-    chdman "${CHDMAN_MODE}" -f -i "$i" -o "${i%.*}.chd"; \
-done
+    [[ -e "${i%.*}.chd" ]] && { \
+      echo "Skipping '$i' (CHD already exists)."; \
+      continue; \
+    }; \
+    echo "Converting '$i' using chdman ${mode} ..."; \
+    chdman "${mode}" -f -i "$i" -o "${i%.*}.chd"; \
+  done
