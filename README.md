@@ -37,3 +37,12 @@ This is important for PlayStation Portable (PSP) CHD files.
   -it marctv/chd-converter
 ```
 
+## check existing CHD files
+
+ ```bash 
+docker run --rm \
+  -v "/volume1/base/chdmaker:/tmp/images/:rw" \
+  --entrypoint chdman \
+  -it marctv/chd-converter \
+  info -i "WipEout Pure (USA) (En,Fr,Es) (v2.00)-60fps patch.chd"
+ ```

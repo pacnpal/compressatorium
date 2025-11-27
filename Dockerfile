@@ -22,9 +22,9 @@ ENV CHDMAN_MODE=createcd
 ENTRYPOINT \
   mode="${CHDMAN_MODE:-createcd}"; \
   case "$mode" in \
-    createcd|createdvd) ;; \
     cd)  mode="createcd"  ;; \
     dvd) mode="createdvd" ;; \
+    createcd|createdvd) ;; \
     *) echo "Unsupported CHDMAN_MODE: '$mode'. Use 'createcd' or 'createdvd'." >&2; exit 1 ;; \
   esac; \
   shopt -s nullglob; \
@@ -35,5 +35,9 @@ ENTRYPOINT \
       continue; \
     }; \
     echo "Converting '$i' using chdman ${mode} ..."; \
-    chdman "${mode}" -f -i "$i" -o "${i%.*}.chd"; \
+    if [[ "$mode" == "createdvd" ]]; then \
+      chdman createdvd -hs 2048 -f -i "$i" -o "${i%.*}.chd"; \
+    else \
+      chdman createcd -f -i "$i" -o "${i%.*}.chd"; \
+    fi; \
   done
