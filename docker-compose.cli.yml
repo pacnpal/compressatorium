@@ -1,0 +1,22 @@
+version: '3.8'
+
+# Example: CLI mode for batch/automated conversion
+# Usage: docker-compose -f docker-compose.cli.yml up
+# This will convert all files and exit
+
+services:
+  chd-converter-cli:
+    image: marctv/chd-converter:latest
+    container_name: chd-converter-cli
+    environment:
+      # CLI mode for batch processing
+      - CHD_MODE=cli
+      # Conversion mode: createcd for CD-ROM, createdvd for DVD-ROM (PSP, PS2)
+      - CHDMAN_MODE=createcd
+      # Specify which volumes to process
+      - CHD_VOLUMES=/data/games
+    volumes:
+      # Mount directory with files to convert (read-write)
+      - ./games:/data/games
+    # No restart policy - container exits after conversion
+    restart: "no"
