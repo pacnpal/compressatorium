@@ -38,7 +38,7 @@ docker run --rm -v "$(pwd)/test:/tmp/images:rw" --entrypoint chdman -it marctv/c
 ### Dockerfile Standards
 - Use minimal base images (prefer `-slim` variants)
 - Clean up package manager caches to reduce image size
-- Combine RUN commands to reduce layers
+- Keep Dockerfile simple and readable (layer optimization is less critical with modern BuildKit)
 - Use multi-line commands with proper formatting and indentation
 - Always include `--no-install-recommends` with `apt-get install`
 
@@ -77,6 +77,7 @@ docker run --rm -v "$(pwd)/test:/tmp/images:rw" --entrypoint chdman -it marctv/c
 
 The repository uses GitHub Actions for automated Docker builds:
 - **Trigger:** Push to `latest` branch or version tags (`v*`)
+  - Note: This project uses `latest` as the main development branch (not `main` or `master`)
 - **Platforms:** linux/amd64, linux/arm64
 - **Registries:** Docker Hub and GitHub Container Registry (ghcr.io)
 - **Secrets Required:**
