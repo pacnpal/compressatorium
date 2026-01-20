@@ -145,7 +145,8 @@ class JobManager:
             return
 
         # Try to acquire lock for the output file (prevents race conditions)
-        if not lock_manager.acquire_lock(job.output_path):
+        lock_acquired = lock_manager.acquire_lock(job.output_path)
+        if not lock_acquired:
             # Could not acquire lock - either file exists or is being converted
             job.status = JobStatus.FAILED
             if os.path.exists(job.output_path):
@@ -221,8 +222,9 @@ class JobManager:
             })
 
         finally:
-            # Always release the lock
-            lock_manager.release_lock(job.output_path)
+            # Only release lock if we acquired it
+            if lock_acquired:
+                lock_manager.release_lock(job.output_path)
             self._processing_count -= 1
 
             # Clean up temp directory if this was an archive extraction
