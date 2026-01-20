@@ -1,44 +1,305 @@
-# Git
+# ============ Git ============
 .git
 .github
 .gitignore
 .gitattributes
+.gitmodules
 
-# Python
-__pycache__
+# ============ Documentation ============
+*.md
+!README.md
+docs/
+documentation/
+CHANGES_SUMMARY.md
+DEPLOYMENT.md
+DOCKER-COMPOSE.md
+LICENSE
+CONTRIBUTING.md
+CHANGELOG.md
+
+# ============ Python ============
+# Byte-compiled / optimized / DLL files
+__pycache__/
 *.py[cod]
 *$py.class
 *.so
+
+# Distribution / packaging
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
 *.egg
-*.egg-info
-dist
-build
+MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Testing
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+htmlcov/
+.cache
+cover/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Ruff
+.ruff_cache/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
 # IDEs
-.vscode
-.idea
+.spyderproject
+.spyproject
+.ropeproject
+profile_default/
+ipython_config.py
+
+# ============ Node.js / JavaScript ============
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm
+.eslintcache
+.stylelintcache
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ============ IDEs and Editors ============
+# Visual Studio Code
+.vscode/
+*.code-workspace
+.history/
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+.idea_modules/
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+Session.vim
+Sessionx.vim
+.netrwhist
+tags
+[._]*.un~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Atom
+.atom/
+
+# ============ Operating System ============
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============ Docker ============
+# Docker compose files
+docker-compose*.yml
+!docker-compose.yml
+docker-compose.override.yml
+
+# Docker files
+.dockerignore
+Dockerfile.dev
+Dockerfile.test
+.docker/
+
+# ============ CI/CD ============
+.travis.yml
+.gitlab-ci.yml
+.circleci/
+.jenkins/
+.github/workflows/
+azure-pipelines.yml
+bitbucket-pipelines.yml
+
+# ============ Application Specific ============
+# CHD Converter images directory
+images/
+images/*
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
 *.swp
 *.swo
 *~
-.DS_Store
 
-# Testing
-.pytest_cache
-.coverage
-htmlcov
-.tox
+# Test files and directories
+test/
+tests/
+spec/
+__tests__/
+*.test.js
+*.test.py
+*.spec.js
+*.spec.py
+test_*.py
 
-# Documentation
-*.md
-!README.md
+# Local configuration
+config.local.*
+.env.local
+.env.*.local
+.env.development
+.env.test
 
-# Docker
-docker-compose*.yml
-.dockerignore
+# Build artifacts
+*.wasm
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
 
-# Application specific
-images
-test
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets and sensitive data
+*.pem
+*.key
+*.cert
+*.crt
+secrets/
+.secrets/
+
+# Backup files
+*.backup
+*.old
+
+# Log files
+*.log
+logs/
+
+# Cache directories
+.cache/
+cache/
+
+# Development files
+TODO.md
+NOTES.md
+.editorconfig
+.prettierrc
+.prettierignore
+.eslintrc*
+eslint.config.js
+.stylelintrc
+tsconfig.json
+jsconfig.json
+
+# Package manager files
+requirements-dev.txt
+requirements.dev.txt
+Pipfile
+Pipfile.lock
+poetry.lock
+pyproject.toml
+setup.py
+setup.cfg
+MANIFEST.in
+
+# Miscellaneous
+*.orig
+.sass-cache/
+connect.lock
+coverage/
+libpeerconnection.log
+testem.log
+typings/
+.angular/

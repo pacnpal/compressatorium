@@ -1,12 +1,11 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from app.config import settings
 from app.models import (
     ConversionJob, JobCreateRequest, BatchJobCreateRequest,
     JobStatus, DuplicateAction, CheckDuplicatesRequest, DuplicateInfo
@@ -149,7 +148,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
             try:
                 actual_path, temp_dir = archive_service.extract_file(archive_path, internal_path)
-            except (ValueError, FileNotFoundError) as exc:
+            except (ValueError, FileNotFoundError):
                 skipped.append(file_path)
                 continue
 
