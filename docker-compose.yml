@@ -26,3 +26,13 @@ services:
       timeout: 10s
       start_period: 10s
       retries: 3
+    # Resource limits (adjust based on your system)
+    # Uncomment to enable:
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2.0'
+    #       memory: 4G
+    #     reservations:
+    #       cpus: '0.5'
+    #       memory: 512M

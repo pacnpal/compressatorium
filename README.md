@@ -117,7 +117,32 @@ Or use the Web UI's CHD Inspector feature by clicking on any `.chd` file.
 
 ---
 
-## Docker Compose Example
+## Docker Compose
+
+The repository includes ready-to-use Docker Compose configurations:
+
+- **`docker-compose.yml`** - Single volume setup (basic usage)
+- **`docker-compose.multi-volume.yml`** - Multiple game libraries
+- **`docker-compose.cli.yml`** - CLI/batch processing mode
+
+### Quick Start
+
+1. **Single Volume Setup:**
+```bash
+docker-compose up -d
+```
+
+2. **Multiple Volumes:**
+```bash
+docker-compose -f docker-compose.multi-volume.yml up -d
+```
+
+3. **CLI Batch Processing:**
+```bash
+docker-compose -f docker-compose.cli.yml up
+```
+
+### Example Configuration
 
 ```yaml
 version: '3.8'
@@ -136,6 +161,8 @@ services:
       - /home/user/games/ps1:/data/ps1
     restart: unless-stopped
 ```
+
+For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
