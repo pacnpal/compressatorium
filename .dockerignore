@@ -1,0 +1,44 @@
+# Git
+.git
+.github
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info
+dist
+build
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDEs
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+
+# Documentation
+*.md
+!README.md
+
+# Docker
+docker-compose*.yml
+.dockerignore
+
+# Application specific
+images
+test

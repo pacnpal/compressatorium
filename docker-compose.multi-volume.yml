@@ -1,0 +1,40 @@
+version: '3.8'
+
+# Example: Multiple game libraries with separate volume mounts
+# Usage: docker-compose -f docker-compose.multi-volume.yml up -d
+
+services:
+  chd-converter:
+    image: marctv/chd-converter:latest
+    container_name: chd-converter-multi
+    ports:
+      - "8080:8080"
+    environment:
+      - CHD_MODE=webui
+      # Multiple volumes - list all container paths here
+      - CHD_VOLUMES=/data/dreamcast,/data/psp,/data/ps1,/data/ps2
+      - CHDMAN_MODE=createcd
+      - MAX_CONCURRENT_JOBS=2
+    volumes:
+      # Map each host directory to its corresponding container path
+      - ./games/dreamcast:/data/dreamcast
+      - ./games/psp:/data/psp
+      - ./games/ps1:/data/ps1
+      - ./games/ps2:/data/ps2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+    # Resource limits (adjust based on your system)
+    # Uncomment to enable:
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2.0'
+    #       memory: 4G
+    #     reservations:
+    #       cpus: '0.5'
+    #       memory: 512M
