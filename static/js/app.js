@@ -148,7 +148,7 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
             onNavigate(entry.path);
         } else if (entry.type === 'archive') {
             // For archives, show a message - archive browsing requires extraction
-            alert(`Archive: ${entry.name}\n\nUse "Search All" to find convertible files inside archives.`);
+            notify(`Archive: ${entry.name}\n\nUse "Search All" to find convertible files inside archives.`);
         } else if (entry.extension === '.chd') {
             onShowInfo(entry.path);
         } else if (entry.convertible) {
