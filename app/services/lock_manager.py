@@ -47,6 +47,9 @@ class LockManager:
             
             # Try to create a lock file
             lock_file_path = f"{normalized_path}.lock"
+            lock_dir = os.path.dirname(lock_file_path)
+            if lock_dir:
+                os.makedirs(lock_dir, exist_ok=True)
             lock_handle = None
             try:
                 # Open lock file in append mode to avoid truncating existing content

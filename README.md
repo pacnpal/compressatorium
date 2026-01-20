@@ -40,7 +40,7 @@ docker run -d \
 
 ### Custom Output Directory
 
-In the Web UI, you can specify a custom output directory for converted CHD files instead of placing them alongside the source files.
+In the Web UI, you can specify a custom output directory for converted CHD files instead of placing them alongside the source files. The directory will be created automatically as long as it is within your configured volumes.
 
 ### Features
 
