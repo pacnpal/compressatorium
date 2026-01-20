@@ -145,7 +145,7 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
         `;
     }
 
-    const handleClick = (entry, e) => {
+    const handleClick = (entry, _e) => {
         if (entry.type === 'directory') {
             onNavigate(entry.path);
         } else if (entry.type === 'archive') {
@@ -723,7 +723,7 @@ function App() {
     const [selectedFiles, setSelectedFiles] = useState(new Map());
     const [jobs, setJobs] = useState([]);
     const [creatingJobs, setCreatingJobs] = useState([]);
-    const [hiddenJobIds, setHiddenJobIds] = useState(new Set());
+    const [_hiddenJobIds, _setHiddenJobIds] = useState(new Set());
     const [loading, setLoading] = useState(false);
     const [conversionMode, setConversionMode] = useState('createcd');
     const [outputDir, setOutputDir] = useState('');
@@ -888,8 +888,6 @@ function App() {
             // Filter out hidden jobs from server response
             const visibleServerJobs = serverJobs.filter(j => !currentHiddenIds.has(j.id));
 
-            // Create a map of current jobs for quick lookup
-            const currentJobMap = new Map(currentJobs.map(j => [j.id, j]));
 
             // Merge: prefer server state but keep local jobs that aren't on server yet
             const mergedJobs = [];
@@ -918,7 +916,7 @@ function App() {
         // Fetch initial jobs list
         api.getJobs()
             .then(serverJobs => {
-                setHiddenJobIds(currentHidden => {
+                _setHiddenJobIds(currentHidden => {
                     setJobs(prev => mergeJobs(serverJobs, prev, currentHidden));
                     return currentHidden;
                 });
@@ -937,7 +935,7 @@ function App() {
                     // Job not in our list - fetch it from server
                     api.getJob(jobId)
                         .then(job => {
-                            setHiddenJobIds(currentHidden => {
+                            _setHiddenJobIds(currentHidden => {
                                 if (currentHidden.has(job.id)) return currentHidden;
                                 setJobs(prev => prev.some(j => j.id === job.id) ? prev : [job, ...prev]);
                                 return currentHidden;
@@ -975,7 +973,7 @@ function App() {
         const interval = setInterval(() => {
             api.getJobs()
                 .then(serverJobs => {
-                    setHiddenJobIds(currentHidden => {
+                    _setHiddenJobIds(currentHidden => {
                         setJobs(prev => mergeJobs(serverJobs, prev, currentHidden));
                         return currentHidden;
                     });
@@ -1281,7 +1279,7 @@ function App() {
 
         // Immediately hide these jobs from the UI
         const idsToHide = completedJobs.map(j => j.id);
-        setHiddenJobIds(prev => {
+        _setHiddenJobIds(prev => {
             const next = new Set(prev);
             idsToHide.forEach(id => next.add(id));
             return next;
@@ -1292,7 +1290,7 @@ function App() {
         try {
             await api.deleteCompletedJobs();
             // Successfully deleted - clean up hidden set
-            setHiddenJobIds(prev => {
+            _setHiddenJobIds(prev => {
                 const next = new Set(prev);
                 idsToHide.forEach(id => next.delete(id));
                 return next;
@@ -1301,7 +1299,7 @@ function App() {
             // If deletion fails, jobs will reappear on next poll
             // Remove from hidden set so they become visible again
             console.error('Failed to delete completed jobs:', err);
-            setHiddenJobIds(prev => {
+            _setHiddenJobIds(prev => {
                 const next = new Set(prev);
                 idsToHide.forEach(id => next.delete(id));
                 return next;
