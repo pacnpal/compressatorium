@@ -18,12 +18,14 @@ docker-compose up -d
 - Mode: Web UI
 - Concurrent jobs: 2
 
+**Use case:** Perfect for a top-level directory containing games organized in subdirectories. The Web UI will recursively browse all subdirectories, allowing you to navigate and convert files anywhere in the directory tree.
+
 ---
 
 ### 2. Multiple Volumes (Advanced)
 **File:** `docker-compose.multi-volume.yml`
 
-For organizing different game libraries:
+For organizing different game libraries as separate mount points:
 ```bash
 docker-compose -f docker-compose.multi-volume.yml up -d
 ```
@@ -33,6 +35,8 @@ docker-compose -f docker-compose.multi-volume.yml up -d
 - `./games/psp` → `/data/psp`
 - `./games/ps1` → `/data/ps1`
 - `./games/ps2` → `/data/ps2`
+
+**Use case:** Ideal when you have games stored in completely separate directories (e.g., different physical drives or network shares). Each mount point appears as a separate volume in the Web UI.
 
 **Customization:**
 Edit the file to add/remove volumes and update the `CHD_VOLUMES` environment variable.
@@ -51,6 +55,8 @@ docker-compose -f docker-compose.cli.yml up
 - Converts all files in mounted volumes
 - Exits after completion (no restart)
 - No web interface
+
+**Note:** CLI mode only processes files in the top level of each mounted volume. For files in subdirectories, use the Web UI mode which supports recursive directory browsing.
 
 **To change conversion mode:**
 Edit `CHDMAN_MODE` in the file:

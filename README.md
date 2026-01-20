@@ -121,13 +121,16 @@ Or use the Web UI's CHD Inspector feature by clicking on any `.chd` file.
 
 The repository includes ready-to-use Docker Compose configurations:
 
-- **`docker-compose.yml`** - Single volume setup (basic usage)
-- **`docker-compose.multi-volume.yml`** - Multiple game libraries
+- **`docker-compose.yml`** - Single volume setup with subdirectory support
+- **`docker-compose.multi-volume.yml`** - Multiple separate volume mounts
 - **`docker-compose.cli.yml`** - CLI/batch processing mode
 
 ### Quick Start
 
-1. **Single Volume Setup:**
+1. **Single Volume Setup** (recommended for most users):
+   - Mount a top-level directory containing your games in subdirectories
+   - The Web UI will recursively browse all subdirectories
+   
 ```bash
 docker-compose up -d
 ```

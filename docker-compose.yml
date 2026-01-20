@@ -17,6 +17,12 @@ services:
       - MAX_CONCURRENT_JOBS=2
     volumes:
       # Mount your game directories here
+      # The Web UI will recursively browse all subdirectories
+      # Example directory structure:
+      #   ./games/
+      #   ├── Dreamcast/
+      #   ├── PSP/
+      #   └── PS1/
       # Syntax: /host/path:/container/path
       - ./games:/data/games
     restart: unless-stopped
