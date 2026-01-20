@@ -148,11 +148,15 @@ class JobManager:
         lock_acquired = lock_manager.acquire_lock(job.output_path)
         if not lock_acquired:
             # Could not acquire lock - either file exists or is being converted
+            # Check current status to provide better error message
+            file_exists, is_locked = lock_manager.check_file_status(job.output_path)
             job.status = JobStatus.FAILED
-            if os.path.exists(job.output_path):
+            if is_locked:
+                job.error_message = "Another job is already converting to this output file"
+            elif file_exists:
                 job.error_message = "Output CHD file already exists"
             else:
-                job.error_message = "Another job is already converting to this output file"
+                job.error_message = "Could not acquire lock for output file"
             job.completed_at = datetime.utcnow()
 
             await self._notify_subscribers(job_id, {

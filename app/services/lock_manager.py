@@ -29,7 +29,7 @@ class LockManager:
         normalized_path = os.path.normpath(output_path)
         with self._lock_mutex:
             is_locked = normalized_path in self._locks
-            file_exists = os.path.exists(normalized_path)
+            file_exists = os.path.isfile(normalized_path)
             return (file_exists, is_locked)
     
     def acquire_lock(self, output_path: str) -> bool:
@@ -49,8 +49,8 @@ class LockManager:
             # Try to create a lock file
             lock_file_path = f"{normalized_path}.lock"
             try:
-                # Open or create the lock file
-                lock_handle = open(lock_file_path, 'w')
+                # Open lock file in append mode to avoid truncating existing content
+                lock_handle = open(lock_file_path, 'a')
                 
                 # Try to acquire an exclusive lock (non-blocking)
                 try:
@@ -66,13 +66,19 @@ class LockManager:
                     return False
                 
                 # Now that we have the lock, check if CHD already exists (atomic with lock)
-                if os.path.exists(normalized_path):
-                    # File exists, release lock and return False
+                if os.path.isfile(normalized_path):
+                    # File exists, release lock and clean up lock file
                     try:
                         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
                     except Exception:
                         pass
                     lock_handle.close()
+                    # Clean up lock file since we're not using it
+                    try:
+                        if os.path.exists(lock_file_path):
+                            os.remove(lock_file_path)
+                    except Exception:
+                        pass
                     return False
                 
                 # Successfully acquired the lock and file doesn't exist
