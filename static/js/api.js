@@ -51,17 +51,31 @@ export const api = {
         return res.json();
     },
 
-    async createBatchJobs(filePaths, mode = 'createcd', outputDir = null) {
+    async createBatchJobs(filePaths, mode = 'createcd', outputDir = null, duplicateAction = 'skip') {
         const res = await fetch(`${API_BASE}/jobs/batch`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 file_paths: filePaths,
                 mode,
-                output_dir: outputDir
+                output_dir: outputDir,
+                duplicate_action: duplicateAction
             })
         });
         if (!res.ok) throw new Error('Failed to create jobs');
+        return res.json();
+    },
+
+    async checkDuplicates(filePaths, outputDir = null) {
+        const res = await fetch(`${API_BASE}/jobs/check-duplicates`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                file_paths: filePaths,
+                output_dir: outputDir
+            })
+        });
+        if (!res.ok) throw new Error('Failed to check duplicates');
         return res.json();
     },
 
@@ -80,6 +94,12 @@ export const api = {
     async cancelJob(jobId) {
         const res = await fetch(`${API_BASE}/jobs/${jobId}`, { method: 'DELETE' });
         if (!res.ok) throw new Error('Failed to cancel job');
+        return res.json();
+    },
+
+    async deleteCompletedJobs() {
+        const res = await fetch(`${API_BASE}/jobs/completed`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed to delete completed jobs');
         return res.json();
     },
 

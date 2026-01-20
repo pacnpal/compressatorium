@@ -28,14 +28,16 @@ class JobManager:
         self,
         file_path: str,
         mode: ConversionMode,
-        output_dir: Optional[str] = None
+        output_dir: Optional[str] = None,
+        output_path: Optional[str] = None
     ) -> ConversionJob:
         """Create a new conversion job."""
         job_id = str(uuid.uuid4())[:8]
         filename = os.path.basename(file_path)
 
-        # Determine output path
-        output_path = chdman_service.get_chd_path(file_path, output_dir)
+        # Determine output path - use explicit path if provided, otherwise calculate
+        if output_path is None:
+            output_path = chdman_service.get_chd_path(file_path, output_dir)
 
         job = ConversionJob(
             id=job_id,

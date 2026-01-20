@@ -704,6 +704,46 @@ header h1 span {
     color: var(--text-secondary);
 }
 
+/* Job status icon */
+.job-status-icon {
+    font-size: 1rem;
+    margin-right: 8px;
+}
+
+/* Pulse animation for creating status */
+@keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 0.8; }
+}
+
+.progress-fill.creating {
+    background: var(--text-secondary);
+}
+
+/* Output directory indicator */
+.output-dir-display {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    padding: 8px 12px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.output-dir-display .icon {
+    font-size: 1rem;
+}
+
+.output-dir-display .path {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
     width: 8px;

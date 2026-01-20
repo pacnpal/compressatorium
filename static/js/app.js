@@ -1,7 +1,7 @@
 // Main CHD Converter App
 import { api, formatSize, getFileIcon } from './api.js';
 
-const { html, render, useState, useEffect, useCallback } = window;
+const { html, render, useState, useEffect, useRef, useCallback } = window;
 
 // ============ Help Component ============
 
@@ -211,40 +211,98 @@ function JobList({ jobs, onCancel }) {
         `;
     }
 
+    const getStatusText = (job) => {
+        switch (job.status) {
+            case 'creating': return 'Creating job...';
+            case 'queued': return 'Waiting in queue';
+            case 'processing': return `Converting: ${job.progress}%`;
+            case 'completed': return 'Completed';
+            case 'failed': return 'Failed';
+            case 'cancelled': return 'Cancelled';
+            default: return job.status;
+        }
+    };
+
+    const getStatusIcon = (job) => {
+        switch (job.status) {
+            case 'creating': return '⏳';
+            case 'queued': return '⏸️';
+            case 'processing': return '⚙️';
+            case 'completed': return '✅';
+            case 'failed': return '❌';
+            case 'cancelled': return '🚫';
+            default: return '📄';
+        }
+    };
+
+    const getOutputDir = (path) => {
+        if (!path) return 'Unknown';
+        const parts = path.split('/');
+        parts.pop(); // Remove filename
+        return parts.length > 0 ? parts.join('/') : '/';
+    };
+
+    const getOutputFilename = (path) => {
+        if (!path) return 'Unknown';
+        return path.split('/').pop();
+    };
+
     return html`
         <ul class="job-list">
             ${jobs.map(job => html`
                 <li key=${job.id} class="job-item">
                     <div class="job-header">
+                        <span class="job-status-icon" title=${getStatusText(job)}>${getStatusIcon(job)}</span>
                         <span class="job-name" title=${job.file_path}>${job.filename}</span>
                         <span class="job-status ${job.status}">${job.status}</span>
                     </div>
+
+                    ${job.output_path && html`
+                        <div class="job-output-info" style="font-size: 0.75rem; color: var(--text-secondary); margin: 4px 0; padding-left: 24px;">
+                            <span title="Output: ${job.output_path}">→ ${getOutputFilename(job.output_path)}</span>
+                            <span style="opacity: 0.7;"> in ${getOutputDir(job.output_path)}</span>
+                        </div>
+                    `}
+
+                    ${job.status === 'creating' && html`
+                        <div class="progress-bar">
+                            <div class="progress-fill creating" style="width: 100%; animation: pulse 1.5s infinite;"></div>
+                        </div>
+                        <div class="progress-text" style="color: var(--text-secondary);">
+                            Setting up conversion job...
+                        </div>
+                    `}
+
+                    ${job.status === 'queued' && html`
+                        <div class="progress-text" style="color: var(--text-secondary);">
+                            Waiting for other jobs to complete...
+                        </div>
+                    `}
+
                     ${job.status === 'processing' && html`
                         <div class="progress-bar">
                             <div class="progress-fill" style="width: ${job.progress}%"></div>
                         </div>
-                        <div class="progress-text">${job.progress}%</div>
+                        <div class="progress-text">
+                            ${job.progress}% - ${job.message && !job.message.startsWith('temp:') ? job.message : 'Converting...'}
+                        </div>
                     `}
-                    ${job.message && !job.message.startsWith('temp:') && html`
-                        <div class="job-message">${job.message}</div>
+
+                    ${job.status === 'completed' && html`
+                        <div class="job-success" style="color: var(--success); font-size: 0.8rem; padding-left: 24px;">
+                            Conversion complete${job.output_size ? ` - ${formatSize(job.output_size)}` : ''}
+                        </div>
                     `}
+
                     ${job.error_message && html`
-                        <div class="job-error">${job.error_message}</div>
+                        <div class="job-error" style="padding-left: 24px;">${job.error_message}</div>
                     `}
+
                     <div class="job-actions">
                         ${['queued', 'processing'].includes(job.status) && html`
                             <button class="btn btn-sm btn-secondary" onClick=${() => onCancel(job.id)} title="Cancel this job">
                                 Cancel
                             </button>
-                        `}
-                        ${job.status === 'completed' && job.output_size && html`
-                            <span class="meta" title="Size of the output CHD file">Output: ${formatSize(job.output_size)}</span>
-                        `}
-                        ${job.status === 'completed' && html`
-                            <span class="success-icon" title="Conversion completed successfully">✓</span>
-                        `}
-                        ${job.status === 'failed' && html`
-                            <span class="error-icon" title="Conversion failed">✗</span>
                         `}
                     </div>
                 </li>
@@ -341,6 +399,51 @@ function CHDInfoModal({ path, onClose }) {
     `;
 }
 
+function DuplicateModal({ duplicates, onAction, onClose }) {
+    if (!duplicates || duplicates.length === 0) return null;
+
+    const existingCount = duplicates.filter(d => d.exists).length;
+
+    return html`
+        <div class="modal-overlay" onClick=${onClose}>
+            <div class="modal" onClick=${(e) => e.stopPropagation()}>
+                <div class="modal-header">
+                    <h3>Duplicate Output Files Found</h3>
+                    <button class="modal-close" onClick=${onClose} title="Close">×</button>
+                </div>
+                <div class="modal-body" style="padding: 15px;">
+                    <p style="margin-bottom: 15px;">
+                        <strong>${existingCount}</strong> of ${duplicates.length} selected file(s) already have CHD output files.
+                    </p>
+                    <div style="max-height: 200px; overflow-y: auto; margin-bottom: 15px; padding: 10px; background: var(--bg-primary); border-radius: 4px;">
+                        ${duplicates.filter(d => d.exists).map(d => html`
+                            <div key=${d.file_path} style="margin-bottom: 8px; font-size: 0.85rem;">
+                                <div style="color: var(--text-primary);">${d.file_path.split('/').pop()}</div>
+                                <div style="color: var(--text-secondary); font-size: 0.75rem;">→ ${d.output_path.split('/').pop()}</div>
+                            </div>
+                        `)}
+                    </div>
+                    <p style="margin-bottom: 15px; color: var(--text-secondary);">How would you like to handle these duplicates?</p>
+                    <div style="display: flex; flex-direction: column; gap: 10px;">
+                        <button class="btn btn-primary" onClick=${() => onAction('rename')} style="width: 100%;">
+                            Rename (create game_1.chd, game_2.chd, etc.)
+                        </button>
+                        <button class="btn btn-secondary" onClick=${() => onAction('overwrite')} style="width: 100%;">
+                            Overwrite existing files
+                        </button>
+                        <button class="btn btn-secondary" onClick=${() => onAction('skip')} style="width: 100%;">
+                            Skip duplicates (convert only new files)
+                        </button>
+                        <button class="btn btn-secondary" onClick=${onClose} style="width: 100%;">
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
 // ============ Main App ============
 
 function App() {
@@ -354,6 +457,8 @@ function App() {
     const [entriesError, setEntriesError] = useState(null);
     const [selectedFiles, setSelectedFiles] = useState(new Map());
     const [jobs, setJobs] = useState([]);
+    const [creatingJobs, setCreatingJobs] = useState([]);
+    const [hiddenJobIds, setHiddenJobIds] = useState(new Set());
     const [loading, setLoading] = useState(false);
     const [conversionMode, setConversionMode] = useState('createcd');
     const [outputDir, setOutputDir] = useState('');
@@ -363,12 +468,31 @@ function App() {
     const [showHelp, setShowHelp] = useState(false);
     const [notification, setNotification] = useState(null);
     const [converting, setConverting] = useState(false);
+    const [duplicateCheck, setDuplicateCheck] = useState(null); // { duplicates: [], paths: [] }
+
+    // Ref to track current path for use in callbacks
+    const currentPathRef = useRef(null);
+    currentPathRef.current = currentPath;
 
     // Show notification
     const notify = (message, type = 'info') => {
         setNotification({ message, type });
         setTimeout(() => setNotification(null), 4000);
     };
+
+    // Refresh file list for current directory
+    const refreshFileList = useCallback(() => {
+        const path = currentPathRef.current;
+        if (path) {
+            api.listFiles(path)
+                .then(data => {
+                    setEntries(data.entries);
+                })
+                .catch(err => {
+                    console.error('Failed to refresh file list:', err);
+                });
+        }
+    }, []);
 
     // Load volumes on mount
     useEffect(() => {
@@ -414,22 +538,69 @@ function App() {
 
     // Subscribe to job updates
     useEffect(() => {
-        // Ensure we have the current global jobs list immediately
-        api.getJobs().then(setJobs).catch(() => {});
+        // Helper to merge server jobs with local state, respecting hidden jobs
+        const mergeJobs = (serverJobs, currentJobs, currentHiddenIds) => {
+            // Filter out hidden jobs from server response
+            const visibleServerJobs = serverJobs.filter(j => !currentHiddenIds.has(j.id));
 
-        const unsubscribe = api.subscribeToJobs((update) => {
-            // If a job we haven't seen yet sends an update, fetch it and add it
-            if (update?.data?.job_id) {
-                const jobId = update.data.job_id;
-                api.getJob(jobId)
-                    .then(job => setJobs(prev => (prev.some(j => j.id === job.id) ? prev : [job, ...prev])))
-                    .catch(() => {});
+            // Create a map of current jobs for quick lookup
+            const currentJobMap = new Map(currentJobs.map(j => [j.id, j]));
+
+            // Merge: prefer server state but keep local jobs that aren't on server yet
+            const mergedJobs = [];
+            const seenIds = new Set();
+
+            // Add all visible server jobs (they have the authoritative state)
+            for (const serverJob of visibleServerJobs) {
+                mergedJobs.push(serverJob);
+                seenIds.add(serverJob.id);
             }
 
-            // Update existing job entries
+            // Add any local jobs that aren't from the server yet (e.g., optimistic updates)
+            for (const localJob of currentJobs) {
+                if (!seenIds.has(localJob.id) && !currentHiddenIds.has(localJob.id)) {
+                    // Keep local job if it's not yet on server (might be in-flight)
+                    // But only if it's a temporary/creating job
+                    if (localJob.id.startsWith('pending-')) {
+                        mergedJobs.push(localJob);
+                    }
+                }
+            }
+
+            return mergedJobs;
+        };
+
+        // Fetch initial jobs list
+        api.getJobs()
+            .then(serverJobs => {
+                setHiddenJobIds(currentHidden => {
+                    setJobs(prev => mergeJobs(serverJobs, prev, currentHidden));
+                    return currentHidden;
+                });
+            })
+            .catch(() => {});
+
+        const unsubscribe = api.subscribeToJobs((update) => {
+            const jobId = update?.data?.job_id;
+            if (!jobId) return;
+
+            // Update existing job or fetch if new
             setJobs(prevJobs => {
-                const idx = prevJobs.findIndex(j => j.id === update?.data?.job_id);
-                if (idx === -1) return prevJobs;
+                const idx = prevJobs.findIndex(j => j.id === jobId);
+
+                if (idx === -1) {
+                    // Job not in our list - fetch it from server
+                    api.getJob(jobId)
+                        .then(job => {
+                            setHiddenJobIds(currentHidden => {
+                                if (currentHidden.has(job.id)) return currentHidden;
+                                setJobs(prev => prev.some(j => j.id === job.id) ? prev : [job, ...prev]);
+                                return currentHidden;
+                            });
+                        })
+                        .catch(() => {});
+                    return prevJobs;
+                }
 
                 const newJobs = [...prevJobs];
                 newJobs[idx] = {
@@ -445,6 +616,8 @@ function App() {
 
                 if (update.type === 'complete') {
                     notify(`Completed: ${newJobs[idx].filename}`, 'success');
+                    // Refresh file list to show the new CHD file
+                    refreshFileList();
                 } else if (update.type === 'error') {
                     notify(`Failed: ${newJobs[idx].filename}`, 'error');
                 }
@@ -453,17 +626,25 @@ function App() {
             });
         });
 
-        // Poll jobs periodically (global)
+        // Poll jobs periodically - merge instead of replace
         const interval = setInterval(() => {
-            api.getJobs().then(setJobs).catch(() => {});
+            api.getJobs()
+                .then(serverJobs => {
+                    setHiddenJobIds(currentHidden => {
+                        setJobs(prev => mergeJobs(serverJobs, prev, currentHidden));
+                        return currentHidden;
+                    });
+                })
+                .catch(() => {});
         }, 4000);
 
         return () => {
             unsubscribe();
             clearInterval(interval);
         };
-    }, []);
-// Handlers
+    }, [refreshFileList]);
+
+    // Handlers
     const handleVolumeSelect = (vol) => {
         setSelectedVolume(vol);
         setCurrentPath(vol.path);
@@ -538,6 +719,77 @@ function App() {
         }
     };
 
+    // Helper to calculate expected output path
+    const getExpectedOutputPath = (filePath) => {
+        // Get the filename (handle archive paths like "archive.zip::game.iso")
+        const filename = (filePath.includes('::') ? filePath.split('::').pop() : filePath).split('/').pop();
+        // Replace extension with .chd
+        const chdFilename = filename.replace(/\.[^.]+$/, '.chd');
+
+        // Determine output directory
+        let outDir;
+        if (outputDir) {
+            outDir = outputDir;
+        } else if (filePath.includes('::')) {
+            // For archive files, output goes next to the archive
+            outDir = filePath.split('::')[0].split('/').slice(0, -1).join('/');
+        } else {
+            // For regular files, output goes next to the source
+            outDir = filePath.split('/').slice(0, -1).join('/');
+        }
+
+        return `${outDir}/${chdFilename}`;
+    };
+
+    // Execute conversion with specified duplicate action
+    const executeConversion = async (paths, duplicateAction = 'skip') => {
+        // Build optimistic placeholder jobs so the user sees immediate feedback
+        const placeholders = paths.map((p, i) => ({
+            id: `pending-${Date.now()}-${i}`,
+            file_path: p,
+            filename: (p.includes('::') ? p.split('::').pop() : p).split('/').pop(),
+            mode: conversionMode,
+            status: 'creating',
+            progress: 0,
+            message: 'Setting up conversion...',
+            output_path: getExpectedOutputPath(p)
+        }));
+        setCreatingJobs(placeholders);
+
+        setConverting(true);
+        try {
+            notify(`⏳ Creating ${paths.length} conversion job(s)...`, 'info');
+
+            const newJobs = await api.createBatchJobs(
+                paths,
+                conversionMode,
+                outputDir || null,
+                duplicateAction
+            );
+
+            // Clear placeholders and prepend real jobs
+            setCreatingJobs([]);
+            setJobs(prev => [...newJobs, ...prev]);
+            setSelectedFiles(new Map());
+
+            if (newJobs.length > 0) {
+                notify(`✓ Started ${newJobs.length} conversion job(s)`, 'success');
+            } else {
+                notify('ℹ No jobs created (all files were skipped)', 'info');
+            }
+        } catch (err) {
+            const errorMsg = err.message || 'Unknown error occurred';
+            // Mark placeholders as failed so user sees what went wrong
+            setCreatingJobs(prev => prev.map(j => ({...j, status: 'failed', error_message: errorMsg, message: `Failed to create: ${errorMsg}`})));
+            notify(`✗ Failed to create jobs: ${errorMsg}`, 'error');
+            console.error('Failed to create jobs:', err);
+        } finally {
+            // Remove failed placeholders after a short delay
+            setTimeout(() => setCreatingJobs(prev => prev.filter(j => j.status !== 'failed')), 2500);
+            setConverting(false);
+        }
+    };
+
     const handleConvert = async () => {
         const paths = Array.from(selectedFiles.keys());
         if (paths.length === 0) {
@@ -545,30 +797,32 @@ function App() {
             return;
         }
 
-        setConverting(true);
-        notify(`⏳ Creating ${paths.length} conversion job(s)...`, 'info');
-        
+        // Check for duplicates
         try {
-            const newJobs = await api.createBatchJobs(
-                paths,
-                conversionMode,
-                outputDir || null
-            );
-            
-            if (newJobs && newJobs.length > 0) {
-                setJobs(prev => [...newJobs, ...prev]);
-                setSelectedFiles(new Map());
-                notify(`✓ Started ${newJobs.length} conversion job(s)`, 'success');
-            } else {
-                notify('⚠ No jobs were created', 'error');
+            const duplicates = await api.checkDuplicates(paths, outputDir || null);
+            const hasDuplicates = duplicates.some(d => d.exists);
+
+            if (hasDuplicates) {
+                // Show duplicate handling modal
+                setDuplicateCheck({ duplicates, paths });
+                return;
             }
+
+            // No duplicates, proceed directly
+            await executeConversion(paths, 'skip');
         } catch (err) {
-            const errorMsg = err.message || 'Unknown error occurred';
-            notify(`✗ Failed to create jobs: ${errorMsg}`, 'error');
-            console.error('Failed to create jobs:', err);
-        } finally {
-            setConverting(false);
+            notify(`✗ Failed to check for duplicates: ${err.message}`, 'error');
+            console.error('Duplicate check failed:', err);
         }
+    };
+
+    const handleDuplicateAction = async (action) => {
+        if (!duplicateCheck) return;
+
+        const { paths } = duplicateCheck;
+        setDuplicateCheck(null); // Close modal
+
+        await executeConversion(paths, action);
     };
 
     const handleSearch = async () => {
@@ -628,8 +882,40 @@ function App() {
         }
     };
 
-    const handleClearCompleted = () => {
+    const handleClearCompleted = async () => {
+        // Find all completed/failed/cancelled jobs
+        const completedJobs = jobs.filter(j => ['completed', 'failed', 'cancelled'].includes(j.status));
+
+        if (completedJobs.length === 0) return;
+
+        // Immediately hide these jobs from the UI
+        const idsToHide = completedJobs.map(j => j.id);
+        setHiddenJobIds(prev => {
+            const next = new Set(prev);
+            idsToHide.forEach(id => next.add(id));
+            return next;
+        });
         setJobs(prev => prev.filter(j => !['completed', 'failed', 'cancelled'].includes(j.status)));
+
+        // Delete all completed jobs from the server in one request
+        try {
+            await api.deleteCompletedJobs();
+            // Successfully deleted - clean up hidden set
+            setHiddenJobIds(prev => {
+                const next = new Set(prev);
+                idsToHide.forEach(id => next.delete(id));
+                return next;
+            });
+        } catch (err) {
+            // If deletion fails, jobs will reappear on next poll
+            // Remove from hidden set so they become visible again
+            console.error('Failed to delete completed jobs:', err);
+            setHiddenJobIds(prev => {
+                const next = new Set(prev);
+                idsToHide.forEach(id => next.delete(id));
+                return next;
+            });
+        }
     };
 
     const convertibleCount = entries.filter(e => e.convertible && !e.has_chd).length;
@@ -755,6 +1041,16 @@ function App() {
                         />
                     </div>
 
+                    ${selectedFiles.size > 0 && html`
+                        <div class="output-dir-display">
+                            <span class="icon">📁</span>
+                            <span class="path" title=${outputDir || currentPath || 'Source file location'}>
+                                <strong>Output:</strong> ${outputDir || currentPath || 'Same folder as source files'}
+                            </span>
+                            <span style="opacity: 0.7;">(${selectedFiles.size} file${selectedFiles.size > 1 ? 's' : ''} selected)</span>
+                        </div>
+                    `}
+
                     <div class="panel-content">
                         ${loading
                             ? html`<div class="loading"><div class="spinner"></div>Loading...</div>`
@@ -796,7 +1092,7 @@ function App() {
                     </div>
                     <div class="panel-content">
                         <${JobList}
-                            jobs=${jobs}
+                            jobs=${creatingJobs.length ? [...creatingJobs, ...jobs] : jobs}
                             onCancel=${handleCancelJob}
                         />
                     </div>
@@ -807,6 +1103,14 @@ function App() {
                 <${CHDInfoModal}
                     path=${showCHDInfo}
                     onClose=${() => setShowCHDInfo(null)}
+                />
+            `}
+
+            ${duplicateCheck && html`
+                <${DuplicateModal}
+                    duplicates=${duplicateCheck.duplicates}
+                    onAction=${handleDuplicateAction}
+                    onClose=${() => setDuplicateCheck(null)}
                 />
             `}
         </div>

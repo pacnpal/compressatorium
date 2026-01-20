@@ -9,6 +9,12 @@ class ConversionMode(str, Enum):
     CREATEDVD = "createdvd"
 
 
+class DuplicateAction(str, Enum):
+    SKIP = "skip"
+    OVERWRITE = "overwrite"
+    RENAME = "rename"
+
+
 class JobStatus(str, Enum):
     QUEUED = "queued"
     PROCESSING = "processing"
@@ -58,12 +64,25 @@ class JobCreateRequest(BaseModel):
     file_path: str
     mode: ConversionMode = ConversionMode.CREATECD
     output_dir: Optional[str] = None  # If None, output alongside source
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP  # What to do if output exists
 
 
 class BatchJobCreateRequest(BaseModel):
     file_paths: List[str]
     mode: ConversionMode = ConversionMode.CREATECD
     output_dir: Optional[str] = None  # If None, output alongside source
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP  # What to do if output exists
+
+
+class CheckDuplicatesRequest(BaseModel):
+    file_paths: List[str]
+    output_dir: Optional[str] = None
+
+
+class DuplicateInfo(BaseModel):
+    file_path: str
+    output_path: str
+    exists: bool
 
 
 class ArchiveEntry(BaseModel):
