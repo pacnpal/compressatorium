@@ -14,6 +14,7 @@ from app.models import (
 from app.services.job_manager import job_manager
 from app.services.archive import archive_service
 from app.services.chdman import chdman_service
+from app.utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
 
@@ -36,34 +37,16 @@ def get_unique_output_path(base_path: str) -> str:
         counter += 1
 
 
-def validate_path(path: str) -> bool:
-    """Validate that a path is within configured volumes."""
-    # Handle archive paths (archive_path::internal_path)
-    if "::" in path:
-        path = path.split("::")[0]
-
-    real_path = os.path.realpath(path)
-    for volume in settings.volumes:
-        real_volume = os.path.realpath(volume)
-        if real_path.startswith(real_volume + os.sep) or real_path == real_volume:
-            return True
-    return False
-
-
-def validate_output_dir(output_dir: Optional[str]) -> bool:
-    """Validate output directory is within configured volumes."""
-    if output_dir is None:
-        return True
-    return validate_path(output_dir)
-
-
 @router.post("/jobs/check-duplicates", response_model=List[DuplicateInfo])
 async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
     results = []
 
+    if request.output_dir and not is_within_configured_volumes(request.output_dir, treat_archives=False):
+        raise HTTPException(status_code=403, detail="Access denied: output directory outside configured volumes")
+
     for file_path in request.file_paths:
-        if not validate_path(file_path):
+        if not is_within_configured_volumes(file_path):
             continue
 
         # Handle archive paths - get the actual filename and determine output location
@@ -93,10 +76,10 @@ async def check_duplicates(request: CheckDuplicatesRequest):
 @router.post("/jobs", response_model=ConversionJob)
 async def create_job(request: JobCreateRequest):
     """Create a single conversion job."""
-    if not validate_path(request.file_path):
+    if not is_within_configured_volumes(request.file_path):
         raise HTTPException(status_code=403, detail="Access denied: file path outside configured volumes")
 
-    if not validate_output_dir(request.output_dir):
+    if request.output_dir and not is_within_configured_volumes(request.output_dir, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: output directory outside configured volumes")
 
     # Handle archive files
@@ -108,7 +91,10 @@ async def create_job(request: JobCreateRequest):
         # Extract from archive
         archive_path, internal_path = request.file_path.split("::", 1)
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
-        file_path, temp_dir = archive_service.extract_file(archive_path, internal_path)
+        try:
+            file_path, temp_dir = archive_service.extract_file(archive_path, internal_path)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to extract from archive: {exc}")
         # Note: temp_dir cleanup should be handled after conversion
 
     if not os.path.isfile(file_path):
@@ -131,7 +117,7 @@ async def create_job(request: JobCreateRequest):
 
     # Store temp_dir reference for cleanup (simplified - in production use proper cleanup)
     if temp_dir:
-        job.message = f"temp:{temp_dir}"
+        job.temp_dir = temp_dir
 
     return job
 
@@ -140,13 +126,13 @@ async def create_job(request: JobCreateRequest):
 async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
     for file_path in request.file_paths:
-        if not validate_path(file_path):
+        if not is_within_configured_volumes(file_path):
             raise HTTPException(
                 status_code=403,
                 detail=f"Access denied: {file_path} outside configured volumes"
             )
 
-    if not validate_output_dir(request.output_dir):
+    if request.output_dir and not is_within_configured_volumes(request.output_dir, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: output directory outside configured volumes")
 
     jobs = []
@@ -161,7 +147,11 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if "::" in file_path:
             archive_path, internal_path = file_path.split("::", 1)
             archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
-            actual_path, temp_dir = archive_service.extract_file(archive_path, internal_path)
+            try:
+                actual_path, temp_dir = archive_service.extract_file(archive_path, internal_path)
+            except (ValueError, FileNotFoundError) as exc:
+                skipped.append(file_path)
+                continue
 
         if os.path.isfile(actual_path):
             # Calculate output path and handle duplicates
@@ -180,7 +170,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
 
             job = job_manager.create_job(actual_path, request.mode, output_path=output_path)
             if temp_dir:
-                job.message = f"temp:{temp_dir}"
+                job.temp_dir = temp_dir
             jobs.append(job)
 
     return jobs

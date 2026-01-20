@@ -58,6 +58,7 @@ class ConversionJob(BaseModel):
     error_message: Optional[str] = None
     output_path: Optional[str] = None
     output_size: Optional[int] = None
+    temp_dir: Optional[str] = None
 
 
 class JobCreateRequest(BaseModel):

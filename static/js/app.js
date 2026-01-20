@@ -330,7 +330,7 @@ function JobList({ jobs, onCancel }) {
                             <div class="progress-fill" style="width: ${job.progress}%"></div>
                         </div>
                         <div class="progress-text">
-                            ${job.progress}% - ${job.message && !job.message.startsWith('temp:') ? job.message : 'Converting...'}
+                            ${job.progress}% - ${job.message || 'Converting...'}
                         </div>
                     `}
 
@@ -786,7 +786,9 @@ function App() {
                             const hasChanges = newArchiveEntries.some((newEntry, i) => {
                                 const oldEntry = prevEntries[i];
                                 return oldEntry.name !== newEntry.name ||
+                                       oldEntry.path !== newEntry.path ||
                                        oldEntry.size !== newEntry.size ||
+                                       oldEntry.convertible !== newEntry.convertible ||
                                        oldEntry.has_chd !== newEntry.has_chd;
                             });
                             if (!hasChanges) return prevEntries;
@@ -816,9 +818,11 @@ function App() {
                             const hasChanges = newEntries.some((newEntry, i) => {
                                 const oldEntry = prevEntries[i];
                                 return oldEntry.name !== newEntry.name ||
+                                       oldEntry.path !== newEntry.path ||
                                        oldEntry.size !== newEntry.size ||
-                                       oldEntry.is_dir !== newEntry.is_dir ||
-                                       oldEntry.chd_exists !== newEntry.chd_exists;
+                                       oldEntry.type !== newEntry.type ||
+                                       oldEntry.convertible !== newEntry.convertible ||
+                                       oldEntry.has_chd !== newEntry.has_chd;
                             });
                             // Only update if there are actual changes
                             if (!hasChanges) return prevEntries;

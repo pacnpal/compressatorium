@@ -9,11 +9,10 @@ from app.models import FileEntry, DirectoryListing, Volume
 from app.services.chdman import CONVERTIBLE_EXTENSIONS
 from app.services.archive import archive_service, ARCHIVE_EXTENSIONS
 from app.services.lock_manager import lock_manager
+from app.utils.path_utils import is_within_configured_volumes, get_volume_name_for_path
 
 router = APIRouter()
 
-
-def validate_path(path: str) -> bool:
     """Validate that a path is within configured volumes (prevent traversal)."""
     try:
         # Resolve the user-supplied path (do not require it to exist).
@@ -70,20 +69,14 @@ async def list_files(
     show_archives: bool = Query(True, description="Show archive contents")
 ):
     """List files in a directory."""
-    if not validate_path(path):
+    if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
 
     if not os.path.isdir(path):
         raise HTTPException(status_code=404, detail="Directory not found")
 
     # Determine which volume this path belongs to
-    volume_name = ""
-    for vol_path in settings.volumes:
-        real_vol = os.path.realpath(vol_path)
-        real_path = os.path.realpath(path)
-        if real_path.startswith(real_vol):
-            volume_name = settings.get_volume_name(vol_path)
-            break
+    volume_name = get_volume_name_for_path(path) or ""
 
     entries = []
 
@@ -139,7 +132,7 @@ async def search_files(
     include_archives: bool = Query(True, description="Search inside archives")
 ) -> dict:
     """Search for convertible files in a directory tree."""
-    if not validate_path(path):
+    if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
 
     if not os.path.isdir(path):
@@ -203,7 +196,7 @@ async def list_archive(
     path: str = Query(..., description="Path to archive file")
 ) -> dict:
     """List convertible files inside an archive."""
-    if not validate_path(path):
+    if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
 
     if not os.path.isfile(path):
@@ -237,7 +230,7 @@ async def rename_file(
     new_name: str = Query(..., description="New name for the file or directory")
 ) -> dict:
     """Rename a file or directory."""
-    if not validate_path(path):
+    if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
 
     if not os.path.exists(path):
@@ -251,7 +244,7 @@ async def rename_file(
     new_path = os.path.join(parent_dir, new_name)
 
     # Check if new path is also within allowed volumes
-    if not validate_path(new_path):
+    if not is_within_configured_volumes(new_path, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: target path outside configured volumes")
 
     # Check if target already exists
@@ -275,7 +268,7 @@ async def delete_file(
     path: str = Query(..., description="Path to file or directory to delete")
 ) -> dict:
     """Delete a file or empty directory."""
-    if not validate_path(path):
+    if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
 
     if not os.path.exists(path):

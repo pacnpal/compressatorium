@@ -5,11 +5,10 @@ from fastapi import APIRouter, HTTPException, Query
 from app.config import settings
 from app.models import CHDInfo
 from app.services.chdman import chdman_service
+from app.utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
 
-
-def validate_path(path: str) -> bool:
     """Validate that a path is within configured volumes."""
     real_path = os.path.realpath(path)
     for volume in settings.volumes:
@@ -24,7 +23,7 @@ async def get_chd_info(
     path: str = Query(..., description="Path to CHD file")
 ):
     """Get information about a CHD file."""
-    if not validate_path(path):
+    if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
 
     if not os.path.isfile(path):
@@ -62,7 +61,7 @@ async def verify_chd(
     path: str = Query(..., description="Path to CHD file to verify")
 ) -> dict:
     """Verify the integrity of a CHD file."""
-    if not validate_path(path):
+    if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
 
     if not os.path.isfile(path):

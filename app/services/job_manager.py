@@ -234,12 +234,12 @@ class JobManager:
             self._processing_count -= 1
 
             # Clean up temp directory if this was an archive extraction
-            if job.message and job.message.startswith("temp:"):
-                temp_dir = job.message.replace("temp:", "")
+            if job.temp_dir:
+                temp_dir = job.temp_dir
                 try:
-                    if os.path.isdir(temp_dir):
+                    if temp_dir and os.path.isdir(temp_dir):
                         shutil.rmtree(temp_dir, ignore_errors=True)
-                        job.message = ""  # Clear the temp marker
+                    job.temp_dir = None
                 except Exception as cleanup_error:
                     print(f"Failed to cleanup temp dir {temp_dir}: {cleanup_error}")
 

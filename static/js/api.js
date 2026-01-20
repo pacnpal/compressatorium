@@ -47,7 +47,10 @@ export const api = {
                 output_dir: outputDir
             })
         });
-        if (!res.ok) throw new Error('Failed to create job');
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to create job' }));
+            throw new Error(error.detail || 'Failed to create job');
+        }
         return res.json();
     },
 
@@ -62,7 +65,10 @@ export const api = {
                 duplicate_action: duplicateAction
             })
         });
-        if (!res.ok) throw new Error('Failed to create jobs');
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to create jobs' }));
+            throw new Error(error.detail || 'Failed to create jobs');
+        }
         return res.json();
     },
 
@@ -75,7 +81,10 @@ export const api = {
                 output_dir: outputDir
             })
         });
-        if (!res.ok) throw new Error('Failed to check duplicates');
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to check duplicates' }));
+            throw new Error(error.detail || 'Failed to check duplicates');
+        }
         return res.json();
     },
 
