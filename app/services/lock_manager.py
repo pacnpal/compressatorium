@@ -48,6 +48,7 @@ class LockManager:
             
             # Try to create a lock file
             lock_file_path = f"{normalized_path}.lock"
+            lock_handle = None
             try:
                 # Open lock file in append mode to avoid truncating existing content
                 lock_handle = open(lock_file_path, 'a')
@@ -73,6 +74,7 @@ class LockManager:
                     except Exception:
                         pass
                     lock_handle.close()
+                    lock_handle = None
                     # Clean up lock file since we're not using it
                     try:
                         if os.path.exists(lock_file_path):
@@ -87,6 +89,12 @@ class LockManager:
                 return True
                 
             except Exception as e:
+                # Ensure file handle is closed on any error
+                if lock_handle is not None:
+                    try:
+                        lock_handle.close()
+                    except Exception:
+                        pass
                 print(f"Failed to acquire lock for {normalized_path}: {e}")
                 return False
     
