@@ -2,13 +2,13 @@ import asyncio
 import os
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from app.config import settings
 from app.models import (
     ConversionJob, JobCreateRequest, BatchJobCreateRequest,
-    ConversionMode, JobStatus
+    JobStatus
 )
 from app.services.job_manager import job_manager
 from app.services.archive import archive_service

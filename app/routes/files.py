@@ -1,12 +1,12 @@
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
 from app.models import FileEntry, DirectoryListing, Volume
-from app.services.chdman import chdman_service, CONVERTIBLE_EXTENSIONS
+from app.services.chdman import CONVERTIBLE_EXTENSIONS
 from app.services.archive import archive_service, ARCHIVE_EXTENSIONS
 from app.services.lock_manager import lock_manager
 

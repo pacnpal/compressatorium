@@ -122,7 +122,7 @@ function Breadcrumb({ path, volume, onNavigate }) {
     `;
 }
 
-function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowInfo, error }) {
+function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, error }) {
     if (error) {
         return html`
             <div class="error-state">
@@ -147,8 +147,8 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
         if (entry.type === 'directory') {
             onNavigate(entry.path);
         } else if (entry.type === 'archive') {
-            // For archives, show a message - archive browsing requires extraction
-            notify(`Archive: ${entry.name}\n\nUse "Search All" to find convertible files inside archives.`);
+            // For archives, browse contents
+            onBrowseArchive && onBrowseArchive(entry.path);
         } else if (entry.extension === '.chd') {
             onShowInfo(entry.path);
         } else if (entry.convertible) {
@@ -159,8 +159,8 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
     const getTooltip = (entry) => {
         if (entry.type === 'directory') return `Open folder: ${entry.name}`;
         if (entry.type === 'archive') return `Archive: ${entry.name} - Use Search All to find files inside`;
-        if (entry.extension === '.chd') return `Click to view CHD info`;
-        if (entry.convertible) return entry.has_chd ? `Already converted` : `Click to select for conversion`;
+        if (entry.extension === '.chd') return 'Click to view CHD info';
+        if (entry.convertible) return entry.has_chd ? 'Already converted' : 'Click to select for conversion';
         return entry.name;
     };
 
@@ -362,6 +362,7 @@ function App() {
     const [searchResults, setSearchResults] = useState(null);
     const [showHelp, setShowHelp] = useState(false);
     const [notification, setNotification] = useState(null);
+    const [converting, setConverting] = useState(false);
 
     // Show notification
     const notify = (message, type = 'info') => {
@@ -413,9 +414,21 @@ function App() {
 
     // Subscribe to job updates
     useEffect(() => {
+        // Ensure we have the current global jobs list immediately
+        api.getJobs().then(setJobs).catch(() => {});
+
         const unsubscribe = api.subscribeToJobs((update) => {
+            // If a job we haven't seen yet sends an update, fetch it and add it
+            if (update?.data?.job_id) {
+                const jobId = update.data.job_id;
+                api.getJob(jobId)
+                    .then(job => setJobs(prev => (prev.some(j => j.id === job.id) ? prev : [job, ...prev])))
+                    .catch(() => {});
+            }
+
+            // Update existing job entries
             setJobs(prevJobs => {
-                const idx = prevJobs.findIndex(j => j.id === update.data.job_id);
+                const idx = prevJobs.findIndex(j => j.id === update?.data?.job_id);
                 if (idx === -1) return prevJobs;
 
                 const newJobs = [...prevJobs];
@@ -430,7 +443,6 @@ function App() {
                     output_size: update.data.output_size
                 };
 
-                // Show notification on completion
                 if (update.type === 'complete') {
                     notify(`Completed: ${newJobs[idx].filename}`, 'success');
                 } else if (update.type === 'error') {
@@ -441,18 +453,17 @@ function App() {
             });
         });
 
-        // Poll jobs periodically
+        // Poll jobs periodically (global)
         const interval = setInterval(() => {
             api.getJobs().then(setJobs).catch(() => {});
-        }, 5000);
+        }, 4000);
 
         return () => {
             unsubscribe();
             clearInterval(interval);
         };
     }, []);
-
-    // Handlers
+// Handlers
     const handleVolumeSelect = (vol) => {
         setSelectedVolume(vol);
         setCurrentPath(vol.path);
@@ -462,6 +473,46 @@ function App() {
     const handleNavigate = (path) => {
         setCurrentPath(path);
         setSelectedFiles(new Map());
+    };
+
+    const handleBrowseArchive = async (archivePath) => {
+        setLoading(true);
+        setEntriesError(null);
+        const archiveName = archivePath.split('/').pop();
+        notify(`📦 Loading archive: ${archiveName}...`, 'info');
+        
+        try {
+            const archiveData = await api.listArchive(archivePath);
+            
+            if (!archiveData || !archiveData.files || archiveData.files.length === 0) {
+                notify(`ℹ No convertible files found in ${archiveName}`, 'info');
+                setEntries([]);
+                return;
+            }
+            
+            const archiveEntries = archiveData.files.map(file => ({
+                name: file.name,
+                path: `${archivePath}::${file.internal_path}`,
+                type: 'file',
+                size: file.size,
+                extension: file.extension,
+                convertible: file.convertible,
+                has_chd: false,
+                is_archive_item: true,
+                archive_path: archivePath
+            }));
+            
+            setEntries(archiveEntries);
+            setSearchMode(false);
+            setSearchResults(null);
+            notify(`✓ Loaded ${archiveEntries.length} file(s) from ${archiveName}`, 'success');
+        } catch (err) {
+            setEntriesError(err.message);
+            console.error('Failed to browse archive:', err);
+            notify(`✗ Failed to browse archive: ${err.message}`, 'error');
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleToggleSelect = (entry) => {
@@ -481,39 +532,60 @@ function App() {
         if (selectedFiles.size === convertible.length) {
             setSelectedFiles(new Map());
         } else {
-            setSelectedFiles(new Map(convertible.map(e => [e.path, e])));
+            const newMap = new Map();
+            convertible.forEach(e => newMap.set(e.path, e));
+            setSelectedFiles(newMap);
         }
     };
 
     const handleConvert = async () => {
         const paths = Array.from(selectedFiles.keys());
-        if (paths.length === 0) return;
+        if (paths.length === 0) {
+            notify('⚠ Please select at least one file to convert', 'error');
+            return;
+        }
 
+        setConverting(true);
+        notify(`⏳ Creating ${paths.length} conversion job(s)...`, 'info');
+        
         try {
             const newJobs = await api.createBatchJobs(
                 paths,
                 conversionMode,
                 outputDir || null
             );
-            setJobs(prev => [...newJobs, ...prev]);
-            setSelectedFiles(new Map());
-            notify(`Started ${newJobs.length} conversion job(s)`, 'success');
+            
+            if (newJobs && newJobs.length > 0) {
+                setJobs(prev => [...newJobs, ...prev]);
+                setSelectedFiles(new Map());
+                notify(`✓ Started ${newJobs.length} conversion job(s)`, 'success');
+            } else {
+                notify('⚠ No jobs were created', 'error');
+            }
         } catch (err) {
-            notify(`Failed to create jobs: ${err.message}`, 'error');
+            const errorMsg = err.message || 'Unknown error occurred';
+            notify(`✗ Failed to create jobs: ${errorMsg}`, 'error');
             console.error('Failed to create jobs:', err);
+        } finally {
+            setConverting(false);
         }
     };
 
     const handleSearch = async () => {
-        if (!currentPath) return;
+        if (!currentPath) {
+            notify('⚠ No path selected', 'error');
+            return;
+        }
+        
         setLoading(true);
         setEntriesError(null);
+        notify('🔍 Searching for convertible files...', 'info');
+        
         try {
             const results = await api.searchFiles(currentPath, true, true);
             setSearchResults(results);
             setSearchMode(true);
 
-            // Combine files and archive contents for display
             const combined = [
                 ...results.files.map(f => ({
                     ...f,
@@ -530,13 +602,13 @@ function App() {
             setEntries(combined);
 
             if (combined.length === 0) {
-                notify('No convertible files found', 'info');
+                notify('ℹ No convertible files found', 'info');
             } else {
-                notify(`Found ${combined.length} convertible file(s)`, 'success');
+                notify(`✓ Found ${combined.length} convertible file(s)`, 'success');
             }
         } catch (err) {
             setEntriesError(err.message);
-            notify(`Search failed: ${err.message}`, 'error');
+            notify(`✗ Search failed: ${err.message}`, 'error');
             console.error('Search failed:', err);
         } finally {
             setLoading(false);
@@ -661,11 +733,14 @@ function App() {
                         `}
                         <button
                             class="btn btn-primary"
-                            disabled=${selectedFiles.size === 0}
+                            disabled=${selectedFiles.size === 0 || converting}
                             onClick=${handleConvert}
-                            title=${selectedFiles.size > 0 ? `Convert ${selectedFiles.size} selected file(s) to CHD` : 'Select files to convert'}
+                            title=${converting ? 'Converting...' : selectedFiles.size > 0 ? `Convert ${selectedFiles.size} selected file(s) to CHD` : 'Select files to convert'}
                         >
-                            Convert ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}
+                            ${converting 
+                                ? html`<span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-width: 2px;"></span>Converting...`
+                                : `Convert ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}`
+                            }
                         </button>
                     </div>
 
@@ -689,6 +764,7 @@ function App() {
                                 onNavigate=${handleNavigate}
                                 onToggleSelect=${handleToggleSelect}
                                 onShowInfo=${setShowCHDInfo}
+                                onBrowseArchive=${handleBrowseArchive}
                                 error=${entriesError}
                             />`
                         }

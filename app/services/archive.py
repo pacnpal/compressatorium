@@ -2,7 +2,7 @@ import os
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 import shutil
 
 try:
