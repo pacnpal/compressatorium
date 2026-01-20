@@ -101,6 +101,26 @@ class ChdmanService:
 
         return self._parse_info(stdout.decode())
 
+    async def verify(self, chd_path: str) -> dict:
+        """
+        Verify the integrity of a CHD file.
+
+        Returns:
+            dict: {"valid": bool, "message": str}
+        """
+        process = await asyncio.create_subprocess_exec(
+            self.chdman_path, "verify", "-i", chd_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        stdout, _ = await process.communicate()
+        output = stdout.decode()
+
+        if process.returncode == 0:
+            return {"valid": True, "message": "CHD file verified successfully"}
+        else:
+            return {"valid": False, "message": output.strip() or "CHD verification failed"}
+
     def _parse_progress(self, line: str) -> int:
         """Parse chdman output for progress percentage."""
         # chdman outputs: "Compressing, 45.2% complete..."

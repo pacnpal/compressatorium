@@ -122,7 +122,9 @@ function Breadcrumb({ path, volume, onNavigate }) {
     `;
 }
 
-function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, error }) {
+function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, error }) {
+    const [verifyingPath, setVerifyingPath] = useState(null);
+
     if (error) {
         return html`
             <div class="error-state">
@@ -156,13 +158,26 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
         }
     };
 
+    const handleVerifyClick = async (e, entry) => {
+        e.stopPropagation();
+        setVerifyingPath(entry.path);
+        try {
+            await onVerify(entry.path);
+        } finally {
+            setVerifyingPath(null);
+        }
+    };
+
     const getTooltip = (entry) => {
         if (entry.type === 'directory') return `Open folder: ${entry.name}`;
-        if (entry.type === 'archive') return `Archive: ${entry.name} - Use Search All to find files inside`;
+        if (entry.type === 'archive') return `Archive: ${entry.name} - Click to browse contents`;
         if (entry.extension === '.chd') return 'Click to view CHD info';
         if (entry.convertible) return entry.has_chd ? 'Already converted' : 'Click to select for conversion';
         return entry.name;
     };
+
+    const isVerified = (entry) => entry.extension === '.chd' && verifiedCHDs && verifiedCHDs.has(entry.path);
+    const isArchiveItem = (entry) => entry.is_archive_item;
 
     return html`
         <ul class="file-list">
@@ -193,6 +208,37 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
                     `}
                     ${entry.convertible && !entry.has_chd && html`
                         <span class="status convertible" title="Can be converted to CHD">Convertible</span>
+                    `}
+                    ${isVerified(entry) && html`
+                        <span class="status verified" title="CHD integrity verified">✓ Verified</span>
+                    `}
+                    ${!isArchiveItem(entry) && html`
+                        <div class="file-actions" onClick=${(e) => e.stopPropagation()}>
+                            ${entry.extension === '.chd' && !isVerified(entry) && html`
+                                <button
+                                    class="btn-icon"
+                                    onClick=${(e) => handleVerifyClick(e, entry)}
+                                    title="Verify CHD integrity"
+                                    disabled=${verifyingPath === entry.path}
+                                >
+                                    ${verifyingPath === entry.path ? '⏳' : '🔍'}
+                                </button>
+                            `}
+                            <button
+                                class="btn-icon"
+                                onClick=${(e) => { e.stopPropagation(); onRename(entry); }}
+                                title="Rename"
+                            >
+                                ✏️
+                            </button>
+                            <button
+                                class="btn-icon btn-danger"
+                                onClick=${(e) => { e.stopPropagation(); onDelete(entry); }}
+                                title="Delete"
+                            >
+                                🗑️
+                            </button>
+                        </div>
                     `}
                 </li>
             `)}
@@ -444,6 +490,225 @@ function DuplicateModal({ duplicates, onAction, onClose }) {
     `;
 }
 
+function RenameModal({ entry, onRename, onClose }) {
+    const [newName, setNewName] = useState(entry?.name || '');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!entry) return null;
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (!newName.trim() || newName === entry.name) return;
+
+        setLoading(true);
+        setError(null);
+        try {
+            await onRename(entry.path, newName.trim());
+            onClose();
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return html`
+        <div class="modal-overlay" onClick=${onClose}>
+            <div class="modal" onClick=${(e) => e.stopPropagation()}>
+                <div class="modal-header">
+                    <h3>Rename</h3>
+                    <button class="modal-close" onClick=${onClose} title="Close">×</button>
+                </div>
+                <form onSubmit=${handleSubmit} class="modal-body" style="padding: 15px;">
+                    <p style="margin-bottom: 10px; color: var(--text-secondary);">
+                        Current name: <strong>${entry.name}</strong>
+                    </p>
+                    <input
+                        type="text"
+                        value=${newName}
+                        onInput=${(e) => setNewName(e.target.value)}
+                        placeholder="Enter new name"
+                        style="width: 100%; padding: 10px; margin-bottom: 15px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-primary); color: var(--text-primary);"
+                        autoFocus
+                    />
+                    ${error && html`
+                        <p style="color: var(--error); margin-bottom: 15px; font-size: 0.85rem;">${error}</p>
+                    `}
+                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                        <button type="button" class="btn btn-secondary" onClick=${onClose} disabled=${loading}>
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            class="btn btn-primary"
+                            disabled=${loading || !newName.trim() || newName === entry.name}
+                        >
+                            ${loading ? 'Renaming...' : 'Rename'}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+}
+
+function DeleteModal({ entry, hasCHD, verifiedCHDs, onDelete, onVerify, onClose }) {
+    const [step, setStep] = useState(1); // 1 = initial, 2 = verification/confirm, 3 = final confirm
+    const [verifying, setVerifying] = useState(false);
+    const [verificationResult, setVerificationResult] = useState(null);
+    const [deleting, setDeleting] = useState(false);
+    const [error, setError] = useState(null);
+
+    if (!entry) return null;
+
+    const isSourceFile = ['.iso', '.gdi', '.cue', '.bin'].includes(entry.extension?.toLowerCase());
+    const chdPath = isSourceFile && hasCHD ? entry.path.replace(/\.[^.]+$/, '.chd') : null;
+    const isAlreadyVerified = chdPath && verifiedCHDs.has(chdPath);
+
+    const handleVerify = async () => {
+        if (!chdPath) return;
+        setVerifying(true);
+        setError(null);
+        try {
+            const result = await onVerify(chdPath);
+            setVerificationResult(result);
+            if (result.valid) {
+                setStep(3);
+            }
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setVerifying(false);
+        }
+    };
+
+    const handleDelete = async () => {
+        setDeleting(true);
+        setError(null);
+        try {
+            await onDelete(entry.path);
+            onClose();
+        } catch (err) {
+            setError(err.message);
+            setDeleting(false);
+        }
+    };
+
+    return html`
+        <div class="modal-overlay" onClick=${onClose}>
+            <div class="modal" onClick=${(e) => e.stopPropagation()}>
+                <div class="modal-header">
+                    <h3 style="color: var(--error);">⚠️ Delete File</h3>
+                    <button class="modal-close" onClick=${onClose} title="Close">×</button>
+                </div>
+                <div class="modal-body" style="padding: 15px;">
+                    <p style="margin-bottom: 15px;">
+                        Are you sure you want to delete: <br/>
+                        <strong style="word-break: break-all;">${entry.name}</strong>
+                    </p>
+
+                    ${step === 1 && html`
+                        ${isSourceFile && hasCHD && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px;">
+                                <p style="color: var(--success); margin-bottom: 8px;">✓ A CHD file exists for this source</p>
+                                ${isAlreadyVerified ? html`
+                                    <p style="color: var(--success);">✓ CHD has been verified</p>
+                                ` : html`
+                                    <p style="color: var(--warning);">
+                                        ⚠️ CHD has not been verified. We recommend verifying before deleting the source.
+                                    </p>
+                                `}
+                            </div>
+                        `}
+                        ${isSourceFile && !hasCHD && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--error);">
+                                <p style="color: var(--error);">
+                                    ⚠️ <strong>WARNING:</strong> No CHD file exists for this source file. Deleting it will result in data loss!
+                                </p>
+                            </div>
+                        `}
+                        <p style="color: var(--text-secondary); margin-bottom: 15px;">This action cannot be undone.</p>
+                        ${error && html`
+                            <p style="color: var(--error); margin-bottom: 15px; font-size: 0.85rem;">${error}</p>
+                        `}
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            ${isSourceFile && hasCHD && !isAlreadyVerified && html`
+                                <button class="btn btn-primary" onClick=${handleVerify} disabled=${verifying}>
+                                    ${verifying ? 'Verifying CHD...' : '🔍 Verify CHD First'}
+                                </button>
+                            `}
+                            <button
+                                class="btn btn-secondary"
+                                onClick=${() => setStep(isSourceFile && hasCHD && isAlreadyVerified ? 3 : 2)}
+                            >
+                                ${isAlreadyVerified ? 'Continue to Delete' : 'Skip Verification'}
+                            </button>
+                            <button class="btn btn-secondary" onClick=${onClose}>Cancel</button>
+                        </div>
+                    `}
+
+                    ${step === 2 && html`
+                        <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--warning);">
+                            <p style="color: var(--warning);">
+                                ⚠️ You're about to delete a file without CHD verification.
+                            </p>
+                        </div>
+                        ${verificationResult && !verificationResult.valid && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--error);">
+                                <p style="color: var(--error);">
+                                    ❌ CHD verification failed: ${verificationResult.message}
+                                </p>
+                            </div>
+                        `}
+                        <p style="color: var(--text-secondary); margin-bottom: 15px;">
+                            Are you <strong>absolutely sure</strong> you want to proceed?
+                        </p>
+                        ${error && html`
+                            <p style="color: var(--error); margin-bottom: 15px; font-size: 0.85rem;">${error}</p>
+                        `}
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <button class="btn btn-secondary" style="background: var(--error);" onClick=${handleDelete} disabled=${deleting}>
+                                ${deleting ? 'Deleting...' : 'Yes, Delete Anyway'}
+                            </button>
+                            <button class="btn btn-secondary" onClick=${onClose}>Cancel</button>
+                        </div>
+                    `}
+
+                    ${step === 3 && html`
+                        ${verificationResult && verificationResult.valid && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
+                                <p style="color: var(--success);">
+                                    ✓ CHD verified successfully! Safe to delete source file.
+                                </p>
+                            </div>
+                        `}
+                        ${isAlreadyVerified && !verificationResult && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
+                                <p style="color: var(--success);">
+                                    ✓ CHD was previously verified. Safe to delete source file.
+                                </p>
+                            </div>
+                        `}
+                        <p style="color: var(--text-secondary); margin-bottom: 15px;">
+                            Confirm deletion of the source file?
+                        </p>
+                        ${error && html`
+                            <p style="color: var(--error); margin-bottom: 15px; font-size: 0.85rem;">${error}</p>
+                        `}
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <button class="btn btn-primary" onClick=${handleDelete} disabled=${deleting}>
+                                ${deleting ? 'Deleting...' : 'Delete Source File'}
+                            </button>
+                            <button class="btn btn-secondary" onClick=${onClose}>Cancel</button>
+                        </div>
+                    `}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
 // ============ Main App ============
 
 function App() {
@@ -470,10 +735,18 @@ function App() {
     const [converting, setConverting] = useState(false);
     const [duplicateCheck, setDuplicateCheck] = useState(null); // { duplicates: [], paths: [] }
     const [autoRefresh, setAutoRefresh] = useState(true); // Auto-refresh file list
+    const [currentArchivePath, setCurrentArchivePath] = useState(null); // Track current archive being viewed
+    const [renameTarget, setRenameTarget] = useState(null); // Entry to rename
+    const [deleteTarget, setDeleteTarget] = useState(null); // Entry to delete
+    const [verifiedCHDs, setVerifiedCHDs] = useState(new Set()); // Set of verified CHD paths
 
     // Ref to track current path for use in callbacks
     const currentPathRef = useRef(null);
     currentPathRef.current = currentPath;
+
+    // Ref to track current archive path for use in callbacks
+    const currentArchivePathRef = useRef(null);
+    currentArchivePathRef.current = currentArchivePath;
 
     // Show notification
     const notify = (message, type = 'info') => {
@@ -481,10 +754,57 @@ function App() {
         setTimeout(() => setNotification(null), 4000);
     };
 
-    // Refresh file list for current directory (transparent merge to avoid flicker)
+    // Refresh file list for current directory or archive (transparent merge to avoid flicker)
     const refreshFileList = useCallback((showSpinner = false) => {
         const path = currentPathRef.current;
-        if (path && !searchMode) {
+        const archivePath = currentArchivePathRef.current;
+
+        if (searchMode) return;
+
+        // If we're viewing an archive, refresh the archive contents
+        if (archivePath) {
+            if (showSpinner) setLoading(true);
+            api.listArchive(archivePath)
+                .then(archiveData => {
+                    if (!archiveData || !archiveData.files) return;
+
+                    const newArchiveEntries = archiveData.files.map(file => ({
+                        name: file.name,
+                        path: `${archivePath}::${file.internal_path}`,
+                        type: 'file',
+                        size: file.size,
+                        extension: file.extension,
+                        convertible: file.convertible,
+                        has_chd: file.has_chd || false,
+                        is_archive_item: true,
+                        archive_path: archivePath
+                    }));
+
+                    // Merge entries transparently to preserve UI stability
+                    setEntries(prevEntries => {
+                        if (prevEntries.length === newArchiveEntries.length) {
+                            const hasChanges = newArchiveEntries.some((newEntry, i) => {
+                                const oldEntry = prevEntries[i];
+                                return oldEntry.name !== newEntry.name ||
+                                       oldEntry.size !== newEntry.size ||
+                                       oldEntry.has_chd !== newEntry.has_chd;
+                            });
+                            if (!hasChanges) return prevEntries;
+                        }
+                        return newArchiveEntries;
+                    });
+                })
+                .catch(err => {
+                    console.error('Failed to refresh archive contents:', err);
+                })
+                .finally(() => {
+                    if (showSpinner) setLoading(false);
+                });
+            return;
+        }
+
+        // Otherwise refresh the directory contents
+        if (path) {
             if (showSpinner) setLoading(true);
             api.listFiles(path)
                 .then(data => {
@@ -681,11 +1001,13 @@ function App() {
         setSelectedVolume(vol);
         setCurrentPath(vol.path);
         setSelectedFiles(new Map());
+        setCurrentArchivePath(null); // Exit archive view when changing volumes
     };
 
     const handleNavigate = (path) => {
         setCurrentPath(path);
         setSelectedFiles(new Map());
+        setCurrentArchivePath(null); // Exit archive view when navigating directories
     };
 
     const handleBrowseArchive = async (archivePath) => {
@@ -693,16 +1015,17 @@ function App() {
         setEntriesError(null);
         const archiveName = archivePath.split('/').pop();
         notify(`📦 Loading archive: ${archiveName}...`, 'info');
-        
+
         try {
             const archiveData = await api.listArchive(archivePath);
-            
+
             if (!archiveData || !archiveData.files || archiveData.files.length === 0) {
                 notify(`ℹ No convertible files found in ${archiveName}`, 'info');
                 setEntries([]);
+                setCurrentArchivePath(null);
                 return;
             }
-            
+
             const archiveEntries = archiveData.files.map(file => ({
                 name: file.name,
                 path: `${archivePath}::${file.internal_path}`,
@@ -710,11 +1033,12 @@ function App() {
                 size: file.size,
                 extension: file.extension,
                 convertible: file.convertible,
-                has_chd: false,
+                has_chd: file.has_chd || false,
                 is_archive_item: true,
                 archive_path: archivePath
             }));
-            
+
+            setCurrentArchivePath(archivePath); // Track that we're in archive view
             setEntries(archiveEntries);
             setSearchMode(false);
             setSearchResults(null);
@@ -723,6 +1047,7 @@ function App() {
             setEntriesError(err.message);
             console.error('Failed to browse archive:', err);
             notify(`✗ Failed to browse archive: ${err.message}`, 'error');
+            setCurrentArchivePath(null);
         } finally {
             setLoading(false);
         }
@@ -749,6 +1074,30 @@ function App() {
             convertible.forEach(e => newMap.set(e.path, e));
             setSelectedFiles(newMap);
         }
+    };
+
+    // File operations handlers
+    const handleRename = async (path, newName) => {
+        await api.renameFile(path, newName);
+        notify(`✓ Renamed to ${newName}`, 'success');
+        refreshFileList(true);
+    };
+
+    const handleDelete = async (path) => {
+        await api.deleteFile(path);
+        notify('✓ File deleted', 'success');
+        refreshFileList(true);
+    };
+
+    const handleVerify = async (chdPath) => {
+        const result = await api.verifyCHD(chdPath);
+        if (result.valid) {
+            setVerifiedCHDs(prev => new Set([...prev, chdPath]));
+            notify('✓ CHD verified successfully', 'success');
+        } else {
+            notify(`✗ CHD verification failed: ${result.message}`, 'error');
+        }
+        return result;
     };
 
     // Helper to calculate expected output path
@@ -1049,6 +1398,24 @@ function App() {
                         onNavigate=${handleNavigate}
                     />
 
+                    ${currentArchivePath && html`
+                        <div class="archive-indicator">
+                            <button
+                                class="btn btn-sm btn-secondary"
+                                onClick=${() => {
+                                    setCurrentArchivePath(null);
+                                    refreshFileList(true);
+                                }}
+                                title="Return to folder view"
+                            >
+                                ← Back
+                            </button>
+                            <span class="archive-name" title=${currentArchivePath}>
+                                📦 Viewing: ${currentArchivePath.split('/').pop()}
+                            </span>
+                        </div>
+                    `}
+
                     ${searchMode && searchResults && html`
                         <div class="search-results">
                             <h3>Found ${searchResults.total_files} file(s), ${searchResults.total_in_archives} in archives</h3>
@@ -1117,6 +1484,10 @@ function App() {
                                 onToggleSelect=${handleToggleSelect}
                                 onShowInfo=${setShowCHDInfo}
                                 onBrowseArchive=${handleBrowseArchive}
+                                onRename=${setRenameTarget}
+                                onDelete=${setDeleteTarget}
+                                onVerify=${handleVerify}
+                                verifiedCHDs=${verifiedCHDs}
                                 error=${entriesError}
                             />`
                         }
@@ -1167,6 +1538,25 @@ function App() {
                     duplicates=${duplicateCheck.duplicates}
                     onAction=${handleDuplicateAction}
                     onClose=${() => setDuplicateCheck(null)}
+                />
+            `}
+
+            ${renameTarget && html`
+                <${RenameModal}
+                    entry=${renameTarget}
+                    onRename=${handleRename}
+                    onClose=${() => setRenameTarget(null)}
+                />
+            `}
+
+            ${deleteTarget && html`
+                <${DeleteModal}
+                    entry=${deleteTarget}
+                    hasCHD=${deleteTarget.has_chd}
+                    verifiedCHDs=${verifiedCHDs}
+                    onDelete=${handleDelete}
+                    onVerify=${handleVerify}
+                    onClose=${() => setDeleteTarget(null)}
                 />
             `}
         </div>

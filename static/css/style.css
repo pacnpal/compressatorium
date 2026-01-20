@@ -224,10 +224,52 @@ header h1 span {
     color: white;
 }
 
+.file-item .status.verified {
+    background: var(--success);
+    color: var(--bg-primary);
+}
+
 .file-item .checkbox {
     width: 20px;
     height: 20px;
     accent-color: var(--accent);
+}
+
+/* File Actions */
+.file-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.file-item:hover .file-actions {
+    opacity: 1;
+}
+
+.btn-icon {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.btn-icon:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--text-secondary);
+}
+
+.btn-icon:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-icon.btn-danger:hover {
+    background: var(--error);
+    border-color: var(--error);
 }
 
 /* Toolbar */
@@ -521,6 +563,26 @@ header h1 span {
     font-size: 0.9rem;
     color: var(--text-secondary);
     margin-bottom: 10px;
+}
+
+/* Archive Indicator */
+.archive-indicator {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+    margin-top: 10px;
+    border: 1px solid var(--border);
+}
+
+.archive-indicator .archive-name {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* Header Actions */

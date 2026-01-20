@@ -55,3 +55,24 @@ async def get_chd_info(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read CHD info: {str(e)}")
+
+
+@router.get("/verify")
+async def verify_chd(
+    path: str = Query(..., description="Path to CHD file to verify")
+) -> dict:
+    """Verify the integrity of a CHD file."""
+    if not validate_path(path):
+        raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
+
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not path.lower().endswith(".chd"):
+        raise HTTPException(status_code=400, detail="Not a CHD file")
+
+    try:
+        result = await chdman_service.verify(path)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to verify CHD: {str(e)}")

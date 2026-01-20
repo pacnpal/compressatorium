@@ -214,8 +214,86 @@ async def list_archive(
 
     contents = archive_service.list_archive_contents(path)
 
+    # Check for existing CHD files in the archive's directory
+    archive_dir = os.path.dirname(path)
+    for file_entry in contents:
+        # Get the base name without extension and add .chd
+        base_name = Path(file_entry["name"]).stem
+        chd_path = os.path.join(archive_dir, f"{base_name}.chd")
+        # Use atomic check to get both file existence and lock status
+        file_exists, is_converting = lock_manager.check_file_status(chd_path)
+        file_entry["has_chd"] = file_exists or is_converting
+
     return {
         "archive": path,
         "files": contents,
         "total": len(contents)
     }
+
+
+@router.post("/files/rename")
+async def rename_file(
+    path: str = Query(..., description="Path to file or directory to rename"),
+    new_name: str = Query(..., description="New name for the file or directory")
+) -> dict:
+    """Rename a file or directory."""
+    if not validate_path(path):
+        raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="File or directory not found")
+
+    # Validate new name (no path separators, no empty, no special chars that could be problematic)
+    if not new_name or '/' in new_name or '\\' in new_name or new_name in ('.', '..'):
+        raise HTTPException(status_code=400, detail="Invalid new name")
+
+    parent_dir = os.path.dirname(path)
+    new_path = os.path.join(parent_dir, new_name)
+
+    # Check if new path is also within allowed volumes
+    if not validate_path(new_path):
+        raise HTTPException(status_code=403, detail="Access denied: target path outside configured volumes")
+
+    # Check if target already exists
+    if os.path.exists(new_path):
+        raise HTTPException(status_code=409, detail="A file or directory with that name already exists")
+
+    try:
+        os.rename(path, new_path)
+        return {
+            "success": True,
+            "old_path": path,
+            "new_path": new_path,
+            "message": f"Successfully renamed to {new_name}"
+        }
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to rename: {str(e)}")
+
+
+@router.delete("/files/delete")
+async def delete_file(
+    path: str = Query(..., description="Path to file or directory to delete")
+) -> dict:
+    """Delete a file or empty directory."""
+    if not validate_path(path):
+        raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="File or directory not found")
+
+    try:
+        if os.path.isdir(path):
+            # Only delete empty directories for safety
+            if os.listdir(path):
+                raise HTTPException(status_code=400, detail="Cannot delete non-empty directory")
+            os.rmdir(path)
+        else:
+            os.remove(path)
+
+        return {
+            "success": True,
+            "path": path,
+            "message": "Successfully deleted"
+        }
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {str(e)}")

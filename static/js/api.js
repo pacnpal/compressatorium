@@ -135,6 +135,34 @@ export const api = {
         const res = await fetch(`${API_BASE}/info?${params}`);
         if (!res.ok) throw new Error('Failed to get CHD info');
         return res.json();
+    },
+
+    async verifyCHD(path) {
+        const params = new URLSearchParams({ path });
+        const res = await fetch(`${API_BASE}/verify?${params}`);
+        if (!res.ok) throw new Error('Failed to verify CHD');
+        return res.json();
+    },
+
+    // File operations
+    async renameFile(path, newName) {
+        const params = new URLSearchParams({ path, new_name: newName });
+        const res = await fetch(`${API_BASE}/files/rename?${params}`, { method: 'POST' });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to rename' }));
+            throw new Error(error.detail || 'Failed to rename');
+        }
+        return res.json();
+    },
+
+    async deleteFile(path) {
+        const params = new URLSearchParams({ path });
+        const res = await fetch(`${API_BASE}/files/delete?${params}`, { method: 'DELETE' });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to delete' }));
+            throw new Error(error.detail || 'Failed to delete');
+        }
+        return res.json();
     }
 };
 
