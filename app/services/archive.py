@@ -73,17 +73,19 @@ class ArchiveService:
         """List contents of a 7z file."""
         entries = []
         with py7zr.SevenZipFile(archive_path, "r") as zf:
-            for name, info in zf.archiveinfo().files.items() if hasattr(zf.archiveinfo(), 'files') else []:
-                ext = Path(name).suffix.lower()
-                if ext in CONVERTIBLE_EXTENSIONS:
-                    entries.append({
-                        "archive_path": archive_path,
-                        "internal_path": name,
-                        "name": os.path.basename(name),
-                        "size": getattr(info, 'uncompressed', 0),
-                        "extension": ext,
-                        "convertible": True
-                    })
+            archive_info = zf.archiveinfo()
+            if hasattr(archive_info, "files"):
+                for name, info in archive_info.files.items():
+                    ext = Path(name).suffix.lower()
+                    if ext in CONVERTIBLE_EXTENSIONS:
+                        entries.append({
+                            "archive_path": archive_path,
+                            "internal_path": name,
+                            "name": os.path.basename(name),
+                            "size": getattr(info, 'uncompressed', 0),
+                            "extension": ext,
+                            "convertible": True
+                        })
             # Fallback for different py7zr versions
             if not entries:
                 for entry in zf.list():
