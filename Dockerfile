@@ -1,43 +1,50 @@
 FROM debian:trixie-slim
 
-# Install modern MAME tools (includes a recent chdman with `createdvd` support)
+# Install system dependencies
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
       mame-tools \
+      python3 \
+      python3-pip \
+      python3-venv \
+      unrar-free \
+      p7zip-full \
       bash && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Directory where your images will be mounted
-WORKDIR /tmp/images
+# Create Python virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Use bash for the ENTRYPOINT script
-SHELL ["/bin/bash", "-c"]
+# Install Python dependencies
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Default mode: createcd (can be overridden at runtime)
-ENV CHDMAN_MODE=createcd
+# Copy application
+COPY app/ /app/app/
+COPY static/ /app/static/
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-# Convert all supported image files to .chd
-ENTRYPOINT \
-  mode="${CHDMAN_MODE:-createcd}"; \
-  case "$mode" in \
-    cd)  mode="createcd"  ;; \
-    dvd) mode="createdvd" ;; \
-    createcd|createdvd) ;; \
-    *) echo "Unsupported CHDMAN_MODE: '$mode'. Use 'createcd' or 'createdvd'." >&2; exit 1 ;; \
-  esac; \
-  shopt -s nullglob; \
-  for i in *.gdi *.iso *.cue; do \
-    [[ -e "$i" ]] || continue; \
-    [[ -e "${i%.*}.chd" ]] && { \
-      echo "Skipping '$i' (CHD already exists)."; \
-      continue; \
-    }; \
-    echo "Converting '$i' using chdman ${mode} ..."; \
-    if [[ "$mode" == "createdvd" ]]; then \
-      chdman createdvd -hs 2048 -f -i "$i" -o "${i%.*}.chd"; \
-    else \
-      chdman createcd -f -i "$i" -o "${i%.*}.chd"; \
-    fi; \
-  done
+WORKDIR /app
+
+# Configuration
+ENV CHD_VOLUMES="/data/games"
+ENV CHD_MODE="webui"
+ENV CHDMAN_MODE="createcd"
+ENV MAX_CONCURRENT_JOBS=2
+ENV PYTHONUNBUFFERED=1
+
+# Default volume mount point
+VOLUME ["/data/games"]
+
+# Expose web port
+EXPOSE 8080
+
+# Health check (only applies in webui mode)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 0
+
+ENTRYPOINT ["/app/entrypoint.sh"]
