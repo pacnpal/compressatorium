@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CHD Converter</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💿</text></svg>">
+</head>
+<body>
+    <div id="app">
+        <div class="loading" style="height: 100vh;">
+            <div class="spinner"></div>
+            Loading CHD Converter...
+        </div>
+    </div>
+
+    <!-- Preact + HTM with local-vendored fallback before CDN -->
+    <script type="module">
+        async function loadModule(urls) {
+            let lastError;
+            for (const url of urls) {
+                try {
+                    return await import(url);
+                } catch (err) {
+                    lastError = err;
+                }
+            }
+            throw lastError || new Error('Failed to load module from provided URLs');
+        }
+
+        function showLoadError(err) {
+            const appEl = document.getElementById('app');
+            if (!appEl) return;
+            appEl.innerHTML = `
+                <div class="error-state">
+                    <h1>Failed to load application</h1>
+                    <p>${err && err.message ? err.message : 'Unknown error while loading dependencies.'}</p>
+                    <button onclick="location.reload()">Retry</button>
+                </div>
+            `;
+        }
+
+        (async () => {
+            try {
+                const preactModule = await loadModule([
+                    '/static/vendor/preact.mjs',
+                    'https://esm.sh/preact@10.19.3'
+                ]);
+                const hooksModule = await loadModule([
+                    '/static/vendor/preact-hooks.mjs',
+                    'https://esm.sh/preact@10.19.3/hooks'
+                ]);
+                const htmModule = await loadModule([
+                    '/static/vendor/htm.mjs',
+                    'https://esm.sh/htm@3.1.1'
+                ]);
+
+                const { h, render } = preactModule;
+                const { useState, useEffect, useCallback, useRef } = hooksModule;
+                const htm = htmModule.default || htmModule.htm || htmModule;
+
+                const html = htm.bind(h);
+
+                // Make available globally for components
+                window.h = h;
+                window.html = html;
+                window.useState = useState;
+                window.useEffect = useEffect;
+                window.useCallback = useCallback;
+                window.useRef = useRef;
+                window.render = render;
+
+                // Load main app after globals are set
+                await import('/static/js/app.js');
+            } catch (err) {
+                showLoadError(err);
+            }
+        })();
+    </script>
+</body>
+</html>
