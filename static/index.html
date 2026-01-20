@@ -5,14 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CHD Converter</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💿</text></svg>">
 </head>
 <body>
-    <div id="app"></div>
+    <div id="app">
+        <div class="loading" style="height: 100vh;">
+            <div class="spinner"></div>
+            Loading CHD Converter...
+        </div>
+    </div>
 
     <!-- Preact + HTM from CDN (no build step) -->
     <script type="module">
         import { h, render } from 'https://esm.sh/preact@10.19.3';
-        import { useState, useEffect, useCallback } from 'https://esm.sh/preact@10.19.3/hooks';
+        import { useState, useEffect, useCallback, useRef } from 'https://esm.sh/preact@10.19.3/hooks';
         import htm from 'https://esm.sh/htm@3.1.1';
 
         const html = htm.bind(h);
@@ -23,10 +29,19 @@
         window.useState = useState;
         window.useEffect = useEffect;
         window.useCallback = useCallback;
+        window.useRef = useRef;
         window.render = render;
 
         // Load main app after globals are set
-        import('/static/js/app.js');
+        import('/static/js/app.js').catch(err => {
+            document.getElementById('app').innerHTML = `
+                <div class="error-state">
+                    <h1>Failed to load application</h1>
+                    <p>${err.message}</p>
+                    <button onclick="location.reload()">Retry</button>
+                </div>
+            `;
+        });
     </script>
 </body>
 </html>

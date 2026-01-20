@@ -106,6 +106,50 @@ async def list_jobs():
     return job_manager.get_all_jobs()
 
 
+# NOTE: SSE endpoints must be defined BEFORE parameterized routes to avoid conflicts
+@router.get("/jobs/events")
+async def job_events():
+    """SSE endpoint for all job progress updates."""
+    import json
+
+    async def event_generator():
+        # Create a queue to receive all job updates
+        queues = {}
+
+        while True:
+            try:
+                # Subscribe to any new jobs
+                for job in job_manager.get_all_jobs():
+                    if job.id not in queues and job.status in (JobStatus.QUEUED, JobStatus.PROCESSING):
+                        queues[job.id] = job_manager.subscribe(job.id)
+
+                # Check all queues for updates
+                for job_id, queue in list(queues.items()):
+                    try:
+                        update = queue.get_nowait()
+                        yield {
+                            "event": update.get("type", "progress"),
+                            "data": json.dumps(update)
+                        }
+
+                        # Unsubscribe if job is done
+                        if update.get("type") in ("complete", "error"):
+                            job_manager.unsubscribe(job_id, queue)
+                            del queues[job_id]
+
+                    except asyncio.QueueEmpty:
+                        pass
+
+                await asyncio.sleep(0.1)
+
+            except Exception as e:
+                # Log error but keep the connection alive
+                print(f"SSE event generator error: {e}")
+                await asyncio.sleep(1)
+
+    return EventSourceResponse(event_generator())
+
+
 @router.get("/jobs/{job_id}", response_model=ConversionJob)
 async def get_job(job_id: str):
     """Get a specific job by ID."""
@@ -133,44 +177,11 @@ async def cancel_job(job_id: str):
     raise HTTPException(status_code=400, detail="Cannot cancel job")
 
 
-@router.get("/jobs/events")
-async def job_events():
-    """SSE endpoint for all job progress updates."""
-    async def event_generator():
-        # Create a queue to receive all job updates
-        queues = {}
-
-        while True:
-            # Subscribe to any new jobs
-            for job in job_manager.get_all_jobs():
-                if job.id not in queues and job.status in (JobStatus.QUEUED, JobStatus.PROCESSING):
-                    queues[job.id] = job_manager.subscribe(job.id)
-
-            # Check all queues for updates
-            for job_id, queue in list(queues.items()):
-                try:
-                    update = queue.get_nowait()
-                    yield {
-                        "event": update.get("type", "progress"),
-                        "data": update
-                    }
-
-                    # Unsubscribe if job is done
-                    if update.get("type") in ("complete", "error"):
-                        job_manager.unsubscribe(job_id, queue)
-                        del queues[job_id]
-
-                except asyncio.QueueEmpty:
-                    pass
-
-            await asyncio.sleep(0.1)
-
-    return EventSourceResponse(event_generator())
-
-
 @router.get("/jobs/{job_id}/events")
 async def job_progress(job_id: str):
     """SSE endpoint for a specific job's progress."""
+    import json
+
     job = job_manager.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -182,11 +193,11 @@ async def job_progress(job_id: str):
             # Send initial state
             yield {
                 "event": "status",
-                "data": {
+                "data": json.dumps({
                     "job_id": job_id,
                     "status": job.status.value,
                     "progress": job.progress
-                }
+                })
             }
 
             while True:
@@ -194,7 +205,7 @@ async def job_progress(job_id: str):
                     update = await asyncio.wait_for(queue.get(), timeout=30)
                     yield {
                         "event": update.get("type", "progress"),
-                        "data": update
+                        "data": json.dumps(update)
                     }
 
                     if update.get("type") in ("complete", "error"):
@@ -202,8 +213,10 @@ async def job_progress(job_id: str):
 
                 except asyncio.TimeoutError:
                     # Send keepalive
-                    yield {"event": "ping", "data": {}}
+                    yield {"event": "ping", "data": json.dumps({})}
 
+        except Exception as e:
+            print(f"SSE job progress error: {e}")
         finally:
             job_manager.unsubscribe(job_id, queue)
 
