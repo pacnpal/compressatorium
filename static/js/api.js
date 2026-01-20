@@ -86,23 +86,25 @@ export const api = {
     subscribeToJobs(onUpdate) {
         const eventSource = new EventSource(`${API_BASE}/jobs/events`);
 
-        eventSource.addEventListener('progress', (e) => {
-            onUpdate({ type: 'progress', data: JSON.parse(e.data) });
-        });
-
-        eventSource.addEventListener('complete', (e) => {
-            onUpdate({ type: 'complete', data: JSON.parse(e.data) });
-        });
-
-        eventSource.addEventListener('error', (e) => {
-            if (e.data) {
-                onUpdate({ type: 'error', data: JSON.parse(e.data) });
+        const safeParseAndUpdate = (type, e) => {
+            try {
+                if (e.data) {
+                    onUpdate({ type, data: JSON.parse(e.data) });
+                }
+            } catch (err) {
+                console.error(`Failed to parse SSE ${type} event:`, err, e.data);
             }
-        });
+        };
 
-        eventSource.addEventListener('status', (e) => {
-            onUpdate({ type: 'status', data: JSON.parse(e.data) });
-        });
+        eventSource.addEventListener('progress', (e) => safeParseAndUpdate('progress', e));
+        eventSource.addEventListener('complete', (e) => safeParseAndUpdate('complete', e));
+        eventSource.addEventListener('error', (e) => safeParseAndUpdate('error', e));
+        eventSource.addEventListener('status', (e) => safeParseAndUpdate('status', e));
+
+        eventSource.onerror = (err) => {
+            console.error('SSE connection error:', err);
+            // Don't close - EventSource will auto-reconnect
+        };
 
         return () => eventSource.close();
     },
@@ -118,6 +120,7 @@ export const api = {
 
 // Format file size
 export function formatSize(bytes) {
+    if (bytes == null || bytes === undefined) return '';
     if (bytes === 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];

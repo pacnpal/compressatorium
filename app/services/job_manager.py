@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 import os
+import shutil
 from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, List, Optional, Set
@@ -203,6 +204,16 @@ class JobManager:
 
         finally:
             self._processing_count -= 1
+
+            # Clean up temp directory if this was an archive extraction
+            if job.message and job.message.startswith("temp:"):
+                temp_dir = job.message.replace("temp:", "")
+                try:
+                    if os.path.isdir(temp_dir):
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                        job.message = ""  # Clear the temp marker
+                except Exception as cleanup_error:
+                    print(f"Failed to cleanup temp dir {temp_dir}: {cleanup_error}")
 
 
 job_manager = JobManager(max_concurrent=settings.max_concurrent_jobs)
