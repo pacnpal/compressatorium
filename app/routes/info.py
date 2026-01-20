@@ -2,20 +2,11 @@ import os
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.config import settings
 from app.models import CHDInfo
 from app.services.chdman import chdman_service
 from app.utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
-
-    """Validate that a path is within configured volumes."""
-    real_path = os.path.realpath(path)
-    for volume in settings.volumes:
-        real_volume = os.path.realpath(volume)
-        if real_path.startswith(real_volume + os.sep) or real_path == real_volume:
-            return True
-    return False
 
 
 @router.get("/info", response_model=CHDInfo)
