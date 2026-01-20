@@ -8,6 +8,7 @@ from app.config import settings
 from app.models import FileEntry, DirectoryListing, Volume
 from app.services.chdman import chdman_service, CONVERTIBLE_EXTENSIONS
 from app.services.archive import archive_service, ARCHIVE_EXTENSIONS
+from app.services.lock_manager import lock_manager
 
 router = APIRouter()
 
@@ -102,11 +103,16 @@ async def list_files(
                 is_convertible = ext in CONVERTIBLE_EXTENSIONS
                 is_archive = ext in ARCHIVE_EXTENSIONS
 
-                # Check if CHD already exists for convertible files
+                # Check if CHD already exists or is being converted
                 has_chd = False
+                is_converting = False
                 if is_convertible:
                     chd_path = str(Path(item_path).with_suffix(".chd"))
-                    has_chd = os.path.exists(chd_path)
+                    # Check if file is currently locked (being converted)
+                    is_converting = lock_manager.is_locked(chd_path)
+                    # Only check existence if not currently being converted
+                    if not is_converting:
+                        has_chd = os.path.exists(chd_path)
 
                 entry = FileEntry(
                     name=item,
@@ -115,7 +121,7 @@ async def list_files(
                     size=size,
                     extension=ext,
                     convertible=is_convertible,
-                    has_chd=has_chd
+                    has_chd=has_chd or is_converting  # Treat converting as "has CHD" to prevent double conversion
                 )
                 entries.append(entry)
 
@@ -157,13 +163,16 @@ async def search_files(
                 elif os.path.isfile(item_path):
                     if ext in CONVERTIBLE_EXTENSIONS:
                         chd_path = str(Path(item_path).with_suffix(".chd"))
-                        has_chd = os.path.exists(chd_path)
+                        # Check if file is currently locked (being converted)
+                        is_converting = lock_manager.is_locked(chd_path)
+                        # Only check existence if not currently being converted
+                        has_chd = False if is_converting else os.path.exists(chd_path)
                         files.append({
                             "name": item,
                             "path": item_path,
                             "size": os.path.getsize(item_path),
                             "extension": ext,
-                            "has_chd": has_chd,
+                            "has_chd": has_chd or is_converting,  # Treat converting as "has CHD"
                             "in_archive": False
                         })
                     elif include_archives and ext in ARCHIVE_EXTENSIONS:

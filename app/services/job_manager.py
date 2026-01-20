@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Set
 
 from app.models import ConversionJob, JobStatus, ConversionMode
 from app.services.chdman import chdman_service
+from app.services.lock_manager import lock_manager
 from app.config import settings
 
 
@@ -143,6 +144,23 @@ class JobManager:
             self._cancelled.discard(job_id)
             return
 
+        # Try to acquire lock for the output file (prevents race conditions)
+        if not lock_manager.acquire_lock(job.output_path):
+            # Could not acquire lock - either file exists or is being converted
+            job.status = JobStatus.FAILED
+            if os.path.exists(job.output_path):
+                job.error_message = "Output CHD file already exists"
+            else:
+                job.error_message = "Another job is already converting to this output file"
+            job.completed_at = datetime.utcnow()
+
+            await self._notify_subscribers(job_id, {
+                "type": "error",
+                "job_id": job_id,
+                "error": job.error_message
+            })
+            return
+
         self._processing_count += 1
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.utcnow()
@@ -203,6 +221,8 @@ class JobManager:
             })
 
         finally:
+            # Always release the lock
+            lock_manager.release_lock(job.output_path)
             self._processing_count -= 1
 
             # Clean up temp directory if this was an archive extraction
