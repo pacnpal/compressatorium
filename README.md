@@ -11,6 +11,36 @@ Compresses GDI, ISO, BIN and CUE files to CHD using **CHDMAN** from MAME Tools.
 
 ---
 
+## Installation
+
+The Docker image is available from two registries:
+
+### Docker Hub
+
+```bash
+docker pull marctv/chd-converter
+```
+
+### GitHub Container Registry
+
+```bash
+docker pull ghcr.io/pacnpal/docker-chd-converter-webui
+```
+
+Both registries provide identical images with multi-architecture support (`linux/amd64` and `linux/arm64`).
+
+> **Note:** In all examples below, you can substitute `marctv/chd-converter` with `ghcr.io/pacnpal/docker-chd-converter-webui` interchangeably.
+
+### Available Tags
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Latest stable release from the main branch |
+| `vX.Y.Z` | Specific version (e.g., `v1.0.0`) |
+| `sha-xxxxxxx` | Specific commit build |
+
+---
+
 ## Web UI Mode (Default)
 
 The easiest way to use CHD Converter is through the web interface:
