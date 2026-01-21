@@ -1,6 +1,9 @@
 import asyncio
 import re
 import os
+import logging
+import time
+import threading
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
@@ -8,6 +11,8 @@ from config import settings
 
 
 CONVERTIBLE_EXTENSIONS = {".gdi", ".iso", ".cue", ".bin"}
+
+logger = logging.getLogger("chd.chdman")
 
 
 class ConversionCancelled(Exception):
@@ -19,6 +24,20 @@ class ChdmanService:
 
     def __init__(self):
         self.chdman_path = settings.chdman_path
+        self._active_pids: set[int] = set()
+        self._pid_lock = threading.Lock()
+
+    def _track_pid(self, pid: int):
+        with self._pid_lock:
+            self._active_pids.add(pid)
+
+    def _untrack_pid(self, pid: int):
+        with self._pid_lock:
+            self._active_pids.discard(pid)
+
+    def active_pids(self) -> list[int]:
+        with self._pid_lock:
+            return list(self._active_pids)
 
     async def convert(
         self,
@@ -52,6 +71,9 @@ class ChdmanService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
         )
+        self._track_pid(process.pid)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Starting chdman pid=%s cmd=%s", process.pid, " ".join(cmd))
 
         cancelled_by_request = False
         cancel_task = None
@@ -62,21 +84,41 @@ class ChdmanService:
                 if process.returncode is not None:
                     return
                 cancelled_by_request = True
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("Cancelling chdman pid=%s", process.pid)
                 process.terminate()
                 try:
                     await asyncio.wait_for(process.wait(), timeout=5)
                 except asyncio.TimeoutError:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("Killing chdman pid=%s after timeout", process.pid)
                     process.kill()
 
             cancel_task = asyncio.create_task(_cancel_watcher())
 
         buffer = ""
+        last_output_at = time.monotonic()
+        last_idle_log = last_output_at
         while True:
-            chunk = await process.stdout.read(100)
+            if settings.debug:
+                try:
+                    chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)
+                except asyncio.TimeoutError:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    now = time.monotonic()
+                    idle_for = now - last_output_at
+                    if logger.isEnabledFor(logging.DEBUG) and idle_for >= 30 and now - last_idle_log >= 30:
+                        logger.debug("chdman pid=%s idle for %.1fs", process.pid, idle_for)
+                        last_idle_log = now
+                    continue
+            else:
+                chunk = await process.stdout.read(100)
             if not chunk:
                 break
 
             buffer += chunk.decode("utf-8", errors="replace")
+            last_output_at = time.monotonic()
 
             # Process complete lines and progress updates
             while "\r" in buffer or "\n" in buffer:
@@ -103,6 +145,9 @@ class ChdmanService:
             yield {"progress": progress, "message": buffer.strip()}
 
         await process.wait()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("chdman pid=%s exit=%s", process.pid, process.returncode)
+        self._untrack_pid(process.pid)
 
         if cancel_task:
             cancel_task.cancel()

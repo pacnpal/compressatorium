@@ -157,5 +157,9 @@ class LockManager:
                     except Exception as e:
                         print(f"Failed to remove lock file {lock_file_path}: {e}")
 
+    def stats(self) -> dict:
+        with self._lock_mutex:
+            return {"locks": len(self._locks)}
+
 
 lock_manager = LockManager()

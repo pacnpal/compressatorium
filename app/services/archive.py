@@ -2,6 +2,8 @@ import os
 import shutil
 import tempfile
 import zipfile
+import time
+import logging
 from pathlib import Path, PurePosixPath
 from typing import List, Tuple
 
@@ -21,6 +23,8 @@ except ImportError:
 ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
 CONVERTIBLE_EXTENSIONS = {".gdi", ".iso", ".cue", ".bin"}
 
+logger = logging.getLogger("chd.archive")
+
 
 class ArchiveService:
     """Service for handling compressed archives."""
@@ -37,6 +41,7 @@ class ArchiveService:
         """List convertible files inside an archive."""
         ext = Path(archive_path).suffix.lower()
         entries = []
+        start = time.monotonic()
 
         try:
             if ext == ".zip":
@@ -46,7 +51,15 @@ class ArchiveService:
             elif ext == ".rar" and HAS_RAR:
                 entries = self._list_rar(archive_path)
         except Exception as e:
-            print(f"Error listing archive {archive_path}: {e}")
+            logger.exception("Error listing archive %s: %s", archive_path, e)
+        finally:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Listed archive %s entries=%d in %.2fs",
+                    archive_path,
+                    len(entries),
+                    time.monotonic() - start
+                )
 
         for entry in entries:
             entry["output_stem"] = self._output_stem_for_member(entry["internal_path"])

@@ -164,6 +164,12 @@ class ConcurrencyManager:
         except OSError:
             pass
 
+    def stats(self) -> dict:
+        return {
+            "tickets": len(self._list_tickets()),
+            "slots": len(self._slot_paths)
+        }
+
 
 concurrency_manager = ConcurrencyManager(
     settings.max_concurrent_jobs,

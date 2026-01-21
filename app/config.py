@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import List
+from typing import List, Optional
 import os
 
 
@@ -15,6 +15,11 @@ class Settings(BaseSettings):
 
     # chdman binary path
     chdman_path: str = Field(default="/usr/bin/chdman", alias="CHDMAN_PATH")
+
+    # Debug logging
+    debug: bool = Field(default=False, alias="CHD_DEBUG")
+    debug_log_path: Optional[str] = Field(default=None, alias="CHD_DEBUG_LOG_PATH")
+    debug_heartbeat_interval: int = Field(default=30, alias="CHD_DEBUG_HEARTBEAT")
 
     class Config:
         populate_by_name = True

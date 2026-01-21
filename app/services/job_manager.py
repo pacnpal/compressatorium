@@ -2,6 +2,10 @@ import asyncio
 import uuid
 import os
 import shutil
+import time
+import logging
+import resource
+import sys
 from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, List, Optional, Set
@@ -14,6 +18,9 @@ from services.verification_store import verification_store
 from services.archive import archive_service
 from fastapi.concurrency import run_in_threadpool
 from config import settings
+
+
+logger = logging.getLogger("chd.job_manager")
 
 
 class JobManager:
@@ -29,6 +36,7 @@ class JobManager:
         self._cancel_events: Dict[str, asyncio.Event] = {}
         self._running = False
         self._dispatcher_task: Optional[asyncio.Task] = None
+        self._debug_task: Optional[asyncio.Task] = None
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
 
     def create_job(
@@ -63,6 +71,15 @@ class JobManager:
         self.jobs[job_id] = job
         ticket = concurrency_manager.reserve_ticket(job_id)
         self._queue.put_nowait((ticket, job_id))
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Queued job %s mode=%s input=%s output=%s overwrite=%s",
+                job_id,
+                mode.value,
+                file_path,
+                output_path,
+                allow_overwrite
+            )
         self._prune_jobs()
         return job
 
@@ -196,7 +213,61 @@ class JobManager:
             return
         self._running = True
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
+        if settings.debug and settings.debug_heartbeat_interval > 0:
+            self._debug_task = asyncio.create_task(self._debug_loop())
         await self._dispatcher_task
+
+    async def _debug_loop(self):
+        while self._running:
+            try:
+                await asyncio.sleep(settings.debug_heartbeat_interval)
+                if not logger.isEnabledFor(logging.DEBUG):
+                    continue
+
+                jobs = list(self.jobs.values())
+                status_counts = {
+                    JobStatus.QUEUED: 0,
+                    JobStatus.PROCESSING: 0,
+                    JobStatus.COMPLETED: 0,
+                    JobStatus.FAILED: 0,
+                    JobStatus.CANCELLED: 0
+                }
+                for job in jobs:
+                    status_counts[job.status] = status_counts.get(job.status, 0) + 1
+
+                subscriber_queues = sum(len(qs) for qs in self._subscribers.values())
+                temp_dirs = sum(1 for job in jobs if job.temp_dir)
+
+                usage = resource.getrusage(resource.RUSAGE_SELF)
+                rss_raw = usage.ru_maxrss
+                if sys.platform == "darwin":
+                    rss_mb = rss_raw / (1024 * 1024)
+                else:
+                    rss_mb = rss_raw / 1024
+
+                logger.debug(
+                    "Heartbeat jobs=%d queued=%d processing=%d completed=%d failed=%d cancelled=%d "
+                    "queue_size=%d semaphore=%s cancelled_set=%d subscribers=%d temp_dirs=%d "
+                    "locks=%d tickets=%d active_chdman=%d rss_raw=%d rss_mb=%.1f",
+                    len(jobs),
+                    status_counts[JobStatus.QUEUED],
+                    status_counts[JobStatus.PROCESSING],
+                    status_counts[JobStatus.COMPLETED],
+                    status_counts[JobStatus.FAILED],
+                    status_counts[JobStatus.CANCELLED],
+                    self._queue.qsize(),
+                    getattr(self._semaphore, "_value", None),
+                    len(self._cancelled),
+                    subscriber_queues,
+                    temp_dirs,
+                    lock_manager.stats().get("locks"),
+                    concurrency_manager.stats().get("tickets"),
+                    len(chdman_service.active_pids()),
+                    rss_raw,
+                    rss_mb
+                )
+            except Exception as exc:
+                logger.exception("Debug heartbeat error: %s", exc)
 
     async def _dispatcher_loop(self):
         """Dispatcher loop that starts jobs in FIFO order with concurrency control."""
@@ -221,7 +292,7 @@ class JobManager:
                     self._semaphore.release()
                     raise
             except Exception as e:
-                print(f"Dispatcher error: {e}")
+                logger.exception("Dispatcher error: %s", e)
             finally:
                 self._queue.task_done()
 
@@ -236,6 +307,15 @@ class JobManager:
         job = self.jobs.get(job_id)
         if not job:
             return
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Starting job %s status=%s input=%s output=%s",
+                job_id,
+                job.status.value,
+                job.file_path,
+                job.output_path
+            )
 
         if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
             self._cancelled.discard(job_id)
@@ -307,6 +387,9 @@ class JobManager:
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.utcnow()
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Job %s acquired locks and started processing", job_id)
+
         await self._notify_subscribers(job_id, {
             "type": "status",
             "job_id": job_id,
@@ -317,7 +400,15 @@ class JobManager:
         try:
             input_path = job.file_path
             if "::" in job.file_path:
+                extract_start = time.monotonic()
                 archive_path, internal_path = job.file_path.split("::", 1)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Job %s extracting archive %s member %s",
+                        job_id,
+                        archive_path,
+                        internal_path
+                    )
                 input_path, temp_dir = await run_in_threadpool(
                     archive_service.extract_file,
                     archive_path,
@@ -330,6 +421,19 @@ class JobManager:
                     internal_path,
                     temp_dir
                 )
+                if logger.isEnabledFor(logging.DEBUG):
+                    extracted_size = None
+                    try:
+                        extracted_size = os.path.getsize(input_path)
+                    except OSError:
+                        pass
+                    logger.debug(
+                        "Job %s extracted to %s size=%s in %.2fs",
+                        job_id,
+                        input_path,
+                        extracted_size,
+                        time.monotonic() - extract_start
+                    )
                 if cancel_event.is_set():
                     raise ConversionCancelled("Conversion cancelled")
 
@@ -408,6 +512,12 @@ class JobManager:
             # Clean up temp directory if this was an archive extraction
             self._cleanup_temp_dir(job)
             self._prune_jobs(exclude_id=job_id)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Job %s finished status=%s",
+                    job_id,
+                    job.status.value
+                )
 
 
 job_manager = JobManager(
