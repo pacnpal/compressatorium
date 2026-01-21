@@ -6,7 +6,7 @@ version: '3.8'
 
 services:
   chd-converter-cli:
-    image: marctv/chd-converter:latest
+    image: pacnpal/chd-converter:latest
     container_name: chd-converter-cli
     environment:
       # CLI mode for batch processing

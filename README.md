@@ -1,5 +1,7 @@
 # Docker CHD "Compressed Hunks of Data" Converter
 
+> **Fork Notice:** This project is a fork of [MarcTV/docker-chd-converter](https://github.com/MarcTV/docker-chd-converter) with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
+
 Compresses GDI, ISO, BIN and CUE files to CHD using **CHDMAN** from MAME Tools.
 
 * **Web UI** for easy file browsing and conversion
@@ -18,7 +20,7 @@ The Docker image is available from two registries:
 ### Docker Hub
 
 ```bash
-docker pull marctv/chd-converter
+docker pull pacnpal/chd-converter
 ```
 
 ### GitHub Container Registry
@@ -29,7 +31,7 @@ docker pull ghcr.io/pacnpal/docker-chd-converter-webui
 
 Both registries provide identical images with multi-architecture support (`linux/amd64` and `linux/arm64`).
 
-> **Note:** In all examples below, you can substitute `marctv/chd-converter` with `ghcr.io/pacnpal/docker-chd-converter-webui` interchangeably.
+> **Note:** In all examples below, you can substitute `pacnpal/chd-converter` with `ghcr.io/pacnpal/docker-chd-converter-webui` interchangeably.
 
 ### Available Tags
 
@@ -49,7 +51,7 @@ The easiest way to use CHD Converter is through the web interface:
 docker run -d \
   -p 8080:8080 \
   -v /path/to/games:/data/games \
-  marctv/chd-converter
+  pacnpal/chd-converter
 ```
 
 Then open **http://localhost:8080** in your browser.
@@ -65,7 +67,7 @@ docker run -d \
   -v /home/user/dreamcast:/data/dreamcast \
   -v /home/user/psp:/data/psp \
   -v /home/user/ps1:/data/ps1 \
-  marctv/chd-converter
+  pacnpal/chd-converter
 ```
 
 ### Custom Output Directory
@@ -93,7 +95,7 @@ For automated/headless conversion, use CLI mode:
 docker run --rm \
   -e CHD_MODE=cli \
   -v "$(pwd)/isofiles:/data/games:rw" \
-  marctv/chd-converter
+  pacnpal/chd-converter
 ```
 
 ### DVD Conversion (PSP, PS2)
@@ -103,7 +105,7 @@ docker run --rm \
   -e CHD_MODE=cli \
   -e CHDMAN_MODE=createdvd \
   -v "$(pwd)/isofiles:/data/games:rw" \
-  marctv/chd-converter
+  pacnpal/chd-converter
 ```
 
 ### Multiple Volumes in CLI Mode
@@ -115,7 +117,7 @@ docker run --rm \
   -e CHD_VOLUMES="/data/psp,/data/ps2" \
   -v /home/user/psp:/data/psp:rw \
   -v /home/user/ps2:/data/ps2:rw \
-  marctv/chd-converter
+  pacnpal/chd-converter
 ```
 
 ---
@@ -128,7 +130,7 @@ Using the chdman info command directly:
 docker run --rm \
   -v "/path/to/games:/data/games:ro" \
   --entrypoint chdman \
-  marctv/chd-converter \
+  pacnpal/chd-converter \
   info -i "/data/games/game.chd"
 ```
 
@@ -182,7 +184,7 @@ version: '3.8'
 
 services:
   chd-converter:
-    image: marctv/chd-converter
+    image: pacnpal/chd-converter
     ports:
       - "8080:8080"
     environment:
@@ -213,3 +215,15 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 **Output format:**
 - `.chd` - Compressed Hunks of Data
+
+---
+
+## Acknowledgments
+
+This project is a fork of the original [docker-chd-converter](https://github.com/MarcTV/docker-chd-converter) by [MarcTV](https://github.com/MarcTV). The original project provides a simple CLI-based batch converter, and this fork extends it with a Web UI and additional features.
+
+**Original Project:**
+- Repository: [github.com/MarcTV/docker-chd-converter](https://github.com/MarcTV/docker-chd-converter)
+- Docker Hub: [hub.docker.com/r/marctv/chd-converter](https://hub.docker.com/r/marctv/chd-converter)
+
+Thank you MarcTV for creating and sharing the original converter!

@@ -9,28 +9,28 @@ This is a Docker-based CHD (Compressed Hunks of Data) converter that uses MAME's
 - **Base Image:** Debian Trixie Slim
 - **Primary Tool:** MAME Tools (chdman)
 - **Shell:** Bash
-- **Container Registry:** Docker Hub (`marctv/chd-converter`) and GitHub Container Registry
+- **Container Registry:** Docker Hub (`pacnpal/chd-converter`) and GitHub Container Registry
 
 ## Build and Test Commands
 
 ### Build Docker Image
 ```bash
-docker build -t marctv/chd-converter .
+docker build -t pacnpal/chd-converter .
 ```
 
 ### Test CD Conversion (Default Mode)
 ```bash
-docker run --rm -v "$(pwd)/test:/tmp/images:rw" -it marctv/chd-converter
+docker run --rm -v "$(pwd)/test:/tmp/images:rw" -it pacnpal/chd-converter
 ```
 
 ### Test DVD Conversion Mode
 ```bash
-docker run --rm -e CHDMAN_MODE=createdvd -v "$(pwd)/test:/tmp/images:rw" -it marctv/chd-converter
+docker run --rm -e CHDMAN_MODE=createdvd -v "$(pwd)/test:/tmp/images:rw" -it pacnpal/chd-converter
 ```
 
 ### Verify CHD File
 ```bash
-docker run --rm -v "$(pwd)/test:/tmp/images:rw" --entrypoint chdman -it marctv/chd-converter info -i "filename.chd"
+docker run --rm -v "$(pwd)/test:/tmp/images:rw" --entrypoint chdman -it pacnpal/chd-converter info -i "filename.chd"
 ```
 
 ## Coding Conventions

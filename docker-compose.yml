@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   chd-converter:
-    image: marctv/chd-converter:latest
+    image: pacnpal/chd-converter:latest
     container_name: chd-converter
     ports:
       - "8080:8080"
