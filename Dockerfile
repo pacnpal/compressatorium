@@ -14,11 +14,9 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Create Python virtual environment
+# Create Python virtual environment and install dependencies
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-
-# Install Python dependencies
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
@@ -27,9 +25,6 @@ COPY app/ /app/
 COPY static/ /static/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-
-# Create config directory for persistent data
-RUN mkdir -p /config
 
 WORKDIR /app
 

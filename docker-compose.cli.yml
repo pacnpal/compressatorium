@@ -16,6 +16,8 @@ services:
       # Specify which volumes to process
       - CHD_VOLUMES=/data/games
     volumes:
+      # Required: Persistent config storage
+      - ./config:/config
       # Mount directory with files to convert (read-write)
       - ./games:/data/games
     # No restart policy - container exits after conversion

@@ -50,11 +50,14 @@ The easiest way to use CHD Converter is through the web interface:
 ```bash
 docker run -d \
   -p 8080:8080 \
+  -v /path/to/config:/config \
   -v /path/to/games:/data/games \
   pacnpal/chd-converter
 ```
 
 Then open **http://localhost:8080** in your browser.
+
+> **Required:** The `/config` volume must be mounted for persistent data storage.
 
 ### Multiple Volumes
 
@@ -63,6 +66,7 @@ Mount multiple game directories for better organization:
 ```bash
 docker run -d \
   -p 8080:8080 \
+  -v /path/to/config:/config \
   -e CHD_VOLUMES="/data/dreamcast,/data/psp,/data/ps1" \
   -v /home/user/dreamcast:/data/dreamcast \
   -v /home/user/psp:/data/psp \
@@ -152,33 +156,17 @@ Or use the Web UI's CHD Inspector feature by clicking on any `.chd` file.
 
 ## Persistent Data
 
-The Web UI stores verification records (tracking which CHD files have been verified) in a JSON file. By default, this is stored at `/config/verified_chds.json` inside the container, which is **not persistent** across container restarts.
-
-To persist this data, mount a volume to `/config`:
+The `/config` volume is **required** and must be mounted for the application to store persistent data.
 
 ```bash
-docker run -d \
-  -p 8080:8080 \
-  -v /path/to/games:/data/games \
-  -v /path/to/config:/config \
-  pacnpal/chd-converter
-```
-
-Alternatively, store config within your game volumes:
-
-```bash
-docker run -d \
-  -p 8080:8080 \
-  -e CHD_DATA_DIR=/data/games/.chd-converter \
-  -v /path/to/games:/data/games \
-  pacnpal/chd-converter
+-v /path/to/config:/config
 ```
 
 ### Data Files
 
-| File | Description |
-|------|-------------|
-| `verified_chds.json` | Records of verified CHD files (integrity checks) |
+| File | Location | Description |
+|------|----------|-------------|
+| `verified_chds.json` | `/config/` | Records of verified CHD files (integrity checks) |
 
 ---
 
@@ -222,9 +210,9 @@ services:
       - "8080:8080"
     environment:
       - CHD_VOLUMES=/data/dreamcast,/data/psp,/data/ps1
-      - CHD_DATA_DIR=/data/dreamcast/.chd-converter
       - MAX_CONCURRENT_JOBS=2
     volumes:
+      - /home/user/chd-converter-config:/config
       - /home/user/games/dreamcast:/data/dreamcast
       - /home/user/games/psp:/data/psp
       - /home/user/games/ps1:/data/ps1

@@ -16,6 +16,8 @@ services:
       - CHDMAN_MODE=createcd
       - MAX_CONCURRENT_JOBS=2
     volumes:
+      # Required: Persistent config storage
+      - ./config:/config
       # Map each host directory to its corresponding container path
       - ./games/dreamcast:/data/dreamcast
       - ./games/psp:/data/psp
