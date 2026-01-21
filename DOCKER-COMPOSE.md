@@ -117,16 +117,16 @@ All configurations support these environment variables (edit in the compose file
 | `CHD_MODE` | `webui` | Mode: `webui` or `cli` |
 | `CHD_VOLUMES` | `/data/games` | Comma-separated volume paths |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` |
-| `MAX_CONCURRENT_JOBS` | `2` | Parallel conversion jobs (Web UI only) |
+| `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs (Web UI only) |
+| `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (lower priority) |
+| `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class for chdman |
+| `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level for chdman |
 
 ---
 
 ## Resource Limits
 
-Each configuration includes commented resource limits. To enable:
-
-1. Uncomment the `deploy` section in the compose file
-2. Adjust CPU and memory values based on your system
+Each configuration includes conservative resource limits. Adjust CPU and memory values based on your system.
 
 Example:
 ```yaml
@@ -134,7 +134,7 @@ deploy:
   resources:
     limits:
       cpus: '2.0'      # Maximum 2 CPU cores
-      memory: 4G       # Maximum 4GB RAM
+      memory: 8G       # Maximum 8GB RAM
     reservations:
       cpus: '0.5'      # Reserved 0.5 CPU cores
       memory: 512M     # Reserved 512MB RAM

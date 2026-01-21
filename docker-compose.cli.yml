@@ -15,6 +15,10 @@ services:
       - CHDMAN_MODE=createcd
       # Specify which volumes to process
       - CHD_VOLUMES=/data/games
+      # Reduce CPU/IO impact of chdman
+      - CHD_CHDMAN_NICE=10
+      - CHD_CHDMAN_IOPRIO_CLASS=2
+      - CHD_CHDMAN_IOPRIO_LEVEL=6
     volumes:
       # Required: Persistent config storage
       - ./config:/config

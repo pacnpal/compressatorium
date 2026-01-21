@@ -149,8 +149,13 @@ Or use the Web UI's CHD Inspector feature by clicking on any `.chd` file.
 | `CHD_MODE` | `webui` | Mode: `webui` (web interface) or `cli` (batch processing) |
 | `CHD_VOLUMES` | `/data/games` | Comma-separated list of volume mount paths |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` |
-| `MAX_CONCURRENT_JOBS` | `2` | Maximum parallel conversion jobs (Web UI only) |
+| `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (Web UI only) |
+| `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (lower priority) |
+| `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class for chdman (`1` realtime, `2` best-effort, `3` idle) |
+| `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level for chdman (`0` highest, `7` lowest) |
 | `CHD_DATA_DIR` | `/config` | Directory for persistent application data |
+
+Defaults are intentionally conservative to reduce host impact during conversion. Increase `MAX_CONCURRENT_JOBS` or adjust `CHD_CHDMAN_*` only if your host has ample CPU/RAM and fast storage.
 
 ---
 
@@ -188,6 +193,8 @@ The repository includes ready-to-use Docker Compose configurations:
 docker-compose up -d
 ```
 
+The default compose files include conservative CPU/memory limits to help avoid host lockups during large conversions. Adjust those limits to match your system.
+
 2. **Multiple Volumes:**
 ```bash
 docker-compose -f docker-compose.multi-volume.yml up -d
@@ -210,7 +217,10 @@ services:
       - "8080:8080"
     environment:
       - CHD_VOLUMES=/data/dreamcast,/data/psp,/data/ps1
-      - MAX_CONCURRENT_JOBS=2
+      - MAX_CONCURRENT_JOBS=1
+      - CHD_CHDMAN_NICE=10
+      - CHD_CHDMAN_IOPRIO_CLASS=2
+      - CHD_CHDMAN_IOPRIO_LEVEL=6
     volumes:
       - /home/user/chd-converter-config:/config
       - /home/user/games/dreamcast:/data/dreamcast

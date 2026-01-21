@@ -54,7 +54,10 @@ This document contains the results of a comprehensive deployment readiness audit
 | `CHD_MODE` | `webui` | ✅ | Web UI or CLI mode |
 | `CHD_VOLUMES` | `/data/games` | ✅ | Volume mount paths |
 | `CHDMAN_MODE` | `createcd` | ✅ | CD/DVD conversion mode |
-| `MAX_CONCURRENT_JOBS` | `2` | ✅ | Parallel job limit |
+| `MAX_CONCURRENT_JOBS` | `1` | ✅ | Parallel job limit |
+| `CHD_CHDMAN_NICE` | `10` | ✅ | Nice level for chdman |
+| `CHD_CHDMAN_IOPRIO_CLASS` | `2` | ✅ | I/O priority class for chdman |
+| `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | ✅ | I/O priority level for chdman |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | ✅ | Binary path override |
 | `PYTHONUNBUFFERED` | `1` | ✅ | Logging optimization |
 

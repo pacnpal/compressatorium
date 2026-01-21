@@ -14,7 +14,10 @@ services:
       # Multiple volumes - list all container paths here
       - CHD_VOLUMES=/data/dreamcast,/data/psp,/data/ps1,/data/ps2
       - CHDMAN_MODE=createcd
-      - MAX_CONCURRENT_JOBS=2
+      - MAX_CONCURRENT_JOBS=1
+      - CHD_CHDMAN_NICE=10
+      - CHD_CHDMAN_IOPRIO_CLASS=2
+      - CHD_CHDMAN_IOPRIO_LEVEL=6
     volumes:
       # Required: Persistent config storage
       - ./config:/config
@@ -31,12 +34,11 @@ services:
       start_period: 10s
       retries: 3
     # Resource limits (adjust based on your system)
-    # Uncomment to enable:
-    # deploy:
-    #   resources:
-    #     limits:
-    #       cpus: '2.0'
-    #       memory: 4G
-    #     reservations:
-    #       cpus: '0.5'
-    #       memory: 512M
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 8G
+        reservations:
+          cpus: '0.5'
+          memory: 512M

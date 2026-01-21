@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     chd_volumes: str = Field(default="/data/games", alias="CHD_VOLUMES")
 
     # Job limits
-    max_concurrent_jobs: int = Field(default=2, alias="MAX_CONCURRENT_JOBS")
+    max_concurrent_jobs: int = Field(default=1, alias="MAX_CONCURRENT_JOBS")
     concurrency_lock_dir: str = Field(default="/tmp/chd_converter_locks", alias="CHD_CONCURRENCY_LOCK_DIR")
     max_job_history: int = Field(default=500, alias="MAX_JOB_HISTORY")
 
