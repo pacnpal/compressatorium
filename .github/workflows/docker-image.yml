@@ -159,6 +159,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name != 'pull_request'
+    # Don't fail the workflow if image scan fails (e.g., image not yet available)
+    continue-on-error: true
     permissions:
       security-events: write
       contents: read
@@ -185,8 +187,8 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-results.sarif') != ''
         with:
           sarif_file: trivy-results.sarif
 
@@ -196,6 +198,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/latest' && github.event_name != 'pull_request'
+    # Don't fail the workflow if Docker Hub repo doesn't exist yet (first push creates it)
+    continue-on-error: true
 
     steps:
       - name: Checkout
