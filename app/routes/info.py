@@ -1,6 +1,11 @@
 import os
 
 from fastapi import APIRouter, HTTPException, Query
+from sse_starlette.sse import EventSourceResponse
+import json
+import asyncio
+import time
+import contextlib
 
 from models import CHDInfo
 from services.chdman import chdman_service
@@ -69,6 +74,79 @@ async def verify_chd(
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to verify CHD: {str(e)}")
+
+
+@router.get("/verify/events")
+async def verify_chd_events(
+    path: str = Query(..., description="Path to CHD file to verify")
+) -> EventSourceResponse:
+    """Stream CHD verification progress updates."""
+    if not is_within_configured_volumes(path, treat_archives=False):
+        raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
+
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not path.lower().endswith(".chd"):
+        raise HTTPException(status_code=400, detail="Not a CHD file")
+
+    async def event_generator():
+        queue: asyncio.Queue = asyncio.Queue()
+        done = asyncio.Event()
+        start = time.monotonic()
+
+        async def run_verify():
+            try:
+                async for update in chdman_service.verify_stream(path):
+                    await queue.put(update)
+            except Exception as exc:
+                await queue.put({"type": "error", "valid": False, "message": str(exc)})
+            finally:
+                done.set()
+
+        verify_task = asyncio.create_task(run_verify())
+        try:
+            while True:
+                try:
+                    update = await asyncio.wait_for(queue.get(), timeout=2)
+                except asyncio.TimeoutError:
+                    elapsed = int(time.monotonic() - start)
+                    yield {
+                        "event": "verify_progress",
+                        "data": json.dumps({
+                            "progress": None,
+                            "message": f"Verifying... ({elapsed}s)"
+                        })
+                    }
+                    if done.is_set() and queue.empty():
+                        break
+                    continue
+
+                if update.get("type") == "progress":
+                    yield {
+                        "event": "verify_progress",
+                        "data": json.dumps(update)
+                    }
+                elif update.get("type") == "complete":
+                    if update.get("valid"):
+                        verification_store.mark_verified(path)
+                    yield {
+                        "event": "verify_complete",
+                        "data": json.dumps(update)
+                    }
+                    break
+                elif update.get("type") == "error":
+                    yield {
+                        "event": "verify_error",
+                        "data": json.dumps(update)
+                    }
+                    break
+        finally:
+            verify_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await verify_task
+
+    return EventSourceResponse(event_generator())
 
 
 @router.get("/verified")

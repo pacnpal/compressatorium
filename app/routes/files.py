@@ -32,7 +32,8 @@ async def list_volumes():
 @router.get("/files", response_model=DirectoryListing)
 async def list_files(
     path: str = Query(..., description="Directory path to list"),
-    show_archives: bool = Query(True, description="Show archive contents")
+    show_archives: bool = Query(True, description="Show archive contents"),
+    summarize_archives: bool = Query(True, description="Include archive summaries")
 ):
     """List files in a directory."""
     if not is_within_configured_volumes(path, treat_archives=False):
@@ -44,47 +45,65 @@ async def list_files(
     # Determine which volume this path belongs to
     volume_name = get_volume_name_for_path(path) or ""
 
-    entries = []
+    def scan_directory(target_path: str, show_archives_flag: bool, summarize_archives_flag: bool):
+        entries = []
+        try:
+            for item in sorted(os.listdir(target_path)):
+                item_path = os.path.join(target_path, item)
+                ext = Path(item).suffix.lower()
 
-    try:
-        for item in sorted(os.listdir(path)):
-            item_path = os.path.join(path, item)
-            ext = Path(item).suffix.lower()
+                if os.path.isdir(item_path):
+                    entries.append(FileEntry(
+                        name=item,
+                        path=item_path,
+                        type="directory"
+                    ))
+                elif os.path.isfile(item_path):
+                    size = os.path.getsize(item_path)
+                    is_convertible = ext in CONVERTIBLE_EXTENSIONS
+                    is_archive = ext in ARCHIVE_EXTENSIONS
+                    if is_archive and not show_archives_flag:
+                        continue
 
-            if os.path.isdir(item_path):
-                entries.append(FileEntry(
-                    name=item,
-                    path=item_path,
-                    type="directory"
-                ))
-            elif os.path.isfile(item_path):
-                size = os.path.getsize(item_path)
-                is_convertible = ext in CONVERTIBLE_EXTENSIONS
-                is_archive = ext in ARCHIVE_EXTENSIONS
-                if is_archive and not show_archives:
-                    continue
+                    # Check if CHD already exists or is being converted (atomic check)
+                    has_chd = False
+                    if is_convertible:
+                        chd_path = str(Path(item_path).with_suffix(".chd"))
+                        file_exists, is_converting = lock_manager.check_file_status(chd_path)
+                        has_chd = file_exists or is_converting
 
-                # Check if CHD already exists or is being converted (atomic check)
-                has_chd = False
-                if is_convertible:
-                    chd_path = str(Path(item_path).with_suffix(".chd"))
-                    # Use atomic check to get both file existence and lock status
-                    file_exists, is_converting = lock_manager.check_file_status(chd_path)
-                    has_chd = file_exists or is_converting
+                    archive_items = None
+                    archive_has_chd = None
+                    if is_archive and summarize_archives_flag:
+                        contents = archive_service.list_archive_contents(item_path)
+                        archive_items = len(contents)
+                        archive_has_chd = 0
+                        archive_dir = os.path.dirname(item_path)
+                        for entry in contents:
+                            output_stem = entry.get("output_stem") or Path(entry["internal_path"]).stem
+                            chd_path = os.path.join(archive_dir, f"{output_stem}.chd")
+                            file_exists, is_converting = lock_manager.check_file_status(chd_path)
+                            if file_exists or is_converting:
+                                archive_has_chd += 1
+                        has_chd = archive_has_chd > 0
 
-                entry = FileEntry(
-                    name=item,
-                    path=item_path,
-                    type="archive" if is_archive else "file",
-                    size=size,
-                    extension=ext,
-                    convertible=is_convertible,
-                    has_chd=has_chd
-                )
-                entries.append(entry)
+                    entry = FileEntry(
+                        name=item,
+                        path=item_path,
+                        type="archive" if is_archive else "file",
+                        size=size,
+                        extension=ext,
+                        convertible=is_convertible,
+                        has_chd=has_chd,
+                        archive_items=archive_items,
+                        archive_has_chd=archive_has_chd
+                    )
+                    entries.append(entry)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Permission denied")
+        return entries
 
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="Permission denied")
+    entries = await run_in_threadpool(scan_directory, path, show_archives, summarize_archives)
 
     return DirectoryListing(
         volume=volume_name,
@@ -153,6 +172,7 @@ async def search_files(
                                     "size": entry["size"],
                                     "extension": entry["extension"],
                                     "output_stem": output_stem,
+                                    "chd_path": chd_path,
                                     "has_chd": file_exists or is_converting,
                                     "in_archive": True
                                 })
@@ -198,6 +218,7 @@ async def list_archive(
         # Use atomic check to get both file existence and lock status
         file_exists, is_converting = lock_manager.check_file_status(chd_path)
         file_entry["has_chd"] = file_exists or is_converting
+        file_entry["chd_path"] = chd_path
 
     return {
         "archive": path,

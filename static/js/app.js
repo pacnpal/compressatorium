@@ -123,8 +123,7 @@ function Breadcrumb({ path, volume, onNavigate }) {
     `;
 }
 
-function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, error }) {
-    const [verifyingPath, setVerifyingPath] = useState(null);
+function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, verifyProgress, error }) {
 
     if (error) {
         return html`
@@ -159,37 +158,53 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
         }
     };
 
+    const isArchiveItem = (entry) => entry.is_archive_item || entry.in_archive;
+    const getChdPath = (entry) => entry.chd_path || (entry.extension === '.chd' ? entry.path : null);
+
     const handleVerifyClick = async (e, entry) => {
         e.stopPropagation();
-        setVerifyingPath(entry.path);
-        try {
-            await onVerify(entry.path);
-        } finally {
-            setVerifyingPath(null);
-        }
+        const chdPath = getChdPath(entry);
+        if (!chdPath) return;
+        await onVerify(chdPath);
     };
 
     const getTooltip = (entry) => {
         if (entry.type === 'directory') return `Open folder: ${entry.name}`;
-        if (entry.type === 'archive') return `Archive: ${entry.name} - Click to browse contents`;
+        if (entry.type === 'archive') {
+            if (entry.archive_items != null) {
+                if (entry.archive_items > 0) {
+                    return `Archive: ${entry.name} (${entry.archive_items} image${entry.archive_items === 1 ? '' : 's'}) - Click to browse contents`;
+                }
+                return `Archive: ${entry.name} (no convertible images found)`;
+            }
+            return `Archive: ${entry.name} - Click to browse contents`;
+        }
         if (entry.extension === '.chd') return 'Click to view CHD info';
         if (entry.convertible) return entry.has_chd ? 'Already converted' : 'Click to select for conversion';
         return entry.name;
     };
 
-    const isVerified = (entry) => entry.extension === '.chd' && verifiedCHDs && verifiedCHDs.has(entry.path);
-    const isArchiveItem = (entry) => entry.is_archive_item;
+    const isVerified = (entry) => {
+        const chdPath = getChdPath(entry);
+        return !!(chdPath && verifiedCHDs && verifiedCHDs.has(chdPath));
+    };
 
     return html`
         <ul class="file-list">
-            ${entries.map(entry => html`
+            ${entries.map(entry => {
+                const chdPath = getChdPath(entry);
+                const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
+                const canVerify = chdPath && (entry.extension === '.chd' || (isArchiveItem(entry) && entry.has_chd));
+                const archiveItems = entry.archive_items;
+                const archiveHasChd = entry.archive_has_chd;
+                return html`
                 <li
                     key=${entry.path}
                     class="file-item ${selectedFiles.has(entry.path) ? 'selected' : ''}"
                     onClick=${(e) => handleClick(entry, e)}
                     title=${getTooltip(entry)}
                 >
-                    ${entry.convertible && !entry.has_chd && html`
+                    ${entry.convertible && !entry.has_chd && entry.type !== 'archive' && html`
                         <input
                             type="checkbox"
                             class="checkbox"
@@ -204,27 +219,50 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
                             <div class="meta">${formatSize(entry.size)}</div>
                         `}
                     </div>
-                    ${entry.has_chd && html`
+                    ${entry.type !== 'archive' && entry.has_chd && html`
                         <span class="status has-chd" title="A CHD file already exists for this source">CHD exists</span>
                     `}
-                    ${entry.convertible && !entry.has_chd && html`
+                    ${entry.type !== 'archive' && entry.convertible && !entry.has_chd && html`
                         <span class="status convertible" title="Can be converted to CHD">Convertible</span>
+                    `}
+                    ${entry.type === 'archive' && archiveItems != null && archiveItems > 0 && html`
+                        <span class="status convertible" title="Convertible images inside this archive">
+                            ${archiveItems} image${archiveItems === 1 ? '' : 's'}
+                        </span>
+                    `}
+                    ${entry.type === 'archive' && archiveItems === 0 && html`
+                        <span class="status" title="No convertible images found in this archive">No images</span>
+                    `}
+                    ${entry.type === 'archive' && archiveHasChd != null && archiveHasChd > 0 && html`
+                        <span class="status has-chd" title="CHD files already exist for this archive">
+                            ${archiveHasChd}/${archiveItems} CHD
+                        </span>
                     `}
                     ${isVerified(entry) && html`
                         <span class="status verified" title="CHD integrity verified">✓ Verified</span>
                     `}
-                    ${!isArchiveItem(entry) && html`
-                        <div class="file-actions" onClick=${(e) => e.stopPropagation()}>
-                            ${entry.extension === '.chd' && !isVerified(entry) && html`
-                                <button
-                                    class="btn-icon"
-                                    onClick=${(e) => handleVerifyClick(e, entry)}
-                                    title="Verify CHD integrity"
-                                    disabled=${verifyingPath === entry.path}
-                                >
-                                    ${verifyingPath === entry.path ? '⏳' : '🔍'}
-                                </button>
-                            `}
+                    ${isVerifying && html`
+                        <span class="status convertible" title="Verifying CHD integrity">
+                            ${(() => {
+                                const status = chdPath ? verifyProgress.get(chdPath) : null;
+                                if (!status) return 'Verifying...';
+                                if (status.progress != null) return `Verifying ${status.progress}%`;
+                                return status.message || 'Verifying...';
+                            })()}
+                        </span>
+                    `}
+                    <div class="file-actions" onClick=${(e) => e.stopPropagation()}>
+                        ${canVerify && !isVerified(entry) && html`
+                            <button
+                                class="btn-icon"
+                                onClick=${(e) => handleVerifyClick(e, entry)}
+                                title="Verify CHD integrity"
+                                disabled=${isVerifying}
+                            >
+                                ${isVerifying ? '⏳' : '🔍'}
+                            </button>
+                        `}
+                        ${!isArchiveItem(entry) && html`
                             <button
                                 class="btn-icon"
                                 onClick=${(e) => { e.stopPropagation(); onRename(entry); }}
@@ -239,10 +277,11 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
                             >
                                 🗑️
                             </button>
-                        </div>
-                    `}
+                        `}
+                    </div>
                 </li>
-            `)}
+                `;
+            })}
         </ul>
     `;
 }
@@ -554,18 +593,67 @@ function RenameModal({ entry, onRename, onClose }) {
     `;
 }
 
-function DeleteModal({ entry, hasCHD, verifiedCHDs, onDelete, onVerify, onClose }) {
+function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, onVerify, onClose }) {
     const [step, setStep] = useState(1); // 1 = initial, 2 = verification/confirm, 3 = final confirm
     const [verifying, setVerifying] = useState(false);
     const [verificationResult, setVerificationResult] = useState(null);
     const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState(null);
+    const [archiveScan, setArchiveScan] = useState({ loading: false, total: 0, chds: [], error: null });
+    const [archiveVerify, setArchiveVerify] = useState({ running: false, total: 0, verified: 0, failed: 0, errors: [] });
+    const [archiveVerifyAttempted, setArchiveVerifyAttempted] = useState(false);
+    const [archiveVerifySkipped, setArchiveVerifySkipped] = useState(false);
 
     if (!entry) return null;
 
     const isSourceFile = ['.iso', '.gdi', '.cue', '.bin'].includes(entry.extension?.toLowerCase());
+    const isArchive = entry.type === 'archive';
     const chdPath = isSourceFile && hasCHD ? entry.path.replace(/\.[^.]+$/, '.chd') : null;
     const isAlreadyVerified = chdPath && verifiedCHDs.has(chdPath);
+    const verifyStatus = chdPath && verifyProgress ? verifyProgress.get(chdPath) : null;
+
+    useEffect(() => {
+        setStep(1);
+        setVerifying(false);
+        setVerificationResult(null);
+        setDeleting(false);
+        setError(null);
+        setArchiveVerifyAttempted(false);
+        setArchiveVerifySkipped(false);
+        setArchiveVerify({ running: false, total: 0, verified: 0, failed: 0, errors: [] });
+    }, [entry.path]);
+
+    useEffect(() => {
+        if (!isArchive) return;
+        let cancelled = false;
+        setArchiveScan({ loading: true, total: 0, chds: [], error: null });
+        api.listArchive(entry.path)
+            .then((data) => {
+                if (cancelled) return;
+                const files = Array.isArray(data?.files) ? data.files : [];
+                const chds = files
+                    .filter((file) => file.has_chd && file.chd_path)
+                    .map((file) => file.chd_path);
+                setArchiveScan({
+                    loading: false,
+                    total: data?.total ?? files.length,
+                    chds,
+                    error: null
+                });
+            })
+            .catch((err) => {
+                if (cancelled) return;
+                setArchiveScan({
+                    loading: false,
+                    total: 0,
+                    chds: [],
+                    error: err.message || 'Failed to scan archive'
+                });
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [entry.path, isArchive]);
 
     const handleVerify = async () => {
         if (!chdPath) return;
@@ -582,6 +670,44 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, onDelete, onVerify, onClose 
         } finally {
             setVerifying(false);
         }
+    };
+
+    const handleArchiveVerify = async () => {
+        if (archiveScan.loading || archiveVerify.running) return;
+        setArchiveVerifyAttempted(true);
+        setArchiveVerifySkipped(false);
+        const chdPaths = archiveScan.chds || [];
+        if (chdPaths.length === 0) {
+            setArchiveVerify({ running: false, total: 0, verified: 0, failed: 0, errors: [] });
+            setStep(3);
+            return;
+        }
+
+        let verified = 0;
+        let failed = 0;
+        const errors = [];
+        setArchiveVerify({ running: true, total: chdPaths.length, verified: 0, failed: 0, errors: [] });
+        for (const path of chdPaths) {
+            try {
+                const result = await onVerify(path);
+                if (result?.valid) {
+                    verified += 1;
+                } else {
+                    failed += 1;
+                    errors.push({ path, message: result?.message || 'Verification failed' });
+                }
+            } catch (err) {
+                failed += 1;
+                errors.push({ path, message: err.message || 'Verification failed' });
+            }
+            setArchiveVerify((prev) => ({
+                ...prev,
+                verified,
+                failed
+            }));
+        }
+        setArchiveVerify({ running: false, total: chdPaths.length, verified, failed, errors });
+        setStep(3);
     };
 
     const handleDelete = async () => {
@@ -610,7 +736,27 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, onDelete, onVerify, onClose 
                     </p>
 
                     ${step === 1 && html`
-                        ${isSourceFile && hasCHD && html`
+                        ${isArchive && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px;">
+                                ${archiveScan.loading && html`
+                                    <p style="color: var(--text-secondary);">Scanning archive for images and CHDs...</p>
+                                `}
+                                {!archiveScan.loading && !archiveScan.error && html`
+                                    <p style="color: var(--text-primary); margin-bottom: 6px;">
+                                        Found ${archiveScan.total} convertible image${archiveScan.total === 1 ? '' : 's'}.
+                                    </p>
+                                    <p style="color: var(--text-secondary);">
+                                        CHD files detected: ${archiveScan.chds.length}
+                                    </p>
+                                `}
+                                {archiveScan.error && html`
+                                    <p style="color: var(--warning);">
+                                        ⚠️ Could not scan archive contents: ${archiveScan.error}
+                                    </p>
+                                `}
+                            </div>
+                        `}
+                        ${isSourceFile && hasCHD && !isArchive && html`
                             <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px;">
                                 <p style="color: var(--success); margin-bottom: 8px;">✓ A CHD file exists for this source</p>
                                 ${isAlreadyVerified ? html`
@@ -622,7 +768,7 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, onDelete, onVerify, onClose 
                                 `}
                             </div>
                         `}
-                        ${isSourceFile && !hasCHD && html`
+                        ${isSourceFile && !hasCHD && !isArchive && html`
                             <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--error);">
                                 <p style="color: var(--error);">
                                     ⚠️ <strong>WARNING:</strong> No CHD file exists for this source file. Deleting it will result in data loss!
@@ -634,22 +780,48 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, onDelete, onVerify, onClose 
                             <p style="color: var(--error); margin-bottom: 15px; font-size: 0.85rem;">${error}</p>
                         `}
                         <div style="display: flex; flex-direction: column; gap: 10px;">
-                            ${isSourceFile && hasCHD && !isAlreadyVerified && html`
+                            ${isArchive && html`
+                                ${archiveVerify.running && html`
+                                    <div style="color: var(--text-secondary); font-size: 0.85rem;">
+                                        Verifying CHDs... ${archiveVerify.verified + archiveVerify.failed}/${archiveVerify.total}
+                                    </div>
+                                `}
+                                ${archiveScan.chds.length > 0 && html`
+                                    <button class="btn btn-primary" onClick=${handleArchiveVerify} disabled=${archiveScan.loading || archiveVerify.running}>
+                                        ${archiveVerify.running ? 'Verifying CHDs...' : '🔍 Verify CHDs First'}
+                                    </button>
+                                `}
+                                <button
+                                    class="btn btn-secondary"
+                                    onClick=${() => { setArchiveVerifySkipped(archiveScan.chds.length > 0); setStep(3); }}
+                                    disabled=${archiveScan.loading || archiveVerify.running}
+                                >
+                                    ${archiveScan.chds.length > 0 ? 'Skip Verification' : 'Continue to Delete'}
+                                </button>
+                            `}
+                            ${isSourceFile && hasCHD && !isAlreadyVerified && !isArchive && html`
                                 <button class="btn btn-primary" onClick=${handleVerify} disabled=${verifying}>
                                     ${verifying ? 'Verifying CHD...' : '🔍 Verify CHD First'}
                                 </button>
                             `}
-                            <button
-                                class="btn btn-secondary"
-                                onClick=${() => setStep(isSourceFile && hasCHD && isAlreadyVerified ? 3 : 2)}
-                            >
-                                ${isAlreadyVerified ? 'Continue to Delete' : 'Skip Verification'}
-                            </button>
+                            ${verifying && verifyStatus && !isArchive && html`
+                                <div style="color: var(--text-secondary); font-size: 0.85rem;">
+                                    ${verifyStatus.progress != null ? `Progress: ${verifyStatus.progress}%` : (verifyStatus.message || 'Verifying...')}
+                                </div>
+                            `}
+                            ${!isArchive && html`
+                                <button
+                                    class="btn btn-secondary"
+                                    onClick=${() => setStep(isSourceFile && hasCHD && isAlreadyVerified ? 3 : 2)}
+                                >
+                                    ${isAlreadyVerified ? 'Continue to Delete' : 'Skip Verification'}
+                                </button>
+                            `}
                             <button class="btn btn-secondary" onClick=${onClose}>Cancel</button>
                         </div>
                     `}
 
-                    ${step === 2 && html`
+                    ${step === 2 && !isArchive && html`
                         <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--warning);">
                             <p style="color: var(--warning);">
                                 ⚠️ You're about to delete a file without CHD verification.
@@ -677,29 +849,66 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, onDelete, onVerify, onClose 
                     `}
 
                     ${step === 3 && html`
-                        ${verificationResult && verificationResult.valid && html`
-                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
-                                <p style="color: var(--success);">
-                                    ✓ CHD verified successfully! Safe to delete source file.
+                        ${isArchive && html`
+                            ${archiveVerifyAttempted && archiveVerify.failed === 0 && archiveVerify.total > 0 && html`
+                                <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
+                                    <p style="color: var(--success);">
+                                        ✓ Verified ${archiveVerify.verified} CHD${archiveVerify.verified === 1 ? '' : 's'} successfully.
+                                    </p>
+                                </div>
+                            `}
+                            ${(archiveVerify.failed > 0 || archiveVerifySkipped || archiveScan.error) && html`
+                                <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--warning);">
+                                    <p style="color: var(--warning); margin-bottom: 6px;">
+                                        ⚠️ Some CHDs were not verified.
+                                    </p>
+                                    ${archiveVerify.failed > 0 && html`
+                                        <p style="color: var(--warning);">Failed verifications: ${archiveVerify.failed}</p>
+                                    `}
+                                    ${archiveVerifySkipped && html`
+                                        <p style="color: var(--warning);">Verification was skipped.</p>
+                                    `}
+                                    ${archiveScan.error && html`
+                                        <p style="color: var(--warning);">Archive scan failed, CHDs may be missing.</p>
+                                    `}
+                                </div>
+                            `}
+                            ${!archiveScan.error && html`
+                                <p style="color: var(--text-secondary); margin-bottom: 15px;">
+                                    Confirm deletion of the archive file?
                                 </p>
-                            </div>
-                        `}
-                        ${isAlreadyVerified && !verificationResult && html`
-                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
-                                <p style="color: var(--success);">
-                                    ✓ CHD was previously verified. Safe to delete source file.
+                            `}
+                            ${archiveScan.error && html`
+                                <p style="color: var(--text-secondary); margin-bottom: 15px;">
+                                    Archive contents could not be scanned. Delete anyway?
                                 </p>
-                            </div>
+                            `}
                         `}
-                        <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                            Confirm deletion of the source file?
-                        </p>
+                        ${!isArchive && html`
+                            ${verificationResult && verificationResult.valid && html`
+                                <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
+                                    <p style="color: var(--success);">
+                                        ✓ CHD verified successfully! Safe to delete source file.
+                                    </p>
+                                </div>
+                            `}
+                            ${isAlreadyVerified && !verificationResult && html`
+                                <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
+                                    <p style="color: var(--success);">
+                                        ✓ CHD was previously verified. Safe to delete source file.
+                                    </p>
+                                </div>
+                            `}
+                            <p style="color: var(--text-secondary); margin-bottom: 15px;">
+                                Confirm deletion of the source file?
+                            </p>
+                        `}
                         ${error && html`
                             <p style="color: var(--error); margin-bottom: 15px; font-size: 0.85rem;">${error}</p>
                         `}
                         <div style="display: flex; flex-direction: column; gap: 10px;">
                             <button class="btn btn-primary" onClick=${handleDelete} disabled=${deleting}>
-                                ${deleting ? 'Deleting...' : 'Delete Source File'}
+                                ${deleting ? 'Deleting...' : isArchive ? 'Delete Archive' : 'Delete Source File'}
                             </button>
                             <button class="btn btn-secondary" onClick=${onClose}>Cancel</button>
                         </div>
@@ -740,6 +949,7 @@ function App() {
     const [renameTarget, setRenameTarget] = useState(null); // Entry to rename
     const [deleteTarget, setDeleteTarget] = useState(null); // Entry to delete
     const [verifiedCHDs, setVerifiedCHDs] = useState(new Set()); // Set of verified CHD paths
+    const [verifyProgress, setVerifyProgress] = useState(new Map());
 
     // Ref to track current path for use in callbacks
     const currentPathRef = useRef(null);
@@ -778,6 +988,7 @@ function App() {
                         convertible: file.convertible,
                         has_chd: file.has_chd || false,
                         output_stem: file.output_stem,
+                        chd_path: file.chd_path,
                         is_archive_item: true,
                         archive_path: archivePath
                     }));
@@ -1052,6 +1263,7 @@ function App() {
                 convertible: file.convertible,
                 has_chd: file.has_chd || false,
                 output_stem: file.output_stem,
+                chd_path: file.chd_path,
                 is_archive_item: true,
                 archive_path: archivePath
             }));
@@ -1127,14 +1339,37 @@ function App() {
     };
 
     const handleVerify = async (chdPath) => {
-        const result = await api.verifyCHD(chdPath);
-        if (result.valid) {
-            setVerifiedCHDs(prev => new Set([...prev, chdPath]));
-            notify('✓ CHD verified successfully', 'success');
-        } else {
-            notify(`✗ CHD verification failed: ${result.message}`, 'error');
+        setVerifyProgress(prev => new Map(prev).set(chdPath, { progress: 0, message: 'Starting verification...' }));
+        try {
+            const result = await api.verifyCHD(chdPath, {
+                onProgress: (update) => {
+                    setVerifyProgress(prev => {
+                        const next = new Map(prev);
+                        next.set(chdPath, {
+                            progress: update.progress,
+                            message: update.message
+                        });
+                        return next;
+                    });
+                }
+            });
+            if (result.valid) {
+                setVerifiedCHDs(prev => new Set([...prev, chdPath]));
+                notify('✓ CHD verified successfully', 'success');
+            } else {
+                notify(`✗ CHD verification failed: ${result.message}`, 'error');
+            }
+            return result;
+        } catch (err) {
+            notify(`✗ CHD verification failed: ${err.message}`, 'error');
+            throw err;
+        } finally {
+            setVerifyProgress(prev => {
+                const next = new Map(prev);
+                next.delete(chdPath);
+                return next;
+            });
         }
-        return result;
     };
 
     // Helper to calculate expected output path
@@ -1291,7 +1526,9 @@ function App() {
                     ...a,
                     name: `${a.name} (in ${a.archive_path.split('/').pop()})`,
                     type: 'file',
-                    convertible: true
+                    convertible: true,
+                    is_archive_item: true,
+                    chd_path: a.chd_path
                 }))
             ];
             setEntries(combined);
@@ -1548,6 +1785,7 @@ function App() {
                                 onDelete=${setDeleteTarget}
                                 onVerify=${handleVerify}
                                 verifiedCHDs=${verifiedCHDs}
+                                verifyProgress=${verifyProgress}
                                 error=${entriesError}
                             />`
                         }
@@ -1614,6 +1852,7 @@ function App() {
                     entry=${deleteTarget}
                     hasCHD=${deleteTarget.has_chd}
                     verifiedCHDs=${verifiedCHDs}
+                    verifyProgress=${verifyProgress}
                     onDelete=${handleDelete}
                     onVerify=${handleVerify}
                     onClose=${() => setDeleteTarget(null)}

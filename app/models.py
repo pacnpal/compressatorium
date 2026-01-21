@@ -31,6 +31,8 @@ class FileEntry(BaseModel):
     extension: Optional[str] = None
     convertible: bool = False
     has_chd: bool = False
+    archive_items: Optional[int] = None
+    archive_has_chd: Optional[int] = None
 
 
 class DirectoryListing(BaseModel):

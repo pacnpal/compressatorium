@@ -224,6 +224,63 @@ class ChdmanService:
         else:
             return {"valid": False, "message": output.strip() or "CHD verification failed"}
 
+    async def verify_stream(self, chd_path: str) -> AsyncGenerator[dict, None]:
+        process = await asyncio.create_subprocess_exec(
+            self.chdman_path, "verify", "-i", chd_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        self._track_pid(process.pid)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Starting chdman verify pid=%s path=%s", process.pid, chd_path)
+
+        output_lines = []
+        buffer = ""
+        while True:
+            chunk = await process.stdout.read(100)
+            if not chunk:
+                break
+
+            buffer += chunk.decode("utf-8", errors="replace")
+
+            while "\r" in buffer or "\n" in buffer:
+                if "\r" in buffer:
+                    parts = buffer.split("\r")
+                    for part in parts[:-1]:
+                        line = part.strip()
+                        if line:
+                            output_lines.append(line)
+                            progress = self._parse_progress(line)
+                            yield {"type": "progress", "progress": progress, "message": line}
+                    buffer = parts[-1]
+                elif "\n" in buffer:
+                    parts = buffer.split("\n")
+                    for part in parts[:-1]:
+                        line = part.strip()
+                        if line:
+                            output_lines.append(line)
+                            progress = self._parse_progress(line)
+                            yield {"type": "progress", "progress": progress, "message": line}
+                    buffer = parts[-1]
+
+        if buffer.strip():
+            line = buffer.strip()
+            output_lines.append(line)
+            progress = self._parse_progress(line)
+            yield {"type": "progress", "progress": progress, "message": line}
+
+        await process.wait()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("chdman verify pid=%s exit=%s", process.pid, process.returncode)
+        self._untrack_pid(process.pid)
+
+        output_lines = output_lines[-20:]
+        output = "\n".join(output_lines).strip()
+        if process.returncode == 0:
+            yield {"type": "complete", "valid": True, "message": "CHD file verified successfully"}
+        else:
+            yield {"type": "error", "valid": False, "message": output or "CHD verification failed"}
+
     def _parse_progress(self, line: str) -> int:
         """Parse chdman output for progress percentage."""
         # chdman outputs: "Compressing, 45.2% complete..."

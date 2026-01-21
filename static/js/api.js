@@ -147,7 +147,52 @@ export const api = {
         return res.json();
     },
 
-    async verifyCHD(path) {
+    async verifyCHD(path, { onProgress } = {}) {
+        if (onProgress) {
+            return new Promise((resolve, reject) => {
+                const params = new URLSearchParams({ path });
+                const eventSource = new EventSource(`${API_BASE}/verify/events?${params}`);
+
+                const cleanup = () => eventSource.close();
+
+                eventSource.addEventListener('verify_progress', (e) => {
+                    try {
+                        if (e.data) {
+                            onProgress(JSON.parse(e.data));
+                        }
+                    } catch (err) {
+                        console.error('Failed to parse verify progress event:', err, e.data);
+                    }
+                });
+
+                eventSource.addEventListener('verify_complete', (e) => {
+                    cleanup();
+                    try {
+                        resolve(JSON.parse(e.data));
+                    } catch (err) {
+                        reject(err);
+                    }
+                });
+
+                eventSource.addEventListener('verify_error', (e) => {
+                    cleanup();
+                    let message = 'CHD verification failed';
+                    try {
+                        const data = JSON.parse(e.data);
+                        message = data.message || message;
+                    } catch (err) {
+                        console.error('Failed to parse verify error event:', err, e.data);
+                    }
+                    reject(new Error(message));
+                });
+
+                eventSource.onerror = (err) => {
+                    cleanup();
+                    reject(new Error('Verification connection error'));
+                };
+            });
+        }
+
         const params = new URLSearchParams({ path });
         const res = await fetch(`${API_BASE}/verify?${params}`);
         if (!res.ok) throw new Error('Failed to verify CHD');
