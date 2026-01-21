@@ -213,7 +213,7 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
           repository: ${{ env.DOCKERHUB_IMAGE }}
           readme-filepath: ./README.md
-          short-description: ${{ github.event.repository.description }}
+          short-description: "Web UI for converting game disc images (GDI/ISO/CUE) to CHD format"
 
   # Summary job
   summary:

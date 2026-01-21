@@ -20,6 +20,7 @@ class ConcurrencyManager:
         self._lock_handles: Dict[str, Tuple[int, object]] = {}
         self._ticket_handles: Dict[str, Tuple[int, str]] = {}
         self._ticket_counter_path = os.path.join(self.lock_dir, "queue_counter")
+        self._cleanup_stale_locks()
         if not os.path.exists(self._ticket_counter_path):
             try:
                 with open(self._ticket_counter_path, "w") as fh:
@@ -145,6 +146,23 @@ class ConcurrencyManager:
                 return next_ticket
         except OSError:
             return int(os.times().elapsed * 1000)
+
+    def _cleanup_stale_locks(self):
+        """Remove stale queue tickets and slot locks from previous runs."""
+        try:
+            for name in os.listdir(self.lock_dir):
+                if name.startswith("queue_") and name.endswith(".ticket"):
+                    try:
+                        os.remove(os.path.join(self.lock_dir, name))
+                    except OSError:
+                        pass
+                if name.startswith("convert_slot_") and name.endswith(".lock"):
+                    try:
+                        os.remove(os.path.join(self.lock_dir, name))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
 
 
 concurrency_manager = ConcurrencyManager(

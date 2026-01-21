@@ -17,6 +17,7 @@ RUN apt-get update && \
 # Create Python virtual environment and install dependencies
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir "pip>=25.3"
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt
 

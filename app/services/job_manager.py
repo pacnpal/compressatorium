@@ -19,12 +19,13 @@ class JobManager:
     def __init__(self, max_concurrent: int = 2):
         self.jobs: OrderedDict[str, ConversionJob] = OrderedDict()
         self.max_concurrent = max(1, max_concurrent)
-        self._queue: asyncio.Queue = asyncio.Queue()
+        self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._cancelled: Set[str] = set()
         self._cancel_events: Dict[str, asyncio.Event] = {}
         self._running = False
-        self._worker_tasks: List[asyncio.Task] = []
+        self._dispatcher_task: Optional[asyncio.Task] = None
+        self._semaphore = asyncio.Semaphore(self.max_concurrent)
 
     def create_job(
         self,
@@ -53,8 +54,8 @@ class JobManager:
         )
 
         self.jobs[job_id] = job
-        concurrency_manager.reserve_ticket(job_id)
-        self._queue.put_nowait(job_id)
+        ticket = concurrency_manager.reserve_ticket(job_id)
+        self._queue.put_nowait((ticket, job_id))
         return job
 
     def create_batch_jobs(
@@ -168,26 +169,41 @@ class JobManager:
         if self._running:
             return
         self._running = True
-        self._worker_tasks = [
-            asyncio.create_task(self._worker_loop(worker_id))
-            for worker_id in range(self.max_concurrent)
-        ]
-        await asyncio.gather(*self._worker_tasks)
+        self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
+        await self._dispatcher_task
 
-    async def _worker_loop(self, worker_id: int):
-        """Worker loop that processes jobs sequentially."""
+    async def _dispatcher_loop(self):
+        """Dispatcher loop that starts jobs in FIFO order with concurrency control."""
         while self._running:
             try:
-                job_id = await self._queue.get()
+                _, job_id = await self._queue.get()
             except asyncio.CancelledError:
                 break
 
             try:
-                await self._process_job(job_id)
+                job = self.jobs.get(job_id)
+                if not job:
+                    continue
+                if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
+                    self._cancelled.discard(job_id)
+                    self._cleanup_temp_dir(job)
+                    continue
+                await self._semaphore.acquire()
+                try:
+                    asyncio.create_task(self._run_job(job_id))
+                except Exception:
+                    self._semaphore.release()
+                    raise
             except Exception as e:
-                print(f"Worker {worker_id} error: {e}")
+                print(f"Dispatcher error: {e}")
             finally:
                 self._queue.task_done()
+
+    async def _run_job(self, job_id: str):
+        try:
+            await self._process_job(job_id)
+        finally:
+            self._semaphore.release()
 
     async def _process_job(self, job_id: str):
         """Process a single conversion job."""
