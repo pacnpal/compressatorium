@@ -15,6 +15,9 @@ class Settings(BaseSettings):
 
     # chdman binary path
     chdman_path: str = Field(default="/usr/bin/chdman", alias="CHDMAN_PATH")
+    chdman_nice: Optional[int] = Field(default=10, alias="CHD_CHDMAN_NICE")
+    chdman_ioprio_class: Optional[int] = Field(default=2, alias="CHD_CHDMAN_IOPRIO_CLASS")
+    chdman_ioprio_level: Optional[int] = Field(default=6, alias="CHD_CHDMAN_IOPRIO_LEVEL")
 
     # Debug logging
     debug: bool = Field(default=False, alias="CHD_DEBUG")

@@ -37,6 +37,9 @@ class JobManager:
         self._last_progress_at: Dict[str, float] = {}
         self._last_progress_log_at: Dict[str, float] = {}
         self._last_stall_log_at: Dict[str, float] = {}
+        self._pid_stats: Dict[int, Dict[str, int]] = {}
+        self._last_output_size: Dict[str, int] = {}
+        self._last_output_size_at: Dict[str, float] = {}
         self._running = False
         self._dispatcher_task: Optional[asyncio.Task] = None
         self._debug_task: Optional[asyncio.Task] = None
@@ -250,11 +253,23 @@ class JobManager:
                     rss_mb = rss_raw / (1024 * 1024)
                 else:
                     rss_mb = rss_raw / 1024
+                open_fds = None
+                if os.path.exists("/proc/self/fd"):
+                    try:
+                        open_fds = len(os.listdir("/proc/self/fd"))
+                    except OSError:
+                        open_fds = None
+                loadavg = None
+                if hasattr(os, "getloadavg"):
+                    try:
+                        loadavg = os.getloadavg()
+                    except OSError:
+                        loadavg = None
 
                 logger.debug(
                     "Heartbeat jobs=%d queued=%d processing=%d completed=%d failed=%d cancelled=%d "
                     "queue_size=%d semaphore=%s cancelled_set=%d subscribers=%d temp_dirs=%d "
-                    "locks=%d tickets=%d active_chdman=%d rss_raw=%d rss_mb=%.1f",
+                    "locks=%d tickets=%d active_chdman=%d rss_raw=%d rss_mb=%.1f open_fds=%s loadavg=%s",
                     len(jobs),
                     status_counts[JobStatus.QUEUED],
                     status_counts[JobStatus.PROCESSING],
@@ -270,14 +285,61 @@ class JobManager:
                     concurrency_manager.stats().get("tickets"),
                     len(chdman_service.active_pids()),
                     rss_raw,
-                    rss_mb
+                    rss_mb,
+                    open_fds,
+                    loadavg
                 )
+
+                for job in jobs:
+                    if job.status != JobStatus.PROCESSING:
+                        continue
+                    now = time.monotonic()
+                    last_progress = self._last_progress_at.get(job.id, now)
+                    idle_for = now - last_progress
+                    output_size = None
+                    output_idle = None
+                    if job.output_path and os.path.exists(job.output_path):
+                        try:
+                            output_size = os.path.getsize(job.output_path)
+                        except OSError:
+                            output_size = None
+                        if output_size is not None:
+                            last_size = self._last_output_size.get(job.id)
+                            last_size_at = self._last_output_size_at.get(job.id, now)
+                            if last_size is None or output_size != last_size:
+                                self._last_output_size[job.id] = output_size
+                                self._last_output_size_at[job.id] = now
+                            else:
+                                output_idle = now - last_size_at
+                    logger.debug(
+                        "Processing job %s progress=%s idle=%.1fs output_size=%s output_idle=%s",
+                        job.id,
+                        job.progress,
+                        idle_for,
+                        output_size,
+                        output_idle
+                    )
 
                 if settings.debug_progress_timeout > 0:
                     now = time.monotonic()
                     for job in jobs:
                         if job.status != JobStatus.PROCESSING:
                             continue
+                        output_size = None
+                        output_idle = None
+                        if job.output_path and os.path.exists(job.output_path):
+                            try:
+                                output_size = os.path.getsize(job.output_path)
+                            except OSError:
+                                output_size = None
+                            if output_size is not None:
+                                last_size = self._last_output_size.get(job.id)
+                                last_size_at = self._last_output_size_at.get(job.id, now)
+                                if last_size is None or output_size != last_size:
+                                    self._last_output_size[job.id] = output_size
+                                    self._last_output_size_at[job.id] = now
+                                else:
+                                    output_idle = now - last_size_at
                         last_progress = self._last_progress_at.get(job.id, now)
                         idle_for = now - last_progress
                         if idle_for < settings.debug_progress_timeout:
@@ -287,15 +349,78 @@ class JobManager:
                             continue
                         self._last_stall_log_at[job.id] = now
                         logger.debug(
-                            "Stalled job %s idle=%.1fs progress=%s message=%s input=%s output=%s started_at=%s",
+                            "Stalled job %s idle=%.1fs progress=%s message=%s input=%s output=%s "
+                            "output_size=%s output_idle=%s started_at=%s",
                             job.id,
                             idle_for,
                             job.progress,
                             job.message,
                             job.file_path,
                             job.output_path,
+                            output_size,
+                            output_idle,
                             job.started_at
                         )
+
+                for pid in chdman_service.active_pids():
+                    proc_io_path = f"/proc/{pid}/io"
+                    proc_status_path = f"/proc/{pid}/status"
+                    if not os.path.exists(proc_status_path):
+                        self._pid_stats.pop(pid, None)
+                        continue
+
+                    rss_kb = None
+                    threads = None
+                    read_bytes = None
+                    write_bytes = None
+
+                    try:
+                        with open(proc_status_path, "r", encoding="utf-8") as fh:
+                            for line in fh:
+                                if line.startswith("VmRSS:"):
+                                    rss_kb = int(line.split()[1])
+                                elif line.startswith("Threads:"):
+                                    threads = int(line.split()[1])
+                    except OSError:
+                        pass
+
+                    if os.path.exists(proc_io_path):
+                        try:
+                            with open(proc_io_path, "r", encoding="utf-8") as fh:
+                                for line in fh:
+                                    if line.startswith("read_bytes:"):
+                                        read_bytes = int(line.split()[1])
+                                    elif line.startswith("write_bytes:"):
+                                        write_bytes = int(line.split()[1])
+                        except OSError:
+                            pass
+
+                    prev = self._pid_stats.get(pid, {})
+                    delta_read = None
+                    delta_write = None
+                    if read_bytes is not None and "read_bytes" in prev:
+                        delta_read = read_bytes - prev["read_bytes"]
+                    if write_bytes is not None and "write_bytes" in prev:
+                        delta_write = write_bytes - prev["write_bytes"]
+
+                    logger.debug(
+                        "chdman pid=%s rss_kb=%s threads=%s read_bytes=%s(+%s) write_bytes=%s(+%s)",
+                        pid,
+                        rss_kb,
+                        threads,
+                        read_bytes,
+                        delta_read,
+                        write_bytes,
+                        delta_write
+                    )
+
+                    updated = {}
+                    if read_bytes is not None:
+                        updated["read_bytes"] = read_bytes
+                    if write_bytes is not None:
+                        updated["write_bytes"] = write_bytes
+                    if updated:
+                        self._pid_stats[pid] = updated
             except Exception as exc:
                 logger.exception("Debug heartbeat error: %s", exc)
 
@@ -553,6 +678,8 @@ class JobManager:
             self._last_progress_at.pop(job_id, None)
             self._last_progress_log_at.pop(job_id, None)
             self._last_stall_log_at.pop(job_id, None)
+            self._last_output_size.pop(job_id, None)
+            self._last_output_size_at.pop(job_id, None)
 
             # Clean up temp directory if this was an archive extraction
             self._cleanup_temp_dir(job)

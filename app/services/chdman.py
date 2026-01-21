@@ -4,6 +4,7 @@ import os
 import logging
 import time
 import threading
+import shutil
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
@@ -26,6 +27,27 @@ class ChdmanService:
         self.chdman_path = settings.chdman_path
         self._active_pids: set[int] = set()
         self._pid_lock = threading.Lock()
+
+    def _build_command(self, mode: str, input_path: str, output_path: str) -> list[str]:
+        cmd = [self.chdman_path, mode, "-f", "-i", input_path, "-o", output_path]
+        if mode == "createdvd":
+            # Insert -hs 2048 after mode for PSP compatibility
+            cmd = [self.chdman_path, mode, "-hs", "2048", "-f", "-i", input_path, "-o", output_path]
+
+        if settings.chdman_ioprio_class is not None and settings.chdman_ioprio_level is not None:
+            ionice = shutil.which("ionice")
+            if ionice:
+                cmd = [
+                    ionice,
+                    "-c",
+                    str(settings.chdman_ioprio_class),
+                    "-n",
+                    str(settings.chdman_ioprio_level),
+                ] + cmd
+            elif logger.isEnabledFor(logging.DEBUG):
+                logger.debug("ionice not found; skipping I/O priority settings")
+
+        return cmd
 
     def _track_pid(self, pid: int):
         with self._pid_lock:
@@ -60,16 +82,20 @@ class ChdmanService:
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-        cmd = [self.chdman_path, mode, "-f", "-i", input_path, "-o", output_path]
+        cmd = self._build_command(mode, input_path, output_path)
 
-        if mode == "createdvd":
-            # Insert -hs 2048 after mode for PSP compatibility
-            cmd = [self.chdman_path, mode, "-hs", "2048", "-f", "-i", input_path, "-o", output_path]
+        def _preexec():
+            if settings.chdman_nice is not None:
+                try:
+                    os.nice(settings.chdman_nice)
+                except OSError:
+                    pass
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
+            stderr=asyncio.subprocess.STDOUT,
+            preexec_fn=_preexec if os.name == "posix" else None
         )
         self._track_pid(process.pid)
         if logger.isEnabledFor(logging.DEBUG):

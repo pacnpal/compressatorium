@@ -8,6 +8,7 @@ RUN apt-get update && \
       python3 \
       python3-pip \
       python3-venv \
+      util-linux \
       unrar-free \
       p7zip-full \
       bash && \
