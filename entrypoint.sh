@@ -1,6 +1,23 @@
 #!/bin/bash
 set -e
 
+# Check if /config is mounted
+if ! mountpoint -q /config 2>/dev/null; then
+    echo ""
+    echo "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+    echo "┃  HEY DUMBASS! YOU FORGOT TO MOUNT /config!                              ┃"
+    echo "┃                                                                         ┃"
+    echo "┃  What the fuck are you doing?! Your data is gonna vanish into thin air  ┃"
+    echo "┃  when this container restarts. Is that what you want, dipshit?          ┃"
+    echo "┃                                                                         ┃"
+    echo "┃  This is stupid. Fix it by adding:                                      ┃"
+    echo "┃      -v /path/to/config:/config                                         ┃"
+    echo "┃                                                                         ┃"
+    echo "┃  RTFM: https://github.com/pacnpal/docker-chd-converter-webui            ┃"
+    echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+    echo ""
+fi
+
 # CHD_MODE: "webui" (default) or "cli"
 MODE="${CHD_MODE:-webui}"
 
