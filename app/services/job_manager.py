@@ -11,6 +11,8 @@ from services.chdman import chdman_service, ConversionCancelled
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
+from services.archive import archive_service
+from fastapi.concurrency import run_in_threadpool
 from config import settings
 
 
@@ -35,11 +37,12 @@ class JobManager:
         mode: ConversionMode,
         output_dir: Optional[str] = None,
         output_path: Optional[str] = None,
-        allow_overwrite: bool = False
+        allow_overwrite: bool = False,
+        filename_override: Optional[str] = None
     ) -> ConversionJob:
         """Create a new conversion job."""
         job_id = str(uuid.uuid4())[:8]
-        filename = os.path.basename(file_path)
+        filename = filename_override or os.path.basename(file_path)
 
         # Determine output path - use explicit path if provided, otherwise calculate
         if output_path is None:
@@ -312,6 +315,24 @@ class JobManager:
         })
 
         try:
+            input_path = job.file_path
+            if "::" in job.file_path:
+                archive_path, internal_path = job.file_path.split("::", 1)
+                input_path, temp_dir = await run_in_threadpool(
+                    archive_service.extract_file,
+                    archive_path,
+                    internal_path
+                )
+                job.temp_dir = temp_dir
+                await run_in_threadpool(
+                    archive_service.extract_related_files,
+                    archive_path,
+                    internal_path,
+                    temp_dir
+                )
+                if cancel_event.is_set():
+                    raise ConversionCancelled("Conversion cancelled")
+
             if job.allow_overwrite and os.path.exists(job.output_path):
                 if not os.path.isfile(job.output_path):
                     raise RuntimeError("Output path exists and is not a file")
@@ -319,7 +340,7 @@ class JobManager:
                 verification_store.clear(job.output_path)
 
             async for update in chdman_service.convert(
-                job.file_path,
+                input_path,
                 job.output_path,
                 job.mode.value,
                 cancel_event=cancel_event

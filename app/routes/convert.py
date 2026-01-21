@@ -91,14 +91,18 @@ async def create_job(request: JobCreateRequest):
 
     # Handle archive files
     file_path = request.file_path
-    temp_dir = None
     archive_source_dir = None  # Directory where the archive is located (for output)
     output_path = None
     output_exists = False
+    display_filename = None
 
     if "::" in request.file_path:
         archive_path, internal_path = request.file_path.split("::", 1)
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
+        display_filename = os.path.basename(internal_path)
+
+        if not os.path.isfile(archive_path):
+            raise HTTPException(status_code=404, detail="Archive not found")
 
         # Calculate output path before extraction to avoid unnecessary work
         effective_output_dir = request.output_dir or archive_source_dir
@@ -116,19 +120,7 @@ async def create_job(request: JobCreateRequest):
             elif request.duplicate_action == DuplicateAction.RENAME:
                 output_path = get_unique_output_path(output_path)
 
-        # Extract from archive only if we're going to convert
-        try:
-            file_path, temp_dir = archive_service.extract_file(archive_path, internal_path)
-            archive_service.extract_related_files(archive_path, internal_path, temp_dir)
-        except (ValueError, FileNotFoundError) as exc:
-            if temp_dir:
-                archive_service.cleanup_temp_dir(temp_dir)
-            raise HTTPException(status_code=400, detail=f"Failed to extract from archive: {exc}")
-        # Note: temp_dir cleanup should be handled after conversion
-
-    if not os.path.isfile(file_path):
-        if temp_dir:
-            archive_service.cleanup_temp_dir(temp_dir)
+    if "::" not in request.file_path and not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
     # Calculate output path and handle duplicates
@@ -153,12 +145,9 @@ async def create_job(request: JobCreateRequest):
         file_path,
         request.mode,
         output_path=output_path,
-        allow_overwrite=allow_overwrite
+        allow_overwrite=allow_overwrite,
+        filename_override=display_filename
     )
-
-    # Store temp_dir reference for cleanup (simplified - in production use proper cleanup)
-    if temp_dir:
-        job.temp_dir = temp_dir
 
     return job
 
@@ -180,16 +169,20 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     skipped = []
 
     for file_path in request.file_paths:
-        actual_path = file_path
-        temp_dir = None
         archive_source_dir = None  # Directory where the archive is located (for output)
         output_path = None
         output_exists = False
+        display_filename = None
 
         # Handle archive files
         if "::" in file_path:
             archive_path, internal_path = file_path.split("::", 1)
             archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
+            display_filename = os.path.basename(internal_path)
+
+            if not os.path.isfile(archive_path):
+                skipped.append(file_path)
+                continue
 
             # Calculate output path before extraction to avoid unnecessary work
             effective_output_dir = request.output_dir or archive_source_dir
@@ -209,47 +202,38 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 elif request.duplicate_action == DuplicateAction.RENAME:
                     output_path = get_unique_output_path(output_path)
 
-            try:
-                actual_path, temp_dir = archive_service.extract_file(archive_path, internal_path)
-                archive_service.extract_related_files(archive_path, internal_path, temp_dir)
-            except (ValueError, FileNotFoundError):
-                if temp_dir:
-                    archive_service.cleanup_temp_dir(temp_dir)
-                skipped.append(file_path)
-                continue
+        if "::" not in file_path and not os.path.isfile(file_path):
+            skipped.append(file_path)
+            continue
 
-        if os.path.isfile(actual_path):
-            # Calculate output path and handle duplicates
-            # For archive files: use output_dir if specified, otherwise save next to archive
-            if output_path is None:
-                effective_output_dir = request.output_dir or archive_source_dir
-                output_path = chdman_service.get_chd_path(actual_path, effective_output_dir)
-                file_exists, is_locked = lock_manager.check_file_status(output_path)
-                output_exists = file_exists
+        # Calculate output path and handle duplicates
+        # For archive files: use output_dir if specified, otherwise save next to archive
+        if output_path is None:
+            effective_output_dir = request.output_dir or archive_source_dir
+            output_path = chdman_service.get_chd_path(file_path, effective_output_dir)
+            file_exists, is_locked = lock_manager.check_file_status(output_path)
+            output_exists = file_exists
 
-                if file_exists or is_locked:
-                    if request.duplicate_action == DuplicateAction.SKIP:
+            if file_exists or is_locked:
+                if request.duplicate_action == DuplicateAction.SKIP:
+                    skipped.append(file_path)
+                    continue
+                elif request.duplicate_action == DuplicateAction.OVERWRITE:
+                    if is_locked:
                         skipped.append(file_path)
                         continue
-                    elif request.duplicate_action == DuplicateAction.OVERWRITE:
-                        if is_locked:
-                            skipped.append(file_path)
-                            continue
-                    elif request.duplicate_action == DuplicateAction.RENAME:
-                        output_path = get_unique_output_path(output_path)
+                elif request.duplicate_action == DuplicateAction.RENAME:
+                    output_path = get_unique_output_path(output_path)
 
-            allow_overwrite = request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
-            job = job_manager.create_job(
-                actual_path,
-                request.mode,
-                output_path=output_path,
-                allow_overwrite=allow_overwrite
-            )
-            if temp_dir:
-                job.temp_dir = temp_dir
-            jobs.append(job)
-        elif temp_dir:
-            archive_service.cleanup_temp_dir(temp_dir)
+        allow_overwrite = request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
+        job = job_manager.create_job(
+            file_path,
+            request.mode,
+            output_path=output_path,
+            allow_overwrite=allow_overwrite,
+            filename_override=display_filename
+        )
+        jobs.append(job)
 
     return jobs
 
