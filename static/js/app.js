@@ -24,7 +24,7 @@ function HelpPanel({ onClose }) {
                             <li><em>DVD Mode</em> - For PSP (.iso), PlayStation 2, etc.</li>
                         </ul>
                     </li>
-                    <li><strong>Convert</strong> - Click the Convert button to start</li>
+                    <li><strong>Queue</strong> - Click Convert to add jobs to the FIFO queue</li>
                 </ol>
                 <h4>File Types</h4>
                 <ul>
@@ -35,6 +35,7 @@ function HelpPanel({ onClose }) {
                 <h4>Tips</h4>
                 <ul>
                     <li>Files showing "CHD exists" already have a converted version</li>
+                    <li>Jobs run in FIFO order when a worker slot is available</li>
                     <li>Use "Search All" to find all convertible files recursively</li>
                     <li>Set a custom output directory or leave empty to save alongside source</li>
                 </ul>
@@ -252,7 +253,7 @@ function JobList({ jobs, onCancel }) {
             <div class="empty-state">
                 <div class="icon">⏳</div>
                 <p>No conversion jobs</p>
-                <p class="help-text">Select files and click Convert to start</p>
+                <p class="help-text">Select files and click Convert to queue jobs</p>
             </div>
         `;
     }
@@ -1192,7 +1193,7 @@ function App() {
 
         setConverting(true);
         try {
-            notify(`⏳ Creating ${paths.length} conversion job(s)...`, 'info');
+            notify(`⏳ Queueing ${paths.length} conversion job(s)...`, 'info');
 
             const newJobs = await api.createBatchJobs(
                 paths,
@@ -1207,7 +1208,7 @@ function App() {
             setSelectedFiles(new Map());
 
             if (newJobs.length > 0) {
-                notify(`✓ Started ${newJobs.length} conversion job(s)`, 'success');
+                notify(`✓ Queued ${newJobs.length} conversion job(s)`, 'success');
             } else {
                 notify('ℹ No jobs created (all files were skipped)', 'info');
             }
