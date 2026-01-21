@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
-from app.config import settings
+from config import settings
 
 
 CONVERTIBLE_EXTENSIONS = {".gdi", ".iso", ".cue", ".bin"}

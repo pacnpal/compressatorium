@@ -3,7 +3,7 @@ import fcntl
 import os
 from typing import Dict, Optional, Tuple
 
-from app.config import settings
+from config import settings
 
 
 class ConcurrencyManager:

@@ -6,11 +6,11 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, List, Optional, Set
 
-from app.models import ConversionJob, JobStatus, ConversionMode
-from app.services.chdman import chdman_service, ConversionCancelled
-from app.services.concurrency_manager import concurrency_manager
-from app.services.lock_manager import lock_manager
-from app.config import settings
+from models import ConversionJob, JobStatus, ConversionMode
+from services.chdman import chdman_service, ConversionCancelled
+from services.concurrency_manager import concurrency_manager
+from services.lock_manager import lock_manager
+from config import settings
 
 
 class JobManager:

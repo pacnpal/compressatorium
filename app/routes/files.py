@@ -4,13 +4,13 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.config import settings
-from app.models import FileEntry, DirectoryListing, Volume
-from app.services.chdman import CONVERTIBLE_EXTENSIONS
-from app.services.archive import archive_service, ARCHIVE_EXTENSIONS
-from app.services.lock_manager import lock_manager
-from app.services.verification_store import verification_store
-from app.utils.path_utils import is_within_configured_volumes, get_volume_name_for_path
+from config import settings
+from models import FileEntry, DirectoryListing, Volume
+from services.chdman import CONVERTIBLE_EXTENSIONS
+from services.archive import archive_service, ARCHIVE_EXTENSIONS
+from services.lock_manager import lock_manager
+from services.verification_store import verification_store
+from utils.path_utils import is_within_configured_volumes, get_volume_name_for_path
 
 router = APIRouter()
 

@@ -14,7 +14,7 @@ class VerificationStore:
         if base_path:
             self._store_path = Path(base_path)
         else:
-            default_dir = Path(os.environ.get("CHD_DATA_DIR", "/app/data"))
+            default_dir = Path(os.environ.get("CHD_DATA_DIR", "/config"))
             self._store_path = default_dir / "verified_chds.json"
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
 

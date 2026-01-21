@@ -2,10 +2,10 @@ import os
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.models import CHDInfo
-from app.services.chdman import chdman_service
-from app.services.verification_store import verification_store
-from app.utils.path_utils import is_within_configured_volumes
+from models import CHDInfo
+from services.chdman import chdman_service
+from services.verification_store import verification_store
+from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
 

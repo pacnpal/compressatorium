@@ -3,8 +3,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 
-from app.routes import files, convert, info
-from app.services.job_manager import job_manager
+from routes import files, convert, info
+from services.job_manager import job_manager
 
 app = FastAPI(
     title="CHD Converter",
@@ -32,7 +32,7 @@ async def health_check():
 
 
 # Serve static files
-static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
+static_dir = os.environ.get("STATIC_DIR", "/static")
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 

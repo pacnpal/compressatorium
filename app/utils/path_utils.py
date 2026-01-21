@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from app.config import settings
+from config import settings
 
 
 def strip_archive_path(path: str) -> str:

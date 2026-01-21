@@ -43,5 +43,5 @@ else
     echo "Starting CHD Converter Web UI..."
     echo "Volumes: $CHD_VOLUMES"
     echo "Access the web interface at http://localhost:8080"
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8080
+    exec uvicorn main:app --host 0.0.0.0 --port 8080
 fi

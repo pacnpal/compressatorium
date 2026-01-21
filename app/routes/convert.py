@@ -6,16 +6,16 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from app.models import (
+from models import (
     ConversionJob, JobCreateRequest, BatchJobCreateRequest,
     JobStatus, DuplicateAction, CheckDuplicatesRequest, DuplicateInfo
 )
-from app.services.job_manager import job_manager
-from app.services.archive import archive_service
-from app.services.chdman import chdman_service
-from app.services.lock_manager import lock_manager
-from app.services.verification_store import verification_store
-from app.utils.path_utils import is_within_configured_volumes
+from services.job_manager import job_manager
+from services.archive import archive_service
+from services.chdman import chdman_service
+from services.lock_manager import lock_manager
+from services.verification_store import verification_store
+from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
 
