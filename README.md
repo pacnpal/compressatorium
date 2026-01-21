@@ -146,13 +146,13 @@ Or use the Web UI's CHD Inspector feature by clicking on any `.chd` file.
 | `CHD_VOLUMES` | `/data/games` | Comma-separated list of volume mount paths |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` |
 | `MAX_CONCURRENT_JOBS` | `2` | Maximum parallel conversion jobs (Web UI only) |
-| `CHD_DATA_DIR` | `app/data` | Directory for persistent application data (relative to `/app`) |
+| `CHD_DATA_DIR` | `/app/data` | Directory for persistent application data |
 
 ---
 
 ## Persistent Data
 
-The Web UI stores verification records (tracking which CHD files have been verified) in a JSON file. By default, this is stored at `/app/app/data/verified_chds.json` inside the container, which is **not persistent** across container restarts.
+The Web UI stores verification records (tracking which CHD files have been verified) in a JSON file. By default, this is stored at `/app/data/verified_chds.json` inside the container, which is **not persistent** across container restarts.
 
 To persist this data, you have two options:
 
@@ -173,9 +173,8 @@ docker run -d \
 ```bash
 docker run -d \
   -p 8080:8080 \
-  -e CHD_DATA_DIR=/config \
   -v /path/to/games:/data/games \
-  -v /path/to/config:/config \
+  -v /path/to/config:/app/data \
   pacnpal/chd-converter
 ```
 
