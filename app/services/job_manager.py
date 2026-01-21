@@ -34,6 +34,9 @@ class JobManager:
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._cancelled: Set[str] = set()
         self._cancel_events: Dict[str, asyncio.Event] = {}
+        self._last_progress_at: Dict[str, float] = {}
+        self._last_progress_log_at: Dict[str, float] = {}
+        self._last_stall_log_at: Dict[str, float] = {}
         self._running = False
         self._dispatcher_task: Optional[asyncio.Task] = None
         self._debug_task: Optional[asyncio.Task] = None
@@ -71,6 +74,9 @@ class JobManager:
         self.jobs[job_id] = job
         ticket = concurrency_manager.reserve_ticket(job_id)
         self._queue.put_nowait((ticket, job_id))
+        now = time.monotonic()
+        self._last_progress_at[job_id] = now
+        self._last_progress_log_at[job_id] = now
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "Queued job %s mode=%s input=%s output=%s overwrite=%s",
@@ -266,6 +272,30 @@ class JobManager:
                     rss_raw,
                     rss_mb
                 )
+
+                if settings.debug_progress_timeout > 0:
+                    now = time.monotonic()
+                    for job in jobs:
+                        if job.status != JobStatus.PROCESSING:
+                            continue
+                        last_progress = self._last_progress_at.get(job.id, now)
+                        idle_for = now - last_progress
+                        if idle_for < settings.debug_progress_timeout:
+                            continue
+                        last_stall = self._last_stall_log_at.get(job.id, 0)
+                        if now - last_stall < settings.debug_progress_timeout:
+                            continue
+                        self._last_stall_log_at[job.id] = now
+                        logger.debug(
+                            "Stalled job %s idle=%.1fs progress=%s message=%s input=%s output=%s started_at=%s",
+                            job.id,
+                            idle_for,
+                            job.progress,
+                            job.message,
+                            job.file_path,
+                            job.output_path,
+                            job.started_at
+                        )
             except Exception as exc:
                 logger.exception("Debug heartbeat error: %s", exc)
 
@@ -453,6 +483,18 @@ class JobManager:
                     continue
                 job.progress = update["progress"]
                 job.message = update["message"]
+                now = time.monotonic()
+                self._last_progress_at[job_id] = now
+                if logger.isEnabledFor(logging.DEBUG):
+                    last_log = self._last_progress_log_at.get(job_id, 0)
+                    if now - last_log >= settings.debug_progress_interval:
+                        self._last_progress_log_at[job_id] = now
+                        logger.debug(
+                            "Job %s progress=%s message=%s",
+                            job_id,
+                            job.progress,
+                            job.message
+                        )
 
                 await self._notify_subscribers(job_id, {
                     "type": "progress",
@@ -508,6 +550,9 @@ class JobManager:
 
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]
+            self._last_progress_at.pop(job_id, None)
+            self._last_progress_log_at.pop(job_id, None)
+            self._last_stall_log_at.pop(job_id, None)
 
             # Clean up temp directory if this was an archive extraction
             self._cleanup_temp_dir(job)

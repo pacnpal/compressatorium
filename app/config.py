@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     debug: bool = Field(default=False, alias="CHD_DEBUG")
     debug_log_path: Optional[str] = Field(default=None, alias="CHD_DEBUG_LOG_PATH")
     debug_heartbeat_interval: int = Field(default=30, alias="CHD_DEBUG_HEARTBEAT")
+    debug_progress_interval: int = Field(default=30, alias="CHD_DEBUG_PROGRESS_INTERVAL")
+    debug_progress_timeout: int = Field(default=300, alias="CHD_DEBUG_PROGRESS_TIMEOUT")
 
     class Config:
         populate_by_name = True
