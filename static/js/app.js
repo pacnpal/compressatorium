@@ -741,7 +741,7 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                                 ${archiveScan.loading && html`
                                     <p style="color: var(--text-secondary);">Scanning archive for images and CHDs...</p>
                                 `}
-                                {!archiveScan.loading && !archiveScan.error && html`
+                                ${!archiveScan.loading && !archiveScan.error && html`
                                     <p style="color: var(--text-primary); margin-bottom: 6px;">
                                         Found ${archiveScan.total} convertible image${archiveScan.total === 1 ? '' : 's'}.
                                     </p>
@@ -749,7 +749,7 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                                         CHD files detected: ${archiveScan.chds.length}
                                     </p>
                                 `}
-                                {archiveScan.error && html`
+                                ${archiveScan.error && html`
                                     <p style="color: var(--warning);">
                                         ⚠️ Could not scan archive contents: ${archiveScan.error}
                                     </p>
