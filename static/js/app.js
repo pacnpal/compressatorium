@@ -604,15 +604,18 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
     const [archiveVerifyAttempted, setArchiveVerifyAttempted] = useState(false);
     const [archiveVerifySkipped, setArchiveVerifySkipped] = useState(false);
 
-    if (!entry) return null;
-
-    const isSourceFile = ['.iso', '.gdi', '.cue', '.bin'].includes(entry.extension?.toLowerCase());
-    const isArchive = entry.type === 'archive';
-    const chdPath = isSourceFile && hasCHD ? entry.path.replace(/\.[^.]+$/, '.chd') : null;
+    const entryPath = entry ? entry.path : '';
+    const isSourceFile = entry ? ['.iso', '.gdi', '.cue', '.bin'].includes(entry.extension?.toLowerCase()) : false;
+    const isArchive = entry ? entry.type === 'archive' : false;
+    const chdPath = entry && isSourceFile && hasCHD ? entry.path.replace(/\.[^.]+$/, '.chd') : null;
     const isAlreadyVerified = chdPath && verifiedCHDs.has(chdPath);
     const verifyStatus = chdPath && verifyProgress ? verifyProgress.get(chdPath) : null;
+    const archiveVerifiedCount = archiveScan.chds.filter((path) => verifiedCHDs.has(path)).length;
+    const archiveUnverified = archiveScan.chds.filter((path) => !verifiedCHDs.has(path));
+    const archiveNeedsVerify = archiveUnverified.length > 0;
 
     useEffect(() => {
+        if (!entryPath) return;
         setStep(1);
         setVerifying(false);
         setVerificationResult(null);
@@ -621,13 +624,14 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
         setArchiveVerifyAttempted(false);
         setArchiveVerifySkipped(false);
         setArchiveVerify({ running: false, total: 0, verified: 0, failed: 0, errors: [] });
-    }, [entry.path]);
+        setArchiveScan({ loading: false, total: 0, chds: [], error: null });
+    }, [entryPath]);
 
     useEffect(() => {
-        if (!isArchive) return;
+        if (!entryPath || !isArchive) return;
         let cancelled = false;
         setArchiveScan({ loading: true, total: 0, chds: [], error: null });
-        api.listArchive(entry.path)
+        api.listArchive(entryPath)
             .then((data) => {
                 if (cancelled) return;
                 const files = Array.isArray(data?.files) ? data.files : [];
@@ -653,7 +657,9 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
         return () => {
             cancelled = true;
         };
-    }, [entry.path, isArchive]);
+    }, [entryPath, isArchive]);
+
+    if (!entry) return null;
 
     const handleVerify = async () => {
         if (!chdPath) return;
@@ -676,9 +682,15 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
         if (archiveScan.loading || archiveVerify.running) return;
         setArchiveVerifyAttempted(true);
         setArchiveVerifySkipped(false);
-        const chdPaths = archiveScan.chds || [];
+        const chdPaths = (archiveScan.chds || []).filter((path) => !verifiedCHDs.has(path));
         if (chdPaths.length === 0) {
-            setArchiveVerify({ running: false, total: 0, verified: 0, failed: 0, errors: [] });
+            setArchiveVerify({
+                running: false,
+                total: 0,
+                verified: archiveScan.chds.length,
+                failed: 0,
+                errors: []
+            });
             setStep(3);
             return;
         }
@@ -746,8 +758,11 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                                         Found ${archiveScan.total} convertible image${archiveScan.total === 1 ? '' : 's'}.
                                     </p>
                                     <p style="color: var(--text-secondary);">
-                                        CHD files detected: ${archiveScan.chds.length}
+                                        CHD files detected: ${archiveScan.chds.length}${archiveScan.chds.length > 0 ? ` (${archiveVerifiedCount} verified)` : ''}
                                     </p>
+                                    ${archiveScan.chds.length > 0 && !archiveNeedsVerify && html`
+                                        <p style="color: var(--success);">✓ All CHDs already verified</p>
+                                    `}
                                 `}
                                 ${archiveScan.error && html`
                                     <p style="color: var(--warning);">
@@ -786,17 +801,17 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                                         Verifying CHDs... ${archiveVerify.verified + archiveVerify.failed}/${archiveVerify.total}
                                     </div>
                                 `}
-                                ${archiveScan.chds.length > 0 && html`
+                                ${archiveNeedsVerify && html`
                                     <button class="btn btn-primary" onClick=${handleArchiveVerify} disabled=${archiveScan.loading || archiveVerify.running}>
                                         ${archiveVerify.running ? 'Verifying CHDs...' : '🔍 Verify CHDs First'}
                                     </button>
                                 `}
                                 <button
                                     class="btn btn-secondary"
-                                    onClick=${() => { setArchiveVerifySkipped(archiveScan.chds.length > 0); setStep(3); }}
+                                    onClick=${() => { setArchiveVerifySkipped(archiveNeedsVerify); setStep(3); }}
                                     disabled=${archiveScan.loading || archiveVerify.running}
                                 >
-                                    ${archiveScan.chds.length > 0 ? 'Skip Verification' : 'Continue to Delete'}
+                                    ${archiveNeedsVerify ? 'Skip Verification' : 'Continue to Delete'}
                                 </button>
                             `}
                             ${isSourceFile && hasCHD && !isAlreadyVerified && !isArchive && html`
@@ -854,6 +869,13 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                                 <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
                                     <p style="color: var(--success);">
                                         ✓ Verified ${archiveVerify.verified} CHD${archiveVerify.verified === 1 ? '' : 's'} successfully.
+                                    </p>
+                                </div>
+                            `}
+                            ${!archiveVerifyAttempted && archiveScan.chds.length > 0 && !archiveNeedsVerify && html`
+                                <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
+                                    <p style="color: var(--success);">
+                                        ✓ All CHDs already verified.
                                     </p>
                                 </div>
                             `}
