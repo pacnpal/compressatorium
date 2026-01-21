@@ -146,6 +146,43 @@ Or use the Web UI's CHD Inspector feature by clicking on any `.chd` file.
 | `CHD_VOLUMES` | `/data/games` | Comma-separated list of volume mount paths |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` |
 | `MAX_CONCURRENT_JOBS` | `2` | Maximum parallel conversion jobs (Web UI only) |
+| `CHD_DATA_DIR` | `/app/data` | Directory for persistent application data |
+
+---
+
+## Persistent Data
+
+The Web UI stores verification records (tracking which CHD files have been verified) in a JSON file. By default, this is stored at `/app/data/verified_chds.json` inside the container, which is **not persistent** across container restarts.
+
+To persist this data, you have two options:
+
+### Option 1: Store data within your game volumes (Recommended)
+
+Set `CHD_DATA_DIR` to a path within your mounted volumes:
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -e CHD_DATA_DIR=/data/games/.chd-converter \
+  -v /path/to/games:/data/games \
+  pacnpal/chd-converter
+```
+
+### Option 2: Mount a separate data volume
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -v /path/to/games:/data/games \
+  -v /path/to/config:/app/data \
+  pacnpal/chd-converter
+```
+
+### Data Files
+
+| File | Description |
+|------|-------------|
+| `verified_chds.json` | Records of verified CHD files (integrity checks) |
 
 ---
 
@@ -189,6 +226,7 @@ services:
       - "8080:8080"
     environment:
       - CHD_VOLUMES=/data/dreamcast,/data/psp,/data/ps1
+      - CHD_DATA_DIR=/data/dreamcast/.chd-converter
       - MAX_CONCURRENT_JOBS=2
     volumes:
       - /home/user/games/dreamcast:/data/dreamcast

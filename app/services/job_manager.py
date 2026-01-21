@@ -53,6 +53,7 @@ class JobManager:
         )
 
         self.jobs[job_id] = job
+        concurrency_manager.reserve_ticket(job_id)
         self._queue.put_nowait(job_id)
         return job
 
@@ -86,6 +87,7 @@ class JobManager:
             cancel_event = self._cancel_events.get(job_id)
             if cancel_event:
                 cancel_event.set()
+            concurrency_manager.release(job_id)
             asyncio.create_task(self._notify_subscribers(job_id, {
                 "type": "cancelled",
                 "job_id": job_id,
@@ -117,6 +119,8 @@ class JobManager:
             if job.status == JobStatus.PROCESSING:
                 self.cancel_job(job_id)
             self._cancelled.discard(job_id)
+            if job_id not in self._cancel_events:
+                concurrency_manager.release(job_id)
             if job_id not in self._cancel_events:
                 self._cleanup_temp_dir(job)
             del self.jobs[job_id]
@@ -223,6 +227,7 @@ class JobManager:
                     "status": job.status.value
                 })
             self._cleanup_temp_dir(job)
+            concurrency_manager.release(job_id)
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]
             return
