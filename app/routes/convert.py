@@ -14,7 +14,6 @@ from services.job_manager import job_manager
 from services.archive import archive_service
 from services.chdman import chdman_service
 from services.lock_manager import lock_manager
-from services.verification_store import verification_store
 from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
@@ -95,6 +94,7 @@ async def create_job(request: JobCreateRequest):
     temp_dir = None
     archive_source_dir = None  # Directory where the archive is located (for output)
     output_path = None
+    output_exists = False
 
     if "::" in request.file_path:
         archive_path, internal_path = request.file_path.split("::", 1)
@@ -106,15 +106,13 @@ async def create_job(request: JobCreateRequest):
         output_path = chdman_service.get_chd_path(output_stem, effective_output_dir, treat_as_stem=True)
 
         file_exists, is_locked = lock_manager.check_file_status(output_path)
+        output_exists = file_exists
         if file_exists or is_locked:
             if request.duplicate_action == DuplicateAction.SKIP:
                 raise HTTPException(status_code=409, detail="Output file already exists")
             elif request.duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise HTTPException(status_code=409, detail="Output file is currently being converted")
-                if file_exists:
-                    os.remove(output_path)
-                    verification_store.clear(output_path)
             elif request.duplicate_action == DuplicateAction.RENAME:
                 output_path = get_unique_output_path(output_path)
 
@@ -140,19 +138,23 @@ async def create_job(request: JobCreateRequest):
         output_path = chdman_service.get_chd_path(file_path, effective_output_dir)
 
         file_exists, is_locked = lock_manager.check_file_status(output_path)
+        output_exists = file_exists
         if file_exists or is_locked:
             if request.duplicate_action == DuplicateAction.SKIP:
                 raise HTTPException(status_code=409, detail="Output file already exists")
             elif request.duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise HTTPException(status_code=409, detail="Output file is currently being converted")
-                if file_exists:
-                    os.remove(output_path)
-                    verification_store.clear(output_path)
             elif request.duplicate_action == DuplicateAction.RENAME:
                 output_path = get_unique_output_path(output_path)
 
-    job = job_manager.create_job(file_path, request.mode, output_path=output_path)
+    allow_overwrite = request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
+    job = job_manager.create_job(
+        file_path,
+        request.mode,
+        output_path=output_path,
+        allow_overwrite=allow_overwrite
+    )
 
     # Store temp_dir reference for cleanup (simplified - in production use proper cleanup)
     if temp_dir:
@@ -182,6 +184,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         temp_dir = None
         archive_source_dir = None  # Directory where the archive is located (for output)
         output_path = None
+        output_exists = False
 
         # Handle archive files
         if "::" in file_path:
@@ -193,6 +196,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             output_stem = archive_service._output_stem_for_member(internal_path)
             output_path = chdman_service.get_chd_path(output_stem, effective_output_dir, treat_as_stem=True)
             file_exists, is_locked = lock_manager.check_file_status(output_path)
+            output_exists = file_exists
 
             if file_exists or is_locked:
                 if request.duplicate_action == DuplicateAction.SKIP:
@@ -202,9 +206,6 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                     if is_locked:
                         skipped.append(file_path)
                         continue
-                    if file_exists:
-                        os.remove(output_path)
-                        verification_store.clear(output_path)
                 elif request.duplicate_action == DuplicateAction.RENAME:
                     output_path = get_unique_output_path(output_path)
 
@@ -224,6 +225,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 effective_output_dir = request.output_dir or archive_source_dir
                 output_path = chdman_service.get_chd_path(actual_path, effective_output_dir)
                 file_exists, is_locked = lock_manager.check_file_status(output_path)
+                output_exists = file_exists
 
                 if file_exists or is_locked:
                     if request.duplicate_action == DuplicateAction.SKIP:
@@ -233,13 +235,16 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                         if is_locked:
                             skipped.append(file_path)
                             continue
-                        if file_exists:
-                            os.remove(output_path)
-                            verification_store.clear(output_path)
                     elif request.duplicate_action == DuplicateAction.RENAME:
                         output_path = get_unique_output_path(output_path)
 
-            job = job_manager.create_job(actual_path, request.mode, output_path=output_path)
+            allow_overwrite = request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
+            job = job_manager.create_job(
+                actual_path,
+                request.mode,
+                output_path=output_path,
+                allow_overwrite=allow_overwrite
+            )
             if temp_dir:
                 job.temp_dir = temp_dir
             jobs.append(job)

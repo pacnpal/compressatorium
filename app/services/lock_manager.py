@@ -60,12 +60,12 @@ class LockManager:
 
         return False
     
-    def acquire_lock(self, output_path: str) -> bool:
+    def acquire_lock(self, output_path: str, *, allow_existing: bool = False) -> bool:
         """
         Acquire a lock for the output file path.
         
         Returns:
-            True if lock was acquired, False if already locked or CHD exists
+            True if lock was acquired, False if already locked or CHD exists and overwrite is not allowed
         """
         normalized_path = os.path.normpath(output_path)
         
@@ -98,21 +98,22 @@ class LockManager:
                     return False
                 
                 # Now that we have the lock, check if CHD already exists (atomic with lock)
-                if os.path.isfile(normalized_path):
-                    # File exists, release lock and clean up lock file
-                    try:
-                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                    except Exception:
-                        pass
-                    lock_handle.close()
-                    lock_handle = None
-                    # Clean up lock file since we're not using it
-                    try:
-                        if os.path.exists(lock_file_path):
-                            os.remove(lock_file_path)
-                    except Exception:
-                        pass
-                    return False
+                if os.path.exists(normalized_path):
+                    if not allow_existing or not os.path.isfile(normalized_path):
+                        # File exists and overwrite not allowed (or not a file): release lock and clean up
+                        try:
+                            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                        except Exception:
+                            pass
+                        lock_handle.close()
+                        lock_handle = None
+                        # Clean up lock file since we're not using it
+                        try:
+                            if os.path.exists(lock_file_path):
+                                os.remove(lock_file_path)
+                        except Exception:
+                            pass
+                        return False
                 
                 # Successfully acquired the lock and file doesn't exist
                 self._locks.add(normalized_path)

@@ -283,15 +283,16 @@ class ArchiveService:
     def _extract_from_7z(self, archive_path: str, internal_path: str, destination: str) -> str:
         with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
             try:
-                data = zf.read([internal_path])
+                parts = PurePosixPath(internal_path).parts
+                if not parts:
+                    raise FileNotFoundError(f"{internal_path} not found in archive")
+                base_dir = Path(destination).parents[len(parts) - 1]
+                zf.extract(targets=[internal_path], path=str(base_dir))
             except Exception as exc:
                 raise FileNotFoundError(f"{internal_path} not found in archive") from exc
 
-            if internal_path not in data:
-                raise FileNotFoundError(f"{internal_path} not found in archive")
-
-            with open(destination, "wb") as dst:
-                shutil.copyfileobj(data[internal_path], dst)
+        if not os.path.isfile(destination):
+            raise FileNotFoundError(f"{internal_path} not found in archive")
         return destination
 
     def _extract_from_rar(self, archive_path: str, internal_path: str, destination: str) -> str:

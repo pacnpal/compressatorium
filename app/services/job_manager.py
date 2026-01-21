@@ -10,15 +10,17 @@ from models import ConversionJob, JobStatus, ConversionMode
 from services.chdman import chdman_service, ConversionCancelled
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import lock_manager
+from services.verification_store import verification_store
 from config import settings
 
 
 class JobManager:
     """Manages conversion job queue and execution."""
 
-    def __init__(self, max_concurrent: int = 2):
+    def __init__(self, max_concurrent: int = 2, max_job_history: int = 500):
         self.jobs: OrderedDict[str, ConversionJob] = OrderedDict()
         self.max_concurrent = max(1, max_concurrent)
+        self.max_job_history = max(0, max_job_history)
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._cancelled: Set[str] = set()
@@ -32,7 +34,8 @@ class JobManager:
         file_path: str,
         mode: ConversionMode,
         output_dir: Optional[str] = None,
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        allow_overwrite: bool = False
     ) -> ConversionJob:
         """Create a new conversion job."""
         job_id = str(uuid.uuid4())[:8]
@@ -50,12 +53,14 @@ class JobManager:
             status=JobStatus.QUEUED,
             progress=0,
             created_at=datetime.utcnow(),
-            output_path=output_path
+            output_path=output_path,
+            allow_overwrite=allow_overwrite
         )
 
         self.jobs[job_id] = job
         ticket = concurrency_manager.reserve_ticket(job_id)
         self._queue.put_nowait((ticket, job_id))
+        self._prune_jobs()
         return job
 
     def create_batch_jobs(
@@ -74,6 +79,24 @@ class JobManager:
     def get_all_jobs(self) -> List[ConversionJob]:
         """Get all jobs."""
         return list(self.jobs.values())
+
+    def _prune_jobs(self, *, exclude_id: Optional[str] = None):
+        if self.max_job_history <= 0:
+            return
+        if len(self.jobs) <= self.max_job_history:
+            return
+
+        removable = []
+        for job_id, job in self.jobs.items():
+            if job_id == exclude_id:
+                continue
+            if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+                removable.append(job_id)
+            if len(self.jobs) - len(removable) <= self.max_job_history:
+                break
+
+        for job_id in removable:
+            self.delete_job(job_id)
 
     def cancel_job(self, job_id: str) -> bool:
         """Cancel a job."""
@@ -214,6 +237,7 @@ class JobManager:
         if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
             self._cancelled.discard(job_id)
             self._cleanup_temp_dir(job)
+            self._prune_jobs(exclude_id=job_id)
             return
 
         cancel_event = asyncio.Event()
@@ -230,6 +254,7 @@ class JobManager:
             })
             self._cleanup_temp_dir(job)
             del self._cancel_events[job_id]
+            self._prune_jobs(exclude_id=job_id)
             return
 
         slot_acquired = await concurrency_manager.acquire(job_id, cancel_event=cancel_event)
@@ -246,10 +271,11 @@ class JobManager:
             concurrency_manager.release(job_id)
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]
+            self._prune_jobs(exclude_id=job_id)
             return
 
         # Try to acquire lock for the output file (prevents race conditions)
-        lock_acquired = lock_manager.acquire_lock(job.output_path)
+        lock_acquired = lock_manager.acquire_lock(job.output_path, allow_existing=job.allow_overwrite)
         if not lock_acquired:
             # Could not acquire lock - either file exists or is being converted
             # Check current status to provide better error message
@@ -272,6 +298,7 @@ class JobManager:
                 del self._cancel_events[job_id]
             concurrency_manager.release(job_id)
             self._cleanup_temp_dir(job)
+            self._prune_jobs(exclude_id=job_id)
             return
 
         job.status = JobStatus.PROCESSING
@@ -285,6 +312,12 @@ class JobManager:
         })
 
         try:
+            if job.allow_overwrite and os.path.exists(job.output_path):
+                if not os.path.isfile(job.output_path):
+                    raise RuntimeError("Output path exists and is not a file")
+                os.remove(job.output_path)
+                verification_store.clear(job.output_path)
+
             async for update in chdman_service.convert(
                 job.file_path,
                 job.output_path,
@@ -353,6 +386,10 @@ class JobManager:
 
             # Clean up temp directory if this was an archive extraction
             self._cleanup_temp_dir(job)
+            self._prune_jobs(exclude_id=job_id)
 
 
-job_manager = JobManager(max_concurrent=settings.max_concurrent_jobs)
+job_manager = JobManager(
+    max_concurrent=settings.max_concurrent_jobs,
+    max_job_history=settings.max_job_history
+)

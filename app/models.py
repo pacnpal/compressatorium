@@ -59,6 +59,7 @@ class ConversionJob(BaseModel):
     output_path: Optional[str] = None
     output_size: Optional[int] = None
     temp_dir: Optional[str] = None
+    allow_overwrite: bool = False
 
 
 class JobCreateRequest(BaseModel):
