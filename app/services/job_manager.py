@@ -216,6 +216,33 @@ class JobManager:
                 except asyncio.QueueFull:
                     pass
 
+    async def _set_job_message(self, job_id: str, message: str):
+        job = self.jobs.get(job_id)
+        if not job:
+            return
+        job.message = message
+        now = time.monotonic()
+        self._last_progress_at[job_id] = now
+        await self._notify_subscribers(job_id, {
+            "type": "status",
+            "job_id": job_id,
+            "status": job.status.value,
+            "progress": job.progress,
+            "message": job.message
+        })
+
+    async def _emit_extract_updates(self, job_id: str, archive_path: str, internal_path: str, task: asyncio.Task):
+        start = time.monotonic()
+        while not task.done():
+            job = self.jobs.get(job_id)
+            if not job or job.status != JobStatus.PROCESSING:
+                return
+            elapsed = int(time.monotonic() - start)
+            name = os.path.basename(internal_path)
+            message = f"Extracting {name}... ({elapsed}s)"
+            await self._set_job_message(job_id, message)
+            await asyncio.sleep(2)
+
     async def process_queue(self):
         """Background task to process conversion queue."""
         if self._running:
@@ -564,11 +591,22 @@ class JobManager:
                         archive_path,
                         internal_path
                     )
-                input_path, temp_dir = await run_in_threadpool(
-                    archive_service.extract_file,
-                    archive_path,
-                    internal_path
+                extract_task = asyncio.create_task(
+                    run_in_threadpool(
+                        archive_service.extract_file,
+                        archive_path,
+                        internal_path
+                    )
                 )
+                extract_status_task = asyncio.create_task(
+                    self._emit_extract_updates(job_id, archive_path, internal_path, extract_task)
+                )
+                input_path, temp_dir = await extract_task
+                extract_status_task.cancel()
+                try:
+                    await extract_status_task
+                except asyncio.CancelledError:
+                    pass
                 job.temp_dir = temp_dir
                 await run_in_threadpool(
                     archive_service.extract_related_files,
