@@ -65,6 +65,17 @@ class VerificationStore:
                 del self._records[normalized]
                 self._persist()
 
+    def move(self, old_path: str, new_path: str):
+        old_normalized = self._normalize_path(old_path)
+        new_normalized = self._normalize_path(new_path)
+        with self._lock:
+            record = self._records.pop(old_normalized, None)
+            if record is None:
+                return
+            record["chd_path"] = new_normalized
+            self._records[new_normalized] = record
+            self._persist()
+
     def is_verified(self, chd_path: str) -> bool:
         normalized = self._normalize_path(chd_path)
         with self._lock:
@@ -78,6 +89,18 @@ class VerificationStore:
     def all_records(self):
         with self._lock:
             return list(self._records.values())
+
+    def prune_missing(self) -> int:
+        removed = []
+        with self._lock:
+            for path in list(self._records.keys()):
+                if not os.path.exists(path):
+                    removed.append(path)
+            if removed:
+                for path in removed:
+                    del self._records[path]
+                self._persist()
+        return len(removed)
 
 
 verification_store = VerificationStore()

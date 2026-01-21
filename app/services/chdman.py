@@ -10,6 +10,10 @@ from app.config import settings
 CONVERTIBLE_EXTENSIONS = {".gdi", ".iso", ".cue", ".bin"}
 
 
+class ConversionCancelled(Exception):
+    """Raised when a conversion is cancelled before completion."""
+
+
 class ChdmanService:
     """Wrapper for chdman binary."""
 
@@ -20,7 +24,8 @@ class ChdmanService:
         self,
         input_path: str,
         output_path: str,
-        mode: str = "createcd"
+        mode: str = "createcd",
+        cancel_event: Optional[asyncio.Event] = None
     ) -> AsyncGenerator[dict, None]:
         """
         Run chdman conversion and yield progress updates.
@@ -47,6 +52,23 @@ class ChdmanService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
         )
+
+        cancelled_by_request = False
+        cancel_task = None
+        if cancel_event:
+            async def _cancel_watcher():
+                nonlocal cancelled_by_request
+                await cancel_event.wait()
+                if process.returncode is not None:
+                    return
+                cancelled_by_request = True
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+
+            cancel_task = asyncio.create_task(_cancel_watcher())
 
         buffer = ""
         while True:
@@ -81,6 +103,16 @@ class ChdmanService:
             yield {"progress": progress, "message": buffer.strip()}
 
         await process.wait()
+
+        if cancel_task:
+            cancel_task.cancel()
+            try:
+                await cancel_task
+            except asyncio.CancelledError:
+                pass
+
+        if cancelled_by_request:
+            raise ConversionCancelled("Conversion cancelled")
 
         if process.returncode != 0:
             raise RuntimeError(f"chdman failed with return code {process.returncode}")
@@ -151,9 +183,9 @@ class ChdmanService:
 
     @staticmethod
     def get_chd_path(input_path: str, output_dir: Optional[str] = None) -> str:
-        """Get the output CHD path for an input file."""
+        """Get the output CHD path for an input file or stem."""
         input_p = Path(input_path)
-        chd_name = input_p.stem + ".chd"
+        chd_name = input_p.stem + ".chd" if input_p.suffix else input_p.name + ".chd"
 
         if output_dir:
             return str(Path(output_dir) / chd_name)

@@ -129,6 +129,7 @@ export const api = {
         eventSource.addEventListener('complete', (e) => safeParseAndUpdate('complete', e));
         eventSource.addEventListener('error', (e) => safeParseAndUpdate('error', e));
         eventSource.addEventListener('status', (e) => safeParseAndUpdate('status', e));
+        eventSource.addEventListener('cancelled', (e) => safeParseAndUpdate('cancelled', e));
 
         eventSource.onerror = (err) => {
             console.error('SSE connection error:', err);
@@ -150,6 +151,12 @@ export const api = {
         const params = new URLSearchParams({ path });
         const res = await fetch(`${API_BASE}/verify?${params}`);
         if (!res.ok) throw new Error('Failed to verify CHD');
+        return res.json();
+    },
+
+    async getVerifiedCHDs() {
+        const res = await fetch(`${API_BASE}/verified`);
+        if (!res.ok) throw new Error('Failed to fetch verified CHDs');
         return res.json();
     },
 

@@ -2,7 +2,7 @@ import os
 import shutil
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import List, Tuple
 
 try:
@@ -47,6 +47,9 @@ class ArchiveService:
                 entries = self._list_rar(archive_path)
         except Exception as e:
             print(f"Error listing archive {archive_path}: {e}")
+
+        for entry in entries:
+            entry["output_stem"] = self._output_stem_for_member(entry["internal_path"])
 
         return entries
 
@@ -193,6 +196,89 @@ class ArchiveService:
             except KeyError as exc:
                 raise FileNotFoundError(f"{internal_path} not found in archive") from exc
         return destination
+
+    def extract_related_files(self, archive_path: str, internal_path: str, temp_dir: str):
+        """Extract sibling files for multi-file formats like .cue or .gdi."""
+        entry_ext = Path(internal_path).suffix.lower()
+        if entry_ext not in {".cue", ".gdi"}:
+            return
+
+        parent = PurePosixPath(internal_path).parent
+        if str(parent) == ".":
+            parent = PurePosixPath("")
+
+        archive_ext = Path(archive_path).suffix.lower()
+        if archive_ext == ".zip":
+            self._extract_related_from_zip(archive_path, parent, temp_dir)
+        elif archive_ext == ".7z" and HAS_7Z:
+            self._extract_related_from_7z(archive_path, parent, temp_dir)
+        elif archive_ext == ".rar" and HAS_RAR:
+            self._extract_related_from_rar(archive_path, parent, temp_dir)
+        else:
+            raise ValueError(f"Unsupported archive format: {archive_ext}")
+
+    def _extract_related_from_zip(self, archive_path: str, parent: PurePosixPath, temp_dir: str):
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                try:
+                    self._validate_member(info.filename)
+                except ValueError:
+                    continue
+                if not self._is_same_parent(info.filename, parent):
+                    continue
+                destination = self._prepare_destination(temp_dir, info.filename)
+                with zf.open(info.filename) as src, open(destination, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+
+    def _extract_related_from_7z(self, archive_path: str, parent: PurePosixPath, temp_dir: str):
+        with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
+            targets = []
+            for entry in zf.list():
+                if entry.is_directory:
+                    continue
+                name = entry.filename
+                try:
+                    self._validate_member(name)
+                except ValueError:
+                    continue
+                if self._is_same_parent(name, parent):
+                    targets.append(name)
+            if targets:
+                zf.extract(targets=targets, path=temp_dir)
+
+    def _extract_related_from_rar(self, archive_path: str, parent: PurePosixPath, temp_dir: str):
+        with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
+            for info in rf.infolist():
+                if info.is_dir():
+                    continue
+                try:
+                    self._validate_member(info.filename)
+                except ValueError:
+                    continue
+                if not self._is_same_parent(info.filename, parent):
+                    continue
+                destination = self._prepare_destination(temp_dir, info.filename)
+                with rf.open(info.filename) as src, open(destination, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+
+    @staticmethod
+    def _is_same_parent(member: str, parent: PurePosixPath) -> bool:
+        member_parent = PurePosixPath(member).parent
+        if str(parent) == "":
+            return str(member_parent) in ("", ".")
+        return member_parent == parent
+
+    @staticmethod
+    def _output_stem_for_member(member: str) -> str:
+        member_path = PurePosixPath(member)
+        parent = member_path.parent
+        stem = member_path.stem
+        if str(parent) in ("", "."):
+            return stem
+        safe_parent = "_".join([p for p in parent.parts if p not in ("", ".")])
+        return f"{safe_parent}_{stem}"
 
     def _extract_from_7z(self, archive_path: str, internal_path: str, destination: str) -> str:
         with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]

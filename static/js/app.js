@@ -153,7 +153,7 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
             onBrowseArchive && onBrowseArchive(entry.path);
         } else if (entry.extension === '.chd') {
             onShowInfo(entry.path);
-        } else if (entry.convertible) {
+        } else if (entry.convertible && !entry.has_chd) {
             onToggleSelect(entry);
         }
     };
@@ -776,6 +776,7 @@ function App() {
                         extension: file.extension,
                         convertible: file.convertible,
                         has_chd: file.has_chd || false,
+                        output_stem: file.output_stem,
                         is_archive_item: true,
                         archive_path: archivePath
                     }));
@@ -860,6 +861,16 @@ function App() {
                 console.error('Failed to load volumes:', err);
             })
             .finally(() => setVolumesLoading(false));
+    }, []);
+
+    useEffect(() => {
+        api.getVerifiedCHDs()
+            .then(data => {
+                if (data && Array.isArray(data.verified)) {
+                    setVerifiedCHDs(new Set(data.verified));
+                }
+            })
+            .catch(() => {});
     }, []);
 
     // Load files when path changes
@@ -952,6 +963,7 @@ function App() {
                     message: update.data.message ?? newJobs[idx].message,
                     status: update.type === 'complete' ? 'completed' :
                             update.type === 'error' ? 'failed' :
+                            update.type === 'cancelled' ? 'cancelled' :
                             update.data.status ?? newJobs[idx].status,
                     error_message: update.data.error,
                     output_size: update.data.output_size
@@ -963,6 +975,8 @@ function App() {
                     refreshFileList();
                 } else if (update.type === 'error') {
                     notify(`Failed: ${newJobs[idx].filename}`, 'error');
+                } else if (update.type === 'cancelled') {
+                    notify(`Cancelled: ${newJobs[idx].filename}`, 'info');
                 }
 
                 return newJobs;
@@ -1036,6 +1050,7 @@ function App() {
                 extension: file.extension,
                 convertible: file.convertible,
                 has_chd: file.has_chd || false,
+                output_stem: file.output_stem,
                 is_archive_item: true,
                 archive_path: archivePath
             }));
@@ -1082,12 +1097,31 @@ function App() {
     const handleRename = async (path, newName) => {
         await api.renameFile(path, newName);
         notify(`✓ Renamed to ${newName}`, 'success');
+        if (path.toLowerCase().endsWith('.chd')) {
+            const lastSlash = path.lastIndexOf('/');
+            const newPath = lastSlash >= 0 ? `${path.slice(0, lastSlash)}/${newName}` : newName;
+            setVerifiedCHDs(prev => {
+                if (!prev.has(path)) return prev;
+                const next = new Set(prev);
+                next.delete(path);
+                next.add(newPath);
+                return next;
+            });
+        }
         refreshFileList(true);
     };
 
     const handleDelete = async (path) => {
         await api.deleteFile(path);
         notify('✓ File deleted', 'success');
+        if (path.toLowerCase().endsWith('.chd')) {
+            setVerifiedCHDs(prev => {
+                if (!prev.has(path)) return prev;
+                const next = new Set(prev);
+                next.delete(path);
+                return next;
+            });
+        }
         refreshFileList(true);
     };
 
@@ -1103,11 +1137,25 @@ function App() {
     };
 
     // Helper to calculate expected output path
-    const getExpectedOutputPath = (filePath) => {
+    const getExpectedOutputPath = (filePath, entry = null) => {
         // Get the filename (handle archive paths like "archive.zip::game.iso")
-        const filename = (filePath.includes('::') ? filePath.split('::').pop() : filePath).split('/').pop();
-        // Replace extension with .chd
-        const chdFilename = filename.replace(/\.[^.]+$/, '.chd');
+        const rawName = (filePath.includes('::') ? filePath.split('::').pop() : filePath);
+        const filename = rawName.split('/').pop();
+        const isArchiveItem = filePath.includes('::');
+        // Replace extension with .chd (include parent path for archive items to avoid collisions)
+        let stem;
+        if (isArchiveItem) {
+            if (entry && entry.output_stem) {
+                stem = entry.output_stem;
+            } else {
+                const parentParts = rawName.split('/').slice(0, -1).filter(Boolean);
+                const safePrefix = parentParts.length ? parentParts.join('_') + '_' : '';
+                stem = safePrefix + filename.replace(/\.[^.]+$/, '');
+            }
+        } else {
+            stem = filename.replace(/\.[^.]+$/, '');
+        }
+        const chdFilename = `${stem}.chd`;
 
         // Determine output directory
         let outDir;
@@ -1127,16 +1175,19 @@ function App() {
     // Execute conversion with specified duplicate action
     const executeConversion = async (paths, duplicateAction = 'skip') => {
         // Build optimistic placeholder jobs so the user sees immediate feedback
-        const placeholders = paths.map((p, i) => ({
-            id: `pending-${Date.now()}-${i}`,
-            file_path: p,
-            filename: (p.includes('::') ? p.split('::').pop() : p).split('/').pop(),
-            mode: conversionMode,
-            status: 'creating',
-            progress: 0,
-            message: 'Setting up conversion...',
-            output_path: getExpectedOutputPath(p)
-        }));
+        const placeholders = paths.map((p, i) => {
+            const entry = selectedFiles.get(p);
+            return {
+                id: `pending-${Date.now()}-${i}`,
+                file_path: p,
+                filename: (p.includes('::') ? p.split('::').pop() : p).split('/').pop(),
+                mode: conversionMode,
+                status: 'creating',
+                progress: 0,
+                message: 'Setting up conversion...',
+                output_path: getExpectedOutputPath(p, entry)
+            };
+        });
         setCreatingJobs(placeholders);
 
         setConverting(true);
@@ -1262,9 +1313,15 @@ function App() {
         try {
             await api.cancelJob(jobId);
             setJobs(prev => prev.map(j =>
-                j.id === jobId ? { ...j, status: 'cancelled' } : j
+                j.id === jobId
+                    ? {
+                        ...j,
+                        status: j.status === 'queued' ? 'cancelled' : j.status,
+                        message: j.status === 'queued' ? j.message : 'Cancelling...'
+                    }
+                    : j
             ));
-            notify('Job cancelled', 'info');
+            notify('Cancellation requested', 'info');
         } catch (err) {
             notify(`Failed to cancel: ${err.message}`, 'error');
             console.error('Failed to cancel job:', err);

@@ -14,9 +14,8 @@ class LockManager:
     
     def is_locked(self, output_path: str) -> bool:
         """Check if an output file is currently locked (being converted)."""
-        normalized_path = os.path.normpath(output_path)
-        with self._lock_mutex:
-            return normalized_path in self._locks
+        _, is_locked = self.check_file_status(output_path)
+        return is_locked
     
     def check_file_status(self, output_path: str) -> tuple[bool, bool]:
         """
@@ -29,7 +28,37 @@ class LockManager:
         with self._lock_mutex:
             is_locked = normalized_path in self._locks
             file_exists = os.path.isfile(normalized_path)
-            return (file_exists, is_locked)
+
+        if is_locked:
+            return (file_exists, True)
+
+        return (file_exists, self._check_external_lock(normalized_path))
+
+    def _check_external_lock(self, normalized_path: str) -> bool:
+        lock_file_path = f"{normalized_path}.lock"
+        if not os.path.exists(lock_file_path):
+            return False
+
+        try:
+            with open(lock_file_path, 'a') as lock_handle:
+                acquired = False
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except BlockingIOError:
+                    return True
+                except (IOError, OSError):
+                    return False
+                finally:
+                    if acquired:
+                        try:
+                            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                        except Exception:
+                            pass
+        except Exception:
+            return False
+
+        return False
     
     def acquire_lock(self, output_path: str) -> bool:
         """

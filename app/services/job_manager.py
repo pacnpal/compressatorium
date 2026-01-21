@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Set
 
 from app.models import ConversionJob, JobStatus, ConversionMode
-from app.services.chdman import chdman_service
+from app.services.chdman import chdman_service, ConversionCancelled
 from app.services.lock_manager import lock_manager
 from app.config import settings
 
@@ -18,11 +18,12 @@ class JobManager:
     def __init__(self, max_concurrent: int = 2):
         self.jobs: OrderedDict[str, ConversionJob] = OrderedDict()
         self.max_concurrent = max_concurrent
-        self._processing_count = 0
         self._queue: asyncio.Queue = asyncio.Queue()
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._cancelled: Set[str] = set()
+        self._cancel_events: Dict[str, asyncio.Event] = {}
         self._running = False
+        self._worker_tasks: List[asyncio.Task] = []
 
     def create_job(
         self,
@@ -77,9 +78,31 @@ class JobManager:
         if not job:
             return False
 
-        if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING):
+        if job.status == JobStatus.QUEUED:
             self._cancelled.add(job_id)
             job.status = JobStatus.CANCELLED
+            job.completed_at = datetime.utcnow()
+            asyncio.create_task(self._notify_subscribers(job_id, {
+                "type": "cancelled",
+                "job_id": job_id,
+                "status": job.status.value
+            }))
+            self._cleanup_temp_dir(job)
+            return True
+
+        if job.status == JobStatus.PROCESSING:
+            self._cancelled.add(job_id)
+            cancel_event = self._cancel_events.get(job_id)
+            if cancel_event:
+                cancel_event.set()
+            job.message = "Cancelling..."
+            asyncio.create_task(self._notify_subscribers(job_id, {
+                "type": "status",
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": job.progress,
+                "message": job.message
+            }))
             return True
         return False
 
@@ -89,13 +112,16 @@ class JobManager:
             job = self.jobs[job_id]
             if job.status == JobStatus.PROCESSING:
                 self.cancel_job(job_id)
+            self._cancelled.discard(job_id)
+            if job_id not in self._cancel_events:
+                self._cleanup_temp_dir(job)
             del self.jobs[job_id]
             return True
         return False
 
     def subscribe(self, job_id: str) -> asyncio.Queue:
         """Subscribe to progress updates for a job."""
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         if job_id not in self._subscribers:
             self._subscribers[job_id] = []
         self._subscribers[job_id].append(queue)
@@ -109,6 +135,17 @@ class JobManager:
             except ValueError:
                 pass
 
+    def _cleanup_temp_dir(self, job: ConversionJob):
+        if job.temp_dir:
+            temp_dir = job.temp_dir
+            try:
+                if temp_dir and os.path.isdir(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception as cleanup_error:
+                print(f"Failed to cleanup temp dir {temp_dir}: {cleanup_error}")
+            finally:
+                job.temp_dir = None
+
     async def _notify_subscribers(self, job_id: str, data: dict):
         """Notify all subscribers of a job update."""
         if job_id in self._subscribers:
@@ -120,21 +157,29 @@ class JobManager:
 
     async def process_queue(self):
         """Background task to process conversion queue."""
+        if self._running:
+            return
         self._running = True
+        self._worker_tasks = [
+            asyncio.create_task(self._worker_loop(worker_id))
+            for worker_id in range(self.max_concurrent)
+        ]
+        await asyncio.gather(*self._worker_tasks)
+
+    async def _worker_loop(self, worker_id: int):
+        """Worker loop that processes jobs sequentially."""
         while self._running:
             try:
-                # Check if we can process more jobs
-                if self._processing_count < self.max_concurrent:
-                    try:
-                        job_id = await asyncio.wait_for(self._queue.get(), timeout=1.0)
-                        asyncio.create_task(self._process_job(job_id))
-                    except asyncio.TimeoutError:
-                        pass
-                else:
-                    await asyncio.sleep(0.5)
+                job_id = await self._queue.get()
+            except asyncio.CancelledError:
+                break
+
+            try:
+                await self._process_job(job_id)
             except Exception as e:
-                print(f"Queue processor error: {e}")
-                await asyncio.sleep(1)
+                print(f"Worker {worker_id} error: {e}")
+            finally:
+                self._queue.task_done()
 
     async def _process_job(self, job_id: str):
         """Process a single conversion job."""
@@ -142,8 +187,25 @@ class JobManager:
         if not job:
             return
 
-        if job_id in self._cancelled:
+        if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
             self._cancelled.discard(job_id)
+            self._cleanup_temp_dir(job)
+            return
+
+        cancel_event = asyncio.Event()
+        self._cancel_events[job_id] = cancel_event
+        if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
+            cancel_event.set()
+            self._cancelled.discard(job_id)
+            if not job.completed_at:
+                job.completed_at = datetime.utcnow()
+            await self._notify_subscribers(job_id, {
+                "type": "cancelled",
+                "job_id": job_id,
+                "status": job.status.value
+            })
+            self._cleanup_temp_dir(job)
+            del self._cancel_events[job_id]
             return
 
         # Try to acquire lock for the output file (prevents race conditions)
@@ -166,9 +228,11 @@ class JobManager:
                 "job_id": job_id,
                 "error": job.error_message
             })
+            if job_id in self._cancel_events:
+                del self._cancel_events[job_id]
+            self._cleanup_temp_dir(job)
             return
 
-        self._processing_count += 1
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.utcnow()
 
@@ -183,13 +247,11 @@ class JobManager:
             async for update in chdman_service.convert(
                 job.file_path,
                 job.output_path,
-                job.mode.value
+                job.mode.value,
+                cancel_event=cancel_event
             ):
-                if job_id in self._cancelled:
-                    self._cancelled.discard(job_id)
-                    job.status = JobStatus.CANCELLED
-                    break
-
+                if cancel_event.is_set():
+                    continue
                 job.progress = update["progress"]
                 job.message = update["message"]
 
@@ -201,6 +263,7 @@ class JobManager:
                 })
 
             if job.status != JobStatus.CANCELLED:
+                self._cancelled.discard(job_id)
                 job.status = JobStatus.COMPLETED
                 job.progress = 100
                 job.completed_at = datetime.utcnow()
@@ -216,7 +279,17 @@ class JobManager:
                     "output_size": job.output_size
                 })
 
+        except ConversionCancelled:
+            self._cancelled.discard(job_id)
+            job.status = JobStatus.CANCELLED
+            job.completed_at = datetime.utcnow()
+            await self._notify_subscribers(job_id, {
+                "type": "cancelled",
+                "job_id": job_id,
+                "status": job.status.value
+            })
         except Exception as e:
+            self._cancelled.discard(job_id)
             job.status = JobStatus.FAILED
             job.error_message = str(e)
             job.completed_at = datetime.utcnow()
@@ -231,17 +304,12 @@ class JobManager:
             # Only release lock if we acquired it
             if lock_acquired:
                 lock_manager.release_lock(job.output_path)
-            self._processing_count -= 1
+
+            if job_id in self._cancel_events:
+                del self._cancel_events[job_id]
 
             # Clean up temp directory if this was an archive extraction
-            if job.temp_dir:
-                temp_dir = job.temp_dir
-                try:
-                    if temp_dir and os.path.isdir(temp_dir):
-                        shutil.rmtree(temp_dir, ignore_errors=True)
-                    job.temp_dir = None
-                except Exception as cleanup_error:
-                    print(f"Failed to cleanup temp dir {temp_dir}: {cleanup_error}")
+            self._cleanup_temp_dir(job)
 
 
 job_manager = JobManager(max_concurrent=settings.max_concurrent_jobs)

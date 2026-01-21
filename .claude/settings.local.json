@@ -20,7 +20,11 @@
       "Bash(pipx run ruff check:*)",
       "Bash(npx eslint:*)",
       "Bash(pip install:*)",
-      "Bash(npx eslint@8:*)"
+      "Bash(npx eslint@8:*)",
+      "Bash(git -C /mnt/user/appdata/Docker-chd-converter-webui diff .github/workflows/docker-image.yml)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push)"
     ]
   }
 }

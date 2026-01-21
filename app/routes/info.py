@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models import CHDInfo
 from app.services.chdman import chdman_service
+from app.services.verification_store import verification_store
 from app.utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
@@ -63,6 +64,20 @@ async def verify_chd(
 
     try:
         result = await chdman_service.verify(path)
+        if result.get("valid"):
+            verification_store.mark_verified(path)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to verify CHD: {str(e)}")
+
+
+@router.get("/verified")
+async def list_verified() -> dict:
+    """List verified CHD paths."""
+    verification_store.prune_missing()
+    verified = []
+    for record in verification_store.all_records():
+        chd_path = record.get("chd_path")
+        if chd_path and is_within_configured_volumes(chd_path, treat_archives=False):
+            verified.append(chd_path)
+    return {"verified": verified}

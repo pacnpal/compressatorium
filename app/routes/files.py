@@ -9,6 +9,7 @@ from app.models import FileEntry, DirectoryListing, Volume
 from app.services.chdman import CONVERTIBLE_EXTENSIONS
 from app.services.archive import archive_service, ARCHIVE_EXTENSIONS
 from app.services.lock_manager import lock_manager
+from app.services.verification_store import verification_store
 from app.utils.path_utils import is_within_configured_volumes, get_volume_name_for_path
 
 router = APIRouter()
@@ -59,6 +60,8 @@ async def list_files(
                 size = os.path.getsize(item_path)
                 is_convertible = ext in CONVERTIBLE_EXTENSIONS
                 is_archive = ext in ARCHIVE_EXTENSIONS
+                if is_archive and not show_archives:
+                    continue
 
                 # Check if CHD already exists or is being converted (atomic check)
                 has_chd = False
@@ -104,15 +107,20 @@ async def search_files(
 
     files = []
     archives = []
+    visited_dirs = set()
 
     def scan_directory(dir_path: str):
+        real_dir = os.path.realpath(dir_path)
+        if real_dir in visited_dirs:
+            return
+        visited_dirs.add(real_dir)
         try:
             for item in os.listdir(dir_path):
                 item_path = os.path.join(dir_path, item)
                 ext = Path(item).suffix.lower()
 
                 if os.path.isdir(item_path):
-                    if recursive:
+                    if recursive and not os.path.islink(item_path):
                         scan_directory(item_path)
                 elif os.path.isfile(item_path):
                     if ext in CONVERTIBLE_EXTENSIONS:
@@ -130,7 +138,11 @@ async def search_files(
                     elif include_archives and ext in ARCHIVE_EXTENSIONS:
                         # List archive contents
                         archive_contents = archive_service.list_archive_contents(item_path)
+                        archive_dir = os.path.dirname(item_path)
                         for entry in archive_contents:
+                            output_stem = entry.get("output_stem") or Path(entry["internal_path"]).stem
+                            chd_path = os.path.join(archive_dir, f"{output_stem}.chd")
+                            file_exists, is_converting = lock_manager.check_file_status(chd_path)
                             archives.append({
                                 "name": entry["name"],
                                 "path": f"{item_path}::{entry['internal_path']}",
@@ -138,7 +150,8 @@ async def search_files(
                                 "internal_path": entry["internal_path"],
                                 "size": entry["size"],
                                 "extension": entry["extension"],
-                                "has_chd": False,
+                                "output_stem": output_stem,
+                                "has_chd": file_exists or is_converting,
                                 "in_archive": True
                             })
         except PermissionError:
@@ -175,7 +188,7 @@ async def list_archive(
     archive_dir = os.path.dirname(path)
     for file_entry in contents:
         # Get the base name without extension and add .chd
-        base_name = Path(file_entry["name"]).stem
+        base_name = file_entry.get("output_stem") or Path(file_entry["name"]).stem
         chd_path = os.path.join(archive_dir, f"{base_name}.chd")
         # Use atomic check to get both file existence and lock status
         file_exists, is_converting = lock_manager.check_file_status(chd_path)
@@ -217,6 +230,12 @@ async def rename_file(
 
     try:
         os.rename(path, new_path)
+        old_is_chd = path.lower().endswith(".chd")
+        new_is_chd = new_path.lower().endswith(".chd")
+        if old_is_chd and new_is_chd:
+            verification_store.move(path, new_path)
+        elif old_is_chd and not new_is_chd:
+            verification_store.clear(path)
         return {
             "success": True,
             "old_path": path,
@@ -246,6 +265,8 @@ async def delete_file(
             os.rmdir(path)
         else:
             os.remove(path)
+            if path.lower().endswith(".chd"):
+                verification_store.clear(path)
 
         return {
             "success": True,
