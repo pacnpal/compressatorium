@@ -1,64 +1,241 @@
-name: Build and push
+name: Build and Push Docker Image
 
 on:
   push:
-    branches: [ "latest" ]
-    tags: ["v*"]
-
-  # Allows you to run this workflow manually from the Actions tab
+    branches:
+      - latest
+      - main
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches:
+      - latest
+      - main
   workflow_dispatch:
+    inputs:
+      push:
+        description: "Push image to registries"
+        required: false
+        default: true
+        type: boolean
+      platforms:
+        description: "Target platforms"
+        required: false
+        default: "linux/amd64,linux/arm64"
+        type: string
+
+# Prevent concurrent runs on the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Registry configuration
+  DOCKERHUB_IMAGE: marctv/chd-converter
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+  # Build configuration
+  PLATFORMS: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
 
 jobs:
-  push_to_registries:
-    name: Push Docker image to multiple registries
+  # Validate Dockerfile syntax
+  lint:
+    name: Lint Dockerfile
     runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
     steps:
-      - name: Check out the repo
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: error
+          ignore: DL3008,DL3013  # Ignore version pinning warnings
+
+  # Build and push Docker images
+  build:
+    name: Build and Push
+    runs-on: ubuntu-latest
+    needs: lint
+    permissions:
+      contents: read
+      packages: write
+      id-token: write      # For signing
+      attestations: write  # For provenance attestations
+      security-events: write  # For security scanning results
+
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for proper versioning
+
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: ${{ env.PLATFORMS }}
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
       - name: Log in to Docker Hub
-        uses: docker/login-action@v2
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-      
-      - name: Log in to the Container registry
-        uses: docker/login-action@v2
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Extract metadata (tags, labels) for Docker
+
+      - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v4
+        uses: docker/metadata-action@v5
         with:
           images: |
-            marctv/chd-converter
-            ghcr.io/${{ github.repository }}
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
           tags: |
+            # Branch name (e.g., latest, main)
             type=ref,event=branch
+            # PR number (e.g., pr-123)
+            type=ref,event=pr
+            # Semantic version tags (e.g., v1.2.3 -> 1.2.3, 1.2, 1)
             type=semver,pattern={{version}}
-      
-      - name: Build and push Docker images
-        uses: docker/build-push-action@v4
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            # latest tag only for default branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/latest' }}
+            # Git short SHA
+            type=sha,prefix=sha-,format=short
+          labels: |
+            org.opencontainers.image.title=CHD Converter
+            org.opencontainers.image.description=Web UI for converting disc images to CHD format
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+          annotations: |
+            org.opencontainers.image.title=CHD Converter
+            org.opencontainers.image.description=Web UI for converting disc images to CHD format
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
+          file: ./Dockerfile
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ github.event_name != 'pull_request' && (inputs.push != false) }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      - name: Update Readme.md and description
-        uses: meeDamian/sync-readme@v1.0.6
-        continue-on-error: true
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Generate artifact attestation (GHCR)
+        if: github.event_name != 'pull_request' && (inputs.push != false)
+        uses: actions/attest-build-provenance@v2
         with:
-          user: ${{ secrets.DOCKER_HUB_USERNAME }}
-          pass: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
-          readme: ./README.md
-          slug: marctv/chd-converter
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # Security scanning
+  scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    permissions:
+      security-events: write
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.GHCR_IMAGE }}@${{ needs.build.outputs.image-digest }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  # Update Docker Hub README
+  update-dockerhub-readme:
+    name: Update Docker Hub README
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/latest' && github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+          repository: ${{ env.DOCKERHUB_IMAGE }}
+          readme-filepath: ./README.md
+          short-description: ${{ github.event.repository.description }}
+
+  # Summary job
+  summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [build, scan]
+    if: always() && github.event_name != 'pull_request'
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Docker Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Images Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Registry | Image |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Hub | \`${{ env.DOCKERHUB_IMAGE }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| GitHub | \`${{ env.GHCR_IMAGE }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Details" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Digest:** \`${{ needs.build.outputs.image-digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platforms:** \`${{ env.PLATFORMS }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Tags" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ needs.build.outputs.image-tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
