@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Set
 
 from app.models import ConversionJob, JobStatus, ConversionMode
 from app.services.chdman import chdman_service, ConversionCancelled
+from app.services.concurrency_manager import concurrency_manager
 from app.services.lock_manager import lock_manager
 from app.config import settings
 
@@ -17,7 +18,7 @@ class JobManager:
 
     def __init__(self, max_concurrent: int = 2):
         self.jobs: OrderedDict[str, ConversionJob] = OrderedDict()
-        self.max_concurrent = max_concurrent
+        self.max_concurrent = max(1, max_concurrent)
         self._queue: asyncio.Queue = asyncio.Queue()
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._cancelled: Set[str] = set()
@@ -82,6 +83,9 @@ class JobManager:
             self._cancelled.add(job_id)
             job.status = JobStatus.CANCELLED
             job.completed_at = datetime.utcnow()
+            cancel_event = self._cancel_events.get(job_id)
+            if cancel_event:
+                cancel_event.set()
             asyncio.create_task(self._notify_subscribers(job_id, {
                 "type": "cancelled",
                 "job_id": job_id,
@@ -208,6 +212,21 @@ class JobManager:
             del self._cancel_events[job_id]
             return
 
+        slot_acquired = await concurrency_manager.acquire(job_id, cancel_event=cancel_event)
+        if not slot_acquired:
+            if job.status != JobStatus.CANCELLED:
+                job.status = JobStatus.CANCELLED
+                job.completed_at = datetime.utcnow()
+                await self._notify_subscribers(job_id, {
+                    "type": "cancelled",
+                    "job_id": job_id,
+                    "status": job.status.value
+                })
+            self._cleanup_temp_dir(job)
+            if job_id in self._cancel_events:
+                del self._cancel_events[job_id]
+            return
+
         # Try to acquire lock for the output file (prevents race conditions)
         lock_acquired = lock_manager.acquire_lock(job.output_path)
         if not lock_acquired:
@@ -230,6 +249,7 @@ class JobManager:
             })
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]
+            concurrency_manager.release(job_id)
             self._cleanup_temp_dir(job)
             return
 
@@ -304,6 +324,8 @@ class JobManager:
             # Only release lock if we acquired it
             if lock_acquired:
                 lock_manager.release_lock(job.output_path)
+
+            concurrency_manager.release(job_id)
 
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]

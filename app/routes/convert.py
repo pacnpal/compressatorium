@@ -66,7 +66,7 @@ async def check_duplicates(request: CheckDuplicatesRequest):
 
         if "::" in file_path:
             output_stem = archive_service._output_stem_for_member(actual_filename)
-            output_path = chdman_service.get_chd_path(output_stem, effective_output_dir)
+            output_path = chdman_service.get_chd_path(output_stem, effective_output_dir, treat_as_stem=True)
         else:
             output_path = chdman_service.get_chd_path(actual_filename, effective_output_dir)
         file_exists, is_locked = lock_manager.check_file_status(output_path)
@@ -103,7 +103,7 @@ async def create_job(request: JobCreateRequest):
         # Calculate output path before extraction to avoid unnecessary work
         effective_output_dir = request.output_dir or archive_source_dir
         output_stem = archive_service._output_stem_for_member(internal_path)
-        output_path = chdman_service.get_chd_path(output_stem, effective_output_dir)
+        output_path = chdman_service.get_chd_path(output_stem, effective_output_dir, treat_as_stem=True)
 
         file_exists, is_locked = lock_manager.check_file_status(output_path)
         if file_exists or is_locked:
@@ -191,7 +191,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             # Calculate output path before extraction to avoid unnecessary work
             effective_output_dir = request.output_dir or archive_source_dir
             output_stem = archive_service._output_stem_for_member(internal_path)
-            output_path = chdman_service.get_chd_path(output_stem, effective_output_dir)
+            output_path = chdman_service.get_chd_path(output_stem, effective_output_dir, treat_as_stem=True)
             file_exists, is_locked = lock_manager.check_file_status(output_path)
 
             if file_exists or is_locked:

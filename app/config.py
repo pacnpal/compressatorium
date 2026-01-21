@@ -10,6 +10,7 @@ class Settings(BaseSettings):
 
     # Job limits
     max_concurrent_jobs: int = Field(default=2, alias="MAX_CONCURRENT_JOBS")
+    concurrency_lock_dir: str = Field(default="/tmp/chd_converter_locks", alias="CHD_CONCURRENCY_LOCK_DIR")
 
     # chdman binary path
     chdman_path: str = Field(default="/usr/bin/chdman", alias="CHDMAN_PATH")

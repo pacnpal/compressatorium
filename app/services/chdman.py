@@ -182,10 +182,15 @@ class ChdmanService:
         return ext in CONVERTIBLE_EXTENSIONS
 
     @staticmethod
-    def get_chd_path(input_path: str, output_dir: Optional[str] = None) -> str:
+    def get_chd_path(
+        input_path: str,
+        output_dir: Optional[str] = None,
+        *,
+        treat_as_stem: bool = False
+    ) -> str:
         """Get the output CHD path for an input file or stem."""
         input_p = Path(input_path)
-        chd_name = input_p.stem + ".chd" if input_p.suffix else input_p.name + ".chd"
+        chd_name = input_p.name + ".chd" if treat_as_stem else input_p.stem + ".chd"
 
         if output_dir:
             return str(Path(output_dir) / chd_name)
