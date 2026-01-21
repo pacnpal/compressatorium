@@ -128,6 +128,21 @@ All configurations support these environment variables (edit in the compose file
 
 Each configuration includes conservative resource limits. Adjust CPU and memory values based on your system.
 
+### Tuning and Host Recommendations
+
+**How to change settings**
+- Edit the compose file and update `MAX_CONCURRENT_JOBS`, `CHD_CHDMAN_*`, and the `deploy.resources` limits.
+
+**Recommended starting points**
+- **Low/medium hosts (≤16 GB RAM, HDD or parity-backed arrays):** keep `MAX_CONCURRENT_JOBS=1`, `CHD_CHDMAN_NICE=10`, `CHD_CHDMAN_IOPRIO_CLASS=2`, `CHD_CHDMAN_IOPRIO_LEVEL=6`. Set a container memory limit (8–12 GB).
+- **Faster hosts (32+ GB RAM, SSD cache):** try `MAX_CONCURRENT_JOBS=2` and a higher memory limit (16–24 GB). Raise I/O priority only if the host remains responsive.
+- **If the host becomes sluggish:** lower `MAX_CONCURRENT_JOBS`, increase `CHD_CHDMAN_NICE`, or set `CHD_CHDMAN_IOPRIO_CLASS=3` (idle) with `CHD_CHDMAN_IOPRIO_LEVEL=7`.
+
+**Docker host tips**
+- Prefer SSD/cache for temporary extraction and CHD output to reduce array contention.
+- Avoid running other heavy services during conversion.
+- Always set container CPU/memory limits on shared hosts.
+
 Example:
 ```yaml
 deploy:

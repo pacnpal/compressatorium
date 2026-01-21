@@ -81,6 +81,22 @@ This document contains the results of a comprehensive deployment readiness audit
 
 ### Archive Support
 - **Status:** ✅ IMPLEMENTED
+
+### Tuning and Host Recommendations
+
+**How to change settings**
+- Set environment variables in your container runtime (Compose, Unraid, or docker run).
+- Apply CPU/memory limits at the container level to protect the host.
+
+**Recommended starting points**
+- **Low/medium hosts (≤16 GB RAM, HDD or parity-backed arrays):** keep `MAX_CONCURRENT_JOBS=1`, `CHD_CHDMAN_NICE=10`, `CHD_CHDMAN_IOPRIO_CLASS=2`, `CHD_CHDMAN_IOPRIO_LEVEL=6`. Set a container memory limit (8–12 GB).
+- **Faster hosts (32+ GB RAM, SSD cache):** try `MAX_CONCURRENT_JOBS=2` and a higher memory limit (16–24 GB). Raise I/O priority only if the host remains responsive.
+- **If the host becomes sluggish:** lower `MAX_CONCURRENT_JOBS`, increase `CHD_CHDMAN_NICE`, or set `CHD_CHDMAN_IOPRIO_CLASS=3` (idle) with `CHD_CHDMAN_IOPRIO_LEVEL=7`.
+
+**Docker host tips**
+- Prefer SSD/cache for temporary extraction and CHD output to reduce array contention.
+- Avoid running other heavy services during conversion.
+- Always set container CPU/memory limits on shared hosts.
 - **Formats:** ZIP, 7z, RAR
 - **Dependencies:** `unrar-free`, `p7zip-full`, `py7zr`, `rarfile`
 - **Extraction:** Temporary extraction with cleanup
