@@ -28,11 +28,27 @@ class ChdmanService:
         self._active_pids: set[int] = set()
         self._pid_lock = threading.Lock()
 
-    def _build_command(self, mode: str, input_path: str, output_path: str) -> list[str]:
+    def _build_command(
+        self,
+        mode: str,
+        input_path: str,
+        output_path: str,
+        compression: Optional[str] = None
+    ) -> list[str]:
         cmd = [self.chdman_path, mode, "-f", "-i", input_path, "-o", output_path]
         if mode == "createdvd":
             # Insert -hs 2048 after mode for PSP compatibility
             cmd = [self.chdman_path, mode, "-hs", "2048", "-f", "-i", input_path, "-o", output_path]
+
+        if compression and mode in {
+            "createcd",
+            "createdvd",
+            "createraw",
+            "createhd",
+            "createld",
+            "copy"
+        }:
+            cmd = cmd[:2] + ["-c", compression] + cmd[2:]
 
         if settings.chdman_ioprio_class is not None and settings.chdman_ioprio_level is not None:
             ionice = shutil.which("ionice")
@@ -66,6 +82,7 @@ class ChdmanService:
         input_path: str,
         output_path: str,
         mode: str = "createcd",
+        compression: Optional[str] = None,
         cancel_event: Optional[asyncio.Event] = None
     ) -> AsyncGenerator[dict, None]:
         """
@@ -82,7 +99,7 @@ class ChdmanService:
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-        cmd = self._build_command(mode, input_path, output_path)
+        cmd = self._build_command(mode, input_path, output_path, compression=compression)
 
         def _preexec():
             if settings.chdman_nice is not None:
@@ -324,6 +341,41 @@ class ChdmanService:
             return str(Path(output_dir) / chd_name)
         else:
             return str(input_p.parent / chd_name)
+
+    @staticmethod
+    def get_output_path_for_mode(
+        mode: str,
+        input_path: str,
+        output_dir: Optional[str] = None,
+        *,
+        treat_as_stem: bool = False
+    ) -> str:
+        input_p = Path(input_path)
+        stem = input_p.name if treat_as_stem else input_p.stem
+
+        if mode.startswith("extract") and not treat_as_stem:
+            name = input_p.name
+            if name.lower().endswith(".chd"):
+                stem = name[:-4]
+
+        if mode == "copy":
+            filename = f"{stem}_copy.chd"
+        elif mode in {"createcd", "createdvd", "createraw", "createhd", "createld"}:
+            filename = f"{stem}.chd"
+        elif mode == "extractcd":
+            filename = stem if stem.lower().endswith(".cue") else f"{stem}.cue"
+        elif mode == "extractdvd":
+            filename = stem if stem.lower().endswith(".iso") else f"{stem}.iso"
+        elif mode in {"extractraw", "extracthd"}:
+            filename = stem if stem.lower().endswith(".raw") else f"{stem}.raw"
+        elif mode == "extractld":
+            filename = stem if stem.lower().endswith(".avi") else f"{stem}.avi"
+        else:
+            filename = f"{stem}.out"
+
+        if output_dir:
+            return str(Path(output_dir) / filename)
+        return str(input_p.parent / filename)
 
 
 chdman_service = ChdmanService()

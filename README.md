@@ -142,6 +142,39 @@ Or use the Web UI's CHD Inspector feature by clicking on any `.chd` file.
 
 ---
 
+## Compression Presets (Emulator Compatibility)
+
+Some emulators (notably NetherSX2/AetherSX2) only support **zlib**-compressed CHDs. In the Web UI, choose:
+
+- **Compression: Default** (uses chdman defaults)
+- **NetherSX2/AetherSX2 (zlib only)** to force `zlib`
+- **Custom compression list** (comma-separated) for advanced users (passed directly to `chdman -c`)
+
+If you see emulator errors like “Failed to initialize cdvd,” re-convert with the zlib-only preset.
+Use `chdman help createcd` or `chdman help createdvd` to see the expected `-c` format for your version.
+
+---
+
+## Supported Operations
+
+All actions are queued and processed by the job queue (FIFO). The queue is the only execution path.
+
+**Create CHD**
+- `createraw`, `createhd`, `createcd`, `createdvd`, `createld`
+
+**Extract from CHD**
+- `extractraw`, `extracthd`, `extractcd`, `extractdvd`, `extractld`
+
+**Copy / Recompress**
+- `copy` (CHD → CHD, optionally with new compression)
+
+Notes:
+- Compression applies to **create** and **copy** operations only.
+- Extract operations ignore compression settings.
+- `extractcd` produces both `.cue` and `.bin` outputs.
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |

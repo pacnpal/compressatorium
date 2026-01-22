@@ -20,8 +20,10 @@ function HelpPanel({ onClose }) {
                     <li><strong>Select Files</strong> - Click checkboxes next to files you want to convert</li>
                     <li><strong>Choose Mode</strong>:
                         <ul>
-                            <li><em>CD Mode</em> - For Dreamcast (.gdi), PlayStation 1, Sega CD, etc.</li>
-                            <li><em>DVD Mode</em> - For PSP (.iso), PlayStation 2, etc.</li>
+                            <li><em>Create CD/DVD</em> - Convert disc images to CHD</li>
+                            <li><em>Create Raw/HD/LD</em> - Advanced creation modes</li>
+                            <li><em>Extract</em> - Convert CHD back to raw/iso/cue</li>
+                            <li><em>Copy</em> - Recompress or duplicate a CHD</li>
                         </ul>
                     </li>
                     <li><strong>Queue</strong> - Click Convert to add jobs to the FIFO queue</li>
@@ -32,13 +34,17 @@ function HelpPanel({ onClose }) {
                     <li>💿 <strong>.chd</strong> - Click to view file information</li>
                     <li>📦 <strong>.zip, .7z, .rar</strong> - Archives (click to browse contents)</li>
                 </ul>
-                <h4>Tips</h4>
+                <h4>Compression Tips</h4>
                 <ul>
-                    <li>Files showing "CHD exists" already have a converted version</li>
-                    <li>Jobs run in FIFO order when a worker slot is available</li>
-                    <li>Use "Search All" to find all convertible files recursively</li>
-                    <li>Set a custom output directory or leave empty to save alongside source</li>
+                    <li><strong>zlib</strong> is the most compatible choice across emulators.</li>
+                    <li><strong>No compression</strong> uses <code>-c none</code> for truly uncompressed output.</li>
+                    <li><strong>lzma</strong> yields smaller files but takes longer to encode.</li>
+                    <li><strong>zstd</strong> can be faster but may not be supported by older builds.</li>
+                    <li>CD-specific codecs (<strong>cdzl/cdzs/cdlz/cdfl</strong>) are intended for CD images.</li>
                 </ul>
+                <p class="compression-note">
+                    Omitting <code>-c</code> would use chdman defaults; this app always sends an explicit choice to avoid surprises.
+                </p>
             </div>
         </div>
     `;
@@ -123,7 +129,7 @@ function Breadcrumb({ path, volume, onNavigate }) {
     `;
 }
 
-function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, verifyProgress, error }) {
+function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, verifyProgress, error }) {
 
     if (error) {
         return html`
@@ -151,10 +157,10 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
         } else if (entry.type === 'archive') {
             // For archives, browse contents
             onBrowseArchive && onBrowseArchive(entry.path);
+        } else if (canSelect(entry)) {
+            onToggleSelect(entry);
         } else if (entry.extension === '.chd') {
             onShowInfo(entry.path);
-        } else if (entry.convertible && !entry.has_chd) {
-            onToggleSelect(entry);
         }
     };
 
@@ -180,7 +186,8 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
             return `Archive: ${entry.name} - Click to browse contents`;
         }
         if (entry.extension === '.chd') return 'Click to view CHD info';
-        if (entry.convertible) return entry.has_chd ? 'Already converted' : 'Click to select for conversion';
+        if (canSelect(entry)) return 'Click to select';
+        if (entry.convertible) return entry.has_chd ? 'Already converted' : entry.name;
         return entry.name;
     };
 
@@ -204,7 +211,7 @@ function FileList({ entries, selectedFiles, onNavigate, onToggleSelect, onShowIn
                     onClick=${(e) => handleClick(entry, e)}
                     title=${getTooltip(entry)}
                 >
-                    ${entry.convertible && !entry.has_chd && entry.type !== 'archive' && html`
+                    ${canSelect(entry) && entry.type !== 'archive' && html`
                         <input
                             type="checkbox"
                             class="checkbox"
@@ -301,7 +308,7 @@ function JobList({ jobs, onCancel }) {
         switch (job.status) {
             case 'creating': return 'Creating job...';
             case 'queued': return 'Waiting in queue';
-            case 'processing': return `Converting: ${job.progress}%`;
+            case 'processing': return `Processing: ${job.progress}%`;
             case 'completed': return 'Completed';
             case 'failed': return 'Failed';
             case 'cancelled': return 'Cancelled';
@@ -355,7 +362,7 @@ function JobList({ jobs, onCancel }) {
                             <div class="progress-fill creating" style="width: 100%; animation: pulse 1.5s infinite;"></div>
                         </div>
                         <div class="progress-text" style="color: var(--text-secondary);">
-                            Setting up conversion job...
+                            Setting up job...
                         </div>
                     `}
 
@@ -370,13 +377,13 @@ function JobList({ jobs, onCancel }) {
                             <div class="progress-fill" style="width: ${job.progress}%"></div>
                         </div>
                         <div class="progress-text">
-                            ${job.progress}% - ${job.message || 'Converting...'}
+                            ${job.progress}% - ${job.message || 'Processing...'}
                         </div>
                     `}
 
                     ${job.status === 'completed' && html`
                         <div class="job-success" style="color: var(--success); font-size: 0.8rem; padding-left: 24px;">
-                            Conversion complete${job.output_size ? ` - ${formatSize(job.output_size)}` : ''}
+                            Job complete${job.output_size ? ` - ${formatSize(job.output_size)}` : ''}
                         </div>
                     `}
 
@@ -499,7 +506,7 @@ function DuplicateModal({ duplicates, onAction, onClose }) {
                 </div>
                 <div class="modal-body" style="padding: 15px;">
                     <p style="margin-bottom: 15px;">
-                        <strong>${existingCount}</strong> of ${duplicates.length} selected file(s) already have CHD output files.
+                        <strong>${existingCount}</strong> of ${duplicates.length} selected file(s) already have output files.
                     </p>
                     <div style="max-height: 200px; overflow-y: auto; margin-bottom: 15px; padding: 10px; background: var(--bg-primary); border-radius: 4px;">
                         ${duplicates.filter(d => d.exists).map(d => html`
@@ -941,6 +948,14 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
     `;
 }
 
+const buildCompressionValue = (selection, options) => {
+    if (selection.includes('none')) return 'none';
+    const ordered = options
+        .filter((opt) => opt.value !== 'none' && selection.includes(opt.value))
+        .map((opt) => opt.value);
+    return ordered.length ? ordered.join(',') : null;
+};
+
 // ============ Main App ============
 
 function App() {
@@ -958,6 +973,8 @@ function App() {
     const [_hiddenJobIds, _setHiddenJobIds] = useState(new Set());
     const [loading, setLoading] = useState(false);
     const [conversionMode, setConversionMode] = useState('createcd');
+    const [compressionSelection, setCompressionSelection] = useState(['zlib']);
+    const [showCompressionHelp, setShowCompressionHelp] = useState(false);
     const [outputDir, setOutputDir] = useState('');
     const [showCHDInfo, setShowCHDInfo] = useState(null);
     const [searchMode, setSearchMode] = useState(false);
@@ -1318,12 +1335,12 @@ function App() {
     };
 
     const handleSelectAll = () => {
-        const convertible = entries.filter(e => e.convertible && !e.has_chd);
-        if (selectedFiles.size === convertible.length) {
+        const selectable = entries.filter(e => canSelectEntry(e));
+        if (selectedFiles.size === selectable.length) {
             setSelectedFiles(new Map());
         } else {
             const newMap = new Map();
-            convertible.forEach(e => newMap.set(e.path, e));
+            selectable.forEach(e => newMap.set(e.path, e));
             setSelectedFiles(newMap);
         }
     };
@@ -1400,7 +1417,7 @@ function App() {
         const rawName = (filePath.includes('::') ? filePath.split('::').pop() : filePath);
         const filename = rawName.split('/').pop();
         const isArchiveItem = filePath.includes('::');
-        // Replace extension with .chd (include parent path for archive items to avoid collisions)
+        // Build a safe stem for archive members to avoid collisions
         let stem;
         if (isArchiveItem) {
             if (entry && entry.output_stem) {
@@ -1413,7 +1430,18 @@ function App() {
         } else {
             stem = filename.replace(/\.[^.]+$/, '');
         }
-        const chdFilename = `${stem}.chd`;
+        let outputFilename = `${stem}.chd`;
+        if (conversionMode === 'copy') {
+            outputFilename = `${stem}_copy.chd`;
+        } else if (conversionMode === 'extractcd') {
+            outputFilename = `${stem}.cue`;
+        } else if (conversionMode === 'extractdvd') {
+            outputFilename = `${stem}.iso`;
+        } else if (conversionMode === 'extractraw' || conversionMode === 'extracthd') {
+            outputFilename = `${stem}.raw`;
+        } else if (conversionMode === 'extractld') {
+            outputFilename = `${stem}.avi`;
+        }
 
         // Determine output directory
         let outDir;
@@ -1427,7 +1455,7 @@ function App() {
             outDir = filePath.split('/').slice(0, -1).join('/');
         }
 
-        return `${outDir}/${chdFilename}`;
+        return `${outDir}/${outputFilename}`;
     };
 
     // Execute conversion with specified duplicate action
@@ -1442,7 +1470,7 @@ function App() {
                 mode: conversionMode,
                 status: 'creating',
                 progress: 0,
-                message: 'Setting up conversion...',
+                message: 'Setting up job...',
                 output_path: getExpectedOutputPath(p, entry)
             };
         });
@@ -1450,13 +1478,14 @@ function App() {
 
         setConverting(true);
         try {
-            notify(`⏳ Queueing ${paths.length} conversion job(s)...`, 'info');
+            notify(`⏳ Queueing ${paths.length} job(s)...`, 'info');
 
             const newJobs = await api.createBatchJobs(
                 paths,
                 conversionMode,
                 outputDir || null,
-                duplicateAction
+                duplicateAction,
+                compressionSupported ? getCompressionValue() : null
             );
 
             // Clear placeholders and prepend real jobs
@@ -1465,7 +1494,7 @@ function App() {
             setSelectedFiles(new Map());
 
             if (newJobs.length > 0) {
-                notify(`✓ Queued ${newJobs.length} conversion job(s)`, 'success');
+                notify(`✓ Queued ${newJobs.length} job(s)`, 'success');
             } else {
                 notify('ℹ No jobs created (all files were skipped)', 'info');
             }
@@ -1485,7 +1514,7 @@ function App() {
     const handleConvert = async () => {
         const paths = Array.from(selectedFiles.keys());
         if (paths.length === 0) {
-            notify('⚠ Please select at least one file to convert', 'error');
+            notify('⚠ Please select at least one file', 'error');
             return;
         }
 
@@ -1494,7 +1523,7 @@ function App() {
 
         // Check for duplicates
         try {
-            const duplicates = await api.checkDuplicates(paths, outputDir || null);
+            const duplicates = await api.checkDuplicates(paths, outputDir || null, conversionMode);
             const hasDuplicates = duplicates.some(d => d.exists);
 
             if (hasDuplicates) {
@@ -1521,6 +1550,136 @@ function App() {
         setDuplicateCheck(null); // Close modal
 
         await executeConversion(paths, action);
+    };
+
+    const compressionOptions = [
+        { value: 'none', label: 'No compression', description: 'Stores data without compression.' },
+        { value: 'zlib', label: 'zlib', description: 'Deflate compression. Broad compatibility.' },
+        { value: 'zstd', label: 'zstd', description: 'High performance and ratio, but older software may not support it.' },
+        { value: 'lzma', label: 'lzma', description: 'High compression ratio, slower.' },
+        { value: 'huff', label: 'huff', description: 'Huffman coding.' },
+        { value: 'flac', label: 'flac', description: 'Audio (stereo 16-bit 44.1kHz PCM). Good for audio data.' },
+        { value: 'cdzl', label: 'cdzl', description: 'CD-ROM data: zlib for audio and subchannel.' },
+        { value: 'cdzs', label: 'cdzs', description: 'CD-ROM data: zstd for audio and subchannel.' },
+        { value: 'cdlz', label: 'cdlz', description: 'CD-ROM data: LZMA for audio + zlib for subchannel.' },
+        { value: 'cdfl', label: 'cdfl', description: 'CD-ROM data: FLAC for audio + zlib for subchannel.' },
+        { value: 'avhu', label: 'avhu', description: 'Huffman for A/V data (LaserDisc).' }
+    ];
+
+    const isCreateMode = conversionMode.startsWith('create');
+    const isExtractMode = conversionMode.startsWith('extract');
+    const isCopyMode = conversionMode === 'copy';
+    const compressionSupported = isCreateMode || isCopyMode;
+
+    useEffect(() => {
+        const failures = [];
+        if (buildCompressionValue(['none'], compressionOptions) !== 'none') {
+            failures.push('none');
+        }
+        if (buildCompressionValue(['zlib'], compressionOptions) !== 'zlib') {
+            failures.push('zlib');
+        }
+        if (buildCompressionValue(['lzma', 'zlib'], compressionOptions) !== 'zlib,lzma') {
+            failures.push('multi');
+        }
+        if (failures.length) {
+            console.error('Compression self-check failed:', failures.join(', '));
+        }
+    }, []);
+
+    const toggleCompression = (value) => {
+        if (!compressionSupported) {
+            notify('Compression options are available only for create/copy modes', 'info');
+            return;
+        }
+        setCompressionSelection((prev) => {
+            const next = new Set(prev);
+            if (value === 'none') {
+                return ['none'];
+            }
+            if (next.has(value)) {
+                next.delete(value);
+            } else {
+                if (next.size >= 4) {
+                    notify('You can select up to 4 compression codecs', 'info');
+                    return Array.from(next);
+                }
+                next.add(value);
+            }
+            next.delete('none');
+            if (next.size === 0) {
+                return ['none'];
+            }
+            return Array.from(next);
+        });
+    };
+
+    const getCompressionValue = () => {
+        return buildCompressionValue(compressionSelection, compressionOptions);
+    };
+
+    const canSelectEntry = (entry) => {
+        if (!entry || entry.type === 'directory' || entry.type === 'archive') return false;
+        if (isExtractMode || isCopyMode) {
+            return entry.extension === '.chd';
+        }
+        if (conversionMode === 'createcd' || conversionMode === 'createdvd') {
+            return entry.convertible;
+        }
+        if (isCreateMode) {
+            return entry.extension !== '.chd';
+        }
+        return false;
+    };
+
+    useEffect(() => {
+        setSelectedFiles(prev => {
+            if (prev.size === 0) return prev;
+            let removed = 0;
+            const next = new Map();
+            prev.forEach((entry, path) => {
+                if (canSelectEntry(entry)) {
+                    next.set(path, entry);
+                } else {
+                    removed += 1;
+                }
+            });
+            if (removed > 0) {
+                notify(`ℹ Cleared ${removed} incompatible selection(s) for this mode`, 'info');
+                return next;
+            }
+            return prev;
+        });
+    }, [conversionMode]);
+
+    const getModeWarnings = () => {
+        const entries = Array.from(selectedFiles.values());
+        if (!entries.length) return [];
+        const cdMax = 900 * 1024 * 1024;
+        const dvdMin = 1200 * 1024 * 1024;
+        const isDiscImage = (entry) => {
+            const ext = entry.extension?.toLowerCase();
+            return ext === '.iso' || ext === '.bin';
+        };
+        const withSize = entries.filter((e) => isDiscImage(e) && typeof e.size === 'number' && e.size > 0);
+        const dvdLikely = withSize.filter((e) => e.size >= dvdMin);
+        const cdLikely = withSize.filter((e) => e.size <= cdMax);
+        const warnings = [];
+        if (conversionMode === 'createcd' && dvdLikely.length) {
+            const sample = dvdLikely.slice(0, 2).map((e) => `${e.name} (${formatSize(e.size)})`).join(', ');
+            warnings.push(`Some selected files look DVD-sized but CD mode is selected. Consider DVD mode. ${sample}${dvdLikely.length > 2 ? ` (+${dvdLikely.length - 2} more)` : ''}`);
+        }
+        if (conversionMode === 'createdvd' && cdLikely.length) {
+            const sample = cdLikely.slice(0, 2).map((e) => `${e.name} (${formatSize(e.size)})`).join(', ');
+            warnings.push(`Some selected files look CD-sized but DVD mode is selected. Consider CD mode. ${sample}${cdLikely.length > 2 ? ` (+${cdLikely.length - 2} more)` : ''}`);
+        }
+        return warnings;
+    };
+
+    const getActionLabel = () => {
+        if (isExtractMode) return 'Extract';
+        if (isCopyMode) return 'Copy';
+        return 'Convert';
     };
 
     const handleSearch = async () => {
@@ -1624,7 +1783,7 @@ function App() {
         }
     };
 
-    const convertibleCount = entries.filter(e => e.convertible && !e.has_chd).length;
+    const convertibleCount = entries.filter(e => canSelectEntry(e)).length;
     const hasCompletedJobs = jobs.some(j => ['completed', 'failed', 'cancelled'].includes(j.status));
 
     return html`
@@ -1747,14 +1906,54 @@ function App() {
                             onChange=${(e) => setConversionMode(e.target.value)}
                             title="Select conversion mode based on your disc type"
                         >
-                            <option value="createcd">CD Mode (Dreamcast, PS1, Sega CD)</option>
-                            <option value="createdvd">DVD Mode (PSP, PS2)</option>
+                            <optgroup label="Create CHD">
+                                <option value="createcd">Create CD CHD (Dreamcast, PS1, Sega CD)</option>
+                                <option value="createdvd">Create DVD CHD (PSP, PS2)</option>
+                                <option value="createraw">Create Raw CHD</option>
+                                <option value="createhd">Create HD CHD</option>
+                                <option value="createld">Create LaserDisc CHD</option>
+                            </optgroup>
+                            <optgroup label="Extract from CHD">
+                                <option value="extractcd">Extract CD (cue/bin)</option>
+                                <option value="extractdvd">Extract DVD (iso)</option>
+                                <option value="extractraw">Extract Raw</option>
+                                <option value="extracthd">Extract HD</option>
+                                <option value="extractld">Extract LaserDisc (avi)</option>
+                            </optgroup>
+                            <optgroup label="Copy / Recompress">
+                                <option value="copy">Copy / Recompress CHD</option>
+                            </optgroup>
                         </select>
+                        <div class="compression-group" role="group" aria-label="Compression options">
+                            <span class="compression-label">Compression</span>
+                            <div class="compression-options">
+                                ${compressionOptions.map((opt) => html`
+                                    <label class="compression-option" title=${opt.description}>
+                                        <input
+                                            type="checkbox"
+                                            checked=${compressionSelection.includes(opt.value)}
+                                            disabled=${!compressionSupported}
+                                            onChange=${() => toggleCompression(opt.value)}
+                                        />
+                                        <span>${opt.label}</span>
+                                    </label>
+                                `)}
+                            </div>
+                            <div class="compression-meta">
+                                <span>${!compressionSupported ? 'Compression not applicable for this mode' : (compressionSelection.includes('none') ? 'No compression (-c none)' : `${compressionSelection.length}/4 codecs selected`)}</span>
+                                <button class="btn btn-sm btn-secondary" onClick=${() => setShowCompressionHelp(v => !v)}>
+                                    ${showCompressionHelp ? 'Hide Info' : 'Compression Info'}
+                                </button>
+                            </div>
+                        </div>
+                        <span class="toolbar-help">
+                            Choose up to 4 codecs. zlib is the most compatible option.
+                        </span>
                         ${convertibleCount > 0 && html`
                             <button
                                 class="btn btn-sm btn-secondary"
                                 onClick=${handleSelectAll}
-                                title=${selectedFiles.size === convertibleCount ? 'Deselect all files' : 'Select all convertible files'}
+                                title=${selectedFiles.size === convertibleCount ? 'Deselect all files' : 'Select all applicable files'}
                             >
                                 ${selectedFiles.size === convertibleCount ? 'Deselect All' : `Select All (${convertibleCount})`}
                             </button>
@@ -1763,14 +1962,42 @@ function App() {
                             class="btn btn-primary"
                             disabled=${selectedFiles.size === 0 || converting}
                             onClick=${handleConvert}
-                            title=${converting ? 'Converting...' : selectedFiles.size > 0 ? `Convert ${selectedFiles.size} selected file(s) to CHD` : 'Select files to convert'}
+                            title=${converting ? `${getActionLabel()}...` : selectedFiles.size > 0 ? `${getActionLabel()} ${selectedFiles.size} selected file(s)` : `Select files to ${getActionLabel().toLowerCase()}`}
                         >
                             ${converting 
-                                ? html`<span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-width: 2px;"></span>Converting...`
-                                : `Convert ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}`
+                                ? html`<span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-width: 2px;"></span>${getActionLabel()}...`
+                                : `${getActionLabel()} ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}`
                             }
                         </button>
                     </div>
+
+                    ${showCompressionHelp && html`
+                        <div class="compression-help">
+                            <h4>Compression Guide</h4>
+                            <ul>
+                                <li><strong>No compression</strong>: passes <code>-c none</code> for uncompressed output.</li>
+                                <li><strong>zlib</strong>: best overall compatibility.</li>
+                                <li><strong>zstd</strong>: fast and small, but older software may not support it.</li>
+                                <li><strong>lzma</strong>: highest compression, slowest.</li>
+                                <li><strong>huff</strong>: Huffman coding, moderate compression.</li>
+                                <li><strong>flac</strong>: audio-only compression for stereo PCM audio.</li>
+                                <li><strong>cdzl/cdzs/cdlz/cdfl</strong>: CD-specific mixes of audio/subchannel codecs.</li>
+                                <li><strong>avhu</strong>: Huffman for A/V (LaserDisc).</li>
+                            </ul>
+                            <p class="compression-note">
+                                If unsure, choose <strong>zlib</strong>. It's the most compatible choice.
+                            </p>
+                            <p class="compression-note">
+                                Omitting <code>-c</code> would use chdman defaults; this app always sends an explicit choice.
+                            </p>
+                        </div>
+                    `}
+
+                    ${getModeWarnings().map((warning, idx) => html`
+                        <div key=${`mode-warning-${idx}`} class="mode-warning">
+                            ⚠️ ${warning}
+                        </div>
+                    `)}
 
                     <div class="output-dir-selector">
                         <label title="Leave empty to save CHD files next to source files">Output directory:</label>
@@ -1799,6 +2026,7 @@ function App() {
                             : html`<${FileList}
                                 entries=${entries}
                                 selectedFiles=${selectedFiles}
+                                canSelect=${canSelectEntry}
                                 onNavigate=${handleNavigate}
                                 onToggleSelect=${handleToggleSelect}
                                 onShowInfo=${setShowCHDInfo}

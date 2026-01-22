@@ -5,8 +5,17 @@ from datetime import datetime
 
 
 class ConversionMode(str, Enum):
+    CREATERAW = "createraw"
+    CREATEHD = "createhd"
     CREATECD = "createcd"
     CREATEDVD = "createdvd"
+    CREATELD = "createld"
+    EXTRACTRAW = "extractraw"
+    EXTRACTHD = "extracthd"
+    EXTRACTCD = "extractcd"
+    EXTRACTDVD = "extractdvd"
+    EXTRACTLD = "extractld"
+    COPY = "copy"
 
 
 class DuplicateAction(str, Enum):
@@ -62,6 +71,7 @@ class ConversionJob(BaseModel):
     output_size: Optional[int] = None
     temp_dir: Optional[str] = None
     allow_overwrite: bool = False
+    compression: Optional[str] = None
 
 
 class JobCreateRequest(BaseModel):
@@ -69,6 +79,7 @@ class JobCreateRequest(BaseModel):
     mode: ConversionMode = ConversionMode.CREATECD
     output_dir: Optional[str] = None  # If None, output alongside source
     duplicate_action: DuplicateAction = DuplicateAction.SKIP  # What to do if output exists
+    compression: Optional[str] = None  # Comma-separated list (e.g. "zlib,lzma")
 
 
 class BatchJobCreateRequest(BaseModel):
@@ -76,11 +87,13 @@ class BatchJobCreateRequest(BaseModel):
     mode: ConversionMode = ConversionMode.CREATECD
     output_dir: Optional[str] = None  # If None, output alongside source
     duplicate_action: DuplicateAction = DuplicateAction.SKIP  # What to do if output exists
+    compression: Optional[str] = None  # Comma-separated list (e.g. "zlib,lzma")
 
 
 class CheckDuplicatesRequest(BaseModel):
     file_paths: List[str]
     output_dir: Optional[str] = None
+    mode: ConversionMode = ConversionMode.CREATECD
 
 
 class DuplicateInfo(BaseModel):

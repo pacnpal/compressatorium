@@ -6,6 +6,7 @@ import time
 import logging
 import resource
 import sys
+from pathlib import Path
 from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, List, Optional, Set
@@ -52,7 +53,8 @@ class JobManager:
         output_dir: Optional[str] = None,
         output_path: Optional[str] = None,
         allow_overwrite: bool = False,
-        filename_override: Optional[str] = None
+        filename_override: Optional[str] = None,
+        compression: Optional[str] = None
     ) -> ConversionJob:
         """Create a new conversion job."""
         job_id = str(uuid.uuid4())[:8]
@@ -71,7 +73,8 @@ class JobManager:
             progress=0,
             created_at=datetime.utcnow(),
             output_path=output_path,
-            allow_overwrite=allow_overwrite
+            allow_overwrite=allow_overwrite,
+            compression=compression
         )
 
         self.jobs[job_id] = job
@@ -82,12 +85,13 @@ class JobManager:
         self._last_progress_log_at[job_id] = now
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "Queued job %s mode=%s input=%s output=%s overwrite=%s",
+                "Queued job %s mode=%s input=%s output=%s overwrite=%s compression=%s",
                 job_id,
                 mode.value,
                 file_path,
                 output_path,
-                allow_overwrite
+                allow_overwrite,
+                compression
             )
         self._prune_jobs()
         return job
@@ -96,10 +100,11 @@ class JobManager:
         self,
         file_paths: List[str],
         mode: ConversionMode,
-        output_dir: Optional[str] = None
+        output_dir: Optional[str] = None,
+        compression: Optional[str] = None
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs."""
-        return [self.create_job(fp, mode, output_dir) for fp in file_paths]
+        return [self.create_job(fp, mode, output_dir, compression=compression) for fp in file_paths]
 
     def get_job(self, job_id: str) -> Optional[ConversionJob]:
         """Get a job by ID."""
@@ -635,11 +640,16 @@ class JobManager:
                     raise RuntimeError("Output path exists and is not a file")
                 os.remove(job.output_path)
                 verification_store.clear(job.output_path)
+                if job.mode.value == "extractcd":
+                    bin_path = str(Path(job.output_path).with_suffix(".bin"))
+                    if os.path.isfile(bin_path):
+                        os.remove(bin_path)
 
             async for update in chdman_service.convert(
                 input_path,
                 job.output_path,
                 job.mode.value,
+                compression=job.compression,
                 cancel_event=cancel_event
             ):
                 if cancel_event.is_set():
@@ -674,7 +684,23 @@ class JobManager:
 
                 # Get output file size
                 if os.path.exists(job.output_path):
-                    job.output_size = os.path.getsize(job.output_path)
+                    if job.mode.value == "extractcd":
+                        cue_size = 0
+                        bin_size = 0
+                        try:
+                            cue_size = os.path.getsize(job.output_path)
+                        except OSError:
+                            pass
+                        try:
+                            bin_path = str(Path(job.output_path).with_suffix(".bin"))
+                            if os.path.exists(bin_path):
+                                bin_size = os.path.getsize(bin_path)
+                        except OSError:
+                            pass
+                        total_size = cue_size + bin_size
+                        job.output_size = total_size if total_size > 0 else None
+                    else:
+                        job.output_size = os.path.getsize(job.output_path)
 
                 await self._notify_subscribers(job_id, {
                     "type": "complete",

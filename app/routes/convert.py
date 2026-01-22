@@ -1,7 +1,8 @@
 import asyncio
 import os
+import re
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
@@ -17,6 +18,20 @@ from services.lock_manager import lock_manager
 from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
+def normalize_compression(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    raw = value.strip().lower()
+    if not raw:
+        return None
+    parts = [p for p in re.split(r"[,\s]+", raw) if p]
+    invalid = [p for p in parts if not re.fullmatch(r"[a-z0-9]+", p)]
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid compression token(s): {', '.join(invalid)}"
+        )
+    return ",".join(parts)
 
 
 def get_unique_output_path(base_path: str) -> str:
@@ -39,10 +54,41 @@ def get_unique_output_path(base_path: str) -> str:
         counter += 1
 
 
+def check_output_conflicts(mode: str, output_path: str) -> tuple[bool, bool]:
+    file_exists, is_locked = lock_manager.check_file_status(output_path)
+    exists = file_exists or is_locked
+    locked = is_locked
+
+    if mode == "extractcd":
+        bin_path = str(Path(output_path).with_suffix(".bin"))
+        bin_exists, bin_locked = lock_manager.check_file_status(bin_path)
+        exists = exists or bin_exists or bin_locked
+        locked = locked or bin_locked
+
+    return exists, locked
+
+
+def get_unique_output_path_for_extractcd(base_path: str) -> str:
+    path = Path(base_path)
+    stem = path.stem
+    suffix = path.suffix or ".cue"
+    parent = path.parent
+
+    counter = 1
+    candidate = str(path)
+    while True:
+        exists, locked = check_output_conflicts("extractcd", candidate)
+        if not exists and not locked:
+            return candidate
+        candidate = str(parent / f"{stem}_{counter}{suffix}")
+        counter += 1
+
+
 @router.post("/jobs/check-duplicates", response_model=List[DuplicateInfo])
 async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
     results = []
+    mode = request.mode.value
 
     if request.output_dir and not is_within_configured_volumes(request.output_dir, treat_archives=False):
         raise HTTPException(status_code=403, detail="Access denied: output directory outside configured volumes")
@@ -65,11 +111,19 @@ async def check_duplicates(request: CheckDuplicatesRequest):
 
         if "::" in file_path:
             output_stem = archive_service._output_stem_for_member(actual_filename)
-            output_path = chdman_service.get_chd_path(output_stem, effective_output_dir, treat_as_stem=True)
+            output_path = chdman_service.get_output_path_for_mode(
+                mode,
+                output_stem,
+                effective_output_dir,
+                treat_as_stem=True
+            )
         else:
-            output_path = chdman_service.get_chd_path(actual_filename, effective_output_dir)
-        file_exists, is_locked = lock_manager.check_file_status(output_path)
-        exists = file_exists or is_locked
+            output_path = chdman_service.get_output_path_for_mode(
+                mode,
+                actual_filename,
+                effective_output_dir
+            )
+        exists, _ = check_output_conflicts(mode, output_path)
 
         results.append(DuplicateInfo(
             file_path=file_path,
@@ -83,6 +137,10 @@ async def check_duplicates(request: CheckDuplicatesRequest):
 @router.post("/jobs", response_model=ConversionJob)
 async def create_job(request: JobCreateRequest):
     """Create a single conversion job."""
+    compression = normalize_compression(request.compression)
+    mode = request.mode.value
+    if compression and mode.startswith("extract"):
+        raise HTTPException(status_code=400, detail="Compression is only supported for CHD creation/copy")
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(status_code=403, detail="Access denied: file path outside configured volumes")
 
@@ -97,6 +155,8 @@ async def create_job(request: JobCreateRequest):
     display_filename = None
 
     if "::" in request.file_path:
+        if mode.startswith("extract") or mode == "copy":
+            raise HTTPException(status_code=400, detail="Archive inputs are not supported for extract/copy")
         archive_path, internal_path = request.file_path.split("::", 1)
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
         display_filename = os.path.basename(internal_path)
@@ -107,38 +167,57 @@ async def create_job(request: JobCreateRequest):
         # Calculate output path before extraction to avoid unnecessary work
         effective_output_dir = request.output_dir or archive_source_dir
         output_stem = archive_service._output_stem_for_member(internal_path)
-        output_path = chdman_service.get_chd_path(output_stem, effective_output_dir, treat_as_stem=True)
+        output_path = chdman_service.get_output_path_for_mode(
+            mode,
+            output_stem,
+            effective_output_dir,
+            treat_as_stem=True
+        )
 
-        file_exists, is_locked = lock_manager.check_file_status(output_path)
-        output_exists = file_exists
-        if file_exists or is_locked:
+        output_exists, is_locked = check_output_conflicts(mode, output_path)
+        if output_exists or is_locked:
             if request.duplicate_action == DuplicateAction.SKIP:
                 raise HTTPException(status_code=409, detail="Output file already exists")
             elif request.duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise HTTPException(status_code=409, detail="Output file is currently being converted")
             elif request.duplicate_action == DuplicateAction.RENAME:
-                output_path = get_unique_output_path(output_path)
+                if mode == "extractcd":
+                    output_path = get_unique_output_path_for_extractcd(output_path)
+                else:
+                    output_path = get_unique_output_path(output_path)
 
     if "::" not in request.file_path and not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not found")
+
+    if (mode.startswith("extract") or mode == "copy") and not file_path.lower().endswith(".chd"):
+        raise HTTPException(status_code=400, detail="Extract/copy modes require .chd input files")
+
+    if mode.startswith("create") and file_path.lower().endswith(".chd"):
+        raise HTTPException(status_code=400, detail="Create modes require non-CHD input files")
 
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive
     if output_path is None:
         effective_output_dir = request.output_dir or archive_source_dir
-        output_path = chdman_service.get_chd_path(file_path, effective_output_dir)
+        output_path = chdman_service.get_output_path_for_mode(
+            mode,
+            file_path,
+            effective_output_dir
+        )
 
-        file_exists, is_locked = lock_manager.check_file_status(output_path)
-        output_exists = file_exists
-        if file_exists or is_locked:
+        output_exists, is_locked = check_output_conflicts(mode, output_path)
+        if output_exists or is_locked:
             if request.duplicate_action == DuplicateAction.SKIP:
                 raise HTTPException(status_code=409, detail="Output file already exists")
             elif request.duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise HTTPException(status_code=409, detail="Output file is currently being converted")
             elif request.duplicate_action == DuplicateAction.RENAME:
-                output_path = get_unique_output_path(output_path)
+                if mode == "extractcd":
+                    output_path = get_unique_output_path_for_extractcd(output_path)
+                else:
+                    output_path = get_unique_output_path(output_path)
 
     allow_overwrite = request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
     job = job_manager.create_job(
@@ -146,7 +225,8 @@ async def create_job(request: JobCreateRequest):
         request.mode,
         output_path=output_path,
         allow_overwrite=allow_overwrite,
-        filename_override=display_filename
+        filename_override=display_filename,
+        compression=compression
     )
 
     return job
@@ -155,6 +235,10 @@ async def create_job(request: JobCreateRequest):
 @router.post("/jobs/batch", response_model=List[ConversionJob])
 async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
+    compression = normalize_compression(request.compression)
+    mode = request.mode.value
+    if compression and mode.startswith("extract"):
+        raise HTTPException(status_code=400, detail="Compression is only supported for CHD creation/copy")
     for file_path in request.file_paths:
         if not is_within_configured_volumes(file_path):
             raise HTTPException(
@@ -176,6 +260,9 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
 
         # Handle archive files
         if "::" in file_path:
+            if mode.startswith("extract") or mode == "copy":
+                skipped.append(file_path)
+                continue
             archive_path, internal_path = file_path.split("::", 1)
             archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
             display_filename = os.path.basename(internal_path)
@@ -187,11 +274,15 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             # Calculate output path before extraction to avoid unnecessary work
             effective_output_dir = request.output_dir or archive_source_dir
             output_stem = archive_service._output_stem_for_member(internal_path)
-            output_path = chdman_service.get_chd_path(output_stem, effective_output_dir, treat_as_stem=True)
-            file_exists, is_locked = lock_manager.check_file_status(output_path)
-            output_exists = file_exists
+            output_path = chdman_service.get_output_path_for_mode(
+                mode,
+                output_stem,
+                effective_output_dir,
+                treat_as_stem=True
+            )
+            output_exists, is_locked = check_output_conflicts(mode, output_path)
 
-            if file_exists or is_locked:
+            if output_exists or is_locked:
                 if request.duplicate_action == DuplicateAction.SKIP:
                     skipped.append(file_path)
                     continue
@@ -200,9 +291,20 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                         skipped.append(file_path)
                         continue
                 elif request.duplicate_action == DuplicateAction.RENAME:
-                    output_path = get_unique_output_path(output_path)
+                    if mode == "extractcd":
+                        output_path = get_unique_output_path_for_extractcd(output_path)
+                    else:
+                        output_path = get_unique_output_path(output_path)
 
         if "::" not in file_path and not os.path.isfile(file_path):
+            skipped.append(file_path)
+            continue
+
+        if (mode.startswith("extract") or mode == "copy") and not file_path.lower().endswith(".chd"):
+            skipped.append(file_path)
+            continue
+
+        if mode.startswith("create") and file_path.lower().endswith(".chd"):
             skipped.append(file_path)
             continue
 
@@ -210,11 +312,14 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         # For archive files: use output_dir if specified, otherwise save next to archive
         if output_path is None:
             effective_output_dir = request.output_dir or archive_source_dir
-            output_path = chdman_service.get_chd_path(file_path, effective_output_dir)
-            file_exists, is_locked = lock_manager.check_file_status(output_path)
-            output_exists = file_exists
+            output_path = chdman_service.get_output_path_for_mode(
+                mode,
+                file_path,
+                effective_output_dir
+            )
+            output_exists, is_locked = check_output_conflicts(mode, output_path)
 
-            if file_exists or is_locked:
+            if output_exists or is_locked:
                 if request.duplicate_action == DuplicateAction.SKIP:
                     skipped.append(file_path)
                     continue
@@ -223,7 +328,10 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                         skipped.append(file_path)
                         continue
                 elif request.duplicate_action == DuplicateAction.RENAME:
-                    output_path = get_unique_output_path(output_path)
+                    if mode == "extractcd":
+                        output_path = get_unique_output_path_for_extractcd(output_path)
+                    else:
+                        output_path = get_unique_output_path(output_path)
 
         allow_overwrite = request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
         job = job_manager.create_job(
@@ -231,7 +339,8 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             request.mode,
             output_path=output_path,
             allow_overwrite=allow_overwrite,
-            filename_override=display_filename
+            filename_override=display_filename,
+            compression=compression
         )
         jobs.append(job)
 

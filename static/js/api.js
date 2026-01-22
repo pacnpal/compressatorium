@@ -37,14 +37,15 @@ export const api = {
     },
 
     // Jobs
-    async createJob(filePath, mode = 'createcd', outputDir = null) {
+    async createJob(filePath, mode = 'createcd', outputDir = null, compression = null) {
         const res = await fetch(`${API_BASE}/jobs`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 file_path: filePath,
                 mode,
-                output_dir: outputDir
+                output_dir: outputDir,
+                compression
             })
         });
         if (!res.ok) {
@@ -54,7 +55,7 @@ export const api = {
         return res.json();
     },
 
-    async createBatchJobs(filePaths, mode = 'createcd', outputDir = null, duplicateAction = 'skip') {
+    async createBatchJobs(filePaths, mode = 'createcd', outputDir = null, duplicateAction = 'skip', compression = null) {
         const res = await fetch(`${API_BASE}/jobs/batch`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -62,7 +63,8 @@ export const api = {
                 file_paths: filePaths,
                 mode,
                 output_dir: outputDir,
-                duplicate_action: duplicateAction
+                duplicate_action: duplicateAction,
+                compression
             })
         });
         if (!res.ok) {
@@ -72,13 +74,14 @@ export const api = {
         return res.json();
     },
 
-    async checkDuplicates(filePaths, outputDir = null) {
+    async checkDuplicates(filePaths, outputDir = null, mode = 'createcd') {
         const res = await fetch(`${API_BASE}/jobs/check-duplicates`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 file_paths: filePaths,
-                output_dir: outputDir
+                output_dir: outputDir,
+                mode
             })
         });
         if (!res.ok) {
