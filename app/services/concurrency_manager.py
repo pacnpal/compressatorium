@@ -55,7 +55,9 @@ class ConcurrencyManager:
         except OSError:
             pass
 
-    async def acquire(self, key: str, cancel_event: Optional[asyncio.Event] = None) -> bool:
+    async def acquire(
+        self, key: str, cancel_event: Optional[asyncio.Event] = None
+    ) -> bool:
         """Acquire a global concurrency slot in FIFO order. Returns False if cancelled."""
         self.reserve_ticket(key)
         has_turn = await self._wait_for_turn(key, cancel_event=cancel_event)
@@ -101,13 +103,15 @@ class ConcurrencyManager:
                 pass
         self.release_ticket(key)
 
-    async def _wait_for_turn(self, key: str, cancel_event: Optional[asyncio.Event] = None) -> bool:
+    async def _wait_for_turn(
+        self, key: str, cancel_event: Optional[asyncio.Event] = None
+    ) -> bool:
         ticket = self.reserve_ticket(key)
         while True:
             if cancel_event and cancel_event.is_set():
                 return False
             tickets = self._list_tickets()
-            if ticket in tickets[:self.max_concurrent]:
+            if ticket in tickets[: self.max_concurrent]:
                 return True
             await asyncio.sleep(0.2)
 
@@ -165,13 +169,9 @@ class ConcurrencyManager:
             pass
 
     def stats(self) -> dict:
-        return {
-            "tickets": len(self._list_tickets()),
-            "slots": len(self._slot_paths)
-        }
+        return {"tickets": len(self._list_tickets()), "slots": len(self._slot_paths)}
 
 
 concurrency_manager = ConcurrencyManager(
-    settings.max_concurrent_jobs,
-    settings.concurrency_lock_dir
+    settings.max_concurrent_jobs, settings.concurrency_lock_dir
 )

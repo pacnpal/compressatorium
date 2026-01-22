@@ -18,9 +18,7 @@ def configure_logging():
     logger.setLevel(level)
     logger.propagate = False
 
-    formatter = logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
@@ -34,10 +32,11 @@ def configure_logging():
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
+
 app = FastAPI(
     title="CHD Converter",
     description="Web UI for converting game disc images to CHD format",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # Include routers
@@ -50,6 +49,7 @@ app.include_router(info.router, prefix="/api", tags=["info"])
 async def startup_event():
     """Start background job processor."""
     import asyncio
+
     configure_logging()
     asyncio.create_task(job_manager.process_queue())
 

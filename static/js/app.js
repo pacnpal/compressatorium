@@ -157,10 +157,12 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         } else if (entry.type === 'archive') {
             // For archives, browse contents
             onBrowseArchive && onBrowseArchive(entry.path);
-        } else if (canSelect(entry)) {
-            onToggleSelect(entry);
         } else if (entry.extension === '.chd') {
+            // For CHD files, show info (but checkbox still works for selection)
             onShowInfo(entry.path);
+        } else {
+            // For all other files, toggle selection
+            onToggleSelect(entry);
         }
     };
 
@@ -199,19 +201,19 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
     return html`
         <ul class="file-list">
             ${entries.map(entry => {
-                const chdPath = getChdPath(entry);
-                const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
-                const canVerify = chdPath && (entry.extension === '.chd' || (isArchiveItem(entry) && entry.has_chd));
-                const archiveItems = entry.archive_items;
-                const archiveHasChd = entry.archive_has_chd;
-                return html`
+        const chdPath = getChdPath(entry);
+        const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
+        const canVerify = chdPath && (entry.extension === '.chd' || (isArchiveItem(entry) && entry.has_chd));
+        const archiveItems = entry.archive_items;
+        const archiveHasChd = entry.archive_has_chd;
+        return html`
                 <li
                     key=${entry.path}
                     class="file-item ${selectedFiles.has(entry.path) ? 'selected' : ''}"
                     onClick=${(e) => handleClick(entry, e)}
                     title=${getTooltip(entry)}
                 >
-                    ${canSelect(entry) && entry.type !== 'archive' && html`
+                    ${entry.type !== 'directory' && entry.type !== 'archive' && html`
                         <input
                             type="checkbox"
                             class="checkbox"
@@ -251,11 +253,11 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                     ${isVerifying && html`
                         <span class="status convertible" title="Verifying CHD integrity">
                             ${(() => {
-                                const status = chdPath ? verifyProgress.get(chdPath) : null;
-                                if (!status) return 'Verifying...';
-                                if (status.progress != null) return `Verifying ${status.progress}%`;
-                                return status.message || 'Verifying...';
-                            })()}
+                    const status = chdPath ? verifyProgress.get(chdPath) : null;
+                    if (!status) return 'Verifying...';
+                    if (status.progress != null) return `Verifying ${status.progress}%`;
+                    return status.message || 'Verifying...';
+                })()}
                         </span>
                     `}
                     <div class="file-actions" onClick=${(e) => e.stopPropagation()}>
@@ -288,7 +290,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                     </div>
                 </li>
                 `;
-            })}
+    })}
         </ul>
     `;
 }
@@ -948,6 +950,485 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
     `;
 }
 
+function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, onRefresh }) {
+    const [step, setStep] = useState(1); // 1 = review, 2 = verifying, 3 = confirm
+    const [deleting, setDeleting] = useState(false);
+    const [error, setError] = useState(null);
+    const [result, setResult] = useState(null);
+    const [verifyState, setVerifyState] = useState({ running: false, total: 0, verified: 0, failed: 0, current: null });
+    const [skipVerification, setSkipVerification] = useState(false);
+
+    // Reset state when entries change
+    const entriesKey = entries ? entries.map(e => e.path).join('|') : '';
+    useEffect(() => {
+        if (!entriesKey) return;
+        setStep(1);
+        setDeleting(false);
+        setError(null);
+        setResult(null);
+        setVerifyState({ running: false, total: 0, verified: 0, failed: 0, current: null });
+        setSkipVerification(false);
+    }, [entriesKey]);
+
+    if (!entries || entries.length === 0) return null;
+
+    // Categorize files
+    const sourceFiles = entries.filter(e =>
+        ['.iso', '.gdi', '.cue', '.bin'].includes(e.extension?.toLowerCase())
+    );
+    const chdFiles = entries.filter(e => e.extension?.toLowerCase() === '.chd');
+    const archives = entries.filter(e => e.type === 'archive');
+    const otherFiles = entries.filter(e =>
+        !sourceFiles.includes(e) && !chdFiles.includes(e) && !archives.includes(e)
+    );
+
+    // Check verification status for source files
+    const sourceFilesWithCHD = sourceFiles.filter(e => e.has_chd);
+    const unverifiedSourceFiles = sourceFilesWithCHD.filter(e => {
+        const chdPath = e.path.replace(/\.[^.]+$/, '.chd');
+        return !verifiedCHDs.has(chdPath);
+    });
+    const sourceFilesWithoutCHD = sourceFiles.filter(e => !e.has_chd);
+    const hasUnverifiedCHDs = unverifiedSourceFiles.length > 0;
+    const hasDangerousDeletes = sourceFilesWithoutCHD.length > 0;
+
+    const handleVerifyAll = async () => {
+        const chdPaths = unverifiedSourceFiles.map(e => e.path.replace(/\.[^.]+$/, '.chd'));
+        if (chdPaths.length === 0) {
+            setStep(3);
+            return;
+        }
+
+        setStep(2);
+        setVerifyState({ running: true, total: chdPaths.length, verified: 0, failed: 0, current: null });
+
+        try {
+            await api.verifyBatchCHDs(chdPaths, {
+                onProgress: (update) => {
+                    if (update.type === 'start') {
+                        // Use server-validated total (may be less than client count if paths were filtered)
+                        setVerifyState(prev => ({
+                            ...prev,
+                            total: update.total
+                        }));
+                    } else if (update.type === 'progress' || update.type === 'file_progress') {
+                        setVerifyState(prev => ({
+                            ...prev,
+                            current: update.filename || update.path
+                        }));
+                    }
+                },
+                onFileComplete: (data) => {
+                    setVerifyState(prev => ({
+                        ...prev,
+                        verified: data.verified,
+                        failed: data.failed,
+                        current: null
+                    }));
+                    // Update parent's verifiedCHDs if verified
+                    if (data.valid && onVerify) {
+                        onVerify(data.path);
+                    }
+                }
+            });
+        } catch (err) {
+            setError(`Verification failed: ${err.message}`);
+        } finally {
+            setVerifyState(prev => ({ ...prev, running: false, current: null }));
+            setStep(3);
+        }
+    };
+
+    const handleDelete = async () => {
+        setDeleting(true);
+        setError(null);
+        try {
+            const paths = entries.map(e => e.path);
+            const deleteResult = await api.deleteBatch(paths);
+            setResult(deleteResult);
+            if (deleteResult.success > 0 && onRefresh) {
+                onRefresh();
+            }
+            if (deleteResult.failed === 0) {
+                onClose();
+            }
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setDeleting(false);
+        }
+    };
+
+    return html`
+        <div class="modal-overlay" onClick=${onClose}>
+            <div class="modal" onClick=${(e) => e.stopPropagation()} style="max-width: 500px;">
+                <div class="modal-header">
+                    <h3 style="color: var(--error);">⚠️ Delete ${entries.length} File${entries.length > 1 ? 's' : ''}</h3>
+                    <button class="modal-close" onClick=${onClose} title="Close">×</button>
+                </div>
+                <div class="modal-body" style="padding: 15px;">
+                    ${step === 1 && html`
+                        <div style="max-height: 200px; overflow-y: auto; margin-bottom: 15px; padding: 10px; background: var(--bg-primary); border-radius: 4px;">
+                            ${sourceFilesWithCHD.length > 0 && html`
+                                <div style="margin-bottom: 10px;">
+                                    <strong style="color: var(--text-primary);">Source files with CHD (${sourceFilesWithCHD.length}):</strong>
+                                    ${sourceFilesWithCHD.map(e => {
+        const chdPath = e.path.replace(/\.[^.]+$/, '.chd');
+        const isVerified = verifiedCHDs.has(chdPath);
+        return html`
+                                            <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0; color: ${isVerified ? 'var(--success)' : 'var(--warning)'};">
+                                                ${isVerified ? '✓' : '⚠'} ${e.name}
+                                            </div>
+                                        `;
+    })}
+                                </div>
+                            `}
+                            ${sourceFilesWithoutCHD.length > 0 && html`
+                                <div style="margin-bottom: 10px;">
+                                    <strong style="color: var(--error);">Source files WITHOUT CHD (${sourceFilesWithoutCHD.length}):</strong>
+                                    ${sourceFilesWithoutCHD.map(e => html`
+                                        <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0; color: var(--error);">
+                                            ❌ ${e.name}
+                                        </div>
+                                    `)}
+                                </div>
+                            `}
+                            ${chdFiles.length > 0 && html`
+                                <div style="margin-bottom: 10px;">
+                                    <strong style="color: var(--text-primary);">CHD files (${chdFiles.length}):</strong>
+                                    ${chdFiles.map(e => html`
+                                        <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0;">💿 ${e.name}</div>
+                                    `)}
+                                </div>
+                            `}
+                            ${archives.length > 0 && html`
+                                <div style="margin-bottom: 10px;">
+                                    <strong style="color: var(--text-primary);">Archives (${archives.length}):</strong>
+                                    ${archives.map(e => html`
+                                        <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0;">📦 ${e.name}</div>
+                                    `)}
+                                </div>
+                            `}
+                            ${otherFiles.length > 0 && html`
+                                <div>
+                                    <strong style="color: var(--text-primary);">Other files (${otherFiles.length}):</strong>
+                                    ${otherFiles.map(e => html`
+                                        <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0;">📄 ${e.name}</div>
+                                    `)}
+                                </div>
+                            `}
+                        </div>
+
+                        ${hasDangerousDeletes && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--error);">
+                                <p style="color: var(--error); margin: 0;">
+                                    ⚠️ <strong>WARNING:</strong> ${sourceFilesWithoutCHD.length} source file${sourceFilesWithoutCHD.length > 1 ? 's have' : ' has'} no CHD backup. Deleting will result in data loss!
+                                </p>
+                            </div>
+                        `}
+
+                        ${hasUnverifiedCHDs && !hasDangerousDeletes && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--warning);">
+                                <p style="color: var(--warning); margin: 0;">
+                                    ⚠️ ${unverifiedSourceFiles.length} source file${unverifiedSourceFiles.length > 1 ? 's have' : ' has'} unverified CHD${unverifiedSourceFiles.length > 1 ? 's' : ''}. We recommend verifying before deletion.
+                                </p>
+                            </div>
+                        `}
+
+                        <p style="color: var(--text-secondary); margin-bottom: 15px;">This action cannot be undone.</p>
+
+                        ${error && html`
+                            <p style="color: var(--error); margin-bottom: 15px; font-size: 0.85rem;">${error}</p>
+                        `}
+
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            ${hasUnverifiedCHDs && html`
+                                <button class="btn btn-primary" onClick=${handleVerifyAll}>
+                                    🔍 Verify All CHDs First (${unverifiedSourceFiles.length})
+                                </button>
+                            `}
+                            <button 
+                                class="btn ${hasUnverifiedCHDs || hasDangerousDeletes ? 'btn-secondary' : 'btn-primary'}"
+                                style="${hasDangerousDeletes ? 'background: var(--error);' : ''}"
+                                onClick=${() => { setSkipVerification(hasUnverifiedCHDs); setStep(3); }}
+                            >
+                                ${hasDangerousDeletes ? 'Delete Anyway (Data Loss!)' : hasUnverifiedCHDs ? 'Skip Verification' : 'Continue to Delete'}
+                            </button>
+                            <button class="btn btn-secondary" onClick=${onClose}>Cancel</button>
+                        </div>
+                    `}
+
+                    ${step === 2 && html`
+                        <div style="text-align: center; padding: 20px;">
+                            <div class="spinner" style="margin: 0 auto 15px;"></div>
+                            <p style="color: var(--text-primary); margin-bottom: 10px;">
+                                Verifying CHD files... ${verifyState.verified + verifyState.failed}/${verifyState.total}
+                            </p>
+                            ${verifyState.current && html`
+                                <p style="color: var(--text-secondary); font-size: 0.85rem;">${verifyState.current}</p>
+                            `}
+                            <div style="margin-top: 15px; font-size: 0.85rem;">
+                                <span style="color: var(--success);">✓ ${verifyState.verified} verified</span>
+                                ${verifyState.failed > 0 && html`
+                                    <span style="color: var(--error); margin-left: 15px;">✗ ${verifyState.failed} failed</span>
+                                `}
+                            </div>
+                        </div>
+                    `}
+
+                    ${step === 3 && html`
+                        ${verifyState.total > 0 && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid ${verifyState.failed > 0 ? 'var(--warning)' : 'var(--success)'};">
+                                <p style="color: ${verifyState.failed > 0 ? 'var(--warning)' : 'var(--success)'}; margin: 0;">
+                                    ${verifyState.failed > 0
+                    ? `⚠️ Verification complete: ${verifyState.verified} passed, ${verifyState.failed} failed`
+                    : `✓ All ${verifyState.verified} CHD${verifyState.verified > 1 ? 's' : ''} verified successfully`
+                }
+                                </p>
+                            </div>
+                        `}
+
+                        ${skipVerification && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--warning);">
+                                <p style="color: var(--warning); margin: 0;">
+                                    ⚠️ Proceeding without CHD verification.
+                                </p>
+                            </div>
+                        `}
+
+                        ${result && html`
+                            <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid ${result.failed > 0 ? 'var(--warning)' : 'var(--success)'};">
+                                <p style="color: ${result.failed > 0 ? 'var(--warning)' : 'var(--success)'}; margin: 0;">
+                                    ${result.failed > 0
+                    ? `Deleted ${result.success} file${result.success !== 1 ? 's' : ''}, ${result.failed} failed`
+                    : `✓ Successfully deleted ${result.success} file${result.success !== 1 ? 's' : ''}`
+                }
+                                </p>
+                                ${result.failed > 0 && result.results && html`
+                                    <div style="margin-top: 10px; font-size: 0.85rem;">
+                                        ${result.results.filter(r => !r.success).map(r => html`
+                                            <div key=${r.path} style="color: var(--error);">
+                                                ✗ ${r.path.split('/').pop()}: ${r.error}
+                                            </div>
+                                        `)}
+                                    </div>
+                                `}
+                            </div>
+                        `}
+
+                        ${!result && html`
+                            <p style="color: var(--text-secondary); margin-bottom: 15px;">
+                                Confirm deletion of ${entries.length} file${entries.length > 1 ? 's' : ''}?
+                            </p>
+                        `}
+
+                        ${error && html`
+                            <p style="color: var(--error); margin-bottom: 15px; font-size: 0.85rem;">${error}</p>
+                        `}
+
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            ${!result && html`
+                                <button 
+                                    class="btn btn-primary" 
+                                    onClick=${handleDelete} 
+                                    disabled=${deleting}
+                                    style="${hasDangerousDeletes ? 'background: var(--error);' : ''}"
+                                >
+                                    ${deleting ? 'Deleting...' : `Delete ${entries.length} File${entries.length > 1 ? 's' : ''}`}
+                                </button>
+                            `}
+                            <button class="btn btn-secondary" onClick=${onClose}>
+                                ${result ? 'Close' : 'Cancel'}
+                            </button>
+                        </div>
+                    `}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function BulkVerifyModal({ chdPaths, onComplete, onClose }) {
+    const [state, setState] = useState({
+        running: false,
+        total: 0,
+        verified: 0,
+        failed: 0,
+        current: null,
+        currentProgress: null,
+        results: [],
+        error: null,
+        complete: false
+    });
+
+    // Reset and start verification when paths change
+    const pathsKey = chdPaths ? chdPaths.join('|') : '';
+    useEffect(() => {
+        if (!pathsKey || chdPaths.length === 0) return;
+
+        let cancelled = false;
+
+        const runVerification = async () => {
+            setState({
+                running: true,
+                total: chdPaths.length,
+                verified: 0,
+                failed: 0,
+                current: null,
+                currentProgress: null,
+                results: [],
+                error: null,
+                complete: false
+            });
+
+            try {
+                const result = await api.verifyBatchCHDs(chdPaths, {
+                    onProgress: (update) => {
+                        if (cancelled) return;
+                        if (update.type === 'start') {
+                            // Use server-validated total (may be less than client count if paths were filtered)
+                            setState(prev => ({
+                                ...prev,
+                                total: update.total
+                            }));
+                        } else if (update.type === 'progress') {
+                            setState(prev => ({
+                                ...prev,
+                                current: update.filename
+                            }));
+                        } else if (update.type === 'file_progress') {
+                            setState(prev => ({
+                                ...prev,
+                                current: update.filename,
+                                currentProgress: update.progress
+                            }));
+                        }
+                    },
+                    onFileComplete: (data) => {
+                        if (cancelled) return;
+                        setState(prev => ({
+                            ...prev,
+                            verified: data.verified,
+                            failed: data.failed,
+                            current: null,
+                            currentProgress: null,
+                            results: [...prev.results, data]
+                        }));
+                    }
+                });
+
+                if (cancelled) return;
+                setState(prev => ({
+                    ...prev,
+                    running: false,
+                    complete: true,
+                    verified: result.verified,
+                    failed: result.failed
+                }));
+
+                if (onComplete) {
+                    onComplete(result);
+                }
+            } catch (err) {
+                if (cancelled) return;
+                setState(prev => ({
+                    ...prev,
+                    running: false,
+                    error: err.message
+                }));
+            }
+        };
+
+        runVerification();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [pathsKey]);
+
+    if (!chdPaths || chdPaths.length === 0) return null;
+
+    return html`
+        <div class="modal-overlay" onClick=${state.running ? null : onClose}>
+            <div class="modal" onClick=${(e) => e.stopPropagation()} style="max-width: 500px;">
+                <div class="modal-header">
+                    <h3>🔍 Verify ${chdPaths.length} CHD File${chdPaths.length > 1 ? 's' : ''}</h3>
+                    ${!state.running && html`
+                        <button class="modal-close" onClick=${onClose} title="Close">×</button>
+                    `}
+                </div>
+                <div class="modal-body" style="padding: 15px;">
+                    ${state.running && html`
+                        <div style="text-align: center; padding: 20px;">
+                            <div class="spinner" style="margin: 0 auto 15px;"></div>
+                            <p style="color: var(--text-primary); margin-bottom: 10px;">
+                                Verifying CHD files... ${state.verified + state.failed}/${state.total}
+                            </p>
+                            ${state.current && html`
+                                <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 5px;">
+                                    ${state.current}
+                                </p>
+                            `}
+                            ${state.currentProgress != null && html`
+                                <div style="width: 100%; height: 4px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden;">
+                                    <div style="width: ${state.currentProgress}%; height: 100%; background: var(--accent); transition: width 0.3s;"></div>
+                                </div>
+                            `}
+                        </div>
+                        <div style="margin-top: 15px; text-align: center; font-size: 0.85rem;">
+                            <span style="color: var(--success);">✓ ${state.verified} verified</span>
+                            ${state.failed > 0 && html`
+                                <span style="color: var(--error); margin-left: 15px;">✗ ${state.failed} failed</span>
+                            `}
+                        </div>
+                    `}
+
+                    ${state.complete && html`
+                        <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid ${state.failed > 0 ? 'var(--warning)' : 'var(--success)'};">
+                            <p style="color: ${state.failed > 0 ? 'var(--warning)' : 'var(--success)'}; margin: 0; font-weight: bold;">
+                                ${state.failed > 0
+                ? `Verification complete: ${state.verified} passed, ${state.failed} failed`
+                : `✓ All ${state.verified} CHD${state.verified > 1 ? 's' : ''} verified successfully!`
+            }
+                            </p>
+                        </div>
+
+                        ${state.results.length > 0 && html`
+                            <div style="max-height: 200px; overflow-y: auto; padding: 10px; background: var(--bg-primary); border-radius: 4px;">
+                                ${state.results.map(r => html`
+                                    <div key=${r.path} style="font-size: 0.85rem; padding: 4px 0; color: ${r.valid ? 'var(--success)' : 'var(--error)'};">
+                                        ${r.valid ? '✓' : '✗'} ${r.filename}
+                                        ${!r.valid && r.message && html`
+                                            <span style="color: var(--text-secondary);"> - ${r.message}</span>
+                                        `}
+                                    </div>
+                                `)}
+                            </div>
+                        `}
+
+                        <div style="margin-top: 15px;">
+                            <button class="btn btn-primary" onClick=${onClose} style="width: 100%;">
+                                Close
+                            </button>
+                        </div>
+                    `}
+
+                    ${state.error && html`
+                        <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--error);">
+                            <p style="color: var(--error); margin: 0;">
+                                ✗ Error: ${state.error}
+                            </p>
+                        </div>
+                        <button class="btn btn-secondary" onClick=${onClose} style="width: 100%;">
+                            Close
+                        </button>
+                    `}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
 const buildCompressionValue = (selection, options) => {
     if (selection.includes('none')) return 'none';
     const ordered = options
@@ -987,6 +1468,8 @@ function App() {
     const [currentArchivePath, setCurrentArchivePath] = useState(null); // Track current archive being viewed
     const [renameTarget, setRenameTarget] = useState(null); // Entry to rename
     const [deleteTarget, setDeleteTarget] = useState(null); // Entry to delete
+    const [bulkDeleteEntries, setBulkDeleteEntries] = useState(null); // Entries for bulk delete
+    const [bulkVerifyPaths, setBulkVerifyPaths] = useState(null); // CHD paths for bulk verify
     const [verifiedCHDs, setVerifiedCHDs] = useState(new Set()); // Set of verified CHD paths
     const [verifyProgress, setVerifyProgress] = useState(new Map());
 
@@ -1038,10 +1521,10 @@ function App() {
                             const hasChanges = newArchiveEntries.some((newEntry, i) => {
                                 const oldEntry = prevEntries[i];
                                 return oldEntry.name !== newEntry.name ||
-                                       oldEntry.path !== newEntry.path ||
-                                       oldEntry.size !== newEntry.size ||
-                                       oldEntry.convertible !== newEntry.convertible ||
-                                       oldEntry.has_chd !== newEntry.has_chd;
+                                    oldEntry.path !== newEntry.path ||
+                                    oldEntry.size !== newEntry.size ||
+                                    oldEntry.convertible !== newEntry.convertible ||
+                                    oldEntry.has_chd !== newEntry.has_chd;
                             });
                             if (!hasChanges) return prevEntries;
                         }
@@ -1070,11 +1553,11 @@ function App() {
                             const hasChanges = newEntries.some((newEntry, i) => {
                                 const oldEntry = prevEntries[i];
                                 return oldEntry.name !== newEntry.name ||
-                                       oldEntry.path !== newEntry.path ||
-                                       oldEntry.size !== newEntry.size ||
-                                       oldEntry.type !== newEntry.type ||
-                                       oldEntry.convertible !== newEntry.convertible ||
-                                       oldEntry.has_chd !== newEntry.has_chd;
+                                    oldEntry.path !== newEntry.path ||
+                                    oldEntry.size !== newEntry.size ||
+                                    oldEntry.type !== newEntry.type ||
+                                    oldEntry.convertible !== newEntry.convertible ||
+                                    oldEntry.has_chd !== newEntry.has_chd;
                             });
                             // Only update if there are actual changes
                             if (!hasChanges) return prevEntries;
@@ -1121,7 +1604,7 @@ function App() {
                     setVerifiedCHDs(new Set(data.verified));
                 }
             })
-            .catch(() => {});
+            .catch(() => { });
     }, []);
 
     // Load files when path changes
@@ -1183,7 +1666,7 @@ function App() {
                     return currentHidden;
                 });
             })
-            .catch(() => {});
+            .catch(() => { });
 
         const unsubscribe = api.subscribeToJobs((update) => {
             const jobId = update?.data?.job_id;
@@ -1203,7 +1686,7 @@ function App() {
                                 return currentHidden;
                             });
                         })
-                        .catch(() => {});
+                        .catch(() => { });
                     return prevJobs;
                 }
 
@@ -1213,9 +1696,9 @@ function App() {
                     progress: update.data.progress ?? newJobs[idx].progress,
                     message: update.data.message ?? newJobs[idx].message,
                     status: update.type === 'complete' ? 'completed' :
-                            update.type === 'error' ? 'failed' :
+                        update.type === 'error' ? 'failed' :
                             update.type === 'cancelled' ? 'cancelled' :
-                            update.data.status ?? newJobs[idx].status,
+                                update.data.status ?? newJobs[idx].status,
                     error_message: update.data.error,
                     output_size: update.data.output_size
                 };
@@ -1243,7 +1726,7 @@ function App() {
                         return currentHidden;
                     });
                 })
-                .catch(() => {});
+                .catch(() => { });
         }, 4000);
 
         return () => {
@@ -1411,6 +1894,88 @@ function App() {
         }
     };
 
+    // Get selected entries that can be deleted (files and archives, not directories or archive members)
+    const getDeletableSelection = useCallback(() => {
+        const entries = [];
+        for (const [path, entry] of selectedFiles) {
+            // Exclude directories, archive members (paths like "archive.zip::game.iso" can't be deleted individually)
+            if (entry && entry.type !== 'directory' && !entry.is_archive_item && !path.includes('::')) {
+                entries.push(entry);
+            }
+        }
+        return entries;
+    }, [selectedFiles]);
+
+    // Get selected CHD file paths for verification
+    const getVerifiableCHDPaths = useCallback(() => {
+        const paths = [];
+        for (const [path, entry] of selectedFiles) {
+            if (entry && entry.extension?.toLowerCase() === '.chd') {
+                paths.push(path);
+            }
+        }
+        return paths;
+    }, [selectedFiles]);
+
+    // Handle bulk delete button click
+    const handleBulkDeleteClick = useCallback(() => {
+        const entries = getDeletableSelection();
+        if (entries.length === 0) {
+            notify('⚠ No deletable files selected', 'error');
+            return;
+        }
+        setBulkDeleteEntries(entries);
+    }, [getDeletableSelection, notify]);
+
+    // Handle bulk verify button click
+    const handleBulkVerifyClick = useCallback(() => {
+        const paths = getVerifiableCHDPaths();
+        if (paths.length === 0) {
+            notify('⚠ No CHD files selected', 'error');
+            return;
+        }
+        setBulkVerifyPaths(paths);
+    }, [getVerifiableCHDPaths, notify]);
+
+    // Handle bulk verify completion - update verified CHDs set
+    const handleBulkVerifyComplete = useCallback((result) => {
+        // Refresh verified CHDs from server to ensure consistency
+        api.getVerifiedCHDs()
+            .then(data => {
+                if (data && Array.isArray(data.verified)) {
+                    setVerifiedCHDs(new Set(data.verified));
+                }
+            })
+            .catch(() => { });
+
+        if (result.verified > 0) {
+            notify(`✓ Verified ${result.verified} CHD${result.verified > 1 ? 's' : ''}${result.failed > 0 ? `, ${result.failed} failed` : ''}`,
+                result.failed > 0 ? 'warning' : 'success');
+        }
+        // Clear selection after bulk verify
+        setSelectedFiles(new Map());
+    }, [notify]);
+
+    // Handle adding a single verified CHD to the set (called from BulkDeleteModal)
+    const handleAddVerifiedCHD = useCallback((chdPath) => {
+        setVerifiedCHDs(prev => new Set([...prev, chdPath]));
+    }, []);
+
+    // Handle bulk delete modal refresh
+    const handleBulkDeleteRefresh = useCallback(() => {
+        refreshFileList(true);
+        // Clear selection after successful bulk delete
+        setSelectedFiles(new Map());
+        // Refresh verified CHDs from server to remove deleted CHD paths from cache
+        api.getVerifiedCHDs()
+            .then(data => {
+                if (data && Array.isArray(data.verified)) {
+                    setVerifiedCHDs(new Set(data.verified));
+                }
+            })
+            .catch(() => { });
+    }, [refreshFileList]);
+
     // Helper to calculate expected output path
     const getExpectedOutputPath = (filePath, entry = null) => {
         // Get the filename (handle archive paths like "archive.zip::game.iso")
@@ -1501,7 +2066,7 @@ function App() {
         } catch (err) {
             const errorMsg = err.message || 'Unknown error occurred';
             // Mark placeholders as failed so user sees what went wrong
-            setCreatingJobs(prev => prev.map(j => ({...j, status: 'failed', error_message: errorMsg, message: `Failed to create: ${errorMsg}`})));
+            setCreatingJobs(prev => prev.map(j => ({ ...j, status: 'failed', error_message: errorMsg, message: `Failed to create: ${errorMsg}` })));
             notify(`✗ Failed to create jobs: ${errorMsg}`, 'error');
             console.error('Failed to create jobs:', err);
         } finally {
@@ -1687,11 +2252,11 @@ function App() {
             notify('⚠ No path selected', 'error');
             return;
         }
-        
+
         setLoading(true);
         setEntriesError(null);
         notify('🔍 Searching for convertible files...', 'info');
-        
+
         try {
             const results = await api.searchFiles(currentPath, true, true);
             setSearchResults(results);
@@ -1881,9 +2446,9 @@ function App() {
                             <button
                                 class="btn btn-sm btn-secondary"
                                 onClick=${() => {
-                                    setCurrentArchivePath(null);
-                                    refreshFileList(true);
-                                }}
+                setCurrentArchivePath(null);
+                refreshFileList(true);
+            }}
                                 title="Return to folder view"
                             >
                                 ← Back
@@ -1964,11 +2529,31 @@ function App() {
                             onClick=${handleConvert}
                             title=${converting ? `${getActionLabel()}...` : selectedFiles.size > 0 ? `${getActionLabel()} ${selectedFiles.size} selected file(s)` : `Select files to ${getActionLabel().toLowerCase()}`}
                         >
-                            ${converting 
-                                ? html`<span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-width: 2px;"></span>${getActionLabel()}...`
-                                : `${getActionLabel()} ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}`
-                            }
+                            ${converting
+            ? html`<span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-width: 2px;"></span>${getActionLabel()}...`
+            : `${getActionLabel()} ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}`
+        }
                         </button>
+                        ${getDeletableSelection().length > 0 && html`
+                            <button
+                                class="btn btn-sm btn-secondary"
+                                onClick=${handleBulkDeleteClick}
+                                title="Delete ${getDeletableSelection().length} selected file(s)"
+                                style="margin-left: 8px;"
+                            >
+                                🗑️ Delete (${getDeletableSelection().length})
+                            </button>
+                        `}
+                        ${getVerifiableCHDPaths().length > 0 && html`
+                            <button
+                                class="btn btn-sm btn-secondary"
+                                onClick=${handleBulkVerifyClick}
+                                title="Verify ${getVerifiableCHDPaths().length} selected CHD file(s)"
+                                style="margin-left: 8px;"
+                            >
+                                🔍 Verify (${getVerifiableCHDPaths().length})
+                            </button>
+                        `}
                     </div>
 
                     ${showCompressionHelp && html`
@@ -2022,8 +2607,8 @@ function App() {
 
                     <div class="panel-content">
                         ${loading
-                            ? html`<div class="loading"><div class="spinner"></div>Loading...</div>`
-                            : html`<${FileList}
+            ? html`<div class="loading"><div class="spinner"></div>Loading...</div>`
+            : html`<${FileList}
                                 entries=${entries}
                                 selectedFiles=${selectedFiles}
                                 canSelect=${canSelectEntry}
@@ -2038,7 +2623,7 @@ function App() {
                                 verifyProgress=${verifyProgress}
                                 error=${entriesError}
                             />`
-                        }
+        }
                     </div>
                 </div>
 
@@ -2106,6 +2691,25 @@ function App() {
                     onDelete=${handleDelete}
                     onVerify=${handleVerify}
                     onClose=${() => setDeleteTarget(null)}
+                />
+            `}
+
+            ${bulkDeleteEntries && html`
+                <${BulkDeleteModal}
+                    entries=${bulkDeleteEntries}
+                    verifiedCHDs=${verifiedCHDs}
+                    onDelete=${handleDelete}
+                    onVerify=${handleAddVerifiedCHD}
+                    onClose=${() => setBulkDeleteEntries(null)}
+                    onRefresh=${handleBulkDeleteRefresh}
+                />
+            `}
+
+            ${bulkVerifyPaths && html`
+                <${BulkVerifyModal}
+                    chdPaths=${bulkVerifyPaths}
+                    onComplete=${handleBulkVerifyComplete}
+                    onClose=${() => setBulkVerifyPaths(null)}
                 />
             `}
         </div>

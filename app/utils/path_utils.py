@@ -55,7 +55,9 @@ def ensure_path_within_volumes(path: str, *, treat_archives: bool = True) -> Pat
     """Return the resolved path if it is within configured volumes, else raise ValueError."""
     if not is_within_configured_volumes(path, treat_archives=treat_archives):
         raise ValueError("Path outside configured volumes")
-    resolved = _resolve_path(strip_archive_path(path) if treat_archives else path, strict=False)
+    resolved = _resolve_path(
+        strip_archive_path(path) if treat_archives else path, strict=False
+    )
     if resolved is None:
         raise ValueError("Path could not be resolved")
     return resolved

@@ -80,12 +80,54 @@ In the Web UI, you can specify a custom output directory for converted CHD files
 
 ### Features
 
-- **File Browser**: Navigate through mounted volumes and subdirectories
-- **Archive Support**: View and convert files inside ZIP, 7z, and RAR archives
-- **Batch Conversion**: Select multiple files and convert them all at once
-- **Progress Tracking**: Real-time progress updates via Server-Sent Events
-- **CHD Inspector**: View detailed information about existing CHD files
-- **Mode Selection**: Choose between CD mode (Dreamcast, PS1, etc.) or DVD mode (PSP, PS2, etc.)
+**File Browser**
+- Navigate through mounted volumes and subdirectories
+- View file sizes, types, and CHD status indicators
+- Recursive search to find all convertible files across the entire volume
+
+**Archive Support**
+- Browse inside ZIP, 7z, and RAR archives without extraction
+- Convert files directly from within archives
+- Archives extract temporarily during conversion, then clean up automatically
+
+**Batch Conversion**
+- Select multiple files and convert them all at once
+- Queue-based processing (FIFO) with configurable concurrency
+- Real-time progress tracking via Server-Sent Events
+- Duplicate detection with options to skip, rename, or overwrite
+
+**Bulk Operations**
+- **Bulk Delete**: Delete multiple selected files at once
+- **Bulk Verify**: Verify integrity of multiple CHD files simultaneously
+- Smart categorization showing source files with/without CHD backups
+- Warnings for files without verified CHD backups before deletion
+
+**CHD Verification**
+- Verify integrity of CHD files using chdman's built-in verification
+- Verification status persisted across sessions (stored in `/config/verified_chds.json`)
+- Integrated verification workflow when deleting source files
+- Visual indicators showing verified vs unverified CHD files
+
+**CHD Inspector**
+- View detailed CHD file information (version, compression, size, hashes)
+- SHA1 and Data SHA1 checksums displayed
+- Raw chdman output available for advanced inspection
+
+**File Management**
+- Rename files and directories
+- Delete files with safety checks (warns about missing CHD backups)
+- Empty directory cleanup
+
+**Conversion Modes**
+- **Create CHD**: createcd (CD), createdvd (DVD/PSP/PS2), createraw, createhd, createld
+- **Extract from CHD**: extractcd, extractdvd, extractraw, extracthd, extractld
+- **Copy/Recompress**: Recompress existing CHD files with different codecs
+
+**Compression Options**
+- Choose from multiple compression codecs: zlib, zstd, lzma, huff, flac
+- CD-specific codecs: cdzl, cdzs, cdlz, cdfl
+- No compression option for maximum compatibility
+- Select up to 4 codecs per conversion
 
 ---
 
@@ -174,6 +216,45 @@ Notes:
 - `extractcd` produces both `.cue` and `.bin` outputs.
 
 ---
+
+## API Endpoints
+
+The Web UI communicates with a REST API that can also be used directly. Interactive API documentation is available at `/docs` when running the container.
+
+### File Operations
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/volumes` | List configured volume mount points |
+| GET | `/api/files` | List files in a directory |
+| GET | `/api/files/search` | Recursively search for convertible files |
+| GET | `/api/files/archive` | List contents of an archive file |
+| POST | `/api/files/rename` | Rename a file or directory |
+| DELETE | `/api/files/delete` | Delete a single file or empty directory |
+| POST | `/api/files/delete-batch` | Delete multiple files at once |
+
+### Conversion Jobs
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/jobs` | Create a single conversion job |
+| POST | `/api/jobs/batch` | Create multiple conversion jobs |
+| POST | `/api/jobs/check-duplicates` | Check for existing output files |
+| GET | `/api/jobs` | List all jobs |
+| GET | `/api/jobs/{id}` | Get a specific job |
+| DELETE | `/api/jobs/{id}` | Cancel a job |
+| DELETE | `/api/jobs/completed` | Clear completed/failed/cancelled jobs |
+| GET | `/api/jobs/events` | SSE stream for job progress updates |
+
+### CHD Information & Verification
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/info` | Get CHD file metadata |
+| GET | `/api/verify` | Verify a CHD file's integrity |
+| GET | `/api/verify/events` | SSE stream for verification progress |
+| POST | `/api/verify-batch/events` | SSE stream for batch verification |
+| GET | `/api/verified` | List all verified CHD paths |
 
 ## Environment Variables
 

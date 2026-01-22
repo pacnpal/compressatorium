@@ -52,7 +52,7 @@ class VerificationStore:
         record = {
             "chd_path": normalized,
             "source_path": self._normalize_path(source_path) if source_path else None,
-            "verified_at": datetime.utcnow().isoformat() + "Z"
+            "verified_at": datetime.utcnow().isoformat() + "Z",
         }
         with self._lock:
             self._records[normalized] = record

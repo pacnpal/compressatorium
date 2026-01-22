@@ -78,7 +78,9 @@ class JobCreateRequest(BaseModel):
     file_path: str
     mode: ConversionMode = ConversionMode.CREATECD
     output_dir: Optional[str] = None  # If None, output alongside source
-    duplicate_action: DuplicateAction = DuplicateAction.SKIP  # What to do if output exists
+    duplicate_action: DuplicateAction = (
+        DuplicateAction.SKIP
+    )  # What to do if output exists
     compression: Optional[str] = None  # Comma-separated list (e.g. "zlib,lzma")
 
 
@@ -86,7 +88,9 @@ class BatchJobCreateRequest(BaseModel):
     file_paths: List[str]
     mode: ConversionMode = ConversionMode.CREATECD
     output_dir: Optional[str] = None  # If None, output alongside source
-    duplicate_action: DuplicateAction = DuplicateAction.SKIP  # What to do if output exists
+    duplicate_action: DuplicateAction = (
+        DuplicateAction.SKIP
+    )  # What to do if output exists
     compression: Optional[str] = None  # Comma-separated list (e.g. "zlib,lzma")
 
 
@@ -126,3 +130,11 @@ class CHDInfo(BaseModel):
     sha1: Optional[str] = None
     data_sha1: Optional[str] = None
     raw_data: str = ""
+
+
+class BulkDeleteRequest(BaseModel):
+    paths: List[str]
+
+
+class BulkVerifyRequest(BaseModel):
+    paths: List[str]

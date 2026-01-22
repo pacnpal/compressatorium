@@ -8,8 +8,13 @@ from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from models import (
-    ConversionJob, JobCreateRequest, BatchJobCreateRequest,
-    JobStatus, DuplicateAction, CheckDuplicatesRequest, DuplicateInfo
+    ConversionJob,
+    JobCreateRequest,
+    BatchJobCreateRequest,
+    JobStatus,
+    DuplicateAction,
+    CheckDuplicatesRequest,
+    DuplicateInfo,
 )
 from services.job_manager import job_manager
 from services.archive import archive_service
@@ -18,6 +23,8 @@ from services.lock_manager import lock_manager
 from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
+
+
 def normalize_compression(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
@@ -29,7 +36,7 @@ def normalize_compression(value: Optional[str]) -> Optional[str]:
     if invalid:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid compression token(s): {', '.join(invalid)}"
+            detail=f"Invalid compression token(s): {', '.join(invalid)}",
         )
     return ",".join(parts)
 
@@ -90,8 +97,13 @@ async def check_duplicates(request: CheckDuplicatesRequest):
     results = []
     mode = request.mode.value
 
-    if request.output_dir and not is_within_configured_volumes(request.output_dir, treat_archives=False):
-        raise HTTPException(status_code=403, detail="Access denied: output directory outside configured volumes")
+    if request.output_dir and not is_within_configured_volumes(
+        request.output_dir, treat_archives=False
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: output directory outside configured volumes",
+        )
 
     for file_path in request.file_paths:
         if not is_within_configured_volumes(file_path):
@@ -112,24 +124,17 @@ async def check_duplicates(request: CheckDuplicatesRequest):
         if "::" in file_path:
             output_stem = archive_service._output_stem_for_member(actual_filename)
             output_path = chdman_service.get_output_path_for_mode(
-                mode,
-                output_stem,
-                effective_output_dir,
-                treat_as_stem=True
+                mode, output_stem, effective_output_dir, treat_as_stem=True
             )
         else:
             output_path = chdman_service.get_output_path_for_mode(
-                mode,
-                actual_filename,
-                effective_output_dir
+                mode, actual_filename, effective_output_dir
             )
         exists, _ = check_output_conflicts(mode, output_path)
 
-        results.append(DuplicateInfo(
-            file_path=file_path,
-            output_path=output_path,
-            exists=exists
-        ))
+        results.append(
+            DuplicateInfo(file_path=file_path, output_path=output_path, exists=exists)
+        )
 
     return results
 
@@ -140,12 +145,23 @@ async def create_job(request: JobCreateRequest):
     compression = normalize_compression(request.compression)
     mode = request.mode.value
     if compression and mode.startswith("extract"):
-        raise HTTPException(status_code=400, detail="Compression is only supported for CHD creation/copy")
+        raise HTTPException(
+            status_code=400,
+            detail="Compression is only supported for CHD creation/copy",
+        )
     if not is_within_configured_volumes(request.file_path):
-        raise HTTPException(status_code=403, detail="Access denied: file path outside configured volumes")
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: file path outside configured volumes",
+        )
 
-    if request.output_dir and not is_within_configured_volumes(request.output_dir, treat_archives=False):
-        raise HTTPException(status_code=403, detail="Access denied: output directory outside configured volumes")
+    if request.output_dir and not is_within_configured_volumes(
+        request.output_dir, treat_archives=False
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: output directory outside configured volumes",
+        )
 
     # Handle archive files
     file_path = request.file_path
@@ -156,7 +172,10 @@ async def create_job(request: JobCreateRequest):
 
     if "::" in request.file_path:
         if mode.startswith("extract") or mode == "copy":
-            raise HTTPException(status_code=400, detail="Archive inputs are not supported for extract/copy")
+            raise HTTPException(
+                status_code=400,
+                detail="Archive inputs are not supported for extract/copy",
+            )
         archive_path, internal_path = request.file_path.split("::", 1)
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
         display_filename = os.path.basename(internal_path)
@@ -168,19 +187,21 @@ async def create_job(request: JobCreateRequest):
         effective_output_dir = request.output_dir or archive_source_dir
         output_stem = archive_service._output_stem_for_member(internal_path)
         output_path = chdman_service.get_output_path_for_mode(
-            mode,
-            output_stem,
-            effective_output_dir,
-            treat_as_stem=True
+            mode, output_stem, effective_output_dir, treat_as_stem=True
         )
 
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if request.duplicate_action == DuplicateAction.SKIP:
-                raise HTTPException(status_code=409, detail="Output file already exists")
+                raise HTTPException(
+                    status_code=409, detail="Output file already exists"
+                )
             elif request.duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
-                    raise HTTPException(status_code=409, detail="Output file is currently being converted")
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Output file is currently being converted",
+                    )
             elif request.duplicate_action == DuplicateAction.RENAME:
                 if mode == "extractcd":
                     output_path = get_unique_output_path_for_extractcd(output_path)
@@ -190,43 +211,54 @@ async def create_job(request: JobCreateRequest):
     if "::" not in request.file_path and not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    if (mode.startswith("extract") or mode == "copy") and not file_path.lower().endswith(".chd"):
-        raise HTTPException(status_code=400, detail="Extract/copy modes require .chd input files")
+    if (
+        mode.startswith("extract") or mode == "copy"
+    ) and not file_path.lower().endswith(".chd"):
+        raise HTTPException(
+            status_code=400, detail="Extract/copy modes require .chd input files"
+        )
 
     if mode.startswith("create") and file_path.lower().endswith(".chd"):
-        raise HTTPException(status_code=400, detail="Create modes require non-CHD input files")
+        raise HTTPException(
+            status_code=400, detail="Create modes require non-CHD input files"
+        )
 
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive
     if output_path is None:
         effective_output_dir = request.output_dir or archive_source_dir
         output_path = chdman_service.get_output_path_for_mode(
-            mode,
-            file_path,
-            effective_output_dir
+            mode, file_path, effective_output_dir
         )
 
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if request.duplicate_action == DuplicateAction.SKIP:
-                raise HTTPException(status_code=409, detail="Output file already exists")
+                raise HTTPException(
+                    status_code=409, detail="Output file already exists"
+                )
             elif request.duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
-                    raise HTTPException(status_code=409, detail="Output file is currently being converted")
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Output file is currently being converted",
+                    )
             elif request.duplicate_action == DuplicateAction.RENAME:
                 if mode == "extractcd":
                     output_path = get_unique_output_path_for_extractcd(output_path)
                 else:
                     output_path = get_unique_output_path(output_path)
 
-    allow_overwrite = request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
+    allow_overwrite = (
+        request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
+    )
     job = job_manager.create_job(
         file_path,
         request.mode,
         output_path=output_path,
         allow_overwrite=allow_overwrite,
         filename_override=display_filename,
-        compression=compression
+        compression=compression,
     )
 
     return job
@@ -238,16 +270,24 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     compression = normalize_compression(request.compression)
     mode = request.mode.value
     if compression and mode.startswith("extract"):
-        raise HTTPException(status_code=400, detail="Compression is only supported for CHD creation/copy")
+        raise HTTPException(
+            status_code=400,
+            detail="Compression is only supported for CHD creation/copy",
+        )
     for file_path in request.file_paths:
         if not is_within_configured_volumes(file_path):
             raise HTTPException(
                 status_code=403,
-                detail=f"Access denied: {file_path} outside configured volumes"
+                detail=f"Access denied: {file_path} outside configured volumes",
             )
 
-    if request.output_dir and not is_within_configured_volumes(request.output_dir, treat_archives=False):
-        raise HTTPException(status_code=403, detail="Access denied: output directory outside configured volumes")
+    if request.output_dir and not is_within_configured_volumes(
+        request.output_dir, treat_archives=False
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: output directory outside configured volumes",
+        )
 
     jobs = []
     skipped = []
@@ -264,7 +304,9 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 skipped.append(file_path)
                 continue
             archive_path, internal_path = file_path.split("::", 1)
-            archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
+            archive_source_dir = os.path.dirname(
+                archive_path
+            )  # Save CHD next to archive
             display_filename = os.path.basename(internal_path)
 
             if not os.path.isfile(archive_path):
@@ -275,10 +317,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             effective_output_dir = request.output_dir or archive_source_dir
             output_stem = archive_service._output_stem_for_member(internal_path)
             output_path = chdman_service.get_output_path_for_mode(
-                mode,
-                output_stem,
-                effective_output_dir,
-                treat_as_stem=True
+                mode, output_stem, effective_output_dir, treat_as_stem=True
             )
             output_exists, is_locked = check_output_conflicts(mode, output_path)
 
@@ -300,7 +339,9 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             skipped.append(file_path)
             continue
 
-        if (mode.startswith("extract") or mode == "copy") and not file_path.lower().endswith(".chd"):
+        if (
+            mode.startswith("extract") or mode == "copy"
+        ) and not file_path.lower().endswith(".chd"):
             skipped.append(file_path)
             continue
 
@@ -313,9 +354,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if output_path is None:
             effective_output_dir = request.output_dir or archive_source_dir
             output_path = chdman_service.get_output_path_for_mode(
-                mode,
-                file_path,
-                effective_output_dir
+                mode, file_path, effective_output_dir
             )
             output_exists, is_locked = check_output_conflicts(mode, output_path)
 
@@ -333,14 +372,16 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                     else:
                         output_path = get_unique_output_path(output_path)
 
-        allow_overwrite = request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
+        allow_overwrite = (
+            request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
+        )
         job = job_manager.create_job(
             file_path,
             request.mode,
             output_path=output_path,
             allow_overwrite=allow_overwrite,
             filename_override=display_filename,
-            compression=compression
+            compression=compression,
         )
         jobs.append(job)
 
@@ -368,7 +409,10 @@ async def job_events():
                 try:
                     # Subscribe to any new jobs
                     for job in job_manager.get_all_jobs():
-                        if job.id not in queues and job.status in (JobStatus.QUEUED, JobStatus.PROCESSING):
+                        if job.id not in queues and job.status in (
+                            JobStatus.QUEUED,
+                            JobStatus.PROCESSING,
+                        ):
                             queues[job.id] = job_manager.subscribe(job.id)
 
                     # Check all queues for updates
@@ -377,7 +421,7 @@ async def job_events():
                             update = queue.get_nowait()
                             yield {
                                 "event": update.get("type", "progress"),
-                                "data": json.dumps(update)
+                                "data": json.dumps(update),
                             }
 
                             # Unsubscribe if job is done
@@ -454,26 +498,38 @@ async def job_progress(job_id: str):
             # Send initial state
             yield {
                 "event": "status",
-                "data": json.dumps({
-                    "job_id": job_id,
-                    "status": job.status.value,
-                    "progress": job.progress
-                })
+                "data": json.dumps(
+                    {
+                        "job_id": job_id,
+                        "status": job.status.value,
+                        "progress": job.progress,
+                    }
+                ),
             }
 
-            if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+            if job.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
                 return
 
             queue = job_manager.subscribe(job_id)
             latest_job = job_manager.get_job(job_id)
-            if latest_job and latest_job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+            if latest_job and latest_job.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
                 yield {
                     "event": "status",
-                    "data": json.dumps({
-                        "job_id": job_id,
-                        "status": latest_job.status.value,
-                        "progress": latest_job.progress
-                    })
+                    "data": json.dumps(
+                        {
+                            "job_id": job_id,
+                            "status": latest_job.status.value,
+                            "progress": latest_job.progress,
+                        }
+                    ),
                 }
                 return
 
@@ -482,7 +538,7 @@ async def job_progress(job_id: str):
                     update = await asyncio.wait_for(queue.get(), timeout=30)
                     yield {
                         "event": update.get("type", "progress"),
-                        "data": json.dumps(update)
+                        "data": json.dumps(update),
                     }
 
                     if update.get("type") in ("complete", "error", "cancelled"):

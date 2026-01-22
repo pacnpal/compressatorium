@@ -227,6 +227,106 @@ export const api = {
             throw new Error(error.detail || 'Failed to delete');
         }
         return res.json();
+    },
+
+    async deleteBatch(paths) {
+        const res = await fetch(`${API_BASE}/files/delete-batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths })
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to delete files' }));
+            throw new Error(error.detail || 'Failed to delete files');
+        }
+        return res.json();
+    },
+
+    async verifyBatchCHDs(paths, { onProgress, onFileComplete } = {}) {
+        const response = await fetch(`${API_BASE}/verify-batch/events`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths })
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Failed to start batch verification' }));
+            throw new Error(error.detail || 'Failed to start batch verification');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let result = { total: 0, verified: 0, failed: 0 };
+
+        const parseSSEEvent = (eventText) => {
+            const lines = eventText.split('\n');
+            let eventType = null;
+            let eventData = null;
+
+            for (const line of lines) {
+                if (line.startsWith('event:')) {
+                    eventType = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    eventData = line.slice(5).trim();
+                }
+            }
+
+            if (!eventType || !eventData) return null;
+
+            try {
+                return { type: eventType, data: JSON.parse(eventData) };
+            } catch (err) {
+                console.error('Failed to parse SSE event data:', err, eventData);
+                return null;
+            }
+        };
+
+        const processEvent = (event) => {
+            if (!event) return false;
+
+            switch (event.type) {
+                case 'verify_batch_start':
+                    if (onProgress) onProgress({ type: 'start', ...event.data });
+                    break;
+                case 'verify_batch_progress':
+                    if (onProgress) onProgress({ type: 'progress', ...event.data });
+                    break;
+                case 'verify_batch_file_progress':
+                    if (onProgress) onProgress({ type: 'file_progress', ...event.data });
+                    break;
+                case 'verify_batch_file_complete':
+                    if (onFileComplete) onFileComplete(event.data);
+                    if (onProgress) onProgress({ type: 'file_complete', ...event.data });
+                    break;
+                case 'verify_batch_complete':
+                    result = event.data;
+                    return true; // Signal completion
+            }
+            return false;
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Split on double newlines (SSE event separator)
+            const events = buffer.split('\n\n');
+            buffer = events.pop() || ''; // Keep incomplete event in buffer
+
+            for (const eventText of events) {
+                if (eventText.trim()) {
+                    const event = parseSSEEvent(eventText);
+                    if (processEvent(event)) {
+                        return result;
+                    }
+                }
+            }
+        }
+
+        return result;
     }
 };
 

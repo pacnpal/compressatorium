@@ -9,12 +9,14 @@ from typing import List, Tuple
 
 try:
     import py7zr
+
     HAS_7Z = True
 except ImportError:
     HAS_7Z = False
 
 try:
     import rarfile
+
     HAS_RAR = True
 except ImportError:
     HAS_RAR = False
@@ -58,7 +60,7 @@ class ArchiveService:
                     "Listed archive %s entries=%d in %.2fs",
                     archive_path,
                     len(entries),
-                    time.monotonic() - start
+                    time.monotonic() - start,
                 )
 
         for entry in entries:
@@ -79,14 +81,16 @@ class ArchiveService:
                     continue
                 ext = Path(info.filename).suffix.lower()
                 if ext in CONVERTIBLE_EXTENSIONS:
-                    entries.append({
-                        "archive_path": archive_path,
-                        "internal_path": info.filename,
-                        "name": os.path.basename(info.filename),
-                        "size": info.file_size,
-                        "extension": ext,
-                        "convertible": True
-                    })
+                    entries.append(
+                        {
+                            "archive_path": archive_path,
+                            "internal_path": info.filename,
+                            "name": os.path.basename(info.filename),
+                            "size": info.file_size,
+                            "extension": ext,
+                            "convertible": True,
+                        }
+                    )
         return entries
 
     def _list_7z(self, archive_path: str) -> List[dict]:
@@ -102,14 +106,16 @@ class ArchiveService:
                         continue
                     ext = Path(name).suffix.lower()
                     if ext in CONVERTIBLE_EXTENSIONS:
-                        entries.append({
-                            "archive_path": archive_path,
-                            "internal_path": name,
-                            "name": os.path.basename(name),
-                            "size": getattr(info, 'uncompressed', 0),
-                            "extension": ext,
-                            "convertible": True
-                        })
+                        entries.append(
+                            {
+                                "archive_path": archive_path,
+                                "internal_path": name,
+                                "name": os.path.basename(name),
+                                "size": getattr(info, "uncompressed", 0),
+                                "extension": ext,
+                                "convertible": True,
+                            }
+                        )
             if not entries:
                 for entry in zf.list():
                     if entry.is_directory:
@@ -120,14 +126,16 @@ class ArchiveService:
                         continue
                     ext = Path(entry.filename).suffix.lower()
                     if ext in CONVERTIBLE_EXTENSIONS:
-                        entries.append({
-                            "archive_path": archive_path,
-                            "internal_path": entry.filename,
-                            "name": os.path.basename(entry.filename),
-                            "size": entry.uncompressed,
-                            "extension": ext,
-                            "convertible": True
-                        })
+                        entries.append(
+                            {
+                                "archive_path": archive_path,
+                                "internal_path": entry.filename,
+                                "name": os.path.basename(entry.filename),
+                                "size": entry.uncompressed,
+                                "extension": ext,
+                                "convertible": True,
+                            }
+                        )
         return entries
 
     def _list_rar(self, archive_path: str) -> List[dict]:
@@ -143,14 +151,16 @@ class ArchiveService:
                     continue
                 ext = Path(info.filename).suffix.lower()
                 if ext in CONVERTIBLE_EXTENSIONS:
-                    entries.append({
-                        "archive_path": archive_path,
-                        "internal_path": info.filename,
-                        "name": os.path.basename(info.filename),
-                        "size": info.file_size,
-                        "extension": ext,
-                        "convertible": True
-                    })
+                    entries.append(
+                        {
+                            "archive_path": archive_path,
+                            "internal_path": info.filename,
+                            "name": os.path.basename(info.filename),
+                            "size": info.file_size,
+                            "extension": ext,
+                            "convertible": True,
+                        }
+                    )
         return entries
 
     def extract_file(self, archive_path: str, internal_path: str) -> Tuple[str, str]:
@@ -162,11 +172,17 @@ class ArchiveService:
             destination = self._prepare_destination(temp_dir, internal_path)
 
             if ext == ".zip":
-                extracted = self._extract_from_zip(archive_path, internal_path, destination)
+                extracted = self._extract_from_zip(
+                    archive_path, internal_path, destination
+                )
             elif ext == ".7z" and HAS_7Z:
-                extracted = self._extract_from_7z(archive_path, internal_path, destination)
+                extracted = self._extract_from_7z(
+                    archive_path, internal_path, destination
+                )
             elif ext == ".rar" and HAS_RAR:
-                extracted = self._extract_from_rar(archive_path, internal_path, destination)
+                extracted = self._extract_from_rar(
+                    archive_path, internal_path, destination
+                )
             else:
                 raise ValueError(f"Unsupported archive format: {ext}")
 
@@ -181,12 +197,12 @@ class ArchiveService:
         if "\\" in member:
             raise ValueError("Backslashes are not allowed in archive members")
         normalized = member.strip()
-        if normalized.startswith('/'):
+        if normalized.startswith("/"):
             raise ValueError("Absolute paths are not allowed inside archives")
-        segments = normalized.split('/')
-        if not segments or any(part in ('', '.', '..') for part in segments):
+        segments = normalized.split("/")
+        if not segments or any(part in ("", ".", "..") for part in segments):
             raise ValueError("Invalid archive member path")
-        if any(':' in part for part in segments):
+        if any(":" in part for part in segments):
             raise ValueError("Drive letters are not allowed inside archives")
         return segments
 
@@ -201,16 +217,22 @@ class ArchiveService:
         candidate.parent.mkdir(parents=True, exist_ok=True)
         return str(candidate)
 
-    def _extract_from_zip(self, archive_path: str, internal_path: str, destination: str) -> str:
+    def _extract_from_zip(
+        self, archive_path: str, internal_path: str, destination: str
+    ) -> str:
         with zipfile.ZipFile(archive_path, "r") as zf:
             try:
                 with zf.open(internal_path) as src, open(destination, "wb") as dst:
                     shutil.copyfileobj(src, dst)
             except KeyError as exc:
-                raise FileNotFoundError(f"{internal_path} not found in archive") from exc
+                raise FileNotFoundError(
+                    f"{internal_path} not found in archive"
+                ) from exc
         return destination
 
-    def extract_related_files(self, archive_path: str, internal_path: str, temp_dir: str):
+    def extract_related_files(
+        self, archive_path: str, internal_path: str, temp_dir: str
+    ):
         """Extract sibling files for multi-file formats like .cue or .gdi."""
         entry_ext = Path(internal_path).suffix.lower()
         if entry_ext not in {".cue", ".gdi"}:
@@ -230,7 +252,9 @@ class ArchiveService:
         else:
             raise ValueError(f"Unsupported archive format: {archive_ext}")
 
-    def _extract_related_from_zip(self, archive_path: str, parent: PurePosixPath, temp_dir: str):
+    def _extract_related_from_zip(
+        self, archive_path: str, parent: PurePosixPath, temp_dir: str
+    ):
         with zipfile.ZipFile(archive_path, "r") as zf:
             for info in zf.infolist():
                 if info.is_dir():
@@ -245,7 +269,9 @@ class ArchiveService:
                 with zf.open(info.filename) as src, open(destination, "wb") as dst:
                     shutil.copyfileobj(src, dst)
 
-    def _extract_related_from_7z(self, archive_path: str, parent: PurePosixPath, temp_dir: str):
+    def _extract_related_from_7z(
+        self, archive_path: str, parent: PurePosixPath, temp_dir: str
+    ):
         with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
             targets = []
             for entry in zf.list():
@@ -261,7 +287,9 @@ class ArchiveService:
             if targets:
                 zf.extract(targets=targets, path=temp_dir)
 
-    def _extract_related_from_rar(self, archive_path: str, parent: PurePosixPath, temp_dir: str):
+    def _extract_related_from_rar(
+        self, archive_path: str, parent: PurePosixPath, temp_dir: str
+    ):
         with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
             for info in rf.infolist():
                 if info.is_dir():
@@ -293,7 +321,9 @@ class ArchiveService:
         safe_parent = "_".join([p for p in parent.parts if p not in ("", ".")])
         return f"{safe_parent}_{stem}"
 
-    def _extract_from_7z(self, archive_path: str, internal_path: str, destination: str) -> str:
+    def _extract_from_7z(
+        self, archive_path: str, internal_path: str, destination: str
+    ) -> str:
         with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
             try:
                 parts = PurePosixPath(internal_path).parts
@@ -302,19 +332,25 @@ class ArchiveService:
                 base_dir = Path(destination).parents[len(parts) - 1]
                 zf.extract(targets=[internal_path], path=str(base_dir))
             except Exception as exc:
-                raise FileNotFoundError(f"{internal_path} not found in archive") from exc
+                raise FileNotFoundError(
+                    f"{internal_path} not found in archive"
+                ) from exc
 
         if not os.path.isfile(destination):
             raise FileNotFoundError(f"{internal_path} not found in archive")
         return destination
 
-    def _extract_from_rar(self, archive_path: str, internal_path: str, destination: str) -> str:
+    def _extract_from_rar(
+        self, archive_path: str, internal_path: str, destination: str
+    ) -> str:
         with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
             try:
                 with rf.open(internal_path) as src, open(destination, "wb") as dst:
                     shutil.copyfileobj(src, dst)
             except (rarfile.Error, KeyError) as exc:  # type: ignore[name-defined]
-                raise FileNotFoundError(f"{internal_path} not found in archive") from exc
+                raise FileNotFoundError(
+                    f"{internal_path} not found in archive"
+                ) from exc
         return destination
 
     def cleanup_temp_dir(self, temp_dir: str):

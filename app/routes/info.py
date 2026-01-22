@@ -7,7 +7,7 @@ import asyncio
 import time
 import contextlib
 
-from models import CHDInfo
+from models import CHDInfo, BulkVerifyRequest
 from services.chdman import chdman_service
 from services.verification_store import verification_store
 from utils.path_utils import is_within_configured_volumes
@@ -16,12 +16,12 @@ router = APIRouter()
 
 
 @router.get("/info", response_model=CHDInfo)
-async def get_chd_info(
-    path: str = Query(..., description="Path to CHD file")
-):
+async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     """Get information about a CHD file."""
     if not is_within_configured_volumes(path, treat_archives=False):
-        raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
+        raise HTTPException(
+            status_code=403, detail="Access denied: path outside configured volumes"
+        )
 
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -46,20 +46,24 @@ async def get_chd_info(
             ratio=info.get("ratio"),
             sha1=info.get("sha1"),
             data_sha1=info.get("data_sha1"),
-            raw_data=info.get("raw_data", "")
+            raw_data=info.get("raw_data", ""),
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read CHD info: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to read CHD info: {str(e)}"
+        )
 
 
 @router.get("/verify")
 async def verify_chd(
-    path: str = Query(..., description="Path to CHD file to verify")
+    path: str = Query(..., description="Path to CHD file to verify"),
 ) -> dict:
     """Verify the integrity of a CHD file."""
     if not is_within_configured_volumes(path, treat_archives=False):
-        raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
+        raise HTTPException(
+            status_code=403, detail="Access denied: path outside configured volumes"
+        )
 
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -78,11 +82,13 @@ async def verify_chd(
 
 @router.get("/verify/events")
 async def verify_chd_events(
-    path: str = Query(..., description="Path to CHD file to verify")
+    path: str = Query(..., description="Path to CHD file to verify"),
 ) -> EventSourceResponse:
     """Stream CHD verification progress updates."""
     if not is_within_configured_volumes(path, treat_archives=False):
-        raise HTTPException(status_code=403, detail="Access denied: path outside configured volumes")
+        raise HTTPException(
+            status_code=403, detail="Access denied: path outside configured volumes"
+        )
 
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -113,33 +119,23 @@ async def verify_chd_events(
                     elapsed = int(time.monotonic() - start)
                     yield {
                         "event": "verify_progress",
-                        "data": json.dumps({
-                            "progress": None,
-                            "message": f"Verifying... ({elapsed}s)"
-                        })
+                        "data": json.dumps(
+                            {"progress": None, "message": f"Verifying... ({elapsed}s)"}
+                        ),
                     }
                     if done.is_set() and queue.empty():
                         break
                     continue
 
                 if update.get("type") == "progress":
-                    yield {
-                        "event": "verify_progress",
-                        "data": json.dumps(update)
-                    }
+                    yield {"event": "verify_progress", "data": json.dumps(update)}
                 elif update.get("type") == "complete":
                     if update.get("valid"):
                         verification_store.mark_verified(path)
-                    yield {
-                        "event": "verify_complete",
-                        "data": json.dumps(update)
-                    }
+                    yield {"event": "verify_complete", "data": json.dumps(update)}
                     break
                 elif update.get("type") == "error":
-                    yield {
-                        "event": "verify_error",
-                        "data": json.dumps(update)
-                    }
+                    yield {"event": "verify_error", "data": json.dumps(update)}
                     break
         finally:
             verify_task.cancel()
@@ -159,3 +155,166 @@ async def list_verified() -> dict:
         if chd_path and is_within_configured_volumes(chd_path, treat_archives=False):
             verified.append(chd_path)
     return {"verified": verified}
+
+
+@router.post("/verify-batch/events")
+async def verify_batch_events(request: BulkVerifyRequest) -> EventSourceResponse:
+    """Stream verification progress for multiple CHD files."""
+    if not request.paths:
+        raise HTTPException(status_code=400, detail="No paths provided")
+
+    # Validate all paths upfront
+    valid_paths = []
+    for path in request.paths:
+        if not is_within_configured_volumes(path, treat_archives=False):
+            continue
+        if not os.path.isfile(path):
+            continue
+        if not path.lower().endswith(".chd"):
+            continue
+        valid_paths.append(path)
+
+    async def event_generator():
+        total = len(valid_paths)
+        verified_count = 0
+        failed_count = 0
+
+        # Send initial status
+        yield {
+            "event": "verify_batch_start",
+            "data": json.dumps({"total": total, "paths": valid_paths}),
+        }
+
+        for idx, path in enumerate(valid_paths):
+            filename = os.path.basename(path)
+            start = time.monotonic()
+
+            # Send file start event
+            yield {
+                "event": "verify_batch_progress",
+                "data": json.dumps(
+                    {
+                        "index": idx,
+                        "total": total,
+                        "path": path,
+                        "filename": filename,
+                        "status": "verifying",
+                        "verified": verified_count,
+                        "failed": failed_count,
+                    }
+                ),
+            }
+
+            try:
+                # Use the streaming verify to get progress updates
+                queue: asyncio.Queue = asyncio.Queue()
+                done = asyncio.Event()
+                final_result = {"valid": False, "message": "Unknown error"}
+
+                async def run_verify():
+                    nonlocal final_result
+                    try:
+                        async for update in chdman_service.verify_stream(path):
+                            await queue.put(update)
+                            if update.get("type") in ("complete", "error"):
+                                final_result = update
+                    except Exception as exc:
+                        final_result = {
+                            "type": "error",
+                            "valid": False,
+                            "message": str(exc),
+                        }
+                        await queue.put(final_result)
+                    finally:
+                        done.set()
+
+                verify_task = asyncio.create_task(run_verify())
+                try:
+                    while not done.is_set() or not queue.empty():
+                        try:
+                            update = await asyncio.wait_for(queue.get(), timeout=2)
+                            if update.get("type") == "progress":
+                                yield {
+                                    "event": "verify_batch_file_progress",
+                                    "data": json.dumps(
+                                        {
+                                            "index": idx,
+                                            "path": path,
+                                            "filename": filename,
+                                            "progress": update.get("progress"),
+                                            "message": update.get("message"),
+                                        }
+                                    ),
+                                }
+                            elif update.get("type") in ("complete", "error"):
+                                break
+                        except asyncio.TimeoutError:
+                            elapsed = int(time.monotonic() - start)
+                            yield {
+                                "event": "verify_batch_file_progress",
+                                "data": json.dumps(
+                                    {
+                                        "index": idx,
+                                        "path": path,
+                                        "filename": filename,
+                                        "progress": None,
+                                        "message": f"Verifying... ({elapsed}s)",
+                                    }
+                                ),
+                            }
+                finally:
+                    verify_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await verify_task
+
+                if final_result.get("valid"):
+                    verification_store.mark_verified(path)
+                    verified_count += 1
+                    status = "verified"
+                else:
+                    failed_count += 1
+                    status = "failed"
+
+                yield {
+                    "event": "verify_batch_file_complete",
+                    "data": json.dumps(
+                        {
+                            "index": idx,
+                            "path": path,
+                            "filename": filename,
+                            "status": status,
+                            "valid": final_result.get("valid", False),
+                            "message": final_result.get("message"),
+                            "verified": verified_count,
+                            "failed": failed_count,
+                        }
+                    ),
+                }
+
+            except Exception as exc:
+                failed_count += 1
+                yield {
+                    "event": "verify_batch_file_complete",
+                    "data": json.dumps(
+                        {
+                            "index": idx,
+                            "path": path,
+                            "filename": filename,
+                            "status": "failed",
+                            "valid": False,
+                            "message": str(exc),
+                            "verified": verified_count,
+                            "failed": failed_count,
+                        }
+                    ),
+                }
+
+        # Send final completion event
+        yield {
+            "event": "verify_batch_complete",
+            "data": json.dumps(
+                {"total": total, "verified": verified_count, "failed": failed_count}
+            ),
+        }
+
+    return EventSourceResponse(event_generator())

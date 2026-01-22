@@ -54,7 +54,7 @@ class JobManager:
         output_path: Optional[str] = None,
         allow_overwrite: bool = False,
         filename_override: Optional[str] = None,
-        compression: Optional[str] = None
+        compression: Optional[str] = None,
     ) -> ConversionJob:
         """Create a new conversion job."""
         job_id = str(uuid.uuid4())[:8]
@@ -74,7 +74,7 @@ class JobManager:
             created_at=datetime.utcnow(),
             output_path=output_path,
             allow_overwrite=allow_overwrite,
-            compression=compression
+            compression=compression,
         )
 
         self.jobs[job_id] = job
@@ -91,7 +91,7 @@ class JobManager:
                 file_path,
                 output_path,
                 allow_overwrite,
-                compression
+                compression,
             )
         self._prune_jobs()
         return job
@@ -101,10 +101,13 @@ class JobManager:
         file_paths: List[str],
         mode: ConversionMode,
         output_dir: Optional[str] = None,
-        compression: Optional[str] = None
+        compression: Optional[str] = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs."""
-        return [self.create_job(fp, mode, output_dir, compression=compression) for fp in file_paths]
+        return [
+            self.create_job(fp, mode, output_dir, compression=compression)
+            for fp in file_paths
+        ]
 
     def get_job(self, job_id: str) -> Optional[ConversionJob]:
         """Get a job by ID."""
@@ -124,7 +127,11 @@ class JobManager:
         for job_id, job in self.jobs.items():
             if job_id == exclude_id:
                 continue
-            if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+            if job.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
                 removable.append(job_id)
             if len(self.jobs) - len(removable) <= self.max_job_history:
                 break
@@ -146,11 +153,12 @@ class JobManager:
             if cancel_event:
                 cancel_event.set()
             concurrency_manager.release(job_id)
-            asyncio.create_task(self._notify_subscribers(job_id, {
-                "type": "cancelled",
-                "job_id": job_id,
-                "status": job.status.value
-            }))
+            asyncio.create_task(
+                self._notify_subscribers(
+                    job_id,
+                    {"type": "cancelled", "job_id": job_id, "status": job.status.value},
+                )
+            )
             self._cleanup_temp_dir(job)
             return True
 
@@ -160,13 +168,18 @@ class JobManager:
             if cancel_event:
                 cancel_event.set()
             job.message = "Cancelling..."
-            asyncio.create_task(self._notify_subscribers(job_id, {
-                "type": "status",
-                "job_id": job_id,
-                "status": job.status.value,
-                "progress": job.progress,
-                "message": job.message
-            }))
+            asyncio.create_task(
+                self._notify_subscribers(
+                    job_id,
+                    {
+                        "type": "status",
+                        "job_id": job_id,
+                        "status": job.status.value,
+                        "progress": job.progress,
+                        "message": job.message,
+                    },
+                )
+            )
             return True
         return False
 
@@ -228,15 +241,20 @@ class JobManager:
         job.message = message
         now = time.monotonic()
         self._last_progress_at[job_id] = now
-        await self._notify_subscribers(job_id, {
-            "type": "status",
-            "job_id": job_id,
-            "status": job.status.value,
-            "progress": job.progress,
-            "message": job.message
-        })
+        await self._notify_subscribers(
+            job_id,
+            {
+                "type": "status",
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": job.progress,
+                "message": job.message,
+            },
+        )
 
-    async def _emit_extract_updates(self, job_id: str, archive_path: str, internal_path: str, task: asyncio.Task):
+    async def _emit_extract_updates(
+        self, job_id: str, archive_path: str, internal_path: str, task: asyncio.Task
+    ):
         start = time.monotonic()
         while not task.done():
             job = self.jobs.get(job_id)
@@ -271,7 +289,7 @@ class JobManager:
                     JobStatus.PROCESSING: 0,
                     JobStatus.COMPLETED: 0,
                     JobStatus.FAILED: 0,
-                    JobStatus.CANCELLED: 0
+                    JobStatus.CANCELLED: 0,
                 }
                 for job in jobs:
                     status_counts[job.status] = status_counts.get(job.status, 0) + 1
@@ -319,7 +337,7 @@ class JobManager:
                     rss_raw,
                     rss_mb,
                     open_fds,
-                    loadavg
+                    loadavg,
                 )
 
                 for job in jobs:
@@ -349,7 +367,7 @@ class JobManager:
                         job.progress,
                         idle_for,
                         output_size,
-                        output_idle
+                        output_idle,
                     )
 
                 if settings.debug_progress_timeout > 0:
@@ -366,7 +384,9 @@ class JobManager:
                                 output_size = None
                             if output_size is not None:
                                 last_size = self._last_output_size.get(job.id)
-                                last_size_at = self._last_output_size_at.get(job.id, now)
+                                last_size_at = self._last_output_size_at.get(
+                                    job.id, now
+                                )
                                 if last_size is None or output_size != last_size:
                                     self._last_output_size[job.id] = output_size
                                     self._last_output_size_at[job.id] = now
@@ -391,7 +411,7 @@ class JobManager:
                             job.output_path,
                             output_size,
                             output_idle,
-                            job.started_at
+                            job.started_at,
                         )
 
                 for pid in chdman_service.active_pids():
@@ -443,7 +463,7 @@ class JobManager:
                         read_bytes,
                         delta_read,
                         write_bytes,
-                        delta_write
+                        delta_write,
                     )
 
                     updated = {}
@@ -501,7 +521,7 @@ class JobManager:
                 job_id,
                 job.status.value,
                 job.file_path,
-                job.output_path
+                job.output_path,
             )
 
         if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
@@ -517,26 +537,26 @@ class JobManager:
             self._cancelled.discard(job_id)
             if not job.completed_at:
                 job.completed_at = datetime.utcnow()
-            await self._notify_subscribers(job_id, {
-                "type": "cancelled",
-                "job_id": job_id,
-                "status": job.status.value
-            })
+            await self._notify_subscribers(
+                job_id,
+                {"type": "cancelled", "job_id": job_id, "status": job.status.value},
+            )
             self._cleanup_temp_dir(job)
             del self._cancel_events[job_id]
             self._prune_jobs(exclude_id=job_id)
             return
 
-        slot_acquired = await concurrency_manager.acquire(job_id, cancel_event=cancel_event)
+        slot_acquired = await concurrency_manager.acquire(
+            job_id, cancel_event=cancel_event
+        )
         if not slot_acquired:
             if job.status != JobStatus.CANCELLED:
                 job.status = JobStatus.CANCELLED
                 job.completed_at = datetime.utcnow()
-                await self._notify_subscribers(job_id, {
-                    "type": "cancelled",
-                    "job_id": job_id,
-                    "status": job.status.value
-                })
+                await self._notify_subscribers(
+                    job_id,
+                    {"type": "cancelled", "job_id": job_id, "status": job.status.value},
+                )
             self._cleanup_temp_dir(job)
             concurrency_manager.release(job_id)
             if job_id in self._cancel_events:
@@ -545,25 +565,27 @@ class JobManager:
             return
 
         # Try to acquire lock for the output file (prevents race conditions)
-        lock_acquired = lock_manager.acquire_lock(job.output_path, allow_existing=job.allow_overwrite)
+        lock_acquired = lock_manager.acquire_lock(
+            job.output_path, allow_existing=job.allow_overwrite
+        )
         if not lock_acquired:
             # Could not acquire lock - either file exists or is being converted
             # Check current status to provide better error message
             file_exists, is_locked = lock_manager.check_file_status(job.output_path)
             job.status = JobStatus.FAILED
             if is_locked:
-                job.error_message = "Another job is already converting to this output file"
+                job.error_message = (
+                    "Another job is already converting to this output file"
+                )
             elif file_exists:
                 job.error_message = "Output CHD file already exists"
             else:
                 job.error_message = "Could not acquire lock for output file"
             job.completed_at = datetime.utcnow()
 
-            await self._notify_subscribers(job_id, {
-                "type": "error",
-                "job_id": job_id,
-                "error": job.error_message
-            })
+            await self._notify_subscribers(
+                job_id, {"type": "error", "job_id": job_id, "error": job.error_message}
+            )
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]
             concurrency_manager.release(job_id)
@@ -577,12 +599,15 @@ class JobManager:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Job %s acquired locks and started processing", job_id)
 
-        await self._notify_subscribers(job_id, {
-            "type": "status",
-            "job_id": job_id,
-            "status": job.status.value,
-            "progress": 0
-        })
+        await self._notify_subscribers(
+            job_id,
+            {
+                "type": "status",
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": 0,
+            },
+        )
 
         try:
             input_path = job.file_path
@@ -594,17 +619,17 @@ class JobManager:
                         "Job %s extracting archive %s member %s",
                         job_id,
                         archive_path,
-                        internal_path
+                        internal_path,
                     )
                 extract_task = asyncio.create_task(
                     run_in_threadpool(
-                        archive_service.extract_file,
-                        archive_path,
-                        internal_path
+                        archive_service.extract_file, archive_path, internal_path
                     )
                 )
                 extract_status_task = asyncio.create_task(
-                    self._emit_extract_updates(job_id, archive_path, internal_path, extract_task)
+                    self._emit_extract_updates(
+                        job_id, archive_path, internal_path, extract_task
+                    )
                 )
                 input_path, temp_dir = await extract_task
                 extract_status_task.cancel()
@@ -617,7 +642,7 @@ class JobManager:
                     archive_service.extract_related_files,
                     archive_path,
                     internal_path,
-                    temp_dir
+                    temp_dir,
                 )
                 if logger.isEnabledFor(logging.DEBUG):
                     extracted_size = None
@@ -630,7 +655,7 @@ class JobManager:
                         job_id,
                         input_path,
                         extracted_size,
-                        time.monotonic() - extract_start
+                        time.monotonic() - extract_start,
                     )
                 if cancel_event.is_set():
                     raise ConversionCancelled("Conversion cancelled")
@@ -650,7 +675,7 @@ class JobManager:
                 job.output_path,
                 job.mode.value,
                 compression=job.compression,
-                cancel_event=cancel_event
+                cancel_event=cancel_event,
             ):
                 if cancel_event.is_set():
                     continue
@@ -666,15 +691,18 @@ class JobManager:
                             "Job %s progress=%s message=%s",
                             job_id,
                             job.progress,
-                            job.message
+                            job.message,
                         )
 
-                await self._notify_subscribers(job_id, {
-                    "type": "progress",
-                    "job_id": job_id,
-                    "progress": job.progress,
-                    "message": job.message
-                })
+                await self._notify_subscribers(
+                    job_id,
+                    {
+                        "type": "progress",
+                        "job_id": job_id,
+                        "progress": job.progress,
+                        "message": job.message,
+                    },
+                )
 
             if job.status != JobStatus.CANCELLED:
                 self._cancelled.discard(job_id)
@@ -702,33 +730,33 @@ class JobManager:
                     else:
                         job.output_size = os.path.getsize(job.output_path)
 
-                await self._notify_subscribers(job_id, {
-                    "type": "complete",
-                    "job_id": job_id,
-                    "output_path": job.output_path,
-                    "output_size": job.output_size
-                })
+                await self._notify_subscribers(
+                    job_id,
+                    {
+                        "type": "complete",
+                        "job_id": job_id,
+                        "output_path": job.output_path,
+                        "output_size": job.output_size,
+                    },
+                )
 
         except ConversionCancelled:
             self._cancelled.discard(job_id)
             job.status = JobStatus.CANCELLED
             job.completed_at = datetime.utcnow()
-            await self._notify_subscribers(job_id, {
-                "type": "cancelled",
-                "job_id": job_id,
-                "status": job.status.value
-            })
+            await self._notify_subscribers(
+                job_id,
+                {"type": "cancelled", "job_id": job_id, "status": job.status.value},
+            )
         except Exception as e:
             self._cancelled.discard(job_id)
             job.status = JobStatus.FAILED
             job.error_message = str(e)
             job.completed_at = datetime.utcnow()
 
-            await self._notify_subscribers(job_id, {
-                "type": "error",
-                "job_id": job_id,
-                "error": str(e)
-            })
+            await self._notify_subscribers(
+                job_id, {"type": "error", "job_id": job_id, "error": str(e)}
+            )
 
         finally:
             # Only release lock if we acquired it
@@ -749,14 +777,10 @@ class JobManager:
             self._cleanup_temp_dir(job)
             self._prune_jobs(exclude_id=job_id)
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Job %s finished status=%s",
-                    job_id,
-                    job.status.value
-                )
+                logger.debug("Job %s finished status=%s", job_id, job.status.value)
 
 
 job_manager = JobManager(
     max_concurrent=settings.max_concurrent_jobs,
-    max_job_history=settings.max_job_history
+    max_job_history=settings.max_job_history,
 )

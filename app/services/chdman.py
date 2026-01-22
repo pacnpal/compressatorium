@@ -33,12 +33,22 @@ class ChdmanService:
         mode: str,
         input_path: str,
         output_path: str,
-        compression: Optional[str] = None
+        compression: Optional[str] = None,
     ) -> list[str]:
         cmd = [self.chdman_path, mode, "-f", "-i", input_path, "-o", output_path]
         if mode == "createdvd":
             # Insert -hs 2048 after mode for PSP compatibility
-            cmd = [self.chdman_path, mode, "-hs", "2048", "-f", "-i", input_path, "-o", output_path]
+            cmd = [
+                self.chdman_path,
+                mode,
+                "-hs",
+                "2048",
+                "-f",
+                "-i",
+                input_path,
+                "-o",
+                output_path,
+            ]
 
         if compression and mode in {
             "createcd",
@@ -46,11 +56,14 @@ class ChdmanService:
             "createraw",
             "createhd",
             "createld",
-            "copy"
+            "copy",
         }:
             cmd = cmd[:2] + ["-c", compression] + cmd[2:]
 
-        if settings.chdman_ioprio_class is not None and settings.chdman_ioprio_level is not None:
+        if (
+            settings.chdman_ioprio_class is not None
+            and settings.chdman_ioprio_level is not None
+        ):
             ionice = shutil.which("ionice")
             if ionice:
                 cmd = [
@@ -83,7 +96,7 @@ class ChdmanService:
         output_path: str,
         mode: str = "createcd",
         compression: Optional[str] = None,
-        cancel_event: Optional[asyncio.Event] = None
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> AsyncGenerator[dict, None]:
         """
         Run chdman conversion and yield progress updates.
@@ -99,7 +112,9 @@ class ChdmanService:
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-        cmd = self._build_command(mode, input_path, output_path, compression=compression)
+        cmd = self._build_command(
+            mode, input_path, output_path, compression=compression
+        )
 
         def _preexec():
             if settings.chdman_nice is not None:
@@ -112,7 +127,7 @@ class ChdmanService:
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            preexec_fn=_preexec if os.name == "posix" else None
+            preexec_fn=_preexec if os.name == "posix" else None,
         )
         self._track_pid(process.pid)
         if logger.isEnabledFor(logging.DEBUG):
@@ -121,6 +136,7 @@ class ChdmanService:
         cancelled_by_request = False
         cancel_task = None
         if cancel_event:
+
             async def _cancel_watcher():
                 nonlocal cancelled_by_request
                 await cancel_event.wait()
@@ -151,8 +167,14 @@ class ChdmanService:
                         break
                     now = time.monotonic()
                     idle_for = now - last_output_at
-                    if logger.isEnabledFor(logging.DEBUG) and idle_for >= 30 and now - last_idle_log >= 30:
-                        logger.debug("chdman pid=%s idle for %.1fs", process.pid, idle_for)
+                    if (
+                        logger.isEnabledFor(logging.DEBUG)
+                        and idle_for >= 30
+                        and now - last_idle_log >= 30
+                    ):
+                        logger.debug(
+                            "chdman pid=%s idle for %.1fs", process.pid, idle_for
+                        )
                         last_idle_log = now
                     continue
             else:
@@ -210,14 +232,19 @@ class ChdmanService:
     async def info(self, chd_path: str) -> dict:
         """Get information about a CHD file."""
         process = await asyncio.create_subprocess_exec(
-            self.chdman_path, "info", "-i", chd_path,
+            self.chdman_path,
+            "info",
+            "-i",
+            chd_path,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            raise RuntimeError(stderr.decode() or f"chdman info failed with code {process.returncode}")
+            raise RuntimeError(
+                stderr.decode() or f"chdman info failed with code {process.returncode}"
+            )
 
         return self._parse_info(stdout.decode())
 
@@ -229,9 +256,12 @@ class ChdmanService:
             dict: {"valid": bool, "message": str}
         """
         process = await asyncio.create_subprocess_exec(
-            self.chdman_path, "verify", "-i", chd_path,
+            self.chdman_path,
+            "verify",
+            "-i",
+            chd_path,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
+            stderr=asyncio.subprocess.STDOUT,
         )
         stdout, _ = await process.communicate()
         output = stdout.decode()
@@ -239,13 +269,19 @@ class ChdmanService:
         if process.returncode == 0:
             return {"valid": True, "message": "CHD file verified successfully"}
         else:
-            return {"valid": False, "message": output.strip() or "CHD verification failed"}
+            return {
+                "valid": False,
+                "message": output.strip() or "CHD verification failed",
+            }
 
     async def verify_stream(self, chd_path: str) -> AsyncGenerator[dict, None]:
         process = await asyncio.create_subprocess_exec(
-            self.chdman_path, "verify", "-i", chd_path,
+            self.chdman_path,
+            "verify",
+            "-i",
+            chd_path,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT
+            stderr=asyncio.subprocess.STDOUT,
         )
         self._track_pid(process.pid)
         if logger.isEnabledFor(logging.DEBUG):
@@ -268,7 +304,11 @@ class ChdmanService:
                         if line:
                             output_lines.append(line)
                             progress = self._parse_progress(line)
-                            yield {"type": "progress", "progress": progress, "message": line}
+                            yield {
+                                "type": "progress",
+                                "progress": progress,
+                                "message": line,
+                            }
                     buffer = parts[-1]
                 elif "\n" in buffer:
                     parts = buffer.split("\n")
@@ -277,7 +317,11 @@ class ChdmanService:
                         if line:
                             output_lines.append(line)
                             progress = self._parse_progress(line)
-                            yield {"type": "progress", "progress": progress, "message": line}
+                            yield {
+                                "type": "progress",
+                                "progress": progress,
+                                "message": line,
+                            }
                     buffer = parts[-1]
 
         if buffer.strip():
@@ -288,15 +332,25 @@ class ChdmanService:
 
         await process.wait()
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("chdman verify pid=%s exit=%s", process.pid, process.returncode)
+            logger.debug(
+                "chdman verify pid=%s exit=%s", process.pid, process.returncode
+            )
         self._untrack_pid(process.pid)
 
         output_lines = output_lines[-20:]
         output = "\n".join(output_lines).strip()
         if process.returncode == 0:
-            yield {"type": "complete", "valid": True, "message": "CHD file verified successfully"}
+            yield {
+                "type": "complete",
+                "valid": True,
+                "message": "CHD file verified successfully",
+            }
         else:
-            yield {"type": "error", "valid": False, "message": output or "CHD verification failed"}
+            yield {
+                "type": "error",
+                "valid": False,
+                "message": output or "CHD verification failed",
+            }
 
     def _parse_progress(self, line: str) -> int:
         """Parse chdman output for progress percentage."""
@@ -331,7 +385,7 @@ class ChdmanService:
         input_path: str,
         output_dir: Optional[str] = None,
         *,
-        treat_as_stem: bool = False
+        treat_as_stem: bool = False,
     ) -> str:
         """Get the output CHD path for an input file or stem."""
         input_p = Path(input_path)
@@ -348,7 +402,7 @@ class ChdmanService:
         input_path: str,
         output_dir: Optional[str] = None,
         *,
-        treat_as_stem: bool = False
+        treat_as_stem: bool = False,
     ) -> str:
         input_p = Path(input_path)
         stem = input_p.name if treat_as_stem else input_p.stem
