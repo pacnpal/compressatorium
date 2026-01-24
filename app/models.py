@@ -42,6 +42,7 @@ class FileEntry(BaseModel):
     has_chd: bool = False
     archive_items: Optional[int] = None
     archive_has_chd: Optional[int] = None
+    media_type: Optional[str] = None  # "dvd", "cd", or None - for CHD files
 
 
 class DirectoryListing(BaseModel):
@@ -130,6 +131,7 @@ class CHDInfo(BaseModel):
     sha1: Optional[str] = None
     data_sha1: Optional[str] = None
     raw_data: str = ""
+    media_type: Optional[str] = None  # "dvd", "cd", or None
 
 
 class BulkDeleteRequest(BaseModel):
@@ -137,4 +139,8 @@ class BulkDeleteRequest(BaseModel):
 
 
 class BulkVerifyRequest(BaseModel):
+    paths: List[str]
+
+
+class MetadataBatchRequest(BaseModel):
     paths: List[str]

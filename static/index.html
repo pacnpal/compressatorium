@@ -19,7 +19,7 @@
         (async () => {
             try {
                 const { html, render, Component } = await import('/static/vendor/standalone.mjs');
-                const { useState, useEffect, useCallback, useRef } = await import('/static/vendor/standalone.mjs');
+                const { useState, useEffect, useCallback, useRef, useMemo } = await import('/static/vendor/standalone.mjs');
                 
                 window.html = html;
                 window.render = render;
@@ -28,6 +28,7 @@
                 window.useEffect = useEffect;
                 window.useCallback = useCallback;
                 window.useRef = useRef;
+                window.useMemo = useMemo;
 
                 await import('/static/js/app.js');
             } catch (err) {

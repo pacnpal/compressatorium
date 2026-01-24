@@ -102,6 +102,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Read version from .version file
+        id: version
+        run: |
+          VERSION=$(cat .version | tr -d '\n\r ')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Read version: ${VERSION}"
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -110,6 +117,8 @@ jobs:
             ${{ env.DOCKERHUB_IMAGE }}
             ${{ env.GHCR_IMAGE }}
           tags: |
+            # Version from .version file (e.g., 0.5.0)
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/latest' || github.ref == 'refs/heads/main' }}
             # Branch name (e.g., latest, main)
             type=ref,event=branch
             # PR number (e.g., pr-123)
@@ -126,6 +135,7 @@ jobs:
             org.opencontainers.image.title=CHD Converter
             org.opencontainers.image.description=Web UI for converting disc images to CHD format
             org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
           annotations: |
             org.opencontainers.image.title=CHD Converter
             org.opencontainers.image.description=Web UI for converting disc images to CHD format
