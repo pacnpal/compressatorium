@@ -162,18 +162,70 @@ header h1 span {
 }
 
 /* File List */
+.file-list-container {
+    display: flex;
+    flex-direction: column;
+}
+
+.file-list-header {
+    display: grid;
+    grid-template-columns: 40px 1fr 90px 140px 100px;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-radius: 6px 6px 0 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.header-cell {
+    display: flex;
+    align-items: center;
+}
+
+.header-cell.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.2s;
+}
+
+.header-cell.sortable:hover {
+    color: var(--text-primary);
+}
+
+.header-checkbox {
+    justify-content: center;
+}
+
+.header-checkbox .checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
 .file-list {
     list-style: none;
 }
 
 .file-item {
-    display: flex;
+    display: grid;
+    grid-template-columns: 40px 1fr 90px 140px 100px;
+    gap: 8px;
     align-items: center;
     padding: 10px 12px;
-    border-radius: 6px;
+    border-radius: 0;
     cursor: pointer;
-    gap: 12px;
     transition: background 0.2s;
+    border-bottom: 1px solid var(--border);
+}
+
+.file-item:last-child {
+    border-bottom: none;
 }
 
 .file-item:hover {
@@ -183,36 +235,60 @@ header h1 span {
 .file-item.selected {
     background: var(--bg-tertiary);
     outline: 2px solid var(--accent);
+    outline-offset: -2px;
 }
 
-.file-item .icon {
-    font-size: 1.3rem;
-    width: 24px;
-    text-align: center;
-}
-
-.file-item .info {
-    flex: 1;
+.file-cell {
+    display: flex;
+    align-items: center;
     min-width: 0;
 }
 
-.file-item .name {
+.file-checkbox {
+    justify-content: center;
+}
+
+.file-checkbox .checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.file-name {
+    gap: 8px;
+    overflow: hidden;
+}
+
+.file-name .icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+
+.file-name .name {
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.file-item .meta {
-    font-size: 0.8rem;
+.file-size {
+    font-size: 0.85rem;
     color: var(--text-secondary);
 }
 
+.file-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
 .file-item .status {
-    font-size: 0.75rem;
-    padding: 2px 8px;
+    font-size: 0.7rem;
+    padding: 2px 6px;
     border-radius: 10px;
     background: var(--bg-primary);
+    white-space: nowrap;
 }
 
 .file-item .status.has-chd {
@@ -230,21 +306,16 @@ header h1 span {
     color: var(--bg-primary);
 }
 
-.file-item .checkbox {
-    width: 20px;
-    height: 20px;
-    accent-color: var(--accent);
-}
-
 /* File Actions */
-.file-actions {
+.file-actions-cell {
     display: flex;
     gap: 4px;
+    justify-content: flex-end;
     opacity: 0;
     transition: opacity 0.2s;
 }
 
-.file-item:hover .file-actions {
+.file-item:hover .file-actions-cell {
     opacity: 1;
 }
 

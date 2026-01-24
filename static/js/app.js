@@ -129,7 +129,7 @@ function Breadcrumb({ path, volume, onNavigate }) {
     `;
 }
 
-function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, verifyProgress, chdMetadata, error }) {
+function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected }) {
 
     if (error) {
         return html`
@@ -198,9 +198,63 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         return !!(chdPath && verifiedCHDs && verifiedCHDs.has(chdPath));
     };
 
+    const getSortIndicator = (column) => {
+        if (sortBy !== column) return '';
+        return sortOrder === 'asc' ? ' ▲' : ' ▼';
+    };
+
+    // Count selectable entries for the header checkbox
+    const selectableCount = entries.filter(e => canSelect(e)).length;
+    const hasSelectableEntries = selectableCount > 0;
+
     return html`
-        <ul class="file-list">
-            ${entries.map(entry => {
+        <div class="file-list-container">
+            <div class="file-list-header">
+                <div class="header-cell header-checkbox">
+                    ${hasSelectableEntries && html`
+                        <input
+                            type="checkbox"
+                            class="checkbox"
+                            checked=${allSelected}
+                            onClick=${onSelectAll}
+                            title=${allSelected ? 'Deselect all' : `Select all (${selectableCount})`}
+                        />
+                    `}
+                </div>
+                <div 
+                    class="header-cell header-name sortable" 
+                    onClick=${() => onSort('name')}
+                    onKeyDown=${(e) => (e.key === 'Enter' || e.key === ' ') && onSort('name')}
+                    role="button"
+                    tabindex="0"
+                    aria-sort=${sortBy === 'name' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}
+                >
+                    Name${getSortIndicator('name')}
+                </div>
+                <div 
+                    class="header-cell header-size sortable" 
+                    onClick=${() => onSort('size')}
+                    onKeyDown=${(e) => (e.key === 'Enter' || e.key === ' ') && onSort('size')}
+                    role="button"
+                    tabindex="0"
+                    aria-sort=${sortBy === 'size' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}
+                >
+                    Size${getSortIndicator('size')}
+                </div>
+                <div 
+                    class="header-cell header-status sortable" 
+                    onClick=${() => onSort('status')}
+                    onKeyDown=${(e) => (e.key === 'Enter' || e.key === ' ') && onSort('status')}
+                    role="button"
+                    tabindex="0"
+                    aria-sort=${sortBy === 'status' ? (sortOrder === 'asc' ? 'ascending' : 'descending') : 'none'}
+                >
+                    Status${getSortIndicator('status')}
+                </div>
+                <div class="header-cell header-actions"></div>
+            </div>
+            <ul class="file-list">
+                ${entries.map(entry => {
         const chdPath = getChdPath(entry);
         const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
         const canVerify = chdPath && (entry.extension === '.chd' || (isArchiveItem(entry) && entry.has_chd));
@@ -213,54 +267,57 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                     onClick=${(e) => handleClick(entry, e)}
                     title=${getTooltip(entry)}
                 >
-                    ${entry.type !== 'directory' && entry.type !== 'archive' && html`
-                        <input
-                            type="checkbox"
-                            class="checkbox"
-                            checked=${selectedFiles.has(entry.path)}
-                            onClick=${(e) => { e.stopPropagation(); onToggleSelect(entry, e); }}
-                        />
-                    `}
-                    <span class="icon">${getFileIcon(entry)}</span>
-                    <div class="info">
-                        <div class="name">${entry.name}</div>
-                        ${entry.size != null && entry.size !== undefined && html`
-                            <div class="meta">${formatSize(entry.size)}</div>
+                    <div class="file-cell file-checkbox">
+                        ${entry.type !== 'directory' && entry.type !== 'archive' && html`
+                            <input
+                                type="checkbox"
+                                class="checkbox"
+                                checked=${selectedFiles.has(entry.path)}
+                                onClick=${(e) => { e.stopPropagation(); onToggleSelect(entry, e); }}
+                            />
                         `}
                     </div>
-                    ${entry.type !== 'archive' && entry.has_chd && html`
-                        <span class="status has-chd" title="A CHD file already exists for this source">CHD exists</span>
-                    `}
-                    ${entry.type !== 'archive' && entry.convertible && !entry.has_chd && html`
-                        <span class="status convertible" title="Can be converted to CHD">Convertible</span>
-                    `}
-                    ${entry.type === 'archive' && archiveItems != null && archiveItems > 0 && html`
-                        <span class="status convertible" title="Convertible images inside this archive">
-                            ${archiveItems} image${archiveItems === 1 ? '' : 's'}
-                        </span>
-                    `}
-                    ${entry.type === 'archive' && archiveItems === 0 && html`
-                        <span class="status" title="No convertible images found in this archive">No images</span>
-                    `}
-                    ${entry.type === 'archive' && archiveHasChd != null && archiveHasChd > 0 && html`
-                        <span class="status has-chd" title="CHD files already exist for this archive">
-                            ${archiveHasChd}/${archiveItems} CHD
-                        </span>
-                    `}
-                    ${isVerified(entry) && html`
-                        <span class="status verified" title="CHD integrity verified">✓ Verified</span>
-                    `}
-                    ${isVerifying && html`
-                        <span class="status convertible" title="Verifying CHD integrity">
-                            ${(() => {
+                    <div class="file-cell file-name">
+                        <span class="icon">${getFileIcon(entry)}</span>
+                        <span class="name">${entry.name}</span>
+                    </div>
+                    <div class="file-cell file-size">
+                        ${entry.size != null && entry.size !== undefined ? formatSize(entry.size) : ''}
+                    </div>
+                    <div class="file-cell file-status">
+                        ${entry.type !== 'archive' && entry.has_chd && html`
+                            <span class="status has-chd" title="A CHD file already exists for this source">CHD exists</span>
+                        `}
+                        ${entry.type !== 'archive' && entry.convertible && !entry.has_chd && html`
+                            <span class="status convertible" title="Can be converted to CHD">Convertible</span>
+                        `}
+                        ${entry.type === 'archive' && archiveItems != null && archiveItems > 0 && html`
+                            <span class="status convertible" title="Convertible images inside this archive">
+                                ${archiveItems} image${archiveItems === 1 ? '' : 's'}
+                            </span>
+                        `}
+                        ${entry.type === 'archive' && archiveItems === 0 && html`
+                            <span class="status" title="No convertible images found in this archive">No images</span>
+                        `}
+                        ${entry.type === 'archive' && archiveHasChd != null && archiveHasChd > 0 && html`
+                            <span class="status has-chd" title="CHD files already exist for this archive">
+                                ${archiveHasChd}/${archiveItems} CHD
+                            </span>
+                        `}
+                        ${isVerified(entry) && html`
+                            <span class="status verified" title="CHD integrity verified">✓ Verified</span>
+                        `}
+                        ${isVerifying && html`
+                            <span class="status convertible" title="Verifying CHD integrity">
+                                ${(() => {
                     const status = chdPath ? verifyProgress.get(chdPath) : null;
                     if (!status) return 'Verifying...';
                     if (status.progress != null) return `Verifying ${status.progress}%`;
                     return status.message || 'Verifying...';
                 })()}
-                        </span>
-                    `}
-                    ${entry.extension === '.chd' && chdMetadata && (() => {
+                            </span>
+                        `}
+                        ${entry.extension === '.chd' && chdMetadata && (() => {
                 const meta = chdMetadata.get(entry.path);
                 if (meta?.media_type === 'dvd') {
                     return html`<span class="status media-badge dvd" title="DVD Format">DVD</span>`;
@@ -270,7 +327,8 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                 }
                 return null;
             })()}
-                    <div class="file-actions" onClick=${(e) => e.stopPropagation()}>
+                    </div>
+                    <div class="file-cell file-actions-cell" onClick=${(e) => e.stopPropagation()}>
                         ${canVerify && !isVerified(entry) && html`
                             <button
                                 class="btn-icon"
@@ -301,7 +359,8 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                 </li>
                 `;
     })}
-        </ul>
+            </ul>
+        </div>
     `;
 }
 
@@ -1486,6 +1545,8 @@ function App() {
     const [lastSelectedIndex, setLastSelectedIndex] = useState(null); // For shift-click range selection
     const [chdMetadata, setChdMetadata] = useState(new Map()); // path -> { media_type: "dvd"|"cd"|null }
     const [appVersion, setAppVersion] = useState(null); // App version from backend
+    const [sortBy, setSortBy] = useState('name'); // 'name', 'size', 'status'
+    const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
 
     // Ref to track current path for use in callbacks
     const currentPathRef = useRef(null);
@@ -1621,14 +1682,52 @@ function App() {
             .catch(() => { });
     }, []);
 
-    // Filtered entries based on file type filter
+    // Filtered and sorted entries based on file type filter and sort settings
     const displayedEntries = useMemo(() => {
-        if (!fileTypeFilter) return entries;
-        const exts = fileTypeFilter.split(',').map(e => e.toLowerCase().trim());
-        return entries.filter(e =>
-            e.type === 'directory' || e.type === 'archive' || exts.includes(e.extension?.toLowerCase())
-        );
-    }, [entries, fileTypeFilter]);
+        // First, filter entries
+        let filtered = entries;
+        if (fileTypeFilter) {
+            const exts = fileTypeFilter.split(',').map(e => e.toLowerCase().trim());
+            filtered = entries.filter(e =>
+                e.type === 'directory' || e.type === 'archive' || exts.includes(e.extension?.toLowerCase())
+            );
+        }
+
+        // Then, sort entries (directories and archives always first)
+        const getStatusPriority = (entry) => {
+            if (entry.type === 'directory') return 0;
+            if (entry.type === 'archive') return 1;
+            if (entry.has_chd) return 2;
+            if (entry.convertible) return 3;
+            return 4;
+        };
+
+        return [...filtered].sort((a, b) => {
+            // Directories always first
+            if (a.type === 'directory' && b.type !== 'directory') return -1;
+            if (b.type === 'directory' && a.type !== 'directory') return 1;
+            // Archives second
+            if (a.type === 'archive' && b.type !== 'archive' && b.type !== 'directory') return -1;
+            if (b.type === 'archive' && a.type !== 'archive' && a.type !== 'directory') return 1;
+
+            // Within same category, sort by selected column
+            let cmp = 0;
+            switch (sortBy) {
+                case 'name':
+                    cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+                    break;
+                case 'size':
+                    cmp = (a.size || 0) - (b.size || 0);
+                    break;
+                case 'status':
+                    cmp = getStatusPriority(a) - getStatusPriority(b);
+                    break;
+                default:
+                    cmp = 0;
+            }
+            return sortOrder === 'asc' ? cmp : -cmp;
+        });
+    }, [entries, fileTypeFilter, sortBy, sortOrder]);
 
     // Prune selected files to only include visible entries when filter changes
     // This prevents hidden selections from causing unexpected behavior during conversion
@@ -1969,6 +2068,19 @@ function App() {
             selectable.forEach(e => newMap.set(e.path, e));
             setSelectedFiles(newMap);
         }
+    };
+
+    const handleSort = (column) => {
+        if (sortBy === column) {
+            // Toggle order if same column
+            setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+        } else {
+            // New column, default to ascending
+            setSortBy(column);
+            setSortOrder('asc');
+        }
+        // Reset shift-click anchor when sort changes (order changes)
+        setLastSelectedIndex(null);
     };
 
     // File operations handlers
@@ -2505,7 +2617,7 @@ function App() {
         }
     };
 
-    const convertibleCount = displayedEntries.filter(e => canSelectEntry(e)).length;
+
     const hasCompletedJobs = jobs.some(j => ['completed', 'failed', 'cancelled'].includes(j.status));
 
     return html`
@@ -2692,14 +2804,6 @@ function App() {
                             <option value=".iso,.gdi,.cue,.bin">Disc Images</option>
                         </select>
                         <button
-                            class="btn btn-sm btn-secondary"
-                            onClick=${handleSelectAll}
-                            disabled=${convertibleCount === 0}
-                            title=${convertibleCount === 0 ? 'No selectable files' : (selectedFiles.size === convertibleCount && convertibleCount > 0 ? 'Deselect all files' : 'Select all applicable files')}
-                        >
-                            ${selectedFiles.size === convertibleCount && convertibleCount > 0 ? 'Deselect All' : `Select All (${convertibleCount})`}
-                        </button>
-                        <button
                             class="btn btn-primary"
                             disabled=${selectedFiles.size === 0 || converting}
                             onClick=${handleConvert}
@@ -2799,6 +2903,11 @@ function App() {
                                 verifyProgress=${verifyProgress}
                                 chdMetadata=${chdMetadata}
                                 error=${entriesError}
+                                sortBy=${sortBy}
+                                sortOrder=${sortOrder}
+                                onSort=${handleSort}
+                                onSelectAll=${handleSelectAll}
+                                allSelected=${selectedFiles.size > 0 && selectedFiles.size === displayedEntries.filter(e => canSelectEntry(e)).length}
                             />`
         }
                     </div>
