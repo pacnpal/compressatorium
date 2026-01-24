@@ -151,7 +151,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         `;
     }
 
-    const handleClick = (entry, _e) => {
+    const handleClick = (entry, e) => {
         if (entry.type === 'directory') {
             onNavigate(entry.path);
         } else if (entry.type === 'archive') {
@@ -161,8 +161,8 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
             // For CHD files, show info (but checkbox still works for selection)
             onShowInfo(entry.path);
         } else {
-            // For all other files, toggle selection
-            onToggleSelect(entry);
+            // For all other files, toggle selection (pass event for shift-click support)
+            onToggleSelect(entry, e);
         }
     };
 

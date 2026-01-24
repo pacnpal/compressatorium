@@ -34,6 +34,7 @@ fi
 
 # Update package.json if it exists
 PACKAGE_JSON="$PROJECT_ROOT/package.json"
+PACKAGE_LOCK="$PROJECT_ROOT/package-lock.json"
 if [ -f "$PACKAGE_JSON" ]; then
     # Use sed to update version in package.json
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -44,6 +45,19 @@ if [ -f "$PACKAGE_JSON" ]; then
         sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" "$PACKAGE_JSON"
     fi
     echo "Updated package.json"
+    
+    # Update package-lock.json if it exists
+    if [ -f "$PACKAGE_LOCK" ]; then
+        if command -v npm &> /dev/null; then
+            # Use npm to regenerate lockfile with new version
+            cd "$PROJECT_ROOT"
+            npm install --package-lock-only
+            echo "Updated package-lock.json"
+        else
+            echo "Warning: npm not found, skipping package-lock.json update"
+            echo "Please run 'npm install --package-lock-only' manually to sync lockfile"
+        fi
+    fi
 fi
 
 echo ""
@@ -57,3 +71,4 @@ echo "  - Health endpoint (returns version)"
 echo ""
 echo "Files that need manual sync (updated by this script):"
 echo "  - package.json"
+echo "  - package-lock.json (if npm is available)"

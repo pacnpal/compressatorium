@@ -57,19 +57,29 @@ class CHDMetadataStore:
         self._write_lock = threading.Lock()
 
     def _persist(self):
-        """Synchronous persist - use _persist_async for non-blocking writes."""
-        with self._write_lock:
-            # Use unique temp file to avoid conflicts
-            tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
-            try:
-                with tmp_path.open("w", encoding="utf-8") as fh:
-                    json.dump(self._records, fh, indent=2)
-                tmp_path.replace(self._store_path)
-                self._dirty = False
-            finally:
-                # Clean up temp file if it still exists
-                if tmp_path.exists():
-                    tmp_path.unlink()
+        """
+        Synchronous persist - writes self._records to disk.
+        
+        Acquires _lock internally to ensure consistent snapshot,
+        then acquires _write_lock for the actual file write.
+        Caller should NOT hold _lock when calling this method.
+        """
+        # Acquire locks in correct order: _lock then _write_lock
+        with self._lock:
+            records_snapshot = dict(self._records)
+            
+            with self._write_lock:
+                # Use unique temp file to avoid conflicts
+                tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
+                try:
+                    with tmp_path.open("w", encoding="utf-8") as fh:
+                        json.dump(records_snapshot, fh, indent=2)
+                    tmp_path.replace(self._store_path)
+                    self._dirty = False
+                finally:
+                    # Clean up temp file if it still exists
+                    if tmp_path.exists():
+                        tmp_path.unlink()
 
     async def _persist_async(self):
         """Non-blocking persist using thread pool executor."""
@@ -219,29 +229,37 @@ class CHDMetadataStore:
             "cached_at": datetime.utcnow().isoformat() + "Z",
         }
         
+        should_persist = False
         with self._lock:
             self._records[normalized] = record
             self._dirty = True
             self._version += 1  # Track modifications for async persist
-            if persist:
-                self._persist()
+            should_persist = persist
+        
+        if should_persist:
+            self._persist()
         
         return record
 
     def clear(self, chd_path: str):
         """Remove cached metadata for a CHD file."""
         normalized = self._normalize_path(chd_path)
+        should_persist = False
         with self._lock:
             if normalized in self._records:
                 del self._records[normalized]
                 self._version += 1
                 self._dirty = True
-                self._persist()
+                should_persist = True
+        
+        if should_persist:
+            self._persist()
 
     def move(self, old_path: str, new_path: str):
         """Update cache when a CHD file is renamed/moved."""
         old_normalized = self._normalize_path(old_path)
         new_normalized = self._normalize_path(new_path)
+        should_persist = False
         with self._lock:
             record = self._records.pop(old_normalized, None)
             if record is None:
@@ -255,6 +273,9 @@ class CHDMetadataStore:
             self._records[new_normalized] = record
             self._version += 1
             self._dirty = True
+            should_persist = True
+        
+        if should_persist:
             self._persist()
 
     def get_batch(self, chd_paths: list) -> Dict[str, dict]:
@@ -279,6 +300,7 @@ class CHDMetadataStore:
     def prune_missing(self) -> int:
         """Remove cache entries for CHD files that no longer exist."""
         removed = []
+        should_persist = False
         with self._lock:
             for path in list(self._records.keys()):
                 if not os.path.exists(path):
@@ -288,7 +310,11 @@ class CHDMetadataStore:
                     del self._records[path]
                 self._version += 1
                 self._dirty = True
-                self._persist()
+                should_persist = True
+        
+        if should_persist:
+            self._persist()
+        
         return len(removed)
 
     def is_dirty(self) -> bool:
@@ -303,9 +329,13 @@ class CHDMetadataStore:
 
     def flush(self):
         """Persist any dirty changes synchronously."""
+        should_persist = False
         with self._lock:
             if self._dirty:
-                self._persist()
+                should_persist = True
+        
+        if should_persist:
+            self._persist()
 
 
 # Singleton instance
