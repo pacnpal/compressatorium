@@ -60,26 +60,32 @@ class CHDMetadataStore:
         """
         Synchronous persist - writes self._records to disk.
         
-        Acquires _lock internally to ensure consistent snapshot,
-        then acquires _write_lock for the actual file write.
+        Uses version checking to ensure consistent writes while minimizing
+        lock hold time (file I/O happens outside _lock).
         Caller should NOT hold _lock when calling this method.
         """
-        # Acquire locks in correct order: _lock then _write_lock
+        # Capture version and snapshot under lock
         with self._lock:
+            snapshot_version = self._version
             records_snapshot = dict(self._records)
-            
-            with self._write_lock:
-                # Use unique temp file to avoid conflicts
-                tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
-                try:
-                    with tmp_path.open("w", encoding="utf-8") as fh:
-                        json.dump(records_snapshot, fh, indent=2)
-                    tmp_path.replace(self._store_path)
-                    self._dirty = False
-                finally:
-                    # Clean up temp file if it still exists
-                    if tmp_path.exists():
-                        tmp_path.unlink()
+        
+        # Do file I/O outside _lock to minimize lock contention
+        with self._write_lock:
+            # Use unique temp file to avoid conflicts
+            tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
+            try:
+                with tmp_path.open("w", encoding="utf-8") as fh:
+                    json.dump(records_snapshot, fh, indent=2)
+                tmp_path.replace(self._store_path)
+                
+                # Now acquire _lock to clear dirty flag (only if version matches)
+                with self._lock:
+                    if self._version == snapshot_version:
+                        self._dirty = False
+            finally:
+                # Clean up temp file if it still exists
+                if tmp_path.exists():
+                    tmp_path.unlink()
 
     async def _persist_async(self):
         """Non-blocking persist using thread pool executor."""
