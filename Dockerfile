@@ -25,6 +25,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # Copy application
 COPY app/ /app/
 COPY static/ /static/
+COPY .version /app/.version
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

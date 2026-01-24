@@ -3,10 +3,29 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 import logging
+from pathlib import Path
 
 from routes import files, convert, info
 from services.job_manager import job_manager
 from config import settings
+
+
+def get_version() -> str:
+    """Read version from .version file at project root."""
+    # Try multiple possible locations for the .version file
+    possible_paths = [
+        Path(__file__).parent.parent / ".version",  # /app/../.version
+        Path("/app/.version"),  # Docker container path
+        Path(".version"),  # Current working directory
+    ]
+    for version_path in possible_paths:
+        try:
+            if version_path.exists():
+                return version_path.read_text().strip()
+        except OSError:
+            # File exists but unreadable, try next location
+            continue
+    return "0.0.0"
 
 
 def configure_logging():
@@ -36,7 +55,7 @@ def configure_logging():
 app = FastAPI(
     title="CHD Converter",
     description="Web UI for converting game disc images to CHD format",
-    version="1.0.0",
+    version=get_version(),
 )
 
 # Include routers
@@ -51,13 +70,15 @@ async def startup_event():
     import asyncio
 
     configure_logging()
+    logger = logging.getLogger("chd")
+    logger.info(f"CHD Converter v{get_version()} starting...")
     asyncio.create_task(job_manager.process_queue())
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy"}
+    return {"status": "healthy", "version": get_version()}
 
 
 # Serve static files

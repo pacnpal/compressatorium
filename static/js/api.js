@@ -3,6 +3,13 @@
 const API_BASE = '/api';
 
 export const api = {
+    // Version
+    async getVersion() {
+        const res = await fetch(`${API_BASE}/version`);
+        if (!res.ok) throw new Error('Failed to fetch version');
+        return res.json();
+    },
+
     // Volumes
     async getVolumes() {
         const res = await fetch(`${API_BASE}/volumes`);
@@ -205,6 +212,29 @@ export const api = {
     async getVerifiedCHDs() {
         const res = await fetch(`${API_BASE}/verified`);
         if (!res.ok) throw new Error('Failed to fetch verified CHDs');
+        return res.json();
+    },
+
+    async getCHDMetadataBatch(paths) {
+        if (!paths || paths.length === 0) return {};
+        const res = await fetch(`${API_BASE}/chd-metadata`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths })
+        });
+        if (!res.ok) throw new Error('Failed to fetch CHD metadata');
+        return res.json();
+    },
+
+    async scanMetadata() {
+        const res = await fetch(`${API_BASE}/chd-metadata/scan`, { method: 'POST' });
+        if (!res.ok) throw new Error('Failed to start metadata scan');
+        return res.json();
+    },
+
+    async getScanStatus() {
+        const res = await fetch(`${API_BASE}/chd-metadata/scan/status`);
+        if (!res.ok) throw new Error('Failed to get scan status');
         return res.json();
     },
 

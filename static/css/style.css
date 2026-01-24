@@ -62,6 +62,7 @@ header h1 span {
     .main-layout {
         grid-template-columns: 250px 1fr;
     }
+
     .jobs-panel {
         grid-column: 1 / -1;
     }
@@ -161,18 +162,70 @@ header h1 span {
 }
 
 /* File List */
+.file-list-container {
+    display: flex;
+    flex-direction: column;
+}
+
+.file-list-header {
+    display: grid;
+    grid-template-columns: 40px 1fr 90px 140px 100px;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-radius: 6px 6px 0 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.header-cell {
+    display: flex;
+    align-items: center;
+}
+
+.header-cell.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.2s;
+}
+
+.header-cell.sortable:hover {
+    color: var(--text-primary);
+}
+
+.header-checkbox {
+    justify-content: center;
+}
+
+.header-checkbox .checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
 .file-list {
     list-style: none;
 }
 
 .file-item {
-    display: flex;
+    display: grid;
+    grid-template-columns: 40px 1fr 90px 140px 100px;
+    gap: 8px;
     align-items: center;
     padding: 10px 12px;
-    border-radius: 6px;
+    border-radius: 0;
     cursor: pointer;
-    gap: 12px;
     transition: background 0.2s;
+    border-bottom: 1px solid var(--border);
+}
+
+.file-item:last-child {
+    border-bottom: none;
 }
 
 .file-item:hover {
@@ -182,36 +235,60 @@ header h1 span {
 .file-item.selected {
     background: var(--bg-tertiary);
     outline: 2px solid var(--accent);
+    outline-offset: -2px;
 }
 
-.file-item .icon {
-    font-size: 1.3rem;
-    width: 24px;
-    text-align: center;
-}
-
-.file-item .info {
-    flex: 1;
+.file-cell {
+    display: flex;
+    align-items: center;
     min-width: 0;
 }
 
-.file-item .name {
+.file-checkbox {
+    justify-content: center;
+}
+
+.file-checkbox .checkbox {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.file-name {
+    gap: 8px;
+    overflow: hidden;
+}
+
+.file-name .icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+
+.file-name .name {
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.file-item .meta {
-    font-size: 0.8rem;
+.file-size {
+    font-size: 0.85rem;
     color: var(--text-secondary);
 }
 
+.file-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
 .file-item .status {
-    font-size: 0.75rem;
-    padding: 2px 8px;
+    font-size: 0.7rem;
+    padding: 2px 6px;
     border-radius: 10px;
     background: var(--bg-primary);
+    white-space: nowrap;
 }
 
 .file-item .status.has-chd {
@@ -229,21 +306,16 @@ header h1 span {
     color: var(--bg-primary);
 }
 
-.file-item .checkbox {
-    width: 20px;
-    height: 20px;
-    accent-color: var(--accent);
-}
-
 /* File Actions */
-.file-actions {
+.file-actions-cell {
     display: flex;
     gap: 4px;
+    justify-content: flex-end;
     opacity: 0;
     transition: opacity 0.2s;
 }
 
-.file-item:hover .file-actions {
+.file-item:hover .file-actions-cell {
     opacity: 1;
 }
 
@@ -377,7 +449,7 @@ header h1 span {
     opacity: 0.6;
 }
 
-.compression-option input:disabled + span {
+.compression-option input:disabled+span {
     opacity: 0.6;
 }
 
@@ -638,7 +710,9 @@ header h1 span {
 }
 
 @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 /* Empty State */
@@ -718,7 +792,7 @@ header h1 span {
     white-space: nowrap;
 }
 
-.auto-refresh-toggle input:checked + .auto-refresh-label {
+.auto-refresh-toggle input:checked+.auto-refresh-label {
     color: var(--success);
 }
 
@@ -814,6 +888,7 @@ header h1 span {
         transform: translateX(100%);
         opacity: 0;
     }
+
     to {
         transform: translateX(0);
         opacity: 1;
@@ -904,8 +979,15 @@ header h1 span {
 
 /* Pulse animation for creating status */
 @keyframes pulse {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 0.8; }
+
+    0%,
+    100% {
+        opacity: 0.4;
+    }
+
+    50% {
+        opacity: 0.8;
+    }
 }
 
 .progress-fill.creating {
@@ -969,4 +1051,61 @@ header h1 span {
     padding: 8px 12px;
     border-radius: 4px;
     margin-bottom: 15px;
+}
+
+/* Footer */
+.app-footer {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 0;
+    margin-top: 20px;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.app-footer a {
+    color: var(--accent);
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.app-footer a:hover {
+    color: var(--accent-hover);
+}
+
+/* CHD Media Type Badges */
+.file-item .status.media-badge {
+    font-weight: 600;
+    font-size: 0.7rem;
+    letter-spacing: 0.5px;
+}
+
+.file-item .status.media-badge.dvd {
+    background: #9b59b6;
+    color: white;
+}
+
+.file-item .status.media-badge.cd {
+    background: #3498db;
+    color: white;
+}
+
+/* File Type Filter Dropdown */
+.toolbar .file-type-filter {
+    min-width: 120px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.toolbar .file-type-filter:focus {
+    outline: none;
+    border-color: var(--accent);
 }
