@@ -117,7 +117,7 @@ jobs:
             ${{ env.DOCKERHUB_IMAGE }}
             ${{ env.GHCR_IMAGE }}
           tags: |
-            # Version from .version file (e.g., 0.5.0)
+            # Version from .version file (e.g., 1.0.0)
             type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/latest' || github.ref == 'refs/heads/main' }}
             # Branch name (e.g., latest, main)
             type=ref,event=branch

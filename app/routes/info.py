@@ -151,26 +151,41 @@ async def get_chd_metadata_batch(
     """
     Get cached metadata for multiple CHD files.
     
-    Returns media_type for each path that has cached metadata.
-    Does NOT run chdman info - only returns already-cached data.
+    For every requested path, an entry is returned. Invalid or non-CHD paths
+    will have media_type=None, cached=False, and an error field.
     """
     result = {}
     
     for path in request.paths:
+        # Default entry for each requested path
+        entry = {"media_type": None, "cached": False}
+        
         if not is_within_configured_volumes(path, treat_archives=False):
+            entry["error"] = "path_outside_configured_volumes"
+            result[path] = entry
             continue
+        
         if not os.path.isfile(path):
+            entry["error"] = "file_not_found"
+            result[path] = entry
             continue
+        
         if not path.lower().endswith(".chd"):
+            entry["error"] = "not_a_chd_file"
+            result[path] = entry
             continue
         
         # Only return cached data, don't run chdman info
         if not chd_metadata_store.is_stale(path):
             media_type = chd_metadata_store.get_media_type(path)
-            result[path] = {"media_type": media_type, "cached": True}
+            entry["media_type"] = media_type
+            entry["cached"] = True
+            # no error field for successful, cached entries
         else:
             # Not cached yet - frontend can trigger individual info calls
-            result[path] = {"media_type": None, "cached": False}
+            entry["error"] = "not_cached"
+        
+        result[path] = entry
     
     return result
 
