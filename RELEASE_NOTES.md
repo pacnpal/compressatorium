@@ -1,5 +1,19 @@
 # Release Notes
 
+## v1.1.4 - Python 3.8 Compatibility Fix
+
+### 🐞 Bug Fix
+
+- **Conversion completion regression** - On Python 3.8, the new `list[str]` annotation in `app/services/chdman.py` raises `TypeError: 'type' object is not subscriptable` at runtime. That exception happens inside the conversion generator before the "complete" event is emitted, so jobs never transition to `completed` on the frontend even if `chdman` finishes. The annotation is now `typing.List[str]` to keep Python 3.8 compatibility.
+- **Guardrail test** - Added a test that fails if `list[...]` annotations appear in `chdman.py` without `from __future__ import annotations`, preventing this regression.
+
+### 📁 Files Changed
+
+- `app/services/chdman.py` - Python 3.8-safe annotation for output buffering
+- `tests/test_chdman_annotations.py` - Regression test for annotation compatibility
+
+---
+
 ## v1.1.1 - Async I/O & Reliability Improvements
 
 ### 🔧 Internal Improvements

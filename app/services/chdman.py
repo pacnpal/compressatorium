@@ -6,7 +6,7 @@ import time
 import threading
 import shutil
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, List
 from fastapi.concurrency import run_in_threadpool
 
 from config import settings
@@ -157,7 +157,7 @@ class ChdmanService:
             cancel_task = asyncio.create_task(_cancel_watcher())
 
         buffer = ""
-        output_lines: list[str] = []
+        output_lines: List[str] = []
         last_output_at = time.monotonic()
         last_idle_log = last_output_at
         while True:
