@@ -1,3 +1,28 @@
+# Release Notes
+
+## v1.1.1 - Async I/O & Reliability Improvements
+
+### 🔧 Internal Improvements
+
+- **Async I/O Refactor** - Filesystem operations on request paths (info, files, stores) now offload to threadpool, preventing event loop blocking
+- **Version-Gated Persistence** - Metadata and verification stores implement last-write-wins with version checks to prevent stale overwrites
+- **Lock Order Consistency** - Eliminated potential deadlocks between sync and async persistence paths
+- **Timezone-Aware Timestamps** - Replaced deprecated `datetime.utcnow()` with `datetime.now(timezone.utc)`
+- **Concurrency Tests** - Added test coverage for concurrent metadata/verification store writes
+
+### 📁 Files Changed
+
+- `app/services/chd_metadata_store.py` - Async persistence, version-gated replace
+- `app/services/verification_store.py` - Async I/O, version-gated replace  
+- `app/services/job_manager.py` - Timezone-aware timestamps
+- `app/routes/info.py` - Threadpool offloading for filesystem checks
+- `app/routes/files.py` - Async filesystem operations
+- `tests/test_metadata.py` - Concurrency tests
+- `tests/test_verification_store.py` - Concurrency tests
+- `walkthrough.md` - Updated async safety documentation
+
+---
+
 # Release Notes - v1.0.0
 
 ## 🎉 Major Release: CHD Metadata Caching & Version System
