@@ -1763,11 +1763,14 @@ function App() {
 
         let cancelled = false;
         let timeoutId = null;
+        let failureCount = 0;
+        const maxFailures = 5;
 
         const poll = async () => {
             try {
                 const status = await api.getScanStatus();
                 if (cancelled) return;
+                failureCount = 0;
                 if (status.scanning) {
                     timeoutId = setTimeout(poll, 1500);
                     return;
@@ -1776,8 +1779,17 @@ function App() {
                 setForceRescanRunning(false);
             } catch (err) {
                 if (cancelled) return;
-                setForceRescanRunning(false);
-                notify(`Failed to get scan status: ${err.message}`, 'error');
+                failureCount += 1;
+                if (failureCount >= maxFailures) {
+                    setForceRescanRunning(false);
+                    notify('Metadata scan status unavailable; badges may be stale.', 'error');
+                    return;
+                }
+                if (failureCount === 1) {
+                    notify(`Failed to get scan status: ${err.message}`, 'error');
+                }
+                const delay = Math.min(5000, 1500 + failureCount * 750);
+                timeoutId = setTimeout(poll, delay);
             }
         };
 
@@ -2589,6 +2601,12 @@ function App() {
         try {
             const res = await api.scanMetadata(shouldForce);
             if (res.status === 'scanning') {
+                if (shouldForce) {
+                    setChdMetadata(new Map());
+                    if (!forceRescanRunning) {
+                        setForceRescanRunning(true);
+                    }
+                }
                 notify('Metadata scan already in progress', 'info');
             } else {
                 if (shouldForce) {
