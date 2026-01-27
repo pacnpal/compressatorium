@@ -77,10 +77,33 @@ class ArchiveService:
                     time.monotonic() - start,
                 )
 
+        entries = self._filter_preferred_entries(entries)
+
         for entry in entries:
             entry["output_stem"] = self._output_stem_for_member(entry["internal_path"])
 
         return entries
+
+    @staticmethod
+    def _filter_preferred_entries(entries: List[dict]) -> List[dict]:
+        if not entries:
+            return entries
+
+        exts_by_parent = {}
+        for entry in entries:
+            parent = PurePosixPath(entry["internal_path"]).parent
+            exts_by_parent.setdefault(parent, set()).add(entry.get("extension"))
+
+        filtered = []
+        for entry in entries:
+            ext = entry.get("extension")
+            parent = PurePosixPath(entry["internal_path"]).parent
+            exts = exts_by_parent.get(parent, set())
+            if ext == ".bin" and (".cue" in exts or ".gdi" in exts):
+                continue
+            filtered.append(entry)
+
+        return filtered
 
     def _list_zip(self, archive_path: str) -> List[dict]:
         """List contents of a ZIP file."""

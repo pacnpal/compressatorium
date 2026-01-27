@@ -1,5 +1,24 @@
 # Release Notes
 
+## v1.1.5 - Archive Conversion Safety & Stall Watchdog
+
+### 🐞 Bug Fixes
+
+- **Archive member selection** - When both `.cue`/`.gdi` and `.bin` exist in the same archive folder, `.bin` entries are now suppressed. This prevents conversions from starting with an incomplete input set (missing TOC/track layout), which can stall `chdman` and never reach completion.
+- **Batch dedupe by output path** - Batch job creation now keeps only one job per output CHD and prefers `.cue`/`.gdi` > `.iso` > `.bin` when multiple archive members map to the same output. This avoids duplicate work, conflicting locks, and stuck jobs.
+- **Stall watchdog** - New `CHD_PROGRESS_TIMEOUT` fails a conversion if both progress and output size stay unchanged for the configured period (default 600s). The job is marked failed with a clear error instead of lingering at 99%.
+
+### 📁 Files Changed
+
+- `app/services/archive.py` - Prefer `.cue`/`.gdi` over `.bin` for archive listings
+- `app/routes/convert.py` - Deduplicate batch jobs by output path and prioritize safe inputs
+- `app/services/chdman.py` - Conversion stall detection with timeout and clear failure message
+- `app/config.py` - New `CHD_PROGRESS_TIMEOUT` setting
+- `README.md` - Archive behavior and timeout docs
+- `DOCKER-COMPOSE.md` / `DEPLOYMENT.md` - Added `CHD_PROGRESS_TIMEOUT`
+
+---
+
 ## v1.1.4 - Python 3.8 Compatibility Fix
 
 ### 🐞 Bug Fix

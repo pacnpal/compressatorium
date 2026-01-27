@@ -289,12 +289,29 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             detail="Access denied: output directory outside configured volumes",
         )
 
+    def _input_extension(path: str) -> str:
+        if "::" in path:
+            _, internal = path.split("::", 1)
+            return Path(internal).suffix.lower()
+        return Path(path).suffix.lower()
+
+    def _priority(ext: str) -> int:
+        if ext in {".cue", ".gdi"}:
+            return 4
+        if ext == ".iso":
+            return 3
+        if ext == ".bin":
+            return 1
+        return 0
+
     jobs = []
     skipped = []
+    candidates = []
 
     for file_path in request.file_paths:
         archive_source_dir = None  # Directory where the archive is located (for output)
         output_path = None
+        base_output_path = None
         output_exists = False
         display_filename = None
 
@@ -319,6 +336,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             output_path = chdman_service.get_output_path_for_mode(
                 mode, output_stem, effective_output_dir, treat_as_stem=True
             )
+            base_output_path = output_path
             output_exists, is_locked = check_output_conflicts(mode, output_path)
 
             if output_exists or is_locked:
@@ -356,6 +374,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             output_path = chdman_service.get_output_path_for_mode(
                 mode, file_path, effective_output_dir
             )
+            base_output_path = output_path
             output_exists, is_locked = check_output_conflicts(mode, output_path)
 
             if output_exists or is_locked:
@@ -375,12 +394,37 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         allow_overwrite = (
             request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
         )
+        candidates.append(
+            {
+                "file_path": file_path,
+                "output_path": output_path,
+                "base_output_path": base_output_path or output_path,
+                "allow_overwrite": allow_overwrite,
+                "display_filename": display_filename,
+                "priority": _priority(_input_extension(file_path)),
+            }
+        )
+
+    selected = {}
+    order = []
+    for candidate in candidates:
+        key = candidate["base_output_path"]
+        existing = selected.get(key)
+        if not existing:
+            selected[key] = candidate
+            order.append(key)
+            continue
+        if candidate["priority"] > existing["priority"]:
+            selected[key] = candidate
+
+    for key in order:
+        candidate = selected[key]
         job = await job_manager.create_job(
-            file_path,
+            candidate["file_path"],
             request.mode,
-            output_path=output_path,
-            allow_overwrite=allow_overwrite,
-            filename_override=display_filename,
+            output_path=candidate["output_path"],
+            allow_overwrite=candidate["allow_overwrite"],
+            filename_override=candidate["display_filename"],
             compression=compression,
         )
         jobs.append(job)

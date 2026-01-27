@@ -134,6 +134,11 @@ class ChdmanService:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Starting chdman pid=%s cmd=%s", process.pid, " ".join(cmd))
 
+        stall_timeout = max(0, int(getattr(settings, "progress_timeout", 0) or 0))
+        last_progress_value = 0
+        last_output_size: Optional[int] = None
+        last_activity_at = time.monotonic()
+
         cancelled_by_request = False
         cancel_task = None
         if cancel_event:
@@ -160,27 +165,71 @@ class ChdmanService:
         output_lines: List[str] = []
         last_output_at = time.monotonic()
         last_idle_log = last_output_at
-        while True:
-            if settings.debug:
+        stall_error: Optional[str] = None
+
+        def _update_output_activity(now: float):
+            nonlocal last_output_size, last_activity_at
+            if not output_path:
+                return
+            try:
+                if not os.path.exists(output_path):
+                    return
+                size = os.path.getsize(output_path)
+            except OSError:
+                return
+            if last_output_size is None:
+                last_output_size = size
+                last_activity_at = now
+                return
+            if size > last_output_size:
+                last_output_size = size
+                last_activity_at = now
+
+        async def _check_stall(now: float) -> bool:
+            nonlocal stall_error
+            if stall_timeout <= 0:
+                return False
+            _update_output_activity(now)
+            if now - last_activity_at < stall_timeout:
+                return False
+            stall_error = (
+                "Conversion stalled: no progress increase or output growth for "
+                f"{stall_timeout}s (progress={last_progress_value}%, output_size={last_output_size})"
+            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "chdman pid=%s stalled for %.1fs (progress=%s output_size=%s)",
+                    process.pid,
+                    now - last_activity_at,
+                    last_progress_value,
+                    last_output_size,
+                )
+            if process.returncode is None:
+                process.terminate()
                 try:
-                    chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)
+                    await asyncio.wait_for(process.wait(), timeout=5)
                 except asyncio.TimeoutError:
-                    if cancel_event and cancel_event.is_set():
-                        break
-                    now = time.monotonic()
-                    idle_for = now - last_output_at
-                    if (
-                        logger.isEnabledFor(logging.DEBUG)
-                        and idle_for >= 30
-                        and now - last_idle_log >= 30
-                    ):
-                        logger.debug(
-                            "chdman pid=%s idle for %.1fs", process.pid, idle_for
-                        )
-                        last_idle_log = now
-                    continue
-            else:
-                chunk = await process.stdout.read(100)
+                    process.kill()
+            return True
+
+        while True:
+            try:
+                chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)
+            except asyncio.TimeoutError:
+                if cancel_event and cancel_event.is_set():
+                    break
+                now = time.monotonic()
+                idle_for = now - last_output_at
+                if (
+                    logger.isEnabledFor(logging.DEBUG)
+                    and idle_for >= 30
+                    and now - last_idle_log >= 30
+                ):
+                    logger.debug("chdman pid=%s idle for %.1fs", process.pid, idle_for)
+                    last_idle_log = now
+                if await _check_stall(now):
+                    break
+                continue
             if not chunk:
                 break
 
@@ -200,7 +249,11 @@ class ChdmanService:
                                     output_lines.append(line)
                                     if len(output_lines) > 30:
                                         output_lines.pop(0)
+                            now = time.monotonic()
                             progress = self._parse_progress(line)
+                            if progress > last_progress_value:
+                                last_progress_value = progress
+                                last_activity_at = now
                             yield {"progress": progress, "message": line}
                     buffer = parts[-1]
                 # Handle newlines
@@ -213,9 +266,15 @@ class ChdmanService:
                                 output_lines.append(line)
                                 if len(output_lines) > 30:
                                     output_lines.pop(0)
+                            now = time.monotonic()
                             progress = self._parse_progress(line)
+                            if progress > last_progress_value:
+                                last_progress_value = progress
+                                last_activity_at = now
                             yield {"progress": progress, "message": line}
                     buffer = parts[-1]
+            if await _check_stall(time.monotonic()):
+                break
 
         # Process any remaining buffer
         if buffer.strip():
@@ -224,8 +283,13 @@ class ChdmanService:
                 output_lines.append(line)
                 if len(output_lines) > 30:
                     output_lines.pop(0)
+            now = time.monotonic()
             progress = self._parse_progress(line)
+            if progress > last_progress_value:
+                last_progress_value = progress
+                last_activity_at = now
             yield {"progress": progress, "message": line}
+            await _check_stall(time.monotonic())
 
         await process.wait()
         if logger.isEnabledFor(logging.DEBUG):
@@ -238,6 +302,9 @@ class ChdmanService:
                 await cancel_task
             except asyncio.CancelledError:
                 pass
+
+        if stall_error:
+            raise RuntimeError(stall_error)
 
         if cancelled_by_request:
             raise ConversionCancelled("Conversion cancelled")

@@ -68,6 +68,7 @@ This document contains the results of a comprehensive deployment readiness audit
 | `CHD_DEBUG_HEARTBEAT` | `30` | ✅ | Debug heartbeat interval (seconds) |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | ✅ | Debug progress log interval |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | ✅ | Debug progress timeout |
+| `CHD_PROGRESS_TIMEOUT` | `600` | ✅ | Fail conversion if progress + output size stall for this many seconds (0 disables) |
 | `PYTHONUNBUFFERED` | `1` | ✅ | Logging optimization |
 
 ---

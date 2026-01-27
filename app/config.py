@@ -45,6 +45,7 @@ class Settings(BaseSettings):
         default=30, alias="CHD_DEBUG_PROGRESS_INTERVAL"
     )
     debug_progress_timeout: int = Field(default=300, alias="CHD_DEBUG_PROGRESS_TIMEOUT")
+    progress_timeout: int = Field(default=600, alias="CHD_PROGRESS_TIMEOUT")
 
     def model_post_init(self, __context):
         if self.temp_dir is None:

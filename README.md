@@ -90,6 +90,7 @@ In the Web UI, you can specify a custom output directory for converted CHD files
 - Browse inside ZIP, 7z, and RAR archives without extraction
 - Convert files directly from within archives
 - Archives extract temporarily during conversion, then clean up automatically
+- When a `.cue`/`.gdi` is present in the same archive folder, `.bin` entries are suppressed and batch jobs are deduplicated by output path to avoid stalled conversions.
 
 **Batch Conversion**
 - Select multiple files and convert them all at once
@@ -278,6 +279,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_DEBUG_HEARTBEAT` | `30` | Debug heartbeat interval in seconds |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval in seconds |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout in seconds |
+| `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |
 
 Defaults are intentionally conservative to reduce host impact during conversion. Increase `MAX_CONCURRENT_JOBS` or adjust `CHD_CHDMAN_*` only if your host has ample CPU/RAM and fast storage. By default temp files go to `/config/temp`; set `CHD_TEMP_DIR` to use a faster disk and mount it into the container.
 
