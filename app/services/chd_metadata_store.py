@@ -168,11 +168,14 @@ class CHDMetadataStore:
         # - "Metadata: Tag:GDROM"
         # - "Metadata: CHCD, Tag: CD-ROM"
         # - "Tag: DVD-VIDEO"
+        # - "Tag='CHT2'" (quoted format)
         for line in raw_data.splitlines():
             if not line:
                 continue
-            for match in re.finditer(r"Tag\s*[:=]\s*([^,]+)", line, re.IGNORECASE):
-                tag_values.add(match.group(1).strip().upper())
+            for match in re.finditer(r"Tag\s*[:=]\s*([^,\s]+)", line, re.IGNORECASE):
+                # Strip quotes from tag values (handles Tag='CHT2' format)
+                tag_value = match.group(1).strip().strip("'\"").upper()
+                tag_values.add(tag_value)
             meta_match = re.search(r"^\s*Metadata:\s*([^,]+)", line, re.IGNORECASE)
             if meta_match:
                 metadata_tags.add(meta_match.group(1).strip().upper())
@@ -190,9 +193,15 @@ class CHDMetadataStore:
             return any(pat in normalized for pat in DVD_TAG_PATTERNS)
 
         def matches_cd(value: str) -> bool:
-            """Check if value matches any CD pattern."""
+            """Check if value matches any CD pattern or CD metadata prefix."""
             normalized = re.sub(r"[^A-Z0-9]", "", value.upper())
-            return any(pat.replace("-", "") in normalized for pat in CD_TAG_PATTERNS)
+            # Check tag patterns
+            if any(pat.replace("-", "") in normalized for pat in CD_TAG_PATTERNS):
+                return True
+            # Check metadata prefixes (handles Tag='CHT2' format)
+            if any(normalized.startswith(prefix) for prefix in CD_METADATA_PREFIXES):
+                return True
+            return False
 
         # Check tag values for DVD first (higher priority)
         for tag_value in tag_values:

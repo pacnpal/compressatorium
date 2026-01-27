@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from typing import List, Optional
 from pathlib import Path
@@ -6,6 +6,11 @@ import os
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        populate_by_name=True,
+        extra="ignore",
+    )
+
     # Volume configuration (comma-separated paths)
     chd_volumes: str = Field(default="/data/games", alias="CHD_VOLUMES")
 
@@ -40,10 +45,6 @@ class Settings(BaseSettings):
         default=30, alias="CHD_DEBUG_PROGRESS_INTERVAL"
     )
     debug_progress_timeout: int = Field(default=300, alias="CHD_DEBUG_PROGRESS_TIMEOUT")
-
-    class Config:
-        populate_by_name = True
-        extra = "ignore"
 
     def model_post_init(self, __context):
         if self.temp_dir is None:
