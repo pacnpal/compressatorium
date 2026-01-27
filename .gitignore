@@ -402,3 +402,4 @@ secrets/
 # Backup files
 *.backup
 *.old
+.snapshots/

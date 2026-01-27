@@ -46,7 +46,7 @@ class JobManager:
         self._debug_task: Optional[asyncio.Task] = None
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
 
-    def create_job(
+    async def create_job(
         self,
         file_path: str,
         mode: ConversionMode,
@@ -93,10 +93,10 @@ class JobManager:
                 allow_overwrite,
                 compression,
             )
-        self._prune_jobs()
+        await self._prune_jobs()
         return job
 
-    def create_batch_jobs(
+    async def create_batch_jobs(
         self,
         file_paths: List[str],
         mode: ConversionMode,
@@ -104,10 +104,11 @@ class JobManager:
         compression: Optional[str] = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs."""
-        return [
-            self.create_job(fp, mode, output_dir, compression=compression)
-            for fp in file_paths
-        ]
+        jobs = []
+        for fp in file_paths:
+            job = await self.create_job(fp, mode, output_dir, compression=compression)
+            jobs.append(job)
+        return jobs
 
     def get_job(self, job_id: str) -> Optional[ConversionJob]:
         """Get a job by ID."""
@@ -117,7 +118,7 @@ class JobManager:
         """Get all jobs."""
         return list(self.jobs.values())
 
-    def _prune_jobs(self, *, exclude_id: Optional[str] = None):
+    async def _prune_jobs(self, *, exclude_id: Optional[str] = None):
         if self.max_job_history <= 0:
             return
         if len(self.jobs) <= self.max_job_history:
@@ -137,9 +138,9 @@ class JobManager:
                 break
 
         for job_id in removable:
-            self.delete_job(job_id)
+            await self.delete_job(job_id)
 
-    def cancel_job(self, job_id: str) -> bool:
+    async def cancel_job(self, job_id: str) -> bool:
         """Cancel a job."""
         job = self.jobs.get(job_id)
         if not job:
@@ -159,7 +160,7 @@ class JobManager:
                     {"type": "cancelled", "job_id": job_id, "status": job.status.value},
                 )
             )
-            self._cleanup_temp_dir(job)
+            await self._cleanup_temp_dir(job)
             return True
 
         if job.status == JobStatus.PROCESSING:
@@ -183,17 +184,17 @@ class JobManager:
             return True
         return False
 
-    def delete_job(self, job_id: str) -> bool:
+    async def delete_job(self, job_id: str) -> bool:
         """Delete a job from the list."""
         if job_id in self.jobs:
             job = self.jobs[job_id]
             if job.status == JobStatus.PROCESSING:
-                self.cancel_job(job_id)
+                await self.cancel_job(job_id)
             self._cancelled.discard(job_id)
             if job_id not in self._cancel_events:
                 concurrency_manager.release(job_id)
             if job_id not in self._cancel_events:
-                self._cleanup_temp_dir(job)
+                await self._cleanup_temp_dir(job)
             del self.jobs[job_id]
             return True
         return False
@@ -214,12 +215,12 @@ class JobManager:
             except ValueError:
                 pass
 
-    def _cleanup_temp_dir(self, job: ConversionJob):
+    async def _cleanup_temp_dir(self, job: ConversionJob):
         if job.temp_dir:
             temp_dir = job.temp_dir
             try:
-                if temp_dir and os.path.isdir(temp_dir):
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                if temp_dir and await run_in_threadpool(os.path.isdir, temp_dir):
+                    await run_in_threadpool(shutil.rmtree, temp_dir, ignore_errors=True)
             except Exception as cleanup_error:
                 print(f"Failed to cleanup temp dir {temp_dir}: {cleanup_error}")
             finally:
@@ -490,7 +491,7 @@ class JobManager:
                     continue
                 if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
                     self._cancelled.discard(job_id)
-                    self._cleanup_temp_dir(job)
+                    await self._cleanup_temp_dir(job)
                     continue
                 await self._semaphore.acquire()
                 try:
@@ -526,8 +527,8 @@ class JobManager:
 
         if job_id in self._cancelled or job.status == JobStatus.CANCELLED:
             self._cancelled.discard(job_id)
-            self._cleanup_temp_dir(job)
-            self._prune_jobs(exclude_id=job_id)
+            await self._cleanup_temp_dir(job)
+            await self._prune_jobs(exclude_id=job_id)
             return
 
         cancel_event = asyncio.Event()
@@ -541,9 +542,9 @@ class JobManager:
                 job_id,
                 {"type": "cancelled", "job_id": job_id, "status": job.status.value},
             )
-            self._cleanup_temp_dir(job)
+            await self._cleanup_temp_dir(job)
             del self._cancel_events[job_id]
-            self._prune_jobs(exclude_id=job_id)
+            await self._prune_jobs(exclude_id=job_id)
             return
 
         slot_acquired = await concurrency_manager.acquire(
@@ -557,11 +558,11 @@ class JobManager:
                     job_id,
                     {"type": "cancelled", "job_id": job_id, "status": job.status.value},
                 )
-            self._cleanup_temp_dir(job)
+            await self._cleanup_temp_dir(job)
             concurrency_manager.release(job_id)
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]
-            self._prune_jobs(exclude_id=job_id)
+            await self._prune_jobs(exclude_id=job_id)
             return
 
         # Try to acquire lock for the output file (prevents race conditions)
@@ -589,8 +590,8 @@ class JobManager:
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]
             concurrency_manager.release(job_id)
-            self._cleanup_temp_dir(job)
-            self._prune_jobs(exclude_id=job_id)
+            await self._cleanup_temp_dir(job)
+            await self._prune_jobs(exclude_id=job_id)
             return
 
         job.status = JobStatus.PROCESSING
@@ -664,7 +665,7 @@ class JobManager:
                 if not os.path.isfile(job.output_path):
                     raise RuntimeError("Output path exists and is not a file")
                 os.remove(job.output_path)
-                verification_store.clear(job.output_path)
+                await verification_store.clear(job.output_path)
                 if job.mode.value == "extractcd":
                     bin_path = str(Path(job.output_path).with_suffix(".bin"))
                     if os.path.isfile(bin_path):
@@ -774,8 +775,8 @@ class JobManager:
             self._last_output_size_at.pop(job_id, None)
 
             # Clean up temp directory if this was an archive extraction
-            self._cleanup_temp_dir(job)
-            self._prune_jobs(exclude_id=job_id)
+            await self._cleanup_temp_dir(job)
+            await self._prune_jobs(exclude_id=job_id)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Job %s finished status=%s", job_id, job.status.value)
 

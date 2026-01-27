@@ -53,6 +53,7 @@ This document contains the results of a comprehensive deployment readiness audit
 |----------|---------|--------|---------|
 | `CHD_MODE` | `webui` | ✅ | Web UI or CLI mode |
 | `CHD_VOLUMES` | `/data/games` | ✅ | Volume mount paths |
+| `CHD_TEMP_DIR` | `/config/temp` | ✅ | Temporary working directory for archive extraction |
 | `CHDMAN_MODE` | `createcd` | ✅ | CD/DVD conversion mode |
 | `MAX_CONCURRENT_JOBS` | `1` | ✅ | Parallel job limit |
 | `CHD_CHDMAN_NICE` | `10` | ✅ | Nice level for chdman |
@@ -94,7 +95,7 @@ This document contains the results of a comprehensive deployment readiness audit
 - **If the host becomes sluggish:** lower `MAX_CONCURRENT_JOBS`, increase `CHD_CHDMAN_NICE`, or set `CHD_CHDMAN_IOPRIO_CLASS=3` (idle) with `CHD_CHDMAN_IOPRIO_LEVEL=7`.
 
 **Docker host tips**
-- Prefer SSD/cache for temporary extraction and CHD output to reduce array contention.
+- Prefer SSD/cache for `CHD_TEMP_DIR` and CHD output to reduce array contention.
 - Avoid running other heavy services during conversion.
 - Always set container CPU/memory limits on shared hosts.
 - **Formats:** ZIP, 7z, RAR

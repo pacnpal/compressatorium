@@ -226,8 +226,9 @@ export const api = {
         return res.json();
     },
 
-    async scanMetadata() {
-        const res = await fetch(`${API_BASE}/chd-metadata/scan`, { method: 'POST' });
+    async scanMetadata(force = false) {
+        const params = force ? '?force=true' : '';
+        const res = await fetch(`${API_BASE}/chd-metadata/scan${params}`, { method: 'POST' });
         if (!res.ok) throw new Error('Failed to start metadata scan');
         return res.json();
     },

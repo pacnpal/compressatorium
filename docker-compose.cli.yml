@@ -15,6 +15,8 @@ services:
       - CHDMAN_MODE=createcd
       # Specify which volumes to process
       - CHD_VOLUMES=/data/games
+      # Optional: override temp location (default: /config/temp)
+      # - CHD_TEMP_DIR=/temp
       # Reduce CPU/IO impact of chdman
       - CHD_CHDMAN_NICE=10
       - CHD_CHDMAN_IOPRIO_CLASS=2
@@ -22,6 +24,8 @@ services:
     volumes:
       # Required: Persistent config storage
       - ./config:/config
+      # Optional: mount custom temp location (must match CHD_TEMP_DIR)
+      # - ./temp:/temp
       # Mount directory with files to convert (read-write)
       - ./games:/data/games
     # No restart policy - container exits after conversion

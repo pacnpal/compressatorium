@@ -2,6 +2,7 @@ import os
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi.concurrency import run_in_threadpool
 from sse_starlette.sse import EventSourceResponse
 import json
 import asyncio
@@ -23,38 +24,46 @@ _scan_lock = asyncio.Lock()
 _is_scanning = False
 
 
-async def scan_metadata_task():
+async def scan_metadata_task(force: bool = False):
     """Background task to scan all volumes for missing CHD metadata."""
     global _is_scanning
     # Note: _is_scanning is already set to True by the trigger endpoint
     logger.info("Starting background metadata scan...")
     count = 0
     
-    def collect_stale_chd_paths():
-        """Collect CHD paths that need metadata refresh (runs in thread pool)."""
-        stale_paths = []
+    def collect_all_chd_paths():
+        """Collect ALL CHD paths from volumes (runs in thread pool)."""
+        paths = []
         for volume in settings.volumes:
             if not os.path.exists(volume):
                 continue
             for root, _, files in os.walk(volume):
                 for file in files:
                     if file.lower().endswith(".chd"):
-                        path = os.path.join(root, file)
-                        if chd_metadata_store.is_stale(path):
-                            stale_paths.append(path)
-        return stale_paths
+                        paths.append(os.path.join(root, file))
+        return paths
     
     try:
         # Run blocking filesystem traversal in thread pool
-        loop = asyncio.get_event_loop()
-        stale_paths = await loop.run_in_executor(None, collect_stale_chd_paths)
-        logger.info(f"Found {len(stale_paths)} CHD files needing metadata refresh")
+        loop = asyncio.get_running_loop()
+        all_paths = await loop.run_in_executor(None, collect_all_chd_paths)
+        
+        # Filter stales asynchronously
+        chd_paths = []
+        for path in all_paths:
+            if force or await chd_metadata_store.is_stale(path):
+                chd_paths.append(path)
+
+        if force:
+            logger.info(f"Found {len(chd_paths)} CHD files for forced metadata refresh")
+        else:
+            logger.info(f"Found {len(chd_paths)} CHD files needing metadata refresh")
         
         # Process each path (chdman_service.info is already async)
-        for path in stale_paths:
+        for path in chd_paths:
             try:
                 info = await chdman_service.info(path)
-                chd_metadata_store.set_metadata(path, info, persist=False)
+                await chd_metadata_store.set_metadata(path, info, persist=False)
                 count += 1
             except Exception as e:
                 logger.warning(f"Failed to scan metadata for {path}: {e}")
@@ -85,12 +94,12 @@ async def get_app_version() -> dict:
 @router.get("/info", response_model=CHDInfo)
 async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     """Get information about a CHD file (cached with mtime-based invalidation)."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes"
         )
 
-    if not os.path.isfile(path):
+    if not await run_in_threadpool(os.path.isfile, path):
         raise HTTPException(status_code=404, detail="File not found")
 
     if not path.lower().endswith(".chd"):
@@ -99,16 +108,16 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     try:
         # Check cache first
         cached_info = None
-        if not chd_metadata_store.is_stale(path):
-            cached_info = chd_metadata_store.get_metadata(path)
+        if not await chd_metadata_store.is_stale(path):
+            cached_info, cached_media_type = await chd_metadata_store.get_full_info(path)
         
         if cached_info:
             info = cached_info
-            media_type = chd_metadata_store.get_media_type(path)
+            media_type = cached_media_type
         else:
             # Run chdman info and cache the result (non-blocking persist)
             info = await chdman_service.info(path)
-            record = chd_metadata_store.set_metadata(path, info, persist=False)
+            record = await chd_metadata_store.set_metadata(path, info, persist=False)
             
             # Schedule async flush in background with error handling
             async def safe_flush():
@@ -117,6 +126,8 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
                 except Exception as e:
                     logger.warning(f"Background metadata flush failed: {e}")
             
+            # Use BackgroundTasks if available, but here we are in a route without it passed explicitly for flush
+            # We can spawn a task
             asyncio.create_task(safe_flush())
             media_type = record.get("media_type")
 
@@ -160,12 +171,12 @@ async def get_chd_metadata_batch(
         # Default entry for each requested path
         entry = {"media_type": None, "cached": False}
         
-        if not is_within_configured_volumes(path, treat_archives=False):
+        if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
             entry["error"] = "path_outside_configured_volumes"
             result[path] = entry
             continue
         
-        if not os.path.isfile(path):
+        if not await run_in_threadpool(os.path.isfile, path):
             entry["error"] = "file_not_found"
             result[path] = entry
             continue
@@ -176,8 +187,9 @@ async def get_chd_metadata_batch(
             continue
         
         # Only return cached data, don't run chdman info
-        if not chd_metadata_store.is_stale(path):
-            media_type = chd_metadata_store.get_media_type(path)
+        if not await chd_metadata_store.is_stale(path):
+            # Optimize: use get_full_info to avoid extra lock/lookup
+            _, media_type = await chd_metadata_store.get_full_info(path)
             entry["media_type"] = media_type
             entry["cached"] = True
             # no error field for successful, cached entries
@@ -191,7 +203,10 @@ async def get_chd_metadata_batch(
 
 
 @router.post("/chd-metadata/scan")
-async def trigger_metadata_scan(background_tasks: BackgroundTasks):
+async def trigger_metadata_scan(
+    background_tasks: BackgroundTasks,
+    force: bool = Query(False, description="Rescan all CHD files, ignoring cache"),
+):
     """Trigger a background scan of all volumes for missing CHD metadata."""
     global _is_scanning
     
@@ -201,7 +216,12 @@ async def trigger_metadata_scan(background_tasks: BackgroundTasks):
             return {"status": "scanning", "message": "Scan already in progress"}
         _is_scanning = True
     
-    background_tasks.add_task(scan_metadata_task)
+    background_tasks.add_task(scan_metadata_task, force)
+    if force:
+        return {
+            "status": "started",
+            "message": "Forced metadata scan started in background",
+        }
     return {"status": "started", "message": "Metadata scan started in background"}
 
 
@@ -216,12 +236,12 @@ async def verify_chd(
     path: str = Query(..., description="Path to CHD file to verify"),
 ) -> dict:
     """Verify the integrity of a CHD file."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes"
         )
 
-    if not os.path.isfile(path):
+    if not await run_in_threadpool(os.path.isfile, path):
         raise HTTPException(status_code=404, detail="File not found")
 
     if not path.lower().endswith(".chd"):
@@ -230,7 +250,7 @@ async def verify_chd(
     try:
         result = await chdman_service.verify(path)
         if result.get("valid"):
-            verification_store.mark_verified(path)
+            await verification_store.mark_verified(path)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to verify CHD: {str(e)}")
@@ -241,12 +261,12 @@ async def verify_chd_events(
     path: str = Query(..., description="Path to CHD file to verify"),
 ) -> EventSourceResponse:
     """Stream CHD verification progress updates."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes"
         )
 
-    if not os.path.isfile(path):
+    if not await run_in_threadpool(os.path.isfile, path):
         raise HTTPException(status_code=404, detail="File not found")
 
     if not path.lower().endswith(".chd"):
@@ -287,7 +307,7 @@ async def verify_chd_events(
                     yield {"event": "verify_progress", "data": json.dumps(update)}
                 elif update.get("type") == "complete":
                     if update.get("valid"):
-                        verification_store.mark_verified(path)
+                        await verification_store.mark_verified(path)
                     yield {"event": "verify_complete", "data": json.dumps(update)}
                     break
                 elif update.get("type") == "error":
@@ -304,11 +324,11 @@ async def verify_chd_events(
 @router.get("/verified")
 async def list_verified() -> dict:
     """List verified CHD paths."""
-    verification_store.prune_missing()
+    await verification_store.prune_missing()
     verified = []
     for record in verification_store.all_records():
         chd_path = record.get("chd_path")
-        if chd_path and is_within_configured_volumes(chd_path, treat_archives=False):
+        if chd_path and await run_in_threadpool(is_within_configured_volumes, chd_path, treat_archives=False):
             verified.append(chd_path)
     return {"verified": verified}
 
@@ -322,9 +342,9 @@ async def verify_batch_events(request: BulkVerifyRequest) -> EventSourceResponse
     # Validate all paths upfront
     valid_paths = []
     for path in request.paths:
-        if not is_within_configured_volumes(path, treat_archives=False):
+        if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
             continue
-        if not os.path.isfile(path):
+        if not await run_in_threadpool(os.path.isfile, path):
             continue
         if not path.lower().endswith(".chd"):
             continue
@@ -424,7 +444,7 @@ async def verify_batch_events(request: BulkVerifyRequest) -> EventSourceResponse
                         await verify_task
 
                 if final_result.get("valid"):
-                    verification_store.mark_verified(path)
+                    await verification_store.mark_verified(path)
                     verified_count += 1
                     status = "verified"
                 else:

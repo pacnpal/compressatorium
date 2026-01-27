@@ -258,42 +258,43 @@ async def rename_file(
     new_name: str = Query(..., description="New name for the file or directory"),
 ) -> dict:
     """Rename a file or directory."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    # is_within_configured_volumes uses os.path.realpath which hits disk
+    if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes"
         )
 
-    if not os.path.exists(path):
+    if not await run_in_threadpool(os.path.exists, path):
         raise HTTPException(status_code=404, detail="File or directory not found")
 
     # Validate new name (no path separators, no empty, no special chars that could be problematic)
     if not new_name or "/" in new_name or "\\" in new_name or new_name in (".", ".."):
         raise HTTPException(status_code=400, detail="Invalid new name")
 
-    parent_dir = os.path.dirname(path)
-    new_path = os.path.join(parent_dir, new_name)
+    directory = os.path.dirname(path)
+    new_path = os.path.join(directory, new_name)
 
     # Check if new path is also within allowed volumes
-    if not is_within_configured_volumes(new_path, treat_archives=False):
+    if not await run_in_threadpool(is_within_configured_volumes, new_path, treat_archives=False):
         raise HTTPException(
             status_code=403,
             detail="Access denied: target path outside configured volumes",
         )
 
     # Check if target already exists
-    if os.path.exists(new_path):
+    if await run_in_threadpool(os.path.exists, new_path):
         raise HTTPException(
             status_code=409, detail="A file or directory with that name already exists"
         )
 
     try:
-        os.rename(path, new_path)
+        await run_in_threadpool(os.rename, path, new_path)
         old_is_chd = path.lower().endswith(".chd")
         new_is_chd = new_path.lower().endswith(".chd")
         if old_is_chd and new_is_chd:
-            verification_store.move(path, new_path)
+            await verification_store.move(path, new_path)
         elif old_is_chd and not new_is_chd:
-            verification_store.clear(path)
+            await verification_store.clear(path)
         return {
             "success": True,
             "old_path": path,
@@ -309,26 +310,28 @@ async def delete_file(
     path: str = Query(..., description="Path to file or directory to delete"),
 ) -> dict:
     """Delete a file or empty directory."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes"
         )
 
-    if not os.path.exists(path):
+    if not await run_in_threadpool(os.path.exists, path):
         raise HTTPException(status_code=404, detail="File or directory not found")
 
     try:
-        if os.path.isdir(path):
+        is_dir = await run_in_threadpool(os.path.isdir, path)
+        if is_dir:
             # Only delete empty directories for safety
-            if os.listdir(path):
+            contents = await run_in_threadpool(os.listdir, path)
+            if contents:
                 raise HTTPException(
                     status_code=400, detail="Cannot delete non-empty directory"
                 )
-            os.rmdir(path)
+            await run_in_threadpool(os.rmdir, path)
         else:
-            os.remove(path)
+            await run_in_threadpool(os.remove, path)
             if path.lower().endswith(".chd"):
-                verification_store.clear(path)
+                await verification_store.clear(path)
 
         return {"success": True, "path": path, "message": "Successfully deleted"}
     except OSError as e:
@@ -345,17 +348,17 @@ async def delete_files_batch(request: BulkDeleteRequest) -> dict:
     success_count = 0
     failed_count = 0
 
-    def delete_single_file(path: str) -> dict:
+    async def delete_single_file(path: str) -> dict:
         """Delete a single file and return result."""
         # Validate path is within configured volumes
-        if not is_within_configured_volumes(path, treat_archives=False):
+        if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
             return {
                 "path": path,
                 "success": False,
                 "error": "Access denied: path outside configured volumes",
             }
 
-        if not os.path.exists(path):
+        if not await run_in_threadpool(os.path.exists, path):
             return {
                 "path": path,
                 "success": False,
@@ -363,19 +366,22 @@ async def delete_files_batch(request: BulkDeleteRequest) -> dict:
             }
 
         try:
-            if os.path.isdir(path):
+            is_dir = await run_in_threadpool(os.path.isdir, path)
+            if is_dir:
                 # Only delete empty directories for safety
-                if os.listdir(path):
+                # os.listdir can be blocking
+                contents = await run_in_threadpool(os.listdir, path)
+                if contents:
                     return {
                         "path": path,
                         "success": False,
                         "error": "Cannot delete non-empty directory",
                     }
-                os.rmdir(path)
+                await run_in_threadpool(os.rmdir, path)
             else:
-                os.remove(path)
+                await run_in_threadpool(os.remove, path)
                 if path.lower().endswith(".chd"):
-                    verification_store.clear(path)
+                    await verification_store.clear(path)
 
             return {"path": path, "success": True}
         except OSError as e:
@@ -383,7 +389,7 @@ async def delete_files_batch(request: BulkDeleteRequest) -> dict:
 
     # Process all files
     for path in request.paths:
-        result = await run_in_threadpool(delete_single_file, path)
+        result = await delete_single_file(path)
         results.append(result)
         if result["success"]:
             success_count += 1

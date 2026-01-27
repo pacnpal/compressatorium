@@ -7,6 +7,8 @@ import logging
 from pathlib import Path, PurePosixPath
 from typing import List, Tuple
 
+from config import settings
+
 try:
     import py7zr
 
@@ -33,6 +35,18 @@ class ArchiveService:
 
     def __init__(self):
         self._temp_dirs: dict = {}
+
+    def _create_temp_dir(self) -> str:
+        base_dir = settings.temp_dir
+        if base_dir is None:
+            base_dir = str(Path(settings.data_dir) / "temp")
+        if base_dir:
+            try:
+                Path(base_dir).mkdir(parents=True, exist_ok=True)
+                return tempfile.mkdtemp(prefix="chd_extract_", dir=base_dir)
+            except OSError as exc:
+                logger.warning("Failed to create temp dir %s: %s", base_dir, exc)
+        return tempfile.mkdtemp(prefix="chd_extract_")
 
     def is_archive(self, filename: str) -> bool:
         """Check if a file is a supported archive."""
@@ -166,7 +180,7 @@ class ArchiveService:
     def extract_file(self, archive_path: str, internal_path: str) -> Tuple[str, str]:
         """Extract a specific file from an archive into a temp directory."""
         ext = Path(archive_path).suffix.lower()
-        temp_dir = tempfile.mkdtemp(prefix="chd_extract_")
+        temp_dir = self._create_temp_dir()
 
         try:
             destination = self._prepare_destination(temp_dir, internal_path)

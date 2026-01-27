@@ -7,6 +7,7 @@ import threading
 import shutil
 from pathlib import Path
 from typing import AsyncGenerator, Optional
+from fastapi.concurrency import run_in_threadpool
 
 from config import settings
 
@@ -110,7 +111,7 @@ class ChdmanService:
             dict: {"progress": int, "message": str}
         """
         # Ensure output directory exists
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        await run_in_threadpool(os.makedirs, os.path.dirname(output_path), exist_ok=True)
 
         cmd = self._build_command(
             mode, input_path, output_path, compression=compression
@@ -363,6 +364,7 @@ class ChdmanService:
     def _parse_info(self, output: str) -> dict:
         """Parse chdman info output into structured data."""
         info = {"raw_data": output}
+        metadata_lines = []
 
         # Parse key-value pairs
         for line in output.split("\n"):
@@ -370,7 +372,13 @@ class ChdmanService:
             if ":" in line:
                 key, value = line.split(":", 1)
                 key = key.strip().lower().replace(" ", "_")
-                info[key] = value.strip()
+                value = value.strip()
+                info[key] = value
+                if key == "metadata":
+                    metadata_lines.append(value)
+
+        if metadata_lines:
+            info["metadata_lines"] = metadata_lines
 
         return info
 

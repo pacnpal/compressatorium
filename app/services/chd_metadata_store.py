@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
+from fastapi.concurrency import run_in_threadpool
 
 # Shared executor for async file I/O
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chd_metadata")
@@ -61,8 +62,8 @@ class CHDMetadataStore:
         Synchronous persist - writes self._records to disk.
         
         Uses version checking to ensure consistent writes while minimizing
-        lock hold time (file I/O happens outside _lock).
-        Caller should NOT hold _lock when calling this method.
+        lock hold time. Implements last-write-wins: only commits if version
+        hasn't changed since snapshot.
         """
         # Capture version and snapshot under lock
         with self._lock:
@@ -71,51 +72,57 @@ class CHDMetadataStore:
         
         # Do file I/O outside _lock to minimize lock contention
         with self._write_lock:
-            # Use unique temp file to avoid conflicts
             tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
             try:
                 with tmp_path.open("w", encoding="utf-8") as fh:
                     json.dump(records_snapshot, fh, indent=2)
-                tmp_path.replace(self._store_path)
                 
-                # Now acquire _lock to clear dirty flag (only if version matches)
+                # Version-gated replace: only commit if version still matches
                 with self._lock:
                     if self._version == snapshot_version:
+                        tmp_path.replace(self._store_path)
                         self._dirty = False
+                    # else: discard stale write, newer snapshot will be written
             finally:
-                # Clean up temp file if it still exists
+                # Clean up temp file if it still exists (stale or failed)
                 if tmp_path.exists():
                     tmp_path.unlink()
 
     async def _persist_async(self):
-        """Non-blocking persist using thread pool executor."""
+        """Non-blocking persist using thread pool executor.
+        
+        Uses the same pattern as sync _persist:
+        1. Snapshot under _lock
+        2. Write to temp under _write_lock
+        3. Version-gated replace under _lock (only commits if version matches)
+        """
         loop = asyncio.get_event_loop()
-        # Capture version and snapshot under lock
+        
+        # Capture version and snapshot under lock (fast, in-memory)
         with self._lock:
             snapshot_version = self._version
             records_copy = dict(self._records)
         
         def do_write():
-            # Acquire locks in correct order: _lock then _write_lock
-            # This matches the order used by sync _persist (called with _lock held)
-            with self._lock:
-                # Re-check version under lock
-                if self._version != snapshot_version:
-                    return False  # Stale, skip write
-                
-                with self._write_lock:
-                    # Use unique temp file to avoid conflicts
-                    tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
-                    try:
-                        with tmp_path.open("w", encoding="utf-8") as fh:
-                            json.dump(records_copy, fh, indent=2)
-                        tmp_path.replace(self._store_path)
-                        # Clear dirty here while we still hold _lock
-                        self._dirty = False
-                        return True
-                    finally:
-                        if tmp_path.exists():
-                            tmp_path.unlink()
+            # File I/O under _write_lock only (not holding _lock)
+            with self._write_lock:
+                tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
+                try:
+                    with tmp_path.open("w", encoding="utf-8") as fh:
+                        json.dump(records_copy, fh, indent=2)
+                    
+                    # Version-gated replace: only commit if version still matches
+                    with self._lock:
+                        if self._version == snapshot_version:
+                            tmp_path.replace(self._store_path)
+                            self._dirty = False
+                            return True
+                        # else: discard stale write, newer snapshot will be written
+                        return False
+                finally:
+                    # Clean up temp file if it still exists (stale or failed)
+                    if tmp_path.exists():
+                        tmp_path.unlink()
         
         try:
             await loop.run_in_executor(_executor, do_write)
@@ -136,30 +143,58 @@ class CHDMetadataStore:
         Returns 'dvd' if Tag contains DVD, 'cd' if it contains CD/CHT patterns.
         """
         raw_data = info.get("raw_data", "")
-        
+
+        tag_values = set()
+        metadata_tags = set()
+
         # Look for metadata lines containing Tag info
         # Example patterns:
         # - "Metadata: Tag:GDROM"
         # - "Metadata: CHCD, Tag: CD-ROM"
         # - "Tag: DVD-VIDEO"
-        
-        tag_match = re.search(r"Tag:\s*([^,]+)", raw_data, re.IGNORECASE)
-        if tag_match:
-            tag_value = tag_match.group(1).upper()
+        for line in raw_data.splitlines():
+            if not line:
+                continue
+            for match in re.finditer(r"Tag\s*[:=]\s*([^,]+)", line, re.IGNORECASE):
+                tag_values.add(match.group(1).strip().upper())
+            meta_match = re.search(r"^\s*Metadata:\s*([^,]+)", line, re.IGNORECASE)
+            if meta_match:
+                metadata_tags.add(meta_match.group(1).strip().upper())
+
+        metadata_lines = info.get("metadata_lines")
+        if isinstance(metadata_lines, list):
+            for entry in metadata_lines:
+                if not isinstance(entry, str):
+                    continue
+                metadata_tags.add(entry.strip().upper())
+
+        def is_cd_value(value: str) -> bool:
+            normalized = re.sub(r"[^A-Z0-9]", "", value.upper())
+            return ("CD" in normalized) or ("GDROM" in normalized)
+
+        for tag_value in tag_values:
             if "DVD" in tag_value:
                 return "dvd"
-            if "CD" in tag_value or "GDROM" in tag_value:
+        for tag_value in tag_values:
+            if is_cd_value(tag_value):
                 return "cd"
-        
+
+        for meta_value in metadata_tags:
+            if "DVD" in meta_value:
+                return "dvd"
+        for meta_value in metadata_tags:
+            if meta_value.startswith("CHT") or meta_value == "CHCD" or is_cd_value(meta_value):
+                return "cd"
+
         # Fallback: check for common patterns in metadata field
         metadata = info.get("metadata", "")
         if isinstance(metadata, str):
             metadata_upper = metadata.upper()
             if "DVD" in metadata_upper:
                 return "dvd"
-            if "CD" in metadata_upper or "GDROM" in metadata_upper:
+            if "CD" in metadata_upper or "GDROM" in metadata_upper or "CHCD" in metadata_upper:
                 return "cd"
-        
+
         # Additional heuristic: check compression type for CD-specific codecs
         compression = info.get("compression", "")
         if isinstance(compression, str):
@@ -169,30 +204,30 @@ class CHDMetadataStore:
         
         return None
 
-    def get_metadata(self, chd_path: str) -> Optional[dict]:
+    async def get_metadata(self, chd_path: str) -> Optional[dict]:
         """Get cached metadata for a CHD file."""
-        normalized = self._normalize_path(chd_path)
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
         with self._lock:
             record = self._records.get(normalized)
             if record is None:
                 return None
             return record.get("metadata")
 
-    def get_media_type(self, chd_path: str) -> Optional[str]:
+    async def get_media_type(self, chd_path: str) -> Optional[str]:
         """Get just the media type (dvd/cd) for a CHD file."""
-        normalized = self._normalize_path(chd_path)
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
         with self._lock:
             record = self._records.get(normalized)
             if record is None:
                 return None
             return record.get("media_type")
 
-    def is_stale(self, chd_path: str) -> bool:
+    async def is_stale(self, chd_path: str) -> bool:
         """Check if cached metadata is stale (file modified since caching)."""
-        normalized = self._normalize_path(chd_path)
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
         
         try:
-            current_mtime = os.path.getmtime(normalized)
+            current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
         except OSError:
             # File doesn't exist or not accessible - treat as stale
             return True
@@ -206,7 +241,7 @@ class CHDMetadataStore:
                 return True
             return current_mtime != cached_mtime
 
-    def set_metadata(self, chd_path: str, info: dict, persist: bool = True) -> dict:
+    async def set_metadata(self, chd_path: str, info: dict, persist: bool = True) -> dict:
         """
         Cache metadata for a CHD file.
         
@@ -218,13 +253,15 @@ class CHDMetadataStore:
         Returns:
             The record that was stored (includes extracted media_type)
         """
-        normalized = self._normalize_path(chd_path)
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
         
         try:
-            mtime = os.path.getmtime(normalized)
+            mtime = await run_in_threadpool(os.path.getmtime, normalized)
         except OSError:
             mtime = None
         
+        # CPU bound, but fast enough to run on event loop usually. 
+        # If very complex, could offload, but extract_media_type is regex/string ops.
         media_type = self.extract_media_type(info)
         
         record = {
@@ -243,13 +280,13 @@ class CHDMetadataStore:
             should_persist = persist
         
         if should_persist:
-            self._persist()
+            await self._persist_async()
         
         return record
 
-    def clear(self, chd_path: str):
+    async def clear(self, chd_path: str):
         """Remove cached metadata for a CHD file."""
-        normalized = self._normalize_path(chd_path)
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
         should_persist = False
         with self._lock:
             if normalized in self._records:
@@ -259,67 +296,102 @@ class CHDMetadataStore:
                 should_persist = True
         
         if should_persist:
-            self._persist()
+            await self._persist_async()
 
-    def move(self, old_path: str, new_path: str):
+    async def move(self, old_path: str, new_path: str):
         """Update cache when a CHD file is renamed/moved."""
-        old_normalized = self._normalize_path(old_path)
-        new_normalized = self._normalize_path(new_path)
+        old_normalized = await run_in_threadpool(self._normalize_path, old_path)
+        new_normalized = await run_in_threadpool(self._normalize_path, new_path)
+        
+        # Pre-fetch mtime for new path to minimize lock time and ensure atomicity of the swap
+        try:
+            new_mtime = await run_in_threadpool(os.path.getmtime, new_normalized)
+        except OSError:
+            new_mtime = None
+
         should_persist = False
         with self._lock:
-            record = self._records.pop(old_normalized, None)
-            if record is None:
-                return
-            record["chd_path"] = new_normalized
-            # Update mtime for new path
-            try:
-                record["mtime"] = os.path.getmtime(new_normalized)
-            except OSError:
-                record["mtime"] = None
-            self._records[new_normalized] = record
-            self._version += 1
-            self._dirty = True
-            should_persist = True
+            # Atomic check-and-move
+            if old_normalized in self._records:
+                record = self._records.pop(old_normalized)
+                
+                # Update record structure
+                record["chd_path"] = new_normalized
+                record["mtime"] = new_mtime
+                self._records[new_normalized] = record
+                
+                self._version += 1
+                self._dirty = True
+                should_persist = True
         
         if should_persist:
-            self._persist()
+            await self._persist_async()
 
-    def get_batch(self, chd_paths: list) -> Dict[str, dict]:
+    async def get_batch(self, chd_paths: list) -> Dict[str, dict]:
         """Get cached metadata for multiple CHD files at once."""
         result = {}
+        # Normalize all paths first (offloaded)
+        # We can do this in parallel or serial. Serial is fine for now as it's run_in_threadpool.
+        # Actually, let's just do it one by one or mapped.
+        normalized_map = {}
+        for path in chd_paths:
+            normalized_map[path] = await run_in_threadpool(self._normalize_path, path)
+
         with self._lock:
-            for path in chd_paths:
-                normalized = self._normalize_path(path)
+            for original_path, normalized in normalized_map.items():
                 record = self._records.get(normalized)
                 if record is not None:
-                    result[path] = {
+                    result[original_path] = {
                         "media_type": record.get("media_type"),
                         "cached": True,
                     }
         return result
+
+    async def get_full_info(self, chd_path: str) -> tuple[Optional[dict], Optional[str]]:
+        """Get both metadata and media_type in one call."""
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        with self._lock:
+            record = self._records.get(normalized)
+            if record is None:
+                return None, None
+            return record.get("metadata"), record.get("media_type")
 
     def all_records(self):
         """Return all cached records."""
         with self._lock:
             return list(self._records.values())
 
-    def prune_missing(self) -> int:
+    async def prune_missing(self) -> int:
         """Remove cache entries for CHD files that no longer exist."""
-        removed = []
-        should_persist = False
-        with self._lock:
-            for path in list(self._records.keys()):
+        def _check_and_prune():
+            # 1. Snapshot keys safely
+            with self._lock:
+                keys = list(self._records.keys())
+            
+            # 2. Check existence (blocking I/O)
+            removed = []
+            for path in keys:
                 if not os.path.exists(path):
                     removed.append(path)
+            
+            # 3. Remove missing from records with lock AND snapshot for persist
+            should_persist = False
             if removed:
-                for path in removed:
-                    del self._records[path]
-                self._version += 1
-                self._dirty = True
-                should_persist = True
+                with self._lock:
+                    for path in removed:
+                        if path in self._records:
+                            del self._records[path]
+                    self._version += 1
+                    self._dirty = True
+                    should_persist = True
+            
+            # 4. Return whether we need to persist and the count
+            return removed, should_persist
+
+        removed, should_persist = await run_in_threadpool(_check_and_prune)
         
         if should_persist:
-            self._persist()
+            await self._persist_async()
         
         return len(removed)
 

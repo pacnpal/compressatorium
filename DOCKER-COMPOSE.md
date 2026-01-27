@@ -15,6 +15,7 @@ docker-compose up -d
 **Default configuration:**
 - Port: 8080
 - Volume: `./games` → `/data/games`
+- Temp: `/config/temp` (inside `./config`)
 - Mode: Web UI
 - Concurrent jobs: 2
 
@@ -35,6 +36,7 @@ docker-compose -f docker-compose.multi-volume.yml up -d
 - `./games/psp` → `/data/psp`
 - `./games/ps1` → `/data/ps1`
 - `./games/ps2` → `/data/ps2`
+- Temp: `/config/temp` (inside `./config`)
 
 **Use case:** Ideal when you have games stored in completely separate directories (e.g., different physical drives or network shares). Each mount point appears as a separate volume in the Web UI.
 
@@ -116,6 +118,7 @@ All configurations support these environment variables (edit in the compose file
 |----------|---------|-------------|
 | `CHD_MODE` | `webui` | Mode: `webui` or `cli` |
 | `CHD_VOLUMES` | `/data/games` | Comma-separated volume paths |
+| `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs (Web UI only) |
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (lower priority) |
@@ -139,7 +142,7 @@ Each configuration includes conservative resource limits. Adjust CPU and memory 
 - **If the host becomes sluggish:** lower `MAX_CONCURRENT_JOBS`, increase `CHD_CHDMAN_NICE`, or set `CHD_CHDMAN_IOPRIO_CLASS=3` (idle) with `CHD_CHDMAN_IOPRIO_LEVEL=7`.
 
 **Docker host tips**
-- Prefer SSD/cache for temporary extraction and CHD output to reduce array contention.
+- Prefer SSD/cache for `CHD_TEMP_DIR` and CHD output to reduce array contention.
 - Avoid running other heavy services during conversion.
 - Always set container CPU/memory limits on shared hosts.
 

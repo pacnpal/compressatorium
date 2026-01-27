@@ -57,7 +57,8 @@ docker run -d \
 
 Then open **http://localhost:8080** in your browser.
 
-> **Required:** The `/config` volume must be mounted for persistent data storage.
+> **Required:** The `/config` volume must be mounted for persistent data storage.  
+> **Default temp location:** `/config/temp`. To use a different location, set `CHD_TEMP_DIR` and mount it.
 
 ### Multiple Volumes
 
@@ -262,6 +263,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 |----------|---------|-------------|
 | `CHD_MODE` | `webui` | Mode: `webui` (web interface) or `cli` (batch processing) |
 | `CHD_VOLUMES` | `/data/games` | Comma-separated list of volume mount paths |
+| `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (Web UI only) |
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (lower priority) |
@@ -269,7 +271,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level for chdman (`0` highest, `7` lowest) |
 | `CHD_DATA_DIR` | `/config` | Directory for persistent application data |
 
-Defaults are intentionally conservative to reduce host impact during conversion. Increase `MAX_CONCURRENT_JOBS` or adjust `CHD_CHDMAN_*` only if your host has ample CPU/RAM and fast storage.
+Defaults are intentionally conservative to reduce host impact during conversion. Increase `MAX_CONCURRENT_JOBS` or adjust `CHD_CHDMAN_*` only if your host has ample CPU/RAM and fast storage. By default temp files go to `/config/temp`; set `CHD_TEMP_DIR` to use a faster disk and mount it into the container.
 
 ---
 
@@ -321,7 +323,7 @@ The default compose files include conservative CPU/memory limits to help avoid h
 - **If the host becomes sluggish:** lower `MAX_CONCURRENT_JOBS`, increase `CHD_CHDMAN_NICE`, or set `CHD_CHDMAN_IOPRIO_CLASS=3` (idle) with `CHD_CHDMAN_IOPRIO_LEVEL=7`.
 
 **Docker host tips**
-- Prefer SSD/cache for temporary extraction and CHD output to reduce array contention.
+- Prefer SSD/cache for `CHD_TEMP_DIR` and CHD output to reduce array contention.
 - Avoid running other heavy services during conversion.
 - Always set container CPU/memory limits on shared hosts.
 

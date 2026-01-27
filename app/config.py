@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import List, Optional
+from pathlib import Path
 import os
 
 
@@ -8,12 +9,18 @@ class Settings(BaseSettings):
     # Volume configuration (comma-separated paths)
     chd_volumes: str = Field(default="/data/games", alias="CHD_VOLUMES")
 
+    # Persistent data directory
+    data_dir: str = Field(default="/config", alias="CHD_DATA_DIR")
+
     # Job limits
     max_concurrent_jobs: int = Field(default=1, alias="MAX_CONCURRENT_JOBS")
     concurrency_lock_dir: str = Field(
         default="/tmp/chd_converter_locks", alias="CHD_CONCURRENCY_LOCK_DIR"
     )
     max_job_history: int = Field(default=500, alias="MAX_JOB_HISTORY")
+
+    # Temporary working directory (archive extraction, etc.)
+    temp_dir: Optional[str] = Field(default=None, alias="CHD_TEMP_DIR")
 
     # chdman binary path
     chdman_path: str = Field(default="/usr/bin/chdman", alias="CHDMAN_PATH")
@@ -37,6 +44,10 @@ class Settings(BaseSettings):
     class Config:
         populate_by_name = True
         extra = "ignore"
+
+    def model_post_init(self, __context):
+        if self.temp_dir is None:
+            self.temp_dir = str(Path(self.data_dir) / "temp")
 
     @property
     def volumes(self) -> List[str]:

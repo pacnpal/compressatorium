@@ -252,7 +252,7 @@ async def create_job(request: JobCreateRequest):
     allow_overwrite = (
         request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
     )
-    job = job_manager.create_job(
+    job = await job_manager.create_job(
         file_path,
         request.mode,
         output_path=output_path,
@@ -375,7 +375,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         allow_overwrite = (
             request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
         )
-        job = job_manager.create_job(
+        job = await job_manager.create_job(
             file_path,
             request.mode,
             output_path=output_path,
@@ -460,7 +460,7 @@ async def delete_completed_jobs():
     deleted_ids = []
     for job in list(job_manager.get_all_jobs()):
         if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
-            if job_manager.delete_job(job.id):
+            if await job_manager.delete_job(job.id):
                 deleted_ids.append(job.id)
     return {"deleted": deleted_ids, "count": len(deleted_ids)}
 
@@ -474,10 +474,10 @@ async def cancel_job(job_id: str):
 
     if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
         # Just remove from list
-        job_manager.delete_job(job_id)
+        await job_manager.delete_job(job_id)
         return {"status": "deleted"}
 
-    if job_manager.cancel_job(job_id):
+    if await job_manager.cancel_job(job_id):
         return {"status": "cancelled"}
 
     raise HTTPException(status_code=400, detail="Cannot cancel job")

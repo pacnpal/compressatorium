@@ -13,6 +13,8 @@ services:
       - CHD_MODE=webui
       # Multiple volumes - list all container paths here
       - CHD_VOLUMES=/data/dreamcast,/data/psp,/data/ps1,/data/ps2
+      # Optional: override temp location (default: /config/temp)
+      # - CHD_TEMP_DIR=/temp
       - CHDMAN_MODE=createcd
       - MAX_CONCURRENT_JOBS=1
       - CHD_CHDMAN_NICE=10
@@ -21,6 +23,8 @@ services:
     volumes:
       # Required: Persistent config storage
       - ./config:/config
+      # Optional: mount custom temp location (must match CHD_TEMP_DIR)
+      # - ./temp:/temp
       # Map each host directory to its corresponding container path
       - ./games/dreamcast:/data/dreamcast
       - ./games/psp:/data/psp

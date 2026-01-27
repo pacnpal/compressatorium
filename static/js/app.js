@@ -2549,13 +2549,17 @@ function App() {
         }
     };
 
-    const handleScanMetadata = async () => {
+    const handleScanMetadata = async (force = false) => {
+        const shouldForce = force === true;
         try {
-            const res = await api.scanMetadata();
+            const res = await api.scanMetadata(shouldForce);
             if (res.status === 'scanning') {
                 notify('Metadata scan already in progress', 'info');
             } else {
-                notify('Started background metadata scan', 'success');
+                notify(
+                    shouldForce ? 'Started forced metadata scan' : 'Started background metadata scan',
+                    'success'
+                );
             }
         } catch (err) {
             notify(`Failed to start scan: ${err.message}`, 'error');
@@ -2636,10 +2640,17 @@ function App() {
                 <div style="display: flex; gap: 10px;">
                     <button
                         class="btn btn-secondary help-btn"
-                        onClick=${handleScanMetadata}
+                        onClick=${() => handleScanMetadata(false)}
                         title="Scan all volumes for CHD metadata"
                     >
                         Scan Metadata
+                    </button>
+                    <button
+                        class="btn btn-secondary help-btn"
+                        onClick=${() => handleScanMetadata(true)}
+                        title="Rescan all CHD metadata (ignore cache)"
+                    >
+                        Force Rescan
                     </button>
                     <button
                         class="btn btn-secondary help-btn"

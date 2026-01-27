@@ -11,6 +11,8 @@ services:
       - CHD_MODE=webui
       # Comma-separated list of volume mount paths
       - CHD_VOLUMES=/data/games
+      # Optional: override temp location (default: /config/temp)
+      # - CHD_TEMP_DIR=/temp
       # Conversion mode: createcd (CD-ROM) or createdvd (DVD-ROM)
       - CHDMAN_MODE=createcd
       # Maximum parallel conversion jobs (Web UI only)
@@ -22,6 +24,8 @@ services:
     volumes:
       # Required: Persistent config storage
       - ./config:/config
+      # Optional: mount custom temp location (must match CHD_TEMP_DIR)
+      # - ./temp:/temp
       # Mount your game directories here
       # The Web UI will recursively browse all subdirectories
       # Example directory structure:
