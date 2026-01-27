@@ -11,8 +11,8 @@ This document contains the results of a comprehensive deployment readiness audit
 
 ### Path Traversal Protection
 - **Status:** ✅ IMPLEMENTED
-- **Location:** `app/routes/files.py` (lines 16-51), `app/routes/convert.py` (lines 19-37)
-- **Details:** Both path validation functions use `Path.resolve()` and `is_relative_to()` to prevent directory traversal attacks
+- **Location:** `app/utils/path_utils.py`, used in `files.py` and `convert.py`
+- **Details:** `is_within_configured_volumes()` uses `Path.resolve()` and `is_relative_to()` to prevent directory traversal attacks
 - **Fallback:** Includes Python 3.8 fallback using `os.path.commonpath`
 
 ### Secrets and Credentials
@@ -29,7 +29,7 @@ This document contains the results of a comprehensive deployment readiness audit
 ### Command Injection Protection
 - **Status:** ✅ SECURE
 - **Details:** `chdman` service uses `asyncio.create_subprocess_exec()` with argument list (not shell=True)
-- **Location:** `app/services/chdman.py` (line 45)
+- **Location:** `app/services/chdman.py`
 
 ---
 
