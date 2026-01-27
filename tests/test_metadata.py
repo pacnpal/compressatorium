@@ -12,6 +12,9 @@ def media_type_cases():
         ({"raw_data": "Tag: DVD-VIDEO"}, "dvd"),
         ({"raw_data": "Tag: GD-ROM"}, "cd"),
         ({"metadata_lines": ["CHCD"]}, "cd"),
+        ({"metadata_lines": ["CHT2"]}, "cd"),  # CHT2 is a CD identifier
+        ({"raw_data": "Metadata: CHTR"}, "cd"),  # CHTR prefix
+        ({"raw_data": "Tag: DVD-ROM"}, "dvd"),
     ]
 
 

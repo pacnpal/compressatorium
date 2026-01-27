@@ -18,6 +18,22 @@ from fastapi.concurrency import run_in_threadpool
 # Shared executor for async file I/O
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chd_metadata")
 
+# =============================================================================
+# MEDIA TYPE DETECTION - Single Source of Truth
+# =============================================================================
+# Tag patterns that identify DVD media
+DVD_TAG_PATTERNS = frozenset(["DVD", "DVD-VIDEO", "DVD-ROM"])
+
+# Tag patterns that identify CD media (checked after DVD patterns)
+CD_TAG_PATTERNS = frozenset(["CD", "CD-ROM", "CDROM", "GDROM", "GD-ROM"])
+
+# Metadata prefixes that identify CD media (e.g., CHCD, CHT2, CHTR)
+CD_METADATA_PREFIXES = ("CHCD", "CHT2", "CHTR", "CHT")
+
+# CD-specific compression codecs (fallback detection)
+CD_COMPRESSION_CODECS = frozenset(["cdzl", "cdzs", "cdlz", "cdfl"])
+# =============================================================================
+
 
 class CHDMetadataStore:
     """Persists CHD metadata across application restarts."""
@@ -139,8 +155,8 @@ class CHDMetadataStore:
         """
         Extract media type (dvd/cd) from CHD metadata.
         
-        Looks at the 'metadata' field or raw_data for Tag information.
-        Returns 'dvd' if Tag contains DVD, 'cd' if it contains CD/CHT patterns.
+        Uses patterns defined in MEDIA_TYPE_PATTERNS constants.
+        Returns 'dvd' if Tag contains DVD, 'cd' if it contains CD patterns.
         """
         raw_data = info.get("raw_data", "")
 
@@ -168,38 +184,50 @@ class CHDMetadataStore:
                     continue
                 metadata_tags.add(entry.strip().upper())
 
-        def is_cd_value(value: str) -> bool:
-            normalized = re.sub(r"[^A-Z0-9]", "", value.upper())
-            return ("CD" in normalized) or ("GDROM" in normalized)
+        def matches_dvd(value: str) -> bool:
+            """Check if value matches any DVD pattern."""
+            normalized = value.upper()
+            return any(pat in normalized for pat in DVD_TAG_PATTERNS)
 
+        def matches_cd(value: str) -> bool:
+            """Check if value matches any CD pattern."""
+            normalized = re.sub(r"[^A-Z0-9]", "", value.upper())
+            return any(pat.replace("-", "") in normalized for pat in CD_TAG_PATTERNS)
+
+        # Check tag values for DVD first (higher priority)
         for tag_value in tag_values:
-            if "DVD" in tag_value:
+            if matches_dvd(tag_value):
                 return "dvd"
         for tag_value in tag_values:
-            if is_cd_value(tag_value):
+            if matches_cd(tag_value):
                 return "cd"
 
+        # Check metadata tags for DVD first
         for meta_value in metadata_tags:
-            if "DVD" in meta_value:
+            if matches_dvd(meta_value):
                 return "dvd"
         for meta_value in metadata_tags:
-            if meta_value.startswith("CHT") or meta_value == "CHCD" or is_cd_value(meta_value):
+            # Check CD metadata prefixes (CHCD, CHT2, CHTR, etc.)
+            if any(meta_value.startswith(prefix) for prefix in CD_METADATA_PREFIXES):
+                return "cd"
+            if matches_cd(meta_value):
                 return "cd"
 
         # Fallback: check for common patterns in metadata field
         metadata = info.get("metadata", "")
         if isinstance(metadata, str):
             metadata_upper = metadata.upper()
-            if "DVD" in metadata_upper:
+            if any(pat in metadata_upper for pat in DVD_TAG_PATTERNS):
                 return "dvd"
-            if "CD" in metadata_upper or "GDROM" in metadata_upper or "CHCD" in metadata_upper:
+            if any(pat.replace("-", "") in metadata_upper for pat in CD_TAG_PATTERNS):
+                return "cd"
+            if any(metadata_upper.startswith(prefix) for prefix in CD_METADATA_PREFIXES):
                 return "cd"
 
         # Additional heuristic: check compression type for CD-specific codecs
         compression = info.get("compression", "")
         if isinstance(compression, str):
-            cd_codecs = ["cdzl", "cdzs", "cdlz", "cdfl"]
-            if any(codec in compression.lower() for codec in cd_codecs):
+            if any(codec in compression.lower() for codec in CD_COMPRESSION_CODECS):
                 return "cd"
         
         return None
