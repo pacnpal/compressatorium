@@ -157,6 +157,7 @@ class ChdmanService:
             cancel_task = asyncio.create_task(_cancel_watcher())
 
         buffer = ""
+        output_lines: list[str] = []
         last_output_at = time.monotonic()
         last_idle_log = last_output_at
         while True:
@@ -193,22 +194,38 @@ class ChdmanService:
                     parts = buffer.split("\r")
                     for part in parts[:-1]:
                         if part.strip():
-                            progress = self._parse_progress(part)
-                            yield {"progress": progress, "message": part.strip()}
+                            line = part.strip()
+                            if line:
+                                if not output_lines or output_lines[-1] != line:
+                                    output_lines.append(line)
+                                    if len(output_lines) > 30:
+                                        output_lines.pop(0)
+                            progress = self._parse_progress(line)
+                            yield {"progress": progress, "message": line}
                     buffer = parts[-1]
                 # Handle newlines
                 elif "\n" in buffer:
                     parts = buffer.split("\n")
                     for part in parts[:-1]:
-                        if part.strip():
-                            progress = self._parse_progress(part)
-                            yield {"progress": progress, "message": part.strip()}
+                        line = part.strip()
+                        if line:
+                            if not output_lines or output_lines[-1] != line:
+                                output_lines.append(line)
+                                if len(output_lines) > 30:
+                                    output_lines.pop(0)
+                            progress = self._parse_progress(line)
+                            yield {"progress": progress, "message": line}
                     buffer = parts[-1]
 
         # Process any remaining buffer
         if buffer.strip():
-            progress = self._parse_progress(buffer)
-            yield {"progress": progress, "message": buffer.strip()}
+            line = buffer.strip()
+            if not output_lines or output_lines[-1] != line:
+                output_lines.append(line)
+                if len(output_lines) > 30:
+                    output_lines.pop(0)
+            progress = self._parse_progress(line)
+            yield {"progress": progress, "message": line}
 
         await process.wait()
         if logger.isEnabledFor(logging.DEBUG):
@@ -226,6 +243,12 @@ class ChdmanService:
             raise ConversionCancelled("Conversion cancelled")
 
         if process.returncode != 0:
+            tail = "\n".join(output_lines[-6:])
+            if tail:
+                raise RuntimeError(
+                    f"chdman failed with return code {process.returncode}."
+                    f"\nLast output:\n{tail}"
+                )
             raise RuntimeError(f"chdman failed with return code {process.returncode}")
 
         yield {"progress": 100, "message": "Conversion complete"}

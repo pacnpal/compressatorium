@@ -943,6 +943,8 @@ header h1 span {
     padding: 6px 8px;
     border-radius: 4px;
     margin-top: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 /* Success/Error Icons */
