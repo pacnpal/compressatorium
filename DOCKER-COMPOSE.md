@@ -118,12 +118,16 @@ All configurations support these environment variables (edit in the compose file
 |----------|---------|-------------|
 | `CHD_MODE` | `webui` | Mode: `webui` or `cli` |
 | `CHD_VOLUMES` | `/data/games` | Comma-separated volume paths |
+| `CHD_DATA_DIR` | `/config` | Persistent data directory |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction |
-| `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` |
-| `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs (Web UI only) |
-| `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (lower priority) |
-| `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class for chdman |
-| `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level for chdman |
+| `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode) |
+| `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary |
+| `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
+| `MAX_JOB_HISTORY` | `500` | Completed jobs to retain in history |
+| `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19) |
+| `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class (`1` realtime, `2` best-effort, `3` idle) |
+| `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level (`0` highest, `7` lowest) |
+| `CHD_DEBUG` | `false` | Enable debug logging |
 
 ---
 

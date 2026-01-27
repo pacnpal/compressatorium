@@ -263,13 +263,21 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 |----------|---------|-------------|
 | `CHD_MODE` | `webui` | Mode: `webui` (web interface) or `cli` (batch processing) |
 | `CHD_VOLUMES` | `/data/games` | Comma-separated list of volume mount paths |
-| `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction |
-| `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` |
-| `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (Web UI only) |
-| `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (lower priority) |
-| `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class for chdman (`1` realtime, `2` best-effort, `3` idle) |
-| `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level for chdman (`0` highest, `7` lowest) |
 | `CHD_DATA_DIR` | `/config` | Directory for persistent application data |
+| `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction |
+| `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode only) |
+| `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
+| `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs |
+| `MAX_JOB_HISTORY` | `500` | Maximum completed jobs to retain in history |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd_converter_locks` | Directory for file locking |
+| `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19, higher = lower priority) |
+| `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class (`1` realtime, `2` best-effort, `3` idle) |
+| `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level (`0` highest, `7` lowest) |
+| `CHD_DEBUG` | `false` | Enable debug logging |
+| `CHD_DEBUG_LOG_PATH` | (none) | Path to debug log file |
+| `CHD_DEBUG_HEARTBEAT` | `30` | Debug heartbeat interval in seconds |
+| `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval in seconds |
+| `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout in seconds |
 
 Defaults are intentionally conservative to reduce host impact during conversion. Increase `MAX_CONCURRENT_JOBS` or adjust `CHD_CHDMAN_*` only if your host has ample CPU/RAM and fast storage. By default temp files go to `/config/temp`; set `CHD_TEMP_DIR` to use a faster disk and mount it into the container.
 

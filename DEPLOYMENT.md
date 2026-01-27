@@ -53,13 +53,21 @@ This document contains the results of a comprehensive deployment readiness audit
 |----------|---------|--------|---------|
 | `CHD_MODE` | `webui` | ✅ | Web UI or CLI mode |
 | `CHD_VOLUMES` | `/data/games` | ✅ | Volume mount paths |
+| `CHD_DATA_DIR` | `/config` | ✅ | Persistent data directory |
 | `CHD_TEMP_DIR` | `/config/temp` | ✅ | Temporary working directory for archive extraction |
-| `CHDMAN_MODE` | `createcd` | ✅ | CD/DVD conversion mode |
+| `CHDMAN_MODE` | `createcd` | ✅ | CD/DVD conversion mode (CLI mode) |
+| `CHDMAN_PATH` | `/usr/bin/chdman` | ✅ | Binary path override |
 | `MAX_CONCURRENT_JOBS` | `1` | ✅ | Parallel job limit |
+| `MAX_JOB_HISTORY` | `500` | ✅ | Completed jobs to retain |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd_converter_locks` | ✅ | Lock directory |
 | `CHD_CHDMAN_NICE` | `10` | ✅ | Nice level for chdman |
 | `CHD_CHDMAN_IOPRIO_CLASS` | `2` | ✅ | I/O priority class for chdman |
 | `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | ✅ | I/O priority level for chdman |
-| `CHDMAN_PATH` | `/usr/bin/chdman` | ✅ | Binary path override |
+| `CHD_DEBUG` | `false` | ✅ | Enable debug logging |
+| `CHD_DEBUG_LOG_PATH` | (none) | ✅ | Debug log file path |
+| `CHD_DEBUG_HEARTBEAT` | `30` | ✅ | Debug heartbeat interval (seconds) |
+| `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | ✅ | Debug progress log interval |
+| `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | ✅ | Debug progress timeout |
 | `PYTHONUNBUFFERED` | `1` | ✅ | Logging optimization |
 
 ---
