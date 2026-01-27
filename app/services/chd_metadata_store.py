@@ -10,7 +10,7 @@ import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 from fastapi.concurrency import run_in_threadpool
@@ -269,7 +269,7 @@ class CHDMetadataStore:
             "metadata": info,
             "media_type": media_type,
             "mtime": mtime,
-            "cached_at": datetime.utcnow().isoformat() + "Z",
+            "cached_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
         
         should_persist = False

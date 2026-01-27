@@ -1,7 +1,7 @@
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 from fastapi.concurrency import run_in_threadpool
@@ -97,7 +97,7 @@ class VerificationStore:
         record = {
             "chd_path": normalized,
             "source_path": normalized_source,
-            "verified_at": datetime.utcnow().isoformat() + "Z",
+            "verified_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
         
         # Update in-memory state

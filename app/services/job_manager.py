@@ -8,7 +8,7 @@ import resource
 import sys
 from pathlib import Path
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set
 
 from models import ConversionJob, JobStatus, ConversionMode
@@ -71,7 +71,7 @@ class JobManager:
             mode=mode,
             status=JobStatus.QUEUED,
             progress=0,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             output_path=output_path,
             allow_overwrite=allow_overwrite,
             compression=compression,
@@ -149,7 +149,7 @@ class JobManager:
         if job.status == JobStatus.QUEUED:
             self._cancelled.add(job_id)
             job.status = JobStatus.CANCELLED
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
             cancel_event = self._cancel_events.get(job_id)
             if cancel_event:
                 cancel_event.set()
@@ -537,7 +537,7 @@ class JobManager:
             cancel_event.set()
             self._cancelled.discard(job_id)
             if not job.completed_at:
-                job.completed_at = datetime.utcnow()
+                job.completed_at = datetime.now(timezone.utc)
             await self._notify_subscribers(
                 job_id,
                 {"type": "cancelled", "job_id": job_id, "status": job.status.value},
@@ -553,7 +553,7 @@ class JobManager:
         if not slot_acquired:
             if job.status != JobStatus.CANCELLED:
                 job.status = JobStatus.CANCELLED
-                job.completed_at = datetime.utcnow()
+                job.completed_at = datetime.now(timezone.utc)
                 await self._notify_subscribers(
                     job_id,
                     {"type": "cancelled", "job_id": job_id, "status": job.status.value},
@@ -582,7 +582,7 @@ class JobManager:
                 job.error_message = "Output CHD file already exists"
             else:
                 job.error_message = "Could not acquire lock for output file"
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
 
             await self._notify_subscribers(
                 job_id, {"type": "error", "job_id": job_id, "error": job.error_message}
@@ -595,7 +595,7 @@ class JobManager:
             return
 
         job.status = JobStatus.PROCESSING
-        job.started_at = datetime.utcnow()
+        job.started_at = datetime.now(timezone.utc)
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Job %s acquired locks and started processing", job_id)
@@ -709,7 +709,7 @@ class JobManager:
                 self._cancelled.discard(job_id)
                 job.status = JobStatus.COMPLETED
                 job.progress = 100
-                job.completed_at = datetime.utcnow()
+                job.completed_at = datetime.now(timezone.utc)
 
                 # Get output file size
                 if os.path.exists(job.output_path):
@@ -744,7 +744,7 @@ class JobManager:
         except ConversionCancelled:
             self._cancelled.discard(job_id)
             job.status = JobStatus.CANCELLED
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
             await self._notify_subscribers(
                 job_id,
                 {"type": "cancelled", "job_id": job_id, "status": job.status.value},
@@ -753,7 +753,7 @@ class JobManager:
             self._cancelled.discard(job_id)
             job.status = JobStatus.FAILED
             job.error_message = str(e)
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
 
             await self._notify_subscribers(
                 job_id, {"type": "error", "job_id": job_id, "error": str(e)}
