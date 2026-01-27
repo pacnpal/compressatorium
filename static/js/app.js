@@ -1544,6 +1544,7 @@ function App() {
     const [fileTypeFilter, setFileTypeFilter] = useState(null); // null = all, or ".chd", ".zip,.7z,.rar", etc.
     const [lastSelectedIndex, setLastSelectedIndex] = useState(null); // For shift-click range selection
     const [chdMetadata, setChdMetadata] = useState(new Map()); // path -> { media_type: "dvd"|"cd"|null }
+    const [forceRescanRunning, setForceRescanRunning] = useState(false);
     const [appVersion, setAppVersion] = useState(null); // App version from backend
     const [sortBy, setSortBy] = useState('name'); // 'name', 'size', 'status'
     const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
@@ -1756,8 +1757,42 @@ function App() {
         });
     }, [displayedEntries, fileTypeFilter]);
 
+    // Poll scan status after a forced rescan so badges refresh with new metadata
+    useEffect(() => {
+        if (!forceRescanRunning) return;
+
+        let cancelled = false;
+        let timeoutId = null;
+
+        const poll = async () => {
+            try {
+                const status = await api.getScanStatus();
+                if (cancelled) return;
+                if (status.scanning) {
+                    timeoutId = setTimeout(poll, 1500);
+                    return;
+                }
+                setChdMetadata(new Map());
+                setForceRescanRunning(false);
+            } catch (err) {
+                if (cancelled) return;
+                setForceRescanRunning(false);
+                notify(`Failed to get scan status: ${err.message}`, 'error');
+            }
+        };
+
+        timeoutId = setTimeout(poll, 1000);
+
+        return () => {
+            cancelled = true;
+            if (timeoutId) clearTimeout(timeoutId);
+        };
+    }, [forceRescanRunning]);
+
     // Fetch CHD metadata for displayed CHD files
     useEffect(() => {
+        if (forceRescanRunning) return;
+
         const chdPaths = displayedEntries
             .filter(e => e.extension?.toLowerCase() === '.chd')
             .map(e => e.path)
@@ -1819,7 +1854,7 @@ function App() {
                 }
             })
             .catch(err => console.warn('Failed to fetch CHD metadata:', err)); // Silently fail - badges are optional
-    }, [displayedEntries]);
+    }, [displayedEntries, forceRescanRunning]);
 
     // Load app version on mount
     useEffect(() => {
@@ -2556,6 +2591,10 @@ function App() {
             if (res.status === 'scanning') {
                 notify('Metadata scan already in progress', 'info');
             } else {
+                if (shouldForce) {
+                    setChdMetadata(new Map());
+                    setForceRescanRunning(true);
+                }
                 notify(
                     shouldForce ? 'Started forced metadata scan' : 'Started background metadata scan',
                     'success'
