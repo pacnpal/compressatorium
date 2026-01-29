@@ -4,6 +4,8 @@ import shlex
 from pathlib import Path
 from typing import Dict, List, Set
 
+from utils.path_utils import strip_archive_path
+
 
 _WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 
@@ -89,13 +91,17 @@ def _parse_gdi_tracks(gdi_path: Path) -> List[str]:
 
 
 def build_delete_plan(source_path: str) -> Dict[str, object]:
-    source = Path(source_path)
+    original_source = source_path
+    is_archive_member = "::" in source_path
+    plan_source = strip_archive_path(source_path) if is_archive_member else source_path
+    source = Path(plan_source)
     base_dir = source.parent
     resolved: Set[str] = set()
     delete_paths: List[str] = []
     missing_paths: List[str] = []
     unsafe_paths: List[str] = []
     errors: List[str] = []
+    warnings: List[str] = []
 
     def _add_path(path: Path) -> None:
         path_str = str(path)
@@ -113,6 +119,18 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
 
     try:
         _add_path(source)
+        if is_archive_member:
+            warnings.append(
+                "Archive input detected; delete-on-verify will remove the entire archive"
+            )
+            return {
+                "source_path": original_source,
+                "delete_paths": delete_paths,
+                "missing_paths": missing_paths,
+                "unsafe_paths": unsafe_paths,
+                "errors": errors,
+                "warnings": warnings,
+            }
         ext = source.suffix.lower()
         track_refs: List[str] = []
         if ext == ".cue":
@@ -133,11 +151,12 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
         errors.append(str(exc))
 
     return {
-        "source_path": str(source),
+        "source_path": original_source,
         "delete_paths": delete_paths,
         "missing_paths": missing_paths,
         "unsafe_paths": unsafe_paths,
         "errors": errors,
+        "warnings": warnings,
     }
 
 

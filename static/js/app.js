@@ -658,6 +658,11 @@ function DeletePlanModal({ plan, onConfirm, onClose }) {
                                 ${(item.delete_paths || []).map(p => html`
                                     <div style="font-size: 0.8rem; color: var(--text-secondary);">${p}</div>
                                 `)}
+                                ${item.warnings && item.warnings.length > 0 && html`
+                                    <div style="font-size: 0.8rem; color: var(--warning); margin-top: 4px;">
+                                        ${item.warnings.join('; ')}
+                                    </div>
+                                `}
                                 ${item.missing_paths && item.missing_paths.length > 0 && html`
                                     <div style="font-size: 0.8rem; color: var(--warning); margin-top: 4px;">
                                         Missing: ${item.missing_paths.map(getBaseName).join(', ')}
@@ -2579,14 +2584,14 @@ function App() {
         return false;
     }, [selectedFiles]);
     const deleteOnVerifySupported = isCreateMode || isCopyMode;
-    const deleteOnVerifyDisabled = !deleteOnVerifySupported || hasArchiveSelection;
+    const deleteOnVerifyDisabled = !deleteOnVerifySupported;
     const deleteOnVerifyLabel = isCopyMode
         ? 'Delete original CHD after copy + verify'
         : 'Delete source after convert + verify';
     const deleteOnVerifyNote = !deleteOnVerifySupported
         ? 'Available only for create/copy modes.'
         : hasArchiveSelection
-            ? 'Disabled while archive items are selected.'
+            ? 'Archive inputs will delete the entire archive after verification.'
             : isCopyMode
                 ? 'Warning: this deletes the original CHD after the copy verifies.'
                 : 'Runs CHD verification and deletes the original source (including .cue/.gdi track files) if it passes.';
