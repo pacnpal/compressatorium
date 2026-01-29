@@ -112,7 +112,7 @@ class ChdmanService:
         """
         # Ensure output directory exists
         output_dir = os.path.dirname(output_path)
-        if output_dir:
+        if output_dir:  # Empty string means output is in current directory, no need to create
             await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
 
         cmd = self._build_command(
@@ -494,6 +494,7 @@ class ChdmanService:
                 process.kill()
                 await process.wait()
         except ProcessLookupError:
+            # The process has already exited or no longer exists; nothing left to terminate.
             pass
 
     def _parse_progress(self, line: str) -> int:
