@@ -28,6 +28,15 @@ from utils.delete_plan import build_delete_plan, build_delete_snapshot
 router = APIRouter()
 
 
+def normalize_output_dir(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Output directory cannot be empty")
+    return cleaned
+
+
 def normalize_compression(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
@@ -103,9 +112,10 @@ async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
     results = []
     mode = request.mode.value
+    output_dir = normalize_output_dir(request.output_dir)
 
-    if request.output_dir and not is_within_configured_volumes(
-        request.output_dir, treat_archives=False
+    if output_dir and not is_within_configured_volumes(
+        output_dir, treat_archives=False
     ):
         raise HTTPException(
             status_code=403,
@@ -118,7 +128,7 @@ async def check_duplicates(request: CheckDuplicatesRequest):
 
         # Handle archive paths - get the actual filename and determine output location
         actual_filename = file_path
-        effective_output_dir = request.output_dir
+        effective_output_dir = output_dir
 
         if "::" in file_path:
             # For archive files, use the internal filename for the CHD name
@@ -201,6 +211,7 @@ async def create_job(request: JobCreateRequest):
     """Create a single conversion job."""
     compression = normalize_compression(request.compression)
     mode = request.mode.value
+    output_dir = normalize_output_dir(request.output_dir)
     if compression and mode.startswith("extract"):
         raise HTTPException(
             status_code=400,
@@ -222,8 +233,8 @@ async def create_job(request: JobCreateRequest):
             detail="Access denied: file path outside configured volumes",
         )
 
-    if request.output_dir and not is_within_configured_volumes(
-        request.output_dir, treat_archives=False
+    if output_dir and not is_within_configured_volumes(
+        output_dir, treat_archives=False
     ):
         raise HTTPException(
             status_code=403,
@@ -251,7 +262,7 @@ async def create_job(request: JobCreateRequest):
             raise HTTPException(status_code=404, detail="Archive not found")
 
         # Calculate output path before extraction to avoid unnecessary work
-        effective_output_dir = request.output_dir or archive_source_dir
+        effective_output_dir = output_dir or archive_source_dir
         output_stem = archive_service._output_stem_for_member(internal_path)
         output_path = chdman_service.get_output_path_for_mode(
             mode, output_stem, effective_output_dir, treat_as_stem=True
@@ -293,7 +304,7 @@ async def create_job(request: JobCreateRequest):
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive
     if output_path is None:
-        effective_output_dir = request.output_dir or archive_source_dir
+        effective_output_dir = output_dir or archive_source_dir
         output_path = chdman_service.get_output_path_for_mode(
             mode, file_path, effective_output_dir
         )
@@ -350,6 +361,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
     compression = normalize_compression(request.compression)
     mode = request.mode.value
+    output_dir = normalize_output_dir(request.output_dir)
     if compression and mode.startswith("extract"):
         raise HTTPException(
             status_code=400,
@@ -372,8 +384,8 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 detail=f"Access denied: {file_path} outside configured volumes",
             )
 
-    if request.output_dir and not is_within_configured_volumes(
-        request.output_dir, treat_archives=False
+    if output_dir and not is_within_configured_volumes(
+        output_dir, treat_archives=False
     ):
         raise HTTPException(
             status_code=403,
@@ -422,7 +434,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 continue
 
             # Calculate output path before extraction to avoid unnecessary work
-            effective_output_dir = request.output_dir or archive_source_dir
+            effective_output_dir = output_dir or archive_source_dir
             output_stem = archive_service._output_stem_for_member(internal_path)
             output_path = chdman_service.get_output_path_for_mode(
                 mode, output_stem, effective_output_dir, treat_as_stem=True
@@ -461,7 +473,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         # Calculate output path and handle duplicates
         # For archive files: use output_dir if specified, otherwise save next to archive
         if output_path is None:
-            effective_output_dir = request.output_dir or archive_source_dir
+            effective_output_dir = output_dir or archive_source_dir
             output_path = chdman_service.get_output_path_for_mode(
                 mode, file_path, effective_output_dir
             )

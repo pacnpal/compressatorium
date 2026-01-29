@@ -1,5 +1,38 @@
 # Release Notes
 
+## v1.2.1 - Archive Safety Limits & Timeout Controls
+
+### ✨ New Features
+
+- **Archive safety limits** - Configure maximum archive entries, per-member size, and total extraction size with `CHD_ARCHIVE_MAX_ENTRIES`, `CHD_ARCHIVE_MAX_MEMBER_SIZE`, and `CHD_ARCHIVE_MAX_TOTAL_SIZE`.
+- **Archive truncation metadata** - File listing/search responses now report when archive listings are truncated by safety limits.
+- **Verification timeouts** - New `CHD_VERIFY_TIMEOUT` and `CHD_VERIFY_PROGRESS_TIMEOUT` allow you to stop long-running or stalled `chdman verify` operations.
+
+### 🛡️ Safety Improvements
+
+- **Output directory validation** - Output directories are trimmed and rejected if empty, preventing accidental writes to invalid paths.
+- **Safe temp cleanup** - Temporary directories are only removed if they are within expected temp locations.
+- **Chdman info timeout** - `CHD_INFO_TIMEOUT` prevents `chdman info` from hanging indefinitely.
+
+### 🐞 Bug Fixes
+
+- **Archive enumeration errors** - Directory scans skip problematic entries instead of failing entire requests.
+- **Output path creation** - Output directories are only created when a directory component exists.
+
+### 📁 Files Changed
+
+- `app/config.py` - Added archive and timeout configuration values
+- `app/models.py` - Archive truncation metadata
+- `app/routes/convert.py` - Output directory validation and reuse
+- `app/routes/files.py` - Archive truncation metadata + safe scanning
+- `app/services/archive.py` - Archive limits + truncated listings
+- `app/services/chdman.py` - Timeout handling for info/verify
+- `app/services/concurrency_manager.py` - Ticket lock handling improvements
+- `app/services/job_manager.py` - Safe temp cleanup checks
+- `README.md` - Archive limit and timeout documentation
+
+---
+
 ## v1.2.0 - Delete-on-Verify & Safer File Ops
 
 ### ✨ New Features

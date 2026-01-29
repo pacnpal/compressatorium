@@ -90,64 +90,81 @@ async def list_files(
     ):
         entries = []
         try:
+            # This outer try-except catches errors from os.listdir() itself
             for item in sorted(os.listdir(target_path)):
                 item_path = os.path.join(target_path, item)
                 ext = Path(item).suffix.lower()
 
-                if os.path.isdir(item_path):
-                    entries.append(
-                        FileEntry(name=item, path=item_path, type="directory")
-                    )
-                elif os.path.isfile(item_path):
-                    size = os.path.getsize(item_path)
-                    is_convertible = ext in CONVERTIBLE_EXTENSIONS
-                    is_archive = ext in ARCHIVE_EXTENSIONS
-                    if is_archive and not show_archives_flag:
-                        continue
-
-                    # Check if CHD already exists or is being converted (atomic check)
-                    has_chd = False
-                    if is_convertible:
-                        chd_path = str(Path(item_path).with_suffix(".chd"))
-                        file_exists, is_converting = lock_manager.check_file_status(
-                            chd_path
+                try:
+                    if os.path.isdir(item_path):
+                        entries.append(
+                            FileEntry(name=item, path=item_path, type="directory")
                         )
-                        has_chd = file_exists or is_converting
+                    elif os.path.isfile(item_path):
+                        size = os.path.getsize(item_path)
+                        is_convertible = ext in CONVERTIBLE_EXTENSIONS
+                        is_archive = ext in ARCHIVE_EXTENSIONS
+                        archive_truncated = None
+                        if is_archive and not show_archives_flag:
+                            continue
 
-                    archive_items = None
-                    archive_has_chd = None
-                    if is_archive and summarize_archives_flag:
-                        contents = archive_service.list_archive_contents(item_path)
-                        archive_items = len(contents)
-                        archive_has_chd = 0
-                        archive_dir = os.path.dirname(item_path)
-                        for entry in contents:
-                            output_stem = (
-                                entry.get("output_stem")
-                                or Path(entry["internal_path"]).stem
-                            )
-                            chd_path = os.path.join(archive_dir, f"{output_stem}.chd")
+                        # Check if CHD already exists or is being converted (atomic check)
+                        has_chd = False
+                        if is_convertible:
+                            chd_path = str(Path(item_path).with_suffix(".chd"))
                             file_exists, is_converting = lock_manager.check_file_status(
                                 chd_path
                             )
-                            if file_exists or is_converting:
-                                archive_has_chd += 1
-                        has_chd = archive_has_chd > 0
+                            has_chd = file_exists or is_converting
 
-                    entry = FileEntry(
-                        name=item,
-                        path=item_path,
-                        type="archive" if is_archive else "file",
-                        size=size,
-                        extension=ext,
-                        convertible=is_convertible,
-                        has_chd=has_chd,
-                        archive_items=archive_items,
-                        archive_has_chd=archive_has_chd,
-                    )
-                    entries.append(entry)
+                        archive_items = None
+                        archive_has_chd = None
+                        if is_archive and summarize_archives_flag:
+                            archive_result = archive_service.list_archive_contents(
+                                item_path, include_meta=True
+                            )
+                            contents = archive_result["entries"]
+                            archive_items = len(contents)
+                            archive_truncated = bool(archive_result["truncated"])
+                            archive_has_chd = 0
+                            archive_dir = os.path.dirname(item_path)
+                            for entry in contents:
+                                output_stem = (
+                                    entry.get("output_stem")
+                                    or Path(entry["internal_path"]).stem
+                                )
+                                chd_path = os.path.join(
+                                    archive_dir, f"{output_stem}.chd"
+                                )
+                                file_exists, is_converting = (
+                                    lock_manager.check_file_status(chd_path)
+                                )
+                                if file_exists or is_converting:
+                                    archive_has_chd += 1
+                            has_chd = archive_has_chd > 0
+
+                        entry = FileEntry(
+                            name=item,
+                            path=item_path,
+                            type="archive" if is_archive else "file",
+                            size=size,
+                            extension=ext,
+                            convertible=is_convertible,
+                            has_chd=has_chd,
+                            archive_items=archive_items,
+                            archive_has_chd=archive_has_chd,
+                            archive_truncated=archive_truncated
+                            if is_archive and summarize_archives_flag
+                            else None,
+                        )
+                        entries.append(entry)
+                except OSError:
+                    # Skip items that cannot be accessed (permissions, missing, etc.)
+                    continue
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Directory not found")
         return entries
 
     entries = await run_in_threadpool(
@@ -178,6 +195,7 @@ async def search_files(
         files = []
         archives = []
         visited_dirs = set()
+        archives_truncated = set()
 
         def _scan(dir_path: str):
             real_dir = os.path.realpath(dir_path)
@@ -189,64 +207,72 @@ async def search_files(
                     item_path = os.path.join(dir_path, item)
                     ext = Path(item).suffix.lower()
 
-                    if os.path.isdir(item_path):
-                        if recursive_scan and not os.path.islink(item_path):
-                            _scan(item_path)
-                    elif os.path.isfile(item_path):
-                        if ext in CONVERTIBLE_EXTENSIONS:
-                            chd_path = str(Path(item_path).with_suffix(".chd"))
-                            # Use atomic check to get both file existence and lock status
-                            file_exists, is_converting = lock_manager.check_file_status(
-                                chd_path
-                            )
-                            files.append(
-                                {
-                                    "name": item,
-                                    "path": item_path,
-                                    "size": os.path.getsize(item_path),
-                                    "extension": ext,
-                                    "has_chd": file_exists or is_converting,
-                                    "in_archive": False,
-                                }
-                            )
-                        elif include_archive_scan and ext in ARCHIVE_EXTENSIONS:
-                            # List archive contents
-                            archive_contents = archive_service.list_archive_contents(
-                                item_path
-                            )
-                            archive_dir = os.path.dirname(item_path)
-                            for entry in archive_contents:
-                                output_stem = (
-                                    entry.get("output_stem")
-                                    or Path(entry["internal_path"]).stem
-                                )
-                                chd_path = os.path.join(
-                                    archive_dir, f"{output_stem}.chd"
-                                )
+                    try:
+                        if os.path.isdir(item_path):
+                            if recursive_scan and not os.path.islink(item_path):
+                                _scan(item_path)
+                        elif os.path.isfile(item_path):
+                            if ext in CONVERTIBLE_EXTENSIONS:
+                                chd_path = str(Path(item_path).with_suffix(".chd"))
+                                # Use atomic check to get both file existence and lock status
                                 file_exists, is_converting = (
                                     lock_manager.check_file_status(chd_path)
                                 )
-                                archives.append(
+                                files.append(
                                     {
-                                        "name": entry["name"],
-                                        "path": f"{item_path}::{entry['internal_path']}",
-                                        "archive_path": item_path,
-                                        "internal_path": entry["internal_path"],
-                                        "size": entry["size"],
-                                        "extension": entry["extension"],
-                                        "output_stem": output_stem,
-                                        "chd_path": chd_path,
+                                        "name": item,
+                                        "path": item_path,
+                                        "size": os.path.getsize(item_path),
+                                        "extension": ext,
                                         "has_chd": file_exists or is_converting,
-                                        "in_archive": True,
+                                        "in_archive": False,
                                     }
                                 )
-            except PermissionError:
+                            elif include_archive_scan and ext in ARCHIVE_EXTENSIONS:
+                                # List archive contents
+                                archive_result = archive_service.list_archive_contents(
+                                    item_path, include_meta=True
+                                )
+                                archive_contents = archive_result["entries"]
+                                if archive_result["truncated"]:
+                                    archives_truncated.add(item_path)
+                                archive_dir = os.path.dirname(item_path)
+                                for entry in archive_contents:
+                                    output_stem = (
+                                        entry.get("output_stem")
+                                        or Path(entry["internal_path"]).stem
+                                    )
+                                    chd_path = os.path.join(
+                                        archive_dir, f"{output_stem}.chd"
+                                    )
+                                    file_exists, is_converting = (
+                                        lock_manager.check_file_status(chd_path)
+                                    )
+                                    archives.append(
+                                        {
+                                            "name": entry["name"],
+                                            "path": f"{item_path}::{entry['internal_path']}",
+                                            "archive_path": item_path,
+                                            "internal_path": entry["internal_path"],
+                                            "size": entry["size"],
+                                            "extension": entry["extension"],
+                                            "output_stem": output_stem,
+                                            "chd_path": chd_path,
+                                            "has_chd": file_exists or is_converting,
+                                            "in_archive": True,
+                                        }
+                                    )
+                    except OSError:
+                        # Skip archive entries that cannot be accessed
+                        continue
+            except (PermissionError, FileNotFoundError, OSError):
+                # Directory is not accessible or disappeared during scanning; skip it.
                 pass
 
         _scan(root_path)
-        return files, archives
+        return files, archives, sorted(archives_truncated)
 
-    files, archives = await run_in_threadpool(
+    files, archives, archives_truncated = await run_in_threadpool(
         scan_directory, path, recursive, include_archives
     )
 
@@ -256,6 +282,7 @@ async def search_files(
         "archives": archives,
         "total_files": len(files),
         "total_in_archives": len(archives),
+        "archives_truncated": archives_truncated,
     }
 
 
@@ -275,7 +302,11 @@ async def list_archive(
     if not archive_service.is_archive(path):
         raise HTTPException(status_code=400, detail="Not a supported archive format")
 
-    contents = await run_in_threadpool(archive_service.list_archive_contents, path)
+    contents_result = await run_in_threadpool(
+        archive_service.list_archive_contents, path, include_meta=True
+    )
+    contents = contents_result["entries"]
+    truncated = bool(contents_result["truncated"])
 
     # Check for existing CHD files in the archive's directory
     archive_dir = os.path.dirname(path)
@@ -288,7 +319,12 @@ async def list_archive(
         file_entry["has_chd"] = file_exists or is_converting
         file_entry["chd_path"] = chd_path
 
-    return {"archive": path, "files": contents, "total": len(contents)}
+    return {
+        "archive": path,
+        "files": contents,
+        "total": len(contents),
+        "truncated": truncated,
+    }
 
 
 @router.post("/files/rename")

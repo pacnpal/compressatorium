@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     # Temporary working directory (archive extraction, etc.)
     temp_dir: Optional[str] = Field(default=None, alias="CHD_TEMP_DIR")
 
+    # Archive safety limits (listing + related extraction for cue/gdi)
+    archive_max_entries: int = Field(default=5000, alias="CHD_ARCHIVE_MAX_ENTRIES")
+    archive_max_member_size: int = Field(
+        default=0, alias="CHD_ARCHIVE_MAX_MEMBER_SIZE"
+    )
+    archive_max_total_size: int = Field(
+        default=0, alias="CHD_ARCHIVE_MAX_TOTAL_SIZE"
+    )
+
     # chdman binary path
     chdman_path: str = Field(default="/usr/bin/chdman", alias="CHDMAN_PATH")
     chdman_nice: Optional[int] = Field(default=10, alias="CHD_CHDMAN_NICE")
@@ -35,6 +44,11 @@ class Settings(BaseSettings):
     )
     chdman_ioprio_level: Optional[int] = Field(
         default=6, alias="CHD_CHDMAN_IOPRIO_LEVEL"
+    )
+    chdman_info_timeout: int = Field(default=60, alias="CHD_INFO_TIMEOUT")
+    chdman_verify_timeout: int = Field(default=0, alias="CHD_VERIFY_TIMEOUT")
+    verify_progress_timeout: int = Field(
+        default=0, alias="CHD_VERIFY_PROGRESS_TIMEOUT"
     )
 
     # Debug logging

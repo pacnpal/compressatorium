@@ -91,6 +91,7 @@ In the Web UI, you can specify a custom output directory for converted CHD files
 - Convert files directly from within archives
 - Archives extract temporarily during conversion, then clean up automatically
 - When a `.cue`/`.gdi` is present in the same archive folder, `.bin` entries are suppressed and batch jobs are deduplicated by output path to avoid stalled conversions.
+- Archive listings include safety limits (max entries/size) and expose truncation metadata when limits are hit.
 
 **Batch Conversion**
 - Select multiple files and convert them all at once
@@ -110,6 +111,7 @@ In the Web UI, you can specify a custom output directory for converted CHD files
 - Verification status persisted across sessions (stored in `/config/verified_chds.json`)
 - Integrated verification workflow when deleting source files
 - Visual indicators showing verified vs unverified CHD files
+- Optional timeouts for long-running verifications and stalled progress
 
 **CHD Inspector**
 - View detailed CHD file information (version, compression, size, hashes)
@@ -275,6 +277,12 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19, higher = lower priority) |
 | `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class (`1` realtime, `2` best-effort, `3` idle) |
 | `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level (`0` highest, `7` lowest) |
+| `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
+| `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
+| `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables limit) |
+| `CHD_INFO_TIMEOUT` | `60` | Timeout in seconds for `chdman info` (0 disables) |
+| `CHD_VERIFY_TIMEOUT` | `0` | Timeout in seconds for `chdman verify` (0 disables) |
+| `CHD_VERIFY_PROGRESS_TIMEOUT` | `0` | Timeout in seconds without verify output (0 disables) |
 | `CHD_DEBUG` | `false` | Enable debug logging |
 | `CHD_DEBUG_LOG_PATH` | (none) | Path to debug log file |
 | `CHD_DEBUG_HEARTBEAT` | `30` | Debug heartbeat interval in seconds |

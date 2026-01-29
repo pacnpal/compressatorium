@@ -5,7 +5,7 @@ import zipfile
 import time
 import logging
 from pathlib import Path, PurePosixPath
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Union, Dict
 
 from config import settings
 
@@ -36,6 +36,51 @@ class ArchiveService:
     def __init__(self):
         self._temp_dirs: dict = {}
 
+    @staticmethod
+    def _archive_limits() -> Tuple[int, int, int]:
+        max_entries = max(0, int(getattr(settings, "archive_max_entries", 0) or 0))
+        max_member_size = max(
+            0, int(getattr(settings, "archive_max_member_size", 0) or 0)
+        )
+        max_total_size = max(
+            0, int(getattr(settings, "archive_max_total_size", 0) or 0)
+        )
+        return max_entries, max_member_size, max_total_size
+
+    @staticmethod
+    def _format_size(size: int) -> str:
+        return f"{size} bytes"
+
+    @staticmethod
+    def _coerce_size(value: Optional[int]) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            return None
+        if size < 0:
+            return None
+        return size
+
+    def _check_member_size(self, size: int, *, member: str) -> None:
+        _, max_member_size, _ = self._archive_limits()
+        if max_member_size > 0 and size > max_member_size:
+            raise ValueError(
+                f"Archive member exceeds max size: {member} ({self._format_size(size)})"
+            )
+
+    def _check_total_size(self, total_size: int) -> None:
+        _, _, max_total_size = self._archive_limits()
+        if max_total_size > 0 and total_size > max_total_size:
+            raise ValueError(
+                f"Archive extraction exceeds max total size ({self._format_size(total_size)})"
+            )
+
+    def _size_limits_enabled(self) -> bool:
+        _, max_member_size, max_total_size = self._archive_limits()
+        return max_member_size > 0 or max_total_size > 0
+
     def _create_temp_dir(self) -> str:
         base_dir = settings.temp_dir
         if base_dir is None:
@@ -53,19 +98,22 @@ class ArchiveService:
         ext = Path(filename).suffix.lower()
         return ext in ARCHIVE_EXTENSIONS
 
-    def list_archive_contents(self, archive_path: str) -> List[dict]:
+    def list_archive_contents(
+        self, archive_path: str, *, include_meta: bool = False
+    ) -> Union[List[dict], Dict[str, Union[List[dict], bool]]]:
         """List convertible files inside an archive."""
         ext = Path(archive_path).suffix.lower()
         entries = []
+        truncated = False
         start = time.monotonic()
 
         try:
             if ext == ".zip":
-                entries = self._list_zip(archive_path)
+                entries, truncated = self._list_zip(archive_path)
             elif ext == ".7z" and HAS_7Z:
-                entries = self._list_7z(archive_path)
+                entries, truncated = self._list_7z(archive_path)
             elif ext == ".rar" and HAS_RAR:
-                entries = self._list_rar(archive_path)
+                entries, truncated = self._list_rar(archive_path)
         except Exception as e:
             logger.exception("Error listing archive %s: %s", archive_path, e)
         finally:
@@ -82,6 +130,8 @@ class ArchiveService:
         for entry in entries:
             entry["output_stem"] = self._output_stem_for_member(entry["internal_path"])
 
+        if include_meta:
+            return {"entries": entries, "truncated": truncated}
         return entries
 
     @staticmethod
@@ -105,9 +155,12 @@ class ArchiveService:
 
         return filtered
 
-    def _list_zip(self, archive_path: str) -> List[dict]:
+    def _list_zip(self, archive_path: str) -> Tuple[List[dict], bool]:
         """List contents of a ZIP file."""
         entries = []
+        max_entries, max_member_size, max_total_size = self._archive_limits()
+        total_size = 0
+        truncated = False
         with zipfile.ZipFile(archive_path, "r") as zf:
             for info in zf.infolist():
                 if info.is_dir():
@@ -118,6 +171,23 @@ class ArchiveService:
                     continue
                 ext = Path(info.filename).suffix.lower()
                 if ext in CONVERTIBLE_EXTENSIONS:
+                    if max_member_size > 0 and info.file_size > max_member_size:
+                        logger.warning(
+                            "Skipping oversized archive member %s (%s)",
+                            info.filename,
+                            self._format_size(info.file_size),
+                        )
+                        truncated = True
+                        continue
+                    if max_total_size > 0 and (total_size + info.file_size) > max_total_size:
+                        logger.warning(
+                            "Archive %s hit max total size limit (%s)",
+                            archive_path,
+                            self._format_size(max_total_size),
+                        )
+                        truncated = True
+                        break
+                    total_size += info.file_size
                     entries.append(
                         {
                             "archive_path": archive_path,
@@ -128,11 +198,22 @@ class ArchiveService:
                             "convertible": True,
                         }
                     )
-        return entries
+                    if max_entries > 0 and len(entries) >= max_entries:
+                        logger.warning(
+                            "Archive %s hit max entry limit (%s)",
+                            archive_path,
+                            max_entries,
+                        )
+                        truncated = True
+                        break
+        return entries, truncated
 
-    def _list_7z(self, archive_path: str) -> List[dict]:
+    def _list_7z(self, archive_path: str) -> Tuple[List[dict], bool]:
         """List contents of a 7z file."""
         entries = []
+        max_entries, max_member_size, max_total_size = self._archive_limits()
+        total_size = 0
+        truncated = False
         with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
             archive_info = zf.archiveinfo()
             if hasattr(archive_info, "files"):
@@ -143,16 +224,53 @@ class ArchiveService:
                         continue
                     ext = Path(name).suffix.lower()
                     if ext in CONVERTIBLE_EXTENSIONS:
+                        size = self._coerce_size(getattr(info, "uncompressed", None))
+                        if size is None:
+                            if max_member_size > 0 or max_total_size > 0:
+                                logger.warning(
+                                    "Skipping archive member %s (unknown size)",
+                                    name,
+                                )
+                                truncated = True
+                                continue
+                            size = 0
+                        if max_member_size > 0 and size > max_member_size:
+                            logger.warning(
+                                "Skipping oversized archive member %s (%s)",
+                                name,
+                                self._format_size(size),
+                            )
+                            truncated = True
+                            continue
+                        if max_total_size > 0 and (total_size + size) > max_total_size:
+                            logger.warning(
+                                "Archive %s hit max total size limit (%s)",
+                                archive_path,
+                                self._format_size(max_total_size),
+                            )
+                            truncated = True
+                            break
+                        total_size += size
                         entries.append(
                             {
                                 "archive_path": archive_path,
                                 "internal_path": name,
                                 "name": os.path.basename(name),
-                                "size": getattr(info, "uncompressed", 0),
+                                "size": size,
                                 "extension": ext,
                                 "convertible": True,
                             }
                         )
+                        if max_entries > 0 and len(entries) >= max_entries:
+                            logger.warning(
+                                "Archive %s hit max entry limit (%s)",
+                                archive_path,
+                                max_entries,
+                            )
+                            truncated = True
+                            break
+                if truncated:
+                    return entries, truncated
             if not entries:
                 for entry in zf.list():
                     if entry.is_directory:
@@ -163,21 +281,59 @@ class ArchiveService:
                         continue
                     ext = Path(entry.filename).suffix.lower()
                     if ext in CONVERTIBLE_EXTENSIONS:
+                        size = self._coerce_size(entry.uncompressed)
+                        if size is None:
+                            if max_member_size > 0 or max_total_size > 0:
+                                logger.warning(
+                                    "Skipping archive member %s (unknown size)",
+                                    entry.filename,
+                                )
+                                truncated = True
+                                continue
+                            size = 0
+                        if max_member_size > 0 and size > max_member_size:
+                            logger.warning(
+                                "Skipping oversized archive member %s (%s)",
+                                entry.filename,
+                                self._format_size(size),
+                            )
+                            truncated = True
+                            continue
+                        if max_total_size > 0 and (total_size + size) > max_total_size:
+                            logger.warning(
+                                "Archive %s hit max total size limit (%s)",
+                                archive_path,
+                                self._format_size(max_total_size),
+                            )
+                            truncated = True
+                            break
+                        total_size += size
                         entries.append(
                             {
                                 "archive_path": archive_path,
                                 "internal_path": entry.filename,
                                 "name": os.path.basename(entry.filename),
-                                "size": entry.uncompressed,
+                                "size": size,
                                 "extension": ext,
                                 "convertible": True,
                             }
                         )
-        return entries
+                        if max_entries > 0 and len(entries) >= max_entries:
+                            logger.warning(
+                                "Archive %s hit max entry limit (%s)",
+                                archive_path,
+                                max_entries,
+                            )
+                            truncated = True
+                            break
+        return entries, truncated
 
-    def _list_rar(self, archive_path: str) -> List[dict]:
+    def _list_rar(self, archive_path: str) -> Tuple[List[dict], bool]:
         """List contents of a RAR file."""
         entries = []
+        max_entries, max_member_size, max_total_size = self._archive_limits()
+        total_size = 0
+        truncated = False
         with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
             for info in rf.infolist():
                 if info.is_dir():
@@ -188,6 +344,23 @@ class ArchiveService:
                     continue
                 ext = Path(info.filename).suffix.lower()
                 if ext in CONVERTIBLE_EXTENSIONS:
+                    if max_member_size > 0 and info.file_size > max_member_size:
+                        logger.warning(
+                            "Skipping oversized archive member %s (%s)",
+                            info.filename,
+                            self._format_size(info.file_size),
+                        )
+                        truncated = True
+                        continue
+                    if max_total_size > 0 and (total_size + info.file_size) > max_total_size:
+                        logger.warning(
+                            "Archive %s hit max total size limit (%s)",
+                            archive_path,
+                            self._format_size(max_total_size),
+                        )
+                        truncated = True
+                        break
+                    total_size += info.file_size
                     entries.append(
                         {
                             "archive_path": archive_path,
@@ -198,7 +371,15 @@ class ArchiveService:
                             "convertible": True,
                         }
                     )
-        return entries
+                    if max_entries > 0 and len(entries) >= max_entries:
+                        logger.warning(
+                            "Archive %s hit max entry limit (%s)",
+                            archive_path,
+                            max_entries,
+                        )
+                        truncated = True
+                        break
+        return entries, truncated
 
     def extract_file(self, archive_path: str, internal_path: str) -> Tuple[str, str]:
         """Extract a specific file from an archive into a temp directory."""
@@ -207,6 +388,15 @@ class ArchiveService:
 
         try:
             destination = self._prepare_destination(temp_dir, internal_path)
+            size = self._coerce_size(self._get_member_size(archive_path, internal_path))
+            if size is None:
+                if self._size_limits_enabled():
+                    raise ValueError(
+                        "Archive member size unknown; cannot enforce limits"
+                    )
+            else:
+                self._check_member_size(size, member=internal_path)
+                self._check_total_size(size)
 
             if ext == ".zip":
                 extracted = self._extract_from_zip(
@@ -279,19 +469,75 @@ class ArchiveService:
         if str(parent) == ".":
             parent = PurePosixPath("")
 
+        initial_total_size = 0
+        primary_size = self._coerce_size(
+            self._get_member_size(archive_path, internal_path)
+        )
+        if primary_size is None:
+            if self._size_limits_enabled():
+                raise ValueError("Archive member size unknown; cannot enforce limits")
+        else:
+            initial_total_size = primary_size
+            self._check_total_size(initial_total_size)
+
         archive_ext = Path(archive_path).suffix.lower()
         if archive_ext == ".zip":
-            self._extract_related_from_zip(archive_path, parent, temp_dir)
+            self._extract_related_from_zip(
+                archive_path,
+                parent,
+                temp_dir,
+                initial_total_size,
+                primary_member=internal_path,
+            )
         elif archive_ext == ".7z" and HAS_7Z:
-            self._extract_related_from_7z(archive_path, parent, temp_dir)
+            self._extract_related_from_7z(
+                archive_path,
+                parent,
+                temp_dir,
+                initial_total_size,
+                primary_member=internal_path,
+            )
         elif archive_ext == ".rar" and HAS_RAR:
-            self._extract_related_from_rar(archive_path, parent, temp_dir)
+            self._extract_related_from_rar(
+                archive_path,
+                parent,
+                temp_dir,
+                initial_total_size,
+                primary_member=internal_path,
+            )
         else:
             raise ValueError(f"Unsupported archive format: {archive_ext}")
 
+    def _get_member_size(self, archive_path: str, internal_path: str) -> Optional[int]:
+        archive_ext = Path(archive_path).suffix.lower()
+        try:
+            if archive_ext == ".zip":
+                with zipfile.ZipFile(archive_path, "r") as zf:
+                    info = zf.getinfo(internal_path)
+                    return info.file_size
+            if archive_ext == ".7z" and HAS_7Z:
+                with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
+                    for entry in zf.list():
+                        if entry.filename == internal_path:
+                            return entry.uncompressed
+                return None
+            if archive_ext == ".rar" and HAS_RAR:
+                with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
+                    info = rf.getinfo(internal_path)
+                    return info.file_size
+        except Exception:
+            return None
+        return None
+
     def _extract_related_from_zip(
-        self, archive_path: str, parent: PurePosixPath, temp_dir: str
+        self,
+        archive_path: str,
+        parent: PurePosixPath,
+        temp_dir: str,
+        initial_total_size: int = 0,
+        primary_member: Optional[str] = None,
     ):
+        total_size = max(0, int(initial_total_size))
         with zipfile.ZipFile(archive_path, "r") as zf:
             for info in zf.infolist():
                 if info.is_dir():
@@ -302,15 +548,27 @@ class ArchiveService:
                     continue
                 if not self._is_same_parent(info.filename, parent):
                     continue
+                if primary_member and info.filename == primary_member:
+                    continue
+                self._check_member_size(info.file_size, member=info.filename)
+                total_size += info.file_size
+                self._check_total_size(total_size)
                 destination = self._prepare_destination(temp_dir, info.filename)
                 with zf.open(info.filename) as src, open(destination, "wb") as dst:
                     shutil.copyfileobj(src, dst)
 
     def _extract_related_from_7z(
-        self, archive_path: str, parent: PurePosixPath, temp_dir: str
+        self,
+        archive_path: str,
+        parent: PurePosixPath,
+        temp_dir: str,
+        initial_total_size: int = 0,
+        primary_member: Optional[str] = None,
     ):
         with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
             targets = []
+            total_size = max(0, int(initial_total_size))
+            _, max_member_size, max_total_size = self._archive_limits()
             for entry in zf.list():
                 if entry.is_directory:
                     continue
@@ -320,13 +578,31 @@ class ArchiveService:
                 except ValueError:
                     continue
                 if self._is_same_parent(name, parent):
+                    if primary_member and name == primary_member:
+                        continue
+                    size = self._coerce_size(entry.uncompressed)
+                    if size is None:
+                        if max_member_size > 0 or max_total_size > 0:
+                            raise ValueError(
+                                "Archive member size unknown; cannot enforce limits"
+                            )
+                        size = 0
+                    self._check_member_size(size, member=name)
+                    total_size += size
+                    self._check_total_size(total_size)
                     targets.append(name)
             if targets:
                 zf.extract(targets=targets, path=temp_dir)
 
     def _extract_related_from_rar(
-        self, archive_path: str, parent: PurePosixPath, temp_dir: str
+        self,
+        archive_path: str,
+        parent: PurePosixPath,
+        temp_dir: str,
+        initial_total_size: int = 0,
+        primary_member: Optional[str] = None,
     ):
+        total_size = max(0, int(initial_total_size))
         with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
             for info in rf.infolist():
                 if info.is_dir():
@@ -337,6 +613,11 @@ class ArchiveService:
                     continue
                 if not self._is_same_parent(info.filename, parent):
                     continue
+                if primary_member and info.filename == primary_member:
+                    continue
+                self._check_member_size(info.file_size, member=info.filename)
+                total_size += info.file_size
+                self._check_total_size(total_size)
                 destination = self._prepare_destination(temp_dir, info.filename)
                 with rf.open(info.filename) as src, open(destination, "wb") as dst:
                     shutil.copyfileobj(src, dst)
