@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -57,12 +57,8 @@ def supports_delete_on_verify(mode: str) -> bool:
     return mode.startswith("create") or mode == "copy"
 
 
-def get_disallowed_archive_paths(file_paths: List[str]) -> set:
-    """Get archive paths that have multiple files selected from them.
-    
-    Returns a set of archive paths that should not allow delete-on-verify
-    because multiple files from the same archive are selected.
-    """
+def get_disallowed_archive_paths(file_paths: List[str]) -> Set[str]:
+    """Get archive paths that should not allow delete-on-verify due to multiple selections."""
     archive_counts = {}
     for file_path in file_paths:
         if "::" not in file_path:
