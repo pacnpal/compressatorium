@@ -99,6 +99,7 @@ In the Web UI, you can specify a custom output directory for converted CHD files
 - Real-time progress tracking via Server-Sent Events
 - Duplicate detection with options to skip, rename, or overwrite
 - Optional delete-on-verify with a preflight confirmation list (includes `.cue`/`.gdi` track files)
+- Archive conversions can delete the entire archive after verify (explicit warning in the delete plan)
 
 **Bulk Operations**
 - **Bulk Delete**: Delete multiple selected files at once

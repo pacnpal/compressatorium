@@ -21,7 +21,7 @@ from services.chd_metadata_store import chd_metadata_store
 from services.archive import archive_service
 from fastapi.concurrency import run_in_threadpool
 from config import settings
-from utils.path_utils import is_within_configured_volumes
+from utils.path_utils import is_within_configured_volumes, strip_archive_path
 from utils.delete_plan import build_delete_plan
 
 
@@ -900,10 +900,6 @@ class JobManager:
                         raise RuntimeError(
                             "Delete-on-verify is only supported for create/copy modes"
                         )
-                    if "::" in job.file_path:
-                        raise RuntimeError(
-                            "Delete-on-verify is not supported for archive inputs"
-                        )
                     if cancel_event.is_set():
                         raise ConversionCancelled("Conversion cancelled")
 
@@ -941,7 +937,14 @@ class JobManager:
                             },
                         )
                     else:
-                        job.message = "Verification complete. Deleting source..."
+                        delete_label = (
+                            "source archive"
+                            if "::" in job.file_path
+                            else "source"
+                        )
+                        job.message = (
+                            f"Verification complete. Deleting {delete_label}..."
+                        )
                         await self._notify_subscribers(
                             job_id,
                             {
@@ -980,7 +983,12 @@ class JobManager:
                             )
 
                         output_real = os.path.realpath(job.output_path)
-                        source_real = os.path.realpath(job.file_path)
+                        source_for_delete = (
+                            strip_archive_path(job.file_path)
+                            if "::" in job.file_path
+                            else job.file_path
+                        )
+                        source_real = os.path.realpath(source_for_delete)
                         delete_order = [
                             p
                             for p in expected_paths

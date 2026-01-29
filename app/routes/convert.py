@@ -169,21 +169,25 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
             detail="Delete-on-verify is only supported for create/copy modes",
         )
 
+    archive_counts = {}
+    for file_path in request.file_paths:
+        if "::" not in file_path:
+            continue
+        archive_path = file_path.split("::", 1)[0]
+        archive_counts[archive_path] = archive_counts.get(archive_path, 0) + 1
+    disallowed_archives = {
+        archive_path
+        for archive_path, count in archive_counts.items()
+        if count > 1
+    }
+
     items = []
     blocked = False
     total_delete_count = 0
 
     for file_path in request.file_paths:
         item = None
-        if "::" in file_path:
-            item = {
-                "source_path": file_path,
-                "delete_paths": [],
-                "missing_paths": [],
-                "unsafe_paths": ["Archive inputs are not supported for delete-on-verify"],
-                "errors": [],
-            }
-        elif not is_within_configured_volumes(file_path, treat_archives=False):
+        if not is_within_configured_volumes(file_path):
             item = {
                 "source_path": file_path,
                 "delete_paths": [],
@@ -193,6 +197,13 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
             }
         else:
             item = await run_in_threadpool(build_delete_plan, file_path)
+
+        if "::" in file_path:
+            archive_path = file_path.split("::", 1)[0]
+            if archive_path in disallowed_archives:
+                item.setdefault("errors", []).append(
+                    "Delete-on-verify is not supported for multiple selections from the same archive"
+                )
 
         items.append(item)
         total_delete_count += len(item.get("delete_paths", []))
@@ -222,11 +233,21 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail="Delete-on-verify is only supported for create/copy modes",
         )
-    if request.delete_on_verify and "::" in request.file_path:
-        raise HTTPException(
-            status_code=400,
-            detail="Delete-on-verify is not supported for archive inputs",
-        )
+    if request.delete_on_verify:
+        archive_counts = {}
+        for file_path in [request.file_path]:
+            if "::" not in file_path:
+                continue
+            archive_path = file_path.split("::", 1)[0]
+            archive_counts[archive_path] = archive_counts.get(archive_path, 0) + 1
+        if any(count > 1 for count in archive_counts.values()):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Delete-on-verify is not supported for multiple selections from the "
+                    "same archive"
+                ),
+            )
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(
             status_code=403,
@@ -372,11 +393,21 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             status_code=400,
             detail="Delete-on-verify is only supported for create/copy modes",
         )
-    if request.delete_on_verify and any("::" in path for path in request.file_paths):
-        raise HTTPException(
-            status_code=400,
-            detail="Delete-on-verify is not supported for archive inputs",
-        )
+    if request.delete_on_verify:
+        archive_counts = {}
+        for file_path in request.file_paths:
+            if "::" not in file_path:
+                continue
+            archive_path = file_path.split("::", 1)[0]
+            archive_counts[archive_path] = archive_counts.get(archive_path, 0) + 1
+        if any(count > 1 for count in archive_counts.values()):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Delete-on-verify is not supported for multiple selections from the "
+                    "same archive"
+                ),
+            )
     for file_path in request.file_paths:
         if not is_within_configured_volumes(file_path):
             raise HTTPException(

@@ -1,5 +1,11 @@
 # Release Notes
 
+## Unreleased
+
+### ✨ New Features
+
+- **Archive delete-on-verify** - Archive inputs can now delete the entire archive after a successful conversion + verification, with an explicit warning in the delete plan.
+
 ## v1.2.1 - Archive Safety Limits & Timeout Controls
 
 ### ✨ New Features
