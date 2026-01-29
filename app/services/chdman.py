@@ -111,7 +111,9 @@ class ChdmanService:
             dict: {"progress": int, "message": str}
         """
         # Ensure output directory exists
-        await run_in_threadpool(os.makedirs, os.path.dirname(output_path), exist_ok=True)
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
 
         cmd = self._build_command(
             mode, input_path, output_path, compression=compression
@@ -330,7 +332,17 @@ class ChdmanService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        timeout = max(0, int(getattr(settings, "chdman_info_timeout", 0) or 0))
+        try:
+            if timeout:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout
+                )
+            else:
+                stdout, stderr = await process.communicate()
+        except asyncio.TimeoutError:
+            await self._terminate_process(process)
+            raise RuntimeError(f"chdman info timed out after {timeout}s")
 
         if process.returncode != 0:
             raise RuntimeError(
@@ -346,24 +358,14 @@ class ChdmanService:
         Returns:
             dict: {"valid": bool, "message": str}
         """
-        process = await asyncio.create_subprocess_exec(
-            self.chdman_path,
-            "verify",
-            "-i",
-            chd_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        stdout, _ = await process.communicate()
-        output = stdout.decode()
-
-        if process.returncode == 0:
-            return {"valid": True, "message": "CHD file verified successfully"}
-        else:
-            return {
-                "valid": False,
-                "message": output.strip() or "CHD verification failed",
-            }
+        final = {"valid": False, "message": "CHD verification failed"}
+        async for update in self.verify_stream(chd_path):
+            if update.get("type") in ("complete", "error"):
+                final = update
+        return {
+            "valid": bool(final.get("valid", False)),
+            "message": final.get("message") or "CHD verification failed",
+        }
 
     async def verify_stream(self, chd_path: str) -> AsyncGenerator[dict, None]:
         process = await asyncio.create_subprocess_exec(
@@ -380,12 +382,43 @@ class ChdmanService:
 
         output_lines = []
         buffer = ""
+        last_output_at = time.monotonic()
+        start = last_output_at
+        stall_timeout = max(
+            0, int(getattr(settings, "verify_progress_timeout", 0) or 0)
+        )
+        overall_timeout = max(
+            0, int(getattr(settings, "chdman_verify_timeout", 0) or 0)
+        )
+        timeout_error = None
+
+        async def _check_timeouts(now: float) -> bool:
+            nonlocal timeout_error
+            if overall_timeout > 0 and now - start >= overall_timeout:
+                timeout_error = f"Verification timed out after {overall_timeout}s"
+                await self._terminate_process(process)
+                return True
+            if stall_timeout > 0 and now - last_output_at >= stall_timeout:
+                timeout_error = (
+                    "Verification stalled: no output for "
+                    f"{stall_timeout}s"
+                )
+                await self._terminate_process(process)
+                return True
+            return False
+
         while True:
-            chunk = await process.stdout.read(100)
+            try:
+                chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)
+            except asyncio.TimeoutError:
+                if await _check_timeouts(time.monotonic()):
+                    break
+                continue
             if not chunk:
                 break
 
             buffer += chunk.decode("utf-8", errors="replace")
+            last_output_at = time.monotonic()
 
             while "\r" in buffer or "\n" in buffer:
                 if "\r" in buffer:
@@ -414,6 +447,8 @@ class ChdmanService:
                                 "message": line,
                             }
                     buffer = parts[-1]
+            if await _check_timeouts(time.monotonic()):
+                break
 
         if buffer.strip():
             line = buffer.strip()
@@ -427,6 +462,10 @@ class ChdmanService:
                 "chdman verify pid=%s exit=%s", process.pid, process.returncode
             )
         self._untrack_pid(process.pid)
+
+        if timeout_error:
+            yield {"type": "error", "valid": False, "message": timeout_error}
+            return
 
         output_lines = output_lines[-20:]
         output = "\n".join(output_lines).strip()
@@ -442,6 +481,20 @@ class ChdmanService:
                 "valid": False,
                 "message": output or "CHD verification failed",
             }
+
+    @staticmethod
+    async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+        try:
+            if process.returncode is not None:
+                return
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+        except ProcessLookupError:
+            pass
 
     def _parse_progress(self, line: str) -> int:
         """Parse chdman output for progress percentage."""

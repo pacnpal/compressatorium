@@ -42,6 +42,7 @@ class FileEntry(BaseModel):
     has_chd: bool = False
     archive_items: Optional[int] = None
     archive_has_chd: Optional[int] = None
+    archive_truncated: Optional[bool] = None
     media_type: Optional[str] = None  # "dvd", "cd", or None - for CHD files
 
 

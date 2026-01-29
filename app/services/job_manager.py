@@ -6,6 +6,7 @@ import time
 import logging
 import resource
 import sys
+import tempfile
 from pathlib import Path
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -333,12 +334,50 @@ class JobManager:
         if job.temp_dir:
             temp_dir = job.temp_dir
             try:
-                if temp_dir and await run_in_threadpool(os.path.isdir, temp_dir):
+                if not self._is_safe_temp_dir(temp_dir):
+                    logger.warning(
+                        "Skipping cleanup for unsafe temp dir %s (job %s)",
+                        temp_dir,
+                        job.id,
+                    )
+                    return
+                if await run_in_threadpool(os.path.isdir, temp_dir):
                     await run_in_threadpool(shutil.rmtree, temp_dir, ignore_errors=True)
             except Exception as cleanup_error:
                 print(f"Failed to cleanup temp dir {temp_dir}: {cleanup_error}")
             finally:
                 job.temp_dir = None
+
+    def _is_safe_temp_dir(self, temp_dir: str) -> bool:
+        if not temp_dir:
+            return False
+        try:
+            resolved = Path(temp_dir).resolve(strict=False)
+        except (OSError, RuntimeError):
+            return False
+
+        bases = []
+        if settings.temp_dir:
+            try:
+                bases.append(Path(settings.temp_dir).resolve(strict=False))
+            except (OSError, RuntimeError):
+                pass
+        try:
+            bases.append(Path(settings.data_dir).resolve(strict=False) / "temp")
+        except (OSError, RuntimeError):
+            pass
+        try:
+            bases.append(Path(tempfile.gettempdir()).resolve(strict=False))
+        except (OSError, RuntimeError):
+            pass
+
+        for base in bases:
+            try:
+                resolved.relative_to(base)
+                return True
+            except ValueError:
+                continue
+        return False
 
     async def _notify_subscribers(self, job_id: str, data: dict):
         """Notify all subscribers of a job update."""

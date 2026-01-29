@@ -1,6 +1,8 @@
 import asyncio
 import fcntl
+import json
 import os
+import time
 from typing import Dict, Optional, Tuple
 
 from config import settings
@@ -35,11 +37,7 @@ class ConcurrencyManager:
 
         ticket = self._next_ticket()
         ticket_path = os.path.join(self.lock_dir, f"queue_{ticket}_{key}.ticket")
-        try:
-            with open(ticket_path, "w") as fh:
-                fh.write(str(ticket))
-        except OSError:
-            pass
+        self._create_ticket_file(ticket_path, ticket)
         self._ticket_handles[key] = (ticket, ticket_path)
         return ticket
 
@@ -111,6 +109,10 @@ class ConcurrencyManager:
             if cancel_event and cancel_event.is_set():
                 return False
             tickets = self._list_tickets()
+            if ticket not in tickets:
+                self._restore_ticket_file(key, ticket)
+                await asyncio.sleep(0.2)
+                continue
             if ticket in tickets[: self.max_concurrent]:
                 return True
             await asyncio.sleep(0.2)
@@ -151,22 +153,174 @@ class ConcurrencyManager:
         except OSError:
             return int(os.times().elapsed * 1000)
 
+    def _create_ticket_file(self, ticket_path: str, ticket: int) -> None:
+        tmp_path = f"{ticket_path}.tmp"
+        try:
+            payload = {
+                "ticket": ticket,
+                "pid": os.getpid(),
+                "created_at": time.time(),
+            }
+            with open(tmp_path, "w") as fh:
+                fh.write(json.dumps(payload))
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_path, ticket_path)
+        except OSError:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+
+    def _restore_ticket_file(self, key: str, ticket: int) -> None:
+        info = self._ticket_handles.get(key)
+        if not info:
+            return
+        _, ticket_path = info
+        if os.path.exists(ticket_path):
+            return
+        self._create_ticket_file(ticket_path, ticket)
+        self._ticket_handles[key] = (ticket, ticket_path)
+
     def _cleanup_stale_locks(self):
         """Remove stale queue tickets and slot locks from previous runs."""
         try:
-            for name in os.listdir(self.lock_dir):
-                if name.startswith("queue_") and name.endswith(".ticket"):
+            slot_handles = []
+            slots_busy = False
+            for path in self._slot_paths:
+                try:
+                    handle = open(path, "a")
+                except OSError:
+                    continue
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    slot_handles.append((path, handle))
+                except BlockingIOError:
+                    handle.close()
+                    slots_busy = True
+                    break
+                except OSError:
+                    handle.close()
+                    continue
+
+            if slots_busy:
+                for _, handle in slot_handles:
                     try:
-                        os.remove(os.path.join(self.lock_dir, name))
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
                         pass
-                if name.startswith("convert_slot_") and name.endswith(".lock"):
+                    finally:
+                        try:
+                            handle.close()
+                        except OSError:
+                            pass
+                slot_handles = []
+
+            try:
+                for name in os.listdir(self.lock_dir):
+                    if not (name.startswith("queue_") and name.endswith(".ticket")):
+                        continue
+                    ticket_path = os.path.join(self.lock_dir, name)
+                    if not slots_busy:
+                        try:
+                            os.remove(ticket_path)
+                        except OSError:
+                            pass
+                        continue
+                    payload, legacy = self._load_ticket_payload(ticket_path)
+                    if payload:
+                        pid = payload.get("pid")
+                        if isinstance(pid, int) and pid > 0:
+                            if self._pid_is_alive(pid):
+                                continue
+                        else:
+                            if legacy and self._ticket_locked(ticket_path):
+                                continue
+                            if not legacy:
+                                continue
+                        try:
+                            os.remove(ticket_path)
+                        except OSError:
+                            pass
+                    elif legacy:
+                        if self._ticket_locked(ticket_path):
+                            continue
+                        try:
+                            os.remove(ticket_path)
+                        except OSError:
+                            pass
+            finally:
+                for path, handle in slot_handles:
+                    if not slots_busy:
+                        try:
+                            if os.path.exists(path):
+                                os.remove(path)
+                        except OSError:
+                            pass
                     try:
-                        os.remove(os.path.join(self.lock_dir, name))
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
                         pass
+                    finally:
+                        try:
+                            handle.close()
+                        except OSError:
+                            pass
         except OSError:
             pass
+
+    @staticmethod
+    def _pid_is_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _load_ticket_payload(self, ticket_path: str) -> Tuple[Optional[dict], bool]:
+        try:
+            with open(ticket_path, "r") as fh:
+                content = fh.read().strip()
+        except OSError:
+            return None, False
+        if not content:
+            return None, False
+        try:
+            payload = json.loads(content)
+            if isinstance(payload, dict):
+                return payload, False
+        except json.JSONDecodeError:
+            pass
+        if content.isdigit():
+            return {"ticket": int(content)}, True
+        return None, False
+
+    @staticmethod
+    def _ticket_locked(ticket_path: str) -> bool:
+        try:
+            handle = open(ticket_path, "a+")
+        except OSError:
+            return True
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            try:
+                handle.close()
+            except OSError:
+                pass
+            return True
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            handle.close()
+        except OSError:
+            pass
+        return False
 
     def stats(self) -> dict:
         return {"tickets": len(self._list_tickets()), "slots": len(self._slot_paths)}
