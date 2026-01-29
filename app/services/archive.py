@@ -100,7 +100,7 @@ class ArchiveService:
 
     def list_archive_contents(
         self, archive_path: str, *, include_meta: bool = False
-    ) -> Union[List[dict], Dict[str, object]]:
+    ) -> Union[List[dict], Dict[str, Union[List[dict], bool]]]:
         """List convertible files inside an archive."""
         ext = Path(archive_path).suffix.lower()
         entries = []
@@ -179,6 +179,14 @@ class ArchiveService:
                         )
                         truncated = True
                         continue
+                    if max_total_size > 0 and (total_size + info.file_size) > max_total_size:
+                        logger.warning(
+                            "Archive %s hit max total size limit (%s)",
+                            archive_path,
+                            self._format_size(max_total_size),
+                        )
+                        truncated = True
+                        break
                     total_size += info.file_size
                     entries.append(
                         {
@@ -195,14 +203,6 @@ class ArchiveService:
                             "Archive %s hit max entry limit (%s)",
                             archive_path,
                             max_entries,
-                        )
-                        truncated = True
-                        break
-                    if max_total_size > 0 and total_size > max_total_size:
-                        logger.warning(
-                            "Archive %s hit max total size limit (%s)",
-                            archive_path,
-                            self._format_size(max_total_size),
                         )
                         truncated = True
                         break
@@ -242,6 +242,14 @@ class ArchiveService:
                             )
                             truncated = True
                             continue
+                        if max_total_size > 0 and (total_size + size) > max_total_size:
+                            logger.warning(
+                                "Archive %s hit max total size limit (%s)",
+                                archive_path,
+                                self._format_size(max_total_size),
+                            )
+                            truncated = True
+                            break
                         total_size += size
                         entries.append(
                             {
@@ -258,14 +266,6 @@ class ArchiveService:
                                 "Archive %s hit max entry limit (%s)",
                                 archive_path,
                                 max_entries,
-                            )
-                            truncated = True
-                            break
-                        if max_total_size > 0 and total_size > max_total_size:
-                            logger.warning(
-                                "Archive %s hit max total size limit (%s)",
-                                archive_path,
-                                self._format_size(max_total_size),
                             )
                             truncated = True
                             break
@@ -299,6 +299,14 @@ class ArchiveService:
                             )
                             truncated = True
                             continue
+                        if max_total_size > 0 and (total_size + size) > max_total_size:
+                            logger.warning(
+                                "Archive %s hit max total size limit (%s)",
+                                archive_path,
+                                self._format_size(max_total_size),
+                            )
+                            truncated = True
+                            break
                         total_size += size
                         entries.append(
                             {
@@ -315,14 +323,6 @@ class ArchiveService:
                                 "Archive %s hit max entry limit (%s)",
                                 archive_path,
                                 max_entries,
-                            )
-                            truncated = True
-                            break
-                        if max_total_size > 0 and total_size > max_total_size:
-                            logger.warning(
-                                "Archive %s hit max total size limit (%s)",
-                                archive_path,
-                                self._format_size(max_total_size),
                             )
                             truncated = True
                             break
@@ -352,6 +352,14 @@ class ArchiveService:
                         )
                         truncated = True
                         continue
+                    if max_total_size > 0 and (total_size + info.file_size) > max_total_size:
+                        logger.warning(
+                            "Archive %s hit max total size limit (%s)",
+                            archive_path,
+                            self._format_size(max_total_size),
+                        )
+                        truncated = True
+                        break
                     total_size += info.file_size
                     entries.append(
                         {
@@ -368,14 +376,6 @@ class ArchiveService:
                             "Archive %s hit max entry limit (%s)",
                             archive_path,
                             max_entries,
-                        )
-                        truncated = True
-                        break
-                    if max_total_size > 0 and total_size > max_total_size:
-                        logger.warning(
-                            "Archive %s hit max total size limit (%s)",
-                            archive_path,
-                            self._format_size(max_total_size),
                         )
                         truncated = True
                         break

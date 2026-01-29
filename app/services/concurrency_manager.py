@@ -171,6 +171,7 @@ class ConcurrencyManager:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except OSError:
+                # Best-effort cleanup: failure to delete the temp file is non-fatal.
                 pass
 
     def _restore_ticket_file(self, key: str, ticket: int) -> None:
@@ -209,11 +210,13 @@ class ConcurrencyManager:
                     try:
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
+                        # Best-effort unlock; closing the file descriptor below will release the lock if still held.
                         pass
                     finally:
                         try:
                             handle.close()
                         except OSError:
+                            # Best-effort close; ignore errors during cleanup
                             pass
                 slot_handles = []
 
@@ -226,6 +229,7 @@ class ConcurrencyManager:
                         try:
                             os.remove(ticket_path)
                         except OSError:
+                            # Best-effort stale ticket cleanup; ignore if the file was already removed.
                             pass
                         continue
                     payload, legacy = self._load_ticket_payload(ticket_path)
@@ -242,6 +246,8 @@ class ConcurrencyManager:
                         try:
                             os.remove(ticket_path)
                         except OSError:
+                            # Best-effort stale ticket cleanup; ignore if the file was already
+                            # removed by another process or cannot be deleted.
                             pass
                     elif legacy:
                         if self._ticket_locked(ticket_path):
@@ -249,6 +255,7 @@ class ConcurrencyManager:
                         try:
                             os.remove(ticket_path)
                         except OSError:
+                            # Best-effort stale ticket cleanup; ignore if the file was already removed.
                             pass
             finally:
                 for path, handle in slot_handles:
@@ -257,17 +264,21 @@ class ConcurrencyManager:
                             if os.path.exists(path):
                                 os.remove(path)
                         except OSError:
+                            # Best-effort cleanup: ignore failures to remove temporary slot lock files.
                             pass
                     try:
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
+                        # Best-effort unlock; closing the file descriptor below will release the lock if still held.
                         pass
                     finally:
                         try:
                             handle.close()
                         except OSError:
+                            # Best-effort cleanup: ignore errors when closing the handle
                             pass
         except OSError:
+            # Best-effort cleanup: ignore top-level errors during stale ticket cleanup
             pass
 
     @staticmethod
@@ -293,6 +304,7 @@ class ConcurrencyManager:
             if isinstance(payload, dict):
                 return payload, False
         except json.JSONDecodeError:
+            # If JSON parsing fails, fall back to interpreting legacy numeric ticket format below.
             pass
         if content.isdigit():
             return {"ticket": int(content)}, True
@@ -310,15 +322,18 @@ class ConcurrencyManager:
             try:
                 handle.close()
             except OSError:
+                # Best-effort cleanup: failure to close here does not affect lock state.
                 pass
             return True
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except OSError:
+            # Best-effort unlock: ignore errors while releasing this transient probe lock.
             pass
         try:
             handle.close()
         except OSError:
+            # Best-effort close: ignore errors closing this transient probe handle.
             pass
         return False
 

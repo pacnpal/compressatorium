@@ -90,6 +90,7 @@ async def list_files(
     ):
         entries = []
         try:
+            # This outer try-except catches errors from os.listdir() itself
             for item in sorted(os.listdir(target_path)):
                 item_path = os.path.join(target_path, item)
                 ext = Path(item).suffix.lower()
@@ -158,6 +159,7 @@ async def list_files(
                         )
                         entries.append(entry)
                 except OSError:
+                    # Skip items that cannot be accessed (permissions, missing, etc.)
                     continue
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
@@ -261,8 +263,10 @@ async def search_files(
                                         }
                                     )
                     except OSError:
+                        # Skip archive entries that cannot be accessed
                         continue
             except (PermissionError, FileNotFoundError, OSError):
+                # Directory is not accessible or disappeared during scanning; skip it.
                 pass
 
         _scan(root_path)

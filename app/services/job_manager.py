@@ -360,16 +360,27 @@ class JobManager:
         if settings.temp_dir:
             try:
                 bases.append(Path(settings.temp_dir).resolve(strict=False))
-            except (OSError, RuntimeError):
-                pass
+            except (OSError, RuntimeError) as exc:
+                logger.debug(
+                    "Skipping configured temp_dir %s due to resolution error: %s",
+                    settings.temp_dir,
+                    exc,
+                )
         try:
             bases.append(Path(settings.data_dir).resolve(strict=False) / "temp")
-        except (OSError, RuntimeError):
-            pass
+        except (OSError, RuntimeError) as exc:
+            logger.debug(
+                "Skipping data_dir temp base %s due to resolution error: %s",
+                settings.data_dir,
+                exc,
+            )
         try:
             bases.append(Path(tempfile.gettempdir()).resolve(strict=False))
-        except (OSError, RuntimeError):
-            pass
+        except (OSError, RuntimeError) as exc:
+            logger.debug(
+                "Skipping system temp base due to resolution error: %s",
+                exc,
+            )
 
         for base in bases:
             try:
