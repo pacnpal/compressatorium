@@ -208,6 +208,16 @@ header h1 span {
     cursor: pointer;
 }
 
+.header-checkbox .checkbox:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+
+.header-checkbox .checkbox:indeterminate {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .file-list {
     list-style: none;
 }
@@ -347,11 +357,47 @@ header h1 span {
 /* Toolbar */
 .toolbar {
     display: flex;
-    gap: 10px;
+    flex-direction: column;
+    gap: 12px;
     padding: 15px 0;
     border-bottom: 1px solid var(--border);
     margin-bottom: 15px;
+}
+
+.toolbar-row {
+    display: flex;
     flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+}
+
+.toolbar-row.actions {
+    justify-content: flex-end;
+}
+
+.toolbar-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 200px;
+}
+
+.toolbar-group select {
+    width: 100%;
+}
+
+.toolbar-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
 }
 
 .toolbar select,
@@ -398,6 +444,11 @@ header h1 span {
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+}
+
+.compression-hint {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
 }
 
 .compression-help {
@@ -457,6 +508,71 @@ header h1 span {
     font-size: 0.75rem;
     color: var(--text-secondary);
     align-self: center;
+}
+
+.conversion-options {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr);
+    gap: 12px;
+    margin-bottom: 15px;
+}
+
+@media (max-width: 900px) {
+    .conversion-options {
+        grid-template-columns: 1fr;
+    }
+
+    .toolbar-row.actions {
+        justify-content: flex-start;
+    }
+}
+
+.option-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.option-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.option-card input[type="text"] {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 10px;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+}
+
+.option-card input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.toggle-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+
+.toggle-option input {
+    margin: 0;
+}
+
+.option-hint {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
 }
 
 .mode-warning {

@@ -1,5 +1,39 @@
 # Release Notes
 
+## v1.2.0 - Delete-on-Verify & Safer File Ops
+
+### ✨ New Features
+
+- **Delete-on-verify** - Optional post-conversion verification that deletes the original source only after a successful CHD verify (create/copy modes).
+- **Delete plan confirmation** - New `/api/jobs/delete-plan` endpoint + UI modal showing exactly which files will be removed before conversion starts.
+- **Track-aware deletes** - `.cue`/`.gdi` companion tracks are included in the delete plan and removed as a set.
+
+### 🛡️ Safety Improvements
+
+- **Snapshot + fingerprint validation** - Delete plans are revalidated at completion and must match original fingerprints before any deletion.
+- **In-use protection** - File delete/rename operations are blocked while a path is used by an active job (including cue/gdi track files).
+- **Lock hygiene** - Hash-based lock filenames and startup cleanup for stale file locks.
+- **Cancel-safe** - If a cancel occurs after verify, deletion is skipped.
+
+### 🎛️ UI/UX
+
+- **Always-visible Select All** checkbox with indeterminate state.
+- **Conversion panel refresh** with clearer post-conversion options and copy-mode warnings.
+
+### 📁 Files Changed
+
+- `app/utils/delete_plan.py` - Track parsing, delete plan snapshotting, safety checks
+- `app/services/job_manager.py` - Delete-on-verify orchestration + safety validation
+- `app/routes/convert.py` - Delete plan endpoint and request validation
+- `app/routes/files.py` - In-use path blocking for rename/delete
+- `app/services/lock_manager.py` - Lock directory management and cleanup
+- `static/js/app.js` - Delete-on-verify UI + Select All + layout updates
+- `static/js/api.js` - Delete plan API
+- `static/css/style.css` - Toolbar/options layout styling
+- `README.md` - Feature and API docs
+
+---
+
 ## v1.1.5 - Archive Conversion Safety & Stall Watchdog
 
 ### 🐞 Bug Fixes

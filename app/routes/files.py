@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
@@ -10,10 +10,49 @@ from models import FileEntry, DirectoryListing, Volume, BulkDeleteRequest
 from services.chdman import CONVERTIBLE_EXTENSIONS
 from services.archive import archive_service, ARCHIVE_EXTENSIONS
 from services.lock_manager import lock_manager
+from services.job_manager import job_manager
 from services.verification_store import verification_store
+from services.chd_metadata_store import chd_metadata_store
 from utils.path_utils import is_within_configured_volumes, get_volume_name_for_path
 
 router = APIRouter()
+
+async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
+    _, is_locked = await run_in_threadpool(lock_manager.check_file_status, path)
+    if is_locked:
+        raise HTTPException(
+            status_code=409, detail="Path is locked by an active conversion"
+        )
+
+    candidates = job_manager.get_active_job_candidates()
+
+    def _match_job_id() -> Optional[str]:
+        try:
+            target = Path(path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError):
+            return None
+
+        for job_id, paths in candidates:
+            for candidate in paths:
+                try:
+                    cand_path = Path(candidate).expanduser().resolve(strict=False)
+                except (OSError, RuntimeError):
+                    continue
+                if cand_path == target:
+                    return job_id
+                if is_dir:
+                    try:
+                        cand_path.relative_to(target)
+                        return job_id
+                    except ValueError:
+                        continue
+        return None
+
+    job_id = await run_in_threadpool(_match_job_id)
+    if job_id:
+        raise HTTPException(
+            status_code=409, detail=f"Path is in use by active job {job_id}"
+        )
 
 
 @router.get("/volumes", response_model=List[Volume])
@@ -267,6 +306,9 @@ async def rename_file(
     if not await run_in_threadpool(os.path.exists, path):
         raise HTTPException(status_code=404, detail="File or directory not found")
 
+    is_dir = await run_in_threadpool(os.path.isdir, path)
+    await _assert_path_not_in_use(path, is_dir=is_dir)
+
     # Validate new name (no path separators, no empty, no special chars that could be problematic)
     if not new_name or "/" in new_name or "\\" in new_name or new_name in (".", ".."):
         raise HTTPException(status_code=400, detail="Invalid new name")
@@ -286,6 +328,7 @@ async def rename_file(
         raise HTTPException(
             status_code=409, detail="A file or directory with that name already exists"
         )
+    await _assert_path_not_in_use(new_path, is_dir=False)
 
     try:
         await run_in_threadpool(os.rename, path, new_path)
@@ -293,8 +336,10 @@ async def rename_file(
         new_is_chd = new_path.lower().endswith(".chd")
         if old_is_chd and new_is_chd:
             await verification_store.move(path, new_path)
+            await chd_metadata_store.move(path, new_path)
         elif old_is_chd and not new_is_chd:
             await verification_store.clear(path)
+            await chd_metadata_store.clear(path)
         return {
             "success": True,
             "old_path": path,
@@ -318,8 +363,10 @@ async def delete_file(
     if not await run_in_threadpool(os.path.exists, path):
         raise HTTPException(status_code=404, detail="File or directory not found")
 
+    is_dir = await run_in_threadpool(os.path.isdir, path)
+    await _assert_path_not_in_use(path, is_dir=is_dir)
+
     try:
-        is_dir = await run_in_threadpool(os.path.isdir, path)
         if is_dir:
             # Only delete empty directories for safety
             contents = await run_in_threadpool(os.listdir, path)
@@ -332,6 +379,7 @@ async def delete_file(
             await run_in_threadpool(os.remove, path)
             if path.lower().endswith(".chd"):
                 await verification_store.clear(path)
+                await chd_metadata_store.clear(path)
 
         return {"success": True, "path": path, "message": "Successfully deleted"}
     except OSError as e:
@@ -365,8 +413,13 @@ async def delete_files_batch(request: BulkDeleteRequest) -> dict:
                 "error": "File or directory not found",
             }
 
+        is_dir = await run_in_threadpool(os.path.isdir, path)
         try:
-            is_dir = await run_in_threadpool(os.path.isdir, path)
+            await _assert_path_not_in_use(path, is_dir=is_dir)
+        except HTTPException as exc:
+            return {"path": path, "success": False, "error": exc.detail}
+
+        try:
             if is_dir:
                 # Only delete empty directories for safety
                 # os.listdir can be blocking
@@ -382,6 +435,7 @@ async def delete_files_batch(request: BulkDeleteRequest) -> dict:
                 await run_in_threadpool(os.remove, path)
                 if path.lower().endswith(".chd"):
                     await verification_store.clear(path)
+                    await chd_metadata_store.clear(path)
 
             return {"path": path, "success": True}
         except OSError as e:

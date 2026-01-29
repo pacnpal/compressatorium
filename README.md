@@ -8,7 +8,7 @@ Compresses GDI, ISO, BIN and CUE files to CHD using **CHDMAN** from MAME Tools.
 * Supports **nested directories** and **compressed archives** (ZIP, 7z, RAR)
 * **Multiple volume mounts** for organizing different game libraries
 * Skips existing `.chd` files
-* Does not delete or modify source files
+* Source files are preserved by default (optional delete-on-verify after successful conversion)
 * Choose between `createcd` (default) or `createdvd` modes
 
 ---
@@ -97,6 +97,7 @@ In the Web UI, you can specify a custom output directory for converted CHD files
 - Queue-based processing (FIFO) with configurable concurrency
 - Real-time progress tracking via Server-Sent Events
 - Duplicate detection with options to skip, rename, or overwrite
+- Optional delete-on-verify with a preflight confirmation list (includes `.cue`/`.gdi` track files)
 
 **Bulk Operations**
 - **Bulk Delete**: Delete multiple selected files at once
@@ -242,6 +243,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | POST | `/api/jobs` | Create a single conversion job |
 | POST | `/api/jobs/batch` | Create multiple conversion jobs |
 | POST | `/api/jobs/check-duplicates` | Check for existing output files |
+| POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list |
 | GET | `/api/jobs` | List all jobs |
 | GET | `/api/jobs/{id}` | Get a specific job |
 | DELETE | `/api/jobs/{id}` | Cancel a job |
@@ -270,7 +272,6 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs |
 | `MAX_JOB_HISTORY` | `500` | Maximum completed jobs to retain in history |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd_converter_locks` | Directory for file locking |
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19, higher = lower priority) |
 | `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class (`1` realtime, `2` best-effort, `3` idle) |
 | `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level (`0` highest, `7` lowest) |

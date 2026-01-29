@@ -9,16 +9,19 @@ import sys
 from pathlib import Path
 from collections import OrderedDict
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from models import ConversionJob, JobStatus, ConversionMode
 from services.chdman import chdman_service, ConversionCancelled
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
+from services.chd_metadata_store import chd_metadata_store
 from services.archive import archive_service
 from fastapi.concurrency import run_in_threadpool
 from config import settings
+from utils.path_utils import is_within_configured_volumes
+from utils.delete_plan import build_delete_plan
 
 
 logger = logging.getLogger("chd.job_manager")
@@ -35,6 +38,7 @@ class JobManager:
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._cancelled: Set[str] = set()
         self._cancel_events: Dict[str, asyncio.Event] = {}
+        self._delete_plans: Dict[str, Dict[str, object]] = {}
         self._last_progress_at: Dict[str, float] = {}
         self._last_progress_log_at: Dict[str, float] = {}
         self._last_stall_log_at: Dict[str, float] = {}
@@ -55,6 +59,8 @@ class JobManager:
         allow_overwrite: bool = False,
         filename_override: Optional[str] = None,
         compression: Optional[str] = None,
+        delete_on_verify: bool = False,
+        delete_snapshot: Optional[Dict[str, object]] = None,
     ) -> ConversionJob:
         """Create a new conversion job."""
         job_id = str(uuid.uuid4())[:8]
@@ -75,9 +81,12 @@ class JobManager:
             output_path=output_path,
             allow_overwrite=allow_overwrite,
             compression=compression,
+            delete_on_verify=delete_on_verify,
         )
 
         self.jobs[job_id] = job
+        if delete_on_verify and delete_snapshot:
+            self._delete_plans[job_id] = delete_snapshot
         ticket = concurrency_manager.reserve_ticket(job_id)
         self._queue.put_nowait((ticket, job_id))
         now = time.monotonic()
@@ -102,11 +111,21 @@ class JobManager:
         mode: ConversionMode,
         output_dir: Optional[str] = None,
         compression: Optional[str] = None,
+        delete_on_verify: bool = False,
+        delete_snapshots: Optional[Dict[str, Dict[str, object]]] = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs."""
         jobs = []
         for fp in file_paths:
-            job = await self.create_job(fp, mode, output_dir, compression=compression)
+            snapshot = delete_snapshots.get(fp) if delete_snapshots else None
+            job = await self.create_job(
+                fp,
+                mode,
+                output_dir,
+                compression=compression,
+                delete_on_verify=delete_on_verify,
+                delete_snapshot=snapshot,
+            )
             jobs.append(job)
         return jobs
 
@@ -117,6 +136,100 @@ class JobManager:
     def get_all_jobs(self) -> List[ConversionJob]:
         """Get all jobs."""
         return list(self.jobs.values())
+
+    def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
+        """Return active job ids with their candidate paths (input/output)."""
+        candidates: List[Tuple[str, List[str]]] = []
+        for job in self.jobs.values():
+            if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
+                continue
+            candidates.append((job.id, self._candidate_paths(job)))
+        return candidates
+
+    @staticmethod
+    def _normalize_path(path: str) -> Optional[Path]:
+        try:
+            return Path(path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError):
+            return None
+
+    def _track_candidate_paths(self, file_path: str) -> List[str]:
+        if "::" in file_path:
+            return []
+        ext = Path(file_path).suffix.lower()
+        if ext not in {".cue", ".gdi"}:
+            return []
+        if not os.path.isfile(file_path):
+            return []
+        try:
+            plan = build_delete_plan(file_path)
+        except Exception:
+            return []
+        source_real = os.path.realpath(file_path)
+        tracks = []
+        for path in plan.get("delete_paths", []):
+            if path == source_real:
+                continue
+            if os.path.exists(path):
+                tracks.append(path)
+        return tracks
+
+    def _candidate_paths(self, job: ConversionJob) -> List[str]:
+        paths = []
+        file_path = job.file_path
+        if "::" in file_path:
+            paths.append(file_path.split("::", 1)[0])
+        else:
+            paths.append(file_path)
+            paths.extend(self._track_candidate_paths(file_path))
+        if job.output_path:
+            paths.append(job.output_path)
+            if job.mode == ConversionMode.EXTRACTCD:
+                paths.append(str(Path(job.output_path).with_suffix(".bin")))
+        return paths
+
+    def find_active_job_for_path(
+        self, path: str, *, is_dir: bool = False
+    ) -> Optional[ConversionJob]:
+        """Return the active job using a path (input/output) or None."""
+        target = self._normalize_path(path)
+        if target is None:
+            return None
+
+        for job in self.jobs.values():
+            if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
+                continue
+            for candidate in self._candidate_paths(job):
+                cand_path = self._normalize_path(candidate)
+                if cand_path is None:
+                    continue
+                if cand_path == target:
+                    return job
+                if is_dir:
+                    try:
+                        cand_path.relative_to(target)
+                        return job
+                    except ValueError:
+                        continue
+        return None
+
+    def _is_path_in_use_by_other_job(self, job_id: str, path: str) -> bool:
+        target = self._normalize_path(path)
+        if target is None:
+            return False
+
+        for job in self.jobs.values():
+            if job.id == job_id:
+                continue
+            if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
+                continue
+            for candidate in self._candidate_paths(job):
+                cand_path = self._normalize_path(candidate)
+                if cand_path is None:
+                    continue
+                if cand_path == target:
+                    return True
+        return False
 
     async def _prune_jobs(self, *, exclude_id: Optional[str] = None):
         if self.max_job_history <= 0:
@@ -191,6 +304,7 @@ class JobManager:
             if job.status == JobStatus.PROCESSING:
                 await self.cancel_job(job_id)
             self._cancelled.discard(job_id)
+            self._delete_plans.pop(job_id, None)
             if job_id not in self._cancel_events:
                 concurrency_manager.release(job_id)
             if job_id not in self._cancel_events:
@@ -707,9 +821,7 @@ class JobManager:
 
             if job.status != JobStatus.CANCELLED:
                 self._cancelled.discard(job_id)
-                job.status = JobStatus.COMPLETED
                 job.progress = 100
-                job.completed_at = datetime.now(timezone.utc)
 
                 # Get output file size
                 if os.path.exists(job.output_path):
@@ -731,6 +843,176 @@ class JobManager:
                     else:
                         job.output_size = os.path.getsize(job.output_path)
 
+                verified = False
+                source_deleted = False
+                if job.delete_on_verify:
+                    if job.mode.value.startswith("extract"):
+                        raise RuntimeError(
+                            "Delete-on-verify is only supported for create/copy modes"
+                        )
+                    if "::" in job.file_path:
+                        raise RuntimeError(
+                            "Delete-on-verify is not supported for archive inputs"
+                        )
+                    if cancel_event.is_set():
+                        raise ConversionCancelled("Conversion cancelled")
+
+                    job.message = "Verifying output..."
+                    await self._notify_subscribers(
+                        job_id,
+                        {
+                            "type": "progress",
+                            "job_id": job_id,
+                            "progress": job.progress,
+                            "message": job.message,
+                        },
+                    )
+
+                    verify_result = await chdman_service.verify(job.output_path)
+                    if not verify_result.get("valid"):
+                        raise RuntimeError(
+                            f"CHD verification failed: {verify_result.get('message')}"
+                        )
+
+                    verified = True
+                    await verification_store.mark_verified(
+                        job.output_path, source_path=job.file_path
+                    )
+
+                    if cancel_event.is_set():
+                        job.message = "Verification complete. Delete skipped (cancelled)."
+                        await self._notify_subscribers(
+                            job_id,
+                            {
+                                "type": "progress",
+                                "job_id": job_id,
+                                "progress": job.progress,
+                                "message": job.message,
+                            },
+                        )
+                    else:
+                        job.message = "Verification complete. Deleting source..."
+                        await self._notify_subscribers(
+                            job_id,
+                            {
+                                "type": "progress",
+                                "job_id": job_id,
+                                "progress": job.progress,
+                                "message": job.message,
+                            },
+                        )
+
+                        snapshot = self._delete_plans.get(job_id)
+                        if not snapshot or not snapshot.get("paths"):
+                            raise RuntimeError(
+                                "Delete plan snapshot missing; refusing to delete"
+                            )
+
+                        expected_paths = list(snapshot.get("paths", []))
+                        expected_set = set(expected_paths)
+                        fingerprints = snapshot.get("fingerprints") or {}
+
+                        current_plan = await run_in_threadpool(
+                            build_delete_plan, job.file_path
+                        )
+                        if (
+                            current_plan.get("errors")
+                            or current_plan.get("unsafe_paths")
+                            or current_plan.get("missing_paths")
+                        ):
+                            raise RuntimeError(
+                                "Delete plan no longer safe; refusing to delete"
+                            )
+                        current_set = set(current_plan.get("delete_paths", []))
+                        if current_set != expected_set:
+                            raise RuntimeError(
+                                "Delete plan changed; refusing to delete"
+                            )
+
+                        output_real = os.path.realpath(job.output_path)
+                        source_real = os.path.realpath(job.file_path)
+                        delete_order = [
+                            p
+                            for p in expected_paths
+                            if os.path.realpath(p) != source_real
+                        ]
+                        if source_real in expected_set:
+                            delete_order.append(source_real)
+                        else:
+                            delete_order = expected_paths
+
+                        for path in expected_paths:
+                            _, is_locked = lock_manager.check_file_status(path)
+                            if is_locked:
+                                raise RuntimeError(
+                                    "Delete path is locked by an active conversion"
+                                )
+                            within_volumes = await run_in_threadpool(
+                                is_within_configured_volumes,
+                                path,
+                                treat_archives=False,
+                            )
+                            if not within_volumes:
+                                raise RuntimeError(
+                                    "Delete path outside configured volumes; refusing to delete"
+                                )
+                            if self._is_path_in_use_by_other_job(job_id, path):
+                                raise RuntimeError(
+                                    "Delete path is still in use by another job"
+                                )
+                            if os.path.islink(path):
+                                raise RuntimeError(
+                                    "Delete path is a symlink; refusing to delete"
+                                )
+                            try:
+                                st = os.stat(path, follow_symlinks=False)
+                            except FileNotFoundError:
+                                raise RuntimeError(
+                                    "Delete path no longer exists; refusing to delete"
+                                )
+                            if not os.path.isfile(path):
+                                raise RuntimeError(
+                                    "Delete path is not a file; refusing to delete"
+                                )
+                            if os.path.realpath(path) == output_real:
+                                raise RuntimeError(
+                                    "Delete path matches output path; refusing to delete"
+                                )
+                            fp = fingerprints.get(path)
+                            if not fp:
+                                raise RuntimeError(
+                                    "Delete fingerprint missing; refusing to delete"
+                                )
+                            mtime_ns = int(
+                                getattr(
+                                    st,
+                                    "st_mtime_ns",
+                                    int(st.st_mtime * 1_000_000_000),
+                                )
+                            )
+                            if (
+                                int(fp.get("size", -1)) != int(st.st_size)
+                                or int(fp.get("mtime_ns", -1)) != mtime_ns
+                                or int(fp.get("inode", -1))
+                                != int(getattr(st, "st_ino", 0))
+                                or int(fp.get("device", -1))
+                                != int(getattr(st, "st_dev", 0))
+                            ):
+                                raise RuntimeError(
+                                    "Delete path fingerprint mismatch; refusing to delete"
+                                )
+
+                        for path in delete_order:
+                            await run_in_threadpool(os.remove, path)
+
+                        source_deleted = True
+
+                        if job.file_path.lower().endswith(".chd"):
+                            await verification_store.clear(job.file_path)
+                            await chd_metadata_store.clear(job.file_path)
+
+                job.status = JobStatus.COMPLETED
+                job.completed_at = datetime.now(timezone.utc)
                 await self._notify_subscribers(
                     job_id,
                     {
@@ -738,6 +1020,8 @@ class JobManager:
                         "job_id": job_id,
                         "output_path": job.output_path,
                         "output_size": job.output_size,
+                        "verified": verified,
+                        "source_deleted": source_deleted,
                     },
                 )
 
@@ -766,6 +1050,7 @@ class JobManager:
 
             concurrency_manager.release(job_id)
 
+            self._delete_plans.pop(job_id, None)
             if job_id in self._cancel_events:
                 del self._cancel_events[job_id]
             self._last_progress_at.pop(job_id, None)

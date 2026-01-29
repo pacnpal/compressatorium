@@ -59,7 +59,6 @@ This document contains the results of a comprehensive deployment readiness audit
 | `CHDMAN_PATH` | `/usr/bin/chdman` | ✅ | Binary path override |
 | `MAX_CONCURRENT_JOBS` | `1` | ✅ | Parallel job limit |
 | `MAX_JOB_HISTORY` | `500` | ✅ | Completed jobs to retain |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd_converter_locks` | ✅ | Lock directory |
 | `CHD_CHDMAN_NICE` | `10` | ✅ | Nice level for chdman |
 | `CHD_CHDMAN_IOPRIO_CLASS` | `2` | ✅ | I/O priority class for chdman |
 | `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | ✅ | I/O priority level for chdman |

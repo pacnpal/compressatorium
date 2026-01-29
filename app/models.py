@@ -73,6 +73,7 @@ class ConversionJob(BaseModel):
     temp_dir: Optional[str] = None
     allow_overwrite: bool = False
     compression: Optional[str] = None
+    delete_on_verify: bool = False
 
 
 class JobCreateRequest(BaseModel):
@@ -83,6 +84,7 @@ class JobCreateRequest(BaseModel):
         DuplicateAction.SKIP
     )  # What to do if output exists
     compression: Optional[str] = None  # Comma-separated list (e.g. "zlib,lzma")
+    delete_on_verify: bool = False
 
 
 class BatchJobCreateRequest(BaseModel):
@@ -93,6 +95,7 @@ class BatchJobCreateRequest(BaseModel):
         DuplicateAction.SKIP
     )  # What to do if output exists
     compression: Optional[str] = None  # Comma-separated list (e.g. "zlib,lzma")
+    delete_on_verify: bool = False
 
 
 class CheckDuplicatesRequest(BaseModel):
@@ -144,3 +147,8 @@ class BulkVerifyRequest(BaseModel):
 
 class MetadataBatchRequest(BaseModel):
     paths: List[str]
+
+
+class DeletePlanRequest(BaseModel):
+    file_paths: List[str]
+    mode: ConversionMode = ConversionMode.CREATECD

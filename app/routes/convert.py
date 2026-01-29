@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from sse_starlette.sse import EventSourceResponse
 
 from models import (
@@ -15,12 +16,14 @@ from models import (
     DuplicateAction,
     CheckDuplicatesRequest,
     DuplicateInfo,
+    DeletePlanRequest,
 )
 from services.job_manager import job_manager
 from services.archive import archive_service
 from services.chdman import chdman_service
 from services.lock_manager import lock_manager
 from utils.path_utils import is_within_configured_volumes
+from utils.delete_plan import build_delete_plan, build_delete_snapshot
 
 router = APIRouter()
 
@@ -39,6 +42,10 @@ def normalize_compression(value: Optional[str]) -> Optional[str]:
             detail=f"Invalid compression token(s): {', '.join(invalid)}",
         )
     return ",".join(parts)
+
+
+def supports_delete_on_verify(mode: str) -> bool:
+    return mode.startswith("create") or mode == "copy"
 
 
 def get_unique_output_path(base_path: str) -> str:
@@ -139,6 +146,56 @@ async def check_duplicates(request: CheckDuplicatesRequest):
     return results
 
 
+@router.post("/jobs/delete-plan")
+async def delete_plan(request: DeletePlanRequest) -> dict:
+    """Build a delete plan for delete-on-verify confirmation."""
+    if not request.file_paths:
+        raise HTTPException(status_code=400, detail="No paths provided")
+
+    mode = request.mode.value
+    if not supports_delete_on_verify(mode):
+        raise HTTPException(
+            status_code=400,
+            detail="Delete-on-verify is only supported for create/copy modes",
+        )
+
+    items = []
+    blocked = False
+    total_delete_count = 0
+
+    for file_path in request.file_paths:
+        item = None
+        if "::" in file_path:
+            item = {
+                "source_path": file_path,
+                "delete_paths": [],
+                "missing_paths": [],
+                "unsafe_paths": ["Archive inputs are not supported for delete-on-verify"],
+                "errors": [],
+            }
+        elif not is_within_configured_volumes(file_path, treat_archives=False):
+            item = {
+                "source_path": file_path,
+                "delete_paths": [],
+                "missing_paths": [],
+                "unsafe_paths": ["Source path outside configured volumes"],
+                "errors": [],
+            }
+        else:
+            item = await run_in_threadpool(build_delete_plan, file_path)
+
+        items.append(item)
+        total_delete_count += len(item.get("delete_paths", []))
+        if item.get("errors") or item.get("unsafe_paths") or item.get("missing_paths"):
+            blocked = True
+
+    return {
+        "items": items,
+        "blocked": blocked,
+        "total_delete_count": total_delete_count,
+    }
+
+
 @router.post("/jobs", response_model=ConversionJob)
 async def create_job(request: JobCreateRequest):
     """Create a single conversion job."""
@@ -148,6 +205,16 @@ async def create_job(request: JobCreateRequest):
         raise HTTPException(
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
+        )
+    if request.delete_on_verify and not supports_delete_on_verify(mode):
+        raise HTTPException(
+            status_code=400,
+            detail="Delete-on-verify is only supported for create/copy modes",
+        )
+    if request.delete_on_verify and "::" in request.file_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Delete-on-verify is not supported for archive inputs",
         )
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(
@@ -252,6 +319,18 @@ async def create_job(request: JobCreateRequest):
     allow_overwrite = (
         request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
     )
+    delete_snapshot = None
+    if request.delete_on_verify:
+        try:
+            delete_snapshot = await run_in_threadpool(
+                build_delete_snapshot, file_path
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Delete-on-verify blocked: {exc}",
+            )
+
     job = await job_manager.create_job(
         file_path,
         request.mode,
@@ -259,6 +338,8 @@ async def create_job(request: JobCreateRequest):
         allow_overwrite=allow_overwrite,
         filename_override=display_filename,
         compression=compression,
+        delete_on_verify=request.delete_on_verify,
+        delete_snapshot=delete_snapshot,
     )
 
     return job
@@ -273,6 +354,16 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         raise HTTPException(
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
+        )
+    if request.delete_on_verify and not supports_delete_on_verify(mode):
+        raise HTTPException(
+            status_code=400,
+            detail="Delete-on-verify is only supported for create/copy modes",
+        )
+    if request.delete_on_verify and any("::" in path for path in request.file_paths):
+        raise HTTPException(
+            status_code=400,
+            detail="Delete-on-verify is not supported for archive inputs",
         )
     for file_path in request.file_paths:
         if not is_within_configured_volumes(file_path):
@@ -394,6 +485,18 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         allow_overwrite = (
             request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
         )
+        delete_snapshot = None
+        if request.delete_on_verify:
+            try:
+                delete_snapshot = await run_in_threadpool(
+                    build_delete_snapshot, file_path
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Delete-on-verify blocked for {file_path}: {exc}",
+                )
+
         candidates.append(
             {
                 "file_path": file_path,
@@ -402,6 +505,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 "allow_overwrite": allow_overwrite,
                 "display_filename": display_filename,
                 "priority": _priority(_input_extension(file_path)),
+                "delete_snapshot": delete_snapshot,
             }
         )
 
@@ -426,6 +530,8 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             allow_overwrite=candidate["allow_overwrite"],
             filename_override=candidate["display_filename"],
             compression=compression,
+            delete_on_verify=request.delete_on_verify,
+            delete_snapshot=candidate.get("delete_snapshot"),
         )
         jobs.append(job)
 

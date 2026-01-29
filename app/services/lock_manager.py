@@ -1,16 +1,59 @@
 import fcntl
+import hashlib
 import os
 from typing import Set
 import threading
+
+from config import settings
 
 
 class LockManager:
     """Manages file locks to prevent concurrent conversions of the same file."""
 
     def __init__(self):
+        self._lock_dir = settings.concurrency_lock_dir or "/tmp/chd_converter_locks"
+        os.makedirs(self._lock_dir, exist_ok=True)
         self._locks: Set[str] = set()
         self._lock_mutex = threading.Lock()
         self._lock_handles = {}
+        self._cleanup_stale_locks()
+
+    def _lock_file_path(self, normalized_path: str) -> str:
+        # Use a stable hash to avoid path length issues and keep locks in /tmp.
+        digest = hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()
+        base = os.path.basename(normalized_path) or "chd"
+        safe_base = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in base)
+        filename = f"filelock-{safe_base}-{digest}.lock"
+        return os.path.join(self._lock_dir, filename)
+
+    def _cleanup_stale_locks(self) -> None:
+        """Remove stale file lock artifacts from the lock directory."""
+        try:
+            for name in os.listdir(self._lock_dir):
+                if not (name.startswith("filelock-") and name.endswith(".lock")):
+                    continue
+                lock_path = os.path.join(self._lock_dir, name)
+                try:
+                    with open(lock_path, "a") as lock_handle:
+                        try:
+                            fcntl.flock(
+                                lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                            )
+                        except BlockingIOError:
+                            # Lock is held by another process; keep the file.
+                            continue
+                        except (IOError, OSError):
+                            continue
+                        finally:
+                            try:
+                                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                            except Exception:
+                                pass
+                    os.remove(lock_path)
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def is_locked(self, output_path: str) -> bool:
         """Check if an output file is currently locked (being converted)."""
@@ -35,7 +78,7 @@ class LockManager:
         return (file_exists, self._check_external_lock(normalized_path))
 
     def _check_external_lock(self, normalized_path: str) -> bool:
-        lock_file_path = f"{normalized_path}.lock"
+        lock_file_path = self._lock_file_path(normalized_path)
         if not os.path.exists(lock_file_path):
             return False
 
@@ -75,7 +118,7 @@ class LockManager:
                 return False
 
             # Try to create a lock file
-            lock_file_path = f"{normalized_path}.lock"
+            lock_file_path = self._lock_file_path(normalized_path)
             lock_dir = os.path.dirname(lock_file_path)
             if lock_dir:
                 os.makedirs(lock_dir, exist_ok=True)
@@ -150,7 +193,7 @@ class LockManager:
                         del self._lock_handles[normalized_path]
 
                     # Clean up the lock file
-                    lock_file_path = f"{normalized_path}.lock"
+                    lock_file_path = self._lock_file_path(normalized_path)
                     try:
                         if os.path.exists(lock_file_path):
                             os.remove(lock_file_path)

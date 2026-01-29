@@ -206,20 +206,38 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
     // Count selectable entries for the header checkbox
     const selectableCount = entries.filter(e => canSelect(e)).length;
     const hasSelectableEntries = selectableCount > 0;
+    const selectedCount = entries.filter(e => canSelect(e) && selectedFiles.has(e.path)).length;
+    const isIndeterminate = hasSelectableEntries && selectedCount > 0 && selectedCount < selectableCount;
+    const selectAllRef = useRef(null);
+
+    useEffect(() => {
+        if (selectAllRef.current) {
+            selectAllRef.current.indeterminate = isIndeterminate;
+        }
+    }, [isIndeterminate, selectableCount]);
+
+    const handleSelectAllClick = (e) => {
+        e.stopPropagation();
+        if (selectAllRef.current) {
+            selectAllRef.current.indeterminate = false;
+        }
+        onSelectAll();
+    };
 
     return html`
         <div class="file-list-container">
             <div class="file-list-header">
                 <div class="header-cell header-checkbox">
-                    ${hasSelectableEntries && html`
-                        <input
-                            type="checkbox"
-                            class="checkbox"
-                            checked=${allSelected}
-                            onClick=${onSelectAll}
-                            title=${allSelected ? 'Deselect all' : `Select all (${selectableCount})`}
-                        />
-                    `}
+                    <input
+                        type="checkbox"
+                        class="checkbox"
+                        checked=${hasSelectableEntries && allSelected}
+                        disabled=${!hasSelectableEntries}
+                        ref=${selectAllRef}
+                        onClick=${handleSelectAllClick}
+                        title=${hasSelectableEntries ? (allSelected ? 'Deselect all' : `Select all (${selectableCount})`) : 'No selectable files'}
+                        aria-checked=${isIndeterminate ? 'mixed' : (hasSelectableEntries && allSelected ? 'true' : 'false')}
+                    />
                 </div>
                 <div 
                     class="header-cell header-name sortable" 
@@ -600,6 +618,75 @@ function DuplicateModal({ duplicates, onAction, onClose }) {
                         </button>
                         <button class="btn btn-secondary" onClick=${onClose} style="width: 100%;">
                             Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function DeletePlanModal({ plan, onConfirm, onClose }) {
+    if (!plan) return null;
+
+    const items = Array.isArray(plan.items) ? plan.items : [];
+    const hasIssues = items.some(item =>
+        (item.errors && item.errors.length) ||
+        (item.unsafe_paths && item.unsafe_paths.length) ||
+        (item.missing_paths && item.missing_paths.length)
+    );
+
+    const getBaseName = (path) => (path || '').split('/').pop() || path;
+
+    return html`
+        <div class="modal-overlay" onClick=${onClose}>
+            <div class="modal" onClick=${(e) => e.stopPropagation()} style="max-width: 540px;">
+                <div class="modal-header">
+                    <h3>Confirm delete after verify</h3>
+                    <button class="modal-close" onClick=${onClose} title="Close">×</button>
+                </div>
+                <div class="modal-body" style="padding: 15px;">
+                    <p style="color: var(--text-secondary); margin-bottom: 12px;">
+                        The files below will be deleted <strong>after</strong> a successful conversion and CHD verification.
+                    </p>
+                    <div style="max-height: 240px; overflow-y: auto; padding: 10px; background: var(--bg-primary); border-radius: 4px; margin-bottom: 15px;">
+                        ${items.map(item => html`
+                            <div style="margin-bottom: 12px;">
+                                <div style="font-weight: 600; font-size: 0.85rem; color: var(--text-primary);">
+                                    ${getBaseName(item.source_path)}
+                                </div>
+                                ${(item.delete_paths || []).map(p => html`
+                                    <div style="font-size: 0.8rem; color: var(--text-secondary);">${p}</div>
+                                `)}
+                                ${item.missing_paths && item.missing_paths.length > 0 && html`
+                                    <div style="font-size: 0.8rem; color: var(--warning); margin-top: 4px;">
+                                        Missing: ${item.missing_paths.map(getBaseName).join(', ')}
+                                    </div>
+                                `}
+                                ${item.unsafe_paths && item.unsafe_paths.length > 0 && html`
+                                    <div style="font-size: 0.8rem; color: var(--error); margin-top: 4px;">
+                                        Unsafe references: ${item.unsafe_paths.join('; ')}
+                                    </div>
+                                `}
+                                ${item.errors && item.errors.length > 0 && html`
+                                    <div style="font-size: 0.8rem; color: var(--error); margin-top: 4px;">
+                                        ${item.errors.join('; ')}
+                                    </div>
+                                `}
+                            </div>
+                        `)}
+                    </div>
+                    ${hasIssues && html`
+                        <p style="color: var(--error); margin-bottom: 12px; font-size: 0.85rem;">
+                            Delete-on-verify is blocked due to missing or unsafe paths. Fix the sources or disable the option to continue.
+                        </p>
+                    `}
+                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                        <button class="btn btn-secondary" onClick=${onClose}>
+                            Cancel
+                        </button>
+                        <button class="btn btn-primary" onClick=${onConfirm} disabled=${hasIssues}>
+                            Confirm delete + convert
                         </button>
                     </div>
                 </div>
@@ -1526,6 +1613,8 @@ function App() {
     const [compressionSelection, setCompressionSelection] = useState(['zlib']);
     const [showCompressionHelp, setShowCompressionHelp] = useState(false);
     const [outputDir, setOutputDir] = useState('');
+    const [deleteOnVerify, setDeleteOnVerify] = useState(false);
+    const [deletePlan, setDeletePlan] = useState(null); // { plan, paths, duplicateAction }
     const [showCHDInfo, setShowCHDInfo] = useState(null);
     const [searchMode, setSearchMode] = useState(false);
     const [searchResults, setSearchResults] = useState(null);
@@ -1975,6 +2064,17 @@ function App() {
                     notify(`Completed: ${newJobs[idx].filename}`, 'success');
                     // Refresh file list to show the new CHD file
                     refreshFileList();
+                    if (update.data.verified && update.data.output_path) {
+                        setVerifiedCHDs(prev => new Set([...prev, update.data.output_path]));
+                    }
+                    if (update.data.source_deleted && newJobs[idx].file_path?.toLowerCase().endsWith('.chd')) {
+                        setVerifiedCHDs(prev => {
+                            if (!prev.has(newJobs[idx].file_path)) return prev;
+                            const next = new Set(prev);
+                            next.delete(newJobs[idx].file_path);
+                            return next;
+                        });
+                    }
                 } else if (update.type === 'error') {
                     notify(`Failed: ${newJobs[idx].filename}`, 'error');
                 } else if (update.type === 'cancelled') {
@@ -2043,6 +2143,8 @@ function App() {
                 notify(`ℹ No convertible files found in ${archiveName}`, 'info');
                 setEntries([]);
                 setCurrentArchivePath(null);
+                setSelectedFiles(new Map());
+                setLastSelectedIndex(null);
                 return;
             }
 
@@ -2062,6 +2164,7 @@ function App() {
 
             setCurrentArchivePath(archivePath); // Track that we're in archive view
             setEntries(archiveEntries);
+            setSelectedFiles(new Map());
             setSearchMode(false);
             setSearchResults(null);
             setLastSelectedIndex(null); // Reset shift-selection anchor
@@ -2325,6 +2428,35 @@ function App() {
         return `${outDir}/${outputFilename}`;
     };
 
+    const requestDeletePlan = async (paths, duplicateAction) => {
+        try {
+            const plan = await api.getDeletePlan(paths, conversionMode);
+            setDeletePlan({ plan, paths, duplicateAction });
+        } catch (err) {
+            notify(`✗ Failed to build delete plan: ${err.message}`, 'error');
+        }
+    };
+
+    const handleDeletePlanConfirm = async () => {
+        if (!deletePlan) return;
+        const { paths, duplicateAction } = deletePlan;
+        setDeletePlan(null);
+        await executeConversion(paths, duplicateAction);
+    };
+
+    const handleDeletePlanClose = () => {
+        setDeletePlan(null);
+    };
+
+    const maybeConfirmDeletePlan = async (paths, duplicateAction) => {
+        if (deleteOnVerify && !deleteOnVerifyDisabled) {
+            await requestDeletePlan(paths, duplicateAction);
+            return false;
+        }
+        await executeConversion(paths, duplicateAction);
+        return true;
+    };
+
     // Execute conversion with specified duplicate action
     const executeConversion = async (paths, duplicateAction = 'skip') => {
         // Build optimistic placeholder jobs so the user sees immediate feedback
@@ -2352,7 +2484,8 @@ function App() {
                 conversionMode,
                 outputDir || null,
                 duplicateAction,
-                compressionSupported ? getCompressionValue() : null
+                compressionSupported ? getCompressionValue() : null,
+                deleteOnVerify && !deleteOnVerifyDisabled
             );
 
             // Clear placeholders and prepend real jobs
@@ -2402,7 +2535,7 @@ function App() {
 
             // No duplicates, proceed directly (executeConversion will manage converting state)
             setConverting(false);
-            await executeConversion(paths, 'skip');
+            await maybeConfirmDeletePlan(paths, 'skip');
         } catch (err) {
             setConverting(false);
             notify(`✗ Failed to check for duplicates: ${err.message}`, 'error');
@@ -2416,7 +2549,7 @@ function App() {
         const { paths } = duplicateCheck;
         setDuplicateCheck(null); // Close modal
 
-        await executeConversion(paths, action);
+        await maybeConfirmDeletePlan(paths, action);
     };
 
     const compressionOptions = [
@@ -2437,6 +2570,38 @@ function App() {
     const isExtractMode = conversionMode.startsWith('extract');
     const isCopyMode = conversionMode === 'copy';
     const compressionSupported = isCreateMode || isCopyMode;
+    const hasArchiveSelection = useMemo(() => {
+        for (const [path, entry] of selectedFiles) {
+            if (path.includes('::') || entry?.is_archive_item) {
+                return true;
+            }
+        }
+        return false;
+    }, [selectedFiles]);
+    const deleteOnVerifySupported = isCreateMode || isCopyMode;
+    const deleteOnVerifyDisabled = !deleteOnVerifySupported || hasArchiveSelection;
+    const deleteOnVerifyLabel = isCopyMode
+        ? 'Delete original CHD after copy + verify'
+        : 'Delete source after convert + verify';
+    const deleteOnVerifyNote = !deleteOnVerifySupported
+        ? 'Available only for create/copy modes.'
+        : hasArchiveSelection
+            ? 'Disabled while archive items are selected.'
+            : isCopyMode
+                ? 'Warning: this deletes the original CHD after the copy verifies.'
+                : 'Runs CHD verification and deletes the original source (including .cue/.gdi track files) if it passes.';
+
+    useEffect(() => {
+        if (deleteOnVerifyDisabled && deleteOnVerify) {
+            setDeleteOnVerify(false);
+        }
+    }, [deleteOnVerifyDisabled, deleteOnVerify]);
+
+    useEffect(() => {
+        if (!deleteOnVerify && deletePlan) {
+            setDeletePlan(null);
+        }
+    }, [deleteOnVerify, deletePlan]);
 
     useEffect(() => {
         const failures = [];
@@ -2793,6 +2958,8 @@ function App() {
                                 class="btn btn-sm btn-secondary"
                                 onClick=${() => {
                 setCurrentArchivePath(null);
+                setSelectedFiles(new Map());
+                setLastSelectedIndex(null);
                 refreshFileList(true);
             }}
                                 title="Return to folder view"
@@ -2812,96 +2979,106 @@ function App() {
                     `}
 
                     <div class="toolbar">
-                        <select
-                            value=${conversionMode}
-                            onChange=${(e) => setConversionMode(e.target.value)}
-                            title="Select conversion mode based on your disc type"
-                        >
-                            <optgroup label="Create CHD">
-                                <option value="createcd">Create CD CHD (Dreamcast, PS1, Sega CD)</option>
-                                <option value="createdvd">Create DVD CHD (PSP, PS2)</option>
-                                <option value="createraw">Create Raw CHD</option>
-                                <option value="createhd">Create HD CHD</option>
-                                <option value="createld">Create LaserDisc CHD</option>
-                            </optgroup>
-                            <optgroup label="Extract from CHD">
-                                <option value="extractcd">Extract CD (cue/bin)</option>
-                                <option value="extractdvd">Extract DVD (iso)</option>
-                                <option value="extractraw">Extract Raw</option>
-                                <option value="extracthd">Extract HD</option>
-                                <option value="extractld">Extract LaserDisc (avi)</option>
-                            </optgroup>
-                            <optgroup label="Copy / Recompress">
-                                <option value="copy">Copy / Recompress CHD</option>
-                            </optgroup>
-                        </select>
-                        <div class="compression-group" role="group" aria-label="Compression options">
-                            <span class="compression-label">Compression</span>
-                            <div class="compression-options">
-                                ${compressionOptions.map((opt) => html`
-                                    <label class="compression-option" title=${opt.description}>
-                                        <input
-                                            type="checkbox"
-                                            checked=${compressionSelection.includes(opt.value)}
-                                            disabled=${!compressionSupported}
-                                            onChange=${() => toggleCompression(opt.value)}
-                                        />
-                                        <span>${opt.label}</span>
-                                    </label>
-                                `)}
+                        <div class="toolbar-row">
+                            <div class="toolbar-group">
+                                <span class="toolbar-label">Mode</span>
+                                <select
+                                    value=${conversionMode}
+                                    onChange=${(e) => setConversionMode(e.target.value)}
+                                    title="Select conversion mode based on your disc type"
+                                >
+                                    <optgroup label="Create CHD">
+                                        <option value="createcd">Create CD CHD (Dreamcast, PS1, Sega CD)</option>
+                                        <option value="createdvd">Create DVD CHD (PSP, PS2)</option>
+                                        <option value="createraw">Create Raw CHD</option>
+                                        <option value="createhd">Create HD CHD</option>
+                                        <option value="createld">Create LaserDisc CHD</option>
+                                    </optgroup>
+                                    <optgroup label="Extract from CHD">
+                                        <option value="extractcd">Extract CD (cue/bin)</option>
+                                        <option value="extractdvd">Extract DVD (iso)</option>
+                                        <option value="extractraw">Extract Raw</option>
+                                        <option value="extracthd">Extract HD</option>
+                                        <option value="extractld">Extract LaserDisc (avi)</option>
+                                    </optgroup>
+                                    <optgroup label="Copy / Recompress">
+                                        <option value="copy">Copy / Recompress CHD</option>
+                                    </optgroup>
+                                </select>
                             </div>
-                            <div class="compression-meta">
-                                <span>${!compressionSupported ? 'Compression not applicable for this mode' : (compressionSelection.includes('none') ? 'No compression (-c none)' : `${compressionSelection.length}/4 codecs selected`)}</span>
-                                <button class="btn btn-sm btn-secondary" onClick=${() => setShowCompressionHelp(v => !v)}>
-                                    ${showCompressionHelp ? 'Hide Info' : 'Compression Info'}
-                                </button>
+                            <div class="compression-group" role="group" aria-label="Compression options">
+                                <span class="compression-label">Compression</span>
+                                <div class="compression-options">
+                                    ${compressionOptions.map((opt) => html`
+                                        <label class="compression-option" title=${opt.description}>
+                                            <input
+                                                type="checkbox"
+                                                checked=${compressionSelection.includes(opt.value)}
+                                                disabled=${!compressionSupported}
+                                                onChange=${() => toggleCompression(opt.value)}
+                                            />
+                                            <span>${opt.label}</span>
+                                        </label>
+                                    `)}
+                                </div>
+                                <div class="compression-meta">
+                                    <span>${!compressionSupported ? 'Compression not applicable for this mode' : (compressionSelection.includes('none') ? 'No compression (-c none)' : `${compressionSelection.length}/4 codecs selected`)}</span>
+                                    <button class="btn btn-sm btn-secondary" onClick=${() => setShowCompressionHelp(v => !v)}>
+                                        ${showCompressionHelp ? 'Hide Info' : 'Compression Info'}
+                                    </button>
+                                </div>
+                                <span class="compression-hint">
+                                    Choose up to 4 codecs. zlib is the most compatible option.
+                                </span>
+                            </div>
+                            <div class="toolbar-group">
+                                <span class="toolbar-label">Filter</span>
+                                <select
+                                    class="file-type-filter"
+                                    value=${fileTypeFilter || ''}
+                                    onChange=${(e) => { setFileTypeFilter(e.target.value || null); setLastSelectedIndex(null); }}
+                                    title="Filter files by type"
+                                >
+                                    <option value="">All Types</option>
+                                    <option value=".chd">CHD Files</option>
+                                    <option value=".zip,.7z,.rar">Archives</option>
+                                    <option value=".iso,.gdi,.cue,.bin">Disc Images</option>
+                                </select>
                             </div>
                         </div>
-                        <span class="toolbar-help">
-                            Choose up to 4 codecs. zlib is the most compatible option.
-                        </span>
-                        <select
-                            class="file-type-filter"
-                            value=${fileTypeFilter || ''}
-                            onChange=${(e) => { setFileTypeFilter(e.target.value || null); setLastSelectedIndex(null); }}
-                            title="Filter files by type"
-                        >
-                            <option value="">All Types</option>
-                            <option value=".chd">CHD Files</option>
-                            <option value=".zip,.7z,.rar">Archives</option>
-                            <option value=".iso,.gdi,.cue,.bin">Disc Images</option>
-                        </select>
-                        <button
-                            class="btn btn-primary"
-                            disabled=${selectedFiles.size === 0 || converting}
-                            onClick=${handleConvert}
-                            title=${converting ? `${getActionLabel()}...` : selectedFiles.size > 0 ? `${getActionLabel()} ${selectedFiles.size} selected file(s)` : `Select files to ${getActionLabel().toLowerCase()}`}
-                        >
-                            ${converting
-            ? html`<span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-width: 2px;"></span>${getActionLabel()}...`
-            : `${getActionLabel()} ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}`
-        }
-                        </button>
-                        ${getDeletableSelection().length > 0 && html`
-                            <button
-                                class="btn btn-sm btn-secondary"
-                                onClick=${handleBulkDeleteClick}
-                                title="Delete ${getDeletableSelection().length} selected file(s)"
-                                style="margin-left: 8px;"
-                            >
-                                🗑️ Delete (${getDeletableSelection().length})
-                            </button>
-                        `}
-                        ${getVerifiableCHDPaths().length > 0 && html`
-                            <button
-                                class="btn btn-sm btn-secondary"
-                                onClick=${handleBulkVerifyClick}
-                                title="Verify ${getVerifiableCHDPaths().length} selected CHD file(s)"
-                                style="margin-left: 8px;"
-                            >
-                                🔍 Verify (${getVerifiableCHDPaths().length})
-                            </button>
-                        `}
+                        <div class="toolbar-row actions">
+                            <div class="toolbar-actions">
+                                <button
+                                    class="btn btn-primary"
+                                    disabled=${selectedFiles.size === 0 || converting}
+                                    onClick=${handleConvert}
+                                    title=${converting ? `${getActionLabel()}...` : selectedFiles.size > 0 ? `${getActionLabel()} ${selectedFiles.size} selected file(s)` : `Select files to ${getActionLabel().toLowerCase()}`}
+                                >
+                                    ${converting
+                ? html`<span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-width: 2px;"></span>${getActionLabel()}...`
+                : `${getActionLabel()} ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}`
+            }
+                                </button>
+                                ${getDeletableSelection().length > 0 && html`
+                                    <button
+                                        class="btn btn-sm btn-secondary"
+                                        onClick=${handleBulkDeleteClick}
+                                        title="Delete ${getDeletableSelection().length} selected file(s)"
+                                    >
+                                        🗑️ Delete (${getDeletableSelection().length})
+                                    </button>
+                                `}
+                                ${getVerifiableCHDPaths().length > 0 && html`
+                                    <button
+                                        class="btn btn-sm btn-secondary"
+                                        onClick=${handleBulkVerifyClick}
+                                        title="Verify ${getVerifiableCHDPaths().length} selected CHD file(s)"
+                                    >
+                                        🔍 Verify (${getVerifiableCHDPaths().length})
+                                    </button>
+                                `}
+                            </div>
+                        </div>
                     </div>
 
                     ${showCompressionHelp && html`
@@ -2932,15 +3109,31 @@ function App() {
                         </div>
                     `)}
 
-                    <div class="output-dir-selector">
-                        <label title="Leave empty to save CHD files next to source files">Output directory:</label>
-                        <input
-                            type="text"
-                            placeholder="Same as source (leave empty)"
-                            value=${outputDir}
-                            onInput=${(e) => setOutputDir(e.target.value)}
-                            title="Optional: Specify a custom directory for output CHD files"
-                        />
+                    <div class="conversion-options">
+                        <div class="option-card">
+                            <span class="option-label">Output directory</span>
+                            <input
+                                type="text"
+                                placeholder="Same as source (leave empty)"
+                                value=${outputDir}
+                                onInput=${(e) => setOutputDir(e.target.value)}
+                                title="Optional: Specify a custom directory for output CHD files"
+                            />
+                            <span class="option-hint">Leave empty to save CHD files next to source files.</span>
+                        </div>
+                        <div class="option-card">
+                            <span class="option-label">Post-conversion</span>
+                            <label class="toggle-option" title="Verify output CHD, then delete the source files">
+                                <input
+                                    type="checkbox"
+                                    checked=${deleteOnVerify}
+                                    disabled=${deleteOnVerifyDisabled}
+                                    onChange=${(e) => setDeleteOnVerify(e.target.checked)}
+                                />
+                                <span>${deleteOnVerifyLabel}</span>
+                            </label>
+                            <span class="option-hint">${deleteOnVerifyNote}</span>
+                        </div>
                     </div>
 
                     ${selectedFiles.size > 0 && html`
@@ -3017,6 +3210,14 @@ function App() {
                 <${CHDInfoModal}
                     path=${showCHDInfo}
                     onClose=${() => setShowCHDInfo(null)}
+                />
+            `}
+
+            ${deletePlan && html`
+                <${DeletePlanModal}
+                    plan=${deletePlan.plan}
+                    onConfirm=${handleDeletePlanConfirm}
+                    onClose=${handleDeletePlanClose}
                 />
             `}
 

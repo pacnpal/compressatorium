@@ -44,7 +44,7 @@ export const api = {
     },
 
     // Jobs
-    async createJob(filePath, mode = 'createcd', outputDir = null, compression = null) {
+    async createJob(filePath, mode = 'createcd', outputDir = null, compression = null, deleteOnVerify = false) {
         const res = await fetch(`${API_BASE}/jobs`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -52,7 +52,8 @@ export const api = {
                 file_path: filePath,
                 mode,
                 output_dir: outputDir,
-                compression
+                compression,
+                delete_on_verify: deleteOnVerify
             })
         });
         if (!res.ok) {
@@ -62,7 +63,7 @@ export const api = {
         return res.json();
     },
 
-    async createBatchJobs(filePaths, mode = 'createcd', outputDir = null, duplicateAction = 'skip', compression = null) {
+    async createBatchJobs(filePaths, mode = 'createcd', outputDir = null, duplicateAction = 'skip', compression = null, deleteOnVerify = false) {
         const res = await fetch(`${API_BASE}/jobs/batch`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -71,7 +72,8 @@ export const api = {
                 mode,
                 output_dir: outputDir,
                 duplicate_action: duplicateAction,
-                compression
+                compression,
+                delete_on_verify: deleteOnVerify
             })
         });
         if (!res.ok) {
@@ -94,6 +96,22 @@ export const api = {
         if (!res.ok) {
             const error = await res.json().catch(() => ({ detail: 'Failed to check duplicates' }));
             throw new Error(error.detail || 'Failed to check duplicates');
+        }
+        return res.json();
+    },
+
+    async getDeletePlan(filePaths, mode = 'createcd') {
+        const res = await fetch(`${API_BASE}/jobs/delete-plan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                file_paths: filePaths,
+                mode
+            })
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to build delete plan' }));
+            throw new Error(error.detail || 'Failed to build delete plan');
         }
         return res.json();
     },
