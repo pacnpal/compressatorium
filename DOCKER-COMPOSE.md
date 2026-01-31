@@ -186,7 +186,7 @@ docker-compose up -d
 
 ### Access container shell
 ```bash
-docker-compose exec chd-converter bash
+docker-compose exec compressatorium bash
 ```
 
 ---

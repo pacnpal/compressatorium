@@ -12,7 +12,7 @@ if ! mountpoint -q /config 2>/dev/null; then
     echo "┃                                                                         ┃"
     echo "┃  Fix it:  -v /path/to/config:/config                                    ┃"
     echo "┃                                                                         ┃"
-    echo "┃  Docs: https://github.com/pacnpal/docker-chd-converter-webui            ┃"
+    echo "┃  Docs: https://github.com/pacnpal/Compressatorium                      ┃"
     echo "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
     echo ""
 fi

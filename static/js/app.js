@@ -3729,7 +3729,7 @@ function App() {
 
             <footer class="app-footer">
                 <span>Compressatorium${appVersion ? ` v${appVersion}` : ''}</span>
-                <a href="https://github.com/pacnpal/Docker-chd-converter-webui" target="_blank" rel="noopener noreferrer">GitHub</a>
+                <a href="https://github.com/pacnpal/Compressatorium" target="_blank" rel="noopener noreferrer">GitHub</a>
             </footer>
         </div>
     `;
