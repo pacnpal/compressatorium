@@ -1,13 +1,13 @@
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import os
 import logging
+import os
 from pathlib import Path
 
-from routes import files, convert, info
-from services.job_manager import job_manager
 from config import settings
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from routes import convert, files, info
+from services.job_manager import job_manager
 
 
 def get_version() -> str:
@@ -28,7 +28,7 @@ def get_version() -> str:
     return "0.0.0"
 
 
-def configure_logging():
+def configure_logging() -> None:
     logger = logging.getLogger("chd")
     if logger.handlers:
         return
@@ -53,8 +53,8 @@ def configure_logging():
 
 
 app = FastAPI(
-    title="CHD Converter",
-    description="Web UI for converting game disc images to CHD format",
+    title="Compressatorium",
+    description="Web UI for converting game disc images using chdman and dolphin-tool",
     version=get_version(),
 )
 
@@ -71,7 +71,7 @@ async def startup_event():
 
     configure_logging()
     logger = logging.getLogger("chd")
-    logger.info(f"CHD Converter v{get_version()} starting...")
+    logger.info(f"Compressatorium v{get_version()} starting...")
     asyncio.create_task(job_manager.process_queue())
 
 
@@ -93,4 +93,4 @@ async def root():
     index_path = os.path.join(static_dir, "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return {"message": "CHD Converter API", "docs": "/docs"}
+    return {"message": "Compressatorium API", "docs": "/docs"}

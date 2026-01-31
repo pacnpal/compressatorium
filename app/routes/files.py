@@ -1,19 +1,18 @@
 import os
 from pathlib import Path
-from typing import List, Optional
-
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.concurrency import run_in_threadpool
 
 from config import settings
-from models import FileEntry, DirectoryListing, Volume, BulkDeleteRequest
-from services.chdman import CONVERTIBLE_EXTENSIONS
-from services.archive import archive_service, ARCHIVE_EXTENSIONS
-from services.lock_manager import lock_manager
-from services.job_manager import job_manager
-from services.verification_store import verification_store
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
+from models import BulkDeleteRequest, DirectoryListing, FileEntry, Volume
+from services.archive import ARCHIVE_EXTENSIONS, archive_service
 from services.chd_metadata_store import chd_metadata_store
-from utils.path_utils import is_within_configured_volumes, get_volume_name_for_path
+from services.chdman import CONVERTIBLE_EXTENSIONS
+from services.dolphin_tool import DOLPHIN_CONVERTIBLE_EXTENSIONS
+from services.job_manager import job_manager
+from services.lock_manager import lock_manager
+from services.verification_store import verification_store
+from utils.path_utils import get_volume_name_for_path, is_within_configured_volumes
 
 router = APIRouter()
 
@@ -21,12 +20,12 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     _, is_locked = await run_in_threadpool(lock_manager.check_file_status, path)
     if is_locked:
         raise HTTPException(
-            status_code=409, detail="Path is locked by an active conversion"
+            status_code=409, detail="Path is locked by an active conversion",
         )
 
     candidates = job_manager.get_active_job_candidates()
 
-    def _match_job_id() -> Optional[str]:
+    def _match_job_id() -> str | None:
         try:
             target = Path(path).expanduser().resolve(strict=False)
         except (OSError, RuntimeError):
@@ -51,18 +50,18 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     job_id = await run_in_threadpool(_match_job_id)
     if job_id:
         raise HTTPException(
-            status_code=409, detail=f"Path is in use by active job {job_id}"
+            status_code=409, detail=f"Path is in use by active job {job_id}",
         )
 
 
-@router.get("/volumes", response_model=List[Volume])
+@router.get("/volumes", response_model=list[Volume])
 async def list_volumes():
     """List all configured volume mount points."""
     volumes = []
     for vol_path in settings.volumes:
         if os.path.isdir(vol_path):
             volumes.append(
-                Volume(name=settings.get_volume_name(vol_path), path=vol_path)
+                Volume(name=settings.get_volume_name(vol_path), path=vol_path),
             )
     return volumes
 
@@ -76,7 +75,7 @@ async def list_files(
     """List files in a directory."""
     if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(
-            status_code=403, detail="Access denied: path outside configured volumes"
+            status_code=403, detail="Access denied: path outside configured volumes",
         )
 
     if not os.path.isdir(path):
@@ -86,7 +85,7 @@ async def list_files(
     volume_name = get_volume_name_for_path(path) or ""
 
     def scan_directory(
-        target_path: str, show_archives_flag: bool, summarize_archives_flag: bool
+        target_path: str, show_archives_flag: bool, summarize_archives_flag: bool,
     ):
         entries = []
         try:
@@ -98,11 +97,12 @@ async def list_files(
                 try:
                     if os.path.isdir(item_path):
                         entries.append(
-                            FileEntry(name=item, path=item_path, type="directory")
+                            FileEntry(name=item, path=item_path, type="directory"),
                         )
                     elif os.path.isfile(item_path):
                         size = os.path.getsize(item_path)
                         is_convertible = ext in CONVERTIBLE_EXTENSIONS
+                        is_dolphin_convertible = ext in DOLPHIN_CONVERTIBLE_EXTENSIONS
                         is_archive = ext in ARCHIVE_EXTENSIONS
                         archive_truncated = None
                         if is_archive and not show_archives_flag:
@@ -110,18 +110,20 @@ async def list_files(
 
                         # Check if CHD already exists or is being converted (atomic check)
                         has_chd = False
+                        chd_ready = False
                         if is_convertible:
                             chd_path = str(Path(item_path).with_suffix(".chd"))
                             file_exists, is_converting = lock_manager.check_file_status(
-                                chd_path
+                                chd_path,
                             )
                             has_chd = file_exists or is_converting
+                            chd_ready = file_exists
 
                         archive_items = None
                         archive_has_chd = None
                         if is_archive and summarize_archives_flag:
                             archive_result = archive_service.list_archive_contents(
-                                item_path, include_meta=True
+                                item_path, include_meta=True,
                             )
                             contents = archive_result["entries"]
                             archive_items = len(contents)
@@ -134,7 +136,7 @@ async def list_files(
                                     or Path(entry["internal_path"]).stem
                                 )
                                 chd_path = os.path.join(
-                                    archive_dir, f"{output_stem}.chd"
+                                    archive_dir, f"{output_stem}.chd",
                                 )
                                 file_exists, is_converting = (
                                     lock_manager.check_file_status(chd_path)
@@ -151,6 +153,8 @@ async def list_files(
                             extension=ext,
                             convertible=is_convertible,
                             has_chd=has_chd,
+                            chd_ready=chd_ready,
+                            dolphin_convertible=is_dolphin_convertible,
                             archive_items=archive_items,
                             archive_has_chd=archive_has_chd,
                             archive_truncated=archive_truncated
@@ -168,7 +172,7 @@ async def list_files(
         return entries
 
     entries = await run_in_threadpool(
-        scan_directory, path, show_archives, summarize_archives
+        scan_directory, path, show_archives, summarize_archives,
     )
 
     return DirectoryListing(volume=volume_name, path=path, entries=entries)
@@ -183,14 +187,14 @@ async def search_files(
     """Search for convertible files in a directory tree."""
     if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(
-            status_code=403, detail="Access denied: path outside configured volumes"
+            status_code=403, detail="Access denied: path outside configured volumes",
         )
 
     if not os.path.isdir(path):
         raise HTTPException(status_code=404, detail="Directory not found")
 
     def scan_directory(
-        root_path: str, recursive_scan: bool, include_archive_scan: bool
+        root_path: str, recursive_scan: bool, include_archive_scan: bool,
     ):
         files = []
         archives = []
@@ -212,26 +216,43 @@ async def search_files(
                             if recursive_scan and not os.path.islink(item_path):
                                 _scan(item_path)
                         elif os.path.isfile(item_path):
-                            if ext in CONVERTIBLE_EXTENSIONS:
-                                chd_path = str(Path(item_path).with_suffix(".chd"))
-                                # Use atomic check to get both file existence and lock status
-                                file_exists, is_converting = (
-                                    lock_manager.check_file_status(chd_path)
+                            if (
+                                ext in CONVERTIBLE_EXTENSIONS
+                                or ext in DOLPHIN_CONVERTIBLE_EXTENSIONS
+                            ):
+                                is_chd_convertible = ext in CONVERTIBLE_EXTENSIONS
+                                is_dolphin_convertible = (
+                                    ext in DOLPHIN_CONVERTIBLE_EXTENSIONS
                                 )
+                                chd_path = None
+                                has_chd = False
+                                chd_ready = False
+                                if is_chd_convertible:
+                                    chd_path = str(Path(item_path).with_suffix(".chd"))
+                                    # Use atomic check to get both file existence and lock status
+                                    file_exists, is_converting = (
+                                        lock_manager.check_file_status(chd_path)
+                                    )
+                                    has_chd = file_exists or is_converting
+                                    chd_ready = file_exists
                                 files.append(
                                     {
                                         "name": item,
                                         "path": item_path,
                                         "size": os.path.getsize(item_path),
                                         "extension": ext,
-                                        "has_chd": file_exists or is_converting,
+                                        "chd_path": chd_path,
+                                        "has_chd": has_chd,
+                                        "chd_ready": chd_ready,
+                                        "convertible": is_chd_convertible,
+                                        "dolphin_convertible": is_dolphin_convertible,
                                         "in_archive": False,
-                                    }
+                                    },
                                 )
                             elif include_archive_scan and ext in ARCHIVE_EXTENSIONS:
                                 # List archive contents
                                 archive_result = archive_service.list_archive_contents(
-                                    item_path, include_meta=True
+                                    item_path, include_meta=True,
                                 )
                                 archive_contents = archive_result["entries"]
                                 if archive_result["truncated"]:
@@ -243,7 +264,7 @@ async def search_files(
                                         or Path(entry["internal_path"]).stem
                                     )
                                     chd_path = os.path.join(
-                                        archive_dir, f"{output_stem}.chd"
+                                        archive_dir, f"{output_stem}.chd",
                                     )
                                     file_exists, is_converting = (
                                         lock_manager.check_file_status(chd_path)
@@ -259,8 +280,11 @@ async def search_files(
                                             "output_stem": output_stem,
                                             "chd_path": chd_path,
                                             "has_chd": file_exists or is_converting,
+                                            "chd_ready": file_exists,
+                                            "convertible": entry.get("extension") in CONVERTIBLE_EXTENSIONS,
+                                            "dolphin_convertible": False,
                                             "in_archive": True,
-                                        }
+                                        },
                                     )
                     except OSError:
                         # Skip archive entries that cannot be accessed
@@ -273,7 +297,7 @@ async def search_files(
         return files, archives, sorted(archives_truncated)
 
     files, archives, archives_truncated = await run_in_threadpool(
-        scan_directory, path, recursive, include_archives
+        scan_directory, path, recursive, include_archives,
     )
 
     return {
@@ -293,7 +317,7 @@ async def list_archive(
     """List convertible files inside an archive."""
     if not is_within_configured_volumes(path, treat_archives=False):
         raise HTTPException(
-            status_code=403, detail="Access denied: path outside configured volumes"
+            status_code=403, detail="Access denied: path outside configured volumes",
         )
 
     if not os.path.isfile(path):
@@ -303,7 +327,7 @@ async def list_archive(
         raise HTTPException(status_code=400, detail="Not a supported archive format")
 
     contents_result = await run_in_threadpool(
-        archive_service.list_archive_contents, path, include_meta=True
+        archive_service.list_archive_contents, path, include_meta=True,
     )
     contents = contents_result["entries"]
     truncated = bool(contents_result["truncated"])
@@ -317,6 +341,7 @@ async def list_archive(
         # Use atomic check to get both file existence and lock status
         file_exists, is_converting = lock_manager.check_file_status(chd_path)
         file_entry["has_chd"] = file_exists or is_converting
+        file_entry["chd_ready"] = file_exists
         file_entry["chd_path"] = chd_path
 
     return {
@@ -336,7 +361,7 @@ async def rename_file(
     # is_within_configured_volumes uses os.path.realpath which hits disk
     if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
         raise HTTPException(
-            status_code=403, detail="Access denied: path outside configured volumes"
+            status_code=403, detail="Access denied: path outside configured volumes",
         )
 
     if not await run_in_threadpool(os.path.exists, path):
@@ -362,7 +387,7 @@ async def rename_file(
     # Check if target already exists
     if await run_in_threadpool(os.path.exists, new_path):
         raise HTTPException(
-            status_code=409, detail="A file or directory with that name already exists"
+            status_code=409, detail="A file or directory with that name already exists",
         )
     await _assert_path_not_in_use(new_path, is_dir=False)
 
@@ -383,7 +408,7 @@ async def rename_file(
             "message": f"Successfully renamed to {new_name}",
         }
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to rename: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to rename: {e!s}")
 
 
 @router.delete("/files/delete")
@@ -393,7 +418,7 @@ async def delete_file(
     """Delete a file or empty directory."""
     if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
         raise HTTPException(
-            status_code=403, detail="Access denied: path outside configured volumes"
+            status_code=403, detail="Access denied: path outside configured volumes",
         )
 
     if not await run_in_threadpool(os.path.exists, path):
@@ -408,7 +433,7 @@ async def delete_file(
             contents = await run_in_threadpool(os.listdir, path)
             if contents:
                 raise HTTPException(
-                    status_code=400, detail="Cannot delete non-empty directory"
+                    status_code=400, detail="Cannot delete non-empty directory",
                 )
             await run_in_threadpool(os.rmdir, path)
         else:
@@ -419,7 +444,7 @@ async def delete_file(
 
         return {"success": True, "path": path, "message": "Successfully deleted"}
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {e!s}")
 
 
 @router.post("/files/delete-batch")
