@@ -7,8 +7,9 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME) and **dolphin-
 * **Web UI** for easy file browsing and conversion
 * Supports **nested directories** and **compressed archives** (ZIP, 7z, RAR)
 * **Multiple volume mounts** for organizing different game libraries
-* **ISO handling toggle** (default Dolphin; switch to CHDMAN for `.iso`)
-* Detects existing outputs with skip/rename/overwrite options (CLI skips existing CHDs)
+* **ISO handling toggle** (defaults to Dolphin for `.iso`; switch to CHDMAN)
+* Web UI detects existing outputs with skip/rename/overwrite options
+* CLI skips existing CHD files by default
 * Source files are preserved by default (optional delete-on-verify after successful conversion)
 * Supports CHD create/extract/copy plus Dolphin RVZ/WIA/GCZ/ISO conversions (Web UI/API)
 
@@ -96,8 +97,7 @@ In the Web UI, you can specify a custom output directory for converted CHD or Do
 - Archive inputs are limited to CHD create modes (not extract/copy/Dolphin).
 
 **ISO Handling & Dolphin Tools (GameCube/Wii)**
-- ISO handling defaults to **Dolphin** (toggle to CHDMAN for CHD-first workflows)
-- Toggle ISO handling between CHDMAN and Dolphin (controls ISO info/verify and conversions)
+- Toggle ISO handling between CHDMAN and Dolphin (defaults to Dolphin; controls ISO info/verify and conversions)
 - Convert `.iso`, `.gcz`, `.wia`, `.rvz`, `.wbfs` with dolphin-tool (RVZ/WIA/GCZ/ISO output)
 - Disc info and verification for Dolphin formats (including batch verification)
 - Dolphin modes require direct disc images (archive members are not supported)
@@ -375,7 +375,7 @@ The `/config` volume is **required** and must be mounted for the application to 
 
 | File | Location | Description |
 |------|----------|-------------|
-| `verified_chds.json` | `/config/` | Records of verified CHD/Dolphin files (integrity checks; filename retained for compatibility) |
+| `verified_chds.json` | `/config/` | Records of verified CHD/Dolphin files (integrity checks; filename retained for backward compatibility) |
 | `chd_metadata.json` | `/config/` | Cached CHD metadata (media type, info cache) |
 | `locks/` | `/config/locks` | Job lock files for concurrency control |
 
