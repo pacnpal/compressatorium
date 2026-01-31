@@ -112,8 +112,12 @@ class DolphinToolService:
             if settings.chdman_nice is not None:
                 try:
                     os.nice(settings.chdman_nice)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.debug(
+                        "Failed to set nice value %s for dolphin-tool process: %s",
+                        settings.chdman_nice,
+                        exc,
+                    )
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -277,7 +281,9 @@ class DolphinToolService:
             try:
                 await cancel_task
             except asyncio.CancelledError:
-                pass
+                # Cancellation of the helper task is expected once the process has finished.
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("cancel_task was cancelled after dolphin-tool process completion")
 
         if stall_error:
             raise RuntimeError(stall_error)
@@ -487,7 +493,8 @@ class DolphinToolService:
                 process.kill()
                 await process.wait()
         except ProcessLookupError:
-            pass
+            # Process is already gone; nothing left to terminate.
+            logger.debug("Process already exited before termination completed.")
 
     def _parse_progress(self, line: str) -> int:
         """Parse dolphin-tool output for progress percentage."""

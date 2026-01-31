@@ -39,7 +39,7 @@ class JobStatus(str, Enum):
 class FileEntry(BaseModel):
     name: str
     path: str
-    type: str  # "file" or "directory"
+    type: str  # "file", "directory", or "archive"
     size: int | None = None
     extension: str | None = None
     convertible: bool = False

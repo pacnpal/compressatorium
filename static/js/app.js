@@ -3265,8 +3265,8 @@ function App() {
 
             <header>
                 <div class="header-brand">
-                    <h1><span>CHD</span> Converter</h1>
-                    <span class="subtitle">Convert game disc images to CHD format</span>
+                    <h1><span>Compressatorium</span></h1>
+                    <span class="subtitle">Convert and compress game disc images</span>
                 </div>
                 <div class="header-actions">
                     <button
