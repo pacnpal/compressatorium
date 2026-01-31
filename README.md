@@ -20,13 +20,13 @@ The Docker image is available from two registries:
 ### Docker Hub
 
 ```bash
-docker pull pacnpal/chd-converter
+docker pull pacnpal/compressatorium
 ```
 
 ### GitHub Container Registry
 
 ```bash
-docker pull ghcr.io/pacnpal/docker-chd-converter-webui
+docker pull ghcr.io/pacnpal/compressatorium
 ```
 
 Both registries provide identical images with multi-architecture support (`linux/amd64` and `linux/arm64`).
