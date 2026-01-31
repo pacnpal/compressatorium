@@ -81,6 +81,16 @@ class ArchiveService:
         _, max_member_size, max_total_size = self._archive_limits()
         return max_member_size > 0 or max_total_size > 0
 
+    @staticmethod
+    def _is_macos_metadata_member(member: str) -> bool:
+        parts = PurePosixPath(member).parts
+        if not parts:
+            return False
+        name = parts[-1]
+        if name == ".DS_Store" or name.startswith("._"):
+            return True
+        return "__MACOSX" in parts
+
     def _create_temp_dir(self) -> str:
         base_dir = settings.temp_dir
         if base_dir is None:
@@ -165,6 +175,8 @@ class ArchiveService:
             for info in zf.infolist():
                 if info.is_dir():
                     continue
+                if self._is_macos_metadata_member(info.filename):
+                    continue
                 try:
                     self._validate_member(info.filename)
                 except ValueError:
@@ -218,6 +230,8 @@ class ArchiveService:
             archive_info = zf.archiveinfo()
             if hasattr(archive_info, "files"):
                 for name, info in archive_info.files.items():
+                    if self._is_macos_metadata_member(name):
+                        continue
                     try:
                         self._validate_member(name)
                     except ValueError:
@@ -274,6 +288,8 @@ class ArchiveService:
             if not entries:
                 for entry in zf.list():
                     if entry.is_directory:
+                        continue
+                    if self._is_macos_metadata_member(entry.filename):
                         continue
                     try:
                         self._validate_member(entry.filename)
@@ -337,6 +353,8 @@ class ArchiveService:
         with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
             for info in rf.infolist():
                 if info.is_dir():
+                    continue
+                if self._is_macos_metadata_member(info.filename):
                     continue
                 try:
                     self._validate_member(info.filename)
@@ -542,6 +560,8 @@ class ArchiveService:
             for info in zf.infolist():
                 if info.is_dir():
                     continue
+                if self._is_macos_metadata_member(info.filename):
+                    continue
                 try:
                     self._validate_member(info.filename)
                 except ValueError:
@@ -573,6 +593,8 @@ class ArchiveService:
                 if entry.is_directory:
                     continue
                 name = entry.filename
+                if self._is_macos_metadata_member(name):
+                    continue
                 try:
                     self._validate_member(name)
                 except ValueError:
@@ -606,6 +628,8 @@ class ArchiveService:
         with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
             for info in rf.infolist():
                 if info.is_dir():
+                    continue
+                if self._is_macos_metadata_member(info.filename):
                     continue
                 try:
                     self._validate_member(info.filename)

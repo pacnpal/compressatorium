@@ -82,6 +82,17 @@ class DolphinToolService:
 
         return cmd
 
+    def _wrap_with_stdbuf(self, cmd: list[str]) -> list[str]:
+        """Wrap command with stdbuf if available to reduce stdout buffering."""
+        stdbuf = shutil.which("stdbuf")
+        if not stdbuf:
+            return cmd
+        try:
+            idx = cmd.index(self.dolphin_tool_path)
+        except ValueError:
+            return [stdbuf, "-oL", "-eL"] + cmd
+        return cmd[:idx] + [stdbuf, "-oL", "-eL"] + cmd[idx:]
+
     def _track_pid(self, pid: int):
         with self._pid_lock:
             self._active_pids.add(pid)
@@ -112,6 +123,7 @@ class DolphinToolService:
         cmd = self._build_convert_command(
             mode, input_path, output_path, compression=compression,
         )
+        cmd = self._wrap_with_stdbuf(cmd)
 
         def _preexec():
             if settings.chdman_nice is not None:
@@ -143,6 +155,8 @@ class DolphinToolService:
         last_progress_value = 0
         last_output_size: int | None = None
         last_activity_at = time.monotonic()
+        start = last_activity_at
+        last_heartbeat_at = start
 
         cancelled_by_request = False
         cancel_task = None
@@ -216,8 +230,16 @@ class DolphinToolService:
             except asyncio.TimeoutError:
                 if cancel_event and cancel_event.is_set():
                     break
-                if await _check_stall(time.monotonic()):
+                now = time.monotonic()
+                if await _check_stall(now):
                     break
+                if now - last_heartbeat_at >= 2:
+                    elapsed = int(now - start)
+                    yield {
+                        "progress": last_progress_value,
+                        "message": f"Converting... ({elapsed}s)",
+                    }
+                    last_heartbeat_at = now
                 continue
             if not chunk:
                 break
@@ -236,10 +258,17 @@ class DolphinToolService:
                                     output_lines.pop(0)
                             now = time.monotonic()
                             progress = self._parse_progress(line)
-                            if progress > last_progress_value:
+                            if progress is not None and progress > last_progress_value:
                                 last_progress_value = progress
                                 last_activity_at = now
-                            yield {"progress": progress, "message": line}
+                            yield {
+                                "progress": (
+                                    progress
+                                    if progress is not None
+                                    else last_progress_value
+                                ),
+                                "message": line,
+                            }
                     buffer = parts[-1]
                 elif "\n" in buffer:
                     parts = buffer.split("\n")
@@ -252,10 +281,17 @@ class DolphinToolService:
                                     output_lines.pop(0)
                             now = time.monotonic()
                             progress = self._parse_progress(line)
-                            if progress > last_progress_value:
+                            if progress is not None and progress > last_progress_value:
                                 last_progress_value = progress
                                 last_activity_at = now
-                            yield {"progress": progress, "message": line}
+                            yield {
+                                "progress": (
+                                    progress
+                                    if progress is not None
+                                    else last_progress_value
+                                ),
+                                "message": line,
+                            }
                     buffer = parts[-1]
             if await _check_stall(time.monotonic()):
                 break
@@ -268,10 +304,15 @@ class DolphinToolService:
                     output_lines.pop(0)
             now = time.monotonic()
             progress = self._parse_progress(line)
-            if progress > last_progress_value:
+            if progress is not None and progress > last_progress_value:
                 last_progress_value = progress
                 last_activity_at = now
-            yield {"progress": progress, "message": line}
+            yield {
+                "progress": (
+                    progress if progress is not None else last_progress_value
+                ),
+                "message": line,
+            }
 
         await process.wait()
         if logger.isEnabledFor(logging.DEBUG):
@@ -355,10 +396,16 @@ class DolphinToolService:
 
     async def verify_stream(self, path: str) -> AsyncGenerator[dict, None]:
         """Stream disc image verification progress."""
+        cmd = self._wrap_with_stdbuf(
+            [
+                self.dolphin_tool_path,
+                "verify",
+                "-i",
+                path,
+            ]
+        )
         process = await asyncio.create_subprocess_exec(
-            self.dolphin_tool_path,
-            "verify",
-            "-i", path,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -500,12 +547,12 @@ class DolphinToolService:
             # Process is already gone; nothing left to terminate.
             logger.debug("Process already exited before termination completed.")
 
-    def _parse_progress(self, line: str) -> int:
+    def _parse_progress(self, line: str) -> int | None:
         """Parse dolphin-tool output for progress percentage."""
         match = re.search(r"(\d+(?:\.\d+)?)\s*%", line)
         if match:
             return min(99, int(float(match.group(1))))
-        return 0
+        return None
 
     def _parse_header(self, output: str) -> dict:
         """Parse dolphin-tool header output into structured data."""

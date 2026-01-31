@@ -4,6 +4,7 @@ import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
 const ISO_TOOL_STORAGE_KEY = 'iso_tool_preference';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
+const isMacMetadataName = (name) => name === '.DS_Store' || name.startsWith('._') || name === '__MACOSX';
 
 const normalizeDolphinLevel = (value) => {
     const raw = `${value ?? ''}`.trim();
@@ -193,6 +194,9 @@ function Breadcrumb({ path, volume, onNavigate }) {
 }
 
 function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected, isoHandling, onToggleIsoHandling }) {
+    const visibleEntries = Array.isArray(entries)
+        ? entries.filter((entry) => !isMacMetadataName(entry?.name || ''))
+        : [];
 
     if (error) {
         return html`
@@ -204,7 +208,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         `;
     }
 
-    if (!entries || entries.length === 0) {
+    if (visibleEntries.length === 0) {
         return html`
             <div class="empty-state">
                 <div class="icon">📂</div>
@@ -375,7 +379,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                 <div class="header-cell header-actions"></div>
             </div>
             <ul class="file-list">
-                ${entries.map(entry => {
+                ${visibleEntries.map(entry => {
         const chdPath = getChdPath(entry);
         const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
         const entryExt = entry.extension?.toLowerCase();
@@ -3032,7 +3036,10 @@ function App() {
     const selectedEntries = useMemo(() => Array.from(selectedFiles.values()), [selectedFiles]);
     const modeVisibility = useMemo(() => {
         if (selectedEntries.length === 0) {
-            return { create: true, extract: true, copy: true, dolphin: true };
+            if (isoHandling === 'dolphin') {
+                return { create: false, extract: false, copy: false, dolphin: true };
+            }
+            return { create: true, extract: true, copy: true, dolphin: false };
         }
         let allowCreate = true;
         let allowExtract = true;
@@ -3054,17 +3061,31 @@ function App() {
             allowCopy = allowCopy && isChd;
             allowDolphin = allowDolphin && canDolphin;
         }
+        if (isoHandling === 'dolphin') {
+            return {
+                create: false,
+                extract: false,
+                copy: false,
+                dolphin: true
+            };
+        }
         return {
             create: allowCreate,
             extract: allowExtract,
             copy: allowCopy,
-            dolphin: allowDolphin
+            dolphin: false
         };
     }, [selectedEntries, isoHandling]);
     const visibleModeGroups = useMemo(() => {
         const filtered = MODE_GROUPS.filter((group) => modeVisibility[group.id]);
-        return filtered.length ? filtered : MODE_GROUPS;
-    }, [modeVisibility]);
+        if (filtered.length) return filtered;
+        if (isoHandling === 'dolphin') {
+            const dolphinGroup = MODE_GROUPS.find((group) => group.id === 'dolphin');
+            return dolphinGroup ? [dolphinGroup] : MODE_GROUPS;
+        }
+        const chdGroups = MODE_GROUPS.filter((group) => group.id !== 'dolphin');
+        return chdGroups.length ? chdGroups : MODE_GROUPS;
+    }, [modeVisibility, isoHandling]);
     useEffect(() => {
         const hasCurrent = visibleModeGroups.some((group) =>
             group.options.some((opt) => opt.value === conversionMode)
@@ -3582,6 +3603,11 @@ function App() {
                                         </optgroup>
                                     `)}
                                 </select>
+                                <div class="toolbar-hint">
+                                    ${isoHandling === 'dolphin'
+                                        ? 'Switch ISO Handling to CHDMAN to see CHD modes.'
+                                        : 'Switch ISO Handling to Dolphin to see Dolphin modes.'}
+                                </div>
                             </div>
                             <div class="compression-group" role="group" aria-label="Compression options">
                                 <span class="compression-label">Compression</span>

@@ -16,6 +16,9 @@ from utils.path_utils import get_volume_name_for_path, is_within_configured_volu
 
 router = APIRouter()
 
+def _is_macos_metadata_entry(name: str) -> bool:
+    return name == ".DS_Store" or name.startswith("._") or name == "__MACOSX"
+
 async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     _, is_locked = await run_in_threadpool(lock_manager.check_file_status, path)
     if is_locked:
@@ -91,6 +94,8 @@ async def list_files(
         try:
             # This outer try-except catches errors from os.listdir() itself
             for item in sorted(os.listdir(target_path)):
+                if _is_macos_metadata_entry(item):
+                    continue
                 item_path = os.path.join(target_path, item)
                 ext = Path(item).suffix.lower()
 
@@ -208,6 +213,8 @@ async def search_files(
             visited_dirs.add(real_dir)
             try:
                 for item in os.listdir(dir_path):
+                    if _is_macos_metadata_entry(item):
+                        continue
                     item_path = os.path.join(dir_path, item)
                     ext = Path(item).suffix.lower()
 
