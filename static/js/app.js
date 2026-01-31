@@ -3,6 +3,56 @@ import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
 const ISO_TOOL_STORAGE_KEY = 'iso_tool_preference';
+const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
+
+const normalizeDolphinLevel = (value) => {
+    const raw = `${value ?? ''}`.trim();
+    if (!raw) return DEFAULT_DOLPHIN_COMPRESSION_LEVEL;
+    if (!/^\d+$/.test(raw)) return DEFAULT_DOLPHIN_COMPRESSION_LEVEL;
+    return raw;
+};
+
+const MODE_GROUPS = [
+    {
+        id: 'create',
+        label: 'Create CHD',
+        options: [
+            { value: 'createcd', label: 'Create CD CHD (Dreamcast, PS1, Sega CD)' },
+            { value: 'createdvd', label: 'Create DVD CHD (PSP, PS2)' },
+            { value: 'createraw', label: 'Create Raw CHD' },
+            { value: 'createhd', label: 'Create HD CHD' },
+            { value: 'createld', label: 'Create LaserDisc CHD' }
+        ]
+    },
+    {
+        id: 'extract',
+        label: 'Extract from CHD',
+        options: [
+            { value: 'extractcd', label: 'Extract CD (cue/bin)' },
+            { value: 'extractdvd', label: 'Extract DVD (iso)' },
+            { value: 'extractraw', label: 'Extract Raw' },
+            { value: 'extracthd', label: 'Extract HD' },
+            { value: 'extractld', label: 'Extract LaserDisc (avi)' }
+        ]
+    },
+    {
+        id: 'copy',
+        label: 'Copy / Recompress',
+        options: [
+            { value: 'copy', label: 'Copy / Recompress CHD' }
+        ]
+    },
+    {
+        id: 'dolphin',
+        label: 'Dolphin (GameCube/Wii)',
+        options: [
+            { value: 'dolphin_rvz', label: 'Convert to RVZ (recommended)' },
+            { value: 'dolphin_wia', label: 'Convert to WIA' },
+            { value: 'dolphin_gcz', label: 'Convert to GCZ' },
+            { value: 'dolphin_iso', label: 'Convert to ISO (extract)' }
+        ]
+    }
+];
 
 // ============ Help Component ============
 
@@ -53,6 +103,7 @@ function HelpPanel({ onClose, isoHandling }) {
                 <ul>
                     <li><strong>RVZ</strong> is the recommended format for Dolphin emulator.</li>
                     <li><strong>zstd</strong> compression gives the best speed/size balance for RVZ.</li>
+                    <li><strong>Compression levels</strong> are required for RVZ/WIA (for example: <code>zstd:5</code>).</li>
                     <li><strong>WIA</strong> is an older compressed format; prefer RVZ for new conversions.</li>
                     <li><strong>GCZ</strong> uses fixed deflate compression (no codec selection).</li>
                     <li><strong>ISO</strong> output extracts to uncompressed disc image.</li>
@@ -729,7 +780,7 @@ function DuplicateModal({ duplicates, onAction, onClose }) {
                     <p style="margin-bottom: 15px; color: var(--text-secondary);">How would you like to handle these duplicates?</p>
                     <div style="display: flex; flex-direction: column; gap: 10px;">
                         <button class="btn btn-primary" onClick=${() => onAction('rename')} style="width: 100%;">
-                            Rename (create game_1.chd, game_2.chd, etc.)
+                            Rename (create unique output files)
                         </button>
                         <button class="btn btn-secondary" onClick=${() => onAction('overwrite')} style="width: 100%;">
                             Overwrite existing files
@@ -747,7 +798,7 @@ function DuplicateModal({ duplicates, onAction, onClose }) {
     `;
 }
 
-function DeletePlanModal({ plan, onConfirm, onClose }) {
+function DeletePlanModal({ plan, onConfirm, onClose, verificationLabel }) {
     if (!plan) return null;
 
     const items = Array.isArray(plan.items) ? plan.items : [];
@@ -768,7 +819,7 @@ function DeletePlanModal({ plan, onConfirm, onClose }) {
                 </div>
                 <div class="modal-body" style="padding: 15px;">
                     <p style="color: var(--text-secondary); margin-bottom: 12px;">
-                        The files below will be deleted <strong>after</strong> a successful conversion and CHD verification.
+                        The files below will be deleted <strong>after</strong> a successful conversion and ${verificationLabel} verification.
                     </p>
                     <div style="max-height: 240px; overflow-y: auto; padding: 10px; background: var(--bg-primary); border-radius: 4px; margin-bottom: 15px;">
                         ${items.map(item => html`
@@ -1865,6 +1916,7 @@ function App() {
         }
     });
     const [compressionSelection, setCompressionSelection] = useState(['zlib']);
+    const [dolphinCompressionLevel, setDolphinCompressionLevel] = useState(DEFAULT_DOLPHIN_COMPRESSION_LEVEL);
     const [showCompressionHelp, setShowCompressionHelp] = useState(false);
     const [outputDir, setOutputDir] = useState('');
     const [deleteOnVerify, setDeleteOnVerify] = useState(false);
@@ -2932,6 +2984,14 @@ function App() {
     const isDolphinCompressible = isDolphinMode && !['dolphin_iso', 'dolphin_gcz'].includes(conversionMode);
     const activeCompressionOptions = isDolphinCompressible ? dolphinCompressionOptions : compressionOptions;
     const compressionSupported = isCreateMode || isCopyMode || isDolphinCompressible;
+    const dolphinCodecValues = isDolphinCompressible
+        ? new Set(activeCompressionOptions.map((opt) => opt.value))
+        : null;
+    const selectedDolphinCodec = isDolphinCompressible
+        ? (compressionSelection.find((value) => value !== 'none' && dolphinCodecValues.has(value)) || 'none')
+        : null;
+    const dolphinLevelEnabled = Boolean(isDolphinCompressible && selectedDolphinCodec && selectedDolphinCodec !== 'none');
+    const normalizedDolphinLevel = normalizeDolphinLevel(dolphinCompressionLevel);
     const hasMultipleDolphinCodecs = isDolphinCompressible
         && compressionSelection.filter((value) => value !== 'none').length > 1;
     const hasArchiveSelection = useMemo(() => {
@@ -2948,12 +3008,83 @@ function App() {
         ? 'Delete original CHD after copy + verify'
         : 'Delete source after convert + verify';
     const deleteOnVerifyNote = !deleteOnVerifySupported
-        ? 'Available only for create/copy modes.'
+        ? 'Available only for create/copy/Dolphin modes.'
         : hasArchiveSelection
             ? 'Archive inputs will delete the entire archive after verification.'
             : isCopyMode
                 ? 'Warning: this deletes the original CHD after the copy verifies.'
-                : 'Runs CHD verification and deletes the original source (including .cue/.gdi track files) if it passes.';
+                : isDolphinMode
+                    ? 'Runs Dolphin disc verification and deletes the original source if it passes.'
+                    : 'Runs CHD verification and deletes the original source (including .cue/.gdi track files) if it passes.';
+    const deleteOnVerifyTitle = isDolphinMode
+        ? 'Verify output disc image, then delete the source files'
+        : 'Verify output CHD, then delete the source files';
+    const outputTitle = isExtractMode
+        ? 'Optional: Specify a custom directory for extracted files'
+        : isDolphinMode
+            ? 'Optional: Specify a custom directory for output disc images'
+            : 'Optional: Specify a custom directory for output CHD files';
+    const outputHint = isExtractMode
+        ? 'Leave empty to save extracted files next to source files.'
+        : isDolphinMode
+            ? 'Leave empty to save Dolphin files next to source files.'
+            : 'Leave empty to save CHD files next to source files.';
+    const selectedEntries = useMemo(() => Array.from(selectedFiles.values()), [selectedFiles]);
+    const modeVisibility = useMemo(() => {
+        if (selectedEntries.length === 0) {
+            return { create: true, extract: true, copy: true, dolphin: true };
+        }
+        let allowCreate = true;
+        let allowExtract = true;
+        let allowCopy = true;
+        let allowDolphin = true;
+        for (const entry of selectedEntries) {
+            const ext = entry.extension?.toLowerCase();
+            const isIso = ext === '.iso';
+            const isChd = ext === '.chd';
+            const inArchive = Boolean(entry.is_archive_item || entry.in_archive || entry.path?.includes('::'));
+            const canDolphin = entry.dolphin_convertible === true
+                && !inArchive
+                && (!isIso || isoHandling === 'dolphin');
+            const canChdCreate = entry.convertible === true
+                && !isChd
+                && (!isIso || isoHandling !== 'dolphin');
+            allowCreate = allowCreate && canChdCreate;
+            allowExtract = allowExtract && isChd;
+            allowCopy = allowCopy && isChd;
+            allowDolphin = allowDolphin && canDolphin;
+        }
+        return {
+            create: allowCreate,
+            extract: allowExtract,
+            copy: allowCopy,
+            dolphin: allowDolphin
+        };
+    }, [selectedEntries, isoHandling]);
+    const visibleModeGroups = useMemo(() => {
+        const filtered = MODE_GROUPS.filter((group) => modeVisibility[group.id]);
+        return filtered.length ? filtered : MODE_GROUPS;
+    }, [modeVisibility]);
+    useEffect(() => {
+        const hasCurrent = visibleModeGroups.some((group) =>
+            group.options.some((opt) => opt.value === conversionMode)
+        );
+        if (!hasCurrent) {
+            const fallback = visibleModeGroups[0]?.options[0]?.value;
+            if (fallback) {
+                setConversionMode(fallback);
+            }
+        }
+    }, [visibleModeGroups, conversionMode]);
+    const compressionMetaText = !compressionSupported
+        ? 'Compression not applicable for this mode'
+        : isDolphinCompressible
+            ? (selectedDolphinCodec === 'none'
+                ? 'No compression (-c none)'
+                : `Codec: ${selectedDolphinCodec} • Level: ${normalizedDolphinLevel}`)
+            : (compressionSelection.includes('none')
+                ? 'No compression (-c none)'
+                : `${compressionSelection.length}/${isDolphinCompressible ? activeCompressionOptions.length : 4} codecs selected`);
 
     useEffect(() => {
         if (deleteOnVerifyDisabled && deleteOnVerify) {
@@ -3048,11 +3179,23 @@ function App() {
     };
 
     const getCompressionValue = () => {
-        return buildCompressionValue(compressionSelection, activeCompressionOptions);
+        const baseValue = buildCompressionValue(compressionSelection, activeCompressionOptions);
+        if (!isDolphinCompressible) {
+            return baseValue;
+        }
+        if (!baseValue || baseValue === 'none') {
+            return baseValue;
+        }
+        const level = normalizeDolphinLevel(dolphinCompressionLevel);
+        return `${baseValue}:${level}`;
     };
 
     const canSelectEntry = (entry) => {
         if (!entry || entry.type === 'directory' || entry.type === 'archive') return false;
+        if (entry.extension === '.iso') {
+            if (isDolphinMode && isoHandling === 'chdman') return false;
+            if (!isDolphinMode && isoHandling === 'dolphin') return false;
+        }
         if (isDolphinMode) {
             return entry.dolphin_convertible === true;
         }
@@ -3431,29 +3574,13 @@ function App() {
                                     onChange=${(e) => setConversionMode(e.target.value)}
                                     title="Select conversion mode based on your disc type"
                                 >
-                                    <optgroup label="Create CHD">
-                                        <option value="createcd">Create CD CHD (Dreamcast, PS1, Sega CD)</option>
-                                        <option value="createdvd">Create DVD CHD (PSP, PS2)</option>
-                                        <option value="createraw">Create Raw CHD</option>
-                                        <option value="createhd">Create HD CHD</option>
-                                        <option value="createld">Create LaserDisc CHD</option>
-                                    </optgroup>
-                                    <optgroup label="Extract from CHD">
-                                        <option value="extractcd">Extract CD (cue/bin)</option>
-                                        <option value="extractdvd">Extract DVD (iso)</option>
-                                        <option value="extractraw">Extract Raw</option>
-                                        <option value="extracthd">Extract HD</option>
-                                        <option value="extractld">Extract LaserDisc (avi)</option>
-                                    </optgroup>
-                                    <optgroup label="Copy / Recompress">
-                                        <option value="copy">Copy / Recompress CHD</option>
-                                    </optgroup>
-                                    <optgroup label="Dolphin (GameCube/Wii)">
-                                        <option value="dolphin_rvz">Convert to RVZ (recommended)</option>
-                                        <option value="dolphin_wia">Convert to WIA</option>
-                                        <option value="dolphin_gcz">Convert to GCZ</option>
-                                        <option value="dolphin_iso">Convert to ISO (extract)</option>
-                                    </optgroup>
+                                    ${visibleModeGroups.map((group) => html`
+                                        <optgroup label=${group.label}>
+                                            ${group.options.map((opt) => html`
+                                                <option value=${opt.value}>${opt.label}</option>
+                                            `)}
+                                        </optgroup>
+                                    `)}
                                 </select>
                             </div>
                             <div class="compression-group" role="group" aria-label="Compression options">
@@ -3471,8 +3598,28 @@ function App() {
                                         </label>
                                     `)}
                                 </div>
+                                ${isDolphinCompressible && html`
+                                    <div class="compression-level">
+                                        <span class="compression-level-label">Level</span>
+                                        <input
+                                            type="number"
+                                            inputmode="numeric"
+                                            min="1"
+                                            max="22"
+                                            step="1"
+                                            value=${dolphinCompressionLevel}
+                                            disabled=${!compressionSupported || !dolphinLevelEnabled}
+                                            onInput=${(e) => setDolphinCompressionLevel(e.target.value)}
+                                            onBlur=${(e) => setDolphinCompressionLevel(normalizeDolphinLevel(e.target.value))}
+                                            title="Dolphin codecs require a compression level"
+                                        />
+                                        <span class="compression-level-hint">
+                                            ${dolphinLevelEnabled ? 'Higher = smaller, slower.' : 'Select a codec to set level.'}
+                                        </span>
+                                    </div>
+                                `}
                                 <div class="compression-meta">
-                                    <span>${!compressionSupported ? 'Compression not applicable for this mode' : (compressionSelection.includes('none') ? 'No compression (-c none)' : `${compressionSelection.length}/${isDolphinCompressible ? activeCompressionOptions.length : 4} codecs selected`)}</span>
+                                    <span>${compressionMetaText}</span>
                                     <button class="btn btn-sm btn-secondary" onClick=${() => setShowCompressionHelp(v => !v)}>
                                         ${showCompressionHelp ? 'Hide Info' : 'Compression Info'}
                                     </button>
@@ -3483,7 +3630,7 @@ function App() {
                                     </div>
                                 `}
                                 <span class="compression-hint">
-                                    ${isDolphinCompressible ? 'Choose one codec for Dolphin formats.' : 'Choose up to 4 codecs. zlib is the most compatible option.'}
+                                    ${isDolphinCompressible ? 'Choose one codec and set a level for Dolphin formats.' : 'Choose up to 4 codecs. zlib is the most compatible option.'}
                                 </span>
                             </div>
                             <div class="toolbar-group">
@@ -3539,23 +3686,38 @@ function App() {
 
                     ${showCompressionHelp && html`
                         <div class="compression-help">
-                            <h4>Compression Guide</h4>
-                            <ul>
-                                <li><strong>No compression</strong>: passes <code>-c none</code> for uncompressed output.</li>
-                                <li><strong>zlib</strong>: best overall compatibility.</li>
-                                <li><strong>zstd</strong>: fast and small, but older software may not support it.</li>
-                                <li><strong>lzma</strong>: highest compression, slowest.</li>
-                                <li><strong>huff</strong>: Huffman coding, moderate compression.</li>
-                                <li><strong>flac</strong>: audio-only compression for stereo PCM audio.</li>
-                                <li><strong>cdzl/cdzs/cdlz/cdfl</strong>: CD-specific mixes of audio/subchannel codecs.</li>
-                                <li><strong>avhu</strong>: Huffman for A/V (LaserDisc).</li>
-                            </ul>
-                            <p class="compression-note">
-                                If unsure, choose <strong>zlib</strong>. It's the most compatible choice.
-                            </p>
-                            <p class="compression-note">
-                                Omitting <code>-c</code> would use chdman defaults; this app always sends an explicit choice.
-                            </p>
+                            <h4>${isDolphinMode ? 'Dolphin Compression Guide' : 'Compression Guide'}</h4>
+                            ${isDolphinMode ? html`
+                                <ul>
+                                    <li><strong>No compression</strong>: stores data uncompressed (<code>-c none</code>).</li>
+                                    <li><strong>zstd</strong>: best balance of speed and size (recommended).</li>
+                                    <li><strong>bzip2</strong>: good compression, slower.</li>
+                                    <li><strong>lzma/lzma2</strong>: highest compression, slowest.</li>
+                                    <li><strong>Level</strong>: required for Dolphin codecs; higher means smaller files but slower encoding.</li>
+                                    <li><strong>GCZ</strong>: fixed deflate compression (no codec/level selection).</li>
+                                    <li><strong>ISO</strong>: uncompressed extraction.</li>
+                                </ul>
+                                <p class="compression-note">
+                                    If unsure, start with <strong>zstd</strong> at level <strong>${normalizedDolphinLevel}</strong>.
+                                </p>
+                            ` : html`
+                                <ul>
+                                    <li><strong>No compression</strong>: passes <code>-c none</code> for uncompressed output.</li>
+                                    <li><strong>zlib</strong>: best overall compatibility.</li>
+                                    <li><strong>zstd</strong>: fast and small, but older software may not support it.</li>
+                                    <li><strong>lzma</strong>: highest compression, slowest.</li>
+                                    <li><strong>huff</strong>: Huffman coding, moderate compression.</li>
+                                    <li><strong>flac</strong>: audio-only compression for stereo PCM audio.</li>
+                                    <li><strong>cdzl/cdzs/cdlz/cdfl</strong>: CD-specific mixes of audio/subchannel codecs.</li>
+                                    <li><strong>avhu</strong>: Huffman for A/V (LaserDisc).</li>
+                                </ul>
+                                <p class="compression-note">
+                                    If unsure, choose <strong>zlib</strong>. It's the most compatible choice.
+                                </p>
+                                <p class="compression-note">
+                                    Omitting <code>-c</code> would use chdman defaults; this app always sends an explicit choice.
+                                </p>
+                            `}
                         </div>
                     `}
 
@@ -3573,13 +3735,13 @@ function App() {
                                 placeholder="Same as source (leave empty)"
                                 value=${outputDir}
                                 onInput=${(e) => setOutputDir(e.target.value)}
-                                title="Optional: Specify a custom directory for output CHD files"
+                                title=${outputTitle}
                             />
-                            <span class="option-hint">Leave empty to save CHD files next to source files.</span>
+                            <span class="option-hint">${outputHint}</span>
                         </div>
                         <div class="option-card">
                             <span class="option-label">Post-conversion</span>
-                            <label class="toggle-option" title="Verify output CHD, then delete the source files">
+                            <label class="toggle-option" title=${deleteOnVerifyTitle}>
                                 <input
                                     type="checkbox"
                                     checked=${deleteOnVerify}
@@ -3675,6 +3837,7 @@ function App() {
             ${deletePlan && html`
                 <${DeletePlanModal}
                     plan=${deletePlan.plan}
+                    verificationLabel=${isDolphinMode ? 'disc image' : 'CHD'}
                     onConfirm=${handleDeletePlanConfirm}
                     onClose=${handleDeletePlanClose}
                 />

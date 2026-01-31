@@ -541,6 +541,42 @@ header h1 span {
     gap: 10px;
 }
 
+.compression-level {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+}
+
+.compression-level-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.compression-level input {
+    width: 72px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+}
+
+.compression-level input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.compression-level-hint {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
 .compression-hint {
     font-size: 0.75rem;
     color: var(--text-secondary);

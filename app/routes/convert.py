@@ -2,7 +2,6 @@ import asyncio
 import os
 import re
 from pathlib import Path
-from typing import List, Set
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -32,6 +31,24 @@ router = APIRouter()
 
 
 def normalize_output_dir(value: str | None) -> str | None:
+    """Normalize and validate the output directory string.
+
+    Parameters
+    ----------
+    value : Optional[str]
+        The output directory path as a string, or None.
+
+    Returns
+    -------
+    Optional[str]
+        The cleaned output directory string, or None if not provided.
+
+    Raises
+    ------
+    HTTPException
+        If the output directory is an empty string after stripping.
+
+    """
     if value is None:
         return None
     cleaned = value.strip()
@@ -88,7 +105,7 @@ def _is_same_path(path_a: str, path_b: str) -> bool:
         return False
 
 
-def get_disallowed_archive_paths(file_paths: List[str]) -> Set[str]:
+def get_disallowed_archive_paths(file_paths: list[str]) -> set[str]:
     """Get archive paths that should not allow delete-on-verify due to multiple selections."""
     archive_counts = {}
     for file_path in file_paths:
@@ -123,7 +140,7 @@ def get_unique_output_path(base_path: str) -> str:
         counter += 1
 
 
-def check_output_conflicts(mode: str, output_path: str) -> tuple[bool, bool]:
+def check_output_conflicts(mode: str, output_path: str) -> tuple:
     file_exists, is_locked = lock_manager.check_file_status(output_path)
     exists = file_exists or is_locked
     locked = is_locked
@@ -722,9 +739,8 @@ async def job_events():
 
                     await asyncio.sleep(0.1)
 
-                except Exception as e:
+                except Exception:
                     # Log error but keep the connection alive
-                    print(f"SSE event generator error: {e}")
                     await asyncio.sleep(1)
         finally:
             for job_id, queue in list(queues.items()):

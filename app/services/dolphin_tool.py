@@ -18,6 +18,7 @@ DOLPHIN_OUTPUT_FORMATS = {
     "dolphin_gcz": ("gcz", ".gcz"),
     "dolphin_iso": ("iso", ".iso"),
 }
+DEFAULT_DOLPHIN_COMPRESSION_LEVEL = "5"
 
 logger = logging.getLogger("chd.dolphin_tool")
 
@@ -59,6 +60,10 @@ class DolphinToolService:
             level = None
             if ":" in compression:
                 codec, level = compression.split(":", 1)
+            if codec == "none":
+                level = None
+            elif level is None:
+                level = DEFAULT_DOLPHIN_COMPRESSION_LEVEL
             cmd.extend(["-c", codec])
             if level:
                 cmd.extend(["-l", level])
