@@ -3875,11 +3875,10 @@ function App() {
                         <div class="header-actions">
                             ${stuckState?.is_stuck && html`
                                 <button
-                                    class="btn btn-sm btn-warning"
+                                    class="btn btn-sm btn-warning-pulse"
                                     onClick=${handleRecoverStuck}
                                     disabled=${recoveringStuck}
                                     title="Jobs are stuck waiting. Click to attempt recovery by cleaning up stale locks."
-                                    style="animation: pulse 2s infinite; background: var(--warning); color: white;"
                                 >
                                     ${recoveringStuck ? '⏳ Recovering...' : '🔧 Fix Stuck Jobs'}
                                 </button>
@@ -3903,12 +3902,12 @@ function App() {
                         </div>
                     </div>
                     ${stuckState?.is_stuck && html`
-                        <div class="stuck-warning" style="padding: 12px; margin: 0 12px 12px; background: var(--warning-bg, #fff3cd); border-left: 4px solid var(--warning, #f0ad4e); border-radius: 4px;">
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="font-size: 1.2em;">⚠️</span>
+                        <div class="stuck-warning">
+                            <div class="stuck-warning-content">
+                                <span class="stuck-warning-icon">⚠️</span>
                                 <div>
-                                    <strong>Jobs Stuck:</strong> ${stuckState.queued_count} job(s) waiting but none processing.
-                                    <div style="font-size: 0.85em; opacity: 0.8; margin-top: 4px;">
+                                    <strong>Jobs Stuck:</strong> ${stuckState.queued_count} ${stuckState.queued_count === 1 ? 'job' : 'jobs'} waiting but none processing.
+                                    <div class="stuck-warning-details">
                                         This usually happens due to stale locks. Click "Fix Stuck Jobs" to attempt automatic recovery.
                                     </div>
                                 </div>

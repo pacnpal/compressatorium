@@ -33,11 +33,11 @@ class LockManager:
         filename = f"filelock-{safe_base}-{digest}.lock"
         return os.path.join(self._lock_dir, filename)
 
-    def _cleanup_stale_locks(self, *, periodic: bool = False) -> int:
+    def _cleanup_stale_locks(self, *, log_level: str = "info") -> int:
         """Remove stale file lock artifacts from the lock directory.
         
         Args:
-            periodic: If True, this is a periodic cleanup (log at debug level)
+            log_level: Logging level for removed locks - "info" or "debug"
         
         Returns:
             Number of stale locks removed
@@ -80,8 +80,10 @@ class LockManager:
                     try:
                         os.remove(lock_path)
                         removed_count += 1
-                        if not periodic or logger.isEnabledFor(logging.DEBUG):
+                        if log_level == "info":
                             logger.info("Removed stale lock file: %s", name)
+                        else:
+                            logger.debug("Removed stale lock file: %s", name)
                     except OSError as e:
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug("Failed to remove stale lock %s: %s", name, e)
@@ -100,7 +102,7 @@ class LockManager:
         Returns:
             Number of stale locks removed
         """
-        return self._cleanup_stale_locks(periodic=True)
+        return self._cleanup_stale_locks(log_level="debug")
 
     def is_locked(self, output_path: str) -> bool:
         """Check if an output file is currently locked (being converted)."""
