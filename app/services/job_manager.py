@@ -237,6 +237,16 @@ class JobManager:
                     return True
         return False
 
+    def _get_queued_and_processing_jobs(self) -> tuple[list[str], list[str]]:
+        """Get lists of queued and processing job IDs.
+        
+        Returns:
+            Tuple of (queued_job_ids, processing_job_ids)
+        """
+        queued_job_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
+        processing_job_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        return queued_job_ids, processing_job_ids
+
     def is_stuck(self) -> bool:
         """Check if the job queue is stuck (queued jobs but none processing).
         
@@ -254,13 +264,12 @@ class JobManager:
             Dictionary with stuck state information
         """
         is_stuck = self.is_stuck()
-        queued = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
-        processing = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        queued_job_ids, processing_job_ids = self._get_queued_and_processing_jobs()
         
         result = {
             "is_stuck": is_stuck,
-            "queued_count": len(queued),
-            "processing_count": len(processing),
+            "queued_count": len(queued_job_ids),
+            "processing_count": len(processing_job_ids),
         }
         
         if self._stuck_detected_at is not None:
@@ -295,21 +304,20 @@ class JobManager:
         removed_locks = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
         
         # Get current state
-        queued = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
-        processing = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        queued_job_ids, processing_job_ids = self._get_queued_and_processing_jobs()
         
         result = {
             "success": True,
             "message": "Recovery attempt completed",
             "removed_locks": removed_locks,
-            "queued_jobs": len(queued),
-            "processing_jobs": len(processing),
+            "queued_jobs": len(queued_job_ids),
+            "processing_jobs": len(processing_job_ids),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         logger.info(
             "Stuck state recovery completed: removed_locks=%d queued=%d processing=%d",
-            removed_locks, len(queued), len(processing)
+            removed_locks, len(queued_job_ids), len(processing_job_ids)
         )
         
         # Clear stuck detection timestamp if state looks healthy now
