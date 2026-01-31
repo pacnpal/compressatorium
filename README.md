@@ -81,6 +81,24 @@ docker run -d \
 
 In the Web UI, you can specify a custom output directory for converted CHD or Dolphin disc images instead of placing them alongside the source files. The directory will be created automatically as long as it is within your configured volumes.
 
+### Screenshots
+
+The Web UI is fully responsive and works seamlessly on desktop, tablet, and mobile devices:
+
+**Desktop View (1280px)**
+
+![Desktop View](docs-desktop-view.png)
+
+**Tablet View (768px)**
+
+![Tablet View](docs-tablet-view.png)
+
+**Mobile View (375px)**
+
+![Mobile View](docs-mobile-view.png)
+
+The mobile interface features a card-based layout with touch-friendly controls (44-48px minimum touch targets), full-width inputs, and optimized spacing for better usability on small screens.
+
 ### Features
 
 **File Browser**
