@@ -2863,7 +2863,7 @@ function App() {
         }
         const isoInputs = paths.filter((path) => isIsoPath(path));
         if (isoInputs.length > 0) {
-            if (!isoHandling) {
+            if (isoHandling === null) {
                 notify('Please select an ISO handling method (CHDMAN or Dolphin) before converting ISO files.', 'error');
                 return;
             }
