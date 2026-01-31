@@ -1,6 +1,6 @@
 # Compressatorium
 
-> **Fork Notice:** This project is a fork of [MarcTV/docker-compressatorium](https://github.com/MarcTV/docker-compressatorium) with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
+> **Fork Notice:** This project is a fork of MarcTV's original Docker CHD Converter project with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
 
 Multi-tool game disc image converter supporting **CHDMAN** (MAME) and **dolphin-tool** (Dolphin Emulator).
 
@@ -404,10 +404,9 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Acknowledgments
 
-This project is a fork of the original [docker-compressatorium](https://github.com/MarcTV/docker-compressatorium) by [MarcTV](https://github.com/MarcTV). The original project provides a simple CLI-based batch converter, and this fork extends it with a Web UI and additional features.
+This project is a fork of the original Docker CHD Converter project by [MarcTV](https://github.com/MarcTV). The original project provides a simple CLI-based batch converter, and this fork extends it with a Web UI and additional features.
 
 **Original Project:**
-- Repository: [github.com/MarcTV/docker-compressatorium](https://github.com/MarcTV/docker-compressatorium)
-- Docker Hub: [hub.docker.com/r/marctv/compressatorium](https://hub.docker.com/r/marctv/compressatorium)
+- Author: [MarcTV](https://github.com/MarcTV)
 
 Thank you MarcTV for creating and sharing the original converter!
