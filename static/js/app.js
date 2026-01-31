@@ -23,7 +23,7 @@ const getIsoHandlingHint = (isoHandling) => {
     if (isoHandling === null) {
         return html`<span role="img" aria-label="Warning">⚠️</span> Please select an ISO handling method above before working with .iso files`;
     }
-    return `Current: ${getIsoHandlingLabel(isoHandling)} • Controls ISO info/verify and other ambiguous ISO actions.`;
+    return html`Current: ${getIsoHandlingLabel(isoHandling)} • Controls ISO info/verify and other ambiguous ISO actions.`;
 };
 
 const MODE_GROUPS = [
