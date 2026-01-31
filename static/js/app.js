@@ -13,6 +13,12 @@ const normalizeDolphinLevel = (value) => {
     return raw;
 };
 
+const getIsoHandlingLabel = (isoHandling) => {
+    if (isoHandling === 'chdman') return 'CHDMAN';
+    if (isoHandling === 'dolphin') return 'Dolphin';
+    return 'None selected';
+};
+
 const MODE_GROUPS = [
     {
         id: 'create',
@@ -58,7 +64,7 @@ const MODE_GROUPS = [
 // ============ Help Component ============
 
 function HelpPanel({ onClose, isoHandling }) {
-    const isoHandlingLabel = isoHandling === 'chdman' ? 'CHDMAN' : isoHandling === 'dolphin' ? 'Dolphin' : 'neither (select one)';
+    const isoHandlingLabel = getIsoHandlingLabel(isoHandling);
     return html`
         <div class="help-panel">
             <div class="help-header">
@@ -3488,7 +3494,7 @@ function App() {
                     </label>
                 </div>
             <div class="iso-tool-hint">
-                Current: ${isoHandling === 'chdman' ? 'CHDMAN' : isoHandling === 'dolphin' ? 'Dolphin' : 'None selected'} • Controls ISO info/verify and other ambiguous ISO actions.
+                Current: ${getIsoHandlingLabel(isoHandling)} • Controls ISO info/verify and other ambiguous ISO actions.
             </div>
         </div>
 
