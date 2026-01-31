@@ -87,6 +87,21 @@ def _is_same_path(path_a: str, path_b: str) -> bool:
         return False
 
 
+def get_disallowed_archive_paths(file_paths: List[str]) -> Set[str]:
+    """Get archive paths that should not allow delete-on-verify due to multiple selections."""
+    archive_counts = {}
+    for file_path in file_paths:
+        if "::" not in file_path:
+            continue
+        archive_path = file_path.split("::", 1)[0]
+        archive_counts[archive_path] = archive_counts.get(archive_path, 0) + 1
+    return {
+        archive_path
+        for archive_path, count in archive_counts.items()
+        if count > 1
+    }
+
+
 def get_unique_output_path(base_path: str) -> str:
     """Generate a unique output path by appending a number if the file exists."""
     file_exists, is_locked = lock_manager.check_file_status(base_path)
@@ -199,17 +214,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
             detail="Delete-on-verify is only supported for create/copy modes",
         )
 
-    archive_counts = {}
-    for file_path in request.file_paths:
-        if "::" not in file_path:
-            continue
-        archive_path = file_path.split("::", 1)[0]
-        archive_counts[archive_path] = archive_counts.get(archive_path, 0) + 1
-    disallowed_archives = {
-        archive_path
-        for archive_path, count in archive_counts.items()
-        if count > 1
-    }
+    disallowed_archives = get_disallowed_archive_paths(request.file_paths)
 
     items = []
     blocked = False
@@ -304,21 +309,6 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail="Delete-on-verify is only supported for create/copy modes",
         )
-    if request.delete_on_verify:
-        archive_counts = {}
-        for file_path in [request.file_path]:
-            if "::" not in file_path:
-                continue
-            archive_path = file_path.split("::", 1)[0]
-            archive_counts[archive_path] = archive_counts.get(archive_path, 0) + 1
-        if any(count > 1 for count in archive_counts.values()):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Delete-on-verify is not supported for multiple selections from the "
-                    "same archive"
-                ),
-            )
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(
             status_code=403,
@@ -508,13 +498,8 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             detail="Delete-on-verify is only supported for create/copy modes",
         )
     if request.delete_on_verify:
-        archive_counts = {}
-        for file_path in request.file_paths:
-            if "::" not in file_path:
-                continue
-            archive_path = file_path.split("::", 1)[0]
-            archive_counts[archive_path] = archive_counts.get(archive_path, 0) + 1
-        if any(count > 1 for count in archive_counts.values()):
+        disallowed_archives = get_disallowed_archive_paths(request.file_paths)
+        if disallowed_archives:
             raise HTTPException(
                 status_code=400,
                 detail=(
