@@ -165,8 +165,13 @@ class LockManager:
                     os.remove(lock_file_path)
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug("Removed stale lock file during check: %s", os.path.basename(lock_file_path))
-                except OSError:
-                    pass
+                except OSError as e:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Failed to remove stale lock file during check: %s (%s)",
+                            os.path.basename(lock_file_path),
+                            e,
+                        )
             
             return False
         except Exception:

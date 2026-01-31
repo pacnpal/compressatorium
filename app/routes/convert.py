@@ -777,10 +777,14 @@ async def check_stuck_status():
 
 @router.post("/jobs/recover")
 async def recover_stuck_jobs():
-    """Manually trigger recovery from stuck job state.
-    
-    This endpoint can be called when jobs are queued but not processing.
-    It will attempt to clean up stale locks and restart stuck jobs.
+    """Manually trigger recovery from a stuck job queue state.
+
+    This endpoint can be called when jobs are queued but not processing,
+    typically due to stale or orphaned locks.
+
+    It attempts to clean up stale locks and restore the queue to a healthy state
+    so that new or pending jobs can be processed again. It does not automatically
+    restart or requeue individual jobs that were previously stuck.
     """
     result = await job_manager.recover_from_stuck_state()
     

@@ -2011,9 +2011,14 @@ header h1 span {
 
 /* Stuck job warning and recovery styles */
 .btn-warning-pulse {
-    animation: pulse 2s infinite;
     background: var(--warning, #f0ad4e);
     color: white;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .btn-warning-pulse {
+        animation: pulse 2s infinite;
+    }
 }
 
 .btn-warning-pulse:hover {

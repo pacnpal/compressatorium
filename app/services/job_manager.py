@@ -265,6 +265,7 @@ class JobManager:
         """
         is_stuck = self.is_stuck()
         queued_job_ids, processing_job_ids = self._get_queued_and_processing_jobs()
+        now_monotonic = time.monotonic()
         
         result = {
             "is_stuck": is_stuck,
@@ -272,11 +273,13 @@ class JobManager:
             "processing_count": len(processing_job_ids),
         }
         
+        # Expose durations derived from monotonic times rather than the raw values,
+        # which are not meaningful as wall-clock timestamps.
         if self._stuck_detected_at is not None:
-            result["stuck_detected_at"] = self._stuck_detected_at
+            result["stuck_for_seconds"] = int(now_monotonic - self._stuck_detected_at)
         
         if self._last_stuck_recovery_at > 0:
-            result["last_recovery_at"] = self._last_stuck_recovery_at
+            result["last_recovery_seconds_ago"] = int(now_monotonic - self._last_stuck_recovery_at)
             
         return result
 
