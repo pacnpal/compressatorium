@@ -282,8 +282,7 @@ class DolphinToolService:
                 await cancel_task
             except asyncio.CancelledError:
                 # Cancellation of the helper task is expected once the process has finished.
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug("cancel_task was cancelled after dolphin-tool process completion")
+                logger.debug("cancel_task was cancelled after dolphin-tool process completion")
 
         if stall_error:
             raise RuntimeError(stall_error)
