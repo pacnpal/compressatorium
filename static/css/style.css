@@ -122,6 +122,32 @@ header h1 span {
     text-align: center;
 }
 
+.iso-tool-banner-warning {
+    border-color: #ff9800;
+    background: rgba(255, 152, 0, 0.05);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .iso-tool-banner-warning {
+        animation: pulse-border 2s ease-in-out infinite;
+    }
+}
+
+@keyframes pulse-border {
+    0%, 100% {
+        border-color: #ff9800;
+    }
+    50% {
+        border-color: #ffa726;
+    }
+}
+
+.iso-tool-hint-warning {
+    color: #e65100;
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
 /* Layout */
 .main-layout {
     display: grid;

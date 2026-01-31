@@ -13,6 +13,19 @@ const normalizeDolphinLevel = (value) => {
     return raw;
 };
 
+const getIsoHandlingLabel = (isoHandling) => {
+    if (isoHandling === 'chdman') return 'CHDMAN';
+    if (isoHandling === 'dolphin') return 'Dolphin';
+    return 'None selected';
+};
+
+const getIsoHandlingHint = (isoHandling) => {
+    if (isoHandling === null) {
+        return html`<span role="img" aria-label="Warning">⚠️</span> Please select an ISO handling method above before working with .iso files`;
+    }
+    return html`Current: ${getIsoHandlingLabel(isoHandling)} • Controls ISO info/verify and other ambiguous ISO actions.`;
+};
+
 const MODE_GROUPS = [
     {
         id: 'create',
@@ -58,7 +71,7 @@ const MODE_GROUPS = [
 // ============ Help Component ============
 
 function HelpPanel({ onClose, isoHandling }) {
-    const isoHandlingLabel = isoHandling === 'chdman' ? 'CHDMAN' : 'Dolphin';
+    const isoHandlingLabel = getIsoHandlingLabel(isoHandling);
     return html`
         <div class="help-panel">
             <div class="help-header">
@@ -1914,9 +1927,9 @@ function App() {
     const [isoHandling, setIsoHandling] = useState(() => {
         try {
             const stored = localStorage.getItem(ISO_TOOL_STORAGE_KEY);
-            return stored === 'chdman' || stored === 'dolphin' ? stored : 'dolphin';
+            return stored === 'chdman' || stored === 'dolphin' ? stored : null;
         } catch (err) {
-            return 'dolphin';
+            return null;
         }
     });
     const [compressionSelection, setCompressionSelection] = useState(['zlib']);
@@ -2857,6 +2870,10 @@ function App() {
         }
         const isoInputs = paths.filter((path) => isIsoPath(path));
         if (isoInputs.length > 0) {
+            if (isoHandling === null) {
+                notify('Please select an ISO handling method (CHDMAN or Dolphin) before converting ISO files.', 'error');
+                return;
+            }
             if (isoHandling === 'dolphin' && !isDolphinMode) {
                 notify('ISO handling is set to Dolphin. Select a Dolphin mode to convert ISO files.', 'error');
                 return;
@@ -3418,6 +3435,7 @@ function App() {
 
 
     const hasCompletedJobs = jobs.some(j => ['completed', 'failed', 'cancelled'].includes(j.status));
+    const needsIsoSelection = isoHandling === null;
 
     return html`
         <div class="container">
@@ -3457,8 +3475,8 @@ function App() {
                 </div>
             </header>
 
-            <div class="iso-tool-banner">
-                <div class="iso-tool-title">ISO Handling</div>
+            <div class="iso-tool-banner${needsIsoSelection ? ' iso-tool-banner-warning' : ''}">
+                <div class="iso-tool-title">ISO Handling${needsIsoSelection ? ' - Selection Required' : ''}</div>
                 <div class="iso-tool-options" role="radiogroup" aria-label="ISO handling">
                     <label class="iso-option">
                         <input
@@ -3487,8 +3505,8 @@ function App() {
                         </div>
                     </label>
                 </div>
-            <div class="iso-tool-hint">
-                Current: ${isoHandling === 'chdman' ? 'CHDMAN' : 'Dolphin'} • Controls ISO info/verify and other ambiguous ISO actions.
+            <div class="iso-tool-hint${needsIsoSelection ? ' iso-tool-hint-warning' : ''}">
+                ${getIsoHandlingHint(isoHandling)}
             </div>
         </div>
 

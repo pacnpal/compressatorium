@@ -7,7 +7,7 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME) and **dolphin-
 * **Web UI** for easy file browsing and conversion
 * Supports **nested directories** and **compressed archives** (ZIP, 7z, RAR)
 * **Multiple volume mounts** for organizing different game libraries
-* **ISO handling toggle** (defaults to Dolphin tool for `.iso`; switch to CHDMAN)
+* **ISO handling toggle** (choose between CHDMAN or Dolphin tool for `.iso` files)
 * Web UI detects existing outputs with skip/rename/overwrite options
 * CLI skips existing CHD files by default
 * Source files are preserved by default (optional delete-on-verify after successful conversion)
@@ -169,7 +169,7 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 - `dolphin_gcz` uses fixed compression and ignores codec selection.
 - `dolphin_iso` outputs an uncompressed ISO image.
 - Archive members are **not** supported for Dolphin conversions.
-- ISO info/verify and conversions follow the ISO Handling toggle in the UI (default: Dolphin for ISO files).
+- ISO info/verify and conversions follow the ISO Handling toggle in the UI (no default - user must choose).
 
 ---
 
