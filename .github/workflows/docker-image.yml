@@ -31,9 +31,9 @@ concurrency:
 
 env:
   # Registry configuration
-  DOCKERHUB_IMAGE: pacnpal/chd-converter
+  DOCKERHUB_IMAGE: pacnpal/compressatorium
   # Note: Must be lowercase for valid OCI image reference
-  GHCR_IMAGE: ghcr.io/pacnpal/docker-chd-converter-webui
+  GHCR_IMAGE: ghcr.io/pacnpal/compressatorium
   # Build configuration
   PLATFORMS: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
 
