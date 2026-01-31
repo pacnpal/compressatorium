@@ -1914,9 +1914,9 @@ function App() {
     const [isoHandling, setIsoHandling] = useState(() => {
         try {
             const stored = localStorage.getItem(ISO_TOOL_STORAGE_KEY);
-            return stored === 'chdman' || stored === 'dolphin' ? stored : 'dolphin';
+            return stored === 'chdman' || stored === 'dolphin' ? stored : 'chdman';
         } catch (err) {
-            return 'dolphin';
+            return 'chdman';
         }
     });
     const [compressionSelection, setCompressionSelection] = useState(['zlib']);
