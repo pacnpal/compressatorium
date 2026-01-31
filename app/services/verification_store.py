@@ -8,7 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 
 
 class VerificationStore:
-    """Persists CHD verification results across application restarts."""
+    """Persists disc/image verification results across application restarts."""
 
     def __init__(self, store_path: str | None = None) -> None:
         base_path = store_path or os.environ.get("CHD_VERIFICATION_STORE")

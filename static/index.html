@@ -17,8 +17,7 @@
 
     <script type="module">
         try {
-            const { html, render, Component } = await import("../../../../../../static/vendor/standalone.mjs");
-            const { useState, useEffect, useCallback, useRef, useMemo } = await import("../../../../../../static/vendor/standalone.mjs");
+            const { html, render, Component, useState, useEffect, useCallback, useRef, useMemo } = await import("/static/vendor/standalone.mjs");
 
             globalThis.html = html;
             globalThis.render = render;
@@ -29,7 +28,7 @@
             globalThis.useRef = useRef;
             globalThis.useMemo = useMemo;
 
-            await import("../../../../../../static/js/app.js");
+            await import("/static/js/app.js");
         } catch (err) {
             const appEl = document.getElementById('app');
             if (appEl) {

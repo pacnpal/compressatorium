@@ -284,26 +284,6 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail="Dolphin compression supports only one codec at a time",
         )
-    if compression and is_dolphin and "," in compression:
-        raise HTTPException(
-            status_code=400,
-            detail="Dolphin compression supports only one codec at a time",
-        )
-    if compression and is_dolphin and "," in compression:
-        raise HTTPException(
-            status_code=400,
-            detail="Dolphin compression supports only one codec at a time",
-        )
-    if compression and is_dolphin and "," in compression:
-        raise HTTPException(
-            status_code=400,
-            detail="Dolphin compression supports only one codec at a time",
-        )
-    if compression and is_dolphin and "," in compression:
-        raise HTTPException(
-            status_code=400,
-            detail="Dolphin compression supports only one codec at a time",
-        )
     if request.delete_on_verify and not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
