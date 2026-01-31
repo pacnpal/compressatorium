@@ -54,9 +54,10 @@ docker-compose -f docker-compose.cli.yml up
 ```
 
 **Behavior:**
-- Converts all files in mounted volumes
+- Converts top-level `.gdi`, `.iso`, `.cue` files in mounted volumes
 - Exits after completion (no restart)
 - No web interface
+- CHDMAN-only (no Dolphin modes in CLI)
 
 **Note:** CLI mode only processes files in the top level of each mounted volume. For files in subdirectories, use the Web UI mode which supports recursive directory browsing.
 
@@ -119,16 +120,31 @@ All configurations support these environment variables (edit in the compose file
 | `CHD_MODE` | `webui` | Mode: `webui` or `cli` |
 | `CHD_VOLUMES` | `/data/games` | Comma-separated volume paths |
 | `CHD_DATA_DIR` | `/config` | Persistent data directory |
-| `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction |
+| `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files |
+| `CHD_METADATA_STORE` | `/config/chd_metadata.json` | CHD metadata cache file path |
+| `CHD_VERIFICATION_STORE` | `/config/verified_chds.json` | Verification store file path |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode) |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary |
+| `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
 | `MAX_JOB_HISTORY` | `500` | Completed jobs to retain in history |
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19) |
 | `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class (`1` realtime, `2` best-effort, `3` idle) |
 | `CHD_CHDMAN_IOPRIO_LEVEL` | `6` | I/O priority level (`0` highest, `7` lowest) |
+| `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
+| `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
+| `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables) |
+| `CHD_INFO_TIMEOUT` | `60` | Timeout in seconds for `chdman info` (0 disables) |
+| `CHD_VERIFY_TIMEOUT` | `0` | Timeout in seconds for `chdman verify` (0 disables) |
+| `CHD_VERIFY_PROGRESS_TIMEOUT` | `0` | Timeout in seconds without verify output (0 disables) |
 | `CHD_DEBUG` | `false` | Enable debug logging |
+| `CHD_DEBUG_LOG_PATH` | (none) | Path to debug log file |
+| `CHD_DEBUG_HEARTBEAT` | `30` | Debug heartbeat interval (seconds) |
+| `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval |
+| `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |
+| `STATIC_DIR` | `/static` | Path to static web assets |
 
 ---
 
