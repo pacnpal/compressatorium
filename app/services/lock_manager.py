@@ -133,7 +133,8 @@ class LockManager:
         
         Returns:
             True if the file is locked by another process, False otherwise.
-            As a side effect, removes the lock file if it's stale (not held).
+        
+        As a side effect, if a lock file exists but is not actively held, it will be removed.
         """
         lock_file_path = self._lock_file_path(normalized_path)
         if not os.path.exists(lock_file_path):
