@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     concurrency_lock_dir: str | None = Field(
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
+        description="Directory for job lock files (default: /tmp/chd-locks - ephemeral, auto-cleaned on restart)",
     )
     max_job_history: int = Field(default=500, alias="MAX_JOB_HISTORY")
 
@@ -81,7 +82,9 @@ class Settings(BaseSettings):
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.data_dir) / "temp")
         if self.concurrency_lock_dir is None:
-            self.concurrency_lock_dir = str(Path(self.data_dir) / "locks")
+            # Use /tmp/chd-locks for ephemeral lock storage
+            # This ensures locks don't persist across container restarts
+            self.concurrency_lock_dir = "/tmp/chd-locks"
 
     @property
     def volumes(self) -> list[str]:

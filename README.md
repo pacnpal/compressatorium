@@ -353,7 +353,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_VOLUMES` | `/data/games` | Comma-separated list of volume mount paths |
 | `CHD_DATA_DIR` | `/config` | Directory for persistent application data |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd-locks` | Directory for job lock files (ephemeral, auto-cleaned on container restart) |
 | `CHD_METADATA_STORE` | `/config/chd_metadata.json` | CHD metadata cache file path |
 | `CHD_VERIFICATION_STORE` | `/config/verified_chds.json` | Verification store file path |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode only) |
@@ -396,7 +396,7 @@ The `/config` volume is **required** and must be mounted for the application to 
 |------|----------|-------------|
 | `verified_chds.json` | `/config/` | Records of verified CHD/Dolphin files (integrity checks; filename retained for backward compatibility with existing installs) |
 | `chd_metadata.json` | `/config/` | Cached CHD metadata (media type, info cache) |
-| `locks/` | `/config/locks` | Job lock files for concurrency control |
+| `locks/` | `/tmp/chd-locks` | Job lock files (ephemeral - automatically cleaned on container restart) |
 
 ---
 

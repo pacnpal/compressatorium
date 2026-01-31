@@ -442,9 +442,22 @@ class JobManager:
         await self._dispatcher_task
 
     async def _debug_loop(self):
+        cleanup_counter = 0
         while self._running:
             try:
                 await asyncio.sleep(settings.debug_heartbeat_interval)
+                
+                # Periodic stale lock cleanup (every 10 heartbeats = 5 minutes by default)
+                cleanup_counter += 1
+                if cleanup_counter >= 10:
+                    cleanup_counter = 0
+                    try:
+                        removed = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
+                        if removed > 0:
+                            logger.info("Periodic cleanup removed %d stale lock file(s)", removed)
+                    except Exception as e:
+                        logger.warning("Periodic lock cleanup failed: %s", e)
+                
                 if not logger.isEnabledFor(logging.DEBUG):
                     continue
 
