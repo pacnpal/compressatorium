@@ -22,7 +22,7 @@ else
         echo "Error: .version file not found"
         exit 1
     fi
-    VERSION=$(cat "$VERSION_FILE" | tr -d '\n\r ')
+    VERSION=$(tr -d '\n\r ' < "$VERSION_FILE")
     echo "Read version: $VERSION"
 fi
 

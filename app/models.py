@@ -1,7 +1,7 @@
-from pydantic import BaseModel
-from enum import Enum
-from typing import Optional, List
 from datetime import datetime
+from enum import Enum
+
+from pydantic import BaseModel
 
 
 class ConversionMode(str, Enum):
@@ -16,6 +16,10 @@ class ConversionMode(str, Enum):
     EXTRACTDVD = "extractdvd"
     EXTRACTLD = "extractld"
     COPY = "copy"
+    DOLPHIN_RVZ = "dolphin_rvz"
+    DOLPHIN_WIA = "dolphin_wia"
+    DOLPHIN_GCZ = "dolphin_gcz"
+    DOLPHIN_ISO = "dolphin_iso"
 
 
 class DuplicateAction(str, Enum):
@@ -35,21 +39,23 @@ class JobStatus(str, Enum):
 class FileEntry(BaseModel):
     name: str
     path: str
-    type: str  # "file" or "directory"
-    size: Optional[int] = None
-    extension: Optional[str] = None
+    type: str  # "file", "directory", or "archive"
+    size: int | None = None
+    extension: str | None = None
     convertible: bool = False
     has_chd: bool = False
-    archive_items: Optional[int] = None
-    archive_has_chd: Optional[int] = None
-    archive_truncated: Optional[bool] = None
-    media_type: Optional[str] = None  # "dvd", "cd", or None - for CHD files
+    chd_ready: bool = False
+    dolphin_convertible: bool = False
+    archive_items: int | None = None
+    archive_has_chd: int | None = None
+    archive_truncated: bool | None = None
+    media_type: str | None = None  # "dvd", "cd", or None - for CHD files
 
 
 class DirectoryListing(BaseModel):
     volume: str
     path: str
-    entries: List[FileEntry]
+    entries: list[FileEntry]
 
 
 class Volume(BaseModel):
@@ -66,42 +72,42 @@ class ConversionJob(BaseModel):
     progress: int = 0
     message: str = ""
     created_at: datetime
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    error_message: Optional[str] = None
-    output_path: Optional[str] = None
-    output_size: Optional[int] = None
-    temp_dir: Optional[str] = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None
+    output_path: str | None = None
+    output_size: int | None = None
+    temp_dir: str | None = None
     allow_overwrite: bool = False
-    compression: Optional[str] = None
+    compression: str | None = None
     delete_on_verify: bool = False
 
 
 class JobCreateRequest(BaseModel):
     file_path: str
     mode: ConversionMode = ConversionMode.CREATECD
-    output_dir: Optional[str] = None  # If None, output alongside source
+    output_dir: str | None = None  # If None, output alongside source
     duplicate_action: DuplicateAction = (
         DuplicateAction.SKIP
     )  # What to do if output exists
-    compression: Optional[str] = None  # Comma-separated list (e.g. "zlib,lzma")
+    compression: str | None = None  # Comma-separated list (e.g. "zlib,lzma")
     delete_on_verify: bool = False
 
 
 class BatchJobCreateRequest(BaseModel):
-    file_paths: List[str]
+    file_paths: list[str]
     mode: ConversionMode = ConversionMode.CREATECD
-    output_dir: Optional[str] = None  # If None, output alongside source
+    output_dir: str | None = None  # If None, output alongside source
     duplicate_action: DuplicateAction = (
         DuplicateAction.SKIP
     )  # What to do if output exists
-    compression: Optional[str] = None  # Comma-separated list (e.g. "zlib,lzma")
+    compression: str | None = None  # Comma-separated list (e.g. "zlib,lzma")
     delete_on_verify: bool = False
 
 
 class CheckDuplicatesRequest(BaseModel):
-    file_paths: List[str]
-    output_dir: Optional[str] = None
+    file_paths: list[str]
+    output_dir: str | None = None
     mode: ConversionMode = ConversionMode.CREATECD
 
 
@@ -122,34 +128,48 @@ class ArchiveEntry(BaseModel):
 
 class CHDInfo(BaseModel):
     file: str
-    input_file: Optional[str] = None
-    file_version: Optional[str] = None
-    logical_size: Optional[str] = None
-    hunk_size: Optional[str] = None
-    total_hunks: Optional[str] = None
-    unit_size: Optional[str] = None
-    total_units: Optional[str] = None
-    compression: Optional[str] = None
-    chd_size: Optional[str] = None
-    ratio: Optional[str] = None
-    sha1: Optional[str] = None
-    data_sha1: Optional[str] = None
+    input_file: str | None = None
+    file_version: str | None = None
+    logical_size: str | None = None
+    hunk_size: str | None = None
+    total_hunks: str | None = None
+    unit_size: str | None = None
+    total_units: str | None = None
+    compression: str | None = None
+    chd_size: str | None = None
+    ratio: str | None = None
+    sha1: str | None = None
+    data_sha1: str | None = None
     raw_data: str = ""
-    media_type: Optional[str] = None  # "dvd", "cd", or None
+    media_type: str | None = None  # "dvd", "cd", or None
 
 
 class BulkDeleteRequest(BaseModel):
-    paths: List[str]
+    paths: list[str]
 
 
 class BulkVerifyRequest(BaseModel):
-    paths: List[str]
+    paths: list[str]
 
 
 class MetadataBatchRequest(BaseModel):
-    paths: List[str]
+    paths: list[str]
 
 
 class DeletePlanRequest(BaseModel):
-    file_paths: List[str]
+    file_paths: list[str]
     mode: ConversionMode = ConversionMode.CREATECD
+
+
+class DolphinDiscInfo(BaseModel):
+    file: str
+    game_id: str | None = None
+    game_name: str | None = None
+    disc_number: str | None = None
+    revision: str | None = None
+    region: str | None = None
+    format: str | None = None
+    compression: str | None = None
+    block_size: str | None = None
+    file_size: str | None = None
+    raw_data: str = ""

@@ -1,8 +1,9 @@
+import contextlib
 import fcntl
 import hashlib
 import os
-from typing import Set
 import threading
+from pathlib import Path
 
 from config import settings
 
@@ -11,9 +12,12 @@ class LockManager:
     """Manages file locks to prevent concurrent conversions of the same file."""
 
     def __init__(self):
-        self._lock_dir = settings.concurrency_lock_dir or "/tmp/chd_converter_locks"
+        self._lock_dir = (
+            settings.concurrency_lock_dir
+            or str(Path(settings.data_dir) / "locks")
+        )
         os.makedirs(self._lock_dir, exist_ok=True)
-        self._locks: Set[str] = set()
+        self._locks: set[str] = set()
         self._lock_mutex = threading.Lock()
         self._lock_handles = {}
         self._cleanup_stale_locks()
@@ -37,18 +41,16 @@ class LockManager:
                     with open(lock_path, "a") as lock_handle:
                         try:
                             fcntl.flock(
-                                lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                                lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
                             )
                         except BlockingIOError:
                             # Lock is held by another process; keep the file.
                             continue
-                        except (IOError, OSError):
+                        except OSError:
                             continue
                         finally:
-                            try:
+                            with contextlib.suppress(Exception):
                                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                            except Exception:
-                                pass
                     os.remove(lock_path)
                 except OSError:
                     pass
@@ -61,11 +63,11 @@ class LockManager:
         return is_locked
 
     def check_file_status(self, output_path: str) -> tuple[bool, bool]:
-        """
-        Check the status of an output file atomically.
+        """Check the status of an output file atomically.
 
         Returns:
             Tuple of (file_exists, is_locked)
+
         """
         normalized_path = os.path.normpath(output_path)
         with self._lock_mutex:
@@ -90,7 +92,7 @@ class LockManager:
                     acquired = True
                 except BlockingIOError:
                     return True
-                except (IOError, OSError):
+                except OSError:
                     return False
                 finally:
                     if acquired:
@@ -104,11 +106,11 @@ class LockManager:
         return False
 
     def acquire_lock(self, output_path: str, *, allow_existing: bool = False) -> bool:
-        """
-        Acquire a lock for the output file path.
+        """Acquire a lock for the output file path.
 
         Returns:
             True if lock was acquired, False if already locked or CHD exists and overwrite is not allowed
+
         """
         normalized_path = os.path.normpath(output_path)
 
@@ -134,7 +136,7 @@ class LockManager:
                     # Lock is held by another process
                     lock_handle.close()
                     return False
-                except (IOError, OSError) as e:
+                except OSError as e:
                     # Other error (permission denied, etc.)
                     lock_handle.close()
                     print(f"Failed to acquire lock for {normalized_path}: {e}")

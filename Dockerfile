@@ -1,6 +1,6 @@
 FROM debian:trixie-slim
 
-# Install system dependencies
+# Install system dependencies, create wrapper script, and prepare venv
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
@@ -11,14 +11,15 @@ RUN apt-get update && \
       util-linux \
       unrar-free \
       p7zip-full \
+      dolphin-emu \
       bash && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Create Python virtual environment and install dependencies
-RUN python3 -m venv /opt/venv
+    rm -rf /var/lib/apt/lists/* && \
+    printf '#!/bin/bash\nexec /usr/games/dolphin-tool "$@"\n' > /usr/local/bin/dolphin-tool && \
+    chmod +x /usr/local/bin/dolphin-tool && \
+    python3 -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir "pip>=25.3"
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir "pip>=25.3"
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
@@ -50,5 +51,13 @@ EXPOSE 8080
 # Health check (only applies in webui mode)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 0
+
+# Run as non-root user
+RUN groupadd -r converter && useradd -r -g converter -s /sbin/nologin converter \
+    && chown -R converter:converter /app /static /opt/venv \
+    && mkdir -p /data/games /config \
+    && chown converter:converter /data/games /config
+
+USER converter
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -3,48 +3,45 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CHD Converter</title>
+    <title>Compressatorium</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💿</text></svg>">
 </head>
 <body>
     <div id="app">
-        <div class="loading" style="height: 100vh;">
+        <div class="loading full-height">
             <div class="spinner"></div>
-            Loading CHD Converter...
+            Loading Compressatorium...
         </div>
     </div>
 
     <script type="module">
-        (async () => {
-            try {
-                const { html, render, Component } = await import('/static/vendor/standalone.mjs');
-                const { useState, useEffect, useCallback, useRef, useMemo } = await import('/static/vendor/standalone.mjs');
-                
-                window.html = html;
-                window.render = render;
-                window.Component = Component;
-                window.useState = useState;
-                window.useEffect = useEffect;
-                window.useCallback = useCallback;
-                window.useRef = useRef;
-                window.useMemo = useMemo;
+        try {
+            const { html, render, Component, useState, useEffect, useCallback, useRef, useMemo } = await import("/static/vendor/standalone.mjs");
 
-                await import('/static/js/app.js');
-            } catch (err) {
-                const appEl = document.getElementById('app');
-                if (appEl) {
-                    appEl.innerHTML = `
-                        <div class="error-state">
-                            <h1>Failed to load application</h1>
-                            <p>${err && err.message ? err.message : 'Unknown error'}</p>
-                            <button onclick="location.reload()">Retry</button>
-                        </div>
-                    `;
-                }
-                console.error('Failed to load:', err);
+            globalThis.html = html;
+            globalThis.render = render;
+            globalThis.Component = Component;
+            globalThis.useState = useState;
+            globalThis.useEffect = useEffect;
+            globalThis.useCallback = useCallback;
+            globalThis.useRef = useRef;
+            globalThis.useMemo = useMemo;
+
+            await import("/static/js/app.js");
+        } catch (err) {
+            const appEl = document.getElementById('app');
+            if (appEl) {
+                appEl.innerHTML = `
+                    <div class="error-state">
+                        <h1>Failed to load application</h1>
+                        <p>${err && err.message ? err.message : 'Unknown error'}</p>
+                        <button onclick="location.reload()">Retry</button>
+                    </div>
+                `;
             }
-        })();
+            console.error('Failed to load:', err);
+        }
     </script>
 </body>
 </html>

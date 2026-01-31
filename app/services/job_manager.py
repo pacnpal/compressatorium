@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from models import ConversionJob, JobStatus, ConversionMode
 from services.chdman import chdman_service, ConversionCancelled
+from services.dolphin_tool import dolphin_tool_service
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
@@ -835,7 +836,12 @@ class JobManager:
                     if os.path.isfile(bin_path):
                         os.remove(bin_path)
 
-            async for update in chdman_service.convert(
+            _convert_service = (
+                dolphin_tool_service
+                if job.mode.value.startswith("dolphin_")
+                else chdman_service
+            )
+            async for update in _convert_service.convert(
                 input_path,
                 job.output_path,
                 job.mode.value,
@@ -914,10 +920,17 @@ class JobManager:
                         },
                     )
 
-                    verify_result = await chdman_service.verify(job.output_path)
+                    _verify_service = (
+                        dolphin_tool_service
+                        if job.mode.value.startswith("dolphin_")
+                        else chdman_service
+                    )
+                    verify_result = await _verify_service.verify(
+                        job.output_path
+                    )
                     if not verify_result.get("valid"):
                         raise RuntimeError(
-                            f"CHD verification failed: {verify_result.get('message')}"
+                            f"Verification failed: {verify_result.get('message')}"
                         )
 
                     verified = True

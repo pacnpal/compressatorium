@@ -3,14 +3,14 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+
 from fastapi.concurrency import run_in_threadpool
 
 
 class VerificationStore:
-    """Persists CHD verification results across application restarts."""
+    """Persists disc/image verification results across application restarts."""
 
-    def __init__(self, store_path: Optional[str] = None):
+    def __init__(self, store_path: str | None = None) -> None:
         base_path = store_path or os.environ.get("CHD_VERIFICATION_STORE")
         if base_path:
             self._store_path = Path(base_path)
@@ -21,7 +21,7 @@ class VerificationStore:
 
         self._lock = threading.Lock()
         self._write_lock = threading.Lock()
-        self._records: Dict[str, Dict[str, Optional[str]]] = {}
+        self._records: dict[str, dict[str, str | None]] = {}
         self._version = 0
         self._last_persisted_version = 0
         self._load()
@@ -40,14 +40,13 @@ class VerificationStore:
                 self._records = {}
         else:
             self._records = {}
-        
+
         # Reset version after load
         self._version = 0
         self._last_persisted_version = 0
 
     def _persist(self):
-        """
-        Synchronously persist records to disk. Should be called in threadpool.
+        """Synchronously persist records to disk. Should be called in threadpool.
         Acquires _write_lock to serialize writes.
         Checks if persistence is needed by comparing _version with _last_persisted_version.
         """
@@ -59,13 +58,13 @@ class VerificationStore:
                     return
                 snapshot = dict(self._records)
                 version_to_write = self._version
-            
+
             # Perform serialization to temp file without holding the main _lock
             tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
             try:
                 with tmp_path.open("w", encoding="utf-8") as fh:
                     json.dump(snapshot, fh, indent=2)
-                
+
                 # Critical section: Check version again and replace under lock
                 # We only replace if the file on disk corresponds to version_to_write.
                 # If _version changed in the meantime, we DO NOT write stale data.
@@ -87,7 +86,7 @@ class VerificationStore:
     def _normalize_path(path: str) -> str:
         return os.path.realpath(path)
 
-    async def mark_verified(self, chd_path: str, *, source_path: Optional[str] = None):
+    async def mark_verified(self, chd_path: str, *, source_path: str | None = None):
         # Normalize paths in threadpool to avoid blocking main loop with disk I/O
         normalized = await run_in_threadpool(self._normalize_path, chd_path)
         normalized_source = None
@@ -99,25 +98,25 @@ class VerificationStore:
             "source_path": normalized_source,
             "verified_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
-        
+
         # Update in-memory state
         with self._lock:
             self._records[normalized] = record
             self._version += 1
-            
+
         # Trigger persistence
         await run_in_threadpool(self._persist)
 
     async def clear(self, chd_path: str):
         normalized = await run_in_threadpool(self._normalize_path, chd_path)
         should_persist = False
-        
+
         with self._lock:
             if normalized in self._records:
                 del self._records[normalized]
                 self._version += 1
                 should_persist = True
-        
+
         if should_persist:
             await run_in_threadpool(self._persist)
 
@@ -125,19 +124,19 @@ class VerificationStore:
         old_normalized = await run_in_threadpool(self._normalize_path, old_path)
         new_normalized = await run_in_threadpool(self._normalize_path, new_path)
         should_persist = False
-        
+
         with self._lock:
             # Use pop to remove old record
             old_record = self._records.pop(old_normalized, None)
             if old_record:
-                # Create a NEW record dict (copy) to avoid mutating shared state 
+                # Create a NEW record dict (copy) to avoid mutating shared state
                 new_record = old_record.copy()
                 new_record["chd_path"] = new_normalized
                 self._records[new_normalized] = new_record
-                
+
                 self._version += 1
                 should_persist = True
-            
+
         if should_persist:
             await run_in_threadpool(self._persist)
 
@@ -146,7 +145,7 @@ class VerificationStore:
         with self._lock:
             return normalized in self._records
 
-    async def get_record(self, chd_path: str) -> Optional[Dict[str, Optional[str]]]:
+    async def get_record(self, chd_path: str) -> dict[str, str | None] | None:
         normalized = await run_in_threadpool(self._normalize_path, chd_path)
         with self._lock:
             return self._records.get(normalized)
@@ -162,13 +161,13 @@ class VerificationStore:
             # 1. Snapshot keys safely
             with self._lock:
                 keys = list(self._records.keys())
-            
+
             # 2. Check existence (blocking I/O)
             missing = []
             for path in keys:
                 if not os.path.exists(path):
                     missing.append(path)
-            
+
             # 3. Remove missing from records with lock AND snapshot for persist
             removed_count = 0
             if missing:
@@ -178,10 +177,10 @@ class VerificationStore:
                             del self._records[path]
                     self._version += 1
                 removed_count = len(missing)
-                
+
                 # 4. Persist
                 self._persist()
-                
+
             return removed_count
 
         return await run_in_threadpool(_check_and_prune)

@@ -2,33 +2,35 @@ import asyncio
 import os
 import re
 from pathlib import Path
-from typing import List, Optional, Set
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
-from sse_starlette.sse import EventSourceResponse
-
 from models import (
-    ConversionJob,
-    JobCreateRequest,
     BatchJobCreateRequest,
-    JobStatus,
-    DuplicateAction,
     CheckDuplicatesRequest,
-    DuplicateInfo,
+    ConversionJob,
     DeletePlanRequest,
+    DuplicateAction,
+    DuplicateInfo,
+    JobCreateRequest,
+    JobStatus,
 )
-from services.job_manager import job_manager
 from services.archive import archive_service
 from services.chdman import chdman_service
+from services.dolphin_tool import (
+    DOLPHIN_CONVERTIBLE_EXTENSIONS,
+    dolphin_tool_service,
+)
+from services.job_manager import job_manager
 from services.lock_manager import lock_manager
-from utils.path_utils import is_within_configured_volumes
+from sse_starlette.sse import EventSourceResponse
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
+from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
 
 
-def normalize_output_dir(value: Optional[str]) -> Optional[str]:
+def normalize_output_dir(value: str | None) -> str | None:
     if value is None:
         return None
     cleaned = value.strip()
@@ -37,14 +39,17 @@ def normalize_output_dir(value: Optional[str]) -> Optional[str]:
     return cleaned
 
 
-def normalize_compression(value: Optional[str]) -> Optional[str]:
+def normalize_compression(value: str | None) -> str | None:
     if value is None:
         return None
     raw = value.strip().lower()
     if not raw:
         return None
     parts = [p for p in re.split(r"[,\s]+", raw) if p]
-    invalid = [p for p in parts if not re.fullmatch(r"[a-z0-9]+", p)]
+    invalid = [
+        p for p in parts
+        if not re.fullmatch(r"[a-z0-9]+(?::[0-9]+)?", p)
+    ]
     if invalid:
         raise HTTPException(
             status_code=400,
@@ -54,7 +59,32 @@ def normalize_compression(value: Optional[str]) -> Optional[str]:
 
 
 def supports_delete_on_verify(mode: str) -> bool:
-    return mode.startswith("create") or mode == "copy"
+    return (
+        mode.startswith("create")
+        or mode == "copy"
+        or mode.startswith("dolphin_")
+    )
+
+
+def _is_dolphin_mode(mode: str) -> bool:
+    return mode.startswith("dolphin_")
+
+
+def _get_output_path(mode, input_path, output_dir, *, treat_as_stem=False):
+    if _is_dolphin_mode(mode):
+        return dolphin_tool_service.get_output_path_for_mode(
+            mode, input_path, output_dir, treat_as_stem=treat_as_stem,
+        )
+    return chdman_service.get_output_path_for_mode(
+        mode, input_path, output_dir, treat_as_stem=treat_as_stem,
+    )
+
+
+def _is_same_path(path_a: str, path_b: str) -> bool:
+    try:
+        return os.path.realpath(path_a) == os.path.realpath(path_b)
+    except OSError:
+        return False
 
 
 def get_disallowed_archive_paths(file_paths: List[str]) -> Set[str]:
@@ -122,7 +152,7 @@ def get_unique_output_path_for_extractcd(base_path: str) -> str:
         counter += 1
 
 
-@router.post("/jobs/check-duplicates", response_model=List[DuplicateInfo])
+@router.post("/jobs/check-duplicates", response_model=list[DuplicateInfo])
 async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
     results = []
@@ -130,7 +160,7 @@ async def check_duplicates(request: CheckDuplicatesRequest):
     output_dir = normalize_output_dir(request.output_dir)
 
     if output_dir and not is_within_configured_volumes(
-        output_dir, treat_archives=False
+        output_dir, treat_archives=False,
     ):
         raise HTTPException(
             status_code=403,
@@ -155,17 +185,17 @@ async def check_duplicates(request: CheckDuplicatesRequest):
 
         if "::" in file_path:
             output_stem = archive_service._output_stem_for_member(actual_filename)
-            output_path = chdman_service.get_output_path_for_mode(
-                mode, output_stem, effective_output_dir, treat_as_stem=True
+            output_path = _get_output_path(
+                mode, output_stem, effective_output_dir, treat_as_stem=True,
             )
         else:
-            output_path = chdman_service.get_output_path_for_mode(
-                mode, actual_filename, effective_output_dir
+            output_path = _get_output_path(
+                mode, actual_filename, effective_output_dir,
             )
         exists, _ = check_output_conflicts(mode, output_path)
 
         results.append(
-            DuplicateInfo(file_path=file_path, output_path=output_path, exists=exists)
+            DuplicateInfo(file_path=file_path, output_path=output_path, exists=exists),
         )
 
     return results
@@ -207,7 +237,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
             archive_path = file_path.split("::", 1)[0]
             if archive_path in disallowed_archives:
                 item.setdefault("errors", []).append(
-                    "Delete-on-verify is not supported for multiple selections from the same archive"
+                    "Delete-on-verify is not supported for multiple selections from the same archive",
                 )
 
         items.append(item)
@@ -228,10 +258,31 @@ async def create_job(request: JobCreateRequest):
     compression = normalize_compression(request.compression)
     mode = request.mode.value
     output_dir = normalize_output_dir(request.output_dir)
+    is_dolphin = _is_dolphin_mode(mode)
     if compression and mode.startswith("extract"):
         raise HTTPException(
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
+        )
+    if compression and not is_dolphin and ":" in compression:
+        raise HTTPException(
+            status_code=400,
+            detail="Compression levels are only supported for Dolphin formats",
+        )
+    if compression and mode == "dolphin_iso":
+        raise HTTPException(
+            status_code=400,
+            detail="Compression not applicable for ISO extraction",
+        )
+    if compression and mode == "dolphin_gcz":
+        raise HTTPException(
+            status_code=400,
+            detail="GCZ uses fixed internal compression",
+        )
+    if compression and is_dolphin and "," in compression:
+        raise HTTPException(
+            status_code=400,
+            detail="Dolphin compression supports only one codec at a time",
         )
     if request.delete_on_verify and not supports_delete_on_verify(mode):
         raise HTTPException(
@@ -245,7 +296,7 @@ async def create_job(request: JobCreateRequest):
         )
 
     if output_dir and not is_within_configured_volumes(
-        output_dir, treat_archives=False
+        output_dir, treat_archives=False,
     ):
         raise HTTPException(
             status_code=403,
@@ -260,10 +311,10 @@ async def create_job(request: JobCreateRequest):
     display_filename = None
 
     if "::" in request.file_path:
-        if mode.startswith("extract") or mode == "copy":
+        if mode.startswith("extract") or mode == "copy" or is_dolphin:
             raise HTTPException(
                 status_code=400,
-                detail="Archive inputs are not supported for extract/copy",
+                detail="Archive inputs are not supported for extract/copy/dolphin modes",
             )
         archive_path, internal_path = request.file_path.split("::", 1)
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
@@ -275,17 +326,17 @@ async def create_job(request: JobCreateRequest):
         # Calculate output path before extraction to avoid unnecessary work
         effective_output_dir = output_dir or archive_source_dir
         output_stem = archive_service._output_stem_for_member(internal_path)
-        output_path = chdman_service.get_output_path_for_mode(
-            mode, output_stem, effective_output_dir, treat_as_stem=True
+        output_path = _get_output_path(
+            mode, output_stem, effective_output_dir, treat_as_stem=True,
         )
 
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if request.duplicate_action == DuplicateAction.SKIP:
                 raise HTTPException(
-                    status_code=409, detail="Output file already exists"
+                    status_code=409, detail="Output file already exists",
                 )
-            elif request.duplicate_action == DuplicateAction.OVERWRITE:
+            if request.duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise HTTPException(
                         status_code=409,
@@ -304,29 +355,38 @@ async def create_job(request: JobCreateRequest):
         mode.startswith("extract") or mode == "copy"
     ) and not file_path.lower().endswith(".chd"):
         raise HTTPException(
-            status_code=400, detail="Extract/copy modes require .chd input files"
+            status_code=400, detail="Extract/copy modes require .chd input files",
         )
 
     if mode.startswith("create") and file_path.lower().endswith(".chd"):
         raise HTTPException(
-            status_code=400, detail="Create modes require non-CHD input files"
+            status_code=400, detail="Create modes require non-CHD input files",
         )
+
+    if is_dolphin:
+        ext = Path(file_path).suffix.lower()
+        if ext not in DOLPHIN_CONVERTIBLE_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail="Dolphin modes require GameCube/Wii disc images "
+                       "(.iso, .gcz, .wia, .rvz, .wbfs)",
+            )
 
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive
     if output_path is None:
         effective_output_dir = output_dir or archive_source_dir
-        output_path = chdman_service.get_output_path_for_mode(
-            mode, file_path, effective_output_dir
+        output_path = _get_output_path(
+            mode, file_path, effective_output_dir,
         )
 
         output_exists, is_locked = check_output_conflicts(mode, output_path)
         if output_exists or is_locked:
             if request.duplicate_action == DuplicateAction.SKIP:
                 raise HTTPException(
-                    status_code=409, detail="Output file already exists"
+                    status_code=409, detail="Output file already exists",
                 )
-            elif request.duplicate_action == DuplicateAction.OVERWRITE:
+            if request.duplicate_action == DuplicateAction.OVERWRITE:
                 if is_locked:
                     raise HTTPException(
                         status_code=409,
@@ -338,6 +398,19 @@ async def create_job(request: JobCreateRequest):
                 else:
                     output_path = get_unique_output_path(output_path)
 
+    if (
+        is_dolphin
+        and request.duplicate_action == DuplicateAction.OVERWRITE
+        and output_path
+        and _is_same_path(output_path, file_path)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Output path matches input; overwriting would delete the source file"
+            ),
+        )
+
     allow_overwrite = (
         request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
     )
@@ -345,7 +418,7 @@ async def create_job(request: JobCreateRequest):
     if request.delete_on_verify:
         try:
             delete_snapshot = await run_in_threadpool(
-                build_delete_snapshot, file_path
+                build_delete_snapshot, file_path,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -367,16 +440,37 @@ async def create_job(request: JobCreateRequest):
     return job
 
 
-@router.post("/jobs/batch", response_model=List[ConversionJob])
+@router.post("/jobs/batch", response_model=list[ConversionJob])
 async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
     compression = normalize_compression(request.compression)
     mode = request.mode.value
+    is_dolphin = _is_dolphin_mode(mode)
     output_dir = normalize_output_dir(request.output_dir)
     if compression and mode.startswith("extract"):
         raise HTTPException(
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
+        )
+    if compression and not is_dolphin and ":" in compression:
+        raise HTTPException(
+            status_code=400,
+            detail="Compression levels are only supported for Dolphin formats",
+        )
+    if compression and mode == "dolphin_iso":
+        raise HTTPException(
+            status_code=400,
+            detail="Compression not applicable for ISO extraction",
+        )
+    if compression and mode == "dolphin_gcz":
+        raise HTTPException(
+            status_code=400,
+            detail="GCZ uses fixed internal compression",
+        )
+    if compression and is_dolphin and "," in compression:
+        raise HTTPException(
+            status_code=400,
+            detail="Dolphin compression supports only one codec at a time",
         )
     if request.delete_on_verify and not supports_delete_on_verify(mode):
         raise HTTPException(
@@ -397,11 +491,11 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if not is_within_configured_volumes(file_path):
             raise HTTPException(
                 status_code=403,
-                detail=f"Access denied: {file_path} outside configured volumes",
+                detail="Access denied: path outside configured volumes",
             )
 
     if output_dir and not is_within_configured_volumes(
-        output_dir, treat_archives=False
+        output_dir, treat_archives=False,
     ):
         raise HTTPException(
             status_code=403,
@@ -436,12 +530,12 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
 
         # Handle archive files
         if "::" in file_path:
-            if mode.startswith("extract") or mode == "copy":
+            if mode.startswith("extract") or mode == "copy" or is_dolphin:
                 skipped.append(file_path)
                 continue
             archive_path, internal_path = file_path.split("::", 1)
             archive_source_dir = os.path.dirname(
-                archive_path
+                archive_path,
             )  # Save CHD next to archive
             display_filename = os.path.basename(internal_path)
 
@@ -452,8 +546,8 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             # Calculate output path before extraction to avoid unnecessary work
             effective_output_dir = output_dir or archive_source_dir
             output_stem = archive_service._output_stem_for_member(internal_path)
-            output_path = chdman_service.get_output_path_for_mode(
-                mode, output_stem, effective_output_dir, treat_as_stem=True
+            output_path = _get_output_path(
+                mode, output_stem, effective_output_dir, treat_as_stem=True,
             )
             base_output_path = output_path
             output_exists, is_locked = check_output_conflicts(mode, output_path)
@@ -462,7 +556,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 if request.duplicate_action == DuplicateAction.SKIP:
                     skipped.append(file_path)
                     continue
-                elif request.duplicate_action == DuplicateAction.OVERWRITE:
+                if request.duplicate_action == DuplicateAction.OVERWRITE:
                     if is_locked:
                         skipped.append(file_path)
                         continue
@@ -486,12 +580,18 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             skipped.append(file_path)
             continue
 
+        if is_dolphin:
+            ext = Path(file_path).suffix.lower()
+            if ext not in DOLPHIN_CONVERTIBLE_EXTENSIONS:
+                skipped.append(file_path)
+                continue
+
         # Calculate output path and handle duplicates
         # For archive files: use output_dir if specified, otherwise save next to archive
         if output_path is None:
             effective_output_dir = output_dir or archive_source_dir
-            output_path = chdman_service.get_output_path_for_mode(
-                mode, file_path, effective_output_dir
+            output_path = _get_output_path(
+                mode, file_path, effective_output_dir,
             )
             base_output_path = output_path
             output_exists, is_locked = check_output_conflicts(mode, output_path)
@@ -500,7 +600,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 if request.duplicate_action == DuplicateAction.SKIP:
                     skipped.append(file_path)
                     continue
-                elif request.duplicate_action == DuplicateAction.OVERWRITE:
+                if request.duplicate_action == DuplicateAction.OVERWRITE:
                     if is_locked:
                         skipped.append(file_path)
                         continue
@@ -510,6 +610,15 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                     else:
                         output_path = get_unique_output_path(output_path)
 
+        if (
+            is_dolphin
+            and request.duplicate_action == DuplicateAction.OVERWRITE
+            and output_path
+            and _is_same_path(output_path, file_path)
+        ):
+            skipped.append(file_path)
+            continue
+
         allow_overwrite = (
             request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
         )
@@ -517,7 +626,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if request.delete_on_verify:
             try:
                 delete_snapshot = await run_in_threadpool(
-                    build_delete_snapshot, file_path
+                    build_delete_snapshot, file_path,
                 )
             except ValueError as exc:
                 raise HTTPException(
@@ -534,7 +643,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 "display_filename": display_filename,
                 "priority": _priority(_input_extension(file_path)),
                 "delete_snapshot": delete_snapshot,
-            }
+            },
         )
 
     selected = {}
@@ -566,7 +675,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     return jobs
 
 
-@router.get("/jobs", response_model=List[ConversionJob])
+@router.get("/jobs", response_model=list[ConversionJob])
 async def list_jobs():
     """List all conversion jobs."""
     return job_manager.get_all_jobs()
@@ -681,7 +790,7 @@ async def job_progress(job_id: str):
                         "job_id": job_id,
                         "status": job.status.value,
                         "progress": job.progress,
-                    }
+                    },
                 ),
             }
 
@@ -706,7 +815,7 @@ async def job_progress(job_id: str):
                             "job_id": job_id,
                             "status": latest_job.status.value,
                             "progress": latest_job.progress,
-                        }
+                        },
                     ),
                 }
                 return

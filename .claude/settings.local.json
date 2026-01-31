@@ -25,7 +25,13 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(tree:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(PYTHONPATH=app python -m pytest:*)",
+      "Bash(CHD_VERIFICATION_STORE_PATH=/tmp/test_verification_store.json PYTHONPATH=app python -m pytest tests/ -v)",
+      "Bash(CHD_VERIFICATION_STORE=/tmp/test_verifications.json PYTHONPATH=app python -m pytest:*)",
+      "Bash(git ls-remote:*)"
     ]
   }
 }

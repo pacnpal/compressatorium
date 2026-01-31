@@ -1,8 +1,8 @@
-# Docker CHD "Compressed Hunks of Data" Converter
+# Compressatorium
 
 > **Fork Notice:** This project is a fork of [MarcTV/docker-chd-converter](https://github.com/MarcTV/docker-chd-converter) with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
 
-Compresses GDI, ISO, BIN and CUE files to CHD using **CHDMAN** from MAME Tools.
+Multi-tool game disc image converter supporting **CHDMAN** (MAME) and **dolphin-tool** (Dolphin Emulator).
 
 * **Web UI** for easy file browsing and conversion
 * Supports **nested directories** and **compressed archives** (ZIP, 7z, RAR)

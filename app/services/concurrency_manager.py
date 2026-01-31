@@ -3,7 +3,6 @@ import fcntl
 import json
 import os
 import time
-from typing import Dict, Optional, Tuple
 
 from config import settings
 
@@ -19,8 +18,8 @@ class ConcurrencyManager:
             os.path.join(self.lock_dir, f"convert_slot_{idx}.lock")
             for idx in range(self.max_concurrent)
         ]
-        self._lock_handles: Dict[str, Tuple[int, object]] = {}
-        self._ticket_handles: Dict[str, Tuple[int, str]] = {}
+        self._lock_handles: dict[str, tuple[int, object]] = {}
+        self._ticket_handles: dict[str, tuple[int, str]] = {}
         self._ticket_counter_path = os.path.join(self.lock_dir, "queue_counter")
         self._cleanup_stale_locks()
         if not os.path.exists(self._ticket_counter_path):
@@ -54,7 +53,7 @@ class ConcurrencyManager:
             pass
 
     async def acquire(
-        self, key: str, cancel_event: Optional[asyncio.Event] = None
+        self, key: str, cancel_event: asyncio.Event | None = None,
     ) -> bool:
         """Acquire a global concurrency slot in FIFO order. Returns False if cancelled."""
         self.reserve_ticket(key)
@@ -102,7 +101,7 @@ class ConcurrencyManager:
         self.release_ticket(key)
 
     async def _wait_for_turn(
-        self, key: str, cancel_event: Optional[asyncio.Event] = None
+        self, key: str, cancel_event: asyncio.Event | None = None,
     ) -> bool:
         ticket = self.reserve_ticket(key)
         while True:
@@ -291,9 +290,9 @@ class ConcurrencyManager:
             return True
         return True
 
-    def _load_ticket_payload(self, ticket_path: str) -> Tuple[Optional[dict], bool]:
+    def _load_ticket_payload(self, ticket_path: str) -> tuple[dict | None, bool]:
         try:
-            with open(ticket_path, "r") as fh:
+            with open(ticket_path) as fh:
                 content = fh.read().strip()
         except OSError:
             return None, False
@@ -342,5 +341,5 @@ class ConcurrencyManager:
 
 
 concurrency_manager = ConcurrencyManager(
-    settings.max_concurrent_jobs, settings.concurrency_lock_dir
+    settings.max_concurrent_jobs, settings.concurrency_lock_dir,
 )

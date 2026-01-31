@@ -1,11 +1,13 @@
-// Main CHD Converter App
-import { api, formatSize, getFileIcon } from './api.js';
+// Main Compressatorium App
+import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
+const ISO_TOOL_STORAGE_KEY = 'iso_tool_preference';
 
 // ============ Help Component ============
 
-function HelpPanel({ onClose }) {
+function HelpPanel({ onClose, isoHandling }) {
+    const isoHandlingLabel = isoHandling === 'chdman' ? 'CHDMAN' : 'Dolphin';
     return html`
         <div class="help-panel">
             <div class="help-header">
@@ -13,7 +15,7 @@ function HelpPanel({ onClose }) {
                 <button class="btn btn-sm btn-secondary" onClick=${onClose}>×</button>
             </div>
             <div class="help-content">
-                <h4>How to use CHD Converter</h4>
+                <h4>How to use Compressatorium</h4>
                 <ol>
                     <li><strong>Select a Volume</strong> - Choose a mounted directory from the left panel</li>
                     <li><strong>Browse Files</strong> - Navigate through folders to find your disc images</li>
@@ -30,9 +32,11 @@ function HelpPanel({ onClose }) {
                 </ol>
                 <h4>File Types</h4>
                 <ul>
-                    <li>💽 <strong>.gdi, .iso, .cue, .bin</strong> - Can be converted to CHD</li>
+                    <li>💽 <strong>.gdi, .cue, .bin</strong> - Can be converted to CHD</li>
+                    <li>🧭 <strong>.iso</strong> - Handled by ${isoHandlingLabel} (change via ISO Handling)</li>
                     <li>💿 <strong>.chd</strong> - Click to view file information</li>
                     <li>📦 <strong>.zip, .7z, .rar</strong> - Archives (click to browse contents)</li>
+                    <li>🎮 <strong>.rvz, .wia, .gcz, .wbfs</strong> - GameCube/Wii disc images (Dolphin)</li>
                 </ul>
                 <h4>Compression Tips</h4>
                 <ul>
@@ -45,6 +49,14 @@ function HelpPanel({ onClose }) {
                 <p class="compression-note">
                     Omitting <code>-c</code> would use chdman defaults; this app always sends an explicit choice to avoid surprises.
                 </p>
+                <h4>Dolphin Formats</h4>
+                <ul>
+                    <li><strong>RVZ</strong> is the recommended format for Dolphin emulator.</li>
+                    <li><strong>zstd</strong> compression gives the best speed/size balance for RVZ.</li>
+                    <li><strong>WIA</strong> is an older compressed format; prefer RVZ for new conversions.</li>
+                    <li><strong>GCZ</strong> uses fixed deflate compression (no codec selection).</li>
+                    <li><strong>ISO</strong> output extracts to uncompressed disc image.</li>
+                </ul>
             </div>
         </div>
     `;
@@ -129,7 +141,7 @@ function Breadcrumb({ path, volume, onNavigate }) {
     `;
 }
 
-function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected }) {
+function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected, isoHandling, onToggleIsoHandling }) {
 
     if (error) {
         return html`
@@ -151,32 +163,62 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         `;
     }
 
+    const isArchiveItem = (entry) => entry.is_archive_item || entry.in_archive;
+    const isoIsDolphin = isoHandling === 'dolphin';
+
     const handleClick = (entry, e) => {
+        const ext = entry.extension?.toLowerCase();
+        const isDolphinInfo = ['.rvz', '.wia', '.gcz', '.wbfs'].includes(ext)
+            || (isoIsDolphin && ext === '.iso');
         if (entry.type === 'directory') {
             onNavigate(entry.path);
         } else if (entry.type === 'archive') {
             // For archives, browse contents
             onBrowseArchive && onBrowseArchive(entry.path);
-        } else if (entry.extension === '.chd') {
+        } else if (entry.extension === '.chd' && !isArchiveItem(entry)) {
             // For CHD files, show info (but checkbox still works for selection)
             onShowInfo(entry.path);
+        } else if (isArchiveItem(entry) && entry.chd_ready && entry.chd_path) {
+            // For archive members with a converted CHD, show info for the output file
+            onShowInfo && onShowInfo(entry.chd_path);
+        } else if (isDolphinInfo && !isArchiveItem(entry)) {
+            onShowInfo && onShowInfo(entry.path);
         } else {
             // For all other files, toggle selection (pass event for shift-click support)
             onToggleSelect(entry, e);
         }
     };
 
-    const isArchiveItem = (entry) => entry.is_archive_item || entry.in_archive;
-    const getChdPath = (entry) => entry.chd_path || (entry.extension === '.chd' ? entry.path : null);
+    const getVerifiablePath = (entry) => {
+        const ext = entry.extension?.toLowerCase();
+        if (entry.chd_path && entry.chd_ready) return entry.chd_path;
+        if (
+            (['.rvz', '.wia', '.gcz', '.wbfs'].includes(ext) || (isoIsDolphin && ext === '.iso'))
+            && !isArchiveItem(entry)
+        ) {
+            return entry.path;
+        }
+        if (ext === '.chd') return entry.path;
+        return null;
+    };
+    const getChdPath = getVerifiablePath;
 
     const handleVerifyClick = async (e, entry) => {
         e.stopPropagation();
         const chdPath = getChdPath(entry);
         if (!chdPath) return;
-        await onVerify(chdPath);
+        await onVerify(chdPath, entry);
+    };
+
+    const handleIsoToggle = (e) => {
+        e.stopPropagation();
+        if (onToggleIsoHandling) {
+            onToggleIsoHandling();
+        }
     };
 
     const getTooltip = (entry) => {
+        const ext = entry.extension?.toLowerCase();
         if (entry.type === 'directory') return `Open folder: ${entry.name}`;
         if (entry.type === 'archive') {
             if (entry.archive_items != null) {
@@ -187,7 +229,17 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
             }
             return `Archive: ${entry.name} - Click to browse contents`;
         }
-        if (entry.extension === '.chd') return 'Click to view CHD info';
+        if (ext === '.chd' && !isArchiveItem(entry)) return 'Click to view CHD info';
+        if (isArchiveItem(entry) && entry.chd_ready && entry.chd_path) return 'Click to view output CHD info';
+        if (isArchiveItem(entry) && entry.has_chd && !entry.chd_ready) return 'CHD conversion in progress';
+        if (!isArchiveItem(entry) && ext === '.iso' && !isoIsDolphin) {
+            return 'ISO handled by CHDMAN. Switch ISO handling to Dolphin for disc info/verify.';
+        }
+        if (
+            (['.rvz', '.wia', '.gcz', '.wbfs'].includes(ext)
+                || (isoIsDolphin && ext === '.iso'))
+            && !isArchiveItem(entry)
+        ) return 'Click to view disc info';
         if (canSelect(entry)) return 'Click to select';
         if (entry.convertible) return entry.has_chd ? 'Already converted' : entry.name;
         return entry.name;
@@ -275,7 +327,11 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                 ${entries.map(entry => {
         const chdPath = getChdPath(entry);
         const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
-        const canVerify = chdPath && (entry.extension === '.chd' || (isArchiveItem(entry) && entry.has_chd));
+        const entryExt = entry.extension?.toLowerCase();
+        const isIsoEntry = entryExt === '.iso';
+        const isDolphinExt = ['.rvz', '.wia', '.gcz', '.wbfs'].includes(entryExt)
+            || (isoIsDolphin && entryExt === '.iso');
+        const canVerify = chdPath && (entry.extension === '.chd' || (isDolphinExt && !isArchiveItem(entry)) || (isArchiveItem(entry) && entry.chd_ready));
         const archiveItems = entry.archive_items;
         const archiveHasChd = entry.archive_has_chd;
         return html`
@@ -322,6 +378,16 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                                 ${archiveHasChd}/${archiveItems} CHD
                             </span>
                         `}
+                        ${isIsoEntry && !isArchiveItem(entry) && html`
+                            <button
+                                type="button"
+                                class="status iso-handling iso-toggle"
+                                title="Click to toggle ISO handling"
+                                onClick=${handleIsoToggle}
+                            >
+                                ISO: ${isoIsDolphin ? 'Dolphin' : 'CHDMAN'}
+                            </button>
+                        `}
                         ${isVerified(entry) && html`
                             <span class="status verified" title="CHD integrity verified">✓ Verified</span>
                         `}
@@ -351,7 +417,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             <button
                                 class="btn-icon"
                                 onClick=${(e) => handleVerifyClick(e, entry)}
-                                title="Verify CHD integrity"
+                                title="Verify integrity"
                                 disabled=${isVerifying}
                             >
                                 ${isVerifying ? '⏳' : '🔍'}
@@ -493,41 +559,47 @@ function JobList({ jobs, onCancel }) {
     `;
 }
 
-function CHDInfoModal({ path, onClose }) {
+function CHDInfoModal({ path, onClose, useDolphin }) {
     const [info, setInfo] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+
+    const dolphin = Boolean(useDolphin) || (path ? isDolphinFile(path) : false);
 
     useEffect(() => {
         if (path) {
             setLoading(true);
             setError(null);
-            api.getCHDInfo(path)
+            const fetchInfo = dolphin ? api.getDolphinInfo(path) : api.getCHDInfo(path);
+            fetchInfo
                 .then(setInfo)
                 .catch(e => setError(e.message))
                 .finally(() => setLoading(false));
         }
-    }, [path]);
+    }, [path, dolphin]);
 
     if (!path) return null;
 
     const filename = path.split('/').pop();
+    const title = dolphin ? 'Disc Information' : 'CHD Information';
+    const loadingText = dolphin ? 'Loading disc info...' : 'Loading CHD info...';
+    const errorText = dolphin ? 'Failed to read disc image' : 'Failed to read CHD file';
 
     return html`
         <div class="modal-overlay" onClick=${onClose}>
             <div class="modal" onClick=${(e) => e.stopPropagation()}>
                 <div class="modal-header">
-                    <h3>CHD Information: ${filename}</h3>
+                    <h3>${title}: ${filename}</h3>
                     <button class="modal-close" onClick=${onClose} title="Close">×</button>
                 </div>
-                ${loading && html`<div class="loading"><div class="spinner"></div>Loading CHD info...</div>`}
+                ${loading && html`<div class="loading"><div class="spinner"></div>${loadingText}</div>`}
                 ${error && html`
                     <div class="error-state">
-                        <p>Failed to read CHD file</p>
+                        <p>${errorText}</p>
                         <p class="error-detail">${error}</p>
                     </div>
                 `}
-                ${info && html`
+                ${info && !dolphin && html`
                     <div class="info-grid">
                         <span class="info-label">File</span>
                         <span class="info-value">${filename}</span>
@@ -567,6 +639,55 @@ function CHDInfoModal({ path, onClose }) {
                         ${info.data_sha1 && html`
                             <span class="info-label">Data SHA1</span>
                             <span class="info-value" style="font-family: monospace; font-size: 0.75rem">${info.data_sha1}</span>
+                        `}
+                    </div>
+                    ${info.raw_data && html`
+                        <details style="margin-top: 15px">
+                            <summary style="cursor: pointer; color: var(--text-secondary)">Show Raw Output</summary>
+                            <pre style="margin-top: 10px; font-size: 0.75rem; overflow-x: auto; padding: 10px; background: var(--bg-primary); border-radius: 4px; white-space: pre-wrap">${info.raw_data}</pre>
+                        </details>
+                    `}
+                `}
+                ${info && dolphin && html`
+                    <div class="info-grid">
+                        <span class="info-label">File</span>
+                        <span class="info-value">${filename}</span>
+
+                        ${info.game_name && html`
+                            <span class="info-label">Game Name</span>
+                            <span class="info-value">${info.game_name}</span>
+                        `}
+                        ${info.game_id && html`
+                            <span class="info-label">Game ID</span>
+                            <span class="info-value" style="font-family: monospace">${info.game_id}</span>
+                        `}
+                        ${info.disc_number && html`
+                            <span class="info-label">Disc Number</span>
+                            <span class="info-value">${info.disc_number}</span>
+                        `}
+                        ${info.revision && html`
+                            <span class="info-label">Revision</span>
+                            <span class="info-value">${info.revision}</span>
+                        `}
+                        ${info.region && html`
+                            <span class="info-label">Region</span>
+                            <span class="info-value">${info.region}</span>
+                        `}
+                        ${info.format && html`
+                            <span class="info-label">Format</span>
+                            <span class="info-value">${info.format}</span>
+                        `}
+                        ${info.compression && html`
+                            <span class="info-label">Compression</span>
+                            <span class="info-value">${info.compression}</span>
+                        `}
+                        ${info.block_size && html`
+                            <span class="info-label">Block Size</span>
+                            <span class="info-value">${info.block_size}</span>
+                        `}
+                        ${info.file_size && html`
+                            <span class="info-label">File Size</span>
+                            <span class="info-value">${info.file_size}</span>
                         `}
                     </div>
                     ${info.raw_data && html`
@@ -836,7 +957,7 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
         setVerifying(true);
         setError(null);
         try {
-            const result = await onVerify(chdPath);
+            const result = await onVerify(chdPath, entry);
             setVerificationResult(result);
             if (result.valid) {
                 setStep(3);
@@ -1409,7 +1530,7 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
     `;
 }
 
-function BulkVerifyModal({ chdPaths, onComplete, onClose }) {
+function BulkVerifyModal({ verifyItems, onComplete, onClose }) {
     const [state, setState] = useState({
         running: false,
         total: 0,
@@ -1423,16 +1544,16 @@ function BulkVerifyModal({ chdPaths, onComplete, onClose }) {
     });
 
     // Reset and start verification when paths change
-    const pathsKey = chdPaths ? chdPaths.join('|') : '';
+    const pathsKey = verifyItems ? verifyItems.map(item => item.path).join('|') : '';
     useEffect(() => {
-        if (!pathsKey || chdPaths.length === 0) return;
+        if (!pathsKey || verifyItems.length === 0) return;
 
         let cancelled = false;
 
         const runVerification = async () => {
             setState({
                 running: true,
-                total: chdPaths.length,
+                total: verifyItems.length,
                 verified: 0,
                 failed: 0,
                 current: null,
@@ -1443,40 +1564,160 @@ function BulkVerifyModal({ chdPaths, onComplete, onClose }) {
             });
 
             try {
-                const result = await api.verifyBatchCHDs(chdPaths, {
-                    onProgress: (update) => {
-                        if (cancelled) return;
-                        if (update.type === 'start') {
-                            // Use server-validated total (may be less than client count if paths were filtered)
+                const allChd = verifyItems.every(item => item.kind === 'chd');
+                const allDolphin = verifyItems.every(item => item.kind === 'dolphin');
+                let result = { verified: 0, failed: 0, total: verifyItems.length };
+
+                if (allChd) {
+                    const chdPaths = verifyItems.map(item => item.path);
+                    result = await api.verifyBatchCHDs(chdPaths, {
+                        onProgress: (update) => {
+                            if (cancelled) return;
+                            if (update.type === 'start') {
+                                // Use server-validated total (may be less than client count if paths were filtered)
+                                setState(prev => ({
+                                    ...prev,
+                                    total: update.total
+                                }));
+                            } else if (update.type === 'progress') {
+                                setState(prev => ({
+                                    ...prev,
+                                    current: update.filename
+                                }));
+                            } else if (update.type === 'file_progress') {
+                                setState(prev => ({
+                                    ...prev,
+                                    current: update.filename,
+                                    currentProgress: update.progress
+                                }));
+                            }
+                        },
+                        onFileComplete: (data) => {
+                            if (cancelled) return;
                             setState(prev => ({
                                 ...prev,
-                                total: update.total
-                            }));
-                        } else if (update.type === 'progress') {
-                            setState(prev => ({
-                                ...prev,
-                                current: update.filename
-                            }));
-                        } else if (update.type === 'file_progress') {
-                            setState(prev => ({
-                                ...prev,
-                                current: update.filename,
-                                currentProgress: update.progress
+                                verified: data.verified,
+                                failed: data.failed,
+                                current: null,
+                                currentProgress: null,
+                                results: [...prev.results, data]
                             }));
                         }
-                    },
-                    onFileComplete: (data) => {
-                        if (cancelled) return;
+                    });
+                } else if (allDolphin) {
+                    const dolphinPaths = verifyItems.map(item => item.path);
+                    result = await api.verifyBatchDolphin(dolphinPaths, {
+                        onProgress: (update) => {
+                            if (cancelled) return;
+                            if (update.type === 'start') {
+                                // Use server-validated total (may be less than client count if paths were filtered)
+                                setState(prev => ({
+                                    ...prev,
+                                    total: update.total
+                                }));
+                            } else if (update.type === 'progress') {
+                                setState(prev => ({
+                                    ...prev,
+                                    current: update.filename
+                                }));
+                            } else if (update.type === 'file_progress') {
+                                setState(prev => ({
+                                    ...prev,
+                                    current: update.filename,
+                                    currentProgress: update.progress
+                                }));
+                            }
+                        },
+                        onFileComplete: (data) => {
+                            if (cancelled) return;
+                            setState(prev => ({
+                                ...prev,
+                                verified: data.verified,
+                                failed: data.failed,
+                                current: null,
+                                currentProgress: null,
+                                results: [...prev.results, data]
+                            }));
+                        }
+                    });
+                } else {
+                    const chdPaths = verifyItems.filter(item => item.kind === 'chd').map(item => item.path);
+                    const dolphinPaths = verifyItems.filter(item => item.kind === 'dolphin').map(item => item.path);
+                    let verified = 0;
+                    let failed = 0;
+                    let chdTotal = chdPaths.length;
+                    let dolphinTotal = dolphinPaths.length;
+
+                    const runBatch = async (kind, paths) => {
+                        const baseVerified = verified;
+                        const baseFailed = failed;
+                        const verifyFn = kind === 'dolphin'
+                            ? api.verifyBatchDolphin.bind(api)
+                            : api.verifyBatchCHDs.bind(api);
+
+                        const batchResult = await verifyFn(paths, {
+                            onProgress: (update) => {
+                                if (cancelled) return;
+                                if (update.type === 'start') {
+                                    if (kind === 'dolphin') {
+                                        dolphinTotal = update.total;
+                                    } else {
+                                        chdTotal = update.total;
+                                    }
+                                    setState(prev => ({
+                                        ...prev,
+                                        total: chdTotal + dolphinTotal
+                                    }));
+                                } else if (update.type === 'progress') {
+                                    setState(prev => ({
+                                        ...prev,
+                                        current: update.filename
+                                    }));
+                                } else if (update.type === 'file_progress') {
+                                    setState(prev => ({
+                                        ...prev,
+                                        current: update.filename,
+                                        currentProgress: update.progress
+                                    }));
+                                }
+                            },
+                            onFileComplete: (data) => {
+                                if (cancelled) return;
+                                const cumulativeVerified = baseVerified + data.verified;
+                                const cumulativeFailed = baseFailed + data.failed;
+                                verified = cumulativeVerified;
+                                failed = cumulativeFailed;
+                                setState(prev => ({
+                                    ...prev,
+                                    verified: cumulativeVerified,
+                                    failed: cumulativeFailed,
+                                    current: null,
+                                    currentProgress: null,
+                                    results: [...prev.results, data]
+                                }));
+                            }
+                        });
+
+                        verified = baseVerified + batchResult.verified;
+                        failed = baseFailed + batchResult.failed;
                         setState(prev => ({
                             ...prev,
-                            verified: data.verified,
-                            failed: data.failed,
+                            verified,
+                            failed,
                             current: null,
-                            currentProgress: null,
-                            results: [...prev.results, data]
+                            currentProgress: null
                         }));
+                    };
+
+                    if (chdPaths.length > 0) {
+                        await runBatch('chd', chdPaths);
                     }
-                });
+                    if (dolphinPaths.length > 0) {
+                        await runBatch('dolphin', dolphinPaths);
+                    }
+
+                    result = { verified, failed, total: chdTotal + dolphinTotal };
+                }
 
                 if (cancelled) return;
                 setState(prev => ({
@@ -1507,13 +1748,13 @@ function BulkVerifyModal({ chdPaths, onComplete, onClose }) {
         };
     }, [pathsKey]);
 
-    if (!chdPaths || chdPaths.length === 0) return null;
+    if (!verifyItems || verifyItems.length === 0) return null;
 
     return html`
         <div class="modal-overlay" onClick=${state.running ? null : onClose}>
             <div class="modal" onClick=${(e) => e.stopPropagation()} style="max-width: 500px;">
                 <div class="modal-header">
-                    <h3>🔍 Verify ${chdPaths.length} CHD File${chdPaths.length > 1 ? 's' : ''}</h3>
+                    <h3>🔍 Verify ${verifyItems.length} File${verifyItems.length > 1 ? 's' : ''}</h3>
                     ${!state.running && html`
                         <button class="modal-close" onClick=${onClose} title="Close">×</button>
                     `}
@@ -1523,7 +1764,7 @@ function BulkVerifyModal({ chdPaths, onComplete, onClose }) {
                         <div style="text-align: center; padding: 20px;">
                             <div class="spinner" style="margin: 0 auto 15px;"></div>
                             <p style="color: var(--text-primary); margin-bottom: 10px;">
-                                Verifying CHD files... ${state.verified + state.failed}/${state.total}
+                                Verifying files... ${state.verified + state.failed}/${state.total}
                             </p>
                             ${state.current && html`
                                 <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 5px;">
@@ -1549,7 +1790,7 @@ function BulkVerifyModal({ chdPaths, onComplete, onClose }) {
                             <p style="color: ${state.failed > 0 ? 'var(--warning)' : 'var(--success)'}; margin: 0; font-weight: bold;">
                                 ${state.failed > 0
                 ? `Verification complete: ${state.verified} passed, ${state.failed} failed`
-                : `✓ All ${state.verified} CHD${state.verified > 1 ? 's' : ''} verified successfully!`
+                : `✓ All ${state.verified} file${state.verified > 1 ? 's' : ''} verified successfully!`
             }
                             </p>
                         </div>
@@ -1615,6 +1856,14 @@ function App() {
     const [_hiddenJobIds, _setHiddenJobIds] = useState(new Set());
     const [loading, setLoading] = useState(false);
     const [conversionMode, setConversionMode] = useState('createcd');
+    const [isoHandling, setIsoHandling] = useState(() => {
+        try {
+            const stored = localStorage.getItem(ISO_TOOL_STORAGE_KEY);
+            return stored === 'chdman' || stored === 'dolphin' ? stored : 'dolphin';
+        } catch (err) {
+            return 'dolphin';
+        }
+    });
     const [compressionSelection, setCompressionSelection] = useState(['zlib']);
     const [showCompressionHelp, setShowCompressionHelp] = useState(false);
     const [outputDir, setOutputDir] = useState('');
@@ -1632,7 +1881,7 @@ function App() {
     const [renameTarget, setRenameTarget] = useState(null); // Entry to rename
     const [deleteTarget, setDeleteTarget] = useState(null); // Entry to delete
     const [bulkDeleteEntries, setBulkDeleteEntries] = useState(null); // Entries for bulk delete
-    const [bulkVerifyPaths, setBulkVerifyPaths] = useState(null); // CHD paths for bulk verify
+    const [bulkVerifyItems, setBulkVerifyItems] = useState(null); // Items for bulk verify
     const [verifiedCHDs, setVerifiedCHDs] = useState(new Set()); // Set of verified CHD paths
     const [verifyProgress, setVerifyProgress] = useState(new Map());
     const [fileTypeFilter, setFileTypeFilter] = useState(null); // null = all, or ".chd", ".zip,.7z,.rar", etc.
@@ -1657,6 +1906,14 @@ function App() {
         setTimeout(() => setNotification(null), 4000);
     };
 
+    useEffect(() => {
+        try {
+            localStorage.setItem(ISO_TOOL_STORAGE_KEY, isoHandling);
+        } catch (err) {
+            // Ignore persistence failures (private mode, disabled storage).
+        }
+    }, [isoHandling]);
+
     // Refresh file list for current directory or archive (transparent merge to avoid flicker)
     const refreshFileList = useCallback((showSpinner = false) => {
         const path = currentPathRef.current;
@@ -1679,6 +1936,7 @@ function App() {
                         extension: file.extension,
                         convertible: file.convertible,
                         has_chd: file.has_chd || false,
+                        chd_ready: Boolean(file.chd_ready),
                         output_stem: file.output_stem,
                         chd_path: file.chd_path,
                         is_archive_item: true,
@@ -1694,7 +1952,8 @@ function App() {
                                     oldEntry.path !== newEntry.path ||
                                     oldEntry.size !== newEntry.size ||
                                     oldEntry.convertible !== newEntry.convertible ||
-                                    oldEntry.has_chd !== newEntry.has_chd;
+                                    oldEntry.has_chd !== newEntry.has_chd ||
+                                    oldEntry.chd_ready !== newEntry.chd_ready;
                             });
                             if (!hasChanges) return prevEntries;
                         }
@@ -1727,7 +1986,8 @@ function App() {
                                     oldEntry.size !== newEntry.size ||
                                     oldEntry.type !== newEntry.type ||
                                     oldEntry.convertible !== newEntry.convertible ||
-                                    oldEntry.has_chd !== newEntry.has_chd;
+                                    oldEntry.has_chd !== newEntry.has_chd ||
+                                    oldEntry.chd_ready !== newEntry.chd_ready;
                             });
                             // Only update if there are actual changes
                             if (!hasChanges) return prevEntries;
@@ -2161,6 +2421,7 @@ function App() {
                 extension: file.extension,
                 convertible: file.convertible,
                 has_chd: file.has_chd || false,
+                chd_ready: Boolean(file.chd_ready),
                 output_stem: file.output_stem,
                 chd_path: file.chd_path,
                 is_archive_item: true,
@@ -2183,6 +2444,32 @@ function App() {
             setLoading(false);
         }
     };
+
+    const isIsoPath = (path) => typeof path === 'string'
+        && path.toLowerCase().endsWith('.iso')
+        && !path.includes('::');
+
+    const handleShowInfo = (path) => {
+        if (!path) return;
+        const isIso = isIsoPath(path);
+        if (isIso) {
+            if (isoHandling !== 'dolphin') {
+                notify('ISO info uses Dolphin tools. Switch ISO handling to Dolphin to view disc info.', 'info');
+                return;
+            }
+            setShowCHDInfo({ path, useDolphin: true });
+            return;
+        }
+        setShowCHDInfo({ path, useDolphin: false });
+    };
+
+    const handleIsoHandlingToggle = useCallback(() => {
+        setIsoHandling(prev => {
+            const next = prev === 'dolphin' ? 'chdman' : 'dolphin';
+            notify(`ISO handling set to ${next === 'dolphin' ? 'Dolphin' : 'CHDMAN'}`, 'info');
+            return next;
+        });
+    }, []);
 
     const handleToggleSelect = (entry, event) => {
         const index = displayedEntries.findIndex(e => e.path === entry.path);
@@ -2270,10 +2557,24 @@ function App() {
         refreshFileList(true);
     };
 
-    const handleVerify = async (chdPath) => {
+    const handleVerify = async (chdPath, entry = null) => {
+        const isArchiveItem = entry?.is_archive_item || entry?.in_archive || (typeof chdPath === 'string' && chdPath.includes('::'));
+        const isIso = typeof chdPath === 'string' && chdPath.toLowerCase().endsWith('.iso');
+        let forceDolphin = false;
+        if (isIso && !isArchiveItem) {
+            if (isoHandling !== 'dolphin') {
+                notify('ISO verification uses Dolphin tools. Switch ISO handling to Dolphin to verify.', 'info');
+                return;
+            }
+            forceDolphin = true;
+        }
+
+        const dolphin = forceDolphin || isDolphinFile(chdPath);
+        const verifyFn = dolphin ? api.verifyDolphin.bind(api) : api.verifyCHD.bind(api);
+        const label = dolphin ? 'Disc' : 'CHD';
         setVerifyProgress(prev => new Map(prev).set(chdPath, { progress: 0, message: 'Starting verification...' }));
         try {
-            const result = await api.verifyCHD(chdPath, {
+            const result = await verifyFn(chdPath, {
                 onProgress: (update) => {
                     setVerifyProgress(prev => {
                         const next = new Map(prev);
@@ -2287,13 +2588,13 @@ function App() {
             });
             if (result.valid) {
                 setVerifiedCHDs(prev => new Set([...prev, chdPath]));
-                notify('✓ CHD verified successfully', 'success');
+                notify(`✓ ${label} verified successfully`, 'success');
             } else {
-                notify(`✗ CHD verification failed: ${result.message}`, 'error');
+                notify(`✗ ${label} verification failed: ${result.message}`, 'error');
             }
             return result;
         } catch (err) {
-            notify(`✗ CHD verification failed: ${err.message}`, 'error');
+            notify(`✗ ${label} verification failed: ${err.message}`, 'error');
             throw err;
         } finally {
             setVerifyProgress(prev => {
@@ -2316,15 +2617,32 @@ function App() {
         return entries;
     }, [selectedFiles]);
 
-    // Get selected CHD file paths for verification
-    const getVerifiableCHDPaths = useCallback(() => {
-        const paths = [];
+    // Get selected file paths for verification (CHD + Dolphin formats)
+    const getVerifiableItems = useCallback(() => {
+        const items = [];
         for (const [path, entry] of selectedFiles) {
-            if (entry && entry.extension?.toLowerCase() === '.chd') {
-                paths.push(path);
+            if (!entry) continue;
+            const ext = entry.extension?.toLowerCase();
+            const isArchiveItem = entry.is_archive_item || entry.in_archive;
+            const filename = entry.name || path.split('/').pop();
+
+            if (entry.chd_path && entry.chd_ready) {
+                items.push({ path: entry.chd_path, filename, kind: 'chd' });
+                continue;
+            }
+            if (ext === '.chd') {
+                items.push({ path, filename, kind: 'chd' });
+                continue;
+            }
+            if (!isArchiveItem && ['.rvz', '.wia', '.gcz', '.wbfs'].includes(ext)) {
+                items.push({ path, filename, kind: 'dolphin' });
+                continue;
+            }
+            if (!isArchiveItem && ext === '.iso') {
+                items.push({ path, filename, kind: 'iso' });
             }
         }
-        return paths;
+        return items;
     }, [selectedFiles]);
 
     // Handle bulk delete button click
@@ -2339,13 +2657,26 @@ function App() {
 
     // Handle bulk verify button click
     const handleBulkVerifyClick = useCallback(() => {
-        const paths = getVerifiableCHDPaths();
-        if (paths.length === 0) {
-            notify('⚠ No CHD files selected', 'error');
+        const items = getVerifiableItems();
+        if (items.length === 0) {
+            notify('⚠ No verifiable files selected', 'error');
             return;
         }
-        setBulkVerifyPaths(paths);
-    }, [getVerifiableCHDPaths, notify]);
+        const isoItems = items.filter(item => item.kind === 'iso');
+        let finalItems = items.filter(item => item.kind !== 'iso');
+        if (isoItems.length > 0) {
+            if (isoHandling === 'dolphin') {
+                finalItems = finalItems.concat(isoItems.map(item => ({ ...item, kind: 'dolphin' })));
+            } else {
+                notify('ISO verification uses Dolphin tools. Switch ISO handling to Dolphin to verify ISO files.', 'info');
+            }
+        }
+        if (finalItems.length === 0) {
+            notify('⚠ No files selected for verification', 'error');
+            return;
+        }
+        setBulkVerifyItems(finalItems);
+    }, [getVerifiableItems, notify, isoHandling]);
 
     // Handle bulk verify completion - update verified CHDs set
     const handleBulkVerifyComplete = useCallback((result) => {
@@ -2359,7 +2690,7 @@ function App() {
             .catch(() => { });
 
         if (result.verified > 0) {
-            notify(`✓ Verified ${result.verified} CHD${result.verified > 1 ? 's' : ''}${result.failed > 0 ? `, ${result.failed} failed` : ''}`,
+            notify(`✓ Verified ${result.verified} file${result.verified > 1 ? 's' : ''}${result.failed > 0 ? `, ${result.failed} failed` : ''}`,
                 result.failed > 0 ? 'warning' : 'success');
         }
         // Clear selection after bulk verify
@@ -2464,6 +2795,21 @@ function App() {
 
     // Execute conversion with specified duplicate action
     const executeConversion = async (paths, duplicateAction = 'skip') => {
+        if (hasMultipleDolphinCodecs) {
+            notify('Dolphin formats support only one compression codec at a time', 'error');
+            return;
+        }
+        const isoInputs = paths.filter((path) => isIsoPath(path));
+        if (isoInputs.length > 0) {
+            if (isoHandling === 'dolphin' && !isDolphinMode) {
+                notify('ISO handling is set to Dolphin. Select a Dolphin mode to convert ISO files.', 'error');
+                return;
+            }
+            if (isoHandling === 'chdman' && isDolphinMode) {
+                notify('ISO handling is set to CHDMAN. Select a CHDMAN create mode to convert ISO files.', 'error');
+                return;
+            }
+        }
         // Build optimistic placeholder jobs so the user sees immediate feedback
         const placeholders = paths.map((p, i) => {
             const entry = selectedFiles.get(p);
@@ -2571,10 +2917,23 @@ function App() {
         { value: 'avhu', label: 'avhu', description: 'Huffman for A/V data (LaserDisc).' }
     ];
 
+    const dolphinCompressionOptions = [
+        { value: 'none', label: 'No compression', description: 'Uncompressed output.' },
+        { value: 'zstd', label: 'zstd', description: 'Best balance of speed and compression (recommended).' },
+        { value: 'bzip2', label: 'bzip2', description: 'Good compression, slower.' },
+        { value: 'lzma', label: 'lzma', description: 'High compression ratio.' },
+        { value: 'lzma2', label: 'lzma2', description: 'Improved LZMA variant.' },
+    ];
+
     const isCreateMode = conversionMode.startsWith('create');
     const isExtractMode = conversionMode.startsWith('extract');
     const isCopyMode = conversionMode === 'copy';
-    const compressionSupported = isCreateMode || isCopyMode;
+    const isDolphinMode = conversionMode.startsWith('dolphin_');
+    const isDolphinCompressible = isDolphinMode && !['dolphin_iso', 'dolphin_gcz'].includes(conversionMode);
+    const activeCompressionOptions = isDolphinCompressible ? dolphinCompressionOptions : compressionOptions;
+    const compressionSupported = isCreateMode || isCopyMode || isDolphinCompressible;
+    const hasMultipleDolphinCodecs = isDolphinCompressible
+        && compressionSelection.filter((value) => value !== 'none').length > 1;
     const hasArchiveSelection = useMemo(() => {
         for (const [path, entry] of selectedFiles) {
             if (path.includes('::') || entry?.is_archive_item) {
@@ -2583,7 +2942,7 @@ function App() {
         }
         return false;
     }, [selectedFiles]);
-    const deleteOnVerifySupported = isCreateMode || isCopyMode;
+    const deleteOnVerifySupported = isCreateMode || isCopyMode || isDolphinMode;
     const deleteOnVerifyDisabled = !deleteOnVerifySupported;
     const deleteOnVerifyLabel = isCopyMode
         ? 'Delete original CHD after copy + verify'
@@ -2601,6 +2960,34 @@ function App() {
             setDeleteOnVerify(false);
         }
     }, [deleteOnVerifyDisabled, deleteOnVerify]);
+
+    useEffect(() => {
+        if (!isDolphinCompressible) {
+            return;
+        }
+        const allowed = new Set(activeCompressionOptions.map((opt) => opt.value));
+        const filtered = compressionSelection.filter((value) => allowed.has(value));
+        if (filtered.length === 0) {
+            if (compressionSelection.length !== 1 || compressionSelection[0] !== 'none') {
+                setCompressionSelection(['none']);
+            }
+            return;
+        }
+        const unique = Array.from(new Set(filtered));
+        if (unique.length > 1) {
+            const preferred = activeCompressionOptions.find(
+                (opt) => opt.value !== 'none' && unique.includes(opt.value)
+            );
+            const next = preferred ? [preferred.value] : ['none'];
+            if (next.length !== compressionSelection.length || next[0] !== compressionSelection[0]) {
+                setCompressionSelection(next);
+            }
+            return;
+        }
+        if (compressionSelection.length !== 1 || compressionSelection[0] !== unique[0]) {
+            setCompressionSelection([unique[0]]);
+        }
+    }, [isDolphinCompressible, activeCompressionOptions, compressionSelection]);
 
     useEffect(() => {
         if (!deleteOnVerify && deletePlan) {
@@ -2629,11 +3016,20 @@ function App() {
             notify('Compression options are available only for create/copy modes', 'info');
             return;
         }
+        const dolphinCompressible = conversionMode.startsWith('dolphin_')
+            && !['dolphin_iso', 'dolphin_gcz'].includes(conversionMode);
         setCompressionSelection((prev) => {
-            const next = new Set(prev);
             if (value === 'none') {
                 return ['none'];
             }
+            if (dolphinCompressible) {
+                if (prev.length === 1 && prev[0] === value) {
+                    return ['none'];
+                }
+                return [value];
+            }
+
+            const next = new Set(prev);
             if (next.has(value)) {
                 next.delete(value);
             } else {
@@ -2652,11 +3048,14 @@ function App() {
     };
 
     const getCompressionValue = () => {
-        return buildCompressionValue(compressionSelection, compressionOptions);
+        return buildCompressionValue(compressionSelection, activeCompressionOptions);
     };
 
     const canSelectEntry = (entry) => {
         if (!entry || entry.type === 'directory' || entry.type === 'archive') return false;
+        if (isDolphinMode) {
+            return entry.dolphin_convertible === true;
+        }
         if (isExtractMode || isCopyMode) {
             return entry.extension === '.chd';
         }
@@ -2714,6 +3113,7 @@ function App() {
     };
 
     const getActionLabel = () => {
+        if (isDolphinMode) return 'Convert';
         if (isExtractMode) return 'Extract';
         if (isCopyMode) return 'Copy';
         return 'Convert';
@@ -2738,13 +3138,17 @@ function App() {
                 ...results.files.map(f => ({
                     ...f,
                     type: 'file',
-                    convertible: true
+                    convertible: Boolean(f.convertible),
+                    dolphin_convertible: Boolean(f.dolphin_convertible),
+                    chd_ready: Boolean(f.chd_ready)
                 })),
                 ...results.archives.map(a => ({
                     ...a,
                     name: `${a.name} (in ${a.archive_path.split('/').pop()})`,
                     type: 'file',
-                    convertible: true,
+                    convertible: Boolean(a.convertible),
+                    dolphin_convertible: Boolean(a.dolphin_convertible),
+                    chd_ready: Boolean(a.chd_ready),
                     is_archive_item: true,
                     chd_path: a.chd_path
                 }))
@@ -2860,11 +3264,11 @@ function App() {
             `}
 
             <header>
-                <div>
-                    <h1><span>CHD</span> Converter</h1>
-                    <span class="subtitle">Convert game disc images to CHD format</span>
+                <div class="header-brand">
+                    <h1><span>Compressatorium</span></h1>
+                    <span class="subtitle">Convert and compress game disc images</span>
                 </div>
-                <div style="display: flex; gap: 10px;">
+                <div class="header-actions">
                     <button
                         class="btn btn-secondary help-btn"
                         onClick=${() => handleScanMetadata(false)}
@@ -2889,7 +3293,42 @@ function App() {
                 </div>
             </header>
 
-            ${showHelp && html`<${HelpPanel} onClose=${() => setShowHelp(false)} />`}
+            <div class="iso-tool-banner">
+                <div class="iso-tool-title">ISO Handling</div>
+                <div class="iso-tool-options" role="radiogroup" aria-label="ISO handling">
+                    <label class="iso-option">
+                        <input
+                            type="radio"
+                            name="iso-tool"
+                            value="chdman"
+                            checked=${isoHandling === 'chdman'}
+                            onChange=${() => setIsoHandling('chdman')}
+                        />
+                        <div class="iso-option-text">
+                            <strong>CHDMAN</strong>
+                            <span>Prefer CHD conversion</span>
+                        </div>
+                    </label>
+                    <label class="iso-option">
+                        <input
+                            type="radio"
+                            name="iso-tool"
+                            value="dolphin"
+                            checked=${isoHandling === 'dolphin'}
+                            onChange=${() => setIsoHandling('dolphin')}
+                        />
+                        <div class="iso-option-text">
+                            <strong>Dolphin</strong>
+                            <span>Use Dolphin tools (GC/Wii)</span>
+                        </div>
+                    </label>
+                </div>
+            <div class="iso-tool-hint">
+                Current: ${isoHandling === 'chdman' ? 'CHDMAN' : 'Dolphin'} • Controls ISO info/verify and other ambiguous ISO actions.
+            </div>
+        </div>
+
+            ${showHelp && html`<${HelpPanel} onClose=${() => setShowHelp(false)} isoHandling=${isoHandling} />`}
 
             <div class="main-layout">
                 <!-- Volumes Panel -->
@@ -3009,12 +3448,18 @@ function App() {
                                     <optgroup label="Copy / Recompress">
                                         <option value="copy">Copy / Recompress CHD</option>
                                     </optgroup>
+                                    <optgroup label="Dolphin (GameCube/Wii)">
+                                        <option value="dolphin_rvz">Convert to RVZ (recommended)</option>
+                                        <option value="dolphin_wia">Convert to WIA</option>
+                                        <option value="dolphin_gcz">Convert to GCZ</option>
+                                        <option value="dolphin_iso">Convert to ISO (extract)</option>
+                                    </optgroup>
                                 </select>
                             </div>
                             <div class="compression-group" role="group" aria-label="Compression options">
                                 <span class="compression-label">Compression</span>
                                 <div class="compression-options">
-                                    ${compressionOptions.map((opt) => html`
+                                    ${activeCompressionOptions.map((opt) => html`
                                         <label class="compression-option" title=${opt.description}>
                                             <input
                                                 type="checkbox"
@@ -3027,13 +3472,18 @@ function App() {
                                     `)}
                                 </div>
                                 <div class="compression-meta">
-                                    <span>${!compressionSupported ? 'Compression not applicable for this mode' : (compressionSelection.includes('none') ? 'No compression (-c none)' : `${compressionSelection.length}/4 codecs selected`)}</span>
+                                    <span>${!compressionSupported ? 'Compression not applicable for this mode' : (compressionSelection.includes('none') ? 'No compression (-c none)' : `${compressionSelection.length}/${isDolphinCompressible ? activeCompressionOptions.length : 4} codecs selected`)}</span>
                                     <button class="btn btn-sm btn-secondary" onClick=${() => setShowCompressionHelp(v => !v)}>
                                         ${showCompressionHelp ? 'Hide Info' : 'Compression Info'}
                                     </button>
                                 </div>
+                                ${hasMultipleDolphinCodecs && html`
+                                    <div class="compression-warning" role="alert">
+                                        Dolphin formats support only one compression codec.
+                                    </div>
+                                `}
                                 <span class="compression-hint">
-                                    Choose up to 4 codecs. zlib is the most compatible option.
+                                    ${isDolphinCompressible ? 'Choose one codec for Dolphin formats.' : 'Choose up to 4 codecs. zlib is the most compatible option.'}
                                 </span>
                             </div>
                             <div class="toolbar-group">
@@ -3048,6 +3498,7 @@ function App() {
                                     <option value=".chd">CHD Files</option>
                                     <option value=".zip,.7z,.rar">Archives</option>
                                     <option value=".iso,.gdi,.cue,.bin">Disc Images</option>
+                                    <option value=".iso,.gcz,.wia,.rvz,.wbfs">GameCube/Wii Images</option>
                                 </select>
                             </div>
                         </div>
@@ -3073,13 +3524,13 @@ function App() {
                                         🗑️ Delete (${getDeletableSelection().length})
                                     </button>
                                 `}
-                                ${getVerifiableCHDPaths().length > 0 && html`
+                                ${getVerifiableItems().length > 0 && html`
                                     <button
                                         class="btn btn-sm btn-secondary"
                                         onClick=${handleBulkVerifyClick}
-                                        title="Verify ${getVerifiableCHDPaths().length} selected CHD file(s)"
+                                        title="Verify ${getVerifiableItems().length} selected file(s)"
                                     >
-                                        🔍 Verify (${getVerifiableCHDPaths().length})
+                                        🔍 Verify (${getVerifiableItems().length})
                                     </button>
                                 `}
                             </div>
@@ -3160,7 +3611,7 @@ function App() {
                                 canSelect=${canSelectEntry}
                                 onNavigate=${handleNavigate}
                                 onToggleSelect=${handleToggleSelect}
-                                onShowInfo=${setShowCHDInfo}
+                                onShowInfo=${handleShowInfo}
                                 onBrowseArchive=${handleBrowseArchive}
                                 onRename=${setRenameTarget}
                                 onDelete=${setDeleteTarget}
@@ -3174,6 +3625,8 @@ function App() {
                                 onSort=${handleSort}
                                 onSelectAll=${handleSelectAll}
                                 allSelected=${selectedFiles.size > 0 && selectedFiles.size === displayedEntries.filter(e => canSelectEntry(e)).length}
+                                isoHandling=${isoHandling}
+                                onToggleIsoHandling=${handleIsoHandlingToggle}
                             />`
         }
                     </div>
@@ -3213,7 +3666,8 @@ function App() {
 
             ${showCHDInfo && html`
                 <${CHDInfoModal}
-                    path=${showCHDInfo}
+                    path=${showCHDInfo.path}
+                    useDolphin=${showCHDInfo.useDolphin}
                     onClose=${() => setShowCHDInfo(null)}
                 />
             `}
@@ -3265,16 +3719,16 @@ function App() {
                 />
             `}
 
-            ${bulkVerifyPaths && html`
+            ${bulkVerifyItems && html`
                 <${BulkVerifyModal}
-                    chdPaths=${bulkVerifyPaths}
+                    verifyItems=${bulkVerifyItems}
                     onComplete=${handleBulkVerifyComplete}
-                    onClose=${() => setBulkVerifyPaths(null)}
+                    onClose=${() => setBulkVerifyItems(null)}
                 />
             `}
 
             <footer class="app-footer">
-                <span>CHD Converter${appVersion ? ` v${appVersion}` : ''}</span>
+                <span>Compressatorium${appVersion ? ` v${appVersion}` : ''}</span>
                 <a href="https://github.com/pacnpal/Docker-chd-converter-webui" target="_blank" rel="noopener noreferrer">GitHub</a>
             </footer>
         </div>
