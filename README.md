@@ -7,7 +7,7 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME) and **dolphin-
 * **Web UI** for easy file browsing and conversion
 * Supports **nested directories** and **compressed archives** (ZIP, 7z, RAR)
 * **Multiple volume mounts** for organizing different game libraries
-* **ISO handling toggle** (defaults to Dolphin for `.iso`; switch to CHDMAN)
+* **ISO handling toggle** (defaults to Dolphin tool for `.iso`; switch to CHDMAN)
 * Web UI detects existing outputs with skip/rename/overwrite options
 * CLI skips existing CHD files by default
 * Source files are preserved by default (optional delete-on-verify after successful conversion)
@@ -97,7 +97,7 @@ In the Web UI, you can specify a custom output directory for converted CHD or Do
 - Archive inputs are limited to CHD create modes (not extract/copy/Dolphin).
 
 **ISO Handling & Dolphin Tools (GameCube/Wii)**
-- Toggle ISO handling between CHDMAN and Dolphin (defaults to Dolphin; controls ISO info/verify and conversions)
+- Toggle ISO handling between CHDMAN and Dolphin (controls ISO info/verify and conversions)
 - Convert `.iso`, `.gcz`, `.wia`, `.rvz`, `.wbfs` with dolphin-tool (RVZ/WIA/GCZ/ISO output)
 - Disc info and verification for Dolphin formats (including batch verification)
 - Dolphin modes require direct disc images (archive members are not supported)
@@ -147,7 +147,7 @@ In the Web UI, you can specify a custom output directory for converted CHD or Do
 - **Dolphin (GameCube/Wii)**: dolphin_rvz, dolphin_wia, dolphin_gcz, dolphin_iso
 
 **Compression Options**
-- Choose from multiple compression codecs: zlib, zstd, lzma, huff, flac, avhu
+- Choose from multiple compression codecs: zlib, zstd, lzma, huff, flac, avhu (A/V Huffman)
 - CD-specific codecs: cdzl, cdzs, cdlz, cdfl (CD images only)
 - No compression option for maximum compatibility (`-c none`)
 - Select up to 4 codecs per conversion (CHD only)
@@ -169,14 +169,15 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 - `dolphin_gcz` uses fixed compression and ignores codec selection.
 - `dolphin_iso` outputs an uncompressed ISO image.
 - Archive members are **not** supported for Dolphin conversions.
-- ISO info/verify and conversions follow the ISO Handling toggle in the UI (default: Dolphin).
+- ISO info/verify and conversions follow the ISO Handling toggle in the UI (default: Dolphin for ISO files).
 
 ---
 
 ## CLI Mode (Batch Processing)
 
 For automated/headless conversion, use CLI mode. CLI mode runs CHDMAN only and processes
-files in the **top level** of each mounted volume (no recursive scanning, no archives).
+files in the **top level** of each mounted volume (no recursive scanning, no archives). See
+`DOCKER-COMPOSE.md` for CLI behavior details.
 
 ### CD Conversion (Default)
 
@@ -375,7 +376,7 @@ The `/config` volume is **required** and must be mounted for the application to 
 
 | File | Location | Description |
 |------|----------|-------------|
-| `verified_chds.json` | `/config/` | Records of verified CHD/Dolphin files (integrity checks; filename retained for backward compatibility) |
+| `verified_chds.json` | `/config/` | Records of verified CHD/Dolphin files (integrity checks; filename retained for backward compatibility with existing installs) |
 | `chd_metadata.json` | `/config/` | Cached CHD metadata (media type, info cache) |
 | `locks/` | `/config/locks` | Job lock files for concurrency control |
 
