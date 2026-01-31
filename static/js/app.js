@@ -2431,6 +2431,15 @@ function App() {
                     });
                 })
                 .catch(() => { });
+            
+            // Check for stuck state
+            api.checkStuckStatus()
+                .then(status => {
+                    setStuckState(status);
+                })
+                .catch(() => {
+                    setStuckState(null);
+                });
         }, 4000);
 
         return () => {
@@ -3432,6 +3441,25 @@ function App() {
                 idsToHide.forEach(id => next.delete(id));
                 return next;
             });
+            notify('Failed to clear completed jobs', 'error');
+        }
+    };
+
+    const handleRecoverStuck = async () => {
+        if (recoveringStuck) return;
+        
+        setRecoveringStuck(true);
+        try {
+            const result = await api.recoverStuckJobs();
+            notify(`Recovery completed: removed ${result.removed_locks || 0} stale lock(s)`, 'success');
+            // Immediately check stuck status again
+            const status = await api.checkStuckStatus();
+            setStuckState(status);
+        } catch (err) {
+            notify(`Recovery failed: ${err.message}`, 'error');
+            console.error('Failed to recover stuck jobs:', err);
+        } finally {
+            setRecoveringStuck(false);
         }
     };
 
@@ -3845,6 +3873,17 @@ function App() {
                     <div class="panel-header">
                         <h2>Jobs ${jobs.length > 0 ? `(${jobs.length})` : ''}</h2>
                         <div class="header-actions">
+                            ${stuckState?.is_stuck && html`
+                                <button
+                                    class="btn btn-sm btn-warning"
+                                    onClick=${handleRecoverStuck}
+                                    disabled=${recoveringStuck}
+                                    title="Jobs are stuck waiting. Click to attempt recovery by cleaning up stale locks."
+                                    style="animation: pulse 2s infinite; background: var(--warning); color: white;"
+                                >
+                                    ${recoveringStuck ? '⏳ Recovering...' : '🔧 Fix Stuck Jobs'}
+                                </button>
+                            `}
                             ${hasCompletedJobs && html`
                                 <button
                                     class="btn btn-sm btn-secondary"
@@ -3863,6 +3902,19 @@ function App() {
                             </button>
                         </div>
                     </div>
+                    ${stuckState?.is_stuck && html`
+                        <div class="stuck-warning" style="padding: 12px; margin: 0 12px 12px; background: var(--warning-bg, #fff3cd); border-left: 4px solid var(--warning, #f0ad4e); border-radius: 4px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="font-size: 1.2em;">⚠️</span>
+                                <div>
+                                    <strong>Jobs Stuck:</strong> ${stuckState.queued_count} job(s) waiting but none processing.
+                                    <div style="font-size: 0.85em; opacity: 0.8; margin-top: 4px;">
+                                        This usually happens due to stale locks. Click "Fix Stuck Jobs" to attempt automatic recovery.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `}
                     <div class="panel-content">
                         <${JobList}
                             jobs=${creatingJobs.length ? [...creatingJobs, ...jobs] : jobs}
