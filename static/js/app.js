@@ -2863,6 +2863,10 @@ function App() {
         }
         const isoInputs = paths.filter((path) => isIsoPath(path));
         if (isoInputs.length > 0) {
+            if (!isoHandling) {
+                notify('Please select an ISO handling method (CHDMAN or Dolphin) before converting ISO files.', 'error');
+                return;
+            }
             if (isoHandling === 'dolphin' && !isDolphinMode) {
                 notify('ISO handling is set to Dolphin. Select a Dolphin mode to convert ISO files.', 'error');
                 return;
