@@ -1644,22 +1644,17 @@ header h1 span {
     }
 
     .compression-options {
-        flex-direction: column;
         gap: 10px;
-        width: 100%;
     }
 
     .compression-option {
-        width: 100%;
-        justify-content: flex-start;
-        padding: 10px 14px;
-        font-size: 0.9rem;
+        padding: 8px 12px;
+        font-size: 0.85rem;
         min-height: 44px;
     }
 
     .compression-option input {
-        transform: scale(1.3);
-        margin-right: 6px;
+        transform: scale(1.2);
     }
 
     .compression-meta {
