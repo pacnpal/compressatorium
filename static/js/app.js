@@ -3435,6 +3435,7 @@ function App() {
 
 
     const hasCompletedJobs = jobs.some(j => ['completed', 'failed', 'cancelled'].includes(j.status));
+    const needsIsoSelection = isoHandling === null;
 
     return html`
         <div class="container">
@@ -3474,8 +3475,8 @@ function App() {
                 </div>
             </header>
 
-            <div class="iso-tool-banner${isoHandling === null ? ' iso-tool-banner-warning' : ''}">
-                <div class="iso-tool-title">ISO Handling${isoHandling === null ? ' - Selection Required' : ''}</div>
+            <div class="iso-tool-banner${needsIsoSelection ? ' iso-tool-banner-warning' : ''}">
+                <div class="iso-tool-title">ISO Handling${needsIsoSelection ? ' - Selection Required' : ''}</div>
                 <div class="iso-tool-options" role="radiogroup" aria-label="ISO handling">
                     <label class="iso-option">
                         <input
@@ -3504,7 +3505,7 @@ function App() {
                         </div>
                     </label>
                 </div>
-            <div class="iso-tool-hint${isoHandling === null ? ' iso-tool-hint-warning' : ''}">
+            <div class="iso-tool-hint${needsIsoSelection ? ' iso-tool-hint-warning' : ''}">
                 ${getIsoHandlingHint(isoHandling)}
             </div>
         </div>
