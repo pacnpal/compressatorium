@@ -19,6 +19,13 @@ const getIsoHandlingLabel = (isoHandling) => {
     return 'None selected';
 };
 
+const getIsoHandlingHint = (isoHandling) => {
+    if (isoHandling === null) {
+        return '⚠️ Please select an ISO handling method above before working with .iso files';
+    }
+    return `Current: ${getIsoHandlingLabel(isoHandling)} • Controls ISO info/verify and other ambiguous ISO actions.`;
+};
+
 const MODE_GROUPS = [
     {
         id: 'create',
@@ -3467,8 +3474,8 @@ function App() {
                 </div>
             </header>
 
-            <div class="iso-tool-banner">
-                <div class="iso-tool-title">ISO Handling</div>
+            <div class="iso-tool-banner${isoHandling === null ? ' iso-tool-banner-warning' : ''}">
+                <div class="iso-tool-title">ISO Handling${isoHandling === null ? ' - Selection Required' : ''}</div>
                 <div class="iso-tool-options" role="radiogroup" aria-label="ISO handling">
                     <label class="iso-option">
                         <input
@@ -3497,8 +3504,8 @@ function App() {
                         </div>
                     </label>
                 </div>
-            <div class="iso-tool-hint">
-                Current: ${getIsoHandlingLabel(isoHandling)} • Controls ISO info/verify and other ambiguous ISO actions.
+            <div class="iso-tool-hint${isoHandling === null ? ' iso-tool-hint-warning' : ''}">
+                ${getIsoHandlingHint(isoHandling)}
             </div>
         </div>
 
