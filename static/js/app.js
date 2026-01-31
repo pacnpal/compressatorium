@@ -58,7 +58,7 @@ const MODE_GROUPS = [
 // ============ Help Component ============
 
 function HelpPanel({ onClose, isoHandling }) {
-    const isoHandlingLabel = isoHandling === 'chdman' ? 'CHDMAN' : 'Dolphin';
+    const isoHandlingLabel = isoHandling === 'chdman' ? 'CHDMAN' : isoHandling === 'dolphin' ? 'Dolphin' : 'neither (select one)';
     return html`
         <div class="help-panel">
             <div class="help-header">
@@ -1914,9 +1914,9 @@ function App() {
     const [isoHandling, setIsoHandling] = useState(() => {
         try {
             const stored = localStorage.getItem(ISO_TOOL_STORAGE_KEY);
-            return stored === 'chdman' || stored === 'dolphin' ? stored : 'chdman';
+            return stored === 'chdman' || stored === 'dolphin' ? stored : null;
         } catch (err) {
-            return 'chdman';
+            return null;
         }
     });
     const [compressionSelection, setCompressionSelection] = useState(['zlib']);
@@ -3488,7 +3488,7 @@ function App() {
                     </label>
                 </div>
             <div class="iso-tool-hint">
-                Current: ${isoHandling === 'chdman' ? 'CHDMAN' : 'Dolphin'} • Controls ISO info/verify and other ambiguous ISO actions.
+                Current: ${isoHandling === 'chdman' ? 'CHDMAN' : isoHandling === 'dolphin' ? 'Dolphin' : 'None selected'} • Controls ISO info/verify and other ambiguous ISO actions.
             </div>
         </div>
 
