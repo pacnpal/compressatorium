@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  chd-converter:
-    image: pacnpal/chd-converter:latest
-    container_name: chd-converter
+  compressatorium:
+    image: pacnpal/compressatorium:latest
+    container_name: compressatorium
     ports:
       - "8080:8080"
     environment:

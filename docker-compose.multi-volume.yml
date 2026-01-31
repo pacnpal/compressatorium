@@ -4,9 +4,9 @@ version: '3.8'
 # Usage: docker-compose -f docker-compose.multi-volume.yml up -d
 
 services:
-  chd-converter:
-    image: pacnpal/chd-converter:latest
-    container_name: chd-converter-multi
+  compressatorium:
+    image: pacnpal/compressatorium:latest
+    container_name: compressatorium-multi
     ports:
       - "8080:8080"
     environment:

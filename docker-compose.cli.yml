@@ -5,9 +5,9 @@ version: '3.8'
 # This will convert all files and exit
 
 services:
-  chd-converter-cli:
-    image: pacnpal/chd-converter:latest
-    container_name: chd-converter-cli
+  compressatorium-cli:
+    image: pacnpal/compressatorium:latest
+    container_name: compressatorium-cli
     environment:
       # CLI mode for batch processing
       - CHD_MODE=cli

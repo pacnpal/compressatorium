@@ -1,6 +1,6 @@
 # Compressatorium
 
-> **Fork Notice:** This project is a fork of [MarcTV/docker-chd-converter](https://github.com/MarcTV/docker-chd-converter) with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
+> **Fork Notice:** This project is a fork of MarcTV's original Docker CHD Converter project with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
 
 Multi-tool game disc image converter supporting **CHDMAN** (MAME) and **dolphin-tool** (Dolphin Emulator).
 
@@ -31,7 +31,7 @@ docker pull ghcr.io/pacnpal/compressatorium
 
 Both registries provide identical images with multi-architecture support (`linux/amd64` and `linux/arm64`).
 
-> **Note:** In all examples below, you can substitute `pacnpal/chd-converter` with `ghcr.io/pacnpal/docker-chd-converter-webui` interchangeably.
+> **Note:** Use either registry: replace `pacnpal/compressatorium` with `ghcr.io/pacnpal/compressatorium` for the same image.
 
 ### Available Tags
 
@@ -52,7 +52,7 @@ docker run -d \
   -p 8080:8080 \
   -v /path/to/config:/config \
   -v /path/to/games:/data/games \
-  pacnpal/chd-converter
+  pacnpal/compressatorium
 ```
 
 Then open **http://localhost:8080** in your browser.
@@ -72,7 +72,7 @@ docker run -d \
   -v /home/user/dreamcast:/data/dreamcast \
   -v /home/user/psp:/data/psp \
   -v /home/user/ps1:/data/ps1 \
-  pacnpal/chd-converter
+  pacnpal/compressatorium
 ```
 
 ### Custom Output Directory
@@ -147,7 +147,7 @@ For automated/headless conversion, use CLI mode:
 docker run --rm \
   -e CHD_MODE=cli \
   -v "$(pwd)/isofiles:/data/games:rw" \
-  pacnpal/chd-converter
+  pacnpal/compressatorium
 ```
 
 ### DVD Conversion (PSP, PS2)
@@ -157,7 +157,7 @@ docker run --rm \
   -e CHD_MODE=cli \
   -e CHDMAN_MODE=createdvd \
   -v "$(pwd)/isofiles:/data/games:rw" \
-  pacnpal/chd-converter
+  pacnpal/compressatorium
 ```
 
 ### Multiple Volumes in CLI Mode
@@ -169,7 +169,7 @@ docker run --rm \
   -e CHD_VOLUMES="/data/psp,/data/ps2" \
   -v /home/user/psp:/data/psp:rw \
   -v /home/user/ps2:/data/ps2:rw \
-  pacnpal/chd-converter
+  pacnpal/compressatorium
 ```
 
 ---
@@ -182,7 +182,7 @@ Using the chdman info command directly:
 docker run --rm \
   -v "/path/to/games:/data/games:ro" \
   --entrypoint chdman \
-  pacnpal/chd-converter \
+  pacnpal/compressatorium \
   info -i "/data/games/game.chd"
 ```
 
@@ -363,8 +363,8 @@ docker-compose -f docker-compose.cli.yml up
 version: '3.8'
 
 services:
-  chd-converter:
-    image: pacnpal/chd-converter
+  compressatorium:
+    image: pacnpal/compressatorium
     ports:
       - "8080:8080"
     environment:
@@ -374,7 +374,7 @@ services:
       - CHD_CHDMAN_IOPRIO_CLASS=2
       - CHD_CHDMAN_IOPRIO_LEVEL=6
     volumes:
-      - /home/user/chd-converter-config:/config
+      - /home/user/compressatorium-config:/config
       - /home/user/games/dreamcast:/data/dreamcast
       - /home/user/games/psp:/data/psp
       - /home/user/games/ps1:/data/ps1
@@ -404,10 +404,9 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Acknowledgments
 
-This project is a fork of the original [docker-chd-converter](https://github.com/MarcTV/docker-chd-converter) by [MarcTV](https://github.com/MarcTV). The original project provides a simple CLI-based batch converter, and this fork extends it with a Web UI and additional features.
+This project is a fork of the original Docker CHD Converter project by [MarcTV](https://github.com/MarcTV). The original project provides a simple CLI-based batch converter, and this fork extends it with a Web UI and additional features.
 
 **Original Project:**
-- Repository: [github.com/MarcTV/docker-chd-converter](https://github.com/MarcTV/docker-chd-converter)
-- Docker Hub: [hub.docker.com/r/marctv/chd-converter](https://hub.docker.com/r/marctv/chd-converter)
+- Author: [MarcTV](https://github.com/MarcTV)
 
 Thank you MarcTV for creating and sharing the original converter!
