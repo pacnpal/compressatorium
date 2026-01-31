@@ -87,7 +87,9 @@ class Settings(BaseSettings):
             # This is secure in the container context because:
             # 1. Container filesystem is isolated
             # 2. Non-root user runs the application
-            # 3. Directory permissions are set restrictively (0o700)
+            # 3. Directory permissions are set restrictively (0o700) during creation
+            #    in concurrency_manager.py and lock_manager.py, mitigating Bandit_B108
+            #    concerns about predictable temporary paths
             # 4. Locks don't persist across container restarts
             # The fixed path is intentional to allow multiple processes to share locks
             self.concurrency_lock_dir = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'chd-locks')
