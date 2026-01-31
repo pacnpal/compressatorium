@@ -253,52 +253,46 @@ class JobManager:
         Returns:
             Dictionary with stuck state information
         """
+class JobManager:
+    # ... existing code ...
+
+    def _get_job_status_counts(self) -> tuple[list[str], list[str]]:
+        queued_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
+        processing_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        return queued_ids, processing_ids
+
+    def is_stuck(self) -> bool:
+        # ... existing code, potentially re-using _get_job_status_counts() ...
+        queued_ids, processing_ids = self._get_job_status_counts()
+        return len(queued_ids) > 0 and len(processing_ids) == 0
+
+    def get_stuck_state_info(self) -> Dict[str, object]:
         is_stuck = self.is_stuck()
-        queued = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
-        processing = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        queued_ids, processing_ids = self._get_job_status_counts()
         
         result = {
             "is_stuck": is_stuck,
-            "queued_count": len(queued),
-            "processing_count": len(processing),
+            "queued_count": len(queued_ids),
+            "processing_count": len(processing_ids),
         }
-        
-        if self._stuck_detected_at is not None:
-            result["stuck_detected_at"] = self._stuck_detected_at
-        
-        if self._last_stuck_recovery_at > 0:
-            result["last_recovery_at"] = self._last_stuck_recovery_at
-            
-        return result
+        # ... rest of the method ...
 
     async def recover_from_stuck_state(self) -> Dict[str, object]:
-        """Attempt to recover from a stuck state by cleaning up stale locks.
-        
-        Returns:
-            Dictionary with recovery results and actions taken
-        """
-        now = time.monotonic()
-        
-        # Prevent recovery spam (minimum cooldown between attempts)
-        if now - self._last_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS:
-            return {
-                "success": False,
-                "message": "Recovery attempted too recently, please wait",
-                "cooldown_remaining": int(self.STUCK_RECOVERY_COOLDOWN_SECONDS - (now - self._last_stuck_recovery_at))
-            }
-        
-        self._last_stuck_recovery_at = now
-        
-        logger.warning("Attempting recovery from stuck state")
-        
-        # Cleanup stale locks
+        # ... existing code ...
         removed_locks = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
         
-        # Get current state
-        queued = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
-        processing = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        # Use the helper method here
+        queued_ids, processing_ids = self._get_job_status_counts()
         
         result = {
+            "success": True,
+            "message": "Recovery attempt completed",
+            "removed_locks": removed_locks,
+            "queued_jobs": len(queued_ids),
+            "processing_jobs": len(processing_ids),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        # ... rest of the method ...
             "success": True,
             "message": "Recovery attempt completed",
             "removed_locks": removed_locks,
