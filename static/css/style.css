@@ -125,7 +125,12 @@ header h1 span {
 .iso-tool-banner-warning {
     border-color: #ff9800;
     background: rgba(255, 152, 0, 0.05);
-    animation: pulse-border 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .iso-tool-banner-warning {
+        animation: pulse-border 2s ease-in-out infinite;
+    }
 }
 
 @keyframes pulse-border {
