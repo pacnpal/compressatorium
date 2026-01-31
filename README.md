@@ -7,9 +7,10 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME) and **dolphin-
 * **Web UI** for easy file browsing and conversion
 * Supports **nested directories** and **compressed archives** (ZIP, 7z, RAR)
 * **Multiple volume mounts** for organizing different game libraries
-* Skips existing `.chd` files
+* **ISO handling toggle** (CHDMAN vs Dolphin for `.iso`)
+* Detects existing outputs with skip/rename/overwrite options (CLI skips existing CHDs)
 * Source files are preserved by default (optional delete-on-verify after successful conversion)
-* Choose between `createcd` (default) or `createdvd` modes
+* Supports CHD create/extract/copy plus Dolphin RVZ/WIA/GCZ/ISO conversions (Web UI/API)
 
 ---
 
@@ -77,13 +78,13 @@ docker run -d \
 
 ### Custom Output Directory
 
-In the Web UI, you can specify a custom output directory for converted CHD files instead of placing them alongside the source files. The directory will be created automatically as long as it is within your configured volumes.
+In the Web UI, you can specify a custom output directory for converted CHD or Dolphin files instead of placing them alongside the source files. The directory will be created automatically as long as it is within your configured volumes.
 
 ### Features
 
 **File Browser**
 - Navigate through mounted volumes and subdirectories
-- View file sizes, types, and CHD status indicators
+- View file sizes, types, ISO handling, and CHD status indicators
 - Recursive search to find all convertible files across the entire volume
 
 **Archive Support**
@@ -92,6 +93,13 @@ In the Web UI, you can specify a custom output directory for converted CHD files
 - Archives extract temporarily during conversion, then clean up automatically
 - When a `.cue`/`.gdi` is present in the same archive folder, `.bin` entries are suppressed and batch jobs are deduplicated by output path to avoid stalled conversions.
 - Archive listings include safety limits (max entries/size) and expose truncation metadata when limits are hit.
+- Archive inputs are limited to CHD create modes (not extract/copy/Dolphin).
+
+**ISO Handling & Dolphin Tools (GameCube/Wii)**
+- Toggle ISO handling between CHDMAN and Dolphin (controls ISO info/verify and conversions)
+- Convert `.iso`, `.gcz`, `.wia`, `.rvz`, `.wbfs` with dolphin-tool (RVZ/WIA/GCZ/ISO output)
+- Disc info and verification for Dolphin formats (including batch verification)
+- Dolphin modes require direct disc images (archive members are not supported)
 
 **Batch Conversion**
 - Select multiple files and convert them all at once
@@ -103,21 +111,28 @@ In the Web UI, you can specify a custom output directory for converted CHD files
 
 **Bulk Operations**
 - **Bulk Delete**: Delete multiple selected files at once
-- **Bulk Verify**: Verify integrity of multiple CHD files simultaneously
+- **Bulk Verify**: Verify integrity of multiple CHD + Dolphin images simultaneously
 - Smart categorization showing source files with/without CHD backups
 - Warnings for files without verified CHD backups before deletion
 
-**CHD Verification**
-- Verify integrity of CHD files using chdman's built-in verification
+**Verification**
+- Verify CHD files using chdman's built-in verification
+- Verify GameCube/Wii disc images using dolphin-tool (ISO uses Dolphin when ISO handling is set to Dolphin)
 - Verification status persisted across sessions (stored in `/config/verified_chds.json`)
 - Integrated verification workflow when deleting source files
-- Visual indicators showing verified vs unverified CHD files
+- Visual indicators showing verified vs unverified items
 - Optional timeouts for long-running verifications and stalled progress
 
 **CHD Inspector**
 - View detailed CHD file information (version, compression, size, hashes)
 - SHA1 and Data SHA1 checksums displayed
 - Raw chdman output available for advanced inspection
+- Dolphin disc info shows game ID, region, format, compression, and raw output
+
+**CHD Metadata Cache**
+- Background metadata scan with CD/DVD badges
+- "Scan Metadata" and "Force Rescan" actions to refresh cached metadata
+- Cache stored in `/config/chd_metadata.json`
 
 **File Management**
 - Rename files and directories
@@ -128,18 +143,39 @@ In the Web UI, you can specify a custom output directory for converted CHD files
 - **Create CHD**: createcd (CD), createdvd (DVD/PSP/PS2), createraw, createhd, createld
 - **Extract from CHD**: extractcd, extractdvd, extractraw, extracthd, extractld
 - **Copy/Recompress**: Recompress existing CHD files with different codecs
+- **Dolphin (GameCube/Wii)**: dolphin_rvz, dolphin_wia, dolphin_gcz, dolphin_iso
 
 **Compression Options**
-- Choose from multiple compression codecs: zlib, zstd, lzma, huff, flac
-- CD-specific codecs: cdzl, cdzs, cdlz, cdfl
-- No compression option for maximum compatibility
-- Select up to 4 codecs per conversion
+- Choose from multiple compression codecs: zlib, zstd, lzma, huff, flac, avhu
+- CD-specific codecs: cdzl, cdzs, cdlz, cdfl (CD images only)
+- No compression option for maximum compatibility (`-c none`)
+- Select up to 4 codecs per conversion (CHD only)
+- Dolphin modes accept one codec + optional level (RVZ/WIA), while GCZ/ISO ignore compression
+
+---
+
+## Dolphin Emulator Support (GameCube/Wii)
+
+Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN-only).
+
+**Supported inputs:** `.iso`, `.gcz`, `.wia`, `.rvz`, `.wbfs`  
+**Output modes:** `dolphin_rvz` (recommended), `dolphin_wia`, `dolphin_gcz`, `dolphin_iso`
+
+**Notes**
+- Requires the Docker image with Dolphin installed (default image includes `dolphin-emu` + wrapper).
+- Dolphin conversions use `dolphin-tool` (configurable via `DOLPHIN_TOOL_PATH`).
+- Compression is a single codec with an optional level (`zstd:5`, `bzip2:5`, `lzma:5`, `lzma2:5`).
+- `dolphin_gcz` uses fixed compression and ignores codec selection.
+- `dolphin_iso` outputs an uncompressed ISO image.
+- Archive members are **not** supported for Dolphin conversions.
+- ISO info/verify and conversions follow the ISO Handling toggle in the UI (default: Dolphin).
 
 ---
 
 ## CLI Mode (Batch Processing)
 
-For automated/headless conversion, use CLI mode:
+For automated/headless conversion, use CLI mode. CLI mode runs CHDMAN only and processes
+files in the **top level** of each mounted volume (no recursive scanning, no archives).
 
 ### CD Conversion (Default)
 
@@ -190,16 +226,19 @@ Or use the Web UI's CHD Inspector feature by clicking on any `.chd` file.
 
 ---
 
-## Compression Presets (Emulator Compatibility)
+## Compression Compatibility Tips
 
-Some emulators (notably NetherSX2/AetherSX2) only support **zlib**-compressed CHDs. In the Web UI, choose:
+Some emulators (notably NetherSX2/AetherSX2) only support **zlib**-compressed CHDs. If you see
+errors like “Failed to initialize cdvd,” re-convert with **zlib only**.
 
-- **Compression: Default** (uses chdman defaults)
-- **NetherSX2/AetherSX2 (zlib only)** to force `zlib`
-- **Custom compression list** (comma-separated) for advanced users (passed directly to `chdman -c`)
+- **zlib**: best compatibility across emulators
+- **zstd**: fast + small, but older software may not support it
+- **lzma**: highest compression, slowest
+- **No compression**: uses `-c none` for uncompressed output
+- **CD-specific codecs**: use cdzl/cdzs/cdlz/cdfl for CD images only
 
-If you see emulator errors like “Failed to initialize cdvd,” re-convert with the zlib-only preset.
-Use `chdman help createcd` or `chdman help createdvd` to see the expected `-c` format for your version.
+For Dolphin formats, choose a single codec (zstd/bzip2/lzma/lzma2) and an optional level.
+Use `chdman help createcd` or `chdman help createdvd` for codec details.
 
 ---
 
@@ -216,10 +255,15 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 **Copy / Recompress**
 - `copy` (CHD → CHD, optionally with new compression)
 
+**Dolphin (GameCube/Wii)**
+- `dolphin_rvz`, `dolphin_wia`, `dolphin_gcz`, `dolphin_iso`
+
 Notes:
-- Compression applies to **create** and **copy** operations only.
+- Compression applies to **create**/**copy** and Dolphin RVZ/WIA operations only.
 - Extract operations ignore compression settings.
 - `extractcd` produces both `.cue` and `.bin` outputs.
+- Dolphin GCZ/ISO outputs ignore compression selection.
+- Archive inputs are supported for create modes only (not extract/copy/Dolphin).
 
 ---
 
@@ -263,6 +307,24 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | POST | `/api/verify-batch/events` | SSE stream for batch verification |
 | GET | `/api/verified` | List all verified CHD paths |
 
+### CHD Metadata & Version
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/version` | Get app version |
+| POST | `/api/chd-metadata` | Fetch cached CHD metadata for multiple files |
+| POST | `/api/chd-metadata/scan` | Trigger background metadata scan |
+| GET | `/api/chd-metadata/scan/status` | Check metadata scan status |
+
+### Dolphin Disc Info & Verification
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/dolphin-info` | Get Dolphin disc metadata |
+| GET | `/api/dolphin-verify` | Verify a disc image's integrity |
+| GET | `/api/dolphin-verify/events` | SSE stream for Dolphin verification progress |
+| POST | `/api/dolphin-verify-batch/events` | SSE stream for batch Dolphin verification |
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -270,9 +332,13 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_MODE` | `webui` | Mode: `webui` (web interface) or `cli` (batch processing) |
 | `CHD_VOLUMES` | `/data/games` | Comma-separated list of volume mount paths |
 | `CHD_DATA_DIR` | `/config` | Directory for persistent application data |
-| `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction |
+| `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files |
+| `CHD_METADATA_STORE` | `/config/chd_metadata.json` | CHD metadata cache file path |
+| `CHD_VERIFICATION_STORE` | `/config/verified_chds.json` | Verification store file path |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode only) |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
+| `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs |
 | `MAX_JOB_HISTORY` | `500` | Maximum completed jobs to retain in history |
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19, higher = lower priority) |
@@ -290,6 +356,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval in seconds |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout in seconds |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |
+| `STATIC_DIR` | `/static` | Path to static web assets |
 
 Defaults are intentionally conservative to reduce host impact during conversion. Increase `MAX_CONCURRENT_JOBS` or adjust `CHD_CHDMAN_*` only if your host has ample CPU/RAM and fast storage. By default temp files go to `/config/temp`; set `CHD_TEMP_DIR` to use a faster disk and mount it into the container.
 
@@ -307,7 +374,9 @@ The `/config` volume is **required** and must be mounted for the application to 
 
 | File | Location | Description |
 |------|----------|-------------|
-| `verified_chds.json` | `/config/` | Records of verified CHD files (integrity checks) |
+| `verified_chds.json` | `/config/` | Records of verified CHD/Dolphin files (integrity checks) |
+| `chd_metadata.json` | `/config/` | Cached CHD metadata (media type, info cache) |
+| `locks/` | `/config/locks` | Job lock files for concurrency control |
 
 ---
 
@@ -389,8 +458,9 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 **Input formats:**
 - `.gdi` - GD-ROM (Dreamcast)
-- `.iso` - ISO 9660 disc images
+- `.iso` - ISO 9660 disc images (CHD or Dolphin based on ISO handling)
 - `.cue` / `.bin` - CD images with cue sheets
+- `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii disc images (Dolphin)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives
@@ -399,6 +469,7 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 **Output format:**
 - `.chd` - Compressed Hunks of Data
+- `.rvz`, `.wia`, `.gcz`, `.iso` - Dolphin output formats
 
 ---
 
