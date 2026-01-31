@@ -2,9 +2,41 @@
 
 ## Unreleased
 
+(No unreleased changes)
+
+---
+
+## v2.0.1 - Mobile-Responsive Design
+
+### 🎨 UI/UX Improvements
+
+- **Mobile-responsive Web UI** - Complete mobile optimization with card-based file list layout, touch-friendly controls (44-48px minimum touch targets), and single-column layout for screens under 768px.
+- **Responsive breakpoints** - Added media queries at 480px, 768px, 900px, and 1200px for seamless experience across all devices.
+- **Touch-optimized controls** - All interactive elements meet WCAG accessibility standards with proper touch target sizing.
+- **Card-based file list** - On mobile, file list converts from table layout to vertical cards with better information hierarchy.
+- **Full-width inputs** - Form controls, dropdowns, and buttons span full width on mobile for easier interaction.
+- **Vertical stacking** - ISO handling options, toolbar elements, and compression options stack vertically on mobile.
+- **Modal improvements** - Modals now use 95% viewport width on mobile with proper scrolling (90vh max-height).
+- **Screenshots documentation** - Added responsive design screenshots to README showcasing desktop, tablet, and mobile views.
+
+### 🔧 Technical Details
+
+- Pure CSS solution with no JavaScript changes required
+- Zero breaking changes to desktop functionality
+- 627 lines of responsive CSS added
+- Desktop layout (3-column) fully preserved for screens ≥1200px
+
+### 📁 Files Changed
+
+- `static/css/style.css` - Added comprehensive mobile-responsive styles with multiple breakpoints
+- `README.md` - Added Screenshots section with responsive design examples
+- `docs-desktop-view.png`, `docs-tablet-view.png`, `docs-mobile-view.png` - Added documentation screenshots
+
 ### ✨ New Features
 
 - **Archive delete-on-verify** - Archive inputs can now delete the entire archive after a successful conversion + verification, with an explicit warning in the delete plan.
+
+---
 
 ## v1.2.1 - Archive Safety Limits & Timeout Controls
 
