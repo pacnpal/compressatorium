@@ -1960,6 +1960,8 @@ function App() {
     const [appVersion, setAppVersion] = useState(null); // App version from backend
     const [sortBy, setSortBy] = useState('name'); // 'name', 'size', 'status'
     const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
+    const [stuckState, setStuckState] = useState(null); // Stuck state detection: { is_stuck, queued_count, processing_count }
+    const [recoveringStuck, setRecoveringStuck] = useState(false); // Recovery in progress
 
     // Ref to track current path for use in callbacks
     const currentPathRef = useRef(null);
@@ -2429,6 +2431,15 @@ function App() {
                     });
                 })
                 .catch(() => { });
+            
+            // Check for stuck state
+            api.checkStuckStatus()
+                .then(status => {
+                    setStuckState(status);
+                })
+                .catch(() => {
+                    setStuckState(null);
+                });
         }, 4000);
 
         return () => {
@@ -3430,6 +3441,25 @@ function App() {
                 idsToHide.forEach(id => next.delete(id));
                 return next;
             });
+            notify('Failed to clear completed jobs', 'error');
+        }
+    };
+
+    const handleRecoverStuck = async () => {
+        if (recoveringStuck) return;
+        
+        setRecoveringStuck(true);
+        try {
+            const result = await api.recoverStuckJobs();
+            notify(`Recovery completed: removed ${result.removed_locks || 0} stale lock(s)`, 'success');
+            // Immediately check stuck status again
+            const status = await api.checkStuckStatus();
+            setStuckState(status);
+        } catch (err) {
+            notify(`Recovery failed: ${err.message}`, 'error');
+            console.error('Failed to recover stuck jobs:', err);
+        } finally {
+            setRecoveringStuck(false);
         }
     };
 
@@ -3843,6 +3873,16 @@ function App() {
                     <div class="panel-header">
                         <h2>Jobs ${jobs.length > 0 ? `(${jobs.length})` : ''}</h2>
                         <div class="header-actions">
+                            ${stuckState?.is_stuck && html`
+                                <button
+                                    class="btn btn-sm btn-warning-pulse"
+                                    onClick=${handleRecoverStuck}
+                                    disabled=${recoveringStuck}
+                                    title="Jobs are stuck waiting. Click to attempt recovery by cleaning up stale locks."
+                                >
+                                    ${recoveringStuck ? '⏳ Recovering...' : '🔧 Fix Stuck Jobs'}
+                                </button>
+                            `}
                             ${hasCompletedJobs && html`
                                 <button
                                     class="btn btn-sm btn-secondary"
@@ -3861,6 +3901,19 @@ function App() {
                             </button>
                         </div>
                     </div>
+                    ${stuckState?.is_stuck && html`
+                        <div class="stuck-warning">
+                            <div class="stuck-warning-content">
+                                <span class="stuck-warning-icon">⚠️</span>
+                                <div>
+                                    <strong>Jobs Stuck:</strong> ${stuckState.queued_count} ${stuckState.queued_count === 1 ? 'job' : 'jobs'} waiting but none processing.
+                                    <div class="stuck-warning-details">
+                                        This usually happens due to stale locks. Click "Fix Stuck Jobs" to attempt automatic recovery.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `}
                     <div class="panel-content">
                         <${JobList}
                             jobs=${creatingJobs.length ? [...creatingJobs, ...jobs] : jobs}

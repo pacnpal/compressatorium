@@ -2008,3 +2008,43 @@ header h1 span {
         max-height: 50vh;
     }
 }
+
+/* Stuck job warning and recovery styles */
+.btn-warning-pulse {
+    background: var(--warning, #f0ad4e);
+    color: white;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .btn-warning-pulse {
+        animation: pulse 2s infinite;
+    }
+}
+
+.btn-warning-pulse:hover {
+    background: var(--warning-dark, #ec971f);
+}
+
+.stuck-warning {
+    padding: 12px;
+    margin: 0 12px 12px;
+    background: var(--warning-bg, #fff3cd);
+    border-left: 4px solid var(--warning, #f0ad4e);
+    border-radius: 4px;
+}
+
+.stuck-warning-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.stuck-warning-icon {
+    font-size: 1.2em;
+}
+
+.stuck-warning-details {
+    font-size: 0.85em;
+    opacity: 0.8;
+    margin-top: 4px;
+}

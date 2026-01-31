@@ -156,6 +156,21 @@ export const api = {
         return res.json();
     },
 
+    async checkStuckStatus() {
+        const res = await fetch(`${API_BASE}/jobs/stuck-status`);
+        if (!res.ok) throw new Error('Failed to check stuck status');
+        return res.json();
+    },
+
+    async recoverStuckJobs() {
+        const res = await fetch(`${API_BASE}/jobs/recover`, { method: 'POST' });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to recover stuck jobs' }));
+            throw new Error(error.detail || 'Failed to recover stuck jobs');
+        }
+        return res.json();
+    },
+
     subscribeToJobs(onUpdate) {
         const eventSource = new EventSource(`${API_BASE}/jobs/events`);
 

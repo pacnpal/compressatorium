@@ -769,6 +769,34 @@ async def delete_completed_jobs():
     return {"deleted": deleted_ids, "count": len(deleted_ids)}
 
 
+@router.get("/jobs/stuck-status")
+async def check_stuck_status():
+    """Check if the job queue is in a stuck state."""
+    return job_manager.get_stuck_state_info()
+
+
+@router.post("/jobs/recover")
+async def recover_stuck_jobs():
+    """Manually trigger recovery from a stuck job queue state.
+
+    This endpoint can be called when jobs are queued but not processing,
+    typically due to stale or orphaned locks.
+
+    It attempts to clean up stale locks and restore the queue to a healthy state
+    so that new or pending jobs can be processed again. It does not automatically
+    restart or requeue individual jobs that were previously stuck.
+    """
+    result = await job_manager.recover_from_stuck_state()
+    
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=429,
+            detail=result.get("message", "Recovery failed")
+        )
+    
+    return result
+
+
 @router.delete("/jobs/{job_id}")
 async def cancel_job(job_id: str):
     """Cancel a job."""

@@ -1,11 +1,14 @@
 import contextlib
 import fcntl
 import hashlib
+import logging
 import os
 import threading
 from pathlib import Path
 
 from config import settings
+
+logger = logging.getLogger("chd.lock_manager")
 
 
 class LockManager:
@@ -16,7 +19,9 @@ class LockManager:
             settings.concurrency_lock_dir
             or str(Path(settings.data_dir) / "locks")
         )
-        os.makedirs(self._lock_dir, exist_ok=True)
+        # Create lock directory with restrictive permissions (owner only)
+        # to address security concerns about predictable temp directories
+        os.makedirs(self._lock_dir, mode=0o700, exist_ok=True)
         self._locks: set[str] = set()
         self._lock_mutex = threading.Lock()
         self._lock_handles = {}
@@ -30,32 +35,76 @@ class LockManager:
         filename = f"filelock-{safe_base}-{digest}.lock"
         return os.path.join(self._lock_dir, filename)
 
-    def _cleanup_stale_locks(self) -> None:
-        """Remove stale file lock artifacts from the lock directory."""
+    def _cleanup_stale_locks(self, *, log_level: str = "info") -> int:
+        """Remove stale file lock artifacts from the lock directory.
+        
+        Args:
+            log_level: Logging level for removed locks - "info" or "debug"
+        
+        Returns:
+            Number of stale locks removed
+        """
+        removed_count = 0
         try:
-            for name in os.listdir(self._lock_dir):
-                if not (name.startswith("filelock-") and name.endswith(".lock")):
-                    continue
+            lock_files = []
+            try:
+                lock_files = [
+                    name for name in os.listdir(self._lock_dir)
+                    if name.startswith("filelock-") and name.endswith(".lock")
+                ]
+            except OSError:
+                return removed_count
+            
+            for name in lock_files:
                 lock_path = os.path.join(self._lock_dir, name)
                 try:
+                    # Try to acquire the lock to see if it's stale
                     with open(lock_path, "a") as lock_handle:
+                        acquired = False
                         try:
                             fcntl.flock(
                                 lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB,
                             )
+                            acquired = True
                         except BlockingIOError:
                             # Lock is held by another process; keep the file.
                             continue
                         except OSError:
+                            # Error trying to lock; skip this file
                             continue
                         finally:
-                            with contextlib.suppress(Exception):
-                                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                    os.remove(lock_path)
+                            if acquired:
+                                with contextlib.suppress(Exception):
+                                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                    
+                    # Lock was acquired successfully, meaning no other process holds it
+                    # This is a stale lock file - remove it
+                    try:
+                        os.remove(lock_path)
+                        removed_count += 1
+                        if log_level == "info":
+                            logger.info("Removed stale lock file: %s", name)
+                        else:
+                            logger.debug("Removed stale lock file: %s", name)
+                    except OSError as e:
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug("Failed to remove stale lock %s: %s", name, e)
                 except OSError:
+                    # Error opening/checking the lock file; skip it
                     pass
-        except OSError:
-            pass
+        except Exception as e:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Error during stale lock cleanup: %s", e)
+        
+        return removed_count
+    
+    def cleanup_stale_locks_periodic(self) -> int:
+        """Public method for periodic cleanup from background tasks.
+        
+        Returns:
+            Number of stale locks removed
+        """
+        return self._cleanup_stale_locks(log_level="debug")
 
     def is_locked(self, output_path: str) -> bool:
         """Check if an output file is currently locked (being converted)."""
@@ -80,6 +129,13 @@ class LockManager:
         return (file_exists, self._check_external_lock(normalized_path))
 
     def _check_external_lock(self, normalized_path: str) -> bool:
+        """Check if an external process holds a lock on the output file.
+        
+        Returns:
+            True if the file is locked by another process, False otherwise.
+        
+        As a side effect, if a lock file exists but is not actively held, it will be removed.
+        """
         lock_file_path = self._lock_file_path(normalized_path)
         if not os.path.exists(lock_file_path):
             return False
@@ -91,8 +147,10 @@ class LockManager:
                     fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     acquired = True
                 except BlockingIOError:
+                    # Lock is actively held by another process
                     return True
                 except OSError:
+                    # Error acquiring lock; assume not locked
                     return False
                 finally:
                     if acquired:
@@ -100,10 +158,24 @@ class LockManager:
                             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
                         except Exception:
                             pass
+            
+            # If we successfully acquired the lock, the file is stale - remove it
+            if acquired:
+                try:
+                    os.remove(lock_file_path)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("Removed stale lock file during check: %s", os.path.basename(lock_file_path))
+                except OSError as e:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Failed to remove stale lock file during check: %s (%s)",
+                            os.path.basename(lock_file_path),
+                            e,
+                        )
+            
+            return False
         except Exception:
             return False
-
-        return False
 
     def acquire_lock(self, output_path: str, *, allow_existing: bool = False) -> bool:
         """Acquire a lock for the output file path.

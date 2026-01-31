@@ -1,5 +1,6 @@
 """Application configuration settings for the CHD converter."""
 
+import os
 from pathlib import Path
 
 from pydantic import Field
@@ -25,6 +26,7 @@ class Settings(BaseSettings):
     concurrency_lock_dir: str | None = Field(
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
+        description="Directory for job lock files (default: ephemeral /tmp subdirectory, auto-cleaned on restart)",
     )
     max_job_history: int = Field(default=500, alias="MAX_JOB_HISTORY")
 
@@ -81,7 +83,16 @@ class Settings(BaseSettings):
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.data_dir) / "temp")
         if self.concurrency_lock_dir is None:
-            self.concurrency_lock_dir = str(Path(self.data_dir) / "locks")
+            # Use a subdirectory under /tmp for ephemeral lock storage
+            # This is secure in the container context because:
+            # 1. Container filesystem is isolated
+            # 2. Non-root user runs the application
+            # 3. Directory permissions are set restrictively (0o700) during creation
+            #    in concurrency_manager.py and lock_manager.py, mitigating Bandit_B108
+            #    concerns about predictable temporary paths
+            # 4. Locks don't persist across container restarts
+            # The fixed path is intentional to allow multiple processes to share locks
+            self.concurrency_lock_dir = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'chd-locks')
 
     @property
     def volumes(self) -> list[str]:
