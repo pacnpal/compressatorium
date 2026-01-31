@@ -1960,6 +1960,8 @@ function App() {
     const [appVersion, setAppVersion] = useState(null); // App version from backend
     const [sortBy, setSortBy] = useState('name'); // 'name', 'size', 'status'
     const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
+    const [stuckState, setStuckState] = useState(null); // Stuck state detection: { is_stuck, queued_count, processing_count }
+    const [recoveringStuck, setRecoveringStuck] = useState(false); // Recovery in progress
 
     // Ref to track current path for use in callbacks
     const currentPathRef = useRef(null);

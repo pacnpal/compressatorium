@@ -50,6 +50,8 @@ class JobManager:
         self._dispatcher_task: Optional[asyncio.Task] = None
         self._debug_task: Optional[asyncio.Task] = None
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        self._stuck_detected_at: Optional[float] = None
+        self._last_stuck_recovery_at: float = 0
 
     async def create_job(
         self,
@@ -231,6 +233,63 @@ class JobManager:
                 if cand_path == target:
                     return True
         return False
+
+    def is_stuck(self) -> bool:
+        """Check if the job queue is stuck (queued jobs but none processing).
+        
+        Returns:
+            True if jobs are queued but none are processing, False otherwise
+        """
+        has_queued = any(job.status == JobStatus.QUEUED for job in self.jobs.values())
+        has_processing = any(job.status == JobStatus.PROCESSING for job in self.jobs.values())
+        return has_queued and not has_processing
+
+    async def recover_from_stuck_state(self) -> Dict[str, object]:
+        """Attempt to recover from a stuck state by cleaning up stale locks.
+        
+        Returns:
+            Dictionary with recovery results and actions taken
+        """
+        now = time.monotonic()
+        
+        # Prevent recovery spam (minimum 60 seconds between attempts)
+        if now - self._last_stuck_recovery_at < 60:
+            return {
+                "success": False,
+                "message": "Recovery attempted too recently, please wait",
+                "cooldown_remaining": int(60 - (now - self._last_stuck_recovery_at))
+            }
+        
+        self._last_stuck_recovery_at = now
+        
+        logger.warning("Attempting recovery from stuck state")
+        
+        # Cleanup stale locks
+        removed_locks = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
+        
+        # Get current state
+        queued = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
+        processing = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        
+        result = {
+            "success": True,
+            "message": "Recovery attempt completed",
+            "removed_locks": removed_locks,
+            "queued_jobs": len(queued),
+            "processing_jobs": len(processing),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        logger.info(
+            "Stuck state recovery completed: removed_locks=%d queued=%d processing=%d",
+            removed_locks, len(queued), len(processing)
+        )
+        
+        # Clear stuck detection timestamp if state looks healthy now
+        if not self.is_stuck():
+            self._stuck_detected_at = None
+        
+        return result
 
     async def _prune_jobs(self, *, exclude_id: Optional[str] = None):
         if self.max_job_history <= 0:
@@ -446,6 +505,37 @@ class JobManager:
         while self._running:
             try:
                 await asyncio.sleep(settings.debug_heartbeat_interval)
+                
+                # Check for stuck state (queued jobs but none processing)
+                now = time.monotonic()
+                if self.is_stuck():
+                    if self._stuck_detected_at is None:
+                        self._stuck_detected_at = now
+                        logger.warning(
+                            "Stuck state detected: jobs queued but none processing. "
+                            "Will attempt automatic recovery in 60 seconds if state persists."
+                        )
+                    else:
+                        stuck_duration = now - self._stuck_detected_at
+                        if stuck_duration >= 60:
+                            # Stuck for 60+ seconds, attempt automatic recovery
+                            logger.error(
+                                "Jobs have been stuck for %.1f seconds. Attempting automatic recovery...",
+                                stuck_duration
+                            )
+                            result = await self.recover_from_stuck_state()
+                            if result.get("success"):
+                                logger.info(
+                                    "Automatic recovery completed: removed %d stale locks",
+                                    result.get("removed_locks", 0)
+                                )
+                            else:
+                                logger.warning("Automatic recovery failed: %s", result.get("message"))
+                else:
+                    # Not stuck, clear detection timestamp
+                    if self._stuck_detected_at is not None:
+                        logger.info("Stuck state cleared")
+                        self._stuck_detected_at = None
                 
                 # Periodic stale lock cleanup (every 10 heartbeats = 5 minutes by default)
                 cleanup_counter += 1

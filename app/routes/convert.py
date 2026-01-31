@@ -769,6 +769,40 @@ async def delete_completed_jobs():
     return {"deleted": deleted_ids, "count": len(deleted_ids)}
 
 
+@router.get("/jobs/stuck-status")
+async def check_stuck_status():
+    """Check if the job queue is in a stuck state."""
+    is_stuck = job_manager.is_stuck()
+    queued = [job.id for job in job_manager.get_all_jobs() if job.status == JobStatus.QUEUED]
+    processing = [job.id for job in job_manager.get_all_jobs() if job.status == JobStatus.PROCESSING]
+    
+    return {
+        "is_stuck": is_stuck,
+        "queued_count": len(queued),
+        "processing_count": len(processing),
+        "stuck_detected_at": job_manager._stuck_detected_at,
+        "last_recovery_at": job_manager._last_stuck_recovery_at if job_manager._last_stuck_recovery_at > 0 else None,
+    }
+
+
+@router.post("/jobs/recover")
+async def recover_stuck_jobs():
+    """Manually trigger recovery from stuck job state.
+    
+    This endpoint can be called when jobs are queued but not processing.
+    It will attempt to clean up stale locks and restart stuck jobs.
+    """
+    result = await job_manager.recover_from_stuck_state()
+    
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=429,
+            detail=result.get("message", "Recovery failed")
+        )
+    
+    return result
+
+
 @router.delete("/jobs/{job_id}")
 async def cancel_job(job_id: str):
     """Cancel a job."""
