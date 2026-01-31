@@ -772,17 +772,7 @@ async def delete_completed_jobs():
 @router.get("/jobs/stuck-status")
 async def check_stuck_status():
     """Check if the job queue is in a stuck state."""
-    is_stuck = job_manager.is_stuck()
-    queued = [job.id for job in job_manager.get_all_jobs() if job.status == JobStatus.QUEUED]
-    processing = [job.id for job in job_manager.get_all_jobs() if job.status == JobStatus.PROCESSING]
-    
-    return {
-        "is_stuck": is_stuck,
-        "queued_count": len(queued),
-        "processing_count": len(processing),
-        "stuck_detected_at": job_manager._stuck_detected_at,
-        "last_recovery_at": job_manager._last_stuck_recovery_at if job_manager._last_stuck_recovery_at > 0 else None,
-    }
+    return job_manager.get_stuck_state_info()
 
 
 @router.post("/jobs/recover")

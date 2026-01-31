@@ -31,6 +31,9 @@ logger = logging.getLogger("chd.job_manager")
 class JobManager:
     """Manages conversion job queue and execution."""
 
+    # Constants
+    STUCK_RECOVERY_COOLDOWN_SECONDS = 60
+
     def __init__(self, max_concurrent: int = 2, max_job_history: int = 500):
         self.jobs: OrderedDict[str, ConversionJob] = OrderedDict()
         self.max_concurrent = max(1, max_concurrent)
@@ -244,6 +247,30 @@ class JobManager:
         has_processing = any(job.status == JobStatus.PROCESSING for job in self.jobs.values())
         return has_queued and not has_processing
 
+    def get_stuck_state_info(self) -> Dict[str, object]:
+        """Get information about the stuck state.
+        
+        Returns:
+            Dictionary with stuck state information
+        """
+        is_stuck = self.is_stuck()
+        queued = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
+        processing = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        
+        result = {
+            "is_stuck": is_stuck,
+            "queued_count": len(queued),
+            "processing_count": len(processing),
+        }
+        
+        if self._stuck_detected_at is not None:
+            result["stuck_detected_at"] = self._stuck_detected_at
+        
+        if self._last_stuck_recovery_at > 0:
+            result["last_recovery_at"] = self._last_stuck_recovery_at
+            
+        return result
+
     async def recover_from_stuck_state(self) -> Dict[str, object]:
         """Attempt to recover from a stuck state by cleaning up stale locks.
         
@@ -252,12 +279,12 @@ class JobManager:
         """
         now = time.monotonic()
         
-        # Prevent recovery spam (minimum 60 seconds between attempts)
-        if now - self._last_stuck_recovery_at < 60:
+        # Prevent recovery spam (minimum cooldown between attempts)
+        if now - self._last_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS:
             return {
                 "success": False,
                 "message": "Recovery attempted too recently, please wait",
-                "cooldown_remaining": int(60 - (now - self._last_stuck_recovery_at))
+                "cooldown_remaining": int(self.STUCK_RECOVERY_COOLDOWN_SECONDS - (now - self._last_stuck_recovery_at))
             }
         
         self._last_stuck_recovery_at = now
@@ -513,11 +540,11 @@ class JobManager:
                         self._stuck_detected_at = now
                         logger.warning(
                             "Stuck state detected: jobs queued but none processing. "
-                            "Will attempt automatic recovery in 60 seconds if state persists."
+                            f"Will attempt automatic recovery in {self.STUCK_RECOVERY_COOLDOWN_SECONDS} seconds if state persists."
                         )
                     else:
                         stuck_duration = now - self._stuck_detected_at
-                        if stuck_duration >= 60:
+                        if stuck_duration >= self.STUCK_RECOVERY_COOLDOWN_SECONDS:
                             # Stuck for 60+ seconds, attempt automatic recovery
                             logger.error(
                                 "Jobs have been stuck for %.1f seconds. Attempting automatic recovery...",
