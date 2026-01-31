@@ -31,7 +31,7 @@ docker pull ghcr.io/pacnpal/compressatorium
 
 Both registries provide identical images with multi-architecture support (`linux/amd64` and `linux/arm64`).
 
-> **Note:** In all examples below, you can substitute `pacnpal/compressatorium` with `ghcr.io/pacnpal/compressatorium` interchangeably.
+> **Note:** Use either registry: replace `pacnpal/compressatorium` with `ghcr.io/pacnpal/compressatorium` for the same image.
 
 ### Available Tags
 
