@@ -13,7 +13,8 @@ class ConcurrencyManager:
     def __init__(self, max_concurrent: int, lock_dir: str):
         self.max_concurrent = max(1, max_concurrent)
         self.lock_dir = lock_dir
-        os.makedirs(self.lock_dir, exist_ok=True)
+        # Create lock directory with restrictive permissions (owner only)
+        os.makedirs(self.lock_dir, mode=0o700, exist_ok=True)
         self._slot_paths = [
             os.path.join(self.lock_dir, f"convert_slot_{idx}.lock")
             for idx in range(self.max_concurrent)

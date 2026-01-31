@@ -19,7 +19,9 @@ class LockManager:
             settings.concurrency_lock_dir
             or str(Path(settings.data_dir) / "locks")
         )
-        os.makedirs(self._lock_dir, exist_ok=True)
+        # Create lock directory with restrictive permissions (owner only)
+        # to address security concerns about predictable temp directories
+        os.makedirs(self._lock_dir, mode=0o700, exist_ok=True)
         self._locks: set[str] = set()
         self._lock_mutex = threading.Lock()
         self._lock_handles = {}

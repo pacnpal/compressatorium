@@ -253,46 +253,52 @@ class JobManager:
         Returns:
             Dictionary with stuck state information
         """
-class JobManager:
-    # ... existing code ...
-
-    def _get_job_status_counts(self) -> tuple[list[str], list[str]]:
-        queued_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
-        processing_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
-        return queued_ids, processing_ids
-
-    def is_stuck(self) -> bool:
-        # ... existing code, potentially re-using _get_job_status_counts() ...
-        queued_ids, processing_ids = self._get_job_status_counts()
-        return len(queued_ids) > 0 and len(processing_ids) == 0
-
-    def get_stuck_state_info(self) -> Dict[str, object]:
         is_stuck = self.is_stuck()
-        queued_ids, processing_ids = self._get_job_status_counts()
+        queued = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
+        processing = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
         
         result = {
             "is_stuck": is_stuck,
-            "queued_count": len(queued_ids),
-            "processing_count": len(processing_ids),
+            "queued_count": len(queued),
+            "processing_count": len(processing),
         }
-        # ... rest of the method ...
+        
+        if self._stuck_detected_at is not None:
+            result["stuck_detected_at"] = self._stuck_detected_at
+        
+        if self._last_stuck_recovery_at > 0:
+            result["last_recovery_at"] = self._last_stuck_recovery_at
+            
+        return result
 
     async def recover_from_stuck_state(self) -> Dict[str, object]:
-        # ... existing code ...
+        """Attempt to recover from a stuck state by cleaning up stale locks.
+        
+        Returns:
+            Dictionary with recovery results and actions taken
+        """
+        now = time.monotonic()
+        
+        # Prevent recovery spam (minimum cooldown between attempts)
+        if now - self._last_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS:
+            return {
+                "success": False,
+                "message": "Recovery attempted too recently, please wait",
+                "cooldown_remaining": int(self.STUCK_RECOVERY_COOLDOWN_SECONDS - (now - self._last_stuck_recovery_at))
+            }
+        
+        self._last_stuck_recovery_at = now
+        
+        logger.warning("Attempting recovery from stuck state")
+        
+        # Cleanup stale locks
         removed_locks = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
         
-        # Use the helper method here
-        queued_ids, processing_ids = self._get_job_status_counts()
+        # Get current state
+        queued = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
+        processing = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
         
         result = {
-            "success": True,
-            "message": "Recovery attempt completed",
-            "removed_locks": removed_locks,
-            "queued_jobs": len(queued_ids),
-            "processing_jobs": len(processing_ids),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        # ... rest of the method ...
             "success": True,
             "message": "Recovery attempt completed",
             "removed_locks": removed_locks,
@@ -521,53 +527,67 @@ class JobManager:
             self._debug_task = asyncio.create_task(self._debug_loop())
         await self._dispatcher_task
 
+    async def _handle_background_maintenance(self, cleanup_counter: int) -> int:
+        """Handle stuck state detection and periodic lock cleanup.
+        
+        Args:
+            cleanup_counter: Current cleanup counter value
+            
+        Returns:
+            Updated cleanup counter value
+        """
+        # Check for stuck state (queued jobs but none processing)
+        now = time.monotonic()
+        if self.is_stuck():
+            if self._stuck_detected_at is None:
+                self._stuck_detected_at = now
+                logger.warning(
+                    "Stuck state detected: jobs queued but none processing. "
+                    f"Will attempt automatic recovery in {self.STUCK_RECOVERY_COOLDOWN_SECONDS} seconds if state persists."
+                )
+            else:
+                stuck_duration = now - self._stuck_detected_at
+                if stuck_duration >= self.STUCK_RECOVERY_COOLDOWN_SECONDS:
+                    # Stuck for 60+ seconds, attempt automatic recovery
+                    logger.error(
+                        "Jobs have been stuck for %.1f seconds. Attempting automatic recovery...",
+                        stuck_duration
+                    )
+                    result = await self.recover_from_stuck_state()
+                    if result.get("success"):
+                        logger.info(
+                            "Automatic recovery completed: removed %d stale locks",
+                            result.get("removed_locks", 0)
+                        )
+                    else:
+                        logger.warning("Automatic recovery failed: %s", result.get("message"))
+        else:
+            # Not stuck, clear detection timestamp
+            if self._stuck_detected_at is not None:
+                logger.info("Stuck state cleared")
+                self._stuck_detected_at = None
+        
+        # Periodic stale lock cleanup (every 10 heartbeats = 5 minutes by default)
+        cleanup_counter += 1
+        if cleanup_counter >= 10:
+            cleanup_counter = 0
+            try:
+                removed = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
+                if removed > 0:
+                    logger.info("Periodic cleanup removed %d stale lock file(s)", removed)
+            except Exception as e:
+                logger.warning("Periodic lock cleanup failed: %s", e)
+        
+        return cleanup_counter
+
     async def _debug_loop(self):
         cleanup_counter = 0
         while self._running:
             try:
                 await asyncio.sleep(settings.debug_heartbeat_interval)
                 
-                # Check for stuck state (queued jobs but none processing)
-                now = time.monotonic()
-                if self.is_stuck():
-                    if self._stuck_detected_at is None:
-                        self._stuck_detected_at = now
-                        logger.warning(
-                            "Stuck state detected: jobs queued but none processing. "
-                            f"Will attempt automatic recovery in {self.STUCK_RECOVERY_COOLDOWN_SECONDS} seconds if state persists."
-                        )
-                    else:
-                        stuck_duration = now - self._stuck_detected_at
-                        if stuck_duration >= self.STUCK_RECOVERY_COOLDOWN_SECONDS:
-                            # Stuck for 60+ seconds, attempt automatic recovery
-                            logger.error(
-                                "Jobs have been stuck for %.1f seconds. Attempting automatic recovery...",
-                                stuck_duration
-                            )
-                            result = await self.recover_from_stuck_state()
-                            if result.get("success"):
-                                logger.info(
-                                    "Automatic recovery completed: removed %d stale locks",
-                                    result.get("removed_locks", 0)
-                                )
-                            else:
-                                logger.warning("Automatic recovery failed: %s", result.get("message"))
-                else:
-                    # Not stuck, clear detection timestamp
-                    if self._stuck_detected_at is not None:
-                        logger.info("Stuck state cleared")
-                        self._stuck_detected_at = None
-                
-                # Periodic stale lock cleanup (every 10 heartbeats = 5 minutes by default)
-                cleanup_counter += 1
-                if cleanup_counter >= 10:
-                    cleanup_counter = 0
-                    try:
-                        removed = await run_in_threadpool(lock_manager.cleanup_stale_locks_periodic)
-                        if removed > 0:
-                            logger.info("Periodic cleanup removed %d stale lock file(s)", removed)
-                    except Exception as e:
-                        logger.warning("Periodic lock cleanup failed: %s", e)
+                # Handle background maintenance tasks
+                cleanup_counter = await self._handle_background_maintenance(cleanup_counter)
                 
                 if not logger.isEnabledFor(logging.DEBUG):
                     continue
