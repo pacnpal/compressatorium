@@ -242,6 +242,62 @@ class Z3DSCompressService:
 
         yield {"progress": 100, "message": "3DS compression complete"}
 
+    @staticmethod
+    def is_convertible(filename: str) -> bool:
+        """Check if a file is convertible by z3ds_compress.
+        
+        Args:
+            filename: Name of the file to check
+            
+        Returns:
+            True if the file has a .cci or .cia extension
+        """
+        ext = Path(filename).suffix.lower()
+        return ext in Z3DS_CONVERTIBLE_EXTENSIONS
+
+    @staticmethod
+    def get_output_path_for_mode(
+        mode: str,
+        input_path: str,
+        output_dir: str | None = None,
+        *,
+        treat_as_stem: bool = False,
+    ) -> str:
+        """Get the output path for z3ds_compress mode.
+        
+        Args:
+            mode: Conversion mode (should be "z3ds_compress")
+            input_path: Path to input file or stem
+            output_dir: Optional output directory
+            treat_as_stem: If True, treat input_path as stem instead of full path
+            
+        Returns:
+            Path for output file
+        """
+        input_p = Path(input_path)
+        
+        if treat_as_stem:
+            # input_path is just a stem, need to determine extension from original
+            # For z3ds, we assume the stem is already known and just add extension
+            stem = input_p.name
+        else:
+            stem = input_p.stem
+            
+        ext = input_p.suffix.lower()
+        
+        # Map input extension to output extension
+        if ext in Z3DS_OUTPUT_FORMATS:
+            output_ext = Z3DS_OUTPUT_FORMATS[ext]
+        else:
+            # Default to .zcci if extension unknown
+            output_ext = ".zcci"
+            
+        filename = f"{stem}{output_ext}"
+        
+        if output_dir:
+            return str(Path(output_dir) / filename)
+        return str(input_p.parent / filename)
+
 
 # Global service instance
 z3ds_compress_service = Z3DSCompressService()

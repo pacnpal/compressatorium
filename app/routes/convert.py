@@ -97,7 +97,9 @@ def _get_output_path(mode, input_path, output_dir, *, treat_as_stem=False):
             mode, input_path, output_dir, treat_as_stem=treat_as_stem,
         )
     if mode == ConversionMode.Z3DS_COMPRESS.value:
-        return z3ds_compress_service.get_output_path(input_path, output_dir)
+        return z3ds_compress_service.get_output_path_for_mode(
+            mode, input_path, output_dir, treat_as_stem=treat_as_stem,
+        )
     return chdman_service.get_output_path_for_mode(
         mode, input_path, output_dir, treat_as_stem=treat_as_stem,
     )
