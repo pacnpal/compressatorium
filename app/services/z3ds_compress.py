@@ -242,11 +242,14 @@ class Z3DSCompressService:
 
         yield {"progress": 100, "message": "3DS compression complete"}
 
-    async def info(self, file_path: str) -> dict:
+    def info(self, file_path: str) -> dict:
         """Get basic information about a 3DS ROM file.
         
         Since z3ds_compressor doesn't provide metadata extraction, this method
         returns basic file system information: size, format, compression status.
+        
+        Note: This is a synchronous method. Callers should wrap with run_in_threadpool
+        if calling from async context.
         
         Args:
             file_path: Path to .cci, .cia, .zcci, or .zcia file

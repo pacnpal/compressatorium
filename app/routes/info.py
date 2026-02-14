@@ -864,7 +864,7 @@ async def get_z3ds_info(
         )
 
     try:
-        info = await z3ds_compress_service.info(path)
+        info = await run_in_threadpool(z3ds_compress_service.info, path)
         return Z3DSInfo(
             file=info["file"],
             size=info["size"],
