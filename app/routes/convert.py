@@ -9,6 +9,7 @@ from models import (
     BatchJobCreateRequest,
     CheckDuplicatesRequest,
     ConversionJob,
+    ConversionMode,
     DeletePlanRequest,
     DuplicateAction,
     DuplicateInfo,
@@ -21,6 +22,7 @@ from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
+from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from sse_starlette.sse import EventSourceResponse
@@ -81,6 +83,7 @@ def supports_delete_on_verify(mode: str) -> bool:
         mode.startswith("create")
         or mode == "copy"
         or mode.startswith("dolphin_")
+        or mode == "z3ds_compress"
     )
 
 
@@ -93,6 +96,8 @@ def _get_output_path(mode, input_path, output_dir, *, treat_as_stem=False):
         return dolphin_tool_service.get_output_path_for_mode(
             mode, input_path, output_dir, treat_as_stem=treat_as_stem,
         )
+    if mode == ConversionMode.Z3DS_COMPRESS.value:
+        return z3ds_compress_service.get_output_path(input_path, output_dir)
     return chdman_service.get_output_path_for_mode(
         mode, input_path, output_dir, treat_as_stem=treat_as_stem,
     )
@@ -329,10 +334,10 @@ async def create_job(request: JobCreateRequest):
     display_filename = None
 
     if "::" in request.file_path:
-        if mode.startswith("extract") or mode == "copy" or is_dolphin:
+        if mode.startswith("extract") or mode == "copy" or is_dolphin or mode == "z3ds_compress":
             raise HTTPException(
                 status_code=400,
-                detail="Archive inputs are not supported for extract/copy/dolphin modes",
+                detail="Archive inputs are not supported for extract/copy/dolphin/z3ds modes",
             )
         archive_path, internal_path = request.file_path.split("::", 1)
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
@@ -388,6 +393,14 @@ async def create_job(request: JobCreateRequest):
                 status_code=400,
                 detail="Dolphin modes require GameCube/Wii disc images "
                        "(.iso, .gcz, .wia, .rvz, .wbfs)",
+            )
+
+    if mode == "z3ds_compress":
+        ext = Path(file_path).suffix.lower()
+        if ext not in Z3DS_CONVERTIBLE_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail="z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia)",
             )
 
     # Calculate output path and handle duplicates
@@ -548,7 +561,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
 
         # Handle archive files
         if "::" in file_path:
-            if mode.startswith("extract") or mode == "copy" or is_dolphin:
+            if mode.startswith("extract") or mode == "copy" or is_dolphin or mode == "z3ds_compress":
                 skipped.append(file_path)
                 continue
             archive_path, internal_path = file_path.split("::", 1)
@@ -601,6 +614,12 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if is_dolphin:
             ext = Path(file_path).suffix.lower()
             if ext not in DOLPHIN_CONVERTIBLE_EXTENSIONS:
+                skipped.append(file_path)
+                continue
+
+        if mode == "z3ds_compress":
+            ext = Path(file_path).suffix.lower()
+            if ext not in Z3DS_CONVERTIBLE_EXTENSIONS:
                 skipped.append(file_path)
                 continue
 
