@@ -65,6 +65,13 @@ const MODE_GROUPS = [
             { value: 'dolphin_gcz', label: 'Convert to GCZ' },
             { value: 'dolphin_iso', label: 'Convert to ISO (extract)' }
         ]
+    },
+    {
+        id: 'z3ds',
+        label: 'Nintendo 3DS',
+        options: [
+            { value: 'z3ds_compress', label: 'Compress to ZCCI/ZCIA' }
+        ]
     }
 ];
 
@@ -430,8 +437,14 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                         ${entry.type !== 'archive' && entry.has_chd && html`
                             <span class="status has-chd" title="A CHD file already exists for this source">CHD exists</span>
                         `}
+                        ${entry.type !== 'archive' && entry.has_z3ds && html`
+                            <span class="status has-chd" title="A compressed 3DS file already exists">Z3DS exists</span>
+                        `}
                         ${entry.type !== 'archive' && entry.convertible && !entry.has_chd && html`
                             <span class="status convertible" title="Can be converted to CHD">Convertible</span>
+                        `}
+                        ${entry.type !== 'archive' && entry.z3ds_convertible && !entry.has_z3ds && html`
+                            <span class="status convertible" title="Can be compressed to ZCCI/ZCIA">3DS ROM</span>
                         `}
                         ${entry.type === 'archive' && archiveItems != null && archiveItems > 0 && html`
                             <span class="status convertible" title="Convertible images inside this archive">
@@ -3013,6 +3026,7 @@ function App() {
     const isExtractMode = conversionMode.startsWith('extract');
     const isCopyMode = conversionMode === 'copy';
     const isDolphinMode = conversionMode.startsWith('dolphin_');
+    const isZ3dsMode = conversionMode === 'z3ds_compress';
     const isDolphinCompressible = isDolphinMode && !['dolphin_iso', 'dolphin_gcz'].includes(conversionMode);
     const activeCompressionOptions = isDolphinCompressible ? dolphinCompressionOptions : compressionOptions;
     const compressionSupported = isCreateMode || isCopyMode || isDolphinCompressible;
@@ -3034,7 +3048,7 @@ function App() {
         }
         return false;
     }, [selectedFiles]);
-    const deleteOnVerifySupported = isCreateMode || isCopyMode || isDolphinMode;
+    const deleteOnVerifySupported = isCreateMode || isCopyMode || isDolphinMode || isZ3dsMode;
     const deleteOnVerifyDisabled = !deleteOnVerifySupported;
     const deleteOnVerifyLabel = isCopyMode
         ? 'Delete original CHD after copy + verify'
@@ -3248,6 +3262,9 @@ function App() {
         if (isDolphinMode) {
             return entry.dolphin_convertible === true;
         }
+        if (isZ3dsMode) {
+            return entry.z3ds_convertible === true;
+        }
         if (isExtractMode || isCopyMode) {
             return entry.extension === '.chd';
         }
@@ -3306,6 +3323,7 @@ function App() {
 
     const getActionLabel = () => {
         if (isDolphinMode) return 'Convert';
+        if (isZ3dsMode) return 'Compress';
         if (isExtractMode) return 'Extract';
         if (isCopyMode) return 'Copy';
         return 'Convert';
@@ -3332,6 +3350,8 @@ function App() {
                     type: 'file',
                     convertible: Boolean(f.convertible),
                     dolphin_convertible: Boolean(f.dolphin_convertible),
+                    z3ds_convertible: Boolean(f.z3ds_convertible),
+                    has_z3ds: Boolean(f.has_z3ds),
                     chd_ready: Boolean(f.chd_ready)
                 })),
                 ...results.archives.map(a => ({
