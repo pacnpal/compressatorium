@@ -8,13 +8,14 @@ import time
 from config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from models import BulkVerifyRequest, CHDInfo, DolphinDiscInfo, MetadataBatchRequest
+from models import BulkVerifyRequest, CHDInfo, DolphinDiscInfo, MetadataBatchRequest, Z3DSInfo
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
 from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
+from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
 from services.verification_store import verification_store
 from sse_starlette.sse import EventSourceResponse
 from utils.path_utils import is_within_configured_volumes
@@ -834,3 +835,47 @@ async def verify_dolphin_events(
                 await verify_task
 
     return EventSourceResponse(event_generator())
+
+
+def _is_z3ds_file(path: str) -> bool:
+    """Check if a file is a 3DS ROM file (.cci, .cia, .zcci, .zcia)."""
+    ext = os.path.splitext(path)[1].lower()
+    return ext in Z3DS_CONVERTIBLE_EXTENSIONS or ext in {".zcci", ".zcia"}
+
+
+@router.get("/z3ds-info", response_model=Z3DSInfo)
+async def get_z3ds_info(
+    path: str = Query(..., description="Path to 3DS ROM file"),
+):
+    """Get basic information about a Nintendo 3DS ROM file (.cci, .cia, .zcci, .zcia)."""
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: path outside configured volumes",
+        )
+    if not await run_in_threadpool(os.path.isfile, path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_z3ds_file(path):
+        raise HTTPException(
+            status_code=400,
+            detail="Not a supported 3DS ROM format (.cci, .cia, .zcci, .zcia)",
+        )
+
+    try:
+        info = await z3ds_compress_service.info(path)
+        return Z3DSInfo(
+            file=info["file"],
+            size=info["size"],
+            size_display=info["size_display"],
+            format=info.get("format"),
+            extension=info["extension"],
+            compressed=info["compressed"],
+            compression_type=info.get("compression_type"),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read 3DS ROM info: {e!s}",
+        )

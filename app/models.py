@@ -176,3 +176,14 @@ class DolphinDiscInfo(BaseModel):
     block_size: str | None = None
     file_size: str | None = None
     raw_data: str = ""
+
+
+class Z3DSInfo(BaseModel):
+    """Information about a Nintendo 3DS ROM file."""
+    file: str
+    size: int
+    size_display: str
+    format: str | None = None
+    extension: str
+    compressed: bool
+    compression_type: str | None = None

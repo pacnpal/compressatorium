@@ -242,6 +242,46 @@ class Z3DSCompressService:
 
         yield {"progress": 100, "message": "3DS compression complete"}
 
+    async def info(self, file_path: str) -> dict:
+        """Get basic information about a 3DS ROM file.
+        
+        Since z3ds_compressor doesn't provide metadata extraction, this method
+        returns basic file system information: size, format, compression status.
+        
+        Args:
+            file_path: Path to .cci, .cia, .zcci, or .zcia file
+            
+        Returns:
+            dict with file info (file, size, format, compressed, etc.)
+        """
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+            
+        file_size = os.path.getsize(file_path)
+        ext = Path(file_path).suffix.lower()
+        
+        # Determine format and compression status
+        is_compressed = ext in {".zcci", ".zcia"}
+        base_format = None
+        if ext in {".cci", ".zcci"}:
+            base_format = "CCI (Cart Image)"
+        elif ext in {".cia", ".zcia"}:
+            base_format = "CIA (Installable Archive)"
+        
+        # Format size for display
+        size_mb = file_size / (1024 * 1024)
+        size_display = f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+        
+        return {
+            "file": file_path,
+            "size": file_size,
+            "size_display": size_display,
+            "format": base_format,
+            "extension": ext,
+            "compressed": is_compressed,
+            "compression_type": "Seekable ZStandard" if is_compressed else None,
+        }
+
     @staticmethod
     def is_convertible(filename: str) -> bool:
         """Check if a file is convertible by z3ds_compress.
