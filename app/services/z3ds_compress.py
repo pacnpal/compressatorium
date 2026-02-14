@@ -17,7 +17,7 @@ Z3DS_OUTPUT_FORMATS = {
     ".cia": ".zcia",
 }
 
-logger = logging.getLogger("chd.z3ds_compress")
+logger = logging.getLogger("z3ds_compress")
 
 
 class Z3DSCompressService:
@@ -97,8 +97,8 @@ class Z3DSCompressService:
         self,
         input_path: str,
         output_path: str,
-        mode: str = "z3ds_compress",  # Mode parameter for consistency with other services
-        compression: str | None = None,  # Not used but kept for interface consistency
+        mode: str = "z3ds_compress",  # Unused but required for interface consistency with chdman/dolphin services
+        compression: str | None = None,  # Unused but required for interface consistency
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Run z3ds_compressor and yield progress updates.
