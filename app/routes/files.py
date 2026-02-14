@@ -9,6 +9,7 @@ from services.archive import ARCHIVE_EXTENSIONS, archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import CONVERTIBLE_EXTENSIONS
 from services.dolphin_tool import DOLPHIN_CONVERTIBLE_EXTENSIONS
+from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
@@ -108,6 +109,7 @@ async def list_files(
                         size = os.path.getsize(item_path)
                         is_convertible = ext in CONVERTIBLE_EXTENSIONS
                         is_dolphin_convertible = ext in DOLPHIN_CONVERTIBLE_EXTENSIONS
+                        is_z3ds_convertible = ext in Z3DS_CONVERTIBLE_EXTENSIONS
                         is_archive = ext in ARCHIVE_EXTENSIONS
                         archive_truncated = None
                         if is_archive and not show_archives_flag:
@@ -123,6 +125,15 @@ async def list_files(
                             )
                             has_chd = file_exists or is_converting
                             chd_ready = file_exists
+
+                        # Check if compressed 3DS file already exists
+                        has_z3ds = False
+                        if is_z3ds_convertible:
+                            from services.z3ds_compress import Z3DS_OUTPUT_FORMATS
+                            z3ds_ext = Z3DS_OUTPUT_FORMATS.get(ext)
+                            if z3ds_ext:
+                                z3ds_path = str(Path(item_path).with_suffix(z3ds_ext))
+                                has_z3ds = os.path.exists(z3ds_path)
 
                         archive_items = None
                         archive_has_chd = None
@@ -160,6 +171,8 @@ async def list_files(
                             has_chd=has_chd,
                             chd_ready=chd_ready,
                             dolphin_convertible=is_dolphin_convertible,
+                            z3ds_convertible=is_z3ds_convertible,
+                            has_z3ds=has_z3ds,
                             archive_items=archive_items,
                             archive_has_chd=archive_has_chd,
                             archive_truncated=archive_truncated
@@ -226,14 +239,17 @@ async def search_files(
                             if (
                                 ext in CONVERTIBLE_EXTENSIONS
                                 or ext in DOLPHIN_CONVERTIBLE_EXTENSIONS
+                                or ext in Z3DS_CONVERTIBLE_EXTENSIONS
                             ):
                                 is_chd_convertible = ext in CONVERTIBLE_EXTENSIONS
                                 is_dolphin_convertible = (
                                     ext in DOLPHIN_CONVERTIBLE_EXTENSIONS
                                 )
+                                is_z3ds_convertible = ext in Z3DS_CONVERTIBLE_EXTENSIONS
                                 chd_path = None
                                 has_chd = False
                                 chd_ready = False
+                                has_z3ds = False
                                 if is_chd_convertible:
                                     chd_path = str(Path(item_path).with_suffix(".chd"))
                                     # Use atomic check to get both file existence and lock status
@@ -242,6 +258,12 @@ async def search_files(
                                     )
                                     has_chd = file_exists or is_converting
                                     chd_ready = file_exists
+                                if is_z3ds_convertible:
+                                    from services.z3ds_compress import Z3DS_OUTPUT_FORMATS
+                                    z3ds_ext = Z3DS_OUTPUT_FORMATS.get(ext)
+                                    if z3ds_ext:
+                                        z3ds_path = str(Path(item_path).with_suffix(z3ds_ext))
+                                        has_z3ds = os.path.exists(z3ds_path)
                                 files.append(
                                     {
                                         "name": item,
@@ -253,6 +275,8 @@ async def search_files(
                                         "chd_ready": chd_ready,
                                         "convertible": is_chd_convertible,
                                         "dolphin_convertible": is_dolphin_convertible,
+                                        "z3ds_convertible": is_z3ds_convertible,
+                                        "has_z3ds": has_z3ds,
                                         "in_archive": False,
                                     },
                                 )

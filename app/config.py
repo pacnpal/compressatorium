@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     dolphin_tool_path: str = Field(
         default="/usr/local/bin/dolphin-tool", alias="DOLPHIN_TOOL_PATH",
     )
+
+    # z3ds_compressor binary path
+    z3ds_compressor_path: str = Field(
+        default="/usr/local/bin/z3ds_compressor", alias="Z3DS_COMPRESSOR_PATH",
+    )
     chdman_nice: int | None = Field(default=10, alias="CHD_CHDMAN_NICE")
     chdman_ioprio_class: int | None = Field(
         default=2,

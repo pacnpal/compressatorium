@@ -12,6 +12,8 @@ RUN apt-get update && \
       unrar-free \
       p7zip-full \
       dolphin-emu \
+      wget \
+      unzip \
       bash && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
@@ -22,6 +24,13 @@ RUN apt-get update && \
 ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Install z3ds_compressor for 3DS ROM compression
+RUN wget -q https://github.com/energeticokay/z3ds_compress/releases/download/corruption_fix/z3ds_compressor_linux.zip && \
+    unzip -q z3ds_compressor_linux.zip && \
+    mv z3ds_compressor /usr/local/bin/z3ds_compressor && \
+    chmod +x /usr/local/bin/z3ds_compressor && \
+    rm z3ds_compressor_linux.zip
 
 # Copy application
 COPY app/ /app/

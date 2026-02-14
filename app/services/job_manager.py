@@ -22,6 +22,7 @@ from services.concurrency_manager import concurrency_manager
 from services.dolphin_tool import dolphin_tool_service
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
+from services.z3ds_compress import z3ds_compress_service
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
@@ -74,7 +75,10 @@ class JobManager:
 
         # Determine output path - use explicit path if provided, otherwise calculate
         if output_path is None:
-            output_path = chdman_service.get_chd_path(file_path, output_dir)
+            if mode == ConversionMode.Z3DS_COMPRESS:
+                output_path = z3ds_compress_service.get_output_path(file_path, output_dir)
+            else:
+                output_path = chdman_service.get_chd_path(file_path, output_dir)
 
         job = ConversionJob(
             id=job_id,
@@ -993,6 +997,8 @@ class JobManager:
             _convert_service = (
                 dolphin_tool_service
                 if job.mode.value.startswith("dolphin_")
+                else z3ds_compress_service
+                if job.mode == ConversionMode.Z3DS_COMPRESS
                 else chdman_service
             )
             async for update in _convert_service.convert(

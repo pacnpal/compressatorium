@@ -20,6 +20,7 @@ class ConversionMode(str, Enum):
     DOLPHIN_WIA = "dolphin_wia"
     DOLPHIN_GCZ = "dolphin_gcz"
     DOLPHIN_ISO = "dolphin_iso"
+    Z3DS_COMPRESS = "z3ds_compress"
 
 
 class DuplicateAction(str, Enum):
@@ -46,6 +47,8 @@ class FileEntry(BaseModel):
     has_chd: bool = False
     chd_ready: bool = False
     dolphin_convertible: bool = False
+    z3ds_convertible: bool = False
+    has_z3ds: bool = False
     archive_items: int | None = None
     archive_has_chd: int | None = None
     archive_truncated: bool | None = None
