@@ -269,28 +269,35 @@ class Z3DSCompressService:
             mode: Conversion mode (should be "z3ds_compress")
             input_path: Path to input file or stem
             output_dir: Optional output directory
-            treat_as_stem: If True, treat input_path as stem instead of full path
+            treat_as_stem: If True, treat input_path as stem without extension
             
         Returns:
             Path for output file
+            
+        Note:
+            When treat_as_stem=True (archive members), the method defaults to .zcci
+            output since we cannot determine the original extension from the stem alone.
+            However, z3ds_compress mode blocks archive inputs, so this case should not occur.
         """
         input_p = Path(input_path)
         
         if treat_as_stem:
-            # input_path is just a stem, need to determine extension from original
-            # For z3ds, we assume the stem is already known and just add extension
+            # input_path is just a stem (no extension)
+            # Default to .zcci since we can't determine .cci vs .cia from stem alone
+            # Note: This case should not occur as archives are blocked for z3ds mode
             stem = input_p.name
-        else:
-            stem = input_p.stem
-            
-        ext = input_p.suffix.lower()
-        
-        # Map input extension to output extension
-        if ext in Z3DS_OUTPUT_FORMATS:
-            output_ext = Z3DS_OUTPUT_FORMATS[ext]
-        else:
-            # Default to .zcci if extension unknown
             output_ext = ".zcci"
+        else:
+            # Normal case: extract stem and map extension
+            stem = input_p.stem
+            ext = input_p.suffix.lower()
+            
+            # Map input extension to output extension
+            if ext in Z3DS_OUTPUT_FORMATS:
+                output_ext = Z3DS_OUTPUT_FORMATS[ext]
+            else:
+                # Default to .zcci if extension unknown
+                output_ext = ".zcci"
             
         filename = f"{stem}{output_ext}"
         
