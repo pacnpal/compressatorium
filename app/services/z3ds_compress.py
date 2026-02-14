@@ -9,6 +9,7 @@ from pathlib import Path
 
 from config import settings
 from fastapi.concurrency import run_in_threadpool
+from services.chdman import ConversionCancelled
 
 Z3DS_CONVERTIBLE_EXTENSIONS = {".cci", ".cia"}
 
@@ -234,7 +235,7 @@ class Z3DSCompressService:
                     os.remove(output_path)
                 except OSError:
                     pass
-            raise asyncio.CancelledError("Compression cancelled by user")
+            raise ConversionCancelled("Compression cancelled by user")
 
         if process.returncode != 0:
             error_msg = "\n".join(output_lines[-10:]) if output_lines else "Unknown error"

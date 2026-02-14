@@ -126,14 +126,17 @@ async def list_files(
                             has_chd = file_exists or is_converting
                             chd_ready = file_exists
 
-                        # Check if compressed 3DS file already exists
+                        # Check if compressed 3DS file already exists or is being converted
                         has_z3ds = False
                         if is_z3ds_convertible:
                             from services.z3ds_compress import Z3DS_OUTPUT_FORMATS
                             z3ds_ext = Z3DS_OUTPUT_FORMATS.get(ext)
                             if z3ds_ext:
                                 z3ds_path = str(Path(item_path).with_suffix(z3ds_ext))
-                                has_z3ds = os.path.exists(z3ds_path)
+                                file_exists, is_converting = lock_manager.check_file_status(
+                                    z3ds_path,
+                                )
+                                has_z3ds = file_exists or is_converting
 
                         archive_items = None
                         archive_has_chd = None
@@ -263,7 +266,10 @@ async def search_files(
                                     z3ds_ext = Z3DS_OUTPUT_FORMATS.get(ext)
                                     if z3ds_ext:
                                         z3ds_path = str(Path(item_path).with_suffix(z3ds_ext))
-                                        has_z3ds = os.path.exists(z3ds_path)
+                                        file_exists, is_converting = lock_manager.check_file_status(
+                                            z3ds_path,
+                                        )
+                                        has_z3ds = file_exists or is_converting
                                 files.append(
                                     {
                                         "name": item,
