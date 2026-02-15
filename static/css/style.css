@@ -45,8 +45,9 @@ header {
 
 header .header-brand {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
 }
 
 header h1 {
@@ -56,6 +57,18 @@ header h1 {
 
 header h1 span {
     color: var(--accent);
+}
+
+.header-logo {
+    height: 44px;
+    width: auto;
+    filter: drop-shadow(0 0 6px rgba(233, 69, 96, 0.3));
+    transition: filter 0.3s ease, transform 0.3s ease;
+}
+
+.header-logo:hover {
+    filter: drop-shadow(0 0 12px rgba(233, 69, 96, 0.5));
+    transform: scale(1.05);
 }
 
 .iso-tool-banner {
@@ -188,6 +201,10 @@ header h1 span {
 
     .subtitle {
         font-size: 0.75rem;
+    }
+
+    .header-logo {
+        height: 32px;
     }
 
     .header-actions {
@@ -1009,6 +1026,26 @@ header h1 span {
 
 .loading.full-height {
     min-height: 100vh;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.loading-logo {
+    width: 80px;
+    height: auto;
+    animation: logo-pulse 2s ease-in-out infinite;
+    filter: drop-shadow(0 0 10px rgba(233, 69, 96, 0.4));
+}
+
+@keyframes logo-pulse {
+    0%, 100% {
+        opacity: 0.7;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 1;
+        transform: scale(1.05);
+    }
 }
 
 .spinner {
@@ -1037,6 +1074,20 @@ header h1 span {
 .empty-state .icon {
     font-size: 3rem;
     margin-bottom: 10px;
+}
+
+.empty-state-logo {
+    width: 64px;
+    height: auto;
+    margin-bottom: 12px;
+    opacity: 0.6;
+    filter: grayscale(0.3);
+    transition: opacity 0.3s ease, filter 0.3s ease;
+}
+
+.empty-state:hover .empty-state-logo {
+    opacity: 0.85;
+    filter: grayscale(0);
 }
 
 /* Search */
@@ -1373,6 +1424,17 @@ header h1 span {
     border-top: 1px solid var(--border);
     font-size: 0.8rem;
     color: var(--text-secondary);
+}
+
+.footer-logo {
+    height: 20px;
+    width: auto;
+    opacity: 0.5;
+    transition: opacity 0.3s ease;
+}
+
+.footer-logo:hover {
+    opacity: 0.8;
 }
 
 .app-footer a {

@@ -320,6 +320,9 @@ class Z3DSCompressService:
 
             yield {"progress": 100, "message": "3DS compression complete"}
 
+        except ConversionCancelled as e:
+            logger.info("z3ds_compress conversion cancelled: %s", e)
+            raise
         except Exception as e:
             logger.exception("Error in z3ds_compress.convert: %s", e)
             raise

@@ -13,8 +13,8 @@ services:
       - CHD_MODE=cli
       # Conversion mode: createcd for CD-ROM, createdvd for DVD-ROM (PSP, PS2)
       - CHDMAN_MODE=createcd
-      # Specify which volumes to process
-      - CHD_VOLUMES=/data/games
+      # Auto-discover mounted volumes under this root (/data/*)
+      - COMPRESSATORIUM_MOUNT_ROOT=/data
       # Optional: override temp location (default: /config/temp)
       # - CHD_TEMP_DIR=/temp
       # Reduce CPU/IO impact of chdman

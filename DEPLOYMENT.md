@@ -52,10 +52,13 @@ This document contains the results of a comprehensive deployment readiness audit
 | Variable | Default | Status | Purpose |
 |----------|---------|--------|---------|
 | `CHD_MODE` | `webui` | ✅ | Web UI or CLI mode |
-| `CHD_VOLUMES` | `/data/games` | ✅ | Volume mount paths |
+| `COMPRESSATORIUM_MOUNT_ROOT` | `/data` | ✅ | Startup scan root for auto-discovered volumes (`/data/*`) |
+| `COMPRESSATORIUM_VOLUMES` | (unset) | ✅ | Explicit comma-separated volume paths (skips startup scan) |
+| `CHD_MOUNT_ROOT` | `/data` | ✅ | Legacy alias for `COMPRESSATORIUM_MOUNT_ROOT` |
+| `CHD_VOLUMES` | (unset) | ✅ | Legacy alias for `COMPRESSATORIUM_VOLUMES` |
 | `CHD_DATA_DIR` | `/config` | ✅ | Persistent data directory |
 | `CHD_TEMP_DIR` | `/config/temp` | ✅ | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | ✅ | Directory for job lock files |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd-locks` | ✅ | Directory for job lock files (ephemeral, auto-cleaned on restart) |
 | `CHD_METADATA_STORE` | `/config/chd_metadata.json` | ✅ | CHD metadata cache file path |
 | `CHD_VERIFICATION_STORE` | `/config/verified_chds.json` | ✅ | Verification store file path |
 | `CHDMAN_MODE` | `createcd` | ✅ | CD/DVD conversion mode (CLI mode) |
@@ -80,6 +83,11 @@ This document contains the results of a comprehensive deployment readiness audit
 | `CHD_PROGRESS_TIMEOUT` | `600` | ✅ | Fail conversion if progress + output size stall for this many seconds (0 disables) |
 | `STATIC_DIR` | `/static` | ✅ | Path to static web assets |
 | `PYTHONUNBUFFERED` | `1` | ✅ | Logging optimization |
+
+Volume precedence:
+- If `COMPRESSATORIUM_VOLUMES` is set, that explicit list is used.
+- If `COMPRESSATORIUM_VOLUMES` is unset, the app scans `COMPRESSATORIUM_MOUNT_ROOT/*` once at startup.
+- Restart the container after adding/removing mounts so discovered volumes refresh.
 
 ---
 
@@ -258,7 +266,7 @@ This document contains the results of a comprehensive deployment readiness audit
 - [ ] Review and set all environment variables
 - [ ] Create game library directories on host
 - [ ] Ensure sufficient disk space for conversions
-- [ ] Configure volume paths in docker-compose.yml
+- [ ] Configure `/data/*` mounts (or set explicit `COMPRESSATORIUM_VOLUMES`)
 - [ ] Set appropriate concurrent job limits based on CPU
 - [ ] Review and adjust health check parameters if needed
 

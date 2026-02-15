@@ -151,7 +151,10 @@ export const api = {
     },
 
     async cancelAllJobs() {
-        const res = await fetch(`${API_BASE}/jobs/cancel-all`, { method: 'POST' });
+        const res = await fetch(`${API_BASE}/jobs/cancel-all`, {
+            method: 'POST',
+            headers: { 'X-CHD-Action-Confirm': 'cancel-all-jobs' }
+        });
         if (!res.ok) {
             const error = await res.json().catch(() => ({ detail: 'Failed to cancel all jobs' }));
             throw new Error(error.detail || 'Failed to cancel all jobs');
@@ -160,7 +163,10 @@ export const api = {
     },
 
     async deleteCompletedJobs() {
-        const res = await fetch(`${API_BASE}/jobs/completed`, { method: 'DELETE' });
+        const res = await fetch(`${API_BASE}/jobs/completed`, {
+            method: 'DELETE',
+            headers: { 'X-CHD-Action-Confirm': 'clear-completed-jobs' }
+        });
         if (!res.ok) throw new Error('Failed to delete completed jobs');
         return res.json();
     },

@@ -1,10 +1,11 @@
 import asyncio
+import logging
 import os
 import re
 from pathlib import Path
 
 from config import settings
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from models import (
     BatchJobCreateRequest,
@@ -31,6 +32,7 @@ from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
+logger = logging.getLogger("chd")
 
 
 def normalize_output_dir(value: str | None) -> str | None:
@@ -806,28 +808,57 @@ async def check_stuck_status():
 
 @router.get("/jobs/{job_id}", response_model=ConversionJob)
 async def get_job(job_id: str):
-    """Get a specific job by ID."""
-    job = job_manager.get_job(job_id)
+    """Get a specific job by ID (including recently archived jobs)."""
+    job = job_manager.get_job_for_lookup(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @router.delete("/jobs/completed")
-async def delete_completed_jobs():
+async def delete_completed_jobs(request: Request):
     """Delete all completed, failed, and cancelled jobs."""
+    confirmation = request.headers.get("x-chd-action-confirm", "")
+    if confirmation != "clear-completed-jobs":
+        raise HTTPException(
+            status_code=400,
+            detail="Missing confirmation header for clear-completed action",
+        )
+
     deleted_ids = []
     for job in list(job_manager.get_all_jobs()):
         if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
             if await job_manager.delete_job(job.id):
                 deleted_ids.append(job.id)
+    client_host = request.client.host if request.client else "unknown"
+    logger.info(
+        "Clear completed requested from %s; deleted=%d",
+        client_host,
+        len(deleted_ids),
+    )
     return {"deleted": deleted_ids, "count": len(deleted_ids)}
 
 
 @router.post("/jobs/cancel-all")
-async def cancel_all_jobs():
+async def cancel_all_jobs(request: Request):
     """Cancel all queued and processing jobs."""
-    return await job_manager.cancel_all_jobs()
+    confirmation = request.headers.get("x-chd-action-confirm", "")
+    if confirmation != "cancel-all-jobs":
+        raise HTTPException(
+            status_code=400,
+            detail="Missing confirmation header for cancel-all action",
+        )
+
+    result = await job_manager.cancel_all_jobs()
+    client_host = request.client.host if request.client else "unknown"
+    logger.info(
+        "Cancel all requested from %s; queued=%d processing=%d requested=%d",
+        client_host,
+        result.get("queued", 0),
+        result.get("processing", 0),
+        result.get("requested", 0),
+    )
+    return result
 
 
 
