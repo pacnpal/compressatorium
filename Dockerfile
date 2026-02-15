@@ -14,6 +14,7 @@ RUN apt-get update && \
       dolphin-emu \
       wget \
       unzip \
+      zstd \
       bash && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \

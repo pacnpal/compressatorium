@@ -1,0 +1,45 @@
+                        <div class="toolbar-row">
+                            <div class="toolbar-group">
+                                <span class="toolbar-label">Filter</span>
+                                ${customFilterMode ? html`
+                                    <div class="custom-filter-input">
+                                        <input
+                                            type="text"
+                                            class="filter-input"
+                                            placeholder=".ext1, .ext2"
+                                            value=${fileTypeFilter || ''}
+                                            onInput=${(e) => { setFileTypeFilter(e.target.value || null); setLastSelectedIndex(null); }}
+                                            title="Enter comma-separated extensions (e.g. .bin, .cue)"
+                                        />
+                                        <button
+                                            class="btn btn-sm btn-secondary"
+                                            onClick=${() => { setCustomFilterMode(false); setFileTypeFilter(null); }}
+                                            title="Clear custom filter"
+                                        >
+                                            ✕
+                                        </button>
+                                    </div>
+                                ` : html`
+                                    <select
+                                        class="file-type-filter"
+                                        value=${fileTypeFilter || ''}
+                                        onChange=${(e) => {
+                if (e.target.value === 'custom') {
+                    setCustomFilterMode(true);
+                    setFileTypeFilter('');
+                } else {
+                    setFileTypeFilter(e.target.value || null);
+                }
+                setLastSelectedIndex(null);
+            }}
+                                        title="Filter files by type"
+                                    >
+                                        ${getFilterOptions(isoHandling).map(opt => html`
+                                            <option value=${opt.value}>${opt.label}</option>
+                                        `)}
+                                    </select>
+                                `}
+                            </div>
+                        </div>
+                        <div class="toolbar-row actions">
+                            <div class="toolbar-actions">

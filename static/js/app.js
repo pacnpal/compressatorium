@@ -4,12 +4,84 @@ import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
+const DEFAULT_PAGE_SIZE = '50';
+const PAGE_SIZE_OPTIONS = [
+    { value: '25', label: '25' },
+    { value: '50', label: '50' },
+    { value: '100', label: '100' },
+    { value: '250', label: '250' },
+    { value: 'all', label: 'All' }
+];
 const isMacMetadataName = (name) => name === '.DS_Store' || name.startsWith('._') || name === '__MACOSX';
+const Z3DS_SOURCE_EXTENSIONS = ['.3ds', '.cci', '.cia'];
+const Z3DS_VERIFY_EXTENSIONS = ['.z3ds', '.zcci', '.zcia'];
+const Z3DS_INFO_EXTENSIONS = [...Z3DS_SOURCE_EXTENSIONS, ...Z3DS_VERIFY_EXTENSIONS];
+const Z3DS_OUTPUT_EXTENSION_BY_SOURCE = {
+    '.3ds': '.z3ds',
+    '.cci': '.zcci',
+    '.cia': '.zcia'
+};
+
+const getFileExtension = (path) => {
+    if (typeof path !== 'string') return '';
+    const lower = path.toLowerCase();
+    const lastSlash = Math.max(lower.lastIndexOf('/'), lower.lastIndexOf('\\'));
+    const filename = lastSlash >= 0 ? lower.slice(lastSlash + 1) : lower;
+    const dot = filename.lastIndexOf('.');
+    if (dot <= 0) return '';
+    return filename.slice(dot);
+};
+
+const is3dsSourceFile = (path) => Z3DS_SOURCE_EXTENSIONS.includes(getFileExtension(path));
+const is3dsVerifyFile = (path) => Z3DS_VERIFY_EXTENSIONS.includes(getFileExtension(path));
+const is3dsFile = (path) => Z3DS_INFO_EXTENSIONS.includes(getFileExtension(path));
+
+const get3dsProductPath = (path) => {
+    if (typeof path !== 'string') return null;
+    const ext = getFileExtension(path);
+    const outExt = Z3DS_OUTPUT_EXTENSION_BY_SOURCE[ext];
+    if (!outExt || !path.toLowerCase().endsWith(ext)) return null;
+    return `${path.slice(0, -ext.length)}${outExt}`;
+};
+
+const getDolphinProductPath = (entry) => {
+    if (
+        !entry
+        || typeof entry.path !== 'string'
+        || (!entry.has_rvz && !entry.dolphin_ready)
+    ) return null;
+    if (typeof entry.dolphin_path === 'string' && entry.dolphin_path) {
+        return entry.dolphin_path;
+    }
+    const ext = getFileExtension(entry.path);
+    if (!ext || !entry.path.toLowerCase().endsWith(ext)) return null;
+    if (ext === '.iso') {
+        return `${entry.path.slice(0, -ext.length)}.rvz`;
+    }
+    return entry.path;
+};
+
+const getModeTerm = (isoHandling, kind) => {
+    if (kind === 'file') return 'file';
+
+    if (isoHandling === 'dolphin') {
+        if (kind === 'product') return 'Dolphin output';
+        if (kind === 'verification') return 'disc image';
+    } else if (isoHandling === 'z3ds') {
+        if (kind === 'product') return 'compressed 3DS';
+        if (kind === 'verification') return '3DS output';
+    } else {
+        if (kind === 'product') return 'CHD';
+        if (kind === 'verification') return 'CHD';
+    }
+
+    return 'item';
+};
 
 const normalizeDolphinLevel = (value) => {
     const raw = `${value ?? ''}`.trim();
     if (!raw) return DEFAULT_DOLPHIN_COMPRESSION_LEVEL;
-    if (/^\d+$/.test(raw)) return DEFAULT_DOLPHIN_COMPRESSION_LEVEL;
+    if (!/^\d+$/.test(raw)) return DEFAULT_DOLPHIN_COMPRESSION_LEVEL;
     return raw;
 };
 
@@ -19,6 +91,41 @@ const getPrimaryToolLabel = (toolSelection) => {
     if (toolSelection === 'z3ds') return '3DS';
     return 'None selected';
 };
+
+const getFilterOptions = (tool) => {
+    const common = [
+        { value: '', label: 'All Types' },
+        { value: '.zip,.7z,.rar', label: 'Archives' },
+        { value: '.chd', label: 'CHD Files' }
+    ];
+
+    if (tool === 'dolphin') {
+        return [
+            ...common,
+            { value: '.iso,.rvz,.wia,.gcz,.wbfs', label: 'GameCube/Wii Images' },
+            { value: '.iso', label: 'ISO Files' },
+            { value: 'custom', label: 'Custom...' }
+        ];
+    }
+
+    if (tool === 'z3ds') {
+        return [
+            ...common,
+            { value: '.cci,.cia,.3ds', label: '3DS ROMs' },
+            { value: 'custom', label: 'Custom...' }
+        ];
+    }
+
+    // Default (CHDMAN)
+    return [
+        ...common,
+        { value: '.cue,.bin,.gdi,.iso', label: 'Disc Images' },
+        { value: '.iso', label: 'ISO Files' },
+        { value: 'custom', label: 'Custom...' }
+    ];
+};
+
+
 
 const getPrimaryToolHint = (toolSelection) => {
     if (toolSelection === null) {
@@ -31,7 +138,7 @@ const getPrimaryToolHint = (toolSelection) => {
         return html`Convert GameCube/Wii disc images • Supports RVZ, WIA, GCZ, ISO formats`;
     }
     if (toolSelection === 'z3ds') {
-        return html`Compress Nintendo 3DS ROMs • Supports .cci/.cia/.3ds (cart & CIA) → .zcci/.zcia/.z3ds • ~50% size reduction`;
+        return html`Compress Nintendo 3DS ROMs • Supports .cci/.cia/.3ds (cart & CIA) → .zcci/.zcia/.z3ds • ~50% size reduction • <strong>Decrypted ROMs only</strong>`;
     }
     return html`Current: ${getPrimaryToolLabel(toolSelection)}`;
 };
@@ -80,7 +187,7 @@ const MODE_GROUPS = [
         id: 'z3ds',
         label: 'Nintendo 3DS',
         options: [
-            { value: 'z3ds_compress', label: 'Compress to ZCCI/ZCIA' }
+            { value: 'z3ds_compress', label: 'Compress to ZCCI/ZCIA/Z3DS' }
         ]
     }
 ];
@@ -236,7 +343,7 @@ function Breadcrumb({ path, volume, onNavigate }) {
     `;
 }
 
-function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected, isoHandling, onToggleIsoHandling }) {
+function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, onCompress, conversionMode, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected, isoHandling, onToggleIsoHandling }) {
     const visibleEntries = Array.isArray(entries)
         ? entries.filter((entry) => !isMacMetadataName(entry?.name || ''))
         : [];
@@ -268,6 +375,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         const ext = entry.extension?.toLowerCase();
         const isDolphinInfo = ['.rvz', '.wia', '.gcz', '.wbfs'].includes(ext)
             || (isoIsDolphin && ext === '.iso');
+        const is3dsInfo = is3dsFile(entry.path);
         if (entry.type === 'directory') {
             onNavigate(entry.path);
         } else if (entry.type === 'archive') {
@@ -281,6 +389,8 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
             onShowInfo && onShowInfo(entry.chd_path);
         } else if (isDolphinInfo && !isArchiveItem(entry)) {
             onShowInfo && onShowInfo(entry.path);
+        } else if (is3dsInfo && !isArchiveItem(entry)) {
+            onShowInfo && onShowInfo(entry.path);
         } else {
             // For all other files, toggle selection (pass event for shift-click support)
             onToggleSelect(entry, e);
@@ -290,11 +400,21 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
     const getVerifiablePath = (entry) => {
         const ext = entry.extension?.toLowerCase();
         if (entry.chd_path && entry.chd_ready) return entry.chd_path;
+        if (!isArchiveItem(entry) && entry.dolphin_ready) {
+            const dolphinPath = getDolphinProductPath(entry);
+            if (dolphinPath) return dolphinPath;
+        }
         if (
             (['.rvz', '.wia', '.gcz', '.wbfs'].includes(ext) || (isoIsDolphin && ext === '.iso'))
             && !isArchiveItem(entry)
         ) {
             return entry.path;
+        }
+        if (!isArchiveItem(entry) && is3dsVerifyFile(entry.path)) {
+            return entry.path;
+        }
+        if (!isArchiveItem(entry) && entry.z3ds_ready) {
+            return entry.z3ds_path || get3dsProductPath(entry.path);
         }
         if (ext === '.chd') return entry.path;
         return null;
@@ -338,6 +458,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                 || (isoIsDolphin && ext === '.iso'))
             && !isArchiveItem(entry)
         ) return 'Click to view disc info';
+        if (!isArchiveItem(entry) && is3dsFile(entry.path)) return 'Click to view 3DS ROM info';
         if (canSelect(entry)) return 'Click to select';
         if (entry.convertible) return entry.has_chd ? 'Already converted' : entry.name;
         return entry.name;
@@ -385,7 +506,9 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                         disabled=${!hasSelectableEntries}
                         ref=${selectAllRef}
                         onClick=${handleSelectAllClick}
-                        title=${hasSelectableEntries ? (allSelected ? 'Deselect all' : `Select all (${selectableCount})`) : 'No selectable files'}
+                        title=${hasSelectableEntries
+            ? (allSelected ? 'Deselect all on this page' : `Select all on this page (${selectableCount})`)
+            : 'No selectable files'}
                         aria-checked=${isIndeterminate ? 'mixed' : (hasSelectableEntries && allSelected ? 'true' : 'false')}
                     />
                 </div>
@@ -426,10 +549,32 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         const chdPath = getChdPath(entry);
         const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
         const entryExt = entry.extension?.toLowerCase();
+
+        // Mode compatibility checks for inline compress button
+        const isCreateMode = conversionMode.startsWith('create');
+        const isExtractMode = conversionMode.startsWith('extract');
+        const isDolphinMode = conversionMode.startsWith('dolphin_');
+        const isZ3dsMode = conversionMode === 'z3ds_compress';
+
+        const canInlineCompress =
+            // CHDMAN create modes only: source images -> CHD
+            (isCreateMode && isoHandling === 'chdman' && entry.convertible && !entry.has_chd) ||
+            // CHDMAN extract/copy modes: CHD inputs only
+            ((isExtractMode || conversionMode === 'copy') && entryExt === '.chd') ||
+            // Dolphin modes only
+            (isDolphinMode && isoHandling === 'dolphin' && entry.dolphin_convertible) ||
+            // 3DS mode only
+            (isZ3dsMode && isoHandling === 'z3ds' && entry.z3ds_convertible && !entry.has_z3ds);
+
         const isIsoEntry = entryExt === '.iso';
         const isDolphinExt = ['.rvz', '.wia', '.gcz', '.wbfs'].includes(entryExt)
             || (isoIsDolphin && entryExt === '.iso');
-        const canVerify = chdPath && (entry.extension === '.chd' || (isDolphinExt && !isArchiveItem(entry)) || (isArchiveItem(entry) && entry.chd_ready));
+        const canVerify = chdPath && (
+            entry.extension === '.chd'
+            || (isDolphinExt && !isArchiveItem(entry))
+            || (!isArchiveItem(entry) && is3dsVerifyFile(chdPath))
+            || (isArchiveItem(entry) && entry.chd_ready)
+        );
         const archiveItems = entry.archive_items;
         const archiveHasChd = entry.archive_has_chd;
         return html`
@@ -451,7 +596,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                     </div>
                     <div class="file-cell file-name">
                         <span class="icon">${getFileIcon(entry)}</span>
-                        <span class="name">${entry.name}</span>
+                        <span class="name" title=${entry.name}>${entry.name}</span>
                     </div>
                     <div class="file-cell file-size">
                         ${entry.size != null && entry.size !== undefined ? formatSize(entry.size) : ''}
@@ -493,10 +638,10 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             </button>
                         `}
                         ${isVerified(entry) && html`
-                            <span class="status verified" title="CHD integrity verified">✓ Verified</span>
+                            <span class="status verified" title="Integrity verified">✓ Verified</span>
                         `}
                         ${isVerifying && html`
-                            <span class="status convertible" title="Verifying CHD integrity">
+                            <span class="status convertible" title="Verifying integrity">
                                 ${(() => {
                     const status = chdPath ? verifyProgress.get(chdPath) : null;
                     if (!status) return 'Verifying...';
@@ -517,6 +662,15 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
             })()}
                     </div>
                     <div class="file-cell file-actions-cell" onClick=${(e) => e.stopPropagation()}>
+                        ${canInlineCompress && html`
+                            <button
+                                class="btn-icon"
+                                onClick=${(e) => { e.stopPropagation(); onCompress(entry); }}
+                                title="Compress/Convert this file now"
+                            >
+                                ⚡
+                            </button>
+                        `}
                         ${canVerify && !isVerified(entry) && html`
                             <button
                                 class="btn-icon"
@@ -663,31 +817,49 @@ function JobList({ jobs, onCancel }) {
     `;
 }
 
-function CHDInfoModal({ path, onClose, useDolphin }) {
+function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
     const [info, setInfo] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
-    const dolphin = Boolean(useDolphin) || (path ? isDolphinFile(path) : false);
+    const mode = useMemo(() => {
+        if (infoMode === 'dolphin' || infoMode === 'z3ds' || infoMode === 'chd') {
+            return infoMode;
+        }
+        if (Boolean(useDolphin) || (path ? isDolphinFile(path) : false)) {
+            return 'dolphin';
+        }
+        if (path ? is3dsFile(path) : false) {
+            return 'z3ds';
+        }
+        return 'chd';
+    }, [infoMode, useDolphin, path]);
+
+    const dolphin = mode === 'dolphin';
+    const z3ds = mode === 'z3ds';
 
     useEffect(() => {
         if (path) {
             setLoading(true);
             setError(null);
-            const fetchInfo = dolphin ? api.getDolphinInfo(path) : api.getCHDInfo(path);
+            const fetchInfo = dolphin
+                ? api.getDolphinInfo(path)
+                : z3ds
+                    ? api.getZ3DSInfo(path)
+                    : api.getCHDInfo(path);
             fetchInfo
                 .then(setInfo)
                 .catch(e => setError(e.message))
                 .finally(() => setLoading(false));
         }
-    }, [path, dolphin]);
+    }, [path, dolphin, z3ds]);
 
     if (!path) return null;
 
     const filename = path.split('/').pop();
-    const title = dolphin ? 'Disc Information' : 'CHD Information';
-    const loadingText = dolphin ? 'Loading disc info...' : 'Loading CHD info...';
-    const errorText = dolphin ? 'Failed to read disc image' : 'Failed to read CHD file';
+    const title = dolphin ? 'Disc Information' : (z3ds ? '3DS ROM Information' : 'CHD Information');
+    const loadingText = dolphin ? 'Loading disc info...' : (z3ds ? 'Loading 3DS ROM info...' : 'Loading CHD info...');
+    const errorText = dolphin ? 'Failed to read disc image' : (z3ds ? 'Failed to read 3DS ROM' : 'Failed to read CHD file');
 
     return html`
         <div class="modal-overlay" onClick=${onClose}>
@@ -703,11 +875,15 @@ function CHDInfoModal({ path, onClose, useDolphin }) {
                         <p class="error-detail">${error}</p>
                     </div>
                 `}
-                ${info && !dolphin && html`
+                ${info && !dolphin && !z3ds && html`
                     <div class="info-grid">
                         <span class="info-label">File</span>
                         <span class="info-value">${filename}</span>
 
+                        ${info.media_type && html`
+                            <span class="info-label">Media Type</span>
+                            <span class="info-value">${info.media_type.toUpperCase()}</span>
+                        `}
                         ${info.file_version && html`
                             <span class="info-label">CHD Version</span>
                             <span class="info-value">${info.file_version}</span>
@@ -751,6 +927,36 @@ function CHDInfoModal({ path, onClose, useDolphin }) {
                             <pre style="margin-top: 10px; font-size: 0.75rem; overflow-x: auto; padding: 10px; background: var(--bg-primary); border-radius: 4px; white-space: pre-wrap">${info.raw_data}</pre>
                         </details>
                     `}
+                `}
+                ${info && z3ds && html`
+                    <div class="info-grid">
+                        <span class="info-label">File</span>
+                        <span class="info-value">${filename}</span>
+
+                        ${info.format && html`
+                            <span class="info-label">Format</span>
+                            <span class="info-value">${info.format}</span>
+                        `}
+                        ${info.extension && html`
+                            <span class="info-label">Extension</span>
+                            <span class="info-value" style="font-family: monospace">${info.extension}</span>
+                        `}
+                        <span class="info-label">Compressed</span>
+                        <span class="info-value">${info.compressed ? 'Yes' : 'No'}</span>
+
+                        ${info.compression_type && html`
+                            <span class="info-label">Compression</span>
+                            <span class="info-value">${info.compression_type}</span>
+                        `}
+                        ${info.size_display && html`
+                            <span class="info-label">File Size</span>
+                            <span class="info-value">${info.size_display}</span>
+                        `}
+                        ${typeof info.size === 'number' && html`
+                            <span class="info-label">Bytes</span>
+                            <span class="info-value">${info.size.toLocaleString()}</span>
+                        `}
+                    </div>
                 `}
                 ${info && dolphin && html`
                     <div class="info-grid">
@@ -851,7 +1057,7 @@ function DuplicateModal({ duplicates, onAction, onClose }) {
     `;
 }
 
-function DeletePlanModal({ plan, onConfirm, onClose, verificationLabel }) {
+function DeletePlanModal({ plan, onConfirm, onClose, verificationLabel, title }) {
     if (!plan) return null;
 
     const items = Array.isArray(plan.items) ? plan.items : [];
@@ -867,12 +1073,12 @@ function DeletePlanModal({ plan, onConfirm, onClose, verificationLabel }) {
         <div class="modal-overlay" onClick=${onClose}>
             <div class="modal" onClick=${(e) => e.stopPropagation()} style="max-width: 540px;">
                 <div class="modal-header">
-                    <h3>Confirm delete after verify</h3>
+                    <h3>${title || 'Confirm delete after verify'}</h3>
                     <button class="modal-close" onClick=${onClose} title="Close">×</button>
                 </div>
                 <div class="modal-body" style="padding: 15px;">
                     <p style="color: var(--text-secondary); margin-bottom: 12px;">
-                        The files below will be deleted <strong>after</strong> a successful conversion and ${verificationLabel} verification.
+                        The files below will be deleted <strong>after</strong> a successful conversion${verificationLabel ? ` and ${verificationLabel} verification` : ''}.
                     </p>
                     <div style="max-height: 240px; overflow-y: auto; padding: 10px; background: var(--bg-primary); border-radius: 4px; margin-bottom: 15px;">
                         ${items.map(item => html`
@@ -916,7 +1122,7 @@ function DeletePlanModal({ plan, onConfirm, onClose, verificationLabel }) {
                             Cancel
                         </button>
                         <button class="btn btn-primary" onClick=${onConfirm} disabled=${hasIssues}>
-                            Confirm delete + convert
+                            Confirm compress + delete
                         </button>
                     </div>
                 </div>
@@ -988,7 +1194,7 @@ function RenameModal({ entry, onRename, onClose }) {
     `;
 }
 
-function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, onVerify, onClose }) {
+function DeleteModal({ entry, verifiedCHDs, verifyProgress, onDelete, onVerify, onClose, isoHandling }) {
     const [step, setStep] = useState(1); // 1 = initial, 2 = verification/confirm, 3 = final confirm
     const [verifying, setVerifying] = useState(false);
     const [verificationResult, setVerificationResult] = useState(null);
@@ -1000,11 +1206,58 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
     const [archiveVerifySkipped, setArchiveVerifySkipped] = useState(false);
 
     const entryPath = entry ? entry.path : '';
-    const isSourceFile = entry ? ['.iso', '.gdi', '.cue', '.bin'].includes(entry.extension?.toLowerCase()) : false;
+    const entryExt = entry ? entry.extension?.toLowerCase() : null;
+    const isSourceFile = entry ? [
+        '.iso', '.gdi', '.cue', '.bin', '.3ds', '.cci', '.cia',
+    ].includes(entryExt) : false;
     const isArchive = entry ? entry.type === 'archive' : false;
-    const chdPath = entry && isSourceFile && hasCHD ? entry.path.replace(/\.[^.]+$/, '.chd') : null;
-    const isAlreadyVerified = chdPath && verifiedCHDs.has(chdPath);
-    const verifyStatus = chdPath && verifyProgress ? verifyProgress.get(chdPath) : null;
+    const fileTerm = getModeTerm(isoHandling, 'file');
+    const resolveSourceProduct = (sourceEntry) => {
+        if (!sourceEntry || !sourceEntry.path) return null;
+
+        const getChdPath = () => (
+            sourceEntry.has_chd ? sourceEntry.path.replace(/\.[^.]+$/, '.chd') : null
+        );
+        const getDolphinPath = () => (
+            sourceEntry.dolphin_ready ? getDolphinProductPath(sourceEntry) : null
+        );
+        const getZ3dsPath = () => (
+            sourceEntry.z3ds_ready ? (sourceEntry.z3ds_path || get3dsProductPath(sourceEntry.path)) : null
+        );
+
+        const preferredKinds = isoHandling === 'dolphin'
+            ? ['dolphin', 'chd', 'z3ds']
+            : isoHandling === 'z3ds'
+                ? ['z3ds', 'chd', 'dolphin']
+                : ['chd', 'dolphin', 'z3ds'];
+
+        for (const kind of preferredKinds) {
+            const productPath = kind === 'dolphin'
+                ? getDolphinPath()
+                : kind === 'z3ds'
+                    ? getZ3dsPath()
+                    : getChdPath();
+            if (productPath) {
+                return { path: productPath, kind };
+            }
+        }
+
+        return null;
+    };
+
+    const resolvedProduct = (isSourceFile && entry && !isArchive) ? resolveSourceProduct(entry) : null;
+    const productPath = resolvedProduct?.path || null;
+    const termsIsoHandling = resolvedProduct?.kind === 'dolphin'
+        ? 'dolphin'
+        : resolvedProduct?.kind === 'z3ds'
+            ? 'z3ds'
+            : 'chdman';
+    const verifyTerm = getModeTerm(termsIsoHandling, 'verification');
+    const productTerm = getModeTerm(termsIsoHandling, 'product');
+
+    const hasProduct = Boolean(productPath);
+    const isAlreadyVerified = productPath && verifiedCHDs.has(productPath);
+    const verifyStatus = productPath && verifyProgress ? verifyProgress.get(productPath) : null;
     const archiveVerifiedCount = archiveScan.chds.filter((path) => verifiedCHDs.has(path)).length;
     const archiveUnverified = archiveScan.chds.filter((path) => !verifiedCHDs.has(path));
     const archiveNeedsVerify = archiveUnverified.length > 0;
@@ -1057,11 +1310,11 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
     if (!entry) return null;
 
     const handleVerify = async () => {
-        if (!chdPath) return;
+        if (!productPath) return;
         setVerifying(true);
         setError(null);
         try {
-            const result = await onVerify(chdPath, entry);
+            const result = await onVerify(productPath, entry);
             setVerificationResult(result);
             if (result.valid) {
                 setStep(3);
@@ -1166,22 +1419,22 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                                 `}
                             </div>
                         `}
-                        ${isSourceFile && hasCHD && !isArchive && html`
+                        ${isSourceFile && hasProduct && !isArchive && html`
                             <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px;">
-                                <p style="color: var(--success); margin-bottom: 8px;">✓ A CHD file exists for this source</p>
+                                <p style="color: var(--success); margin-bottom: 8px;">✓ A ${productTerm} file exists for this source</p>
                                 ${isAlreadyVerified ? html`
-                                    <p style="color: var(--success);">✓ CHD has been verified</p>
+                                    <p style="color: var(--success);">✓ ${productTerm} has been verified</p>
                                 ` : html`
                                     <p style="color: var(--warning);">
-                                        ⚠️ CHD has not been verified. We recommend verifying before deleting the source.
+                                        ⚠️ ${productTerm} has not been verified. We recommend verifying before deleting the source.
                                     </p>
                                 `}
                             </div>
                         `}
-                        ${isSourceFile && !hasCHD && !isArchive && html`
+                        ${isSourceFile && !hasProduct && !isArchive && html`
                             <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--error);">
                                 <p style="color: var(--error);">
-                                    ⚠️ <strong>WARNING:</strong> No CHD file exists for this source file. Deleting it will result in data loss!
+                                    ⚠️ <strong>WARNING:</strong> No ${productTerm} file exists for this source file. Deleting it will result in data loss!
                                 </p>
                             </div>
                         `}
@@ -1209,9 +1462,9 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                                     ${archiveNeedsVerify ? 'Skip Verification' : 'Continue to Delete'}
                                 </button>
                             `}
-                            ${isSourceFile && hasCHD && !isAlreadyVerified && !isArchive && html`
+                            ${isSourceFile && hasProduct && !isAlreadyVerified && !isArchive && html`
                                 <button class="btn btn-primary" onClick=${handleVerify} disabled=${verifying}>
-                                    ${verifying ? 'Verifying CHD...' : '🔍 Verify CHD First'}
+                                    ${verifying ? `Verifying ${verifyTerm}...` : `🔍 Verify ${verifyTerm} First`}
                                 </button>
                             `}
                             ${verifying && verifyStatus && !isArchive && html`
@@ -1222,7 +1475,7 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                             ${!isArchive && html`
                                 <button
                                     class="btn btn-secondary"
-                                    onClick=${() => setStep(isSourceFile && hasCHD && isAlreadyVerified ? 3 : 2)}
+                                    onClick=${() => setStep(isSourceFile && hasProduct && isAlreadyVerified ? 3 : 2)}
                                 >
                                     ${isAlreadyVerified ? 'Continue to Delete' : 'Skip Verification'}
                                 </button>
@@ -1234,13 +1487,13 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                     ${step === 2 && !isArchive && html`
                         <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--warning);">
                             <p style="color: var(--warning);">
-                                ⚠️ You're about to delete a file without CHD verification.
+                                ⚠️ You're about to delete a file without ${verifyTerm} verification.
                             </p>
                         </div>
                         ${verificationResult && !verificationResult.valid && html`
                             <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--error);">
                                 <p style="color: var(--error);">
-                                    ❌ CHD verification failed: ${verificationResult.message}
+                                    ❌ ${verifyTerm} verification failed: ${verificationResult.message}
                                 </p>
                             </div>
                         `}
@@ -1305,14 +1558,14 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                             ${verificationResult && verificationResult.valid && html`
                                 <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
                                     <p style="color: var(--success);">
-                                        ✓ CHD verified successfully! Safe to delete source file.
+                                        ✓ ${productTerm} verified successfully! Safe to delete source file.
                                     </p>
                                 </div>
                             `}
                             ${isAlreadyVerified && !verificationResult && html`
                                 <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
                                     <p style="color: var(--success);">
-                                        ✓ CHD was previously verified. Safe to delete source file.
+                                        ✓ ${productTerm} was previously verified. Safe to delete source file.
                                     </p>
                                 </div>
                             `}
@@ -1325,7 +1578,7 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
                         `}
                         <div style="display: flex; flex-direction: column; gap: 10px;">
                             <button class="btn btn-primary" onClick=${handleDelete} disabled=${deleting}>
-                                ${deleting ? 'Deleting...' : isArchive ? 'Delete Archive' : 'Delete Source File'}
+                                ${deleting ? 'Deleting...' : isArchive ? 'Delete Archive' : `Delete ${fileTerm}`}
                             </button>
                             <button class="btn btn-secondary" onClick=${onClose}>Cancel</button>
                         </div>
@@ -1336,7 +1589,7 @@ function DeleteModal({ entry, hasCHD, verifiedCHDs, verifyProgress, onDelete, on
     `;
 }
 
-function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, onRefresh }) {
+function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, onRefresh, isoHandling }) {
     const [step, setStep] = useState(1); // 1 = review, 2 = verifying, 3 = confirm
     const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState(null);
@@ -1358,65 +1611,190 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
 
     if (!entries || entries.length === 0) return null;
 
+    const fileTerm = getModeTerm(isoHandling, 'file');
+    const verifyTerm = getModeTerm(isoHandling, 'verification');
+    const productTerm = getModeTerm(isoHandling, 'product');
+    const resolveSourceProduct = (entry) => {
+        if (!entry || !entry.path) return null;
+
+        const getChdPath = () => (
+            entry.has_chd ? entry.path.replace(/\.[^.]+$/, '.chd') : null
+        );
+        const getDolphinPath = () => (
+            entry.dolphin_ready ? getDolphinProductPath(entry) : null
+        );
+        const getZ3dsPath = () => (
+            entry.z3ds_ready ? (entry.z3ds_path || get3dsProductPath(entry.path)) : null
+        );
+
+        const preferredKinds = isoHandling === 'dolphin'
+            ? ['dolphin', 'chd', 'z3ds']
+            : isoHandling === 'z3ds'
+                ? ['z3ds', 'chd', 'dolphin']
+                : ['chd', 'dolphin', 'z3ds'];
+
+        for (const kind of preferredKinds) {
+            const productPath = kind === 'dolphin'
+                ? getDolphinPath()
+                : kind === 'z3ds'
+                    ? getZ3dsPath()
+                    : getChdPath();
+            if (productPath) {
+                return { path: productPath, kind };
+            }
+        }
+
+        return null;
+    };
+
     // Categorize files
     const sourceFiles = entries.filter(e =>
-        ['.iso', '.gdi', '.cue', '.bin'].includes(e.extension?.toLowerCase())
+        ['.iso', '.gdi', '.cue', '.bin', '.3ds', '.cci', '.cia'].includes(e.extension?.toLowerCase())
     );
     const chdFiles = entries.filter(e => e.extension?.toLowerCase() === '.chd');
+    const dolphinFiles = entries.filter(e => ['.rvz', '.wia', '.gcz', '.wbfs'].includes(e.extension?.toLowerCase()));
+    const z3dsFiles = entries.filter(e => ['.3ds', '.cci', '.cia'].includes(e.extension?.toLowerCase()));
     const archives = entries.filter(e => e.type === 'archive');
     const otherFiles = entries.filter(e =>
-        !sourceFiles.includes(e) && !chdFiles.includes(e) && !archives.includes(e)
+        !sourceFiles.includes(e) && !chdFiles.includes(e) && !dolphinFiles.includes(e) && !z3dsFiles.includes(e) && !archives.includes(e)
     );
+    const sourceProductByPath = new Map();
+    for (const entry of sourceFiles) {
+        const product = resolveSourceProduct(entry);
+        if (product) {
+            sourceProductByPath.set(entry.path, product);
+        }
+    }
 
     // Check verification status for source files
-    const sourceFilesWithCHD = sourceFiles.filter(e => e.has_chd);
-    const unverifiedSourceFiles = sourceFilesWithCHD.filter(e => {
-        const chdPath = e.path.replace(/\.[^.]+$/, '.chd');
-        return !verifiedCHDs.has(chdPath);
+    const sourceFilesWithProduct = sourceFiles.filter(e => sourceProductByPath.has(e.path));
+    const unverifiedSourceFiles = sourceFilesWithProduct.filter(e => {
+        const product = sourceProductByPath.get(e.path);
+        return product && !verifiedCHDs.has(product.path);
     });
-    const sourceFilesWithoutCHD = sourceFiles.filter(e => !e.has_chd);
-    const hasUnverifiedCHDs = unverifiedSourceFiles.length > 0;
-    const hasDangerousDeletes = sourceFilesWithoutCHD.length > 0;
+    const sourceFilesWithoutProduct = sourceFiles.filter(e => !sourceProductByPath.has(e.path));
+    const hasUnverifiedProducts = unverifiedSourceFiles.length > 0;
+    const hasDangerousDeletes = sourceFilesWithoutProduct.length > 0;
 
     const handleVerifyAll = async () => {
-        const chdPaths = unverifiedSourceFiles.map(e => e.path.replace(/\.[^.]+$/, '.chd'));
-        if (chdPaths.length === 0) {
+        const itemsToVerify = unverifiedSourceFiles.map(e => {
+            const product = sourceProductByPath.get(e.path);
+            return product ? { path: product.path, filename: e.name, kind: product.kind } : null;
+        }).filter(Boolean);
+
+        if (itemsToVerify.length === 0) {
             setStep(3);
             return;
         }
 
         setStep(2);
-        setVerifyState({ running: true, total: chdPaths.length, verified: 0, failed: 0, current: null });
+        setVerifyState({ running: true, total: itemsToVerify.length, verified: 0, failed: 0, current: null });
 
         try {
-            await api.verifyBatchCHDs(chdPaths, {
-                onProgress: (update) => {
-                    if (update.type === 'start') {
-                        // Use server-validated total (may be less than client count if paths were filtered)
+            // Separate by kind for batch verification
+            const chdPaths = itemsToVerify.filter(item => item.kind === 'chd').map(item => item.path);
+            const dolphinPaths = itemsToVerify.filter(item => item.kind === 'dolphin').map(item => item.path);
+            const z3dsPaths = itemsToVerify.filter(item => item.kind === 'z3ds').map(item => item.path);
+
+            let currentVerified = 0;
+            let currentFailed = 0;
+
+            if (chdPaths.length > 0) {
+                let chdStartHandled = false;
+                await api.verifyBatchCHDs(chdPaths, {
+                    onProgress: (update) => {
+                        if (update.type === 'start') {
+                            if (!chdStartHandled && Number.isFinite(update.total)) {
+                                chdStartHandled = true;
+                                setVerifyState(prev => ({
+                                    ...prev,
+                                    total: prev.total - chdPaths.length + update.total
+                                }));
+                            }
+                        } else if (update.type === 'progress' || update.type === 'file_progress') {
+                            setVerifyState(prev => ({ ...prev, current: update.filename || update.path }));
+                        }
+                    },
+                    onFileComplete: (data) => {
+                        currentVerified += data.valid ? 1 : 0;
+                        currentFailed += data.valid ? 0 : 1;
                         setVerifyState(prev => ({
                             ...prev,
-                            total: update.total
+                            verified: currentVerified,
+                            failed: currentFailed,
+                            current: null
                         }));
-                    } else if (update.type === 'progress' || update.type === 'file_progress') {
+                        if (data.valid && onVerify) {
+                            onVerify(data.path);
+                        }
+                    }
+                });
+            }
+
+            if (dolphinPaths.length > 0) {
+                let dolphinStartHandled = false;
+                await api.verifyBatchDolphin(dolphinPaths, {
+                    onProgress: (update) => {
+                        if (update.type === 'start') {
+                            if (!dolphinStartHandled && Number.isFinite(update.total)) {
+                                dolphinStartHandled = true;
+                                setVerifyState(prev => ({
+                                    ...prev,
+                                    total: prev.total - dolphinPaths.length + update.total
+                                }));
+                            }
+                        } else if (update.type === 'progress' || update.type === 'file_progress') {
+                            setVerifyState(prev => ({ ...prev, current: update.filename || update.path }));
+                        }
+                    },
+                    onFileComplete: (data) => {
+                        currentVerified += data.valid ? 1 : 0;
+                        currentFailed += data.valid ? 0 : 1;
                         setVerifyState(prev => ({
                             ...prev,
-                            current: update.filename || update.path
+                            verified: currentVerified,
+                            failed: currentFailed,
+                            current: null
                         }));
+                        if (data.valid && onVerify) {
+                            onVerify(data.path);
+                        }
                     }
-                },
-                onFileComplete: (data) => {
-                    setVerifyState(prev => ({
-                        ...prev,
-                        verified: data.verified,
-                        failed: data.failed,
-                        current: null
-                    }));
-                    // Update parent's verifiedCHDs if verified
-                    if (data.valid && onVerify) {
-                        onVerify(data.path);
+                });
+            }
+
+            if (z3dsPaths.length > 0) {
+                let z3dsStartHandled = false;
+                await api.verifyBatchZ3DS(z3dsPaths, {
+                    onProgress: (update) => {
+                        if (update.type === 'start') {
+                            if (!z3dsStartHandled && Number.isFinite(update.total)) {
+                                z3dsStartHandled = true;
+                                setVerifyState(prev => ({
+                                    ...prev,
+                                    total: prev.total - z3dsPaths.length + update.total
+                                }));
+                            }
+                        } else if (update.type === 'progress' || update.type === 'file_progress') {
+                            setVerifyState(prev => ({ ...prev, current: update.filename || update.path }));
+                        }
+                    },
+                    onFileComplete: (data) => {
+                        currentVerified += data.valid ? 1 : 0;
+                        currentFailed += data.valid ? 0 : 1;
+                        setVerifyState(prev => ({
+                            ...prev,
+                            verified: currentVerified,
+                            failed: currentFailed,
+                            current: null
+                        }));
+                        if (data.valid && onVerify) {
+                            onVerify(data.path);
+                        }
                     }
-                }
-            });
+                });
+            }
+
         } catch (err) {
             setError(`Verification failed: ${err.message}`);
         } finally {
@@ -1449,18 +1827,18 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
         <div class="modal-overlay" onClick=${onClose}>
             <div class="modal" onClick=${(e) => e.stopPropagation()} style="max-width: 500px;">
                 <div class="modal-header">
-                    <h3 style="color: var(--error);">⚠️ Delete ${entries.length} File${entries.length > 1 ? 's' : ''}</h3>
+                    <h3 style="color: var(--error);">⚠️ Delete ${entries.length} ${fileTerm}${entries.length > 1 ? 's' : ''}</h3>
                     <button class="modal-close" onClick=${onClose} title="Close">×</button>
                 </div>
                 <div class="modal-body" style="padding: 15px;">
                     ${step === 1 && html`
                         <div style="max-height: 200px; overflow-y: auto; margin-bottom: 15px; padding: 10px; background: var(--bg-primary); border-radius: 4px;">
-                            ${sourceFilesWithCHD.length > 0 && html`
+                            ${sourceFilesWithProduct.length > 0 && html`
                                 <div style="margin-bottom: 10px;">
-                                    <strong style="color: var(--text-primary);">Source files with CHD (${sourceFilesWithCHD.length}):</strong>
-                                    ${sourceFilesWithCHD.map(e => {
-        const chdPath = e.path.replace(/\.[^.]+$/, '.chd');
-        const isVerified = verifiedCHDs.has(chdPath);
+                                    <strong style="color: var(--text-primary);">Source files with ${productTerm} (${sourceFilesWithProduct.length}):</strong>
+                                    ${sourceFilesWithProduct.map(e => {
+        const product = sourceProductByPath.get(e.path);
+        const isVerified = product && verifiedCHDs.has(product.path);
         return html`
                                             <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0; color: ${isVerified ? 'var(--success)' : 'var(--warning)'};">
                                                 ${isVerified ? '✓' : '⚠'} ${e.name}
@@ -1469,10 +1847,10 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
     })}
                                 </div>
                             `}
-                            ${sourceFilesWithoutCHD.length > 0 && html`
+                            ${sourceFilesWithoutProduct.length > 0 && html`
                                 <div style="margin-bottom: 10px;">
-                                    <strong style="color: var(--error);">Source files WITHOUT CHD (${sourceFilesWithoutCHD.length}):</strong>
-                                    ${sourceFilesWithoutCHD.map(e => html`
+                                    <strong style="color: var(--error);">Source files WITHOUT ${productTerm} (${sourceFilesWithoutProduct.length}):</strong>
+                                    ${sourceFilesWithoutProduct.map(e => html`
                                         <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0; color: var(--error);">
                                             ❌ ${e.name}
                                         </div>
@@ -1484,6 +1862,22 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
                                     <strong style="color: var(--text-primary);">CHD files (${chdFiles.length}):</strong>
                                     ${chdFiles.map(e => html`
                                         <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0;">💿 ${e.name}</div>
+                                    `)}
+                                </div>
+                            `}
+                            ${dolphinFiles.length > 0 && html`
+                                <div style="margin-bottom: 10px;">
+                                    <strong style="color: var(--text-primary);">Dolphin files (${dolphinFiles.length}):</strong>
+                                    ${dolphinFiles.map(e => html`
+                                        <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0;">🐬 ${e.name}</div>
+                                    `)}
+                                </div>
+                            `}
+                            ${z3dsFiles.length > 0 && html`
+                                <div style="margin-bottom: 10px;">
+                                    <strong style="color: var(--text-primary);">3DS files (${z3dsFiles.length}):</strong>
+                                    ${z3dsFiles.map(e => html`
+                                        <div key=${e.path} style="font-size: 0.85rem; padding: 2px 0;">🎮 ${e.name}</div>
                                     `)}
                                 </div>
                             `}
@@ -1508,15 +1902,15 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
                         ${hasDangerousDeletes && html`
                             <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--error);">
                                 <p style="color: var(--error); margin: 0;">
-                                    ⚠️ <strong>WARNING:</strong> ${sourceFilesWithoutCHD.length} source file${sourceFilesWithoutCHD.length > 1 ? 's have' : ' has'} no CHD backup. Deleting will result in data loss!
+                                    ⚠️ <strong>WARNING:</strong> ${sourceFilesWithoutProduct.length} source file${sourceFilesWithoutProduct.length > 1 ? 's have' : ' has'} no ${productTerm} backup. Deleting will result in data loss!
                                 </p>
                             </div>
                         `}
 
-                        ${hasUnverifiedCHDs && !hasDangerousDeletes && html`
+                        ${hasUnverifiedProducts && !hasDangerousDeletes && html`
                             <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--warning);">
                                 <p style="color: var(--warning); margin: 0;">
-                                    ⚠️ ${unverifiedSourceFiles.length} source file${unverifiedSourceFiles.length > 1 ? 's have' : ' has'} unverified CHD${unverifiedSourceFiles.length > 1 ? 's' : ''}. We recommend verifying before deletion.
+                                    ⚠️ ${unverifiedSourceFiles.length} source file${unverifiedSourceFiles.length > 1 ? 's have' : ' has'} unverified ${productTerm}${unverifiedSourceFiles.length > 1 ? 's' : ''}. We recommend verifying before deletion.
                                 </p>
                             </div>
                         `}
@@ -1528,17 +1922,17 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
                         `}
 
                         <div style="display: flex; flex-direction: column; gap: 10px;">
-                            ${hasUnverifiedCHDs && html`
+                            ${hasUnverifiedProducts && html`
                                 <button class="btn btn-primary" onClick=${handleVerifyAll}>
-                                    🔍 Verify All CHDs First (${unverifiedSourceFiles.length})
+                                    🔍 Verify All ${productTerm}s First (${unverifiedSourceFiles.length})
                                 </button>
                             `}
-                            <button 
-                                class="btn ${hasUnverifiedCHDs || hasDangerousDeletes ? 'btn-secondary' : 'btn-primary'}"
+                            <button
+                                class="btn ${hasUnverifiedProducts || hasDangerousDeletes ? 'btn-secondary' : 'btn-primary'}"
                                 style="${hasDangerousDeletes ? 'background: var(--error);' : ''}"
-                                onClick=${() => { setSkipVerification(hasUnverifiedCHDs); setStep(3); }}
+                                onClick=${() => { setSkipVerification(hasUnverifiedProducts); setStep(3); }}
                             >
-                                ${hasDangerousDeletes ? 'Delete Anyway (Data Loss!)' : hasUnverifiedCHDs ? 'Skip Verification' : 'Continue to Delete'}
+                                ${hasDangerousDeletes ? 'Delete Anyway (Data Loss!)' : hasUnverifiedProducts ? 'Skip Verification' : 'Continue to Delete'}
                             </button>
                             <button class="btn btn-secondary" onClick=${onClose}>Cancel</button>
                         </div>
@@ -1548,7 +1942,7 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
                         <div style="text-align: center; padding: 20px;">
                             <div class="spinner" style="margin: 0 auto 15px;"></div>
                             <p style="color: var(--text-primary); margin-bottom: 10px;">
-                                Verifying CHD files... ${verifyState.verified + verifyState.failed}/${verifyState.total}
+                                Verifying ${productTerm} files... ${verifyState.verified + verifyState.failed}/${verifyState.total}
                             </p>
                             ${verifyState.current && html`
                                 <p style="color: var(--text-secondary); font-size: 0.85rem;">${verifyState.current}</p>
@@ -1568,7 +1962,7 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
                                 <p style="color: ${verifyState.failed > 0 ? 'var(--warning)' : 'var(--success)'}; margin: 0;">
                                     ${verifyState.failed > 0
                     ? `⚠️ Verification complete: ${verifyState.verified} passed, ${verifyState.failed} failed`
-                    : `✓ All ${verifyState.verified} CHD${verifyState.verified > 1 ? 's' : ''} verified successfully`
+                    : `✓ All ${verifyState.verified} ${productTerm}${verifyState.verified > 1 ? 's' : ''} verified successfully`
                 }
                                 </p>
                             </div>
@@ -1577,7 +1971,7 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
                         ${skipVerification && html`
                             <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--warning);">
                                 <p style="color: var(--warning); margin: 0;">
-                                    ⚠️ Proceeding without CHD verification.
+                                    ⚠️ Proceeding without ${verifyTerm} verification.
                                 </p>
                             </div>
                         `}
@@ -1604,7 +1998,7 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
 
                         ${!result && html`
                             <p style="color: var(--text-secondary); margin-bottom: 15px;">
-                                Confirm deletion of ${entries.length} file${entries.length > 1 ? 's' : ''}?
+                                Confirm deletion of ${entries.length} ${fileTerm}${entries.length > 1 ? 's' : ''}?
                             </p>
                         `}
 
@@ -1614,13 +2008,13 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
 
                         <div style="display: flex; flex-direction: column; gap: 10px;">
                             ${!result && html`
-                                <button 
-                                    class="btn btn-primary" 
-                                    onClick=${handleDelete} 
+                                <button
+                                    class="btn btn-primary"
+                                    onClick=${handleDelete}
                                     disabled=${deleting}
                                     style="${hasDangerousDeletes ? 'background: var(--error);' : ''}"
                                 >
-                                    ${deleting ? 'Deleting...' : `Delete ${entries.length} File${entries.length > 1 ? 's' : ''}`}
+                                    ${deleting ? 'Deleting...' : `Delete ${entries.length} ${fileTerm}${entries.length > 1 ? 's' : ''}`}
                                 </button>
                             `}
                             <button class="btn btn-secondary" onClick=${onClose}>
@@ -1670,6 +2064,7 @@ function BulkVerifyModal({ verifyItems, onComplete, onClose }) {
             try {
                 const allChd = verifyItems.every(item => item.kind === 'chd');
                 const allDolphin = verifyItems.every(item => item.kind === 'dolphin');
+                const allZ3DS = verifyItems.every(item => item.kind === 'z3ds');
                 let result = { verified: 0, failed: 0, total: verifyItems.length };
 
                 if (allChd) {
@@ -1719,15 +2114,39 @@ function BulkVerifyModal({ verifyItems, onComplete, onClose }) {
                                     ...prev,
                                     total: update.total
                                 }));
-                            } else if (update.type === 'progress') {
+                            } else if (update.type === 'progress' || update.type === 'file_progress') {
                                 setState(prev => ({
                                     ...prev,
-                                    current: update.filename
+                                    current: update.filename || update.path
                                 }));
-                            } else if (update.type === 'file_progress') {
+                            }
+                        },
+                        onFileComplete: (data) => {
+                            if (cancelled) return;
+                            setState(prev => ({
+                                ...prev,
+                                verified: data.verified,
+                                failed: data.failed,
+                                current: null,
+                                currentProgress: null,
+                                results: [...prev.results, data]
+                            }));
+                        }
+                    });
+                } else if (allZ3DS) {
+                    const z3dsPaths = verifyItems.map(item => item.path);
+                    result = await api.verifyBatchZ3DS(z3dsPaths, {
+                        onProgress: (update) => {
+                            if (cancelled) return;
+                            if (update.type === 'start') {
                                 setState(prev => ({
                                     ...prev,
-                                    current: update.filename,
+                                    total: update.total
+                                }));
+                            } else if (update.type === 'progress' || update.type === 'file_progress') {
+                                setState(prev => ({
+                                    ...prev,
+                                    current: update.filename || update.path,
                                     currentProgress: update.progress
                                 }));
                             }
@@ -1747,17 +2166,22 @@ function BulkVerifyModal({ verifyItems, onComplete, onClose }) {
                 } else {
                     const chdPaths = verifyItems.filter(item => item.kind === 'chd').map(item => item.path);
                     const dolphinPaths = verifyItems.filter(item => item.kind === 'dolphin').map(item => item.path);
+                    const z3dsPaths = verifyItems.filter(item => item.kind === 'z3ds').map(item => item.path);
+
                     let verified = 0;
                     let failed = 0;
                     let chdTotal = chdPaths.length;
                     let dolphinTotal = dolphinPaths.length;
+                    let z3dsTotal = z3dsPaths.length;
 
                     const runBatch = async (kind, paths) => {
                         const baseVerified = verified;
                         const baseFailed = failed;
-                        const verifyFn = kind === 'dolphin'
-                            ? api.verifyBatchDolphin.bind(api)
-                            : api.verifyBatchCHDs.bind(api);
+
+                        let verifyFn;
+                        if (kind === 'dolphin') verifyFn = api.verifyBatchDolphin.bind(api);
+                        else if (kind === 'z3ds') verifyFn = api.verifyBatchZ3DS.bind(api);
+                        else verifyFn = api.verifyBatchCHDs.bind(api);
 
                         const batchResult = await verifyFn(paths, {
                             onProgress: (update) => {
@@ -1765,12 +2189,14 @@ function BulkVerifyModal({ verifyItems, onComplete, onClose }) {
                                 if (update.type === 'start') {
                                     if (kind === 'dolphin') {
                                         dolphinTotal = update.total;
+                                    } else if (kind === 'z3ds') {
+                                        z3dsTotal = update.total;
                                     } else {
                                         chdTotal = update.total;
                                     }
                                     setState(prev => ({
                                         ...prev,
-                                        total: chdTotal + dolphinTotal
+                                        total: chdTotal + dolphinTotal + z3dsTotal
                                     }));
                                 } else if (update.type === 'progress') {
                                     setState(prev => ({
@@ -1819,8 +2245,11 @@ function BulkVerifyModal({ verifyItems, onComplete, onClose }) {
                     if (dolphinPaths.length > 0) {
                         await runBatch('dolphin', dolphinPaths);
                     }
+                    if (z3dsPaths.length > 0) {
+                        await runBatch('z3ds', z3dsPaths);
+                    }
 
-                    result = { verified, failed, total: chdTotal + dolphinTotal };
+                    result = { verified, failed, total: chdTotal + dolphinTotal + z3dsTotal };
                 }
 
                 if (cancelled) return;
@@ -1963,7 +2392,7 @@ function App() {
     const [isoHandling, setIsoHandling] = useState(() => {
         try {
             const stored = localStorage.getItem(ISO_TOOL_STORAGE_KEY);
-            return stored === 'chdman' || stored === 'dolphin' ? stored : null;
+            return stored === 'chdman' || stored === 'dolphin' || stored === 'z3ds' ? stored : null;
         } catch (err) {
             return null;
         }
@@ -1971,6 +2400,7 @@ function App() {
     const [compressionSelection, setCompressionSelection] = useState(['zlib']);
     const [dolphinCompressionLevel, setDolphinCompressionLevel] = useState(DEFAULT_DOLPHIN_COMPRESSION_LEVEL);
     const [showCompressionHelp, setShowCompressionHelp] = useState(false);
+    const [customFilterMode, setCustomFilterMode] = useState(false);
     const [outputDir, setOutputDir] = useState('');
     const [deleteOnVerify, setDeleteOnVerify] = useState(false);
     const [deletePlan, setDeletePlan] = useState(null); // { plan, paths, duplicateAction }
@@ -1996,6 +2426,8 @@ function App() {
     const [appVersion, setAppVersion] = useState(null); // App version from backend
     const [sortBy, setSortBy] = useState('name'); // 'name', 'size', 'status'
     const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
+    const [itemsPerPage, setItemsPerPage] = useState(DEFAULT_PAGE_SIZE);
+    const [currentPage, setCurrentPage] = useState(1);
     const [stuckState, setStuckState] = useState(null); // Stuck state detection: { is_stuck, queued_count, processing_count }
     const [recoveringStuck, setRecoveringStuck] = useState(false); // Recovery in progress
 
@@ -2034,6 +2466,7 @@ function App() {
             api.listArchive(archivePath)
                 .then(archiveData => {
                     if (!archiveData || !archiveData.files) return;
+                    setEntriesError(null);
 
                     const newArchiveEntries = archiveData.files.map(file => ({
                         name: file.name,
@@ -2043,6 +2476,12 @@ function App() {
                         extension: file.extension,
                         convertible: file.convertible,
                         has_chd: file.has_chd || false,
+                        has_rvz: false,
+                        dolphin_ready: false,
+                        dolphin_path: null,
+                        has_z3ds: false,
+                        z3ds_ready: false,
+                        z3ds_path: null,
                         chd_ready: Boolean(file.chd_ready),
                         output_stem: file.output_stem,
                         chd_path: file.chd_path,
@@ -2081,6 +2520,7 @@ function App() {
             if (showSpinner) setLoading(true);
             api.listFiles(path)
                 .then(data => {
+                    setEntriesError(null);
                     // Merge entries transparently to preserve UI stability
                     setEntries(prevEntries => {
                         const newEntries = data.entries;
@@ -2093,7 +2533,15 @@ function App() {
                                     oldEntry.size !== newEntry.size ||
                                     oldEntry.type !== newEntry.type ||
                                     oldEntry.convertible !== newEntry.convertible ||
+                                    oldEntry.dolphin_convertible !== newEntry.dolphin_convertible ||
+                                    oldEntry.z3ds_convertible !== newEntry.z3ds_convertible ||
                                     oldEntry.has_chd !== newEntry.has_chd ||
+                                    oldEntry.has_rvz !== newEntry.has_rvz ||
+                                    oldEntry.dolphin_ready !== newEntry.dolphin_ready ||
+                                    oldEntry.dolphin_path !== newEntry.dolphin_path ||
+                                    oldEntry.has_z3ds !== newEntry.has_z3ds ||
+                                    oldEntry.z3ds_ready !== newEntry.z3ds_ready ||
+                                    oldEntry.z3ds_path !== newEntry.z3ds_path ||
                                     oldEntry.chd_ready !== newEntry.chd_ready;
                             });
                             // Only update if there are actual changes
@@ -2103,7 +2551,8 @@ function App() {
                     });
                 })
                 .catch(err => {
-                    console.error('Failed to refresh file list:', err);
+                    setEntriesError(err.message); // Set error for the main file list
+                    console.error('Failed to list files:', err);
                 })
                 .finally(() => {
                     if (showSpinner) setLoading(false);
@@ -2159,8 +2608,8 @@ function App() {
         const getStatusPriority = (entry) => {
             if (entry.type === 'directory') return 0;
             if (entry.type === 'archive') return 1;
-            if (entry.has_chd) return 2;
-            if (entry.convertible) return 3;
+            if (entry.has_chd || entry.has_rvz || entry.has_z3ds) return 2;
+            if (entry.convertible || entry.dolphin_convertible || entry.z3ds_convertible) return 3;
             return 4;
         };
 
@@ -2191,6 +2640,43 @@ function App() {
         });
     }, [entries, fileTypeFilter, sortBy, sortOrder]);
 
+    const pagination = useMemo(() => {
+        const totalItems = displayedEntries.length;
+        if (itemsPerPage === 'all') {
+            return {
+                totalItems,
+                totalPages: 1,
+                page: 1,
+                start: totalItems > 0 ? 1 : 0,
+                end: totalItems
+            };
+        }
+
+        const parsed = Number(itemsPerPage);
+        const pageSize = Number.isFinite(parsed) && parsed > 0 ? parsed : (totalItems || 1);
+        const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+        const page = Math.min(Math.max(currentPage, 1), totalPages);
+        const start = totalItems > 0 ? ((page - 1) * pageSize) + 1 : 0;
+        const end = totalItems > 0 ? Math.min(page * pageSize, totalItems) : 0;
+
+        return { totalItems, totalPages, page, start, end };
+    }, [displayedEntries.length, itemsPerPage, currentPage]);
+
+    const paginatedEntries = useMemo(() => {
+        if (itemsPerPage === 'all') return displayedEntries;
+        const parsed = Number(itemsPerPage);
+        const pageSize = Number.isFinite(parsed) && parsed > 0 ? parsed : displayedEntries.length;
+        if (!pageSize) return displayedEntries;
+        const start = (pagination.page - 1) * pageSize;
+        return displayedEntries.slice(start, start + pageSize);
+    }, [displayedEntries, itemsPerPage, pagination.page]);
+
+    useEffect(() => {
+        if (currentPage !== pagination.page) {
+            setCurrentPage(pagination.page);
+        }
+    }, [currentPage, pagination.page]);
+
     // Prune selected files to only include visible entries when filter changes
     // This prevents hidden selections from causing unexpected behavior during conversion
     useEffect(() => {
@@ -2218,7 +2704,7 @@ function App() {
         });
     }, [displayedEntries, fileTypeFilter]);
 
-    // Poll scan status after a forced rescan so badges refresh with new metadata
+    // Poll forced metadata scan status so badge refresh resumes when backend finishes.
     useEffect(() => {
         if (!forceRescanRunning) return;
 
@@ -2227,34 +2713,39 @@ function App() {
         let failureCount = 0;
         const maxFailures = 5;
 
-        const poll = async () => {
+        const pollStatus = async () => {
             try {
                 const status = await api.getScanStatus();
                 if (cancelled) return;
                 failureCount = 0;
-                if (status.scanning) {
-                    timeoutId = setTimeout(poll, 1500);
+
+                if (status?.scanning) {
+                    timeoutId = setTimeout(pollStatus, 1500);
                     return;
                 }
+
                 setChdMetadata(new Map());
                 setForceRescanRunning(false);
             } catch (err) {
                 if (cancelled) return;
                 failureCount += 1;
+
                 if (failureCount >= maxFailures) {
                     setForceRescanRunning(false);
-                    notify('Metadata scan status unavailable; badges may be stale.', 'error');
+                    notify('Metadata scan status unavailable; resuming badge refresh.', 'warning');
                     return;
                 }
+
                 if (failureCount === 1) {
                     notify(`Failed to get scan status: ${err.message}`, 'error');
                 }
+
                 const delay = Math.min(5000, 1500 + failureCount * 750);
-                timeoutId = setTimeout(poll, delay);
+                timeoutId = setTimeout(pollStatus, delay);
             }
         };
 
-        timeoutId = setTimeout(poll, 1000);
+        timeoutId = setTimeout(pollStatus, 1000);
 
         return () => {
             cancelled = true;
@@ -2467,7 +2958,7 @@ function App() {
                     });
                 })
                 .catch(() => { });
-            
+
             // Check for stuck state
             api.checkStuckStatus()
                 .then(status => {
@@ -2495,12 +2986,17 @@ function App() {
         return () => clearInterval(interval);
     }, [autoRefresh, currentPath, searchMode, refreshFileList]);
 
+    useEffect(() => {
+        setLastSelectedIndex(null);
+    }, [pagination.page, itemsPerPage]);
+
     // Handlers
     const handleVolumeSelect = (vol) => {
         setSelectedVolume(vol);
         setCurrentPath(vol.path);
         setSelectedFiles(new Map());
         setCurrentArchivePath(null); // Exit archive view when changing volumes
+        setCurrentPage(1);
         setLastSelectedIndex(null); // Reset shift-selection anchor
     };
 
@@ -2508,6 +3004,7 @@ function App() {
         setCurrentPath(path);
         setSelectedFiles(new Map());
         setCurrentArchivePath(null); // Exit archive view when navigating directories
+        setCurrentPage(1);
         setLastSelectedIndex(null); // Reset shift-selection anchor
     };
 
@@ -2525,6 +3022,7 @@ function App() {
                 setEntries([]);
                 setCurrentArchivePath(null);
                 setSelectedFiles(new Map());
+                setCurrentPage(1);
                 setLastSelectedIndex(null);
                 return;
             }
@@ -2537,6 +3035,12 @@ function App() {
                 extension: file.extension,
                 convertible: file.convertible,
                 has_chd: file.has_chd || false,
+                has_rvz: false,
+                dolphin_ready: false,
+                dolphin_path: null,
+                has_z3ds: false,
+                z3ds_ready: false,
+                z3ds_path: null,
                 chd_ready: Boolean(file.chd_ready),
                 output_stem: file.output_stem,
                 chd_path: file.chd_path,
@@ -2549,6 +3053,7 @@ function App() {
             setSelectedFiles(new Map());
             setSearchMode(false);
             setSearchResults(null);
+            setCurrentPage(1);
             setLastSelectedIndex(null); // Reset shift-selection anchor
             notify(`✓ Loaded ${archiveEntries.length} file(s) from ${archiveName}`, 'success');
         } catch (err) {
@@ -2573,10 +3078,18 @@ function App() {
                 notify('ISO info uses Dolphin tools. Switch ISO handling to Dolphin to view disc info.', 'info');
                 return;
             }
-            setShowCHDInfo({ path, useDolphin: true });
+            setShowCHDInfo({ path, infoMode: 'dolphin' });
             return;
         }
-        setShowCHDInfo({ path, useDolphin: false });
+        if (is3dsFile(path)) {
+            setShowCHDInfo({ path, infoMode: 'z3ds' });
+            return;
+        }
+        if (isDolphinFile(path)) {
+            setShowCHDInfo({ path, infoMode: 'dolphin' });
+            return;
+        }
+        setShowCHDInfo({ path, infoMode: 'chd' });
     };
 
     const handleIsoHandlingToggle = useCallback(() => {
@@ -2588,13 +3101,13 @@ function App() {
     }, []);
 
     const handleToggleSelect = (entry, event) => {
-        const index = displayedEntries.findIndex(e => e.path === entry.path);
+        const index = paginatedEntries.findIndex(e => e.path === entry.path);
 
         // Handle shift-click range selection
         if (event?.shiftKey && lastSelectedIndex !== null && lastSelectedIndex !== index && index !== -1) {
             const start = Math.min(lastSelectedIndex, index);
             const end = Math.max(lastSelectedIndex, index);
-            const range = displayedEntries.slice(start, end + 1).filter(e => canSelectEntry(e));
+            const range = paginatedEntries.slice(start, end + 1).filter(e => canSelectEntry(e));
 
             setSelectedFiles(prev => {
                 const next = new Map(prev);
@@ -2618,14 +3131,18 @@ function App() {
     };
 
     const handleSelectAll = () => {
-        const selectable = displayedEntries.filter(e => canSelectEntry(e));
-        if (selectedFiles.size === selectable.length && selectable.length > 0) {
-            setSelectedFiles(new Map());
-        } else {
-            const newMap = new Map();
-            selectable.forEach(e => newMap.set(e.path, e));
-            setSelectedFiles(newMap);
-        }
+        const selectable = paginatedEntries.filter(e => canSelectEntry(e));
+        if (selectable.length === 0) return;
+        setSelectedFiles(prev => {
+            const next = new Map(prev);
+            const allOnPageSelected = selectable.every(e => next.has(e.path));
+            if (allOnPageSelected) {
+                selectable.forEach(e => next.delete(e.path));
+            } else {
+                selectable.forEach(e => next.set(e.path, e));
+            }
+            return next;
+        });
     };
 
     const handleSort = (column) => {
@@ -2673,28 +3190,43 @@ function App() {
         refreshFileList(true);
     };
 
-    const handleVerify = async (chdPath, entry = null) => {
-        const isArchiveItem = entry?.is_archive_item || entry?.in_archive || (typeof chdPath === 'string' && chdPath.includes('::'));
-        const isIso = typeof chdPath === 'string' && chdPath.toLowerCase().endsWith('.iso');
+    const handleVerify = async (productPath, entry = null) => {
+        const isArchiveItem = entry?.is_archive_item || entry?.in_archive || (typeof productPath === 'string' && productPath.includes('::'));
+        const isIso = typeof productPath === 'string' && productPath.toLowerCase().endsWith('.iso');
+        const is3dsSource = is3dsSourceFile(productPath);
+
         let forceDolphin = false;
+        let force3ds = false;
+
         if (isIso && !isArchiveItem) {
             if (isoHandling !== 'dolphin') {
                 notify('ISO verification uses Dolphin tools. Switch ISO handling to Dolphin to verify.', 'info');
                 return;
             }
             forceDolphin = true;
+        } else if (is3dsSource && !isArchiveItem) {
+            if (isoHandling !== 'z3ds') {
+                notify('3DS verification requires 3DS mode. Switch ISO handling to 3DS to verify.', 'info');
+                return;
+            }
+            force3ds = true;
         }
 
-        const dolphin = forceDolphin || isDolphinFile(chdPath);
-        const verifyFn = dolphin ? api.verifyDolphin.bind(api) : api.verifyCHD.bind(api);
-        const label = dolphin ? 'Disc' : 'CHD';
-        setVerifyProgress(prev => new Map(prev).set(chdPath, { progress: 0, message: 'Starting verification...' }));
+        const verifyPath = force3ds && is3dsSourceFile(productPath)
+            ? (entry?.z3ds_path || get3dsProductPath(productPath) || productPath)
+            : productPath;
+        const dolphin = forceDolphin || isDolphinFile(verifyPath);
+        const z3ds = force3ds || is3dsFile(verifyPath);
+        const verifyFn = dolphin ? api.verifyDolphin.bind(api) : (z3ds ? api.verify3DS.bind(api) : api.verifyCHD.bind(api));
+        const label = dolphin ? 'Disc' : (z3ds ? '3DS ROM' : 'CHD');
+
+        setVerifyProgress(prev => new Map(prev).set(verifyPath, { progress: 0, message: 'Starting verification...' }));
         try {
-            const result = await verifyFn(chdPath, {
+            const result = await verifyFn(verifyPath, {
                 onProgress: (update) => {
                     setVerifyProgress(prev => {
                         const next = new Map(prev);
-                        next.set(chdPath, {
+                        next.set(verifyPath, {
                             progress: update.progress,
                             message: update.message
                         });
@@ -2703,7 +3235,7 @@ function App() {
                 }
             });
             if (result.valid) {
-                setVerifiedCHDs(prev => new Set([...prev, chdPath]));
+                setVerifiedCHDs(prev => new Set([...prev, verifyPath]));
                 notify(`✓ ${label} verified successfully`, 'success');
             } else {
                 notify(`✗ ${label} verification failed: ${result.message}`, 'error');
@@ -2715,7 +3247,7 @@ function App() {
         } finally {
             setVerifyProgress(prev => {
                 const next = new Map(prev);
-                next.delete(chdPath);
+                next.delete(verifyPath);
                 return next;
             });
         }
@@ -2754,8 +3286,25 @@ function App() {
                 items.push({ path, filename, kind: 'dolphin' });
                 continue;
             }
+            if (!isArchiveItem && entry.dolphin_ready) {
+                const dolphinPath = getDolphinProductPath(entry);
+                if (dolphinPath) {
+                    items.push({ path: dolphinPath, filename, kind: 'dolphin' });
+                    continue;
+                }
+            }
             if (!isArchiveItem && ext === '.iso') {
                 items.push({ path, filename, kind: 'iso' });
+            }
+            if (!isArchiveItem && is3dsVerifyFile(path)) {
+                items.push({ path, filename, kind: 'z3ds' });
+                continue;
+            }
+            if (!isArchiveItem && is3dsSourceFile(path) && entry.z3ds_ready) {
+                const productPath = entry.z3ds_path || get3dsProductPath(path);
+                if (productPath) {
+                    items.push({ path: productPath, filename, kind: 'z3ds' });
+                }
             }
         }
         return items;
@@ -2779,7 +3328,9 @@ function App() {
             return;
         }
         const isoItems = items.filter(item => item.kind === 'iso');
-        let finalItems = items.filter(item => item.kind !== 'iso');
+        const _3dsItems = items.filter(item => item.kind === 'z3ds');
+        let finalItems = items.filter(item => item.kind !== 'iso' && item.kind !== 'z3ds');
+
         if (isoItems.length > 0) {
             if (isoHandling === 'dolphin') {
                 finalItems = finalItems.concat(isoItems.map(item => ({ ...item, kind: 'dolphin' })));
@@ -2787,6 +3338,10 @@ function App() {
                 notify('ISO verification uses Dolphin tools. Switch ISO handling to Dolphin to verify ISO files.', 'info');
             }
         }
+        if (_3dsItems.length > 0) {
+            finalItems = finalItems.concat(_3dsItems.map(item => ({ ...item, kind: 'z3ds' })));
+        }
+
         if (finalItems.length === 0) {
             notify('⚠ No files selected for verification', 'error');
             return;
@@ -2838,6 +3393,7 @@ function App() {
         // Get the filename (handle archive paths like "archive.zip::game.iso")
         const rawName = (filePath.includes('::') ? filePath.split('::').pop() : filePath);
         const filename = rawName.split('/').pop();
+        const sourceExt = getFileExtension(rawName);
         const isArchiveItem = filePath.includes('::');
         // Build a safe stem for archive members to avoid collisions
         let stem;
@@ -2863,6 +3419,14 @@ function App() {
             outputFilename = `${stem}.raw`;
         } else if (conversionMode === 'extractld') {
             outputFilename = `${stem}.avi`;
+        } else if (conversionMode === 'dolphin_rvz') {
+            outputFilename = `${stem}.rvz`;
+        } else if (conversionMode === 'dolphin_wia') {
+            outputFilename = `${stem}.wia`;
+        } else if (conversionMode === 'dolphin_gcz') {
+            outputFilename = `${stem}.gcz`;
+        } else if (conversionMode === 'z3ds_compress') {
+            outputFilename = `${stem}${Z3DS_OUTPUT_EXTENSION_BY_SOURCE[sourceExt] || '.z3ds'}`;
         }
 
         // Determine output directory
@@ -2989,6 +3553,36 @@ function App() {
             return;
         }
 
+        // Strict Mode Validation
+        // Identify invalid files for the current isoHandling mode
+        const invalidFiles = paths.filter(path => {
+            const is3dsSource = is3dsSourceFile(path);
+            const is3dsRelated = is3dsFile(path);
+
+            if (isoHandling === 'z3ds') {
+                return !is3dsSource; // 3DS mode requires 3DS source files
+            } else {
+                return is3dsRelated; // Other modes refuse 3DS files
+            }
+        });
+
+        if (invalidFiles.length > 0) {
+            const modeName = isoHandling === 'z3ds' ? '3DS' : (isoHandling === 'dolphin' ? 'Dolphin' : 'CHDMAN');
+            notify(`⛔ Compatibility Error: ${invalidFiles.length} file(s) are incompatible with ${modeName} mode. Please deselect them.`, 'error');
+            return;
+        }
+
+        await startConversionSafely(paths);
+    };
+
+    const handleInlineCompress = async (entry) => {
+        if (!entry) return;
+        // Check if file is valid for current mode before proceeding?
+        // The button shouldn't be visible if not, so we assume valid.
+        await startConversionSafely([entry.path]);
+    };
+
+    const startConversionSafely = async (paths) => {
         // Show loading state immediately to prevent UI appearing frozen
         setConverting(true);
 
@@ -3075,7 +3669,9 @@ function App() {
     const deleteOnVerifyDisabled = !deleteOnVerifySupported;
     const deleteOnVerifyLabel = isCopyMode
         ? 'Delete original CHD after copy + verify'
-        : 'Delete source after convert + verify';
+        : isZ3dsMode
+            ? 'Delete source after compress'
+            : 'Delete source after convert + verify';
     const getDeleteOnVerifyNote = () => {
         if (!deleteOnVerifySupported) {
             return 'Available only for create/copy/Dolphin/3DS modes.';
@@ -3090,18 +3686,18 @@ function App() {
             return 'Runs Dolphin disc verification and deletes the original source if it passes.';
         }
         if (isZ3dsMode) {
-            return 'Deletes the original .cci/.cia/.3ds ROM file after successful compression.';
+            return 'Runs 3DS integrity verification and deletes the original source if it passes.';
         }
         return 'Runs CHD verification and deletes the original source (including .cue/.gdi track files) if it passes.';
     };
     const deleteOnVerifyNote = getDeleteOnVerifyNote();
-    
+
     const getDeleteOnVerifyTitle = () => {
         if (isDolphinMode) {
             return 'Verify output disc image, then delete the source files';
         }
         if (isZ3dsMode) {
-            return 'Delete source ROM after successful compression';
+            return 'Verify compressed 3DS output, then delete the source files';
         }
         return 'Verify output CHD, then delete the source files';
     };
@@ -3110,12 +3706,16 @@ function App() {
         ? 'Optional: Specify a custom directory for extracted files'
         : isDolphinMode
             ? 'Optional: Specify a custom directory for output disc images'
-            : 'Optional: Specify a custom directory for output CHD files';
+            : isZ3dsMode
+                ? 'Optional: Specify a custom directory for compressed 3DS files'
+                : 'Optional: Specify a custom directory for output CHD files';
     const outputHint = isExtractMode
         ? 'Leave empty to save extracted files next to source files.'
         : isDolphinMode
             ? 'Leave empty to save Dolphin files next to source files.'
-            : 'Leave empty to save CHD files next to source files.';
+            : isZ3dsMode
+                ? 'Leave empty to save compressed files next to source files.'
+                : 'Leave empty to save CHD files next to source files.';
     const selectedEntries = useMemo(() => Array.from(selectedFiles.values()), [selectedFiles]);
     const modeVisibility = useMemo(() => {
         if (selectedEntries.length === 0) {
@@ -3155,7 +3755,7 @@ function App() {
                 create: false,
                 extract: false,
                 copy: false,
-                dolphin: true,
+                dolphin: allowDolphin,
                 z3ds: false
             };
         }
@@ -3165,7 +3765,7 @@ function App() {
                 extract: false,
                 copy: false,
                 dolphin: false,
-                z3ds: true
+                z3ds: allowZ3ds
             };
         }
         return {
@@ -3202,7 +3802,7 @@ function App() {
         }
     }, [visibleModeGroups, conversionMode]);
     const compressionMetaText = !compressionSupported
-        ? 'Compression not applicable for this mode'
+        ? 'Compression options not applicable for this mode'
         : isDolphinCompressible
             ? (selectedDolphinCodec === 'none'
                 ? 'No compression (-c none)'
@@ -3405,6 +4005,7 @@ function App() {
             const results = await api.searchFiles(currentPath, true, true);
             setSearchResults(results);
             setSearchMode(true);
+            setCurrentPage(1);
 
             const combined = [
                 ...results.files.map(f => ({
@@ -3412,8 +4013,13 @@ function App() {
                     type: 'file',
                     convertible: Boolean(f.convertible),
                     dolphin_convertible: Boolean(f.dolphin_convertible),
+                    has_rvz: Boolean(f.has_rvz),
+                    dolphin_ready: Boolean(f.dolphin_ready),
+                    dolphin_path: f.dolphin_path || null,
                     z3ds_convertible: Boolean(f.z3ds_convertible),
                     has_z3ds: Boolean(f.has_z3ds),
+                    z3ds_ready: Boolean(f.z3ds_ready),
+                    z3ds_path: f.z3ds_path || null,
                     chd_ready: Boolean(f.chd_ready)
                 })),
                 ...results.archives.map(a => ({
@@ -3422,12 +4028,19 @@ function App() {
                     type: 'file',
                     convertible: Boolean(a.convertible),
                     dolphin_convertible: Boolean(a.dolphin_convertible),
+                    has_rvz: false,
+                    dolphin_ready: false,
+                    dolphin_path: null,
+                    has_z3ds: false,
+                    z3ds_ready: false,
+                    z3ds_path: null,
                     chd_ready: Boolean(a.chd_ready),
                     is_archive_item: true,
                     chd_path: a.chd_path
                 }))
             ];
             setEntries(combined);
+            setCurrentPage(1);
             setLastSelectedIndex(null); // Reset shift-selection anchor
 
             if (combined.length === 0) {
@@ -3529,7 +4142,7 @@ function App() {
 
     const handleRecoverStuck = async () => {
         if (recoveringStuck) return;
-        
+
         setRecoveringStuck(true);
         try {
             const result = await api.recoverStuckJobs();
@@ -3547,7 +4160,15 @@ function App() {
 
 
     const hasCompletedJobs = jobs.some(j => ['completed', 'failed', 'cancelled'].includes(j.status));
+    const selectableEntriesOnPage = paginatedEntries.filter(e => canSelectEntry(e));
+    const allSelectedOnPage = selectableEntriesOnPage.length > 0
+        && selectableEntriesOnPage.every((entry) => selectedFiles.has(entry.path));
     const needsIsoSelection = isoHandling === null;
+    const handlePageChange = (nextPage) => {
+        const bounded = Math.min(Math.max(nextPage, 1), pagination.totalPages);
+        setCurrentPage(bounded);
+        setLastSelectedIndex(null);
+    };
 
     return html`
         <div class="container">
@@ -3710,6 +4331,7 @@ function App() {
                                 onClick=${() => {
                 setCurrentArchivePath(null);
                 setSelectedFiles(new Map());
+                setCurrentPage(1);
                 setLastSelectedIndex(null);
                 refreshFileList(true);
             }}
@@ -3748,77 +4370,121 @@ function App() {
                                 </select>
                                 <div class="toolbar-hint">
                                     ${isoHandling === 'dolphin'
-                                        ? 'Switch ISO Handling to CHDMAN to see CHD modes.'
-                                        : 'Switch ISO Handling to Dolphin to see Dolphin modes.'}
+            ? 'Switch Primary Tool to CHDMAN to see CHD modes.'
+            : isoHandling === 'z3ds'
+                ? null
+                : 'Switch Primary Tool to Dolphin to see Dolphin modes.'}
                                 </div>
-                            </div>
-                            <div class="compression-group" role="group" aria-label="Compression options">
-                                <span class="compression-label">Compression</span>
-                                <div class="compression-options">
-                                    ${activeCompressionOptions.map((opt) => html`
-                                        <label class="compression-option" title=${opt.description}>
-                                            <input
-                                                type="checkbox"
-                                                checked=${compressionSelection.includes(opt.value)}
-                                                disabled=${!compressionSupported}
-                                                onChange=${() => toggleCompression(opt.value)}
-                                            />
-                                            <span>${opt.label}</span>
-                                        </label>
-                                    `)}
-                                </div>
-                                ${isDolphinCompressible && html`
-                                    <div class="compression-level">
-                                        <span class="compression-level-label">Level</span>
-                                        <input
-                                            type="number"
-                                            inputmode="numeric"
-                                            min="1"
-                                            max="22"
-                                            step="1"
-                                            value=${dolphinCompressionLevel}
-                                            disabled=${!compressionSupported || !dolphinLevelEnabled}
-                                            onInput=${(e) => setDolphinCompressionLevel(e.target.value)}
-                                            onBlur=${(e) => setDolphinCompressionLevel(normalizeDolphinLevel(e.target.value))}
-                                            title="Dolphin codecs require a compression level"
-                                        />
-                                        <span class="compression-level-hint">
-                                            ${dolphinLevelEnabled ? 'Higher = smaller, slower.' : 'Select a codec to set level.'}
-                                        </span>
-                                    </div>
-                                `}
-                                <div class="compression-meta">
-                                    <span>${compressionMetaText}</span>
-                                    <button class="btn btn-sm btn-secondary" onClick=${() => setShowCompressionHelp(v => !v)}>
-                                        ${showCompressionHelp ? 'Hide Info' : 'Compression Info'}
-                                    </button>
-                                </div>
-                                ${hasMultipleDolphinCodecs && html`
-                                    <div class="compression-warning" role="alert">
-                                        Dolphin formats support only one compression codec.
-                                    </div>
-                                `}
-                                <span class="compression-hint">
-                                    ${isDolphinCompressible ? 'Choose one codec and set a level for Dolphin formats.' : 'Choose up to 4 codecs. zlib is the most compatible option.'}
-                                </span>
-                            </div>
-                            <div class="toolbar-group">
-                                <span class="toolbar-label">Filter</span>
-                                <select
-                                    class="file-type-filter"
-                                    value=${fileTypeFilter || ''}
-                                    onChange=${(e) => { setFileTypeFilter(e.target.value || null); setLastSelectedIndex(null); }}
-                                    title="Filter files by type"
-                                >
-                                    <option value="">All Types</option>
-                                    <option value=".chd">CHD Files</option>
-                                    <option value=".zip,.7z,.rar">Archives</option>
-                                    <option value=".iso,.gdi,.cue,.bin">Disc Images</option>
-                                    <option value=".iso,.gcz,.wia,.rvz,.wbfs">GameCube/Wii Images</option>
-                                </select>
                             </div>
                         </div>
-                        <div class="toolbar-row actions">
+                        
+                        ${!isZ3dsMode && html`
+                            <div class="toolbar-row">
+                                <div class="compression-group" role="group" aria-label="Compression options">
+                                    <span class="compression-label">Compression</span>
+                                    <div class="compression-options">
+                                        ${activeCompressionOptions.map((opt) => html`
+                                            <label class="compression-option" title=${opt.description}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked=${compressionSelection.includes(opt.value)}
+                                                    disabled=${!compressionSupported}
+                                                    onChange=${() => toggleCompression(opt.value)}
+                                                />
+                                                <span>${opt.label}</span>
+                                            </label>
+                                        `)}
+                                    </div>
+                                    ${isDolphinCompressible && html`
+                                        <div class="compression-level">
+                                            <span class="compression-level-label">Level</span>
+                                            <input
+                                                type="number"
+                                                inputmode="numeric"
+                                                min="1"
+                                                max="22"
+                                                step="1"
+                                                value=${dolphinCompressionLevel}
+                                                disabled=${!compressionSupported || !dolphinLevelEnabled}
+                                                onInput=${(e) => setDolphinCompressionLevel(e.target.value)}
+                                                onBlur=${(e) => setDolphinCompressionLevel(normalizeDolphinLevel(e.target.value))}
+                                                title="Dolphin codecs require a compression level"
+                                            />
+                                            <span class="compression-level-hint">
+                                                ${dolphinLevelEnabled ? 'Higher = smaller, slower.' : 'Select a codec to set level.'}
+                                            </span>
+                                        </div>
+                                    `}
+                                    <div class="compression-meta">
+                                        <span>${compressionMetaText || 'Compression options not applicable for this mode'}</span>
+                                        <button class="btn btn-sm btn-secondary" onClick=${() => setShowCompressionHelp(v => !v)}>
+                                            ${showCompressionHelp ? 'Hide Info' : 'Compression Info'}
+                                        </button>
+                                    </div>
+                                    ${hasMultipleDolphinCodecs && html`
+                                        <div class="compression-warning" role="alert">
+                                            Dolphin formats support only one compression codec.
+                                        </div>
+                                    `}
+                                    <span class="compression-hint">
+                                        ${isDolphinCompressible ? 'Choose one codec and set a level for Dolphin formats.' : 'Choose up to 4 codecs. zlib is the most compatible option.'}
+                                    </span>
+                                </div>
+                            </div>
+                        `}
+
+                        <div class="toolbar-row actions" style="justify-content: space-between;">
+                            <div class="toolbar-group">
+                                <span class="toolbar-label">Filter</span>
+                                ${customFilterMode ? html`
+                                    <div class="custom-filter-input">
+                                        <input
+                                            type="text"
+                                            class="filter-input"
+                                            placeholder=".ext1, .ext2"
+                                            value=${fileTypeFilter || ''}
+                                            onInput=${(e) => {
+                setFileTypeFilter(e.target.value || null);
+                setCurrentPage(1);
+                setLastSelectedIndex(null);
+            }}
+                                            title="Enter comma-separated extensions (e.g. .bin, .cue)"
+                                        />
+                                        <button
+                                            class="btn btn-sm btn-secondary"
+                                            onClick=${() => {
+                setCustomFilterMode(false);
+                setFileTypeFilter(null);
+                setCurrentPage(1);
+                setLastSelectedIndex(null);
+            }}
+                                            title="Clear custom filter"
+                                        >
+                                            ✕
+                                        </button>
+                                    </div>
+                                ` : html`
+                                    <select
+                                        class="file-type-filter"
+                                        value=${fileTypeFilter || ''}
+                                        onChange=${(e) => {
+                if (e.target.value === 'custom') {
+                    setCustomFilterMode(true);
+                    setFileTypeFilter('');
+                } else {
+                    setFileTypeFilter(e.target.value || null);
+                }
+                setCurrentPage(1);
+                setLastSelectedIndex(null);
+            }}
+                                        title="Filter files by type"
+                                    >
+                                        ${getFilterOptions(isoHandling).map(opt => html`
+                                            <option value=${opt.value}>${opt.label}</option>
+                                        `)}
+                                    </select>
+                                `}
+                            </div>
                             <div class="toolbar-actions">
                                 <button
                                     class="btn btn-primary"
@@ -3827,9 +4493,9 @@ function App() {
                                     title=${converting ? `${getActionLabel()}...` : selectedFiles.size > 0 ? `${getActionLabel()} ${selectedFiles.size} selected file(s)` : `Select files to ${getActionLabel().toLowerCase()}`}
                                 >
                                     ${converting
-                ? html`<span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-width: 2px;"></span>${getActionLabel()}...`
-                : `${getActionLabel()} ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}`
-            }
+            ? html`<span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px; border-width: 2px;"></span>${getActionLabel()}...`
+            : `${getActionLabel()} ${selectedFiles.size > 0 ? `(${selectedFiles.size})` : ''}`
+        }
                                 </button>
                                 ${getDeletableSelection().length > 0 && html`
                                     <button
@@ -3933,11 +4599,58 @@ function App() {
                         </div>
                     `}
 
+                    <div class="pagination-controls">
+                        <div class="pagination-summary">
+                            ${pagination.totalItems > 0
+            ? `Showing ${pagination.start}-${pagination.end} of ${pagination.totalItems} item${pagination.totalItems === 1 ? '' : 's'}`
+            : 'Showing 0 items'}
+                        </div>
+                        <div class="pagination-actions">
+                            <label class="pagination-page-size">
+                                <span>Items per page</span>
+                                <select
+                                    value=${itemsPerPage}
+                                    onChange=${(e) => {
+                setItemsPerPage(e.target.value);
+                setCurrentPage(1);
+                setLastSelectedIndex(null);
+            }}
+                                    title="Select how many files/folders to show per page"
+                                >
+                                    ${PAGE_SIZE_OPTIONS.map((opt) => html`
+                                        <option value=${opt.value}>${opt.label}</option>
+                                    `)}
+                                </select>
+                            </label>
+                            <div class="pagination-nav">
+                                <button
+                                    class="btn btn-sm btn-secondary"
+                                    onClick=${() => handlePageChange(pagination.page - 1)}
+                                    disabled=${pagination.page <= 1}
+                                    title="Previous page"
+                                >
+                                    ← Prev
+                                </button>
+                                <span class="pagination-page-indicator">
+                                    Page ${pagination.page} of ${pagination.totalPages}
+                                </span>
+                                <button
+                                    class="btn btn-sm btn-secondary"
+                                    onClick=${() => handlePageChange(pagination.page + 1)}
+                                    disabled=${pagination.page >= pagination.totalPages}
+                                    title="Next page"
+                                >
+                                    Next →
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="panel-content">
                         ${loading
             ? html`<div class="loading"><div class="spinner"></div>Loading...</div>`
             : html`<${FileList}
-                                entries=${displayedEntries}
+                                entries=${paginatedEntries}
                                 selectedFiles=${selectedFiles}
                                 canSelect=${canSelectEntry}
                                 onNavigate=${handleNavigate}
@@ -3947,6 +4660,8 @@ function App() {
                                 onRename=${setRenameTarget}
                                 onDelete=${setDeleteTarget}
                                 onVerify=${handleVerify}
+                                onCompress=${handleInlineCompress}
+                                conversionMode=${conversionMode}
                                 verifiedCHDs=${verifiedCHDs}
                                 verifyProgress=${verifyProgress}
                                 chdMetadata=${chdMetadata}
@@ -3955,7 +4670,7 @@ function App() {
                                 sortOrder=${sortOrder}
                                 onSort=${handleSort}
                                 onSelectAll=${handleSelectAll}
-                                allSelected=${selectedFiles.size > 0 && selectedFiles.size === displayedEntries.filter(e => canSelectEntry(e)).length}
+                                allSelected=${allSelectedOnPage}
                                 isoHandling=${isoHandling}
                                 onToggleIsoHandling=${handleIsoHandlingToggle}
                             />`
@@ -4021,7 +4736,7 @@ function App() {
             ${showCHDInfo && html`
                 <${CHDInfoModal}
                     path=${showCHDInfo.path}
-                    useDolphin=${showCHDInfo.useDolphin}
+                    infoMode=${showCHDInfo.infoMode}
                     onClose=${() => setShowCHDInfo(null)}
                 />
             `}
@@ -4029,7 +4744,8 @@ function App() {
             ${deletePlan && html`
                 <${DeletePlanModal}
                     plan=${deletePlan.plan}
-                    verificationLabel=${isDolphinMode ? 'disc image' : 'CHD'}
+                    verificationLabel=${isZ3dsMode ? null : (isDolphinMode ? 'disc image' : 'CHD')}
+                    title=${isZ3dsMode ? 'Confirm delete after compress' : null}
                     onConfirm=${handleDeletePlanConfirm}
                     onClose=${handleDeletePlanClose}
                 />
@@ -4054,12 +4770,12 @@ function App() {
             ${deleteTarget && html`
                 <${DeleteModal}
                     entry=${deleteTarget}
-                    hasCHD=${deleteTarget.has_chd}
                     verifiedCHDs=${verifiedCHDs}
                     verifyProgress=${verifyProgress}
                     onDelete=${handleDelete}
                     onVerify=${handleVerify}
                     onClose=${() => setDeleteTarget(null)}
+                    isoHandling=${isoHandling}
                 />
             `}
 
@@ -4071,6 +4787,7 @@ function App() {
                     onVerify=${handleAddVerifiedCHD}
                     onClose=${() => setBulkDeleteEntries(null)}
                     onRefresh=${handleBulkDeleteRefresh}
+                    isoHandling=${isoHandling}
                 />
             `}
 

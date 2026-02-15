@@ -8,17 +8,67 @@ from models import BulkDeleteRequest, DirectoryListing, FileEntry, Volume
 from services.archive import ARCHIVE_EXTENSIONS, archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import CONVERTIBLE_EXTENSIONS
-from services.dolphin_tool import DOLPHIN_CONVERTIBLE_EXTENSIONS
-from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS
+from services.dolphin_tool import DOLPHIN_CONVERTIBLE_EXTENSIONS, DOLPHIN_OUTPUT_FORMATS
+from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, Z3DS_OUTPUT_FORMATS
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
 from utils.path_utils import get_volume_name_for_path, is_within_configured_volumes
 
 router = APIRouter()
+DOLPHIN_OUTPUT_EXTENSIONS = tuple(
+    dict.fromkeys(ext for _, ext in DOLPHIN_OUTPUT_FORMATS.values()),
+)
+
 
 def _is_macos_metadata_entry(name: str) -> bool:
     return name == ".DS_Store" or name.startswith("._") or name == "__MACOSX"
+
+
+def _detect_z3ds_output_path(
+    item_path: str, source_ext: str,
+) -> tuple[bool, bool, str | None]:
+    """Check mapped 3DS output suffix and report presence + readiness."""
+    source = Path(item_path)
+    expected_ext = Z3DS_OUTPUT_FORMATS.get(source_ext)
+    if not expected_ext:
+        return False, False, None
+
+    candidate_path = str(source.with_suffix(expected_ext))
+    file_exists, is_converting = lock_manager.check_file_status(candidate_path)
+    if file_exists or is_converting:
+        return True, file_exists, candidate_path
+
+    return False, False, None
+
+
+def _detect_dolphin_output_path(
+    item_path: str, source_ext: str,
+) -> tuple[bool, bool, str | None]:
+    """Check for Dolphin output siblings and report presence + readiness."""
+    source = Path(item_path)
+    candidate_paths: list[str] = []
+
+    if source_ext in DOLPHIN_OUTPUT_EXTENSIONS and source_ext != ".iso":
+        candidate_paths.append(str(source))
+
+    for output_ext in DOLPHIN_OUTPUT_EXTENSIONS:
+        if output_ext == source_ext:
+            continue
+        candidate_paths.append(str(source.with_suffix(output_ext)))
+
+    converting_path: str | None = None
+    for candidate_path in candidate_paths:
+        file_exists, is_converting = lock_manager.check_file_status(candidate_path)
+        if file_exists:
+            return True, True, candidate_path
+        if is_converting and converting_path is None:
+            converting_path = candidate_path
+
+    if converting_path:
+        return True, False, converting_path
+    return False, False, None
+
 
 async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     _, is_locked = await run_in_threadpool(lock_manager.check_file_status, path)
@@ -117,6 +167,9 @@ async def list_files(
 
                         # Check if CHD already exists or is being converted (atomic check)
                         has_chd = False
+                        has_rvz = False
+                        dolphin_ready = False
+                        dolphin_path = None
                         chd_ready = False
                         if is_convertible:
                             chd_path = str(Path(item_path).with_suffix(".chd"))
@@ -125,18 +178,21 @@ async def list_files(
                             )
                             has_chd = file_exists or is_converting
                             chd_ready = file_exists
+                        if is_dolphin_convertible:
+                            has_rvz, dolphin_ready, dolphin_path = _detect_dolphin_output_path(
+                                item_path,
+                                ext,
+                            )
 
                         # Check if compressed 3DS file already exists or is being converted
                         has_z3ds = False
+                        z3ds_ready = False
+                        z3ds_path = None
                         if is_z3ds_convertible:
-                            from services.z3ds_compress import Z3DS_OUTPUT_FORMATS
-                            z3ds_ext = Z3DS_OUTPUT_FORMATS.get(ext)
-                            if z3ds_ext:
-                                z3ds_path = str(Path(item_path).with_suffix(z3ds_ext))
-                                file_exists, is_converting = lock_manager.check_file_status(
-                                    z3ds_path,
-                                )
-                                has_z3ds = file_exists or is_converting
+                            has_z3ds, z3ds_ready, z3ds_path = _detect_z3ds_output_path(
+                                item_path,
+                                ext,
+                            )
 
                         archive_items = None
                         archive_has_chd = None
@@ -172,10 +228,15 @@ async def list_files(
                             extension=ext,
                             convertible=is_convertible,
                             has_chd=has_chd,
+                            has_rvz=has_rvz,
+                            dolphin_ready=dolphin_ready,
+                            dolphin_path=dolphin_path,
                             chd_ready=chd_ready,
                             dolphin_convertible=is_dolphin_convertible,
                             z3ds_convertible=is_z3ds_convertible,
                             has_z3ds=has_z3ds,
+                            z3ds_ready=z3ds_ready,
+                            z3ds_path=z3ds_path,
                             archive_items=archive_items,
                             archive_has_chd=archive_has_chd,
                             archive_truncated=archive_truncated
@@ -251,8 +312,13 @@ async def search_files(
                                 is_z3ds_convertible = ext in Z3DS_CONVERTIBLE_EXTENSIONS
                                 chd_path = None
                                 has_chd = False
+                                has_rvz = False
+                                dolphin_ready = False
+                                dolphin_path = None
                                 chd_ready = False
                                 has_z3ds = False
+                                z3ds_ready = False
+                                z3ds_path = None
                                 if is_chd_convertible:
                                     chd_path = str(Path(item_path).with_suffix(".chd"))
                                     # Use atomic check to get both file existence and lock status
@@ -261,15 +327,16 @@ async def search_files(
                                     )
                                     has_chd = file_exists or is_converting
                                     chd_ready = file_exists
+                                if is_dolphin_convertible:
+                                    has_rvz, dolphin_ready, dolphin_path = _detect_dolphin_output_path(
+                                        item_path,
+                                        ext,
+                                    )
                                 if is_z3ds_convertible:
-                                    from services.z3ds_compress import Z3DS_OUTPUT_FORMATS
-                                    z3ds_ext = Z3DS_OUTPUT_FORMATS.get(ext)
-                                    if z3ds_ext:
-                                        z3ds_path = str(Path(item_path).with_suffix(z3ds_ext))
-                                        file_exists, is_converting = lock_manager.check_file_status(
-                                            z3ds_path,
-                                        )
-                                        has_z3ds = file_exists or is_converting
+                                    has_z3ds, z3ds_ready, z3ds_path = _detect_z3ds_output_path(
+                                        item_path,
+                                        ext,
+                                    )
                                 files.append(
                                     {
                                         "name": item,
@@ -278,11 +345,16 @@ async def search_files(
                                         "extension": ext,
                                         "chd_path": chd_path,
                                         "has_chd": has_chd,
+                                        "has_rvz": has_rvz,
+                                        "dolphin_ready": dolphin_ready,
+                                        "dolphin_path": dolphin_path,
                                         "chd_ready": chd_ready,
                                         "convertible": is_chd_convertible,
                                         "dolphin_convertible": is_dolphin_convertible,
                                         "z3ds_convertible": is_z3ds_convertible,
                                         "has_z3ds": has_z3ds,
+                                        "z3ds_ready": z3ds_ready,
+                                        "z3ds_path": z3ds_path,
                                         "in_archive": False,
                                     },
                                 )
@@ -317,9 +389,13 @@ async def search_files(
                                             "output_stem": output_stem,
                                             "chd_path": chd_path,
                                             "has_chd": file_exists or is_converting,
+                                            "has_rvz": False,
+                                            "dolphin_ready": False,
+                                            "dolphin_path": None,
                                             "chd_ready": file_exists,
                                             "convertible": entry.get("extension") in CONVERTIBLE_EXTENSIONS,
                                             "dolphin_convertible": False,
+                                            "z3ds_ready": False,
                                             "in_archive": True,
                                         },
                                     )

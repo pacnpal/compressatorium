@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from config import settings
+from services.timeout_policy import compute_progress_stall_timeout
 
 DOLPHIN_CONVERTIBLE_EXTENSIONS = {".iso", ".gcz", ".wia", ".rvz", ".wbfs"}
 
@@ -149,8 +150,11 @@ class DolphinToolService:
                 process.pid, " ".join(cmd),
             )
 
-        stall_timeout = max(
-            0, int(getattr(settings, "progress_timeout", 0) or 0),
+        stall_timeout = compute_progress_stall_timeout(
+            input_path=input_path,
+            base_timeout=getattr(settings, "progress_timeout", 0),
+            timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
+            timeout_cap=getattr(settings, "progress_timeout_cap", 0),
         )
         last_progress_value = 0
         last_output_size: int | None = None

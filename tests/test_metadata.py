@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -84,6 +85,25 @@ def metadata_store_path(tmp_path):
 @pytest.fixture
 def metadata_store(metadata_store_path):
     return CHDMetadataStore(str(metadata_store_path))
+
+
+def test_metadata_store_falls_back_when_default_config_unwritable(monkeypatch, tmp_path):
+    monkeypatch.delenv("CHD_METADATA_STORE", raising=False)
+    monkeypatch.delenv("CHD_DATA_DIR", raising=False)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+
+    original_mkdir = Path.mkdir
+
+    def guarded_mkdir(self, *args, **kwargs):
+        if os.fspath(self) == "/config":
+            raise OSError(30, "Read-only file system")
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", guarded_mkdir)
+    store = CHDMetadataStore()
+
+    assert store._store_path.parent == tmp_path / "compressatorium"
+    assert store._store_path.name == "chd_metadata.json"
 
 
 @pytest.mark.asyncio

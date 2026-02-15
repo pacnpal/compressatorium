@@ -12,12 +12,20 @@ class VerificationStore:
 
     def __init__(self, store_path: str | None = None) -> None:
         base_path = store_path or os.environ.get("CHD_VERIFICATION_STORE")
+        explicit_path = bool(base_path)
         if base_path:
             self._store_path = Path(base_path)
         else:
             default_dir = Path(os.environ.get("CHD_DATA_DIR", "/config"))
             self._store_path = default_dir / "verified_chds.json"
-        self._store_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._store_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            if explicit_path:
+                raise
+            fallback_root = Path(os.environ.get("TMPDIR", "/tmp")) / "compressatorium"
+            fallback_root.mkdir(parents=True, exist_ok=True)
+            self._store_path = fallback_root / self._store_path.name
 
         self._lock = threading.Lock()
         self._write_lock = threading.Lock()

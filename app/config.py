@@ -23,6 +23,21 @@ class Settings(BaseSettings):
 
     # Job limits
     max_concurrent_jobs: int = Field(default=1, alias="MAX_CONCURRENT_JOBS")
+    max_queue_depth: int = Field(
+        default=0,
+        alias="MAX_QUEUE_DEPTH",
+        description="Maximum queued+processing conversion jobs (0 disables backpressure)",
+    )
+    max_verify_concurrency: int = Field(
+        default=2,
+        alias="MAX_VERIFY_CONCURRENCY",
+        description="Maximum concurrent verify workloads across all endpoints",
+    )
+    max_metadata_scan_concurrency: int = Field(
+        default=1,
+        alias="MAX_METADATA_SCAN_CONCURRENCY",
+        description="Maximum concurrent metadata scan tasks",
+    )
     concurrency_lock_dir: str | None = Field(
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
@@ -82,6 +97,14 @@ class Settings(BaseSettings):
     )
     debug_progress_timeout: int = Field(default=300, alias="CHD_DEBUG_PROGRESS_TIMEOUT")
     progress_timeout: int = Field(default=600, alias="CHD_PROGRESS_TIMEOUT")
+    progress_timeout_per_gib: int = Field(
+        default=120,
+        alias="CHD_PROGRESS_TIMEOUT_PER_GIB",
+    )
+    progress_timeout_cap: int = Field(
+        default=7200,
+        alias="CHD_PROGRESS_TIMEOUT_CAP",
+    )
 
     def model_post_init(self, __context: object, /) -> None:  # pylint: disable=arguments-differ
         """Set default paths after model initialization."""

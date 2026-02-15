@@ -3,6 +3,7 @@ import os
 import re
 from pathlib import Path
 
+from config import settings
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from models import (
@@ -23,7 +24,7 @@ from services.dolphin_tool import (
     dolphin_tool_service,
 )
 from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
-from services.job_manager import job_manager
+from services.job_manager import QueueBackpressureError, job_manager
 from services.lock_manager import lock_manager
 from sse_starlette.sse import EventSourceResponse
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
@@ -76,6 +77,26 @@ def normalize_compression(value: str | None) -> str | None:
             detail=f"Invalid compression token(s): {', '.join(invalid)}",
         )
     return ",".join(parts)
+
+
+def enforce_queue_backpressure(additional_jobs: int = 1) -> None:
+    """Raise HTTP 429 when queue depth limits would be exceeded."""
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    if max_depth <= 0:
+        return
+    needed = max(1, int(additional_jobs))
+    current_depth = job_manager.get_queue_depth()
+    projected_depth = current_depth + needed
+    if projected_depth <= max_depth:
+        return
+    remaining = max(0, max_depth - current_depth)
+    raise HTTPException(
+        status_code=429,
+        detail=(
+            f"Conversion queue is at capacity ({current_depth}/{max_depth}). "
+            f"Retry later or submit <= {remaining} additional job(s)."
+        ),
+    )
 
 
 def supports_delete_on_verify(mode: str) -> bool:
@@ -236,7 +257,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
     if not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy modes",
+            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
         )
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -313,7 +334,7 @@ async def create_job(request: JobCreateRequest):
     if request.delete_on_verify and not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy modes",
+            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
         )
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(
@@ -448,6 +469,7 @@ async def create_job(request: JobCreateRequest):
     allow_overwrite = (
         request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
     )
+    enforce_queue_backpressure(1)
     delete_snapshot = None
     if request.delete_on_verify:
         try:
@@ -460,16 +482,19 @@ async def create_job(request: JobCreateRequest):
                 detail=f"Delete-on-verify blocked: {exc}",
             )
 
-    job = await job_manager.create_job(
-        file_path,
-        request.mode,
-        output_path=output_path,
-        allow_overwrite=allow_overwrite,
-        filename_override=display_filename,
-        compression=compression,
-        delete_on_verify=request.delete_on_verify,
-        delete_snapshot=delete_snapshot,
-    )
+    try:
+        job = await job_manager.create_job(
+            file_path,
+            request.mode,
+            output_path=output_path,
+            allow_overwrite=allow_overwrite,
+            filename_override=display_filename,
+            compression=compression,
+            delete_on_verify=request.delete_on_verify,
+            delete_snapshot=delete_snapshot,
+        )
+    except QueueBackpressureError as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
 
     return job
 
@@ -510,7 +535,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     if request.delete_on_verify and not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy modes",
+            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
         )
     if request.delete_on_verify:
         disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -552,7 +577,6 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             return 1
         return 0
 
-    jobs = []
     skipped = []
     candidates = []
 
@@ -699,19 +723,33 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if candidate["priority"] > existing["priority"]:
             selected[key] = candidate
 
+    if order:
+        # Enforce backpressure once using selected candidates to avoid partial enqueues.
+        # This check intentionally happens after de-duplication by output path.
+        enforce_queue_backpressure(len(order))
+
+    job_specs = []
     for key in order:
         candidate = selected[key]
-        job = await job_manager.create_job(
-            candidate["file_path"],
+        job_specs.append(
+            {
+                "file_path": candidate["file_path"],
+                "output_path": candidate["output_path"],
+                "allow_overwrite": candidate["allow_overwrite"],
+                "filename_override": candidate["display_filename"],
+                "delete_snapshot": candidate.get("delete_snapshot"),
+            },
+        )
+
+    try:
+        jobs = await job_manager.create_jobs_atomic(
+            job_specs,
             request.mode,
-            output_path=candidate["output_path"],
-            allow_overwrite=candidate["allow_overwrite"],
-            filename_override=candidate["display_filename"],
             compression=compression,
             delete_on_verify=request.delete_on_verify,
-            delete_snapshot=candidate.get("delete_snapshot"),
         )
-        jobs.append(job)
+    except QueueBackpressureError as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
 
     return jobs
 
@@ -772,6 +810,12 @@ async def job_events():
     return EventSourceResponse(event_generator())
 
 
+@router.get("/jobs/stuck-status")
+async def check_stuck_status():
+    """Check if the job queue is in a stuck state."""
+    return job_manager.get_stuck_state_info()
+
+
 @router.get("/jobs/{job_id}", response_model=ConversionJob)
 async def get_job(job_id: str):
     """Get a specific job by ID."""
@@ -792,10 +836,7 @@ async def delete_completed_jobs():
     return {"deleted": deleted_ids, "count": len(deleted_ids)}
 
 
-@router.get("/jobs/stuck-status")
-async def check_stuck_status():
-    """Check if the job queue is in a stuck state."""
-    return job_manager.get_stuck_state_info()
+
 
 
 @router.post("/jobs/recover")

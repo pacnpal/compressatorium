@@ -51,7 +51,7 @@ Both registries provide identical images with multi-architecture support (`linux
 | Tag | Description |
 |-----|-------------|
 | `latest` | Latest stable release from the main branch |
-| `vX.Y.Z` | Specific version (e.g., `v2.1.0`) |
+| `vX.Y.Z` | Specific version (e.g., `v3.0.0`) |
 | `sha-xxxxxxx` | Specific commit build |
 
 ---
@@ -118,7 +118,7 @@ docker run -d \
 
 ### Custom Output Directory
 
-In the Web UI, you can specify a custom output directory for converted CHD or Dolphin disc images instead of placing them alongside the source files. The directory will be created automatically as long as it is within your configured volumes.
+In the Web UI, you can specify a custom output directory for converted CHD, Dolphin, or 3DS outputs instead of placing them alongside the source files. The directory will be created automatically as long as it is within your configured volumes.
 
 ### Screenshots
 
@@ -467,6 +467,9 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs |
+| `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
+| `MAX_VERIFY_CONCURRENCY` | `2` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |
+| `MAX_METADATA_SCAN_CONCURRENCY` | `1` | Maximum concurrent metadata scan tasks |
 | `MAX_JOB_HISTORY` | `500` | Maximum completed jobs to retain in history |
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19, higher = lower priority) |
 | `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class (`1` realtime, `2` best-effort, `3` idle) |
@@ -483,6 +486,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval in seconds |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout in seconds |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |
+| `CHD_PROGRESS_TIMEOUT_PER_GIB` | `120` | Additional stall timeout seconds per GiB of input size |
+| `CHD_PROGRESS_TIMEOUT_CAP` | `7200` | Upper bound for adaptive conversion stall timeout (0 disables cap) |
 | `STATIC_DIR` | `/static` | Path to static web assets |
 
 Defaults are intentionally conservative to reduce host impact during conversion. Increase `MAX_CONCURRENT_JOBS` or adjust `CHD_CHDMAN_*` only if your host has ample CPU/RAM and fast storage. By default temp files go to `/config/temp`; set `CHD_TEMP_DIR` to use a faster disk and mount it into the container.

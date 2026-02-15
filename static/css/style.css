@@ -1419,6 +1419,62 @@ header h1 span {
     border-color: var(--accent);
 }
 
+/* Pagination Controls */
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 10px 0 14px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 14px;
+}
+
+.pagination-summary {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.pagination-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.pagination-page-size {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.pagination-page-size select {
+    min-width: 90px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--text-primary);
+}
+
+.pagination-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pagination-page-indicator {
+    min-width: 96px;
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
 /* ============================================
    MOBILE RESPONSIVE IMPROVEMENTS
    ============================================ */
@@ -1635,6 +1691,50 @@ header h1 span {
         padding: 12px 16px;
         min-height: 48px;
         font-size: 1rem;
+    }
+
+    .pagination-controls {
+        gap: 10px;
+        padding: 10px 0;
+        margin-bottom: 10px;
+    }
+
+    .pagination-summary {
+        width: 100%;
+        font-size: 0.8rem;
+    }
+
+    .pagination-actions {
+        width: 100%;
+        justify-content: space-between;
+        gap: 10px;
+    }
+
+    .pagination-page-size {
+        flex: 1;
+        min-width: 0;
+        font-size: 0.72rem;
+    }
+
+    .pagination-page-size select {
+        width: 100%;
+        min-height: 40px;
+    }
+
+    .pagination-nav {
+        flex: 1;
+        justify-content: flex-end;
+        gap: 6px;
+    }
+
+    .pagination-nav .btn {
+        min-height: 40px;
+        padding: 8px 10px;
+    }
+
+    .pagination-page-indicator {
+        min-width: auto;
+        font-size: 0.75rem;
     }
 
     /* Compression Options - Mobile */

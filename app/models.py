@@ -45,10 +45,15 @@ class FileEntry(BaseModel):
     extension: str | None = None
     convertible: bool = False
     has_chd: bool = False
+    has_rvz: bool = False
+    dolphin_ready: bool = False
+    dolphin_path: str | None = None
     chd_ready: bool = False
     dolphin_convertible: bool = False
     z3ds_convertible: bool = False
     has_z3ds: bool = False
+    z3ds_ready: bool = False
+    z3ds_path: str | None = None
     archive_items: int | None = None
     archive_has_chd: int | None = None
     archive_truncated: bool | None = None

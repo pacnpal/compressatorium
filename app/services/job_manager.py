@@ -29,6 +29,21 @@ from utils.path_utils import is_within_configured_volumes, strip_archive_path
 logger = logging.getLogger("chd.job_manager")
 
 
+class QueueBackpressureError(RuntimeError):
+    """Raised when queue backpressure limits would be exceeded."""
+
+    def __init__(self, current_depth: int, max_depth: int, additional_jobs: int):
+        self.current_depth = max(0, int(current_depth))
+        self.max_depth = max(0, int(max_depth))
+        self.additional_jobs = max(1, int(additional_jobs))
+        remaining = max(0, self.max_depth - self.current_depth)
+        self.detail = (
+            f"Conversion queue is at capacity ({self.current_depth}/{self.max_depth}). "
+            f"Retry later or submit <= {remaining} additional job(s)."
+        )
+        super().__init__(self.detail)
+
+
 class JobManager:
     """Manages conversion job queue and execution."""
 
@@ -56,8 +71,28 @@ class JobManager:
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._stuck_detected_at: Optional[float] = None
         self._last_stuck_recovery_at: float = 0
+        self._create_lock = asyncio.Lock()
 
-    async def create_job(
+    def _enforce_queue_backpressure_locked(self, additional_jobs: int = 1) -> None:
+        """Raise QueueBackpressureError when queue depth limits are exceeded."""
+        max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+        if max_depth <= 0:
+            return
+
+        needed = max(1, int(additional_jobs))
+        current_depth = sum(
+            1
+            for job in self.jobs.values()
+            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+        )
+        if current_depth + needed > max_depth:
+            raise QueueBackpressureError(
+                current_depth=current_depth,
+                max_depth=max_depth,
+                additional_jobs=needed,
+            )
+
+    def _queue_job_locked(
         self,
         file_path: str,
         mode: ConversionMode,
@@ -69,7 +104,7 @@ class JobManager:
         delete_on_verify: bool = False,
         delete_snapshot: Optional[Dict[str, object]] = None,
     ) -> ConversionJob:
-        """Create a new conversion job."""
+        """Queue a job while holding _create_lock (no backpressure check here)."""
         job_id = str(uuid.uuid4())[:8]
         filename = filename_override or os.path.basename(file_path)
 
@@ -112,8 +147,75 @@ class JobManager:
                 allow_overwrite,
                 compression,
             )
+        return job
+
+    async def create_job(
+        self,
+        file_path: str,
+        mode: ConversionMode,
+        output_dir: Optional[str] = None,
+        output_path: Optional[str] = None,
+        allow_overwrite: bool = False,
+        filename_override: Optional[str] = None,
+        compression: Optional[str] = None,
+        delete_on_verify: bool = False,
+        delete_snapshot: Optional[Dict[str, object]] = None,
+    ) -> ConversionJob:
+        """Create a new conversion job."""
+        async with self._create_lock:
+            self._enforce_queue_backpressure_locked(1)
+            job = self._queue_job_locked(
+                file_path=file_path,
+                mode=mode,
+                output_dir=output_dir,
+                output_path=output_path,
+                allow_overwrite=allow_overwrite,
+                filename_override=filename_override,
+                compression=compression,
+                delete_on_verify=delete_on_verify,
+                delete_snapshot=delete_snapshot,
+            )
         await self._prune_jobs()
         return job
+
+    async def create_jobs_atomic(
+        self,
+        job_specs: List[Dict[str, object]],
+        mode: ConversionMode,
+        compression: Optional[str] = None,
+        delete_on_verify: bool = False,
+    ) -> List[ConversionJob]:
+        """Create multiple jobs atomically under a single backpressure check."""
+        if not job_specs:
+            return []
+
+        jobs: List[ConversionJob] = []
+        async with self._create_lock:
+            self._enforce_queue_backpressure_locked(len(job_specs))
+            for spec in job_specs:
+                file_path = str(spec["file_path"])
+                output_dir = spec.get("output_dir")
+                output_path = spec.get("output_path")
+                filename_override = spec.get("filename_override")
+                jobs.append(
+                    self._queue_job_locked(
+                        file_path=file_path,
+                        mode=mode,
+                        output_dir=str(output_dir) if output_dir is not None else None,
+                        output_path=str(output_path) if output_path is not None else None,
+                        allow_overwrite=bool(spec.get("allow_overwrite", False)),
+                        filename_override=(
+                            str(filename_override)
+                            if filename_override is not None
+                            else None
+                        ),
+                        compression=compression,
+                        delete_on_verify=delete_on_verify,
+                        delete_snapshot=spec.get("delete_snapshot"),
+                    )
+                )
+        await self._prune_jobs()
+        return jobs
 
     async def create_batch_jobs(
         self,
@@ -125,19 +227,22 @@ class JobManager:
         delete_snapshots: Optional[Dict[str, Dict[str, object]]] = None,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs."""
-        jobs = []
+        job_specs: List[Dict[str, object]] = []
         for fp in file_paths:
             snapshot = delete_snapshots.get(fp) if delete_snapshots else None
-            job = await self.create_job(
-                fp,
-                mode,
-                output_dir,
-                compression=compression,
-                delete_on_verify=delete_on_verify,
-                delete_snapshot=snapshot,
+            job_specs.append(
+                {
+                    "file_path": fp,
+                    "output_dir": output_dir,
+                    "delete_snapshot": snapshot,
+                }
             )
-            jobs.append(job)
-        return jobs
+        return await self.create_jobs_atomic(
+            job_specs,
+            mode,
+            compression=compression,
+            delete_on_verify=delete_on_verify,
+        )
 
     def get_job(self, job_id: str) -> Optional[ConversionJob]:
         """Get a job by ID."""
@@ -146,6 +251,14 @@ class JobManager:
     def get_all_jobs(self) -> List[ConversionJob]:
         """Get all jobs."""
         return list(self.jobs.values())
+
+    def get_queue_depth(self) -> int:
+        """Return queued + processing job count for backpressure checks."""
+        return sum(
+            1
+            for job in self.jobs.values()
+            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+        )
 
     def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
         """Return active job ids with their candidate paths (input/output)."""
@@ -1064,39 +1177,64 @@ class JobManager:
                 if job.delete_on_verify:
                     if job.mode.value.startswith("extract"):
                         raise RuntimeError(
-                            "Delete-on-verify is only supported for create/copy modes"
+                            "Delete-on-verify is only supported for create/copy/Dolphin/3DS modes"
                         )
                     if cancel_event.is_set():
                         raise ConversionCancelled("Conversion cancelled")
 
-                    job.message = "Verifying output..."
-                    await self._notify_subscribers(
-                        job_id,
-                        {
-                            "type": "progress",
-                            "job_id": job_id,
-                            "progress": job.progress,
-                            "message": job.message,
-                        },
-                    )
-
-                    _verify_service = (
-                        dolphin_tool_service
-                        if job.mode.value.startswith("dolphin_")
-                        else chdman_service
-                    )
-                    verify_result = await _verify_service.verify(
-                        job.output_path
-                    )
-                    if not verify_result.get("valid"):
-                        raise RuntimeError(
-                            f"Verification failed: {verify_result.get('message')}"
+                    verified = False
+                    if job.mode.value == "z3ds_compress":
+                        job.message = "Verifying output (zstd -t)..."
+                        await self._notify_subscribers(
+                            job_id,
+                            {
+                                "type": "progress",
+                                "job_id": job_id,
+                                "progress": job.progress,
+                                "message": job.message,
+                            },
                         )
 
-                    verified = True
-                    await verification_store.mark_verified(
-                        job.output_path, source_path=job.file_path
-                    )
+                        verify_result = await z3ds_compress_service.verify(job.output_path)
+                        if not verify_result.get("valid"):
+                            raise RuntimeError(
+                                f"Verification failed: {verify_result.get('message')}"
+                            )
+
+                        verified = True
+                        await verification_store.mark_verified(
+                            job.output_path, source_path=job.file_path
+                        )
+
+                    else:
+                        job.message = "Verifying output..."
+                        await self._notify_subscribers(
+                            job_id,
+                            {
+                                "type": "progress",
+                                "job_id": job_id,
+                                "progress": job.progress,
+                                "message": job.message,
+                            },
+                        )
+
+                        _verify_service = (
+                            dolphin_tool_service
+                            if job.mode.value.startswith("dolphin_")
+                            else chdman_service
+                        )
+                        verify_result = await _verify_service.verify(
+                            job.output_path
+                        )
+                        if not verify_result.get("valid"):
+                            raise RuntimeError(
+                                f"Verification failed: {verify_result.get('message')}"
+                            )
+
+                        verified = True
+                        await verification_store.mark_verified(
+                            job.output_path, source_path=job.file_path
+                        )
 
                     if cancel_event.is_set():
                         job.message = "Verification complete. Delete skipped (cancelled)."
@@ -1224,10 +1362,25 @@ class JobManager:
                             if (
                                 int(fp.get("size", -1)) != int(st.st_size)
                                 or int(fp.get("mtime_ns", -1)) != mtime_ns
-                                or int(fp.get("inode", -1))
-                                != int(getattr(st, "st_ino", 0))
-                                or int(fp.get("device", -1))
-                                != int(getattr(st, "st_dev", 0))
+                            ):
+                                raise RuntimeError(
+                                    "Delete path fingerprint mismatch; refusing to delete"
+                                )
+                            snapshot_inode = int(fp.get("inode", 0) or 0)
+                            snapshot_device = int(fp.get("device", 0) or 0)
+                            current_inode = int(getattr(st, "st_ino", 0) or 0)
+                            current_device = int(getattr(st, "st_dev", 0) or 0)
+                            if (
+                                (
+                                    snapshot_inode > 0
+                                    and current_inode > 0
+                                    and snapshot_inode != current_inode
+                                )
+                                or (
+                                    snapshot_device > 0
+                                    and current_device > 0
+                                    and snapshot_device != current_device
+                                )
                             ):
                                 raise RuntimeError(
                                     "Delete path fingerprint mismatch; refusing to delete"

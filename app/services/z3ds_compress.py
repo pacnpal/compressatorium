@@ -1,15 +1,19 @@
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
+import struct
 import threading
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+import aiofiles
 from config import settings
 from fastapi.concurrency import run_in_threadpool
 from services.chdman import ConversionCancelled
+from services.timeout_policy import compute_progress_stall_timeout
 
 Z3DS_CONVERTIBLE_EXTENSIONS = {".cci", ".cia", ".3ds"}
 
@@ -19,7 +23,7 @@ Z3DS_OUTPUT_FORMATS = {
     ".3ds": ".z3ds",
 }
 
-logger = logging.getLogger("z3ds_compress")
+logger = logging.getLogger("chd.z3ds_compress")
 
 
 class Z3DSCompressService:
@@ -72,6 +76,32 @@ class Z3DSCompressService:
         with self._pid_lock:
             return list(self._active_pids)
 
+    @staticmethod
+    async def _get_verify_payload_offset(file_path: str) -> int:
+        """Return the byte offset where the seekable zstd payload begins."""
+
+        def _read_offset() -> int:
+            with open(file_path, "rb") as fh:
+                header = fh.read(0x20)
+
+            if len(header) < 0x20:
+                raise ValueError("Invalid Z3DS file: header is too short")
+
+            magic, _underlying_magic, _version, _reserved, header_size, metadata_size, _compressed_size, _uncompressed_size = struct.unpack(
+                "<4s4sBBHIQQ",
+                header,
+            )
+            if magic != b"Z3DS":
+                raise ValueError("Invalid Z3DS file: missing Z3DS header")
+
+            payload_offset = int(header_size) + int(metadata_size)
+            file_size = os.path.getsize(file_path)
+            if payload_offset <= 0 or payload_offset >= file_size:
+                raise ValueError("Invalid Z3DS file: payload offset is out of range")
+            return payload_offset
+
+        return await run_in_threadpool(_read_offset)
+
     def get_output_path(self, input_path: str, output_dir: str | None = None) -> str:
         """Calculate output path for a 3DS file.
         
@@ -103,146 +133,180 @@ class Z3DSCompressService:
         compression: str | None = None,  # Unused but required for interface consistency
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
-        """Run z3ds_compressor and yield progress updates.
-
-        Args:
-            input_path: Path to input file (.cci or .cia)
-            output_path: Path for output file (.zcci or .zcia)
-            cancel_event: Optional event to signal cancellation
-
-        Yields:
-            dict: {"progress": int, "message": str}
-        """
-        # Ensure output directory exists
-        output_dir = os.path.dirname(output_path)
-        if output_dir:
-            await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
-
-        cmd = self._build_command(input_path, output_path)
-
-        def _preexec():
-            if settings.chdman_nice is not None:
-                try:
-                    os.nice(settings.chdman_nice)
-                except OSError:
-                    pass
-
-        # cmd is built from validated settings paths (no shell interpretation);
-        # create_subprocess_exec passes args directly without shell expansion.
-        process = await asyncio.create_subprocess_exec(
-            cmd[0], *cmd[1:],
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            preexec_fn=_preexec if os.name == "posix" else None,
-        )
-        self._track_pid(process.pid)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Starting z3ds_compressor pid=%s cmd=%s", process.pid, " ".join(cmd))
-
-        stall_timeout = max(0, int(getattr(settings, "progress_timeout", 0) or 0))
-        last_output_size: int | None = None
-        last_activity_at = time.monotonic()
-
-        cancelled_by_request = False
-        cancel_task = None
-        if cancel_event:
-
-            async def _cancel_watcher():
-                nonlocal cancelled_by_request
-                await cancel_event.wait()
-                cancelled_by_request = True
-                try:
-                    process.terminate()
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-
-            cancel_task = asyncio.create_task(_cancel_watcher())
-
-        yield {"progress": 5, "message": "Starting 3DS compression..."}
-
-        output_lines = []
         try:
-            while True:
-                try:
-                    line_bytes = await asyncio.wait_for(
-                        process.stdout.readline(), timeout=2.0,
-                    )
-                except asyncio.TimeoutError:
-                    line_bytes = None
+            # Ensure output directory exists
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
 
-                if line_bytes:
-                    line = line_bytes.decode("utf-8", errors="replace").strip()
-                    if line:
-                        output_lines.append(line)
-                        if logger.isEnabledFor(logging.DEBUG):
-                            logger.debug("z3ds_compressor output: %s", line)
-                        last_activity_at = time.monotonic()
+            cmd = self._build_command(input_path, output_path)
 
-                # Check output file size for progress
-                if os.path.exists(output_path):
+            def _preexec():
+                if settings.chdman_nice is not None:
                     try:
-                        current_size = os.path.getsize(output_path)
-                        if last_output_size is None or current_size != last_output_size:
-                            last_output_size = current_size
-                            last_activity_at = time.monotonic()
-                            # Estimate progress based on typical 50% compression ratio
-                            if os.path.exists(input_path):
-                                input_size = os.path.getsize(input_path)
-                                if input_size > 0:
-                                    # Expect output to be ~50% of input
-                                    expected_output_size = input_size * 0.5
-                                    progress = min(95, int((current_size / expected_output_size) * 90 + 5))
-                                    yield {"progress": progress, "message": f"Compressing... ({current_size // (1024*1024)} MB)"}
+                        os.nice(settings.chdman_nice)
                     except OSError:
                         pass
 
-                # Check if process has finished
-                if process.returncode is not None:
-                    break
+            # cmd is built from validated settings paths (no shell interpretation);
+            # create_subprocess_exec passes args directly without shell expansion.
+            process = await asyncio.create_subprocess_exec(
+                cmd[0], *cmd[1:],
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                preexec_fn=_preexec if os.name == "posix" else None,
+            )
+            if process.stdout is None:
+                raise RuntimeError("z3ds_compressor stdout is not available")
 
-                # Check for stalls
-                if stall_timeout > 0:
-                    elapsed_since_activity = time.monotonic() - last_activity_at
-                    if elapsed_since_activity > stall_timeout:
-                        logger.warning(
-                            "z3ds_compressor pid=%s stalled (no progress for %ds), killing",
-                            process.pid, int(elapsed_since_activity),
-                        )
+            self._track_pid(process.pid)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Starting z3ds_compressor pid=%s cmd=%s",
+                    process.pid,
+                    " ".join(cmd),
+                )
+
+            stall_timeout = compute_progress_stall_timeout(
+                input_path=input_path,
+                base_timeout=getattr(settings, "progress_timeout", 0),
+                timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
+                timeout_cap=getattr(settings, "progress_timeout_cap", 0),
+            )
+            last_output_size: int | None = None
+            last_activity_at = time.monotonic()
+
+            cancelled_by_request = False
+            cancel_task = None
+            if cancel_event:
+
+                async def _cancel_watcher():
+                    nonlocal cancelled_by_request
+                    await cancel_event.wait()
+                    cancelled_by_request = True
+                    try:
+                        process.terminate()
+                        await asyncio.wait_for(process.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+
+                cancel_task = asyncio.create_task(_cancel_watcher())
+
+            yield {"progress": 5, "message": "Starting 3DS compression..."}
+
+            output_lines: list[str] = []
+            buffer = ""
+
+            def _record_line(raw: str) -> None:
+                line = raw.strip()
+                if not line:
+                    return
+                if not output_lines or output_lines[-1] != line:
+                    output_lines.append(line)
+                    if len(output_lines) > 30:
+                        output_lines.pop(0)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("z3ds_compressor output: %s", line)
+
+            try:
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(process.stdout.read(256), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        chunk = None
+                    
+                    if chunk == b"":
+                        break
+
+                    if chunk:
+                        buffer += chunk.decode("utf-8", errors="replace")
+                        last_activity_at = time.monotonic()
+
+                        while True:
+                            sep_positions = [i for i in (buffer.find("\r"), buffer.find("\n")) if i >= 0]
+                            if not sep_positions:
+                                break
+                            sep_index = min(sep_positions)
+                            _record_line(buffer[:sep_index])
+                            buffer = buffer[sep_index + 1:]
+                            last_activity_at = time.monotonic()
+
+                    # Check output file size for progress
+                    if os.path.exists(output_path):
                         try:
-                            process.kill()
-                        except ProcessLookupError:
+                            current_size = os.path.getsize(output_path)
+                            if last_output_size is None or current_size != last_output_size:
+                                last_output_size = current_size
+                                last_activity_at = time.monotonic()
+                                # Estimate progress based on typical 50% compression ratio
+                                if os.path.exists(input_path):
+                                    input_size = os.path.getsize(input_path)
+                                    if input_size > 0:
+                                        # Expect output to be ~50% of input
+                                        expected_output_size = input_size * 0.5
+                                        progress = min(95, int((current_size / expected_output_size) * 90 + 5))
+                                        yield {
+                                            "progress": progress,
+                                            "message": f"Compressing... ({current_size // (1024*1024)} MB)",
+                                        }
+                        except OSError:
                             pass
-                        raise TimeoutError(f"Compression stalled (no progress for {stall_timeout}s)")
 
-            # Wait for process to finish
-            await process.wait()
+                    if process.returncode is not None:
+                        break
 
-        finally:
-            self._untrack_pid(process.pid)
-            if cancel_task:
-                cancel_task.cancel()
-                try:
-                    await cancel_task
-                except asyncio.CancelledError:
-                    pass
+                    # Check for stalls
+                    if stall_timeout > 0:
+                        elapsed_since_activity = time.monotonic() - last_activity_at
+                        if elapsed_since_activity > stall_timeout:
+                            logger.warning(
+                                "z3ds_compressor pid=%s stalled (no progress for %ds), killing",
+                                process.pid, int(elapsed_since_activity),
+                            )
+                            try:
+                                process.kill()
+                            except ProcessLookupError:
+                                pass
+                            raise TimeoutError(
+                                f"Compression stalled (no progress for {stall_timeout}s)",
+                            )
 
-        if cancelled_by_request:
-            # Clean up partial output
-            if os.path.exists(output_path):
-                try:
-                    os.remove(output_path)
-                except OSError:
-                    pass
-            raise ConversionCancelled("Compression cancelled by user")
+                await process.wait()
 
-        if process.returncode != 0:
-            error_msg = "\n".join(output_lines[-10:]) if output_lines else "Unknown error"
-            raise RuntimeError(f"z3ds_compressor failed with exit code {process.returncode}: {error_msg}")
+                if buffer.strip():
+                    _record_line(buffer)
 
-        yield {"progress": 100, "message": "3DS compression complete"}
+            finally:
+                self._untrack_pid(process.pid)
+                if cancel_task:
+                    cancel_task.cancel()
+                    try:
+                        await cancel_task
+                    except asyncio.CancelledError:
+                        pass
+
+            if cancelled_by_request:
+                # Clean up partial output
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except OSError:
+                        pass
+                raise ConversionCancelled("Compression cancelled by user")
+
+            if process.returncode != 0:
+                error_msg = "\n".join(output_lines[-10:]) if output_lines else "Unknown error"
+                raise RuntimeError(
+                    f"z3ds_compressor failed with exit code {process.returncode}: {error_msg}",
+                )
+
+            yield {"progress": 100, "message": "3DS compression complete"}
+
+        except Exception as e:
+            logger.exception("Error in z3ds_compress.convert: %s", e)
+            raise
 
     def info(self, file_path: str) -> dict:
         """Get basic information about a 3DS ROM file.
@@ -352,6 +416,154 @@ class Z3DSCompressService:
             return str(Path(output_dir) / filename)
         return str(input_p.parent / filename)
 
+
+    async def verify(self, file_path: str) -> dict:
+        """Verify the integrity of a compressed 3DS file.
+
+        Since z3ds_compressor lacks a native verify mode, we perform basic checks:
+        1. File exists
+        2. File is not empty
+        3. File has correct extension
+        
+        Returns:
+            dict: {"valid": bool, "message": str}
+        """
+        final = {"valid": False, "message": "Verification failed"}
+        async for update in self.verify_stream(file_path):
+            if update.get("type") in ("complete", "error"):
+                final = update
+        return {
+            "valid": bool(final.get("valid", False)),
+            "message": final.get("message") or "Verification failed",
+        }
+
+    async def verify_stream(self, file_path: str) -> AsyncGenerator[dict, None]:
+        """Stream verification progress.
+        
+        For now, this is a simulated verification since we rely on checks that
+        are seemingly instantaneous. We add a small delay to ensure the UI
+        has time to register the 'verifying' state.
+        """
+        if not os.path.exists(file_path):
+            yield {
+                "type": "error", 
+                "valid": False, 
+                "message": "File not found"
+            }
+            return
+
+        if os.path.getsize(file_path) == 0:
+            yield {
+                "type": "error", 
+                "valid": False, 
+                "message": "File is empty"
+            }
+            return
+
+        ext = Path(file_path).suffix.lower()
+        if ext not in {".zcci", ".zcia", ".z3ds"}:
+             yield {
+                "type": "error", 
+                "valid": False, 
+                "message": f"Invalid extension: {ext}"
+            }
+             return
+
+        # Perform deep verification using zstd -t.
+        # Container metadata length is variable, so compute the payload offset
+        # from the on-disk Z3DS header fields.
+
+        try:
+            zstd_path = shutil.which("zstd")
+            if not zstd_path:
+                yield {
+                    "type": "error",
+                    "valid": False,
+                    "message": "zstd not found; full integrity verification is unavailable",
+                }
+                return
+
+            payload_offset = await self._get_verify_payload_offset(file_path)
+
+            # Start zstd -t process reading from stdin
+            process = await asyncio.create_subprocess_exec(
+                zstd_path,
+                "-t",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            self._track_pid(process.pid)
+
+            try:
+                yield {"type": "progress", "progress": 0, "message": "Verifying integrity..."}
+
+                # Stream file to zstd process from the computed payload offset.
+                chunk_size = 1024 * 1024  # 1MB chunks
+                try:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "Starting z3ds verification stream for %s (offset=%d)",
+                            file_path,
+                            payload_offset,
+                        )
+
+                    async with aiofiles.open(file_path, "rb") as f:
+                        await f.seek(payload_offset)
+
+                        while True:
+                            chunk = await f.read(chunk_size)
+                            if not chunk:
+                                break
+                            try:
+                                if process.stdin is None:
+                                    raise RuntimeError("zstd stdin is unavailable")
+                                process.stdin.write(chunk)
+                                await process.stdin.drain()
+                            except BrokenPipeError:
+                                # zstd closed stdin early due to integrity failure.
+                                break
+
+                    if process.stdin is not None:
+                        process.stdin.close()
+                        await process.stdin.wait_closed()
+
+                except Exception as stream_err:
+                    logger.error("Error streaming to zstd: %s", stream_err)
+                    raise
+
+                # Wait for process to finish
+                _stdout, stderr = await process.communicate()
+
+                if process.returncode == 0:
+                    yield {"type": "progress", "progress": 100, "message": "Integrity check passed"}
+                    yield {
+                        "type": "complete",
+                        "valid": True,
+                        "message": "File verified successfully"
+                    }
+                else:
+                    stderr_text = stderr.decode("utf-8", errors="replace").strip()
+                    yield {
+                        "type": "error",
+                        "valid": False,
+                        "message": f"Integrity check failed: {stderr_text}"
+                    }
+            finally:
+                if process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                    with contextlib.suppress(Exception):
+                        await process.wait()
+                self._untrack_pid(process.pid)
+
+        except Exception as e:
+            logger.exception("Error during 3DS verification: %s", e)
+            yield {
+                "type": "error", 
+                "valid": False, 
+                "message": f"Verification error: {str(e)}"
+            }
 
 # Global service instance
 z3ds_compress_service = Z3DSCompressService()
