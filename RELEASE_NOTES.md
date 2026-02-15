@@ -1,5 +1,25 @@
 # Release Notes
 
+## v3.2.0 - Job Tabs & Queue Pagination
+
+### ✨ New Features
+
+- **Job tabs** - The jobs panel is now split into three tabs: **Queue** (queued + processing + creating), **Completed**, and **Failed/Cancelled**. Each tab shows its own count. The "Failed/Cancelled" tab auto-hides when empty and auto-switches back to Queue if emptied while active.
+- **Job pagination** - Jobs within each tab are paginated with configurable page-size (10 / 25 / 50 / 100 / All), page navigation buttons, and a "Showing X–Y of Z" summary. Current page is clamped when the list shrinks.
+
+### 🎨 UI / UX
+
+- **Tab bar styling** - Pill-shaped tab buttons with uppercase labels, accent-color active state, hover highlights, and full-width equal-sizing on mobile (≤768 px).
+- **Job header count** - The "Jobs" heading now displays the combined total across all tabs rather than the raw `jobs.length`.
+- **Empty-state messaging** - Each tab shows contextual empty titles and help text (e.g. "Select files and click Convert" for Queue, "Successfully completed jobs will appear here" for Completed).
+
+### 📁 Files Changed
+
+- `static/js/app.js` - Job tab state, `displayedJobs` / `queueJobs` / `completedJobs` / `issueJobs` memos, `jobsPagination` / `paginatedJobs` computed values, tab bar and pagination controls, contextual empty-state props
+- `static/css/style.css` - `.job-tabs`, `.job-tab`, `.job-tab.active`, `.job-tab:hover` styles + mobile responsive rules
+
+---
+
 ## v3.1.1 - SSE Batching, Verify Concurrency & Test Coverage
 
 ### 🐞 Bug Fixes

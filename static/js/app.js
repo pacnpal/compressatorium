@@ -727,13 +727,18 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
     `;
 }
 
-function JobList({ jobs, onCancel }) {
+function JobList({
+    jobs,
+    onCancel,
+    emptyTitle = 'No conversion jobs',
+    emptyHelpText = 'Select files and click Convert to queue jobs',
+}) {
     if (jobs.length === 0) {
         return html`
             <div class="empty-state">
                 <div class="icon">⏳</div>
-                <p>No conversion jobs</p>
-                <p class="help-text">Select files and click Convert to queue jobs</p>
+                <p>${emptyTitle}</p>
+                <p class="help-text">${emptyHelpText}</p>
             </div>
         `;
     }
@@ -2514,6 +2519,9 @@ function App() {
     const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
     const [itemsPerPage, setItemsPerPage] = useState(DEFAULT_PAGE_SIZE);
     const [currentPage, setCurrentPage] = useState(1);
+    const [jobTab, setJobTab] = useState('queue');
+    const [jobItemsPerPage, setJobItemsPerPage] = useState(DEFAULT_PAGE_SIZE);
+    const [jobCurrentPage, setJobCurrentPage] = useState(1);
     const [stuckState, setStuckState] = useState(null); // Stuck state detection: { is_stuck, queued_count, processing_count }
     const [recoveringStuck, setRecoveringStuck] = useState(false); // Recovery in progress
     const [showCancelAllModal, setShowCancelAllModal] = useState(false);
@@ -2785,6 +2793,75 @@ function App() {
             setCurrentPage(pagination.page);
         }
     }, [currentPage, pagination.page]);
+
+    const queueJobs = useMemo(() => {
+        const activeServerJobs = jobs.filter(
+            (job) => !['completed', 'failed', 'cancelled'].includes(job.status),
+        );
+        return creatingJobs.length > 0
+            ? [...creatingJobs, ...activeServerJobs]
+            : activeServerJobs;
+    }, [creatingJobs, jobs]);
+
+    const completedJobs = useMemo(
+        () => jobs.filter((job) => job.status === 'completed'),
+        [jobs],
+    );
+
+    const issueJobs = useMemo(
+        () => jobs.filter((job) => ['failed', 'cancelled'].includes(job.status)),
+        [jobs],
+    );
+
+    const displayedJobs = useMemo(() => {
+        if (jobTab === 'completed') return completedJobs;
+        if (jobTab === 'issues') return issueJobs;
+        return queueJobs;
+    }, [jobTab, queueJobs, completedJobs, issueJobs]);
+
+    const jobsPagination = useMemo(() => {
+        const totalItems = displayedJobs.length;
+        if (jobItemsPerPage === 'all') {
+            return {
+                totalItems,
+                totalPages: 1,
+                page: 1,
+                start: totalItems > 0 ? 1 : 0,
+                end: totalItems
+            };
+        }
+
+        const parsed = Number(jobItemsPerPage);
+        const pageSize = Number.isFinite(parsed) && parsed > 0 ? parsed : (totalItems || 1);
+        const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+        const page = Math.min(Math.max(jobCurrentPage, 1), totalPages);
+        const start = totalItems > 0 ? ((page - 1) * pageSize) + 1 : 0;
+        const end = totalItems > 0 ? Math.min(page * pageSize, totalItems) : 0;
+
+        return { totalItems, totalPages, page, start, end };
+    }, [displayedJobs.length, jobItemsPerPage, jobCurrentPage]);
+
+    const paginatedJobs = useMemo(() => {
+        if (jobItemsPerPage === 'all') return displayedJobs;
+        const parsed = Number(jobItemsPerPage);
+        const pageSize = Number.isFinite(parsed) && parsed > 0 ? parsed : displayedJobs.length;
+        if (!pageSize) return displayedJobs;
+        const start = (jobsPagination.page - 1) * pageSize;
+        return displayedJobs.slice(start, start + pageSize);
+    }, [displayedJobs, jobItemsPerPage, jobsPagination.page]);
+
+    useEffect(() => {
+        if (jobCurrentPage !== jobsPagination.page) {
+            setJobCurrentPage(jobsPagination.page);
+        }
+    }, [jobCurrentPage, jobsPagination.page]);
+
+    useEffect(() => {
+        if (jobTab === 'issues' && issueJobs.length === 0) {
+            setJobTab('queue');
+            setJobCurrentPage(1);
+        }
+    }, [jobTab, issueJobs.length]);
 
     // Prune selected files to only include visible entries when filter changes
     // This prevents hidden selections from causing unexpected behavior during conversion
@@ -4446,6 +4523,15 @@ function App() {
         setCurrentPage(bounded);
         setLastSelectedIndex(null);
     };
+    const handleJobPageChange = (nextPage) => {
+        const bounded = Math.min(Math.max(nextPage, 1), jobsPagination.totalPages);
+        setJobCurrentPage(bounded);
+    };
+    const queueTabJobsCount = queueJobs.length;
+    const completedTabJobsCount = completedJobs.length;
+    const issuesTabJobsCount = issueJobs.length;
+    const totalJobsCount = queueTabJobsCount + completedTabJobsCount + issuesTabJobsCount;
+    const showIssuesTab = issuesTabJobsCount > 0 || jobTab === 'issues';
 
     return html`
         <div class="container">
@@ -4961,7 +5047,7 @@ function App() {
                 <!-- Jobs Panel -->
                 <div class="panel jobs-panel">
                     <div class="panel-header">
-                        <h2>Jobs ${jobs.length > 0 ? `(${jobs.length})` : ''}</h2>
+                        <h2>Jobs ${totalJobsCount > 0 ? `(${totalJobsCount})` : ''}</h2>
                         <div class="header-actions">
                             ${stuckState?.is_stuck && html`
                                 <button
@@ -5013,10 +5099,102 @@ function App() {
                             </div>
                         </div>
                     `}
+                    <div class="job-tabs" role="tablist" aria-label="Job list tabs">
+                        <button
+                            class=${`job-tab ${jobTab === 'queue' ? 'active' : ''}`}
+                            role="tab"
+                            aria-selected=${jobTab === 'queue' ? 'true' : 'false'}
+                            onClick=${() => {
+            setJobTab('queue');
+            setJobCurrentPage(1);
+        }}
+                        >
+                            Queue (${queueTabJobsCount})
+                        </button>
+                        <button
+                            class=${`job-tab ${jobTab === 'completed' ? 'active' : ''}`}
+                            role="tab"
+                            aria-selected=${jobTab === 'completed' ? 'true' : 'false'}
+                            onClick=${() => {
+            setJobTab('completed');
+            setJobCurrentPage(1);
+        }}
+                        >
+                            Completed (${completedTabJobsCount})
+                        </button>
+                        ${showIssuesTab && html`
+                            <button
+                                class=${`job-tab ${jobTab === 'issues' ? 'active' : ''}`}
+                                role="tab"
+                                aria-selected=${jobTab === 'issues' ? 'true' : 'false'}
+                                onClick=${() => {
+                setJobTab('issues');
+                setJobCurrentPage(1);
+            }}
+                            >
+                                Failed/Cancelled (${issuesTabJobsCount})
+                            </button>
+                        `}
+                    </div>
+                    <div class="pagination-controls">
+                        <div class="pagination-summary" aria-live="polite" aria-atomic="true">
+                            ${jobsPagination.totalItems > 0
+            ? `Showing ${jobsPagination.start}-${jobsPagination.end} of ${jobsPagination.totalItems} job${jobsPagination.totalItems === 1 ? '' : 's'}`
+            : 'Showing 0 jobs'}
+                        </div>
+                        <div class="pagination-actions">
+                            <label class="pagination-page-size">
+                                <span>Jobs per page</span>
+                                <select
+                                    value=${jobItemsPerPage}
+                                    onChange=${(e) => {
+            setJobItemsPerPage(e.target.value);
+            setJobCurrentPage(1);
+        }}
+                                    title="Select how many jobs to show per page"
+                                >
+                                    ${PAGE_SIZE_OPTIONS.map((opt) => html`
+                                        <option value=${opt.value}>${opt.label}</option>
+                                    `)}
+                                </select>
+                            </label>
+                            <div class="pagination-nav">
+                                <button
+                                    class="btn btn-sm btn-secondary"
+                                    onClick=${() => handleJobPageChange(jobsPagination.page - 1)}
+                                    disabled=${jobsPagination.page <= 1}
+                                    title="Previous jobs page"
+                                >
+                                    ← Prev
+                                </button>
+                                <span class="pagination-page-indicator">
+                                    Page ${jobsPagination.page} of ${jobsPagination.totalPages}
+                                </span>
+                                <button
+                                    class="btn btn-sm btn-secondary"
+                                    onClick=${() => handleJobPageChange(jobsPagination.page + 1)}
+                                    disabled=${jobsPagination.page >= jobsPagination.totalPages}
+                                    title="Next jobs page"
+                                >
+                                    Next →
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                     <div class="panel-content">
                         <${JobList}
-                            jobs=${creatingJobs.length ? [...creatingJobs, ...jobs] : jobs}
+                            jobs=${paginatedJobs}
                             onCancel=${handleCancelJob}
+                            emptyTitle=${jobTab === 'completed'
+            ? 'No completed jobs'
+            : jobTab === 'issues'
+                ? 'No failed or cancelled jobs'
+                : 'No queued jobs'}
+                            emptyHelpText=${jobTab === 'completed'
+            ? 'Successfully completed jobs will appear here.'
+            : jobTab === 'issues'
+                ? 'Failed and cancelled jobs will appear here when they happen.'
+                : 'Select files and click Convert to queue jobs'}
                         />
                     </div>
                 </div>

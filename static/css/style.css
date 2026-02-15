@@ -843,6 +843,35 @@ header h1 span {
 }
 
 /* Jobs Panel */
+.job-tabs {
+    display: flex;
+    gap: 8px;
+    margin: -4px 0 10px;
+}
+
+.job-tab {
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+}
+
+.job-tab:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+.job-tab.active {
+    background: var(--bg-tertiary);
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
 .job-list {
     list-style: none;
 }
@@ -1591,6 +1620,17 @@ header h1 span {
 
     .panel-header h2 {
         font-size: 0.9rem;
+    }
+
+    .job-tabs {
+        width: 100%;
+        gap: 6px;
+    }
+
+    .job-tab {
+        flex: 1;
+        text-align: center;
+        min-height: 40px;
     }
 
     /* Volume List - Mobile */
