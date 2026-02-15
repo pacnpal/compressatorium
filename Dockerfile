@@ -1,4 +1,18 @@
+FROM debian:trixie-slim AS builder
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    ca-certificates && \
+    git clone https://github.com/energeticokay/z3ds_compress.git /tmp/z3ds && \
+    cd /tmp/z3ds && \
+    g++ -O3 src/*.cpp -o z3ds_compressor && \
+    chmod +x z3ds_compressor
+
 FROM debian:trixie-slim
+
 
 # Install system dependencies, create wrapper script, and prepare venv
 RUN apt-get update && \
@@ -27,11 +41,9 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Install z3ds_compressor for 3DS ROM compression
-RUN wget -q https://github.com/energeticokay/z3ds_compress/releases/download/corruption_fix/z3ds_compressor_linux.zip && \
-    unzip -q z3ds_compressor_linux.zip && \
-    mv z3ds_compressor /usr/local/bin/z3ds_compressor && \
-    chmod +x /usr/local/bin/z3ds_compressor && \
-    rm z3ds_compressor_linux.zip
+# Install z3ds_compressor from builder stage
+COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
+
 
 # Copy application
 COPY app/ /app/
