@@ -147,6 +147,25 @@ async def test_dolphin_verify_happy_path(
 
 
 @pytest.mark.asyncio
+async def test_dolphin_verify_returns_429_when_verify_lane_is_saturated(
+    dolphin_test_env, mock_dolphin_service, mock_verification_store, monkeypatch,
+):
+    """Verification requests should fail fast when verify lane has no capacity."""
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        info_routes.workload_limiter,
+        "try_acquire",
+        AsyncMock(return_value=None),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await info_routes.verify_dolphin(path=dolphin_test_env["iso_path"])
+
+    assert exc_info.value.status_code == 429
+
+
+@pytest.mark.asyncio
 async def test_dolphin_verify_file_not_found(
     dolphin_test_env, mock_dolphin_service, mock_verification_store
 ):
@@ -228,6 +247,35 @@ async def test_dolphin_verify_stream_happy_path(
     
     assert progress_found, "Expected to find verify_progress event"
     assert complete_found, "Expected to find verify_complete event"
+
+
+@pytest.mark.asyncio
+async def test_dolphin_verify_stream_returns_verify_error_when_lane_is_saturated(
+    dolphin_test_env, mock_dolphin_service, mock_verification_store, monkeypatch,
+):
+    """Streaming verify should emit verify_error with lane-capacity detail."""
+    monkeypatch.setattr(
+        info_routes.workload_limiter,
+        "try_acquire",
+        AsyncMock(return_value=None),
+    )
+
+    response = await info_routes.verify_dolphin_events(
+        path=dolphin_test_env["iso_path"]
+    )
+
+    events = []
+    async for event in response.body_iterator:
+        events.append(event)
+
+    assert any(e.get("event") == "verify_error" for e in events if isinstance(e, dict))
+    payloads = [
+        e.get("data")
+        for e in events
+        if isinstance(e, dict) and e.get("event") == "verify_error"
+    ]
+    assert payloads
+    assert "capacity" in payloads[0].lower()
 
 
 @pytest.mark.asyncio

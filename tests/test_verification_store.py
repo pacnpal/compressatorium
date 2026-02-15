@@ -26,6 +26,26 @@ def _verification_store(store_path: Path) -> VerificationStore:
     # We cheat and inject it since `VerificationStore.__init__` uses env vars.
     return VerificationStore(str(store_path))
 
+
+def test_verification_store_falls_back_when_default_config_unwritable(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("CHD_VERIFICATION_STORE", raising=False)
+    monkeypatch.delenv("CHD_DATA_DIR", raising=False)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+
+    original_mkdir = Path.mkdir
+
+    def guarded_mkdir(self, *args, **kwargs):
+        if os.fspath(self) == "/config":
+            raise OSError(30, "Read-only file system")
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", guarded_mkdir)
+    store = VerificationStore()
+
+    assert store._store_path.parent == tmp_path / "compressatorium"
+    assert store._store_path.name == "verified_chds.json"
+
+
 @pytest.mark.asyncio
 async def test_async_mark_verified(
     verification_store: VerificationStore,

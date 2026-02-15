@@ -214,6 +214,14 @@ export const api = {
         return res.json();
     },
 
+    // 3DS ROM info
+    async getZ3DSInfo(path) {
+        const params = new URLSearchParams({ path });
+        const res = await fetch(buildApiUrl('/z3ds-info', params));
+        if (!res.ok) throw new Error('Failed to get 3DS ROM info');
+        return res.json();
+    },
+
     async verifyCHD(path, { onProgress } = {}) {
         if (onProgress) {
             return new Promise((resolve, reject) => {
@@ -315,6 +323,58 @@ export const api = {
         const params = new URLSearchParams({ path });
         const res = await fetch(buildApiUrl('/dolphin-verify', params));
         if (!res.ok) throw new Error('Failed to verify disc');
+        return res.json();
+    },
+
+    async verify3DS(path, { onProgress } = {}) {
+        if (onProgress) {
+            return new Promise((resolve, reject) => {
+                const params = new URLSearchParams({ path });
+                const eventSource = new EventSource(buildApiUrl('/z3ds-verify/events', params));
+
+                const cleanup = () => eventSource.close();
+
+                eventSource.addEventListener('verify_progress', (e) => {
+                    try {
+                        if (e.data) {
+                            onProgress(JSON.parse(e.data));
+                        }
+                    } catch (err) {
+                        console.error('Failed to parse verify progress event:', err, e.data);
+                    }
+                });
+
+                eventSource.addEventListener('verify_complete', (e) => {
+                    cleanup();
+                    try {
+                        resolve(JSON.parse(e.data));
+                    } catch (err) {
+                        reject(err);
+                    }
+                });
+
+                eventSource.addEventListener('verify_error', (e) => {
+                    cleanup();
+                    let message = '3DS verification failed';
+                    try {
+                        const data = JSON.parse(e.data);
+                        message = data.message || message;
+                    } catch (err) {
+                        console.error('Failed to parse verify error event:', err, e.data);
+                    }
+                    reject(new Error(message));
+                });
+
+                eventSource.onerror = () => {
+                    cleanup();
+                    reject(new Error('Verification connection error'));
+                };
+            });
+        }
+
+        const params = new URLSearchParams({ path });
+        const res = await fetch(buildApiUrl('/z3ds-verify', params));
+        if (!res.ok) throw new Error('Failed to verify 3DS ROM');
         return res.json();
     },
 
@@ -565,6 +625,99 @@ export const api = {
         }
 
         return result;
+    },
+
+    async verifyBatchZ3DS(paths, { onProgress, onFileComplete } = {}) {
+        const response = await fetch(`${API_BASE}/z3ds-verify-batch/events`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths })
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: 'Failed to start batch verification' }));
+            throw new Error(error.detail || 'Failed to start batch verification');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let result = { total: 0, verified: 0, failed: 0 };
+
+        const parseSSEEvent = (eventText) => {
+            const lines = eventText.split('\n');
+            let eventType = null;
+            let eventData = null;
+
+            for (const line of lines) {
+                if (line.startsWith('event:')) {
+                    eventType = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    eventData = line.slice(5).trim();
+                }
+            }
+
+            if (!eventType || !eventData) return null;
+
+            try {
+                const parsed = JSON.parse(eventData);
+                if (typeof parsed !== 'object' || parsed === null) return null;
+                return { type: eventType, data: parsed };
+            } catch (err) {
+                console.error('Failed to parse SSE event data:', err);
+                return null;
+            }
+        };
+
+        const processEvent = (event) => {
+            if (!event) return false;
+
+            switch (event.type) {
+                case 'verify_batch_start':
+                    if (onProgress) onProgress({ type: 'start', ...event.data });
+                    break;
+                case 'verify_batch_progress':
+                    if (onProgress) onProgress({ type: 'progress', ...event.data });
+                    break;
+                case 'verify_batch_file_progress':
+                    if (onProgress) onProgress({ type: 'file_progress', ...event.data });
+                    break;
+                case 'verify_batch_file_complete':
+                    if (onFileComplete) onFileComplete(event.data);
+                    if (onProgress) onProgress({ type: 'file_complete', ...event.data });
+                    break;
+                case 'verify_batch_complete':
+                    result = event.data;
+                    return true; // Signal completion
+            }
+            return false;
+        };
+
+        let streamActive = true;
+        while (streamActive) {
+            const { done, value } = await reader.read();
+            if (done) {
+                streamActive = false;
+                continue;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Split on double newlines (SSE event separator)
+            const events = buffer.split('\n\n');
+            buffer = events.pop() || ''; // Keep incomplete event in buffer
+
+            for (const eventText of events) {
+                if (eventText.trim()) {
+                    const event = parseSSEEvent(eventText);
+                    if (processEvent(event)) {
+                        return result;
+                    }
+                }
+            }
+        }
+
+        return result;
     }
 };
 
@@ -584,7 +737,7 @@ export function getFileIcon(entry) {
     if (entry.type === 'archive') return '📦';
     const ext = entry.extension?.toLowerCase();
     if (ext === '.chd') return '💿';
-    if (['.rvz', '.wia', '.gcz', '.wbfs'].includes(ext)) return '🎮';
+    if (['.rvz', '.wia', '.gcz', '.wbfs', '.3ds', '.cci', '.cia', '.z3ds', '.zcci', '.zcia'].includes(ext)) return '🎮';
     if (['.iso', '.gdi', '.cue', '.bin'].includes(ext)) return '💽';
     return '📄';
 }

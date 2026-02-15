@@ -2,16 +2,27 @@
 
 > **Fork Notice:** This project is a fork of MarcTV's original Docker CHD Converter project with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
 
-Multi-tool game disc image converter supporting **CHDMAN** (MAME) and **dolphin-tool** (Dolphin Emulator).
+Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), and **z3ds_compressor** (Nintendo 3DS).
 
-* **Web UI** for easy file browsing and conversion
-* Supports **nested directories** and **compressed archives** (ZIP, 7z, RAR)
-* **Multiple volume mounts** for organizing different game libraries
-* **ISO handling toggle** (choose between CHDMAN or Dolphin tool for `.iso` files)
-* Web UI detects existing outputs with skip/rename/overwrite options
-* CLI skips existing CHD files by default
-* Source files are preserved by default (optional delete-on-verify after successful conversion)
-* Supports CHD create/extract/copy plus Dolphin RVZ/WIA/GCZ/ISO conversions (Web UI/API)
+## ✨ Features
+
+* **🎮 Three Primary Tools:** Choose between CHDMAN, Dolphin, or 3DS compression
+* **🌐 Web UI** for easy file browsing and conversion with intuitive tool selection
+* **📁 Nested directories** and **compressed archives** (ZIP, 7z, RAR) support
+* **💾 Multiple volume mounts** for organizing different game libraries
+* **🔄 Smart file detection** - automatically identifies convertible files for each tool
+* **✅ Existing output detection** with skip/rename/overwrite options
+* **🗑️ Delete-on-verify** - optional automatic source removal after successful conversion
+* **📊 Progress tracking** with real-time job queue monitoring
+* **🔍 File information** - view metadata for CHD, Dolphin, and 3DS files
+
+### Supported Conversions
+
+| Tool | Input Formats | Output Formats | Use Case |
+|------|--------------|----------------|----------|
+| **CHDMAN** | .gdi, .cue, .bin, .iso | .chd | CD/DVD/LaserDisc to CHD |
+| **Dolphin** | .iso, .gcm, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
+| **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
 
 ---
 
@@ -40,8 +51,36 @@ Both registries provide identical images with multi-architecture support (`linux
 | Tag | Description |
 |-----|-------------|
 | `latest` | Latest stable release from the main branch |
-| `vX.Y.Z` | Specific version (e.g., `v1.0.0`) |
+| `vX.Y.Z` | Specific version (e.g., `v3.0.0`) |
 | `sha-xxxxxxx` | Specific commit build |
+
+---
+
+## Quick Start Guide
+
+### 1. Select Your Primary Tool
+
+When you open the Web UI, you'll see three tool options at the top:
+
+* **CHDMAN** - For converting CD/DVD/LaserDisc images to CHD format
+* **Dolphin** - For GameCube/Wii disc image conversions
+* **3DS** - For compressing Nintendo 3DS ROMs
+
+**Choose the tool that matches your files.** The interface will automatically show only relevant modes and file types.
+
+### 2. Browse and Select Files
+
+* Navigate through your mounted volumes using the left panel
+* Click on folders to browse subdirectories
+* Check the boxes next to files you want to convert
+* Archives (.zip, .7z, .rar) can be browsed by clicking them
+
+### 3. Configure and Convert
+
+* Select the appropriate conversion mode from the dropdown
+* Adjust compression settings if available
+* Click the action button (Create/Convert/Compress depending on mode)
+* Monitor progress in the job queue panel
 
 ---
 
@@ -79,7 +118,7 @@ docker run -d \
 
 ### Custom Output Directory
 
-In the Web UI, you can specify a custom output directory for converted CHD or Dolphin disc images instead of placing them alongside the source files. The directory will be created automatically as long as it is within your configured volumes.
+In the Web UI, you can specify a custom output directory for converted CHD, Dolphin, or 3DS outputs instead of placing them alongside the source files. The directory will be created automatically as long as it is within your configured volumes.
 
 ### Screenshots
 
@@ -191,6 +230,67 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 
 ---
 
+## Nintendo 3DS Support
+
+3DS ROM compression is available in the Web UI and REST API using [z3ds_compress](https://github.com/energeticokay/z3ds_compress).
+
+### How to Use
+
+1. **Select Primary Tool:** Choose **3DS** from the three main options at the top of the Web UI
+2. **Browse Files:** Navigate to your 3DS ROM directory
+3. **Select ROMs:** Check the boxes next to `.cci`, `.cia`, or `.3ds` files you want to compress
+4. **Compress:** Click the "Compress" button to start the conversion
+5. **Monitor Progress:** Watch the job queue for real-time progress
+6. **Done:** Compressed `.zcci`, `.zcia`, or `.z3ds` files will be created alongside the originals
+
+### Supported File Formats
+
+**Input Formats:**
+- **`.cci`** - CCI (CTR Card Image) format - Nintendo 3DS cartridge dumps
+- **`.cia`** - CIA (CTR Importable Archive) format - Installable packages, updates, DLC
+- **`.3ds`** - Alternative extension for cartridge dumps (identical to .cci, can be renamed)
+
+**Output Formats:**
+- **`.zcci`** - Compressed CCI format (from .cci input)
+- **`.zcia`** - Compressed CIA format (from .cia input)
+- **`.z3ds`** - Compressed 3DS format (from .3ds input)
+
+**Important Note:** The `.3ds` and `.cci` formats are functionally identical - they're both cartridge dump formats with different file extensions. You can freely rename between them. The z3ds_compress tool supports both extensions and maintains the naming convention (.3ds → .z3ds, .cci → .zcci).
+
+### Technical Details
+
+**Compression method:** Seekable ZStandard (256KB frame size)  
+**Size reduction:** Typically **~50%** without compatibility issues  
+**Compression speed:** Fast, single-threaded processing
+
+**Compatibility:**
+- Compressed ROMs are **natively supported** by [Azahar emulator](https://azahar-emu.org/) (release 2123+)
+- Can be decompressed back to original format using the same tool if needed
+- **`.cci` files:** Thoroughly tested and production-ready
+- **`.cia` files:** Supported but considered experimental
+- **`.3ds` files:** Same as .cci - fully supported (they're the same format)
+
+**Technical Limitations:**
+- z3ds_compressor binary is included in the Docker image (`Z3DS_COMPRESSOR_PATH=/usr/local/bin/z3ds_compressor`)
+- Compression settings are fixed - no user configuration needed or available
+- Archive members are **not** supported for 3DS conversions (requires direct file access)
+- ROMs must be decrypted before compression (encrypted ROMs will not work)
+- Progress tracking is based on output file size estimation
+- Delete-on-verify is supported for automatic source file cleanup after successful compression
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
+
+### REST API Endpoints
+
+- `POST /api/convert/batch` - Batch compression jobs (use `mode: "z3ds_compress"`)
+- `GET /api/z3ds-info?path=/path/to/rom.cci` - Get file information (size, format, compression status)
+
+---
+
 ## CLI Mode (Batch Processing)
 
 For automated/headless conversion, use CLI mode. CLI mode runs CHDMAN only and processes
@@ -278,12 +378,16 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 **Dolphin (GameCube/Wii)**
 - `dolphin_rvz`, `dolphin_wia`, `dolphin_gcz`, `dolphin_iso`
 
+**Nintendo 3DS**
+- `z3ds_compress` (.cci → .zcci, .cia → .zcia, .3ds → .z3ds)
+
 Notes:
 - Compression applies to **create**/**copy** and Dolphin RVZ/WIA operations only.
 - Extract operations ignore compression settings.
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
-- Archive inputs are supported for create modes only (not extract/copy/Dolphin).
+- 3DS compression uses fixed settings (no user configuration needed).
+- Archive inputs are supported for CHD create modes only (not extract/copy/Dolphin/3DS).
 
 ---
 
@@ -361,7 +465,11 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode only) |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
+| `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs |
+| `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
+| `MAX_VERIFY_CONCURRENCY` | `2` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |
+| `MAX_METADATA_SCAN_CONCURRENCY` | `1` | Maximum concurrent metadata scan tasks |
 | `MAX_JOB_HISTORY` | `500` | Maximum completed jobs to retain in history |
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19, higher = lower priority) |
 | `CHD_CHDMAN_IOPRIO_CLASS` | `2` | I/O priority class (`1` realtime, `2` best-effort, `3` idle) |
@@ -378,6 +486,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval in seconds |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout in seconds |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |
+| `CHD_PROGRESS_TIMEOUT_PER_GIB` | `120` | Additional stall timeout seconds per GiB of input size |
+| `CHD_PROGRESS_TIMEOUT_CAP` | `7200` | Upper bound for adaptive conversion stall timeout (0 disables cap) |
 | `STATIC_DIR` | `/static` | Path to static web assets |
 
 Defaults are intentionally conservative to reduce host impact during conversion. Increase `MAX_CONCURRENT_JOBS` or adjust `CHD_CHDMAN_*` only if your host has ample CPU/RAM and fast storage. By default temp files go to `/config/temp`; set `CHD_TEMP_DIR` to use a faster disk and mount it into the container.
@@ -490,15 +600,17 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 - `.iso` - ISO 9660 disc images (CHD or Dolphin based on ISO handling)
 - `.cue` / `.bin` - CD images with cue sheets
 - `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii disc images (Dolphin)
+- `.cci`, `.cia`, `.3ds` - Nintendo 3DS ROM images (3DS compression)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives
 - `.7z` - 7-Zip archives
 - `.rar` - RAR archives
 
-**Output format:**
-- `.chd` - Compressed Hunks of Data
+**Output formats:**
+- `.chd` - Compressed Hunks of Data (MAME/CHDMAN)
 - `.rvz`, `.wia`, `.gcz`, `.iso` - Dolphin output formats
+- `.zcci`, `.zcia`, `.z3ds` - Compressed Nintendo 3DS ROMs
 
 ---
 
@@ -509,4 +621,7 @@ This project is a fork of the original Docker CHD Converter project by [MarcTV](
 **Original Project:**
 - Author: [MarcTV](https://github.com/MarcTV)
 
-Thank you MarcTV for creating and sharing the original converter!
+**Additional Tools:**
+- [z3ds_compress](https://github.com/energeticokay/z3ds_compress) by [energeticokay](https://github.com/energeticokay) - Nintendo 3DS ROM compression
+
+Thank you MarcTV and energeticokay for creating and sharing these tools!

@@ -3,12 +3,14 @@ import os
 import re
 from pathlib import Path
 
+from config import settings
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from models import (
     BatchJobCreateRequest,
     CheckDuplicatesRequest,
     ConversionJob,
+    ConversionMode,
     DeletePlanRequest,
     DuplicateAction,
     DuplicateInfo,
@@ -21,7 +23,8 @@ from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
-from services.job_manager import job_manager
+from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
+from services.job_manager import QueueBackpressureError, job_manager
 from services.lock_manager import lock_manager
 from sse_starlette.sse import EventSourceResponse
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
@@ -76,11 +79,15 @@ def normalize_compression(value: str | None) -> str | None:
     return ",".join(parts)
 
 
+
+
+
 def supports_delete_on_verify(mode: str) -> bool:
     return (
         mode.startswith("create")
         or mode == "copy"
         or mode.startswith("dolphin_")
+        or mode == ConversionMode.Z3DS_COMPRESS.value
     )
 
 
@@ -91,6 +98,10 @@ def _is_dolphin_mode(mode: str) -> bool:
 def _get_output_path(mode, input_path, output_dir, *, treat_as_stem=False):
     if _is_dolphin_mode(mode):
         return dolphin_tool_service.get_output_path_for_mode(
+            mode, input_path, output_dir, treat_as_stem=treat_as_stem,
+        )
+    if mode == ConversionMode.Z3DS_COMPRESS.value:
+        return z3ds_compress_service.get_output_path_for_mode(
             mode, input_path, output_dir, treat_as_stem=treat_as_stem,
         )
     return chdman_service.get_output_path_for_mode(
@@ -229,7 +240,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
     if not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy modes",
+            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
         )
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -277,6 +288,7 @@ async def create_job(request: JobCreateRequest):
     mode = request.mode.value
     output_dir = normalize_output_dir(request.output_dir)
     is_dolphin = _is_dolphin_mode(mode)
+    is_z3ds = mode == ConversionMode.Z3DS_COMPRESS.value
     if compression and mode.startswith("extract"):
         raise HTTPException(
             status_code=400,
@@ -305,7 +317,7 @@ async def create_job(request: JobCreateRequest):
     if request.delete_on_verify and not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy modes",
+            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
         )
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(
@@ -329,10 +341,10 @@ async def create_job(request: JobCreateRequest):
     display_filename = None
 
     if "::" in request.file_path:
-        if mode.startswith("extract") or mode == "copy" or is_dolphin:
+        if mode.startswith("extract") or mode == "copy" or is_dolphin or is_z3ds:
             raise HTTPException(
                 status_code=400,
-                detail="Archive inputs are not supported for extract/copy/dolphin modes",
+                detail="Archive inputs are not supported for extract/copy/dolphin/z3ds_compress modes",
             )
         archive_path, internal_path = request.file_path.split("::", 1)
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
@@ -390,6 +402,14 @@ async def create_job(request: JobCreateRequest):
                        "(.iso, .gcz, .wia, .rvz, .wbfs)",
             )
 
+    if is_z3ds:
+        ext = Path(file_path).suffix.lower()
+        if ext not in Z3DS_CONVERTIBLE_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail="z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia, .3ds)",
+            )
+
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive
     if output_path is None:
@@ -444,16 +464,19 @@ async def create_job(request: JobCreateRequest):
                 detail=f"Delete-on-verify blocked: {exc}",
             )
 
-    job = await job_manager.create_job(
-        file_path,
-        request.mode,
-        output_path=output_path,
-        allow_overwrite=allow_overwrite,
-        filename_override=display_filename,
-        compression=compression,
-        delete_on_verify=request.delete_on_verify,
-        delete_snapshot=delete_snapshot,
-    )
+    try:
+        job = await job_manager.create_job(
+            file_path,
+            request.mode,
+            output_path=output_path,
+            allow_overwrite=allow_overwrite,
+            filename_override=display_filename,
+            compression=compression,
+            delete_on_verify=request.delete_on_verify,
+            delete_snapshot=delete_snapshot,
+        )
+    except QueueBackpressureError as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
 
     return job
 
@@ -464,6 +487,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     compression = normalize_compression(request.compression)
     mode = request.mode.value
     is_dolphin = _is_dolphin_mode(mode)
+    is_z3ds = mode == ConversionMode.Z3DS_COMPRESS.value
     output_dir = normalize_output_dir(request.output_dir)
     if compression and mode.startswith("extract"):
         raise HTTPException(
@@ -493,7 +517,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     if request.delete_on_verify and not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy modes",
+            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
         )
     if request.delete_on_verify:
         disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -535,7 +559,6 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             return 1
         return 0
 
-    jobs = []
     skipped = []
     candidates = []
 
@@ -548,7 +571,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
 
         # Handle archive files
         if "::" in file_path:
-            if mode.startswith("extract") or mode == "copy" or is_dolphin:
+            if mode.startswith("extract") or mode == "copy" or is_dolphin or is_z3ds:
                 skipped.append(file_path)
                 continue
             archive_path, internal_path = file_path.split("::", 1)
@@ -601,6 +624,12 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if is_dolphin:
             ext = Path(file_path).suffix.lower()
             if ext not in DOLPHIN_CONVERTIBLE_EXTENSIONS:
+                skipped.append(file_path)
+                continue
+
+        if is_z3ds:
+            ext = Path(file_path).suffix.lower()
+            if ext not in Z3DS_CONVERTIBLE_EXTENSIONS:
                 skipped.append(file_path)
                 continue
 
@@ -676,19 +705,33 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if candidate["priority"] > existing["priority"]:
             selected[key] = candidate
 
+    if order:
+        # Job creation will enforce backpressure atomically under lock.
+        # No need for a pre-check here as it would race with the locked check.
+        pass
+
+    job_specs = []
     for key in order:
         candidate = selected[key]
-        job = await job_manager.create_job(
-            candidate["file_path"],
+        job_specs.append(
+            {
+                "file_path": candidate["file_path"],
+                "output_path": candidate["output_path"],
+                "allow_overwrite": candidate["allow_overwrite"],
+                "filename_override": candidate["display_filename"],
+                "delete_snapshot": candidate.get("delete_snapshot"),
+            },
+        )
+
+    try:
+        jobs = await job_manager.create_jobs_atomic(
+            job_specs,
             request.mode,
-            output_path=candidate["output_path"],
-            allow_overwrite=candidate["allow_overwrite"],
-            filename_override=candidate["display_filename"],
             compression=compression,
             delete_on_verify=request.delete_on_verify,
-            delete_snapshot=candidate.get("delete_snapshot"),
         )
-        jobs.append(job)
+    except QueueBackpressureError as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
 
     return jobs
 
@@ -749,6 +792,12 @@ async def job_events():
     return EventSourceResponse(event_generator())
 
 
+@router.get("/jobs/stuck-status")
+async def check_stuck_status():
+    """Check if the job queue is in a stuck state."""
+    return job_manager.get_stuck_state_info()
+
+
 @router.get("/jobs/{job_id}", response_model=ConversionJob)
 async def get_job(job_id: str):
     """Get a specific job by ID."""
@@ -769,10 +818,7 @@ async def delete_completed_jobs():
     return {"deleted": deleted_ids, "count": len(deleted_ids)}
 
 
-@router.get("/jobs/stuck-status")
-async def check_stuck_status():
-    """Check if the job queue is in a stuck state."""
-    return job_manager.get_stuck_state_info()
+
 
 
 @router.post("/jobs/recover")

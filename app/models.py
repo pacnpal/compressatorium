@@ -20,6 +20,7 @@ class ConversionMode(str, Enum):
     DOLPHIN_WIA = "dolphin_wia"
     DOLPHIN_GCZ = "dolphin_gcz"
     DOLPHIN_ISO = "dolphin_iso"
+    Z3DS_COMPRESS = "z3ds_compress"
 
 
 class DuplicateAction(str, Enum):
@@ -44,8 +45,15 @@ class FileEntry(BaseModel):
     extension: str | None = None
     convertible: bool = False
     has_chd: bool = False
+    has_rvz: bool = False
+    dolphin_ready: bool = False
+    dolphin_path: str | None = None
     chd_ready: bool = False
     dolphin_convertible: bool = False
+    z3ds_convertible: bool = False
+    has_z3ds: bool = False
+    z3ds_ready: bool = False
+    z3ds_path: str | None = None
     archive_items: int | None = None
     archive_has_chd: int | None = None
     archive_truncated: bool | None = None
@@ -173,3 +181,14 @@ class DolphinDiscInfo(BaseModel):
     block_size: str | None = None
     file_size: str | None = None
     raw_data: str = ""
+
+
+class Z3DSInfo(BaseModel):
+    """Information about a Nintendo 3DS ROM file."""
+    file: str
+    size: int
+    size_display: str
+    format: str | None = None
+    extension: str
+    compressed: bool
+    compression_type: str | None = None

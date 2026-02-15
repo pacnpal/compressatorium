@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import logging
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from config import settings
 from fastapi.concurrency import run_in_threadpool
+from services.timeout_policy import compute_progress_stall_timeout
 
 CHDMAN_CONVERTIBLE_EXTENSIONS = {".gdi", ".iso", ".cue", ".bin"}
 CONVERTIBLE_EXTENSIONS = CHDMAN_CONVERTIBLE_EXTENSIONS
@@ -138,7 +140,12 @@ class ChdmanService:
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Starting chdman pid=%s cmd=%s", process.pid, " ".join(cmd))
 
-        stall_timeout = max(0, int(getattr(settings, "progress_timeout", 0) or 0))
+        stall_timeout = compute_progress_stall_timeout(
+            input_path=input_path,
+            base_timeout=getattr(settings, "progress_timeout", 0),
+            timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
+            timeout_cap=getattr(settings, "progress_timeout_cap", 0),
+        )
         last_progress_value = 0
         last_output_size: int | None = None
         last_activity_at = time.monotonic()

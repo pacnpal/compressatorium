@@ -6,6 +6,92 @@
 
 ---
 
+## v3.0.0 - Nintendo 3DS Support & Docker Compose Overhaul
+
+### ✨ New Features
+
+- **Nintendo 3DS Support** - Native support for compressing `.cci`, `.cia`, and `.3ds` ROMs using `z3ds_compress`.
+    - **New Tool Option** - Select **3DS** from the main tool selector to access 3DS compression modes.
+    - **Supported Formats** - Compress `.cci`, `.cia`, and `.3ds` files to `.zcci`, `.zcia`, and `.z3ds`.
+    - **Smart Detection** - Automatically identifies 3DS ROMs and filters the file list.
+- **Docker Compose Overhaul** - Complete restructuring of Docker Compose configurations for better usability and deployment flexibility.
+    - `docker-compose.yml` - Standard single-volume setup.
+    - `docker-compose.multi-volume.yml` - Template for multiple volume mounts.
+    - `docker-compose.cli.yml` - Dedicated CLI batch processing configuration.
+
+### ⚠️ Breaking Changes
+
+- **ISO Handling Policy** - The "ISO Handling" setting no longer defaults to Dolphin.
+    - **Explicit Selection Required** - Users must now explicitly choose between "CHDMAN" (for PS2/DVD) or "Dolphin" (for GameCube/Wii) when processing `.iso` files.
+    - **UI Validation** - The interface prevents conversion of ISO files until a handler is selected, preventing accidental invalid conversions.
+
+### 🐞 Bug Fixes
+
+- **Delete-on-verify messaging** - Corrected messaging for z3ds mode delete-on-verify operations in `static/js/app.js`.
+- **Lock Manager** - Fixed `ensure_lock_manager` usage in `services/job_manager.py` to prevent race conditions during z3ds detection.
+- **Async Info Method** - Fixed `info()` method in `strategies/z3ds.py` to be properly synchronous within the `run_in_threadpool` wrapper, resolving potential event loop blocking issues.
+- **Output Path Logic** - Fixed `treat_as_stem` logic in `get_output_path_for_mode` (routes/convert.py) to correctly handle file extensions.
+- **Cancellation Handling** - Standardized usage of `ConversionCancelled` exception in `services/job_manager.py` for reliable job cancellation.
+- **Archive Size Checks** - Fixed archive size limit checks in `services/archive.py`.
+- **Return Type Consistency** - Improved return type consistency across internal API methods in `routes/info.py`.
+- **UI Accessibility** - Increased warning text size and improved color contrast for better readability in `static/css/style.css`.
+- **ISO Handling Validation** - Added strict check for `iso_handling` parameter in `routes/convert.py`, rejecting requests where it is null.
+
+### ⚙️ Reliability & Maintenance
+
+- **Periodic Lock Cleanup** - Added `cleanup_stale_locks_periodic` to `JobManager` (services/job_manager.py), running every 10 debug heartbeats (approx. 5 minutes) to automatically remove stale lock files.
+- **Z3DS Metadata Optimization** - Added `has_z3ds` and `z3ds_convertible` flags to file search responses in `routes/files.py` to optimize frontend filtering.
+- **Conversion Queue Backpressure** - Added queue depth limiting for job creation endpoints:
+    - New `MAX_QUEUE_DEPTH` guard applies to `/api/jobs` and `/api/jobs/batch`.
+    - Requests now return HTTP `429` when queued + processing jobs exceed configured capacity.
+- **Workload Lane Concurrency Controls** - Added lane-specific limits to reduce cross-workload contention:
+    - `MAX_VERIFY_CONCURRENCY` caps concurrent CHD/Dolphin/3DS verify workflows.
+    - `MAX_METADATA_SCAN_CONCURRENCY` caps concurrent metadata scan tasks.
+    - Verify endpoints now fail fast with HTTP `429` when verify capacity is saturated.
+- **Adaptive Stall Timeouts** - Conversion stall detection is now size-aware:
+    - Uses baseline `CHD_PROGRESS_TIMEOUT`.
+    - Adds `CHD_PROGRESS_TIMEOUT_PER_GIB` seconds per GiB of input.
+    - Enforces upper bound with `CHD_PROGRESS_TIMEOUT_CAP`.
+
+### 🔧 Technical Details
+
+- **Z3DS Integration** - Implemented `Z3DS_INFO_EXTENSIONS` and `Z3DS_VERIFY_EXTENSIONS` constants for centralized file type management.
+- **Path Helper Methods** - Added `_is_z3ds_info_file` and `_is_z3ds_verify_file` helpers in `routes/info.py` for consistent file type checking.
+- **Type Hinting** - Updated type hints in `services/chdman.py` and `services/dolphin_tool.py` for better code quality and static analysis.
+- **Refactoring** - Extracted `needsIsoSelection` computed variable in `static/js/app.js` for better maintainability.
+- **Timeout Policy Helper** - Added `services/timeout_policy.py` to centralize adaptive stall-timeout computation.
+- **Workload Limiter Service** - Added `services/workload_limiter.py` to coordinate verify and metadata scan lane capacity.
+- **Queue Depth API** - Added `get_queue_depth()` in `services/job_manager.py` for backpressure checks in convert routes.
+- **Regression Coverage** - Added tests for queue-capacity `429`, verify-lane `429`, and adaptive timeout math.
+
+
+### 🛡️ Deployment & Security
+
+- **New Deployment Guide** - `DEPLOYMENT.md` covers security best practices, resource limits, and production hardening.
+- **Docker Documentation** - `DOCKER-COMPOSE.md` provides a quick reference for common commands and troubleshooting.
+- **Security Audit** - verified path traversal protections, secret scanning, and container security.
+
+### 📁 Files Changed
+
+- `static/js/app.js` - Added 3DS tool logic and frontend integration.
+- `app/services/z3ds_compress.py` - New service for 3DS compression.
+- `app/routes/info.py` - Fixed async info method patterns.
+- `app/routes/convert.py` - Fixed output path logic.
+- `README.md` - Added 3DS documentation and Docker Compose sections.
+- `DEPLOYMENT.md` - New deployment guide.
+- `DOCKER-COMPOSE.md` - New Docker Compose reference.
+- `docker-compose*.yml` - New compose files.
+- `app/config.py` - Added queue/lane controls and adaptive timeout settings.
+- `app/services/timeout_policy.py` - New adaptive stall-timeout helper.
+- `app/services/workload_limiter.py` - New lane limiter for verify + metadata scan workloads.
+- `app/services/job_manager.py` - Added queue depth accessor for backpressure.
+- `app/services/chdman.py`, `app/services/dolphin_tool.py`, `app/services/z3ds_compress.py` - Switched conversion stall checks to adaptive timeout policy.
+- `tests/test_timeout_policy.py` - Added adaptive-timeout unit tests.
+- `tests/test_mode_parity_fixes.py` - Added conversion queue backpressure tests.
+- `tests/test_dolphin_routes.py` - Added verify-lane saturation (`429`) test.
+
+---
+
 ## v2.0.1 - Mobile-Responsive Design
 
 ### 🎨 UI/UX Improvements
