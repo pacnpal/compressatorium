@@ -1,5 +1,34 @@
 # Release Notes
 
+## v3.1.1 - SSE Batching, Verify Concurrency & Test Coverage
+
+### 🐞 Bug Fixes
+
+- **Verify concurrency default** - `MAX_VERIFY_CONCURRENCY` default changed from `2` to `1` to match serial-first processing policy, preventing unexpected parallel verify workloads on low-resource hosts.
+
+### 🎨 UI / UX
+
+- **SSE job-update batching** - Rapid Server-Sent Events are now coalesced in a micro-batch window (`JOB_UPDATE_BATCH_WINDOW_MS`) before applying to React state. Only the latest update per job is kept, drastically reducing re-renders during high-throughput conversions.
+- **Lazy state cloning** - `setJobs` updater uses an `ensureMutable()` helper that clones the jobs array at most once per flush, avoiding unnecessary allocations when no fields actually changed.
+- **Flush-on-terminal** - Terminal events (`complete`, `error`, `cancelled`) force an immediate flush of the pending batch so the UI reflects final state without waiting for the batch timer.
+
+### 📖 Documentation
+
+- **README** - Updated `MAX_VERIFY_CONCURRENCY` default from `2` to `1` in the environment variable table.
+
+### 🧪 Tests
+
+- **Serial concurrency defaults** - New `test_concurrency_defaults_are_serial` in `tests/test_volume_discovery.py` asserts both `max_concurrent_jobs` and `max_verify_concurrency` default to `1`.
+
+### 📁 Files Changed
+
+- `app/config.py` - `max_verify_concurrency` default `2` → `1`
+- `static/js/app.js` - SSE micro-batching, lazy array cloning, flush-on-terminal
+- `README.md` - Env var table correction
+- `tests/test_volume_discovery.py` - Serial-default assertion test
+
+---
+
 ## v3.1.0 - Volume Discovery, Queue Controls & UI Refresh
 
 ### ✨ New Features
@@ -12,6 +41,7 @@
 ### 🐞 Bug Fixes
 
 - **Serial queue enforcement** - When `MAX_CONCURRENT_JOBS=1`, the dispatcher now awaits `_run_job()` inline instead of spawning a detached task, preventing race-condition parallel processing.
+- **Serial verify default** - `MAX_VERIFY_CONCURRENCY` now defaults to `1` so verification workloads are single-lane unless explicitly increased.
 - **Concurrency invariant logging** - `_run_job()` now logs an error if the count of processing jobs exceeds `max_concurrent`, providing fast detection of scheduling bugs.
 - **Job lookup continuity** - Recently deleted jobs are archived in memory (TTL 15 min, max 2000 entries) so frontend polling does not immediately 404 after a job is cleared. Archive timestamps refresh on access.
 - **z3ds cancellation propagation** - `z3ds_compress.convert()` now catches and re-raises `ConversionCancelled` before the generic `Exception` handler, ensuring clean cancellation logging.

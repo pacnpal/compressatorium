@@ -2459,6 +2459,7 @@ const buildCompressionValue = (selection, options) => {
 function App() {
     const PROGRESS_RENDER_THROTTLE_MS = 250;
     const COMPLETION_REFRESH_DEBOUNCE_MS = 500;
+    const JOB_UPDATE_BATCH_WINDOW_MS = 100;
 
     // State
     const [volumes, setVolumes] = useState([]);
@@ -2528,6 +2529,8 @@ function App() {
     const currentArchivePathRef = useRef(null);
     currentArchivePathRef.current = currentArchivePath;
     const progressRenderAtRef = useRef(new Map()); // jobId -> timestamp
+    const queuedJobUpdatesRef = useRef(new Map()); // jobId -> latest SSE payload
+    const jobUpdateFlushTimeoutRef = useRef(null);
     const completionRefreshTimeoutRef = useRef(null);
 
     // Show notification
@@ -3004,101 +3007,150 @@ function App() {
             })
             .catch(() => { });
 
+        const applyQueuedJobUpdates = (queuedUpdates) => {
+            if (queuedUpdates.length === 0) return;
+
+            setJobs(prevJobs => {
+                let nextJobs = prevJobs;
+                let didMutate = false;
+
+                const ensureMutable = () => {
+                    if (!didMutate) {
+                        nextJobs = [...prevJobs];
+                        didMutate = true;
+                    }
+                    return nextJobs;
+                };
+
+                for (const update of queuedUpdates) {
+                    const jobId = update?.data?.job_id;
+                    if (!jobId) continue;
+
+                    const idx = nextJobs.findIndex(j => j.id === jobId);
+                    const hydratedJob = update?.data?.job;
+                    if (idx === -1) {
+                        if (hydratedJob) {
+                            ensureMutable().unshift(hydratedJob);
+                        }
+                        continue;
+                    }
+
+                    const prevJob = nextJobs[idx];
+                    const statusUpdate = update.type === 'complete' ? 'completed' :
+                        update.type === 'error' ? 'failed' :
+                            update.type === 'cancelled' ? 'cancelled' :
+                                update.data.status ?? prevJob.status;
+                    const isTerminalUpdate = update.type === 'complete'
+                        || update.type === 'error'
+                        || update.type === 'cancelled';
+
+                    // Progress events are still throttled per job, but now after
+                    // SSE events have already been coalesced into a small batch.
+                    if (!isTerminalUpdate && !hydratedJob) {
+                        const now = Date.now();
+                        const lastPaintAt = progressRenderAtRef.current.get(jobId) || 0;
+                        const nextProgress = update.data.progress ?? prevJob.progress;
+                        if (
+                            statusUpdate === prevJob.status
+                            && nextProgress > prevJob.progress
+                            && (now - lastPaintAt) < PROGRESS_RENDER_THROTTLE_MS
+                        ) {
+                            continue;
+                        }
+                        progressRenderAtRef.current.set(jobId, now);
+                    }
+
+                    const updatedJob = {
+                        ...prevJob,
+                        ...(hydratedJob || {}),
+                        progress: update.data.progress ?? prevJob.progress,
+                        message: update.data.message ?? prevJob.message,
+                        status: statusUpdate,
+                        error_message: update.data.error ?? prevJob.error_message,
+                        output_size: update.data.output_size ?? prevJob.output_size
+                    };
+
+                    const unchanged = (
+                        prevJob.status === updatedJob.status
+                        && prevJob.progress === updatedJob.progress
+                        && prevJob.message === updatedJob.message
+                        && prevJob.error_message === updatedJob.error_message
+                        && prevJob.output_size === updatedJob.output_size
+                        && prevJob.started_at === updatedJob.started_at
+                        && prevJob.completed_at === updatedJob.completed_at
+                        && prevJob.output_path === updatedJob.output_path
+                    );
+                    if (unchanged) {
+                        continue;
+                    }
+
+                    ensureMutable()[idx] = updatedJob;
+
+                    if (isTerminalUpdate) {
+                        progressRenderAtRef.current.delete(jobId);
+                    }
+
+                    if (update.type === 'complete') {
+                        notify(`Completed: ${updatedJob.filename}`, 'success');
+                        // Refresh file list with debounce to avoid churn on rapid batch completions.
+                        scheduleCompletionRefresh();
+                        if (update.data.verified && update.data.output_path) {
+                            setVerifiedCHDs(prev => new Set([...prev, update.data.output_path]));
+                        }
+                        if (update.data.source_deleted && updatedJob.file_path?.toLowerCase().endsWith('.chd')) {
+                            setVerifiedCHDs(prev => {
+                                if (!prev.has(updatedJob.file_path)) return prev;
+                                const next = new Set(prev);
+                                next.delete(updatedJob.file_path);
+                                return next;
+                            });
+                        }
+                    } else if (update.type === 'error') {
+                        notify(`Failed: ${updatedJob.filename}`, 'error');
+                    } else if (update.type === 'cancelled') {
+                        notify(`Cancelled: ${updatedJob.filename}`, 'info');
+                    }
+                }
+
+                return didMutate ? nextJobs : prevJobs;
+            });
+        };
+
+        const flushQueuedJobUpdates = (force = false) => {
+            if (!force && jobUpdateFlushTimeoutRef.current) {
+                return;
+            }
+
+            if (!force) {
+                jobUpdateFlushTimeoutRef.current = setTimeout(() => {
+                    jobUpdateFlushTimeoutRef.current = null;
+                    flushQueuedJobUpdates(true);
+                }, JOB_UPDATE_BATCH_WINDOW_MS);
+                return;
+            }
+
+            if (jobUpdateFlushTimeoutRef.current) {
+                clearTimeout(jobUpdateFlushTimeoutRef.current);
+                jobUpdateFlushTimeoutRef.current = null;
+            }
+
+            const queuedUpdates = Array.from(queuedJobUpdatesRef.current.values());
+            queuedJobUpdatesRef.current.clear();
+            applyQueuedJobUpdates(queuedUpdates);
+        };
+
         const unsubscribe = api.subscribeToJobs((update) => {
             const jobId = update?.data?.job_id;
             if (!jobId) return;
 
-            // Update existing job or fetch if new
-            setJobs(prevJobs => {
-                const idx = prevJobs.findIndex(j => j.id === jobId);
+            // Keep only the latest pending update for each job to prevent UI lag
+            // from high-frequency progress messages.
+            queuedJobUpdatesRef.current.set(jobId, update);
 
-                if (idx === -1) {
-                    const hydratedJob = update?.data?.job;
-                    if (hydratedJob) {
-                        return [hydratedJob, ...prevJobs];
-                    }
-                    return prevJobs;
-                }
-
-                const newJobs = [...prevJobs];
-                const hydratedJob = update?.data?.job;
-                const prevJob = newJobs[idx];
-                const statusUpdate = update.type === 'complete' ? 'completed' :
-                    update.type === 'error' ? 'failed' :
-                        update.type === 'cancelled' ? 'cancelled' :
-                            update.data.status ?? prevJob.status;
-
-                // Progress events can be very chatty; coalesce them to keep the UI responsive.
-                const isTerminalUpdate = update.type === 'complete'
-                    || update.type === 'error'
-                    || update.type === 'cancelled';
-                if (!isTerminalUpdate && !hydratedJob) {
-                    const now = Date.now();
-                    const lastPaintAt = progressRenderAtRef.current.get(jobId) || 0;
-                    const nextProgress = update.data.progress ?? prevJob.progress;
-                    if (
-                        statusUpdate === prevJob.status
-                        && nextProgress > prevJob.progress
-                        && (now - lastPaintAt) < PROGRESS_RENDER_THROTTLE_MS
-                    ) {
-                        return prevJobs;
-                    }
-                    progressRenderAtRef.current.set(jobId, now);
-                }
-
-                const nextJob = {
-                    ...prevJob,
-                    ...(hydratedJob || {}),
-                    progress: update.data.progress ?? prevJob.progress,
-                    message: update.data.message ?? prevJob.message,
-                    status: statusUpdate,
-                    error_message: update.data.error ?? prevJob.error_message,
-                    output_size: update.data.output_size ?? prevJob.output_size
-                };
-
-                const unchanged = (
-                    prevJob.status === nextJob.status
-                    && prevJob.progress === nextJob.progress
-                    && prevJob.message === nextJob.message
-                    && prevJob.error_message === nextJob.error_message
-                    && prevJob.output_size === nextJob.output_size
-                    && prevJob.started_at === nextJob.started_at
-                    && prevJob.completed_at === nextJob.completed_at
-                    && prevJob.output_path === nextJob.output_path
-                );
-                if (unchanged) {
-                    return prevJobs;
-                }
-
-                newJobs[idx] = nextJob;
-
-                if (isTerminalUpdate) {
-                    progressRenderAtRef.current.delete(jobId);
-                }
-
-                if (update.type === 'complete') {
-                    notify(`Completed: ${newJobs[idx].filename}`, 'success');
-                    // Refresh file list with debounce to avoid churn on rapid batch completions.
-                    scheduleCompletionRefresh();
-                    if (update.data.verified && update.data.output_path) {
-                        setVerifiedCHDs(prev => new Set([...prev, update.data.output_path]));
-                    }
-                    if (update.data.source_deleted && newJobs[idx].file_path?.toLowerCase().endsWith('.chd')) {
-                        setVerifiedCHDs(prev => {
-                            if (!prev.has(newJobs[idx].file_path)) return prev;
-                            const next = new Set(prev);
-                            next.delete(newJobs[idx].file_path);
-                            return next;
-                        });
-                    }
-                } else if (update.type === 'error') {
-                    notify(`Failed: ${newJobs[idx].filename}`, 'error');
-                } else if (update.type === 'cancelled') {
-                    notify(`Cancelled: ${newJobs[idx].filename}`, 'info');
-                }
-
-                return newJobs;
-            });
+            const isTerminalUpdate = update.type === 'complete'
+                || update.type === 'error'
+                || update.type === 'cancelled';
+            flushQueuedJobUpdates(isTerminalUpdate);
         });
 
         // Poll jobs periodically - merge instead of replace
@@ -3133,6 +3185,11 @@ function App() {
 
         return () => {
             unsubscribe();
+            if (jobUpdateFlushTimeoutRef.current) {
+                clearTimeout(jobUpdateFlushTimeoutRef.current);
+                jobUpdateFlushTimeoutRef.current = null;
+            }
+            queuedJobUpdatesRef.current.clear();
             clearInterval(interval);
         };
     }, [scheduleCompletionRefresh]);

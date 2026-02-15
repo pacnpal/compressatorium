@@ -48,3 +48,12 @@ def test_startup_scan_caches_discovered_volumes(tmp_path: Path):
     games2.mkdir()
     assert settings.volumes == [str(games)]
 
+
+def test_concurrency_defaults_are_serial(monkeypatch):
+    monkeypatch.delenv("MAX_CONCURRENT_JOBS", raising=False)
+    monkeypatch.delenv("MAX_VERIFY_CONCURRENCY", raising=False)
+
+    settings = Settings()
+
+    assert settings.max_concurrent_jobs == 1
+    assert settings.max_verify_concurrency == 1

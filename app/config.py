@@ -40,7 +40,7 @@ class Settings(BaseSettings):
         description="Maximum queued+processing conversion jobs (0 disables backpressure)",
     )
     max_verify_concurrency: int = Field(
-        default=2,
+        default=1,
         alias="MAX_VERIFY_CONCURRENCY",
         description="Maximum concurrent verify workloads across all endpoints",
     )
