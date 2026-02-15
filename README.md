@@ -241,25 +241,40 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 3. **Select ROMs:** Check the boxes next to `.cci`, `.cia`, or `.3ds` files you want to compress
 4. **Compress:** Click the "Compress" button to start the conversion
 5. **Monitor Progress:** Watch the job queue for real-time progress
-6. **Done:** Compressed `.zcci` or `.zcia` files will be created alongside the originals
+6. **Done:** Compressed `.zcci`, `.zcia`, or `.z3ds` files will be created alongside the originals
+
+### Supported File Formats
+
+**Input Formats:**
+- **`.cci`** - CCI (CTR Card Image) format - Nintendo 3DS cartridge dumps
+- **`.cia`** - CIA (CTR Importable Archive) format - Installable packages, updates, DLC
+- **`.3ds`** - Alternative extension for cartridge dumps (identical to .cci, can be renamed)
+
+**Output Formats:**
+- **`.zcci`** - Compressed CCI format (from .cci input)
+- **`.zcia`** - Compressed CIA format (from .cia input)
+- **`.z3ds`** - Compressed 3DS format (from .3ds input)
+
+**Important Note:** The `.3ds` and `.cci` formats are functionally identical - they're both cartridge dump formats with different file extensions. You can freely rename between them. The z3ds_compress tool supports both extensions and maintains the naming convention (.3ds → .z3ds, .cci → .zcci).
 
 ### Technical Details
 
-**Supported inputs:** `.cci` (cart images), `.cia` (installable archives), `.3ds` (cart images - same as .cci)  
-**Output formats:** `.zcci`, `.zcia`, `.z3ds` (compressed formats)  
 **Compression method:** Seekable ZStandard (256KB frame size)  
-**Size reduction:** Typically **~50%** without compatibility issues
+**Size reduction:** Typically **~50%** without compatibility issues  
+**Compression speed:** Fast, single-threaded processing
 
 **Compatibility:**
-- Compressed ROMs are natively supported by [Azahar emulator](https://azahar-emu.org/) (release 2123+)
+- Compressed ROMs are **natively supported** by [Azahar emulator](https://azahar-emu.org/) (release 2123+)
 - Can be decompressed back to original format using the same tool if needed
-- `.cci` files have been thoroughly tested and are production-ready
-- `.cia` files are supported but should be considered experimental
+- **`.cci` files:** Thoroughly tested and production-ready
+- **`.cia` files:** Supported but considered experimental
+- **`.3ds` files:** Same as .cci - fully supported (they're the same format)
 
 **Technical Limitations:**
 - z3ds_compressor binary is included in the Docker image (`Z3DS_COMPRESSOR_PATH=/usr/local/bin/z3ds_compressor`)
 - Compression settings are fixed - no user configuration needed or available
 - Archive members are **not** supported for 3DS conversions (requires direct file access)
+- ROMs must be decrypted before compression (encrypted ROMs will not work)
 - Progress tracking is based on output file size estimation
 - Delete-on-verify is supported for automatic source file cleanup after successful compression
 
@@ -590,7 +605,7 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 **Output formats:**
 - `.chd` - Compressed Hunks of Data (MAME/CHDMAN)
 - `.rvz`, `.wia`, `.gcz`, `.iso` - Dolphin output formats
-- `.zcci`, `.zcia` - Compressed Nintendo 3DS ROMs
+- `.zcci`, `.zcia`, `.z3ds` - Compressed Nintendo 3DS ROMs
 
 ---
 

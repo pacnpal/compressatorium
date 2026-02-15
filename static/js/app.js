@@ -31,7 +31,7 @@ const getPrimaryToolHint = (toolSelection) => {
         return html`Convert GameCube/Wii disc images • Supports RVZ, WIA, GCZ, ISO formats`;
     }
     if (toolSelection === 'z3ds') {
-        return html`Compress Nintendo 3DS ROMs • Converts .cci/.cia/.3ds to .zcci/.zcia/.z3ds`;
+        return html`Compress Nintendo 3DS ROMs • Supports .cci/.cia/.3ds (cart & CIA) → .zcci/.zcia/.z3ds • ~50% size reduction`;
     }
     return html`Current: ${getPrimaryToolLabel(toolSelection)}`;
 };
@@ -117,14 +117,27 @@ function HelpPanel({ onClose, isoHandling }) {
                     <li>🧭 <strong>.iso</strong> - Handled by ${toolLabel} for info/verify operations</li>
                     <li>💿 <strong>.chd</strong> - MAME CHD format (click to view information)</li>
                     <li>🎮 <strong>.rvz, .wia, .gcz, .wbfs</strong> - GameCube/Wii images (Dolphin)</li>
-                    <li>🎮 <strong>.cci, .cia, .3ds</strong> - Nintendo 3DS ROMs (compress to .zcci/.zcia/.z3ds)</li>
+                    <li>🎮 <strong>.cci, .cia, .3ds</strong> - Nintendo 3DS ROMs:
+                        <ul style="margin-top: 5px; font-size: 0.9em;">
+                            <li><em>.cci</em> - CCI (Cart Image) format, cartridge dumps</li>
+                            <li><em>.cia</em> - CIA (Installable Archive) format, updates/DLC</li>
+                            <li><em>.3ds</em> - Alternative cart dump format (same as .cci)</li>
+                            <li><em>Outputs:</em> .zcci, .zcia, .z3ds (compressed with ZStandard)</li>
+                        </ul>
+                    </li>
                     <li>📦 <strong>.zip, .7z, .rar</strong> - Archives (click to browse contents)</li>
                 </ul>
                 <h4>Compression Tips</h4>
                 <ul>
                     <li><strong>CHDMAN:</strong> zlib is most compatible; lzma yields smaller files but slower encoding</li>
                     <li><strong>Dolphin:</strong> RVZ is recommended for best compression with fast decompression</li>
-                    <li><strong>3DS:</strong> Uses seekable ZStandard compression (~50% size reduction)</li>
+                    <li><strong>3DS:</strong> Uses seekable ZStandard compression (~50% size reduction)
+                        <ul style="margin-top: 5px; font-size: 0.9em;">
+                            <li>Natively supported by Azahar emulator (v2123+)</li>
+                            <li>.3ds and .cci are the same format with different extensions</li>
+                            <li>ROMs must be decrypted before compression</li>
+                        </ul>
+                    </li>
                     <li><strong>Delete-on-verify:</strong> Automatically removes source files after successful conversion</li>
                 </ul>
                 <p class="compression-note">
@@ -448,13 +461,13 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             <span class="status has-chd" title="A CHD file already exists for this source">CHD exists</span>
                         `}
                         ${entry.type !== 'archive' && entry.has_z3ds && html`
-                            <span class="status has-chd" title="A compressed 3DS file already exists">Z3DS exists</span>
+                            <span class="status has-chd" title="A compressed 3DS file (.zcci/.zcia/.z3ds) already exists">Z3DS exists</span>
                         `}
                         ${entry.type !== 'archive' && entry.convertible && !entry.has_chd && html`
                             <span class="status convertible" title="Can be converted to CHD">Convertible</span>
                         `}
                         ${entry.type !== 'archive' && entry.z3ds_convertible && !entry.has_z3ds && html`
-                            <span class="status convertible" title="Can be compressed to ZCCI/ZCIA">3DS ROM</span>
+                            <span class="status convertible" title="Nintendo 3DS ROM - Can be compressed to ZCCI/ZCIA/Z3DS format">3DS ROM</span>
                         `}
                         ${entry.type === 'archive' && archiveItems != null && archiveItems > 0 && html`
                             <span class="status convertible" title="Convertible images inside this archive">
