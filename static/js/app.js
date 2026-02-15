@@ -2,28 +2,38 @@
 import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
-const ISO_TOOL_STORAGE_KEY = 'iso_tool_preference';
+const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
 const isMacMetadataName = (name) => name === '.DS_Store' || name.startsWith('._') || name === '__MACOSX';
 
 const normalizeDolphinLevel = (value) => {
     const raw = `${value ?? ''}`.trim();
     if (!raw) return DEFAULT_DOLPHIN_COMPRESSION_LEVEL;
-    if (!/^\d+$/.test(raw)) return DEFAULT_DOLPHIN_COMPRESSION_LEVEL;
+    if (/^\d+$/.test(raw)) return DEFAULT_DOLPHIN_COMPRESSION_LEVEL;
     return raw;
 };
 
-const getIsoHandlingLabel = (isoHandling) => {
-    if (isoHandling === 'chdman') return 'CHDMAN';
-    if (isoHandling === 'dolphin') return 'Dolphin';
+const getPrimaryToolLabel = (toolSelection) => {
+    if (toolSelection === 'chdman') return 'CHDMAN';
+    if (toolSelection === 'dolphin') return 'Dolphin';
+    if (toolSelection === 'z3ds') return '3DS';
     return 'None selected';
 };
 
-const getIsoHandlingHint = (isoHandling) => {
-    if (isoHandling === null) {
-        return html`<span role="img" aria-label="Warning">⚠️</span> Please select an ISO handling method above before working with .iso files`;
+const getPrimaryToolHint = (toolSelection) => {
+    if (toolSelection === null) {
+        return html`<span role="img" aria-label="Warning">⚠️</span> Please select your primary tool above to get started`;
     }
-    return html`Current: ${getIsoHandlingLabel(isoHandling)} • Controls ISO info/verify and other ambiguous ISO actions.`;
+    if (toolSelection === 'chdman') {
+        return html`Convert disc images to CHD format • Supports CD/DVD/LaserDisc`;
+    }
+    if (toolSelection === 'dolphin') {
+        return html`Convert GameCube/Wii disc images • Supports RVZ, WIA, GCZ, ISO formats`;
+    }
+    if (toolSelection === 'z3ds') {
+        return html`Compress Nintendo 3DS ROMs • Converts .cci/.cia to .zcci/.zcia`;
+    }
+    return html`Current: ${getPrimaryToolLabel(toolSelection)}`;
 };
 
 const MODE_GROUPS = [
@@ -78,7 +88,7 @@ const MODE_GROUPS = [
 // ============ Help Component ============
 
 function HelpPanel({ onClose, isoHandling }) {
-    const isoHandlingLabel = getIsoHandlingLabel(isoHandling);
+    const toolLabel = getPrimaryToolLabel(isoHandling);
     return html`
         <div class="help-panel">
             <div class="help-header">
@@ -88,34 +98,34 @@ function HelpPanel({ onClose, isoHandling }) {
             <div class="help-content">
                 <h4>How to use Compressatorium</h4>
                 <ol>
+                    <li><strong>Select Primary Tool</strong> - Choose CHDMAN, Dolphin, or 3DS at the top</li>
                     <li><strong>Select a Volume</strong> - Choose a mounted directory from the left panel</li>
                     <li><strong>Browse Files</strong> - Navigate through folders to find your disc images</li>
                     <li><strong>Select Files</strong> - Click checkboxes next to files you want to convert</li>
                     <li><strong>Choose Mode</strong>:
                         <ul>
-                            <li><em>Create CD/DVD</em> - Convert disc images to CHD</li>
-                            <li><em>Create Raw/HD/LD</em> - Advanced creation modes</li>
-                            <li><em>Extract</em> - Convert CHD back to raw/iso/cue</li>
-                            <li><em>Copy</em> - Recompress or duplicate a CHD</li>
+                            <li><em>CHDMAN</em> - Create/Extract/Copy CHD files (CD/DVD/LaserDisc)</li>
+                            <li><em>Dolphin</em> - Convert GameCube/Wii images (RVZ/WIA/GCZ/ISO)</li>
+                            <li><em>3DS</em> - Compress Nintendo 3DS ROMs (.cci/.cia → .zcci/.zcia)</li>
                         </ul>
                     </li>
-                    <li><strong>Queue</strong> - Click Convert to add jobs to the FIFO queue</li>
+                    <li><strong>Queue</strong> - Click the action button to add jobs to the queue</li>
                 </ol>
                 <h4>File Types</h4>
                 <ul>
-                    <li>💽 <strong>.gdi, .cue, .bin</strong> - Can be converted to CHD</li>
-                    <li>🧭 <strong>.iso</strong> - Handled by ${isoHandlingLabel} (change via ISO Handling)</li>
-                    <li>💿 <strong>.chd</strong> - Click to view file information</li>
+                    <li>💽 <strong>.gdi, .cue, .bin</strong> - Can be converted to CHD (CHDMAN)</li>
+                    <li>🧭 <strong>.iso</strong> - Handled by ${toolLabel} for info/verify operations</li>
+                    <li>💿 <strong>.chd</strong> - MAME CHD format (click to view information)</li>
+                    <li>🎮 <strong>.rvz, .wia, .gcz, .wbfs</strong> - GameCube/Wii images (Dolphin)</li>
+                    <li>🎮 <strong>.cci, .cia</strong> - Nintendo 3DS ROMs (compress to .zcci/.zcia)</li>
                     <li>📦 <strong>.zip, .7z, .rar</strong> - Archives (click to browse contents)</li>
-                    <li>🎮 <strong>.rvz, .wia, .gcz, .wbfs</strong> - GameCube/Wii disc images (Dolphin)</li>
                 </ul>
                 <h4>Compression Tips</h4>
                 <ul>
-                    <li><strong>zlib</strong> is the most compatible choice across emulators.</li>
-                    <li><strong>No compression</strong> uses <code>-c none</code> for truly uncompressed output.</li>
-                    <li><strong>lzma</strong> yields smaller files but takes longer to encode.</li>
-                    <li><strong>zstd</strong> can be faster but may not be supported by older builds.</li>
-                    <li>CD-specific codecs (<strong>cdzl/cdzs/cdlz/cdfl</strong>) are intended for CD images.</li>
+                    <li><strong>CHDMAN:</strong> zlib is most compatible; lzma yields smaller files but slower encoding</li>
+                    <li><strong>Dolphin:</strong> RVZ is recommended for best compression with fast decompression</li>
+                    <li><strong>3DS:</strong> Uses seekable ZStandard compression (~50% size reduction)</li>
+                    <li><strong>Delete-on-verify:</strong> Automatically removes source files after successful conversion</li>
                 </ul>
                 <p class="compression-note">
                     Omitting <code>-c</code> would use chdman defaults; this app always sends an explicit choice to avoid surprises.
@@ -3079,14 +3089,18 @@ function App() {
     const modeVisibility = useMemo(() => {
         if (selectedEntries.length === 0) {
             if (isoHandling === 'dolphin') {
-                return { create: false, extract: false, copy: false, dolphin: true };
+                return { create: false, extract: false, copy: false, dolphin: true, z3ds: false };
             }
-            return { create: true, extract: true, copy: true, dolphin: false };
+            if (isoHandling === 'z3ds') {
+                return { create: false, extract: false, copy: false, dolphin: false, z3ds: true };
+            }
+            return { create: true, extract: true, copy: true, dolphin: false, z3ds: false };
         }
         let allowCreate = true;
         let allowExtract = true;
         let allowCopy = true;
         let allowDolphin = true;
+        let allowZ3ds = true;
         for (const entry of selectedEntries) {
             const ext = entry.extension?.toLowerCase();
             const isIso = ext === '.iso';
@@ -3098,24 +3112,37 @@ function App() {
             const canChdCreate = entry.convertible === true
                 && !isChd
                 && (!isIso || isoHandling !== 'dolphin');
+            const canZ3ds = entry.z3ds_convertible === true && !inArchive;
             allowCreate = allowCreate && canChdCreate;
             allowExtract = allowExtract && isChd;
             allowCopy = allowCopy && isChd;
             allowDolphin = allowDolphin && canDolphin;
+            allowZ3ds = allowZ3ds && canZ3ds;
         }
         if (isoHandling === 'dolphin') {
             return {
                 create: false,
                 extract: false,
                 copy: false,
-                dolphin: true
+                dolphin: true,
+                z3ds: false
+            };
+        }
+        if (isoHandling === 'z3ds') {
+            return {
+                create: false,
+                extract: false,
+                copy: false,
+                dolphin: false,
+                z3ds: true
             };
         }
         return {
             create: allowCreate,
             extract: allowExtract,
             copy: allowCopy,
-            dolphin: false
+            dolphin: false,
+            z3ds: false
         };
     }, [selectedEntries, isoHandling]);
     const visibleModeGroups = useMemo(() => {
@@ -3125,7 +3152,11 @@ function App() {
             const dolphinGroup = MODE_GROUPS.find((group) => group.id === 'dolphin');
             return dolphinGroup ? [dolphinGroup] : MODE_GROUPS;
         }
-        const chdGroups = MODE_GROUPS.filter((group) => group.id !== 'dolphin');
+        if (isoHandling === 'z3ds') {
+            const z3dsGroup = MODE_GROUPS.find((group) => group.id === 'z3ds');
+            return z3dsGroup ? [z3dsGroup] : MODE_GROUPS;
+        }
+        const chdGroups = MODE_GROUPS.filter((group) => group.id !== 'dolphin' && group.id !== 'z3ds');
         return chdGroups.length ? chdGroups : MODE_GROUPS;
     }, [modeVisibility, isoHandling]);
     useEffect(() => {
@@ -3526,8 +3557,8 @@ function App() {
             </header>
 
             <div class="iso-tool-banner${needsIsoSelection ? ' iso-tool-banner-warning' : ''}">
-                <div class="iso-tool-title">ISO Handling${needsIsoSelection ? ' - Selection Required' : ''}</div>
-                <div class="iso-tool-options" role="radiogroup" aria-label="ISO handling">
+                <div class="iso-tool-title">Primary Tool${needsIsoSelection ? ' - Selection Required' : ''}</div>
+                <div class="iso-tool-options" role="radiogroup" aria-label="Primary tool selection">
                     <label class="iso-option">
                         <input
                             type="radio"
@@ -3538,7 +3569,7 @@ function App() {
                         />
                         <div class="iso-option-text">
                             <strong>CHDMAN</strong>
-                            <span>Prefer CHD conversion</span>
+                            <span>CHD conversion (CD/DVD/LD)</span>
                         </div>
                     </label>
                     <label class="iso-option">
@@ -3551,12 +3582,25 @@ function App() {
                         />
                         <div class="iso-option-text">
                             <strong>Dolphin</strong>
-                            <span>Use Dolphin tools (GC/Wii)</span>
+                            <span>GameCube/Wii (RVZ/WIA/GCZ)</span>
+                        </div>
+                    </label>
+                    <label class="iso-option">
+                        <input
+                            type="radio"
+                            name="iso-tool"
+                            value="z3ds"
+                            checked=${isoHandling === 'z3ds'}
+                            onChange=${() => setIsoHandling('z3ds')}
+                        />
+                        <div class="iso-option-text">
+                            <strong>3DS</strong>
+                            <span>Nintendo 3DS ROMs</span>
                         </div>
                     </label>
                 </div>
             <div class="iso-tool-hint${needsIsoSelection ? ' iso-tool-hint-warning' : ''}">
-                ${getIsoHandlingHint(isoHandling)}
+                ${getPrimaryToolHint(isoHandling)}
             </div>
         </div>
 
