@@ -5,6 +5,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     git \
     build-essential \
+    libzstd-dev \
     ca-certificates && \
     git clone https://github.com/energeticokay/z3ds_compress.git /tmp/z3ds && \
     cd /tmp/z3ds && \
