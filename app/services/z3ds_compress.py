@@ -436,10 +436,8 @@ class Z3DSCompressService:
     async def verify(self, file_path: str) -> dict:
         """Verify the integrity of a compressed 3DS file.
 
-        Since z3ds_compressor lacks a native verify mode, we perform basic checks:
-        1. File exists
-        2. File is not empty
-        3. File has correct extension
+        Performs deep verification by streaming the compressed Z3DS/ZCCI/ZCIA file
+        through `zstd -t` to validate the ZStandard stream integrity.
         
         Returns:
             dict: {"valid": bool, "message": str}
@@ -454,11 +452,11 @@ class Z3DSCompressService:
         }
 
     async def verify_stream(self, file_path: str) -> AsyncGenerator[dict, None]:
-        """Stream verification progress.
+        """Stream verification progress for a compressed 3DS file.
         
-        For now, this is a simulated verification since we rely on checks that
-        are seemingly instantaneous. We add a small delay to ensure the UI
-        has time to register the 'verifying' state.
+        Performs deep integrity verification by piping the file through `zstd -t`
+        to validate the ZStandard compression stream. This ensures the compressed
+        data is not corrupted and can be successfully decompressed.
         """
         if not os.path.exists(file_path):
             yield {

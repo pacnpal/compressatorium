@@ -37,7 +37,7 @@
 - **UI Accessibility** - Increased warning text size and improved color contrast for better readability in `static/css/style.css`.
 - **ISO Handling Validation** - Added strict check for `iso_handling` parameter in `routes/convert.py`, rejecting requests where it is null.
 
-### �️ Reliability & Maintenance
+### ⚙️ Reliability & Maintenance
 
 - **Periodic Lock Cleanup** - Added `cleanup_stale_locks_periodic` to `JobManager` (services/job_manager.py), running every 10 debug heartbeats (approx. 5 minutes) to automatically remove stale lock files.
 - **Z3DS Metadata Optimization** - Added `has_z3ds` and `z3ds_convertible` flags to file search responses in `routes/files.py` to optimize frontend filtering.
@@ -53,7 +53,7 @@
     - Adds `CHD_PROGRESS_TIMEOUT_PER_GIB` seconds per GiB of input.
     - Enforces upper bound with `CHD_PROGRESS_TIMEOUT_CAP`.
 
-### �🔧 Technical Details
+### 🔧 Technical Details
 
 - **Z3DS Integration** - Implemented `Z3DS_INFO_EXTENSIONS` and `Z3DS_VERIFY_EXTENSIONS` constants for centralized file type management.
 - **Path Helper Methods** - Added `_is_z3ds_info_file` and `_is_z3ds_verify_file` helpers in `routes/info.py` for consistent file type checking.
