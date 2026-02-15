@@ -7,9 +7,11 @@ RUN apt-get update && \
     build-essential \
     libzstd-dev \
     ca-certificates && \
-    git clone https://github.com/energeticokay/z3ds_compress.git /tmp/z3ds && \
-    cd /tmp/z3ds && \
-    g++ -O3 src/*.cpp -o z3ds_compressor -lzstd && \
+    git clone https://github.com/energeticokay/z3ds_compress.git /tmp/z3ds
+
+WORKDIR /tmp/z3ds
+
+RUN g++ -O3 src/*.cpp -o z3ds_compressor -lzstd && \
     chmod +x z3ds_compressor
 
 FROM debian:trixie-slim
