@@ -4,15 +4,25 @@
 
 Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), and **z3ds_compressor** (Nintendo 3DS).
 
-* **Web UI** for easy file browsing and conversion
-* Supports **nested directories** and **compressed archives** (ZIP, 7z, RAR)
-* **Multiple volume mounts** for organizing different game libraries
-* **ISO handling toggle** (choose between CHDMAN or Dolphin tool for `.iso` files)
-* Web UI detects existing outputs with skip/rename/overwrite options
-* CLI skips existing CHD files by default
-* Source files are preserved by default (optional delete-on-verify after successful conversion)
-* Supports CHD create/extract/copy plus Dolphin RVZ/WIA/GCZ/ISO conversions (Web UI/API)
-* Compress Nintendo 3DS ROMs (.cci/.cia) to .zcci/.zcia format using seekable ZStandard
+## ✨ Features
+
+* **🎮 Three Primary Tools:** Choose between CHDMAN, Dolphin, or 3DS compression
+* **🌐 Web UI** for easy file browsing and conversion with intuitive tool selection
+* **📁 Nested directories** and **compressed archives** (ZIP, 7z, RAR) support
+* **💾 Multiple volume mounts** for organizing different game libraries
+* **🔄 Smart file detection** - automatically identifies convertible files for each tool
+* **✅ Existing output detection** with skip/rename/overwrite options
+* **🗑️ Delete-on-verify** - optional automatic source removal after successful conversion
+* **📊 Progress tracking** with real-time job queue monitoring
+* **🔍 File information** - view metadata for CHD, Dolphin, and 3DS files
+
+### Supported Conversions
+
+| Tool | Input Formats | Output Formats | Use Case |
+|------|--------------|----------------|----------|
+| **CHDMAN** | .gdi, .cue, .bin, .iso | .chd | CD/DVD/LaserDisc to CHD |
+| **Dolphin** | .iso, .gcm, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
+| **3DS** | .cci, .cia | .zcci, .zcia | Nintendo 3DS ROM compression |
 
 ---
 
@@ -41,8 +51,36 @@ Both registries provide identical images with multi-architecture support (`linux
 | Tag | Description |
 |-----|-------------|
 | `latest` | Latest stable release from the main branch |
-| `vX.Y.Z` | Specific version (e.g., `v1.0.0`) |
+| `vX.Y.Z` | Specific version (e.g., `v2.1.0`) |
 | `sha-xxxxxxx` | Specific commit build |
+
+---
+
+## Quick Start Guide
+
+### 1. Select Your Primary Tool
+
+When you open the Web UI, you'll see three tool options at the top:
+
+* **CHDMAN** - For converting CD/DVD/LaserDisc images to CHD format
+* **Dolphin** - For GameCube/Wii disc image conversions
+* **3DS** - For compressing Nintendo 3DS ROMs
+
+**Choose the tool that matches your files.** The interface will automatically show only relevant modes and file types.
+
+### 2. Browse and Select Files
+
+* Navigate through your mounted volumes using the left panel
+* Click on folders to browse subdirectories
+* Check the boxes next to files you want to convert
+* Archives (.zip, .7z, .rar) can be browsed by clicking them
+
+### 3. Configure and Convert
+
+* Select the appropriate conversion mode from the dropdown
+* Adjust compression settings if available
+* Click the action button (Create/Convert/Compress depending on mode)
+* Monitor progress in the job queue panel
 
 ---
 
@@ -196,24 +234,45 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 
 3DS ROM compression is available in the Web UI and REST API using [z3ds_compress](https://github.com/energeticokay/z3ds_compress).
 
+### How to Use
+
+1. **Select Primary Tool:** Choose **3DS** from the three main options at the top of the Web UI
+2. **Browse Files:** Navigate to your 3DS ROM directory
+3. **Select ROMs:** Check the boxes next to `.cci` or `.cia` files you want to compress
+4. **Compress:** Click the "Compress" button to start the conversion
+5. **Monitor Progress:** Watch the job queue for real-time progress
+6. **Done:** Compressed `.zcci` or `.zcia` files will be created alongside the originals
+
+### Technical Details
+
 **Supported inputs:** `.cci` (cart images), `.cia` (installable archives)  
 **Output formats:** `.zcci` (compressed cart images), `.zcia` (compressed installable archives)  
-**Compression method:** Seekable ZStandard
+**Compression method:** Seekable ZStandard (256KB frame size)  
+**Size reduction:** Typically **~50%** without compatibility issues
 
-**Notes**
-- Typically achieves **~50% size reduction** without impacting compatibility.
-- `.cci` files have been thoroughly tested and are production-ready.
-- `.cia` files are supported but should be considered experimental until further validation.
-- Compressed ROMs are natively supported by [Azahar emulator](https://azahar-emu.org/) (release 2123+).
-- z3ds_compressor binary is included in the Docker image (`Z3DS_COMPRESSOR_PATH=/usr/local/bin/z3ds_compressor`).
-- Compression settings are fixed (256KB frame size) - no user configuration needed.
-- Archive members are **not** supported for 3DS conversions.
+**Compatibility:**
+- Compressed ROMs are natively supported by [Azahar emulator](https://azahar-emu.org/) (release 2123+)
+- Can be decompressed back to original format using the same tool if needed
+- `.cci` files have been thoroughly tested and are production-ready
+- `.cia` files are supported but should be considered experimental
 
-**Example usage:**
-1. Browse to your 3DS ROM directory in the Web UI
-2. Select `.cci` or `.cia` files
-3. Choose `z3ds_compress` as the conversion mode
-4. Convert to create `.zcci` or `.zcia` files alongside the originals
+**Technical Limitations:**
+- z3ds_compressor binary is included in the Docker image (`Z3DS_COMPRESSOR_PATH=/usr/local/bin/z3ds_compressor`)
+- Compression settings are fixed - no user configuration needed or available
+- Archive members are **not** supported for 3DS conversions (requires direct file access)
+- Progress tracking is based on output file size estimation
+- Delete-on-verify is supported for automatic source file cleanup after successful compression
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
+
+### REST API Endpoints
+
+- `POST /api/convert/batch` - Batch compression jobs (use `mode: "z3ds_compress"`)
+- `GET /api/z3ds-info?path=/path/to/rom.cci` - Get file information (size, format, compression status)
 
 ---
 
