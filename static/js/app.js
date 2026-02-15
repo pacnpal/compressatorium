@@ -3063,18 +3063,36 @@ function App() {
     const deleteOnVerifyLabel = isCopyMode
         ? 'Delete original CHD after copy + verify'
         : 'Delete source after convert + verify';
-    const deleteOnVerifyNote = !deleteOnVerifySupported
-        ? 'Available only for create/copy/Dolphin modes.'
-        : hasArchiveSelection
-            ? 'Archive inputs will delete the entire archive after verification.'
-            : isCopyMode
-                ? 'Warning: this deletes the original CHD after the copy verifies.'
-                : isDolphinMode
-                    ? 'Runs Dolphin disc verification and deletes the original source if it passes.'
-                    : 'Runs CHD verification and deletes the original source (including .cue/.gdi track files) if it passes.';
-    const deleteOnVerifyTitle = isDolphinMode
-        ? 'Verify output disc image, then delete the source files'
-        : 'Verify output CHD, then delete the source files';
+    const getDeleteOnVerifyNote = () => {
+        if (!deleteOnVerifySupported) {
+            return 'Available only for create/copy/Dolphin/3DS modes.';
+        }
+        if (hasArchiveSelection) {
+            return 'Archive inputs will delete the entire archive after verification.';
+        }
+        if (isCopyMode) {
+            return 'Warning: this deletes the original CHD after the copy verifies.';
+        }
+        if (isDolphinMode) {
+            return 'Runs Dolphin disc verification and deletes the original source if it passes.';
+        }
+        if (isZ3dsMode) {
+            return 'Deletes the original .cci/.cia ROM file after successful compression.';
+        }
+        return 'Runs CHD verification and deletes the original source (including .cue/.gdi track files) if it passes.';
+    };
+    const deleteOnVerifyNote = getDeleteOnVerifyNote();
+    
+    const getDeleteOnVerifyTitle = () => {
+        if (isDolphinMode) {
+            return 'Verify output disc image, then delete the source files';
+        }
+        if (isZ3dsMode) {
+            return 'Delete source ROM after successful compression';
+        }
+        return 'Verify output CHD, then delete the source files';
+    };
+    const deleteOnVerifyTitle = getDeleteOnVerifyTitle();
     const outputTitle = isExtractMode
         ? 'Optional: Specify a custom directory for extracted files'
         : isDolphinMode
