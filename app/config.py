@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, PrivateAttr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,9 +14,20 @@ class Settings(BaseSettings):
         populate_by_name=True,
         extra="ignore",
     )
+    _startup_discovered_volumes: list[str] = PrivateAttr(default_factory=list)
+    _startup_scan_completed: bool = PrivateAttr(default=False)
 
-    # Volume configuration (comma-separated paths)
-    chd_volumes: str = Field(default="/data/games", alias="CHD_VOLUMES")
+    # Volume configuration. Prefer COMPRESSATORIUM_* names; CHD_* remain supported aliases.
+    chd_volumes: str = Field(
+        default="",
+        alias="COMPRESSATORIUM_VOLUMES",
+        validation_alias=AliasChoices("COMPRESSATORIUM_VOLUMES", "CHD_VOLUMES"),
+    )
+    data_mount_root: str = Field(
+        default="/data",
+        alias="COMPRESSATORIUM_MOUNT_ROOT",
+        validation_alias=AliasChoices("COMPRESSATORIUM_MOUNT_ROOT", "CHD_MOUNT_ROOT"),
+    )
 
     # Persistent data directory
     data_dir: str = Field(default="/config", alias="CHD_DATA_DIR")
@@ -124,9 +135,54 @@ class Settings(BaseSettings):
 
     @property
     def volumes(self) -> list[str]:
-        """Parse CHD_VOLUMES into a list of paths."""
-        volumes = str(self.chd_volumes)
-        return [v.strip() for v in volumes.split(",") if v.strip()]
+        """Return explicit volume list when set, otherwise auto-discover /data/*."""
+        explicit = str(self.chd_volumes).strip()
+        if explicit:
+            return [v.strip() for v in explicit.split(",") if v.strip()]
+        if self._startup_scan_completed:
+            return list(self._startup_discovered_volumes)
+        return self.discover_data_volumes()
+
+    def scan_data_mounts_on_startup(self) -> list[str]:
+        """Capture discovered volumes once during startup for stable runtime behavior."""
+        self._startup_discovered_volumes = self.discover_data_volumes()
+        self._startup_scan_completed = True
+        return list(self._startup_discovered_volumes)
+
+    def discover_data_volumes(self) -> list[str]:
+        """Return configured data volumes discovered from data_mount_root.
+
+        Discovery strategy:
+        1. Scan direct subdirectories under `data_mount_root`.
+        2. If one or more entries are mount points, use only mount points.
+        3. Otherwise use all direct subdirectories.
+        4. If no subdirectories exist, allow `data_mount_root` itself when present.
+        """
+        root_path = Path(str(self.data_mount_root)).expanduser()
+        try:
+            resolved_root = root_path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return []
+
+        if not resolved_root.is_dir():
+            return []
+
+        children: list[Path] = []
+        try:
+            children = sorted(
+                [p for p in resolved_root.iterdir() if p.is_dir()],
+                key=lambda p: p.name.lower(),
+            )
+        except OSError:
+            return []
+
+        mount_children = [p for p in children if os.path.ismount(str(p))]
+        selected = mount_children if mount_children else children
+
+        if not selected:
+            return [str(resolved_root)]
+
+        return [str(path) for path in selected]
 
     def get_volume_name(self, path: str) -> str:
         """Extract a friendly name from a volume path."""

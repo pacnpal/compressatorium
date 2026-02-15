@@ -99,6 +99,7 @@ docker run -d \
 Then open **http://localhost:8080** in your browser.
 
 > **Required:** The `/config` volume must be mounted for persistent data storage.  
+> **Volume discovery:** If `COMPRESSATORIUM_VOLUMES` is unset, the app scans `/data/*` at startup and auto-registers mounted game volumes (restart after mount changes).  
 > **Default temp location:** `/config/temp`. To use a different location, set `CHD_TEMP_DIR` and mount it.
 
 ### Multiple Volumes
@@ -109,7 +110,6 @@ Mount multiple game directories for better organization:
 docker run -d \
   -p 8080:8080 \
   -v /path/to/config:/config \
-  -e CHD_VOLUMES="/data/dreamcast,/data/psp,/data/ps1" \
   -v /home/user/dreamcast:/data/dreamcast \
   -v /home/user/psp:/data/psp \
   -v /home/user/ps1:/data/ps1 \
@@ -161,11 +161,12 @@ The mobile interface features a card-based layout with touch-friendly controls (
 
 **Batch Conversion**
 - Select multiple files and convert them all at once
-- Queue-based processing (FIFO) with configurable concurrency
+- Queue-based processing (FIFO), defaulting to serial execution (`MAX_CONCURRENT_JOBS=1`)
 - Real-time progress tracking via Server-Sent Events
 - Duplicate detection with options to skip, rename, or overwrite
 - Optional delete-on-verify with a preflight confirmation list (includes `.cue`/`.gdi` track files)
 - Archive conversions can delete the entire archive after verify (explicit warning in the delete plan)
+- Job manager controls include **Cancel All** and **Clear Done**, both guarded by confirmation dialogs
 
 **Bulk Operations**
 - **Bulk Delete**: Delete multiple selected files at once
@@ -286,8 +287,11 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 
 ### REST API Endpoints
 
-- `POST /api/convert/batch` - Batch compression jobs (use `mode: "z3ds_compress"`)
+- `POST /api/jobs` or `POST /api/jobs/batch` - Queue 3DS compression jobs (use `mode: "z3ds_compress"`)
 - `GET /api/z3ds-info?path=/path/to/rom.cci` - Get file information (size, format, compression status)
+- `GET /api/z3ds-verify?path=/path/to/rom.zcci` - Verify compressed 3DS output integrity
+- `GET /api/z3ds-verify/events?path=/path/to/rom.zcci` - SSE stream for 3DS verify progress
+- `POST /api/z3ds-verify-batch/events` - SSE stream for batch 3DS verification
 
 ---
 
@@ -322,7 +326,6 @@ docker run --rm \
 docker run --rm \
   -e CHD_MODE=cli \
   -e CHDMAN_MODE=createdvd \
-  -e CHD_VOLUMES="/data/psp,/data/ps2" \
   -v /home/user/psp:/data/psp:rw \
   -v /home/user/ps2:/data/ps2:rw \
   pacnpal/compressatorium
@@ -419,9 +422,15 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | GET | `/api/jobs/{id}` | Get a specific job |
 | DELETE | `/api/jobs/{id}` | Cancel a job |
 | DELETE | `/api/jobs/completed` | Clear completed/failed/cancelled jobs |
+| POST | `/api/jobs/cancel-all` | Cancel all queued and processing jobs |
 | GET | `/api/jobs/events` | SSE stream for job progress updates |
+| GET | `/api/jobs/{id}/events` | SSE stream for a single job's progress |
 | GET | `/api/jobs/stuck-status` | Check if job queue is in a stuck state |
 | POST | `/api/jobs/recover` | Manually trigger recovery from stuck job queue |
+
+**Destructive jobs actions require explicit confirmation headers:**
+- `DELETE /api/jobs/completed` requires `X-CHD-Action-Confirm: clear-completed-jobs`
+- `POST /api/jobs/cancel-all` requires `X-CHD-Action-Confirm: cancel-all-jobs`
 
 ### CHD Information & Verification
 
@@ -456,7 +465,10 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CHD_MODE` | `webui` | Mode: `webui` (web interface) or `cli` (batch processing) |
-| `CHD_VOLUMES` | `/data/games` | Comma-separated list of volume mount paths |
+| `COMPRESSATORIUM_MOUNT_ROOT` | `/data` | Startup scan root. When no explicit volumes are set, directories under this path (`/data/*`) are auto-registered |
+| `COMPRESSATORIUM_VOLUMES` | (unset) | Explicit comma-separated volume paths. When set, startup scan is skipped |
+| `CHD_MOUNT_ROOT` | `/data` | Legacy alias for `COMPRESSATORIUM_MOUNT_ROOT` |
+| `CHD_VOLUMES` | (unset) | Legacy alias for `COMPRESSATORIUM_VOLUMES` |
 | `CHD_DATA_DIR` | `/config` | Directory for persistent application data |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
 | `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd-locks` | Directory for job lock files (ephemeral, auto-cleaned on container restart) |
@@ -466,7 +478,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
-| `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs |
+| `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (`1` = serial queue processing) |
 | `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
 | `MAX_VERIFY_CONCURRENCY` | `2` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |
 | `MAX_METADATA_SCAN_CONCURRENCY` | `1` | Maximum concurrent metadata scan tasks |
@@ -576,7 +588,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - CHD_VOLUMES=/data/dreamcast,/data/psp,/data/ps1
+      - COMPRESSATORIUM_MOUNT_ROOT=/data
       - MAX_CONCURRENT_JOBS=1
       - CHD_CHDMAN_NICE=10
       - CHD_CHDMAN_IOPRIO_CLASS=2

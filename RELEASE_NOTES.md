@@ -1,8 +1,77 @@
 # Release Notes
 
-## Unreleased
+## v3.1.0 - Volume Discovery, Queue Controls & UI Refresh
 
-(No unreleased changes)
+### ✨ New Features
+
+- **Automatic volume discovery** - When `COMPRESSATORIUM_VOLUMES` is not set, the app discovers mounted libraries from `COMPRESSATORIUM_MOUNT_ROOT/*` at startup. Mount-point children are preferred over plain directories; results are cached for stable runtime behavior.
+- **Queue-wide cancellation** - New `POST /api/jobs/cancel-all` endpoint with `X-CHD-Action-Confirm: cancel-all-jobs` header guard. A confirmation modal in the UI prevents accidental bulk cancellation.
+- **Clear completed jobs** - New `DELETE /api/jobs/completed` endpoint with `X-CHD-Action-Confirm: clear-completed-jobs` header guard. Adds a "Clear Done" button with a confirmation modal showing the count of jobs to remove.
+- **Entrypoint volume discovery** - `entrypoint.sh` now runs the same discover-volumes logic at container startup and logs whether volumes are explicit or auto-discovered, with proper comma-delimited iteration and whitespace trimming.
+
+### 🐞 Bug Fixes
+
+- **Serial queue enforcement** - When `MAX_CONCURRENT_JOBS=1`, the dispatcher now awaits `_run_job()` inline instead of spawning a detached task, preventing race-condition parallel processing.
+- **Concurrency invariant logging** - `_run_job()` now logs an error if the count of processing jobs exceeds `max_concurrent`, providing fast detection of scheduling bugs.
+- **Job lookup continuity** - Recently deleted jobs are archived in memory (TTL 15 min, max 2000 entries) so frontend polling does not immediately 404 after a job is cleared. Archive timestamps refresh on access.
+- **z3ds cancellation propagation** - `z3ds_compress.convert()` now catches and re-raises `ConversionCancelled` before the generic `Exception` handler, ensuring clean cancellation logging.
+- **Progress update deduplication** - SSE event handler skips `setJobs` when all tracked fields are identical, eliminating unnecessary React re-renders.
+- **File-list auto-refresh paused during work** - Auto-refresh interval is suppressed while any jobs are creating, queued, or processing, preventing disruptive list flickers mid-batch.
+
+### 🎨 UI / UX
+
+- **Header and footer logo** - `logo.png` is displayed in the header alongside the title and in the app footer.
+- **Favicon** - `index.html` now uses `favicon.ico` from `/static/images/`.
+- **Cache-busting** - `app.js` is loaded with a `?v=<version>` query parameter sourced from the backend, and the index response sets `Cache-Control: no-store` to avoid stale JS after deploys.
+- **Completion refresh debounce** - File-list refresh after job completion is debounced to reduce churn during rapid batch completions.
+- **Progress render throttle** - Per-job progress rendering is throttled so the UI stays responsive during fast SSE bursts.
+- **Stale progress ref cleanup** - `progressRenderAtRef` entries are pruned on terminal events and during `mergeJobs`, preventing memory leaks from long sessions.
+- **Clear Done confirmation modal** - New `ClearDoneModal` component shows job count and guards accidental clears. Button shows a spinner (`clearingCompletedJobs` state) during the API call.
+
+### ⚙️ Reliability & Maintenance
+
+- **Environment variable standardization** - Preferred env names are `COMPRESSATORIUM_MOUNT_ROOT` and `COMPRESSATORIUM_VOLUMES`. Legacy `CHD_MOUNT_ROOT` / `CHD_VOLUMES` remain supported via Pydantic `AliasChoices`.
+- **Startup volume caching** - `Settings.scan_data_mounts_on_startup()` snapshots discovered volumes once at boot so the runtime volume list is stable even if mount points change later.
+- **Data mount root config** - New `data_mount_root` setting (default `/data`) controls where the auto-discovery scan looks.
+
+### 📖 Documentation
+
+- **README** - Updated batch conversion docs, added cancel-all / clear-done mentions, documented confirmation headers on destructive API actions, added new 3DS verify endpoints, updated environment variable table with `COMPRESSATORIUM_*` names and legacy aliases, updated example docker-compose snippet.
+- **DEPLOYMENT.md** - Refreshed for new environment variable names.
+- **DOCKER-COMPOSE.md** - Refreshed for new environment variable names.
+- **AGENTS.md** - New agent runbook covering dev, test, Docker, queue API, version sync, and CI workflows.
+- **Docker Compose files** - All three compose files (`docker-compose.yml`, `docker-compose.multi-volume.yml`, `docker-compose.cli.yml`) updated from `CHD_VOLUMES` to `COMPRESSATORIUM_MOUNT_ROOT=/data`.
+- **run_dev.sh** - Updated to use `COMPRESSATORIUM_MOUNT_ROOT` / `COMPRESSATORIUM_VOLUMES` with fallback to legacy names.
+
+### 🧪 Tests
+
+- **Volume discovery** - New `tests/test_volume_discovery.py` covering explicit volumes, auto-discovery from children, and startup cache stability.
+- **Cancel-all confirmation header** - Test that `cancel_all_jobs` rejects requests missing the confirmation header with `400`.
+- **Clear-completed confirmation header** - Test that `delete_completed_jobs` rejects requests missing the confirmation header with `400`.
+- **Archived job lookup** - Tests for archive retrieval after delete, timestamp refresh on access, and route-level lookup returning archived jobs.
+- **Serial dispatcher concurrency** - End-to-end test proving `max_concurrent=1` never exceeds one simultaneous conversion.
+- **z3ds / Dolphin test fixtures** - Added `data_mount_root` monkeypatch to `test_z3ds_routes.py`, `test_metadata.py`, `test_dolphin_routes.py`, and `test_mode_parity_fixes.py` to satisfy the new required setting.
+
+### 📁 Files Changed
+
+- `app/config.py` - Volume discovery engine, `data_mount_root`, `AliasChoices`, startup scan cache
+- `app/main.py` - Index `Cache-Control: no-store`, version query param on `app.js`
+- `app/routes/convert.py` - Cancel-all and clear-completed confirmation header guards, client-IP logging
+- `app/services/job_manager.py` - Archived jobs subsystem, serial dispatch, concurrency invariant check
+- `app/services/z3ds_compress.py` - `ConversionCancelled` catch-and-reraise
+- `entrypoint.sh` - `discover_volumes()` function, volume logging, whitespace-safe iteration
+- `static/index.html` - Logo, favicon, cache-busted script tag
+- `static/css/style.css` - Header/footer logo styles
+- `static/js/app.js` - ClearDoneModal, progress throttle, completion debounce, auto-refresh guard
+- `static/js/api.js` - `deleteCompletedJobs` with confirmation header
+- `docker-compose.yml`, `docker-compose.multi-volume.yml`, `docker-compose.cli.yml` - `COMPRESSATORIUM_MOUNT_ROOT`
+- `run_dev.sh` - New env var names with legacy fallback
+- `Dockerfile` - Minor build layer update
+- `README.md`, `DEPLOYMENT.md`, `DOCKER-COMPOSE.md` - Doc refresh
+- `AGENTS.md` - New agent runbook
+- `tests/test_mode_parity_fixes.py` - 6 new test cases + fixture updates
+- `tests/test_volume_discovery.py` - New volume discovery tests
+- `tests/test_dolphin_routes.py`, `tests/test_z3ds_routes.py`, `tests/test_metadata.py` - Fixture updates
 
 ---
 
@@ -11,7 +80,7 @@
 ### ✨ New Features
 
 - **Clear Queue** - Added a "Clear Queue" button to the job queue header that allows users to cancel all running and queued jobs at once.
-    - **API Endpoint** - `DELETE /api/jobs` endpoint exposed for bulk cancellation.
+    - **API Endpoint** - `POST /api/jobs/cancel-all` endpoint exposed for bulk cancellation.
     - **UI Integration** - Prominently displayed button in the queue header for quick access.
 
 ---

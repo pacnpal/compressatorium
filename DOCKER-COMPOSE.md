@@ -17,7 +17,7 @@ docker-compose up -d
 - Volume: `./games` → `/data/games`
 - Temp: `/config/temp` (inside `./config`)
 - Mode: Web UI
-- Concurrent jobs: 2
+- Concurrent jobs: 1
 
 **Use case:** Perfect for a top-level directory containing games organized in subdirectories. The Web UI will recursively browse all subdirectories, allowing you to navigate and convert files anywhere in the directory tree.
 
@@ -41,7 +41,8 @@ docker-compose -f docker-compose.multi-volume.yml up -d
 **Use case:** Ideal when you have games stored in completely separate directories (e.g., different physical drives or network shares). Each mount point appears as a separate volume in the Web UI.
 
 **Customization:**
-Edit the file to add/remove volumes and update the `CHD_VOLUMES` environment variable.
+Edit the file to add/remove volume mounts under `/data/*`.
+Use `COMPRESSATORIUM_VOLUMES` only when you want an explicit comma-separated list and to skip startup scanning.
 
 ---
 
@@ -115,13 +116,20 @@ After starting with `docker-compose up -d`:
 
 All configurations support these environment variables (edit in the compose file):
 
+Volume behavior:
+- If `COMPRESSATORIUM_VOLUMES` is set, that explicit list is used.
+- If `COMPRESSATORIUM_VOLUMES` is unset, the app scans `COMPRESSATORIUM_MOUNT_ROOT/*` at startup (restart after mount changes).
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CHD_MODE` | `webui` | Mode: `webui` or `cli` |
-| `CHD_VOLUMES` | `/data/games` | Comma-separated volume paths |
+| `COMPRESSATORIUM_MOUNT_ROOT` | `/data` | Startup scan root for auto-discovered volumes (`/data/*`) |
+| `COMPRESSATORIUM_VOLUMES` | (unset) | Explicit comma-separated volume paths (skips startup scan) |
+| `CHD_MOUNT_ROOT` | `/data` | Legacy alias for `COMPRESSATORIUM_MOUNT_ROOT` |
+| `CHD_VOLUMES` | (unset) | Legacy alias for `COMPRESSATORIUM_VOLUMES` |
 | `CHD_DATA_DIR` | `/config` | Persistent data directory |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd-locks` | Directory for job lock files (ephemeral, auto-cleaned on container restart) |
 | `CHD_METADATA_STORE` | `/config/chd_metadata.json` | CHD metadata cache file path |
 | `CHD_VERIFICATION_STORE` | `/config/verified_chds.json` | Verification store file path |
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode) |
@@ -144,6 +152,8 @@ All configurations support these environment variables (edit in the compose file
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout |
 | `CHD_PROGRESS_TIMEOUT` | `600` | Fail a conversion if progress and output size do not advance for this many seconds (0 disables) |
+| `CHD_PROGRESS_TIMEOUT_PER_GIB` | `120` | Additional stall-timeout seconds per GiB of input size |
+| `CHD_PROGRESS_TIMEOUT_CAP` | `7200` | Upper bound for adaptive conversion stall timeout (0 disables cap) |
 | `STATIC_DIR` | `/static` | Path to static web assets |
 
 ---

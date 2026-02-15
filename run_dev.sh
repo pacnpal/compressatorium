@@ -9,7 +9,8 @@ if [ -f .env.local ]; then
 fi
 
 # Configuration
-export CHD_VOLUMES="${CHD_VOLUMES:-$(pwd)/test_data}"
+export COMPRESSATORIUM_MOUNT_ROOT="${COMPRESSATORIUM_MOUNT_ROOT:-${CHD_MOUNT_ROOT:-$(pwd)/test_data}}"
+export COMPRESSATORIUM_VOLUMES="${COMPRESSATORIUM_VOLUMES:-${CHD_VOLUMES:-}}"
 export CHD_MODE="webui"
 export MAX_CONCURRENT_JOBS=1
 export CHD_CHDMAN_NICE=0
@@ -22,7 +23,7 @@ export CHD_TEMP_DIR="$(pwd)/.local-config/temp"
 # Ensure directories exist
 mkdir -p "$CHD_DATA_DIR"
 mkdir -p "$CHD_TEMP_DIR"
-mkdir -p "$CHD_VOLUMES"
+mkdir -p "$COMPRESSATORIUM_MOUNT_ROOT"
 
 # Activate virtual environment
 if [ ! -d ".venv" ]; then
@@ -41,7 +42,12 @@ export PYTHONPATH="$PYTHONPATH:$(pwd)/app"
 # Run the application
 PORT="${PORT:-8080}"
 echo "Starting Compressatorium on port $PORT..."
-echo "Volumes: $CHD_VOLUMES"
+echo "Volume root: $COMPRESSATORIUM_MOUNT_ROOT"
+if [ -n "$COMPRESSATORIUM_VOLUMES" ]; then
+    echo "Using explicit COMPRESSATORIUM_VOLUMES: $COMPRESSATORIUM_VOLUMES"
+else
+    echo "Using auto-discovery under: $COMPRESSATORIUM_MOUNT_ROOT"
+fi
 echo "Config: $CHD_DATA_DIR"
 echo "Access at: http://localhost:$PORT"
 

@@ -58,7 +58,7 @@ RUN chmod +x /entrypoint.sh
 WORKDIR /app
 
 # Configuration
-ENV CHD_VOLUMES="/data/games"
+ENV COMPRESSATORIUM_MOUNT_ROOT="/data"
 ENV CHD_MODE="webui"
 ENV CHDMAN_MODE="createcd"
 ENV MAX_CONCURRENT_JOBS=1

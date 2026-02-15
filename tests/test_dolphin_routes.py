@@ -18,6 +18,7 @@ def dolphin_test_env(tmp_path, monkeypatch):
     
     # Configure volumes to allow access
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
     
     return {
         "iso_path": str(iso_path),
@@ -308,6 +309,9 @@ async def test_dolphin_info_service_error(dolphin_test_env, monkeypatch):
     mock_service.header = fake_header_error
     monkeypatch.setattr(info_routes, "dolphin_tool_service", mock_service)
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(dolphin_test_env["tmp_path"]))
+    monkeypatch.setattr(
+        info_routes.settings, "data_mount_root", str(dolphin_test_env["tmp_path"])
+    )
     
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.get_dolphin_info(path=dolphin_test_env["iso_path"])
@@ -332,6 +336,9 @@ async def test_dolphin_verify_service_error(
     mock_service.verify = fake_verify_error
     monkeypatch.setattr(info_routes, "dolphin_tool_service", mock_service)
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(dolphin_test_env["tmp_path"]))
+    monkeypatch.setattr(
+        info_routes.settings, "data_mount_root", str(dolphin_test_env["tmp_path"])
+    )
     
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.verify_dolphin(path=dolphin_test_env["iso_path"])

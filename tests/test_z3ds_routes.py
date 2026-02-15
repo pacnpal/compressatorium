@@ -17,6 +17,7 @@ def z3ds_test_env(tmp_path, monkeypatch):
     compressed_path.write_text("fake compressed")
 
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
 
     return {
         "source_path": str(source_path),

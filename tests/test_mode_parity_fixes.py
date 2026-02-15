@@ -1,14 +1,19 @@
 """Regression tests for cross-mode parity fixes."""
 
+import asyncio
 import os
+from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.models import (
     BatchJobCreateRequest,
+    ConversionJob,
     ConversionMode,
     DeletePlanRequest,
     JobCreateRequest,
@@ -37,6 +42,7 @@ def _files_env(tmp_path: Path, monkeypatch):
     other_iso.write_bytes(b"iso")
 
     monkeypatch.setattr(files_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(files_routes.settings, "data_mount_root", str(tmp_path))
 
     return {
         "root": str(tmp_path),
@@ -124,6 +130,7 @@ async def test_create_job_returns_429_when_queue_is_full(tmp_path: Path, monkeyp
     source_path.write_bytes(b"iso")
 
     monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
     monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 1)
     monkeypatch.setattr(convert_routes.job_manager, "get_queue_depth", lambda: 1)
 
@@ -153,6 +160,7 @@ async def test_batch_create_returns_429_when_queue_capacity_would_be_exceeded(
     second.write_bytes(b"b")
 
     monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
     monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 2)
     monkeypatch.setattr(convert_routes.job_manager, "get_queue_depth", lambda: 1)
 
@@ -183,7 +191,16 @@ async def test_cancel_all_jobs_endpoint_delegates_to_manager(monkeypatch):
     cancel_all_mock = AsyncMock(return_value=payload)
     monkeypatch.setattr(convert_routes.job_manager, "cancel_all_jobs", cancel_all_mock)
 
-    result = await convert_routes.cancel_all_jobs()
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/jobs/cancel-all",
+            "headers": [(b"x-chd-action-confirm", b"cancel-all-jobs")],
+        }
+    )
+
+    result = await convert_routes.cancel_all_jobs(request)
 
     assert result == payload
     cancel_all_mock.assert_awaited_once()
@@ -213,6 +230,196 @@ async def test_cancel_all_jobs_marks_queued_jobs_cancelled(tmp_path: Path):
     assert set(result["job_ids"]) == {first_job.id, second_job.id}
     assert manager.get_job(first_job.id).status == JobStatus.CANCELLED
     assert manager.get_job(second_job.id).status == JobStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_jobs_endpoint_requires_confirmation_header():
+    """Cancel-all route should reject calls missing the explicit confirmation header."""
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/jobs/cancel-all",
+            "headers": [],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await convert_routes.cancel_all_jobs(request)
+
+    assert exc_info.value.status_code == 400
+    assert "Missing confirmation header" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_delete_completed_endpoint_requires_confirmation_header():
+    """Clear-completed route should reject calls missing confirmation header."""
+    request = Request(
+        {
+            "type": "http",
+            "method": "DELETE",
+            "path": "/api/jobs/completed",
+            "headers": [],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await convert_routes.delete_completed_jobs(request)
+
+    assert exc_info.value.status_code == 400
+    assert "Missing confirmation header" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_get_job_lookup_returns_archived_job_after_delete(tmp_path: Path):
+    """Deleted jobs should remain temporarily retrievable to avoid stale-client 404 loops."""
+    source_path = tmp_path / "disc.iso"
+    source_path.write_bytes(b"iso")
+
+    manager = JobManager(max_concurrent=1, max_job_history=10)
+    job = await manager.create_job(
+        str(source_path),
+        ConversionMode.CREATECD,
+        output_path=str(tmp_path / "disc.chd"),
+    )
+    job.status = JobStatus.COMPLETED
+    job.completed_at = datetime.now(timezone.utc)
+
+    assert await manager.delete_job(job.id) is True
+    assert manager.get_job(job.id) is None
+
+    archived = manager.get_job_for_lookup(job.id)
+    assert archived is not None
+    assert archived.id == job.id
+    assert archived.status == JobStatus.COMPLETED
+
+
+def test_get_job_lookup_refreshes_archive_timestamp(monkeypatch):
+    """Archived lookup should refresh recency so TTL pruning reflects latest access."""
+    manager = JobManager(max_concurrent=1, max_job_history=10)
+    archived_job = ConversionJob(
+        id="stale1234",
+        file_path="/tmp/game.iso",
+        filename="game.iso",
+        mode=ConversionMode.CREATECD,
+        status=JobStatus.COMPLETED,
+        progress=100,
+        message="Done",
+        created_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        output_path="/tmp/game.chd",
+    )
+    manager._archived_jobs[archived_job.id] = (archived_job, 100.0)
+
+    monkeypatch.setattr(job_manager_module.time, "monotonic", lambda: 250.0)
+    looked_up = manager.get_job_for_lookup(archived_job.id)
+
+    assert looked_up is archived_job
+    assert manager._archived_jobs[archived_job.id][1] == 250.0
+
+
+@pytest.mark.asyncio
+async def test_get_job_endpoint_returns_archived_job(monkeypatch):
+    """Route lookup should return recently archived jobs instead of immediate 404."""
+    archived_job = convert_routes.ConversionJob(
+        id="deadbeef",
+        file_path="/tmp/game.iso",
+        filename="game.iso",
+        mode=ConversionMode.CREATECD,
+        status=JobStatus.COMPLETED,
+        progress=100,
+        message="Done",
+        created_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        output_path="/tmp/game.chd",
+    )
+    monkeypatch.setattr(
+        convert_routes.job_manager,
+        "get_job_for_lookup",
+        lambda job_id: archived_job if job_id == "deadbeef" else None,
+    )
+
+    result = await convert_routes.get_job("deadbeef")
+    assert result.id == "deadbeef"
+    assert result.status == JobStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_keeps_processing_serial_when_max_concurrent_one(
+    tmp_path: Path, monkeypatch,
+):
+    """The dispatcher should never run more than one conversion at a time in serial mode."""
+    source_a = tmp_path / "a.iso"
+    source_b = tmp_path / "b.iso"
+    output_a = tmp_path / "a.chd"
+    output_b = tmp_path / "b.chd"
+    source_a.write_bytes(b"a")
+    source_b.write_bytes(b"b")
+
+    active = 0
+    peak = 0
+
+    async def fake_convert(
+        input_path: str,
+        output_path: str,
+        mode: str = "createcd",
+        compression: str | None = None,
+        cancel_event=None,
+    ):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            Path(output_path).write_bytes(b"out")
+            yield {"progress": 25, "message": "working"}
+            await asyncio.sleep(0.05)
+            yield {"progress": 100, "message": "done"}
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(job_manager_module.chdman_service, "convert", fake_convert)
+    monkeypatch.setattr(
+        job_manager_module.chdman_service,
+        "verify",
+        AsyncMock(return_value={"valid": True, "message": "ok"}),
+    )
+
+    manager = JobManager(max_concurrent=1, max_job_history=10)
+    first = await manager.create_job(
+        str(source_a),
+        ConversionMode.CREATECD,
+        output_path=str(output_a),
+    )
+    second = await manager.create_job(
+        str(source_b),
+        ConversionMode.CREATECD,
+        output_path=str(output_b),
+    )
+
+    worker_task = asyncio.create_task(manager.process_queue())
+    try:
+        deadline = asyncio.get_running_loop().time() + 5
+        while asyncio.get_running_loop().time() < deadline:
+            first_job = manager.get_job(first.id)
+            second_job = manager.get_job(second.id)
+            if (
+                first_job and first_job.status == JobStatus.COMPLETED
+                and second_job and second_job.status == JobStatus.COMPLETED
+            ):
+                break
+            await asyncio.sleep(0.02)
+
+        first_job = manager.get_job(first.id)
+        second_job = manager.get_job(second.id)
+        assert first_job and first_job.status == JobStatus.COMPLETED
+        assert second_job and second_job.status == JobStatus.COMPLETED
+        assert peak == 1
+    finally:
+        manager._running = False
+        if manager._dispatcher_task:
+            manager._dispatcher_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker_task
 
 
 @pytest.mark.asyncio
@@ -271,6 +478,7 @@ async def test_z3ds_delete_on_verify_marks_output_verified(tmp_path: Path, monke
     source_path.write_bytes(b"source")
 
     monkeypatch.setattr(job_manager_module.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(job_manager_module.settings, "data_mount_root", str(tmp_path))
 
     async def fake_convert(
         input_path: str,
@@ -348,6 +556,7 @@ async def test_delete_on_verify_rejects_inode_device_fingerprint_mismatch(
     os.replace(replacement, source_path)
 
     monkeypatch.setattr(job_manager_module.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(job_manager_module.settings, "data_mount_root", str(tmp_path))
 
     async def fake_convert(
         input_path: str,

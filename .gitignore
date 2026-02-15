@@ -356,9 +356,9 @@ docker-compose.override.yml
 .docker/
 
 # ============ Application Specific ============
-# CHD Converter images directory
-images/
-images/*
+# CHD Converter images directory (root-level only, not static/images/)
+/images/
+/images/*
 
 # Temporary files
 *.tmp

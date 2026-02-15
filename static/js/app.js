@@ -5,7 +5,6 @@ const { html, render, useState, useEffect, useRef, useCallback, useMemo } = wind
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
 const DEFAULT_PAGE_SIZE = '50';
-const JOB_LOOKUP_RETRY_MS = 15000;
 const PAGE_SIZE_OPTIONS = [
     { value: '25', label: '25' },
     { value: '50', label: '50' },
@@ -287,9 +286,9 @@ function VolumeList({ volumes, selectedVolume, onSelect, loading, error }) {
     if (volumes.length === 0) {
         return html`
             <div class="empty-state">
-                <div class="icon">📂</div>
+                <img src="/static/images/logo.png" alt="" class="empty-state-logo" />
                 <p>No volumes configured</p>
-                <p class="help-text">Mount directories using CHD_VOLUMES environment variable</p>
+                <p class="help-text">Mount directories under /data/* or set COMPRESSATORIUM_VOLUMES explicitly</p>
             </div>
         `;
     }
@@ -362,7 +361,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
     if (visibleEntries.length === 0) {
         return html`
             <div class="empty-state">
-                <div class="icon">📂</div>
+                <img src="/static/images/logo.png" alt="" class="empty-state-logo" />
                 <p>No files found</p>
                 <p class="help-text">This folder is empty or contains no supported files</p>
             </div>
@@ -554,38 +553,38 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
             </div>
             <ul class="file-list">
                 ${visibleEntries.map(entry => {
-        const chdPath = getChdPath(entry);
-        const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
-        const entryExt = entry.extension?.toLowerCase();
+                const chdPath = getChdPath(entry);
+                const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
+                const entryExt = entry.extension?.toLowerCase();
 
-        // Mode compatibility checks for inline compress button
-        const isCreateMode = conversionMode.startsWith('create');
-        const isExtractMode = conversionMode.startsWith('extract');
-        const isDolphinMode = conversionMode.startsWith('dolphin_');
-        const isZ3dsMode = conversionMode === 'z3ds_compress';
+                // Mode compatibility checks for inline compress button
+                const isCreateMode = conversionMode.startsWith('create');
+                const isExtractMode = conversionMode.startsWith('extract');
+                const isDolphinMode = conversionMode.startsWith('dolphin_');
+                const isZ3dsMode = conversionMode === 'z3ds_compress';
 
-        const canInlineCompress =
-            // CHDMAN create modes only: source images -> CHD
-            (isCreateMode && isoHandling === 'chdman' && entry.convertible && !entry.has_chd) ||
-            // CHDMAN extract/copy modes: CHD inputs only
-            ((isExtractMode || conversionMode === 'copy') && entryExt === '.chd') ||
-            // Dolphin modes only
-            (isDolphinMode && isoHandling === 'dolphin' && entry.dolphin_convertible) ||
-            // 3DS mode only
-            (isZ3dsMode && isoHandling === 'z3ds' && entry.z3ds_convertible && !entry.has_z3ds);
+                const canInlineCompress =
+                    // CHDMAN create modes only: source images -> CHD
+                    (isCreateMode && isoHandling === 'chdman' && entry.convertible && !entry.has_chd) ||
+                    // CHDMAN extract/copy modes: CHD inputs only
+                    ((isExtractMode || conversionMode === 'copy') && entryExt === '.chd') ||
+                    // Dolphin modes only
+                    (isDolphinMode && isoHandling === 'dolphin' && entry.dolphin_convertible) ||
+                    // 3DS mode only
+                    (isZ3dsMode && isoHandling === 'z3ds' && entry.z3ds_convertible && !entry.has_z3ds);
 
-        const isIsoEntry = entryExt === '.iso';
-        const isDolphinExt = ['.rvz', '.wia', '.gcz', '.wbfs'].includes(entryExt)
-            || (isoIsDolphin && entryExt === '.iso');
-        const canVerify = chdPath && (
-            entry.extension === '.chd'
-            || (isDolphinExt && !isArchiveItem(entry))
-            || (!isArchiveItem(entry) && is3dsVerifyFile(chdPath))
-            || (isArchiveItem(entry) && entry.chd_ready)
-        );
-        const archiveItems = entry.archive_items;
-        const archiveHasChd = entry.archive_has_chd;
-        return html`
+                const isIsoEntry = entryExt === '.iso';
+                const isDolphinExt = ['.rvz', '.wia', '.gcz', '.wbfs'].includes(entryExt)
+                    || (isoIsDolphin && entryExt === '.iso');
+                const canVerify = chdPath && (
+                    entry.extension === '.chd'
+                    || (isDolphinExt && !isArchiveItem(entry))
+                    || (!isArchiveItem(entry) && is3dsVerifyFile(chdPath))
+                    || (isArchiveItem(entry) && entry.chd_ready)
+                );
+                const archiveItems = entry.archive_items;
+                const archiveHasChd = entry.archive_has_chd;
+                return html`
                 <li
                     key=${entry.path}
                     class="file-item ${selectedFiles.has(entry.path) ? 'selected' : ''}"
@@ -640,7 +639,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             </span>
                         `}
                         ${isIsoEntry && !isArchiveItem(entry) && (isoToggleEnabled
-                ? html`
+                        ? html`
                                 <button
                                     type="button"
                                     class="status iso-handling iso-toggle"
@@ -650,7 +649,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                                     ISO: ${isoModeLabel}
                                 </button>
                             `
-                : html`
+                        : html`
                                 <span
                                     class="status iso-handling"
                                     title="ISO workflows are unavailable while Primary Tool is set to 3DS"
@@ -658,30 +657,30 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                                     ISO: ${isoModeLabel}
                                 </span>
                             `
-            )}
+                    )}
                         ${isVerified(entry) && html`
                             <span class="status verified" title="Integrity verified">✓ Verified</span>
                         `}
                         ${isVerifying && html`
                             <span class="status convertible" title="Verifying integrity">
                                 ${(() => {
-                    const status = chdPath ? verifyProgress.get(chdPath) : null;
-                    if (!status) return 'Verifying...';
-                    if (status.progress != null) return `Verifying ${status.progress}%`;
-                    return status.message || 'Verifying...';
-                })()}
+                            const status = chdPath ? verifyProgress.get(chdPath) : null;
+                            if (!status) return 'Verifying...';
+                            if (status.progress != null) return `Verifying ${status.progress}%`;
+                            return status.message || 'Verifying...';
+                        })()}
                             </span>
                         `}
                         ${entry.extension === '.chd' && chdMetadata && (() => {
-                const meta = chdMetadata.get(entry.path);
-                if (meta?.media_type === 'dvd') {
-                    return html`<span class="status media-badge dvd" title="DVD Format">DVD</span>`;
-                }
-                if (meta?.media_type === 'cd') {
-                    return html`<span class="status media-badge cd" title="CD Format">CD</span>`;
-                }
-                return null;
-            })()}
+                        const meta = chdMetadata.get(entry.path);
+                        if (meta?.media_type === 'dvd') {
+                            return html`<span class="status media-badge dvd" title="DVD Format">DVD</span>`;
+                        }
+                        if (meta?.media_type === 'cd') {
+                            return html`<span class="status media-badge cd" title="CD Format">CD</span>`;
+                        }
+                        return null;
+                    })()}
                     </div>
                     <div class="file-cell file-actions-cell" onClick=${(e) => e.stopPropagation()}>
                         ${canInlineCompress && html`
@@ -722,7 +721,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                     </div>
                 </li>
                 `;
-    })}
+            })}
             </ul>
         </div>
     `;
@@ -1104,6 +1103,34 @@ function CancelAllJobsModal({ total, queued, processing, onConfirm, onClose, bus
                         </button>
                         <button class="btn btn-primary" onClick=${onConfirm} disabled=${busy}>
                             ${busy ? 'Cancelling...' : 'Cancel All Jobs'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function ClearDoneModal({ total, onConfirm, onClose, busy }) {
+    if (!total || total <= 0) return null;
+
+    return html`
+        <div class="modal-overlay" onClick=${busy ? null : onClose}>
+            <div class="modal" onClick=${(e) => e.stopPropagation()} style="max-width: 440px;">
+                <div class="modal-header">
+                    <h3>Clear Completed Jobs?</h3>
+                    ${!busy && html`<button class="modal-close" onClick=${onClose} title="Close">×</button>`}
+                </div>
+                <div class="modal-body" style="padding: 15px;">
+                    <p style="margin-bottom: 12px; color: var(--text-secondary);">
+                        This will remove ${total} completed/failed/cancelled job${total === 1 ? '' : 's'} from the list.
+                    </p>
+                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                        <button class="btn btn-secondary" onClick=${onClose} disabled=${busy}>
+                            Keep History
+                        </button>
+                        <button class="btn btn-primary" onClick=${onConfirm} disabled=${busy}>
+                            ${busy ? 'Clearing...' : 'Clear Done'}
                         </button>
                     </div>
                 </div>
@@ -2430,6 +2457,9 @@ const buildCompressionValue = (selection, options) => {
 // ============ Main App ============
 
 function App() {
+    const PROGRESS_RENDER_THROTTLE_MS = 250;
+    const COMPLETION_REFRESH_DEBOUNCE_MS = 500;
+
     // State
     const [volumes, setVolumes] = useState([]);
     const [volumesLoading, setVolumesLoading] = useState(true);
@@ -2487,6 +2517,8 @@ function App() {
     const [recoveringStuck, setRecoveringStuck] = useState(false); // Recovery in progress
     const [showCancelAllModal, setShowCancelAllModal] = useState(false);
     const [cancellingAllJobs, setCancellingAllJobs] = useState(false);
+    const [showClearDoneModal, setShowClearDoneModal] = useState(false);
+    const [clearingCompletedJobs, setClearingCompletedJobs] = useState(false);
 
     // Ref to track current path for use in callbacks
     const currentPathRef = useRef(null);
@@ -2495,7 +2527,8 @@ function App() {
     // Ref to track current archive path for use in callbacks
     const currentArchivePathRef = useRef(null);
     currentArchivePathRef.current = currentArchivePath;
-    const missingJobLookupUntilRef = useRef(new Map());
+    const progressRenderAtRef = useRef(new Map()); // jobId -> timestamp
+    const completionRefreshTimeoutRef = useRef(null);
 
     // Show notification
     const notify = (message, type = 'info') => {
@@ -2617,6 +2650,21 @@ function App() {
                 });
         }
     }, [searchMode]);
+
+    const scheduleCompletionRefresh = useCallback(() => {
+        if (completionRefreshTimeoutRef.current) {
+            clearTimeout(completionRefreshTimeoutRef.current);
+        }
+        completionRefreshTimeoutRef.current = setTimeout(() => {
+            refreshFileList(false);
+        }, COMPLETION_REFRESH_DEBOUNCE_MS);
+    }, [refreshFileList]);
+
+    useEffect(() => () => {
+        if (completionRefreshTimeoutRef.current) {
+            clearTimeout(completionRefreshTimeoutRef.current);
+        }
+    }, []);
 
     // Load volumes on mount
     useEffect(() => {
@@ -2814,6 +2862,9 @@ function App() {
     // Fetch CHD metadata for displayed CHD files
     useEffect(() => {
         if (forceRescanRunning) return;
+        const hasActiveWork = creatingJobs.length > 0
+            || jobs.some(j => ['creating', 'queued', 'processing'].includes(j.status));
+        if (hasActiveWork) return;
 
         const chdPaths = displayedEntries
             .filter(e => e.extension?.toLowerCase() === '.chd')
@@ -2876,7 +2927,7 @@ function App() {
                 }
             })
             .catch(err => console.warn('Failed to fetch CHD metadata:', err)); // Silently fail - badges are optional
-    }, [displayedEntries, forceRescanRunning]);
+    }, [displayedEntries, forceRescanRunning, jobs, creatingJobs]);
 
     // Load app version on mount
     useEffect(() => {
@@ -2922,13 +2973,10 @@ function App() {
                 seenIds.add(serverJob.id);
             }
 
-            // Add local jobs that should persist even when polling misses them
+            // Add any local jobs that aren't from the server yet (optimistic placeholders only)
             for (const localJob of currentJobs) {
                 if (!seenIds.has(localJob.id) && !currentHiddenIds.has(localJob.id)) {
-                    if (
-                        localJob.id.startsWith('pending-')
-                        || ['creating', 'queued', 'processing'].includes(localJob.status)
-                    ) {
+                    if (localJob.id.startsWith('pending-')) {
                         mergedJobs.push(localJob);
                     }
                 }
@@ -2941,7 +2989,16 @@ function App() {
         api.getJobs()
             .then(serverJobs => {
                 _setHiddenJobIds(currentHidden => {
-                    setJobs(prev => mergeJobs(serverJobs, prev, currentHidden));
+                    setJobs(prev => {
+                        const merged = mergeJobs(serverJobs, prev, currentHidden);
+                        const visibleIds = new Set(merged.map(j => j.id));
+                        for (const key of progressRenderAtRef.current.keys()) {
+                            if (!visibleIds.has(key)) {
+                                progressRenderAtRef.current.delete(key);
+                            }
+                        }
+                        return merged;
+                    });
                     return currentHidden;
                 });
             })
@@ -2960,52 +3017,69 @@ function App() {
                     if (hydratedJob) {
                         return [hydratedJob, ...prevJobs];
                     }
-
-                    const now = Date.now();
-                    for (const [missingId, until] of missingJobLookupUntilRef.current) {
-                        if (until <= now) {
-                            missingJobLookupUntilRef.current.delete(missingId);
-                        }
-                    }
-                    const retryAt = missingJobLookupUntilRef.current.get(jobId) || 0;
-                    if (now < retryAt) {
-                        return prevJobs;
-                    }
-                    missingJobLookupUntilRef.current.set(jobId, now + JOB_LOOKUP_RETRY_MS);
-
-                    // Job not in our list - fetch it from server with backoff to avoid 404 spam
-                    api.getJob(jobId)
-                        .then(job => {
-                            missingJobLookupUntilRef.current.delete(jobId);
-                            _setHiddenJobIds(currentHidden => {
-                                if (currentHidden.has(job.id)) return currentHidden;
-                                setJobs(prev => prev.some(j => j.id === job.id) ? prev : [job, ...prev]);
-                                return currentHidden;
-                            });
-                        })
-                        .catch(() => { });
                     return prevJobs;
                 }
 
                 const newJobs = [...prevJobs];
                 const hydratedJob = update?.data?.job;
-                newJobs[idx] = {
-                    ...newJobs[idx],
+                const prevJob = newJobs[idx];
+                const statusUpdate = update.type === 'complete' ? 'completed' :
+                    update.type === 'error' ? 'failed' :
+                        update.type === 'cancelled' ? 'cancelled' :
+                            update.data.status ?? prevJob.status;
+
+                // Progress events can be very chatty; coalesce them to keep the UI responsive.
+                const isTerminalUpdate = update.type === 'complete'
+                    || update.type === 'error'
+                    || update.type === 'cancelled';
+                if (!isTerminalUpdate && !hydratedJob) {
+                    const now = Date.now();
+                    const lastPaintAt = progressRenderAtRef.current.get(jobId) || 0;
+                    const nextProgress = update.data.progress ?? prevJob.progress;
+                    if (
+                        statusUpdate === prevJob.status
+                        && nextProgress > prevJob.progress
+                        && (now - lastPaintAt) < PROGRESS_RENDER_THROTTLE_MS
+                    ) {
+                        return prevJobs;
+                    }
+                    progressRenderAtRef.current.set(jobId, now);
+                }
+
+                const nextJob = {
+                    ...prevJob,
                     ...(hydratedJob || {}),
-                    progress: update.data.progress ?? newJobs[idx].progress,
-                    message: update.data.message ?? newJobs[idx].message,
-                    status: update.type === 'complete' ? 'completed' :
-                        update.type === 'error' ? 'failed' :
-                            update.type === 'cancelled' ? 'cancelled' :
-                                update.data.status ?? newJobs[idx].status,
-                    error_message: update.data.error,
-                    output_size: update.data.output_size
+                    progress: update.data.progress ?? prevJob.progress,
+                    message: update.data.message ?? prevJob.message,
+                    status: statusUpdate,
+                    error_message: update.data.error ?? prevJob.error_message,
+                    output_size: update.data.output_size ?? prevJob.output_size
                 };
+
+                const unchanged = (
+                    prevJob.status === nextJob.status
+                    && prevJob.progress === nextJob.progress
+                    && prevJob.message === nextJob.message
+                    && prevJob.error_message === nextJob.error_message
+                    && prevJob.output_size === nextJob.output_size
+                    && prevJob.started_at === nextJob.started_at
+                    && prevJob.completed_at === nextJob.completed_at
+                    && prevJob.output_path === nextJob.output_path
+                );
+                if (unchanged) {
+                    return prevJobs;
+                }
+
+                newJobs[idx] = nextJob;
+
+                if (isTerminalUpdate) {
+                    progressRenderAtRef.current.delete(jobId);
+                }
 
                 if (update.type === 'complete') {
                     notify(`Completed: ${newJobs[idx].filename}`, 'success');
-                    // Refresh file list to show the new CHD file
-                    refreshFileList();
+                    // Refresh file list with debounce to avoid churn on rapid batch completions.
+                    scheduleCompletionRefresh();
                     if (update.data.verified && update.data.output_path) {
                         setVerifiedCHDs(prev => new Set([...prev, update.data.output_path]));
                     }
@@ -3032,7 +3106,16 @@ function App() {
             api.getJobs()
                 .then(serverJobs => {
                     _setHiddenJobIds(currentHidden => {
-                        setJobs(prev => mergeJobs(serverJobs, prev, currentHidden));
+                        setJobs(prev => {
+                            const merged = mergeJobs(serverJobs, prev, currentHidden);
+                            const visibleIds = new Set(merged.map(j => j.id));
+                            for (const key of progressRenderAtRef.current.keys()) {
+                                if (!visibleIds.has(key)) {
+                                    progressRenderAtRef.current.delete(key);
+                                }
+                            }
+                            return merged;
+                        });
                         return currentHidden;
                     });
                 })
@@ -3052,18 +3135,20 @@ function App() {
             unsubscribe();
             clearInterval(interval);
         };
-    }, [refreshFileList]);
+    }, [scheduleCompletionRefresh]);
 
     // Auto-refresh file list when enabled
     useEffect(() => {
-        if (!autoRefresh || !currentPath || searchMode) return;
+        const hasActiveWork = creatingJobs.length > 0
+            || jobs.some(j => ['creating', 'queued', 'processing'].includes(j.status));
+        if (!autoRefresh || !currentPath || searchMode || hasActiveWork) return;
 
         const interval = setInterval(() => {
             refreshFileList(false); // Silent refresh, no spinner
         }, 3000); // Refresh every 3 seconds
 
         return () => clearInterval(interval);
-    }, [autoRefresh, currentPath, searchMode, refreshFileList]);
+    }, [autoRefresh, currentPath, searchMode, refreshFileList, jobs, creatingJobs]);
 
     useEffect(() => {
         setLastSelectedIndex(null);
@@ -4219,11 +4304,23 @@ function App() {
         }
     };
 
+    const handleRequestClearCompleted = () => {
+        const completedCount = jobs.filter(j => ['completed', 'failed', 'cancelled'].includes(j.status)).length;
+        if (completedCount === 0) {
+            notify('No completed jobs to clear', 'info');
+            return;
+        }
+        setShowClearDoneModal(true);
+    };
+
     const handleClearCompleted = async () => {
+        if (clearingCompletedJobs) return;
+
         // Find all completed/failed/cancelled jobs
         const completedJobs = jobs.filter(j => ['completed', 'failed', 'cancelled'].includes(j.status));
 
         if (completedJobs.length === 0) return;
+        setClearingCompletedJobs(true);
 
         // Immediately hide these jobs from the UI
         const idsToHide = completedJobs.map(j => j.id);
@@ -4253,6 +4350,9 @@ function App() {
                 return next;
             });
             notify('Failed to clear completed jobs', 'error');
+        } finally {
+            setClearingCompletedJobs(false);
+            setShowClearDoneModal(false);
         }
     };
 
@@ -4300,8 +4400,11 @@ function App() {
 
             <header>
                 <div class="header-brand">
-                    <h1><span>Compressatorium</span></h1>
-                    <span class="subtitle">Convert and compress game disc images</span>
+                    <img src="/static/images/logo.png" alt="" class="header-logo" />
+                    <div>
+                        <h1><span>Compressatorium</span></h1>
+                        <span class="subtitle">Convert and compress game disc images</span>
+                    </div>
                 </div>
                 <div class="header-actions">
                     <button
@@ -4731,10 +4834,10 @@ function App() {
                                 <select
                                     value=${itemsPerPage}
                                     onChange=${(e) => {
-                setItemsPerPage(e.target.value);
-                setCurrentPage(1);
-                setLastSelectedIndex(null);
-            }}
+            setItemsPerPage(e.target.value);
+            setCurrentPage(1);
+            setLastSelectedIndex(null);
+        }}
                                     title="Select how many files/folders to show per page"
                                 >
                                     ${PAGE_SIZE_OPTIONS.map((opt) => html`
@@ -4816,7 +4919,7 @@ function App() {
                             ${hasCompletedJobs && html`
                                 <button
                                     class="btn btn-sm btn-secondary"
-                                    onClick=${handleClearCompleted}
+                                    onClick=${handleRequestClearCompleted}
                                     title="Remove completed, failed, and cancelled jobs from the list"
                                 >
                                     Clear Done
@@ -4881,6 +4984,15 @@ function App() {
                 />
             `}
 
+            ${showClearDoneModal && html`
+                <${ClearDoneModal}
+                    total=${jobs.filter(j => ['completed', 'failed', 'cancelled'].includes(j.status)).length}
+                    busy=${clearingCompletedJobs}
+                    onConfirm=${handleClearCompleted}
+                    onClose=${() => setShowClearDoneModal(false)}
+                />
+            `}
+
             ${deletePlan && html`
                 <${DeletePlanModal}
                     plan=${deletePlan.plan}
@@ -4940,6 +5052,7 @@ function App() {
             `}
 
             <footer class="app-footer">
+                <img src="/static/images/logo.png" alt="" class="footer-logo" />
                 <span>Compressatorium${appVersion ? ` v${appVersion}` : ''}</span>
                 <a href="https://github.com/pacnpal/Compressatorium" target="_blank" rel="noopener noreferrer">GitHub</a>
             </footer>

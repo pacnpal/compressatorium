@@ -71,6 +71,8 @@ async def startup_event():
 
     configure_logging()
     logger = logging.getLogger("chd")
+    explicit_volumes = [v.strip() for v in str(settings.chd_volumes).split(",") if v.strip()]
+    discovered_volumes = [] if explicit_volumes else settings.scan_data_mounts_on_startup()
     logger.info(f"Compressatorium v{get_version()} starting...")
     logger.info(
         "Runtime limits pid=%s max_concurrent_jobs=%s max_job_history=%s lock_dir=%s",
@@ -78,6 +80,13 @@ async def startup_event():
         settings.max_concurrent_jobs,
         settings.max_job_history,
         settings.concurrency_lock_dir,
+    )
+    logger.info(
+        "Volume discovery mount_root=%s explicit=%s discovered=%s effective=%s",
+        settings.data_mount_root,
+        explicit_volumes,
+        discovered_volumes,
+        settings.volumes,
     )
     asyncio.create_task(job_manager.process_queue())
 
@@ -99,5 +108,5 @@ async def root():
     """Serve the main HTML page."""
     index_path = os.path.join(static_dir, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers={"Cache-Control": "no-store"})
     return {"message": "Compressatorium API", "docs": "/docs"}

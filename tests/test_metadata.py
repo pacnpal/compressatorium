@@ -36,6 +36,7 @@ def scan_env(tmp_path, monkeypatch):
     chd_path.write_text("test")
 
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
 
     calls = []
 

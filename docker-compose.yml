@@ -9,8 +9,8 @@ services:
     environment:
       # Mode: webui (default) or cli
       - CHD_MODE=webui
-      # Comma-separated list of volume mount paths
-      - CHD_VOLUMES=/data/games
+      # Auto-discover mounted volumes under this root (/data/*)
+      - COMPRESSATORIUM_MOUNT_ROOT=/data
       # Optional: override temp location (default: /config/temp)
       # - CHD_TEMP_DIR=/temp
       # Conversion mode: createcd (CD-ROM) or createdvd (DVD-ROM)

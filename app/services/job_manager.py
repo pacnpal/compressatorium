@@ -49,9 +49,12 @@ class JobManager:
 
     # Constants
     STUCK_RECOVERY_COOLDOWN_SECONDS = 60
+    ARCHIVED_JOB_TTL_SECONDS = 60 * 15
+    MAX_ARCHIVED_JOBS = 2000
 
     def __init__(self, max_concurrent: int = 1, max_job_history: int = 500):
         self.jobs: OrderedDict[str, ConversionJob] = OrderedDict()
+        self._archived_jobs: OrderedDict[str, Tuple[ConversionJob, float]] = OrderedDict()
         self.max_concurrent = max(1, max_concurrent)
         self.max_job_history = max(0, max_job_history)
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
@@ -253,6 +256,40 @@ class JobManager:
     def get_job(self, job_id: str) -> Optional[ConversionJob]:
         """Get a job by ID."""
         return self.jobs.get(job_id)
+
+    def _prune_archived_jobs(self) -> None:
+        if not self._archived_jobs:
+            return
+
+        now = time.monotonic()
+        max_keep = max(self.MAX_ARCHIVED_JOBS, self.max_job_history * 2)
+        while self._archived_jobs:
+            if len(self._archived_jobs) > max_keep:
+                self._archived_jobs.popitem(last=False)
+                continue
+            oldest_job_id, (_, archived_at) = next(iter(self._archived_jobs.items()))
+            if now - archived_at <= self.ARCHIVED_JOB_TTL_SECONDS:
+                break
+            self._archived_jobs.pop(oldest_job_id, None)
+
+    def _archive_job_for_lookup(self, job: ConversionJob) -> None:
+        archived = job.model_copy(deep=True)
+        self._archived_jobs[archived.id] = (archived, time.monotonic())
+        self._prune_archived_jobs()
+
+    def get_job_for_lookup(self, job_id: str) -> Optional[ConversionJob]:
+        """Get a live job, or a recently archived one that was deleted from history."""
+        job = self.jobs.get(job_id)
+        if job is not None:
+            return job
+        self._prune_archived_jobs()
+        archived = self._archived_jobs.pop(job_id, None)
+        if archived is None:
+            return None
+        # Mark as recently accessed so active clients can briefly recover.
+        archived_job, _ = archived
+        self._archived_jobs[job_id] = (archived_job, time.monotonic())
+        return archived_job
 
     def get_all_jobs(self) -> List[ConversionJob]:
         """Get all jobs."""
@@ -551,6 +588,7 @@ class JobManager:
             job = self.jobs[job_id]
             if job.status == JobStatus.PROCESSING:
                 await self.cancel_job(job_id)
+            self._archive_job_for_lookup(job)
             self._cancelled.discard(job_id)
             self._delete_plans.pop(job_id, None)
             if job_id not in self._cancel_events:
@@ -964,9 +1002,15 @@ class JobManager:
                     continue
                 await self._semaphore.acquire()
                 try:
-                    asyncio.create_task(self._run_job(job_id))
+                    if self.max_concurrent == 1:
+                        await self._run_job(job_id)
+                    else:
+                        asyncio.create_task(self._run_job(job_id))
                 except Exception:
-                    self._semaphore.release()
+                    # _run_job() always releases the semaphore in its finally block.
+                    # Only release here if task creation failed before _run_job started.
+                    if self.max_concurrent != 1:
+                        self._semaphore.release()
                     raise
             except Exception as e:
                 logger.exception("Dispatcher error: %s", e)
@@ -1065,6 +1109,15 @@ class JobManager:
 
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.now(timezone.utc)
+        processing_now = sum(
+            1 for candidate in self.jobs.values() if candidate.status == JobStatus.PROCESSING
+        )
+        if processing_now > self.max_concurrent:
+            logger.error(
+                "Processing concurrency invariant violated: processing=%d max_concurrent=%d",
+                processing_now,
+                self.max_concurrent,
+            )
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Job %s acquired locks and started processing", job_id)

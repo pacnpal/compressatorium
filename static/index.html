@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Compressatorium</title>
     <link rel="stylesheet" href="/static/css/style.css">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💿</text></svg>">
+    <link rel="icon" href="/static/images/favicon.ico" type="image/x-icon">
 </head>
 <body>
     <div id="app">
         <div class="loading full-height">
+            <img src="/static/images/logo.png" alt="Compressatorium" class="loading-logo" />
             <div class="spinner"></div>
             Loading Compressatorium...
         </div>
@@ -28,7 +29,17 @@
             globalThis.useRef = useRef;
             globalThis.useMemo = useMemo;
 
-            await import("/static/js/app.js");
+            let appVersion = "dev";
+            try {
+                const versionRes = await fetch("/api/version", { cache: "no-store" });
+                if (versionRes.ok) {
+                    const payload = await versionRes.json();
+                    if (payload && payload.version) appVersion = String(payload.version);
+                }
+            } catch (_) {
+                // Best effort cache-busting; keep fallback version token.
+            }
+            await import(`/static/js/app.js?v=${encodeURIComponent(appVersion)}`);
         } catch (err) {
             const appEl = document.getElementById('app');
             if (appEl) {
