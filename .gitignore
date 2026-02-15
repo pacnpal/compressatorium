@@ -409,3 +409,8 @@ secrets/
 .github/instructions/codacy.instructions.md
 .env.local
 .local-bin/
+
+# Temporary artifacts
+temp_snippet.txt
+recent_log.txt
+test_error.png
