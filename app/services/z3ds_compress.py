@@ -11,11 +11,12 @@ from config import settings
 from fastapi.concurrency import run_in_threadpool
 from services.chdman import ConversionCancelled
 
-Z3DS_CONVERTIBLE_EXTENSIONS = {".cci", ".cia"}
+Z3DS_CONVERTIBLE_EXTENSIONS = {".cci", ".cia", ".3ds"}
 
 Z3DS_OUTPUT_FORMATS = {
     ".cci": ".zcci",
     ".cia": ".zcia",
+    ".3ds": ".z3ds",
 }
 
 logger = logging.getLogger("z3ds_compress")
@@ -253,7 +254,7 @@ class Z3DSCompressService:
         if calling from async context.
         
         Args:
-            file_path: Path to .cci, .cia, .zcci, or .zcia file
+            file_path: Path to .cci, .cia, .3ds, .zcci, .zcia, or .z3ds file
             
         Returns:
             dict with file info (file, size, format, compressed, etc.)
@@ -265,12 +266,14 @@ class Z3DSCompressService:
         ext = Path(file_path).suffix.lower()
         
         # Determine format and compression status
-        is_compressed = ext in {".zcci", ".zcia"}
+        is_compressed = ext in {".zcci", ".zcia", ".z3ds"}
         base_format = None
         if ext in {".cci", ".zcci"}:
             base_format = "CCI (Cart Image)"
         elif ext in {".cia", ".zcia"}:
             base_format = "CIA (Installable Archive)"
+        elif ext in {".3ds", ".z3ds"}:
+            base_format = "3DS (Cart Image)"
         
         # Format size for display
         size_mb = file_size / (1024 * 1024)

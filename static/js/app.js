@@ -31,7 +31,7 @@ const getPrimaryToolHint = (toolSelection) => {
         return html`Convert GameCube/Wii disc images • Supports RVZ, WIA, GCZ, ISO formats`;
     }
     if (toolSelection === 'z3ds') {
-        return html`Compress Nintendo 3DS ROMs • Converts .cci/.cia to .zcci/.zcia`;
+        return html`Compress Nintendo 3DS ROMs • Converts .cci/.cia/.3ds to .zcci/.zcia/.z3ds`;
     }
     return html`Current: ${getPrimaryToolLabel(toolSelection)}`;
 };
@@ -106,7 +106,7 @@ function HelpPanel({ onClose, isoHandling }) {
                         <ul>
                             <li><em>CHDMAN</em> - Create/Extract/Copy CHD files (CD/DVD/LaserDisc)</li>
                             <li><em>Dolphin</em> - Convert GameCube/Wii images (RVZ/WIA/GCZ/ISO)</li>
-                            <li><em>3DS</em> - Compress Nintendo 3DS ROMs (.cci/.cia → .zcci/.zcia)</li>
+                            <li><em>3DS</em> - Compress Nintendo 3DS ROMs (.cci/.cia/.3ds → .zcci/.zcia/.z3ds)</li>
                         </ul>
                     </li>
                     <li><strong>Queue</strong> - Click the action button to add jobs to the queue</li>
@@ -117,7 +117,7 @@ function HelpPanel({ onClose, isoHandling }) {
                     <li>🧭 <strong>.iso</strong> - Handled by ${toolLabel} for info/verify operations</li>
                     <li>💿 <strong>.chd</strong> - MAME CHD format (click to view information)</li>
                     <li>🎮 <strong>.rvz, .wia, .gcz, .wbfs</strong> - GameCube/Wii images (Dolphin)</li>
-                    <li>🎮 <strong>.cci, .cia</strong> - Nintendo 3DS ROMs (compress to .zcci/.zcia)</li>
+                    <li>🎮 <strong>.cci, .cia, .3ds</strong> - Nintendo 3DS ROMs (compress to .zcci/.zcia/.z3ds)</li>
                     <li>📦 <strong>.zip, .7z, .rar</strong> - Archives (click to browse contents)</li>
                 </ul>
                 <h4>Compression Tips</h4>
@@ -3077,7 +3077,7 @@ function App() {
             return 'Runs Dolphin disc verification and deletes the original source if it passes.';
         }
         if (isZ3dsMode) {
-            return 'Deletes the original .cci/.cia ROM file after successful compression.';
+            return 'Deletes the original .cci/.cia/.3ds ROM file after successful compression.';
         }
         return 'Runs CHD verification and deletes the original source (including .cue/.gdi track files) if it passes.';
     };

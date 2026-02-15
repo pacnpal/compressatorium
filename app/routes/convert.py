@@ -403,7 +403,7 @@ async def create_job(request: JobCreateRequest):
         if ext not in Z3DS_CONVERTIBLE_EXTENSIONS:
             raise HTTPException(
                 status_code=400,
-                detail="z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia)",
+                detail="z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia, .3ds)",
             )
 
     # Calculate output path and handle duplicates

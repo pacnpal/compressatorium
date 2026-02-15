@@ -22,7 +22,7 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-too
 |------|--------------|----------------|----------|
 | **CHDMAN** | .gdi, .cue, .bin, .iso | .chd | CD/DVD/LaserDisc to CHD |
 | **Dolphin** | .iso, .gcm, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
-| **3DS** | .cci, .cia | .zcci, .zcia | Nintendo 3DS ROM compression |
+| **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
 
 ---
 
@@ -238,15 +238,15 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 
 1. **Select Primary Tool:** Choose **3DS** from the three main options at the top of the Web UI
 2. **Browse Files:** Navigate to your 3DS ROM directory
-3. **Select ROMs:** Check the boxes next to `.cci` or `.cia` files you want to compress
+3. **Select ROMs:** Check the boxes next to `.cci`, `.cia`, or `.3ds` files you want to compress
 4. **Compress:** Click the "Compress" button to start the conversion
 5. **Monitor Progress:** Watch the job queue for real-time progress
 6. **Done:** Compressed `.zcci` or `.zcia` files will be created alongside the originals
 
 ### Technical Details
 
-**Supported inputs:** `.cci` (cart images), `.cia` (installable archives)  
-**Output formats:** `.zcci` (compressed cart images), `.zcia` (compressed installable archives)  
+**Supported inputs:** `.cci` (cart images), `.cia` (installable archives), `.3ds` (cart images - same as .cci)  
+**Output formats:** `.zcci`, `.zcia`, `.z3ds` (compressed formats)  
 **Compression method:** Seekable ZStandard (256KB frame size)  
 **Size reduction:** Typically **~50%** without compatibility issues
 
@@ -364,7 +364,7 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 - `dolphin_rvz`, `dolphin_wia`, `dolphin_gcz`, `dolphin_iso`
 
 **Nintendo 3DS**
-- `z3ds_compress` (.cci → .zcci, .cia → .zcia)
+- `z3ds_compress` (.cci → .zcci, .cia → .zcia, .3ds → .z3ds)
 
 Notes:
 - Compression applies to **create**/**copy** and Dolphin RVZ/WIA operations only.
@@ -580,7 +580,7 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 - `.iso` - ISO 9660 disc images (CHD or Dolphin based on ISO handling)
 - `.cue` / `.bin` - CD images with cue sheets
 - `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii disc images (Dolphin)
-- `.cci`, `.cia` - Nintendo 3DS ROM images (3DS compression)
+- `.cci`, `.cia`, `.3ds` - Nintendo 3DS ROM images (3DS compression)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives
