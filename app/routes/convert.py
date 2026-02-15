@@ -767,6 +767,12 @@ async def job_events():
                     for job_id, queue in list(queues.items()):
                         try:
                             update = queue.get_nowait()
+                            job = job_manager.get_job(job_id)
+                            if job is not None:
+                                update = {
+                                    **update,
+                                    "job": job.model_dump(mode="json"),
+                                }
                             yield {
                                 "event": update.get("type", "progress"),
                                 "data": json.dumps(update),
@@ -816,6 +822,12 @@ async def delete_completed_jobs():
             if await job_manager.delete_job(job.id):
                 deleted_ids.append(job.id)
     return {"deleted": deleted_ids, "count": len(deleted_ids)}
+
+
+@router.post("/jobs/cancel-all")
+async def cancel_all_jobs():
+    """Cancel all queued and processing jobs."""
+    return await job_manager.cancel_all_jobs()
 
 
 

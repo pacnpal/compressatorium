@@ -50,7 +50,7 @@ class JobManager:
     # Constants
     STUCK_RECOVERY_COOLDOWN_SECONDS = 60
 
-    def __init__(self, max_concurrent: int = 2, max_job_history: int = 500):
+    def __init__(self, max_concurrent: int = 1, max_job_history: int = 500):
         self.jobs: OrderedDict[str, ConversionJob] = OrderedDict()
         self.max_concurrent = max(1, max_concurrent)
         self.max_job_history = max(0, max_job_history)
@@ -517,6 +517,33 @@ class JobManager:
             )
             return True
         return False
+
+    async def cancel_all_jobs(self) -> Dict[str, object]:
+        """Cancel all queued and processing jobs.
+
+        Returns:
+            Summary payload with queued/processing counts and job IDs that received
+            a cancellation request.
+        """
+        queued_ids = [
+            job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED
+        ]
+        processing_ids = [
+            job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING
+        ]
+        requested_ids: list[str] = []
+
+        # Snapshot IDs first to avoid mutating while iterating jobs.
+        for job_id in queued_ids + processing_ids:
+            if await self.cancel_job(job_id):
+                requested_ids.append(job_id)
+
+        return {
+            "requested": len(requested_ids),
+            "queued": len(queued_ids),
+            "processing": len(processing_ids),
+            "job_ids": requested_ids,
+        }
 
     async def delete_job(self, job_id: str) -> bool:
         """Delete a job from the list."""

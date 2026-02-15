@@ -5,6 +5,7 @@ const { html, render, useState, useEffect, useRef, useCallback, useMemo } = wind
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
 const DEFAULT_PAGE_SIZE = '50';
+const JOB_LOOKUP_RETRY_MS = 15000;
 const PAGE_SIZE_OPTIONS = [
     { value: '25', label: '25' },
     { value: '50', label: '50' },
@@ -1070,6 +1071,39 @@ function DuplicateModal({ duplicates, onAction, onClose }) {
                         </button>
                         <button class="btn btn-secondary" onClick=${onClose} style="width: 100%;">
                             Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function CancelAllJobsModal({ total, queued, processing, onConfirm, onClose, busy }) {
+    if (!total || total <= 0) return null;
+
+    return html`
+        <div class="modal-overlay" onClick=${busy ? null : onClose}>
+            <div class="modal" onClick=${(e) => e.stopPropagation()} style="max-width: 460px;">
+                <div class="modal-header">
+                    <h3>Cancel All Active Jobs?</h3>
+                    ${!busy && html`<button class="modal-close" onClick=${onClose} title="Close">×</button>`}
+                </div>
+                <div class="modal-body" style="padding: 15px;">
+                    <p style="margin-bottom: 12px; color: var(--text-secondary);">
+                        This will request cancellation for all active jobs.
+                    </p>
+                    <div style="margin-bottom: 15px; padding: 10px; background: var(--bg-primary); border-radius: 4px;">
+                        <div><strong>Total:</strong> ${total}</div>
+                        <div><strong>Queued:</strong> ${queued}</div>
+                        <div><strong>Processing:</strong> ${processing}</div>
+                    </div>
+                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                        <button class="btn btn-secondary" onClick=${onClose} disabled=${busy}>
+                            Keep Running
+                        </button>
+                        <button class="btn btn-primary" onClick=${onConfirm} disabled=${busy}>
+                            ${busy ? 'Cancelling...' : 'Cancel All Jobs'}
                         </button>
                     </div>
                 </div>
@@ -2451,6 +2485,8 @@ function App() {
     const [currentPage, setCurrentPage] = useState(1);
     const [stuckState, setStuckState] = useState(null); // Stuck state detection: { is_stuck, queued_count, processing_count }
     const [recoveringStuck, setRecoveringStuck] = useState(false); // Recovery in progress
+    const [showCancelAllModal, setShowCancelAllModal] = useState(false);
+    const [cancellingAllJobs, setCancellingAllJobs] = useState(false);
 
     // Ref to track current path for use in callbacks
     const currentPathRef = useRef(null);
@@ -2459,6 +2495,7 @@ function App() {
     // Ref to track current archive path for use in callbacks
     const currentArchivePathRef = useRef(null);
     currentArchivePathRef.current = currentArchivePath;
+    const missingJobLookupUntilRef = useRef(new Map());
 
     // Show notification
     const notify = (message, type = 'info') => {
@@ -2885,12 +2922,13 @@ function App() {
                 seenIds.add(serverJob.id);
             }
 
-            // Add any local jobs that aren't from the server yet (e.g., optimistic updates)
+            // Add local jobs that should persist even when polling misses them
             for (const localJob of currentJobs) {
                 if (!seenIds.has(localJob.id) && !currentHiddenIds.has(localJob.id)) {
-                    // Keep local job if it's not yet on server (might be in-flight)
-                    // But only if it's a temporary/creating job
-                    if (localJob.id.startsWith('pending-')) {
+                    if (
+                        localJob.id.startsWith('pending-')
+                        || ['creating', 'queued', 'processing'].includes(localJob.status)
+                    ) {
                         mergedJobs.push(localJob);
                     }
                 }
@@ -2918,9 +2956,27 @@ function App() {
                 const idx = prevJobs.findIndex(j => j.id === jobId);
 
                 if (idx === -1) {
-                    // Job not in our list - fetch it from server
+                    const hydratedJob = update?.data?.job;
+                    if (hydratedJob) {
+                        return [hydratedJob, ...prevJobs];
+                    }
+
+                    const now = Date.now();
+                    for (const [missingId, until] of missingJobLookupUntilRef.current) {
+                        if (until <= now) {
+                            missingJobLookupUntilRef.current.delete(missingId);
+                        }
+                    }
+                    const retryAt = missingJobLookupUntilRef.current.get(jobId) || 0;
+                    if (now < retryAt) {
+                        return prevJobs;
+                    }
+                    missingJobLookupUntilRef.current.set(jobId, now + JOB_LOOKUP_RETRY_MS);
+
+                    // Job not in our list - fetch it from server with backoff to avoid 404 spam
                     api.getJob(jobId)
                         .then(job => {
+                            missingJobLookupUntilRef.current.delete(jobId);
                             _setHiddenJobIds(currentHidden => {
                                 if (currentHidden.has(job.id)) return currentHidden;
                                 setJobs(prev => prev.some(j => j.id === job.id) ? prev : [job, ...prev]);
@@ -2932,8 +2988,10 @@ function App() {
                 }
 
                 const newJobs = [...prevJobs];
+                const hydratedJob = update?.data?.job;
                 newJobs[idx] = {
                     ...newJobs[idx],
+                    ...(hydratedJob || {}),
                     progress: update.data.progress ?? newJobs[idx].progress,
                     message: update.data.message ?? newJobs[idx].message,
                     status: update.type === 'complete' ? 'completed' :
@@ -4128,6 +4186,39 @@ function App() {
         }
     };
 
+    const handleRequestCancelAll = () => {
+        const activeCount = jobs.filter(j => ['queued', 'processing'].includes(j.status)).length;
+        if (activeCount === 0) {
+            notify('No active jobs to cancel', 'info');
+            return;
+        }
+        setShowCancelAllModal(true);
+    };
+
+    const handleCancelAllJobs = async () => {
+        if (cancellingAllJobs) return;
+        setCancellingAllJobs(true);
+        try {
+            const result = await api.cancelAllJobs();
+            setJobs(prev => prev.map((job) => {
+                if (job.status === 'queued') {
+                    return { ...job, status: 'cancelled' };
+                }
+                if (job.status === 'processing') {
+                    return { ...job, message: 'Cancelling...' };
+                }
+                return job;
+            }));
+            setShowCancelAllModal(false);
+            notify(`Cancellation requested for ${result.requested || 0} job(s)`, 'info');
+        } catch (err) {
+            notify(`Failed to cancel all jobs: ${err.message}`, 'error');
+            console.error('Failed to cancel all jobs:', err);
+        } finally {
+            setCancellingAllJobs(false);
+        }
+    };
+
     const handleClearCompleted = async () => {
         // Find all completed/failed/cancelled jobs
         const completedJobs = jobs.filter(j => ['completed', 'failed', 'cancelled'].includes(j.status));
@@ -4184,6 +4275,10 @@ function App() {
     };
 
 
+    const queuedJobsCount = jobs.filter(j => j.status === 'queued').length;
+    const processingJobsCount = jobs.filter(j => j.status === 'processing').length;
+    const activeJobsCount = queuedJobsCount + processingJobsCount;
+    const hasActiveJobs = activeJobsCount > 0;
     const hasCompletedJobs = jobs.some(j => ['completed', 'failed', 'cancelled'].includes(j.status));
     const selectableEntriesOnPage = paginatedEntries.filter(e => canSelectEntry(e));
     const allSelectedOnPage = selectableEntriesOnPage.length > 0
@@ -4727,6 +4822,15 @@ function App() {
                                     Clear Done
                                 </button>
                             `}
+                            ${hasActiveJobs && html`
+                                <button
+                                    class="btn btn-sm btn-secondary"
+                                    onClick=${handleRequestCancelAll}
+                                    title="Cancel all queued and processing jobs"
+                                >
+                                    Cancel All
+                                </button>
+                            `}
                             <button
                                 class="btn btn-sm btn-secondary"
                                 onClick=${() => api.getJobs().then(setJobs)}
@@ -4763,6 +4867,17 @@ function App() {
                     path=${showCHDInfo.path}
                     infoMode=${showCHDInfo.infoMode}
                     onClose=${() => setShowCHDInfo(null)}
+                />
+            `}
+
+            ${showCancelAllModal && html`
+                <${CancelAllJobsModal}
+                    total=${activeJobsCount}
+                    queued=${queuedJobsCount}
+                    processing=${processingJobsCount}
+                    busy=${cancellingAllJobs}
+                    onConfirm=${handleCancelAllJobs}
+                    onClose=${() => setShowCancelAllModal(false)}
                 />
             `}
 

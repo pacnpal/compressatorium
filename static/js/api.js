@@ -150,6 +150,15 @@ export const api = {
         return res.json();
     },
 
+    async cancelAllJobs() {
+        const res = await fetch(`${API_BASE}/jobs/cancel-all`, { method: 'POST' });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to cancel all jobs' }));
+            throw new Error(error.detail || 'Failed to cancel all jobs');
+        }
+        return res.json();
+    },
+
     async deleteCompletedJobs() {
         const res = await fetch(`${API_BASE}/jobs/completed`, { method: 'DELETE' });
         if (!res.ok) throw new Error('Failed to delete completed jobs');

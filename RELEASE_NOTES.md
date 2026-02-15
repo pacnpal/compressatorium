@@ -6,6 +6,16 @@
 
 ---
 
+## v3.0.1 - Clear Queue Feature
+
+### ✨ New Features
+
+- **Clear Queue** - Added a "Clear Queue" button to the job queue header that allows users to cancel all running and queued jobs at once.
+    - **API Endpoint** - `DELETE /api/jobs` endpoint exposed for bulk cancellation.
+    - **UI Integration** - Prominently displayed button in the queue header for quick access.
+
+---
+
 ## v3.0.0 - Nintendo 3DS Support & Docker Compose Overhaul
 
 ### ✨ New Features

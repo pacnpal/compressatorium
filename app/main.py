@@ -72,6 +72,13 @@ async def startup_event():
     configure_logging()
     logger = logging.getLogger("chd")
     logger.info(f"Compressatorium v{get_version()} starting...")
+    logger.info(
+        "Runtime limits pid=%s max_concurrent_jobs=%s max_job_history=%s lock_dir=%s",
+        os.getpid(),
+        settings.max_concurrent_jobs,
+        settings.max_job_history,
+        settings.concurrency_lock_dir,
+    )
     asyncio.create_task(job_manager.process_queue())
 
 

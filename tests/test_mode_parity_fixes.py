@@ -48,6 +48,12 @@ def _files_env(tmp_path: Path, monkeypatch):
     }
 
 
+def test_job_manager_default_max_concurrent_is_one():
+    """JobManager should default to serial processing unless explicitly overridden."""
+    manager = JobManager()
+    assert manager.max_concurrent == 1
+
+
 @pytest.mark.asyncio
 async def test_list_files_populates_has_rvz(files_env):
     """Directory listing should surface Dolphin output presence for inputs."""
@@ -163,6 +169,50 @@ async def test_batch_create_returns_429_when_queue_capacity_would_be_exceeded(
 
     assert exc_info.value.status_code == 429
     create_job_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_jobs_endpoint_delegates_to_manager(monkeypatch):
+    """Cancel-all route should return JobManager summary payload."""
+    payload = {
+        "requested": 2,
+        "queued": 1,
+        "processing": 1,
+        "job_ids": ["a1b2c3d4", "e5f6g7h8"],
+    }
+    cancel_all_mock = AsyncMock(return_value=payload)
+    monkeypatch.setattr(convert_routes.job_manager, "cancel_all_jobs", cancel_all_mock)
+
+    result = await convert_routes.cancel_all_jobs()
+
+    assert result == payload
+    cancel_all_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_jobs_marks_queued_jobs_cancelled(tmp_path: Path):
+    """JobManager cancel-all should cancel all queued jobs in one call."""
+    first = tmp_path / "a.iso"
+    second = tmp_path / "b.iso"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+
+    manager = JobManager(max_concurrent=1, max_job_history=10)
+    first_job = await manager.create_job(
+        str(first), ConversionMode.CREATECD, output_path=str(tmp_path / "a.chd"),
+    )
+    second_job = await manager.create_job(
+        str(second), ConversionMode.CREATECD, output_path=str(tmp_path / "b.chd"),
+    )
+
+    result = await manager.cancel_all_jobs()
+
+    assert result["queued"] == 2
+    assert result["processing"] == 0
+    assert result["requested"] == 2
+    assert set(result["job_ids"]) == {first_job.id, second_job.id}
+    assert manager.get_job(first_job.id).status == JobStatus.CANCELLED
+    assert manager.get_job(second_job.id).status == JobStatus.CANCELLED
 
 
 @pytest.mark.asyncio
