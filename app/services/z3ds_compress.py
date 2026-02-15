@@ -279,13 +279,18 @@ class Z3DSCompressService:
                     _record_line(buffer)
 
             finally:
-                self._untrack_pid(process.pid)
                 if cancel_task:
                     cancel_task.cancel()
                     try:
                         await cancel_task
                     except asyncio.CancelledError:
                         pass
+                if process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                    with contextlib.suppress(Exception):
+                        await process.wait()
+                self._untrack_pid(process.pid)
 
             if cancelled_by_request:
                 # Clean up partial output

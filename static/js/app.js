@@ -370,6 +370,12 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
 
     const isArchiveItem = (entry) => entry.is_archive_item || entry.in_archive;
     const isoIsDolphin = isoHandling === 'dolphin';
+    const isoToggleEnabled = isoHandling === 'dolphin' || isoHandling === 'chdman';
+    const isoModeLabel = isoHandling === 'dolphin'
+        ? 'Dolphin'
+        : isoHandling === 'chdman'
+            ? 'CHDMAN'
+            : '3DS mode';
 
     const handleClick = (entry, e) => {
         const ext = entry.extension?.toLowerCase();
@@ -430,6 +436,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
 
     const handleIsoToggle = (e) => {
         e.stopPropagation();
+        if (!isoToggleEnabled) return;
         if (onToggleIsoHandling) {
             onToggleIsoHandling();
         }
@@ -451,7 +458,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         if (isArchiveItem(entry) && entry.chd_ready && entry.chd_path) return 'Click to view output CHD info';
         if (isArchiveItem(entry) && entry.has_chd && !entry.chd_ready) return 'CHD conversion in progress';
         if (!isArchiveItem(entry) && ext === '.iso' && !isoIsDolphin) {
-            return 'ISO handled by CHDMAN. Switch ISO handling to Dolphin for disc info/verify.';
+            return 'ISO info uses Dolphin tools. Switch Primary Tool to Dolphin for disc info/verify.';
         }
         if (
             (['.rvz', '.wia', '.gcz', '.wbfs'].includes(ext)
@@ -627,16 +634,26 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                                 ${archiveHasChd}/${archiveItems} CHD
                             </span>
                         `}
-                        ${isIsoEntry && !isArchiveItem(entry) && html`
-                            <button
-                                type="button"
-                                class="status iso-handling iso-toggle"
-                                title="Click to toggle ISO handling"
-                                onClick=${handleIsoToggle}
-                            >
-                                ISO: ${isoIsDolphin ? 'Dolphin' : 'CHDMAN'}
-                            </button>
-                        `}
+                        ${isIsoEntry && !isArchiveItem(entry) && (isoToggleEnabled
+                ? html`
+                                <button
+                                    type="button"
+                                    class="status iso-handling iso-toggle"
+                                    title="Click to toggle ISO handling"
+                                    onClick=${handleIsoToggle}
+                                >
+                                    ISO: ${isoModeLabel}
+                                </button>
+                            `
+                : html`
+                                <span
+                                    class="status iso-handling"
+                                    title="ISO workflows are unavailable while Primary Tool is set to 3DS"
+                                >
+                                    ISO: ${isoModeLabel}
+                                </span>
+                            `
+            )}
                         ${isVerified(entry) && html`
                             <span class="status verified" title="Integrity verified">✓ Verified</span>
                         `}
@@ -3094,6 +3111,10 @@ function App() {
 
     const handleIsoHandlingToggle = useCallback(() => {
         setIsoHandling(prev => {
+            if (prev === 'z3ds') {
+                notify('ISO toggle is unavailable in 3DS mode. Switch Primary Tool to CHDMAN or Dolphin first.', 'info');
+                return prev;
+            }
             const next = prev === 'dolphin' ? 'chdman' : 'dolphin';
             notify(`ISO handling set to ${next === 'dolphin' ? 'Dolphin' : 'CHDMAN'}`, 'info');
             return next;
