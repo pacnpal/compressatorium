@@ -597,6 +597,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                                 type="checkbox"
                                 class="checkbox"
                                 checked=${selectedFiles.has(entry.path)}
+                                disabled=${!canSelect(entry)}
                                 onClick=${(e) => { e.stopPropagation(); onToggleSelect(entry, e); }}
                             />
                         `}
@@ -604,6 +605,9 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                     <div class="file-cell file-name">
                         <span class="icon">${getFileIcon(entry)}</span>
                         <span class="name" title=${entry.name}>${entry.name}</span>
+                        ${entry.type !== 'directory' && entry.type !== 'archive' && !canSelect(entry) && html`
+                            <span class="incompatible-warning" title="This file cannot be selected in the current conversion mode">⚠️</span>
+                        `}
                     </div>
                     <div class="file-cell file-size">
                         ${entry.size != null && entry.size !== undefined ? formatSize(entry.size) : ''}
@@ -4621,7 +4625,7 @@ function App() {
                     `}
 
                     <div class="pagination-controls">
-                        <div class="pagination-summary">
+                        <div class="pagination-summary" aria-live="polite" aria-atomic="true">
                             ${pagination.totalItems > 0
             ? `Showing ${pagination.start}-${pagination.end} of ${pagination.totalItems} item${pagination.totalItems === 1 ? '' : 's'}`
             : 'Showing 0 items'}

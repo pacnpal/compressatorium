@@ -74,7 +74,13 @@ class JobManager:
         self._create_lock = asyncio.Lock()
 
     def _enforce_queue_backpressure_locked(self, additional_jobs: int = 1) -> None:
-        """Raise QueueBackpressureError when queue depth limits are exceeded."""
+        """Raise QueueBackpressureError when queue depth limits are exceeded.
+
+        This method is expected to be called only while holding ``self._create_lock``.
+        """
+        assert self._create_lock.locked(), (
+            "_enforce_queue_backpressure_locked must be called with self._create_lock held"
+        )
         max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
         if max_depth <= 0:
             return

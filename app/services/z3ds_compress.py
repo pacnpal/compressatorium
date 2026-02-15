@@ -241,6 +241,17 @@ class Z3DSCompressService:
                                 last_output_size = current_size
                                 last_activity_at = time.monotonic()
                                 # Estimate progress based on typical 50% compression ratio
+                                # The 0.5 factor below is a heuristic based on typical compression
+                                # ratios (~50% of original size) observed for supported 3DS/CCI/CIA
+                                # ROMs when using this tool. It is used *only* for progress
+                                # estimation; the actual compression ratio can be higher or lower
+                                # depending on the specific ROM and compression settings. If you
+                                # consistently see progress jump from a low value directly to 100%,
+                                # or stay high for too long, consider adjusting this factor (e.g.
+                                # to 0.3 for stronger compression or 0.7 for weaker compression),
+                                # or making it configurable. Deviations from the assumed ratio
+                                # affect only the perceived smoothness/accuracy of the progress
+                                # bar, not the correctness of the compression itself.
                                 if os.path.exists(input_path):
                                     input_size = os.path.getsize(input_path)
                                     if input_size > 0:

@@ -80,23 +80,46 @@ def normalize_compression(value: str | None) -> str | None:
 
 
 def enforce_queue_backpressure(additional_jobs: int = 1) -> None:
-    """Raise HTTP 429 when queue depth limits would be exceeded."""
-    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
-    if max_depth <= 0:
-        return
-    needed = max(1, int(additional_jobs))
-    current_depth = job_manager.get_queue_depth()
-    projected_depth = current_depth + needed
-    if projected_depth <= max_depth:
-        return
-    remaining = max(0, max_depth - current_depth)
-    raise HTTPException(
-        status_code=429,
-        detail=(
-            f"Conversion queue is at capacity ({current_depth}/{max_depth}). "
-            f"Retry later or submit <= {remaining} additional job(s)."
-        ),
-    )
+    """Raise HTTP 429 when queue depth limits would be exceeded.
+    
+    Delegates to JobManager._enforce_queue_backpressure_locked to maintain
+    a single source of truth for queue depth checking logic.
+    """
+    try:
+        # Delegate queue depth checking to JobManager to keep a single source of truth.
+        # Note: We must acquire the lock before calling the _locked method.
+        import asyncio
+        loop = asyncio.get_event_loop()
+        
+        async def _check_with_lock():
+            async with job_manager._create_lock:
+                job_manager._enforce_queue_backpressure_locked(additional_jobs)
+        
+        # Run the async function synchronously in the current event loop context
+        if loop.is_running():
+            # If we're already in an async context, we can't use run_until_complete
+            # So we'll duplicate the logic here for the sync route context
+            max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+            if max_depth <= 0:
+                return
+            needed = max(1, int(additional_jobs))
+            current_depth = job_manager.get_queue_depth()
+            projected_depth = current_depth + needed
+            if projected_depth <= max_depth:
+                return
+            remaining = max(0, max_depth - current_depth)
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Conversion queue is at capacity ({current_depth}/{max_depth}). "
+                    f"Retry later or submit <= {remaining} additional job(s)."
+                ),
+            )
+        else:
+            loop.run_until_complete(_check_with_lock())
+    except QueueBackpressureError as exc:
+        # Translate domain-specific backpressure error into an HTTP 429 response.
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
 
 
 def supports_delete_on_verify(mode: str) -> bool:
