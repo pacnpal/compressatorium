@@ -1,5 +1,27 @@
 # Release Notes
 
+## v3.2.3 - Batched Notifications, Deferred UI Updates & Job Index
+
+### 🎨 UI / UX
+
+- **Batched terminal notifications** - Completed, failed, and cancelled job notifications are now aggregated per flush cycle. Instead of one toast per job, a single summary toast is shown (e.g. "Completed 5 jobs", "2 jobs failed"). Individual filenames are still shown when only one job completes.
+- **Batched verified-CHD set updates** - `setVerifiedCHDs` is called once per flush with all added/removed paths collected during the batch, eliminating per-job Set cloning.
+- **Deferred UI updates during dropdown interaction** - A `deferJobUiUpdatesRef` flag pauses job-driven React re-renders while a `<select>` dropdown (mode, filter, page-size) is focused or has its menu open. This prevents the dropdown from closing mid-selection when an SSE update or poll cycle triggers a state change. Dropdowns set the flag on `focus`/`mousedown` and clear it on `blur`/`change`.
+- **Capped placeholder rows** - Optimistic "creating" placeholders are capped at `MAX_VISIBLE_CREATING_PLACEHOLDERS` (100). For larger batches, remaining jobs are counted but not rendered, with an info toast showing the total queued count.
+
+### ⚙️ Reliability & Performance
+
+- **Job index map** - `applyQueuedJobUpdates` now builds a lazy `Map<jobId, index>` via `ensureJobIndex()` on first lookup, replacing O(n) `findIndex` per update with O(1) map lookups. The index is maintained as jobs are inserted or replaced.
+- **Extracted `applyPolledJobs` helper** - The poll-interval and initial-fetch merge logic is deduplicated into a single `applyPolledJobs(serverJobs)` function. It also checks `deferJobUiUpdatesRef` to skip state updates while a dropdown is open.
+- **Stuck-state polling guard** - `checkStuckStatus` responses are silently discarded when `deferJobUiUpdatesRef` is active, preventing spurious stuck-state banner flickers during dropdown interaction.
+- **New-job insertion order** - Hydrated jobs arriving via SSE for unknown IDs are now appended (`push`) instead of prepended (`unshift`), maintaining chronological order and avoiding unnecessary array shifts.
+
+### 📁 Files Changed
+
+- `static/js/app.js` - All changes above: batched notifications, deferred UI flag, `ensureJobIndex`, `applyPolledJobs`, placeholder cap, dropdown `onFocus`/`onBlur`/`onMouseDown` handlers
+
+---
+
 ## v3.2.2 - Search View Snapshot & Auto-Return
 
 ### ✨ New Features

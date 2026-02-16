@@ -6,6 +6,7 @@ const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
 const DEFAULT_PAGE_SIZE = '50';
 const DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST = true;
+const MAX_VISIBLE_CREATING_PLACEHOLDERS = 100;
 const PAGE_SIZE_OPTIONS = [
     { value: '25', label: '25' },
     { value: '50', label: '50' },
@@ -2548,12 +2549,21 @@ function App() {
     const jobUpdateFlushTimeoutRef = useRef(null);
     const completionRefreshTimeoutRef = useRef(null);
     const preSearchViewRef = useRef(null); // List/archive view snapshot before Search All
+    const deferJobUiUpdatesRef = useRef(false); // Pause job-driven rerenders during active select interactions
 
     // Show notification
     const notify = (message, type = 'info') => {
         setNotification({ message, type });
         setTimeout(() => setNotification(null), 4000);
     };
+
+    const beginUiSelectionInteraction = useCallback(() => {
+        deferJobUiUpdatesRef.current = true;
+    }, []);
+
+    const endUiSelectionInteraction = useCallback(() => {
+        deferJobUiUpdatesRef.current = false;
+    }, []);
 
     const capturePreSearchView = useCallback(() => {
         preSearchViewRef.current = {
@@ -3107,31 +3117,43 @@ function App() {
             return mergedJobs;
         };
 
+        const applyPolledJobs = (serverJobs) => {
+            if (deferJobUiUpdatesRef.current) {
+                return;
+            }
+            _setHiddenJobIds(currentHidden => {
+                setJobs(prev => {
+                    const merged = mergeJobs(serverJobs, prev, currentHidden);
+                    const visibleIds = new Set(merged.map(j => j.id));
+                    for (const key of progressRenderAtRef.current.keys()) {
+                        if (!visibleIds.has(key)) {
+                            progressRenderAtRef.current.delete(key);
+                        }
+                    }
+                    return merged;
+                });
+                return currentHidden;
+            });
+        };
+
         // Fetch initial jobs list
         api.getJobs()
-            .then(serverJobs => {
-                _setHiddenJobIds(currentHidden => {
-                    setJobs(prev => {
-                        const merged = mergeJobs(serverJobs, prev, currentHidden);
-                        const visibleIds = new Set(merged.map(j => j.id));
-                        for (const key of progressRenderAtRef.current.keys()) {
-                            if (!visibleIds.has(key)) {
-                                progressRenderAtRef.current.delete(key);
-                            }
-                        }
-                        return merged;
-                    });
-                    return currentHidden;
-                });
-            })
+            .then(applyPolledJobs)
             .catch(() => { });
 
         const applyQueuedJobUpdates = (queuedUpdates) => {
             if (queuedUpdates.length === 0) return;
 
+            const completedNames = [];
+            let failedCount = 0;
+            let cancelledCount = 0;
+            const verifiedPathsToAdd = new Set();
+            const verifiedPathsToRemove = new Set();
+
             setJobs(prevJobs => {
                 let nextJobs = prevJobs;
                 let didMutate = false;
+                let jobIndexById = null;
 
                 const ensureMutable = () => {
                     if (!didMutate) {
@@ -3141,15 +3163,26 @@ function App() {
                     return nextJobs;
                 };
 
+                const ensureJobIndex = () => {
+                    if (jobIndexById !== null) return jobIndexById;
+                    jobIndexById = new Map();
+                    for (let i = 0; i < nextJobs.length; i += 1) {
+                        jobIndexById.set(nextJobs[i].id, i);
+                    }
+                    return jobIndexById;
+                };
+
                 for (const update of queuedUpdates) {
                     const jobId = update?.data?.job_id;
                     if (!jobId) continue;
 
-                    const idx = nextJobs.findIndex(j => j.id === jobId);
+                    const idx = ensureJobIndex().get(jobId);
                     const hydratedJob = update?.data?.job;
-                    if (idx === -1) {
+                    if (idx == null) {
                         if (hydratedJob) {
-                            ensureMutable().unshift(hydratedJob);
+                            const mutableJobs = ensureMutable();
+                            mutableJobs.push(hydratedJob);
+                            ensureJobIndex().set(hydratedJob.id, mutableJobs.length - 1);
                         }
                         continue;
                     }
@@ -3204,38 +3237,77 @@ function App() {
                     }
 
                     ensureMutable()[idx] = updatedJob;
+                    ensureJobIndex().set(updatedJob.id, idx);
 
                     if (isTerminalUpdate) {
                         progressRenderAtRef.current.delete(jobId);
                     }
 
                     if (update.type === 'complete') {
-                        notify(`Completed: ${updatedJob.filename}`, 'success');
-                        // Refresh file list with debounce to avoid churn on rapid batch completions.
-                        scheduleCompletionRefresh();
+                        if (updatedJob.filename) completedNames.push(updatedJob.filename);
                         if (update.data.verified && update.data.output_path) {
-                            setVerifiedCHDs(prev => new Set([...prev, update.data.output_path]));
+                            verifiedPathsToAdd.add(update.data.output_path);
                         }
                         if (update.data.source_deleted && updatedJob.file_path?.toLowerCase().endsWith('.chd')) {
-                            setVerifiedCHDs(prev => {
-                                if (!prev.has(updatedJob.file_path)) return prev;
-                                const next = new Set(prev);
-                                next.delete(updatedJob.file_path);
-                                return next;
-                            });
+                            verifiedPathsToRemove.add(updatedJob.file_path);
                         }
                     } else if (update.type === 'error') {
-                        notify(`Failed: ${updatedJob.filename}`, 'error');
+                        failedCount += 1;
                     } else if (update.type === 'cancelled') {
-                        notify(`Cancelled: ${updatedJob.filename}`, 'info');
+                        cancelledCount += 1;
                     }
                 }
 
                 return didMutate ? nextJobs : prevJobs;
             });
+
+            if (completedNames.length > 0) {
+                // Refresh file list with debounce to avoid churn on rapid batch completions.
+                scheduleCompletionRefresh();
+                if (completedNames.length === 1) {
+                    notify(`Completed: ${completedNames[0]}`, 'success');
+                } else {
+                    notify(`Completed ${completedNames.length} jobs`, 'success');
+                }
+            }
+            if (failedCount > 0) {
+                notify(
+                    failedCount === 1 ? '1 job failed' : `${failedCount} jobs failed`,
+                    'error',
+                );
+            }
+            if (cancelledCount > 0) {
+                notify(
+                    cancelledCount === 1 ? '1 job cancelled' : `${cancelledCount} jobs cancelled`,
+                    'info',
+                );
+            }
+
+            if (verifiedPathsToAdd.size > 0 || verifiedPathsToRemove.size > 0) {
+                setVerifiedCHDs(prev => {
+                    const next = new Set(prev);
+                    for (const path of verifiedPathsToAdd) {
+                        next.add(path);
+                    }
+                    for (const path of verifiedPathsToRemove) {
+                        next.delete(path);
+                    }
+                    return next;
+                });
+            }
         };
 
         const flushQueuedJobUpdates = (force = false) => {
+            if (deferJobUiUpdatesRef.current) {
+                if (!jobUpdateFlushTimeoutRef.current) {
+                    jobUpdateFlushTimeoutRef.current = setTimeout(() => {
+                        jobUpdateFlushTimeoutRef.current = null;
+                        flushQueuedJobUpdates(true);
+                    }, JOB_UPDATE_BATCH_WINDOW_MS);
+                }
+                return;
+            }
+
             if (!force && jobUpdateFlushTimeoutRef.current) {
                 return;
             }
@@ -3275,29 +3347,17 @@ function App() {
         // Poll jobs periodically - merge instead of replace
         const interval = setInterval(() => {
             api.getJobs()
-                .then(serverJobs => {
-                    _setHiddenJobIds(currentHidden => {
-                        setJobs(prev => {
-                            const merged = mergeJobs(serverJobs, prev, currentHidden);
-                            const visibleIds = new Set(merged.map(j => j.id));
-                            for (const key of progressRenderAtRef.current.keys()) {
-                                if (!visibleIds.has(key)) {
-                                    progressRenderAtRef.current.delete(key);
-                                }
-                            }
-                            return merged;
-                        });
-                        return currentHidden;
-                    });
-                })
+                .then(applyPolledJobs)
                 .catch(() => { });
 
             // Check for stuck state
             api.checkStuckStatus()
                 .then(status => {
+                    if (deferJobUiUpdatesRef.current) return;
                     setStuckState(status);
                 })
                 .catch(() => {
+                    if (deferJobUiUpdatesRef.current) return;
                     setStuckState(null);
                 });
         }, 4000);
@@ -3840,7 +3900,9 @@ function App() {
             }
         }
         // Build optimistic placeholder jobs so the user sees immediate feedback
-        const placeholders = paths.map((p, i) => {
+        const visiblePaths = paths.slice(0, MAX_VISIBLE_CREATING_PLACEHOLDERS);
+        const hiddenPlaceholderCount = Math.max(0, paths.length - visiblePaths.length);
+        const placeholders = visiblePaths.map((p, i) => {
             const entry = selectedFiles.get(p);
             return {
                 id: `pending-${Date.now()}-${i}`,
@@ -3854,6 +3916,12 @@ function App() {
             };
         });
         setCreatingJobs(placeholders);
+        if (hiddenPlaceholderCount > 0) {
+            notify(
+                `Queueing ${paths.length} jobs. Showing ${visiblePaths.length} pending rows for responsiveness.`,
+                'info',
+            );
+        }
 
         setConverting(true);
         try {
@@ -4776,7 +4844,13 @@ function App() {
                                 <span class="toolbar-label">Mode</span>
                                 <select
                                     value=${conversionMode}
-                                    onChange=${(e) => setConversionMode(e.target.value)}
+                                    onFocus=${beginUiSelectionInteraction}
+                                    onBlur=${endUiSelectionInteraction}
+                                    onMouseDown=${beginUiSelectionInteraction}
+                                    onChange=${(e) => {
+            endUiSelectionInteraction();
+            setConversionMode(e.target.value);
+        }}
                                     title="Select conversion mode based on your disc type"
                                 >
                                     ${visibleModeGroups.map((group) => html`
@@ -4886,7 +4960,11 @@ function App() {
                                     <select
                                         class="file-type-filter"
                                         value=${fileTypeFilter || ''}
+                                        onFocus=${beginUiSelectionInteraction}
+                                        onBlur=${endUiSelectionInteraction}
+                                        onMouseDown=${beginUiSelectionInteraction}
                                         onChange=${(e) => {
+                endUiSelectionInteraction();
                 if (e.target.value === 'custom') {
                     setCustomFilterMode(true);
                     setFileTypeFilter('');
@@ -5029,7 +5107,11 @@ function App() {
                                 <span>Items per page</span>
                                 <select
                                     value=${itemsPerPage}
+                                    onFocus=${beginUiSelectionInteraction}
+                                    onBlur=${endUiSelectionInteraction}
+                                    onMouseDown=${beginUiSelectionInteraction}
                                     onChange=${(e) => {
+            endUiSelectionInteraction();
             setItemsPerPage(e.target.value);
             setCurrentPage(1);
             setLastSelectedIndex(null);
@@ -5200,7 +5282,11 @@ function App() {
                                 <span>Jobs per page</span>
                                 <select
                                     value=${jobItemsPerPage}
+                                    onFocus=${beginUiSelectionInteraction}
+                                    onBlur=${endUiSelectionInteraction}
+                                    onMouseDown=${beginUiSelectionInteraction}
                                     onChange=${(e) => {
+            endUiSelectionInteraction();
             setJobItemsPerPage(e.target.value);
             setJobCurrentPage(1);
         }}
