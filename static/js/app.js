@@ -5,6 +5,7 @@ const { html, render, useState, useEffect, useRef, useCallback, useMemo } = wind
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
 const DEFAULT_PAGE_SIZE = '50';
+const DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST = true;
 const PAGE_SIZE_OPTIONS = [
     { value: '25', label: '25' },
     { value: '50', label: '50' },
@@ -2459,6 +2460,11 @@ const buildCompressionValue = (selection, options) => {
     return ordered.length ? ordered.join(',') : null;
 };
 
+const cloneSelectionMap = (selection) => {
+    if (!(selection instanceof Map)) return new Map();
+    return new Map(selection);
+};
+
 // ============ Main App ============
 
 function App() {
@@ -2515,6 +2521,7 @@ function App() {
     const [chdMetadata, setChdMetadata] = useState(new Map()); // path -> { media_type: "dvd"|"cd"|null }
     const [forceRescanRunning, setForceRescanRunning] = useState(false);
     const [appVersion, setAppVersion] = useState(null); // App version from backend
+    const [searchAutoReturnToFileList, setSearchAutoReturnToFileList] = useState(DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST);
     const [sortBy, setSortBy] = useState('name'); // 'name', 'size', 'status'
     const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
     const [itemsPerPage, setItemsPerPage] = useState(DEFAULT_PAGE_SIZE);
@@ -2540,12 +2547,42 @@ function App() {
     const queuedJobUpdatesRef = useRef(new Map()); // jobId -> latest SSE payload
     const jobUpdateFlushTimeoutRef = useRef(null);
     const completionRefreshTimeoutRef = useRef(null);
+    const preSearchViewRef = useRef(null); // List/archive view snapshot before Search All
 
     // Show notification
     const notify = (message, type = 'info') => {
         setNotification({ message, type });
         setTimeout(() => setNotification(null), 4000);
     };
+
+    const capturePreSearchView = useCallback(() => {
+        preSearchViewRef.current = {
+            entries,
+            entriesError,
+            currentArchivePath,
+            selectedFiles: cloneSelectionMap(selectedFiles),
+            currentPage,
+            lastSelectedIndex
+        };
+    }, [entries, entriesError, currentArchivePath, selectedFiles, currentPage, lastSelectedIndex]);
+
+    const restorePreSearchView = useCallback(() => {
+        const snapshot = preSearchViewRef.current;
+        if (!snapshot) {
+            notify('No previous file list view is available yet.', 'info');
+            return false;
+        }
+
+        setSearchMode(false);
+        setSearchResults(null);
+        setEntries(snapshot.entries || []);
+        setEntriesError(snapshot.entriesError || null);
+        setCurrentArchivePath(snapshot.currentArchivePath || null);
+        setSelectedFiles(cloneSelectionMap(snapshot.selectedFiles));
+        setCurrentPage(snapshot.currentPage || 1);
+        setLastSelectedIndex(snapshot.lastSelectedIndex ?? null);
+        return true;
+    }, [notify]);
 
     useEffect(() => {
         try {
@@ -3012,7 +3049,12 @@ function App() {
     // Load app version on mount
     useEffect(() => {
         api.getVersion()
-            .then(data => setAppVersion(data.version))
+            .then(data => {
+                setAppVersion(data.version);
+                if (typeof data.search_auto_return_to_file_list === 'boolean') {
+                    setSearchAutoReturnToFileList(data.search_auto_return_to_file_list);
+                }
+            })
             .catch(err => console.warn('Failed to fetch app version:', err));
     }, []);
 
@@ -3294,6 +3336,7 @@ function App() {
         setCurrentPath(vol.path);
         setSelectedFiles(new Map());
         setCurrentArchivePath(null); // Exit archive view when changing volumes
+        preSearchViewRef.current = null;
         setCurrentPage(1);
         setLastSelectedIndex(null); // Reset shift-selection anchor
     };
@@ -3302,6 +3345,7 @@ function App() {
         setCurrentPath(path);
         setSelectedFiles(new Map());
         setCurrentArchivePath(null); // Exit archive view when navigating directories
+        preSearchViewRef.current = null;
         setCurrentPage(1);
         setLastSelectedIndex(null); // Reset shift-selection anchor
     };
@@ -3771,29 +3815,28 @@ function App() {
             await requestDeletePlan(paths, duplicateAction);
             return false;
         }
-        await executeConversion(paths, duplicateAction);
-        return true;
+        return executeConversion(paths, duplicateAction);
     };
 
     // Execute conversion with specified duplicate action
     const executeConversion = async (paths, duplicateAction = 'skip') => {
         if (hasMultipleDolphinCodecs) {
             notify('Dolphin formats support only one compression codec at a time', 'error');
-            return;
+            return false;
         }
         const isoInputs = paths.filter((path) => isIsoPath(path));
         if (isoInputs.length > 0) {
             if (isoHandling === null) {
                 notify('Please select an ISO handling method (CHDMAN or Dolphin) before converting ISO files.', 'error');
-                return;
+                return false;
             }
             if (isoHandling === 'dolphin' && !isDolphinMode) {
                 notify('ISO handling is set to Dolphin. Select a Dolphin mode to convert ISO files.', 'error');
-                return;
+                return false;
             }
             if (isoHandling === 'chdman' && isDolphinMode) {
                 notify('ISO handling is set to CHDMAN. Select a CHDMAN create mode to convert ISO files.', 'error');
-                return;
+                return false;
             }
         }
         // Build optimistic placeholder jobs so the user sees immediate feedback
@@ -3835,12 +3878,17 @@ function App() {
             } else {
                 notify('ℹ No jobs created (all files were skipped)', 'info');
             }
+            if (searchMode && searchAutoReturnToFileList) {
+                restorePreSearchView();
+            }
+            return true;
         } catch (err) {
             const errorMsg = err.message || 'Unknown error occurred';
             // Mark placeholders as failed so user sees what went wrong
             setCreatingJobs(prev => prev.map(j => ({ ...j, status: 'failed', error_message: errorMsg, message: `Failed to create: ${errorMsg}` })));
             notify(`✗ Failed to create jobs: ${errorMsg}`, 'error');
             console.error('Failed to create jobs:', err);
+            return false;
         } finally {
             // Remove failed placeholders after a short delay
             setTimeout(() => setCreatingJobs(prev => prev.filter(j => j.status !== 'failed')), 2500);
@@ -3897,16 +3945,17 @@ function App() {
                 // Show duplicate handling modal (pause converting state while modal is shown)
                 setConverting(false);
                 setDuplicateCheck({ duplicates, paths });
-                return;
+                return false;
             }
 
             // No duplicates, proceed directly (executeConversion will manage converting state)
             setConverting(false);
-            await maybeConfirmDeletePlan(paths, 'skip');
+            return await maybeConfirmDeletePlan(paths, 'skip');
         } catch (err) {
             setConverting(false);
             notify(`✗ Failed to check for duplicates: ${err.message}`, 'error');
             console.error('Duplicate check failed:', err);
+            return false;
         }
     };
 
@@ -4299,6 +4348,10 @@ function App() {
             return;
         }
 
+        if (!searchMode) {
+            capturePreSearchView();
+        }
+
         setLoading(true);
         setEntriesError(null);
         notify('🔍 Searching for convertible files...', 'info');
@@ -4649,10 +4702,10 @@ function App() {
                             ${searchMode && html`
                                 <button
                                     class="btn btn-sm btn-secondary"
-                                    onClick=${() => handleNavigate(currentPath)}
-                                    title="Clear search and show folder contents"
+                                    onClick=${restorePreSearchView}
+                                    title="Return to the file list view from before Search All"
                                 >
-                                    ← Back
+                                    ← File List
                                 </button>
                             `}
                             ${!searchMode && html`

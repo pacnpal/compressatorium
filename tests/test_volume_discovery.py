@@ -57,3 +57,11 @@ def test_concurrency_defaults_are_serial(monkeypatch):
 
     assert settings.max_concurrent_jobs == 1
     assert settings.max_verify_concurrency == 1
+
+
+def test_search_auto_return_default_and_legacy_alias(monkeypatch):
+    monkeypatch.delenv("COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST", raising=False)
+    monkeypatch.delenv("CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST", raising=False)
+
+    assert Settings().search_auto_return_to_file_list is True
+    assert Settings(CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST="false").search_auto_return_to_file_list is False

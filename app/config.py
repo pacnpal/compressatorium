@@ -32,6 +32,16 @@ class Settings(BaseSettings):
     # Persistent data directory
     data_dir: str = Field(default="/config", alias="CHD_DATA_DIR")
 
+    # Web UI behavior
+    search_auto_return_to_file_list: bool = Field(
+        default=True,
+        alias="COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST",
+        validation_alias=AliasChoices(
+            "COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST",
+            "CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST",
+        ),
+    )
+
     # Job limits
     max_concurrent_jobs: int = Field(default=1, alias="MAX_CONCURRENT_JOBS")
     max_queue_depth: int = Field(

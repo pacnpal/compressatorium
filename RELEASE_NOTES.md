@@ -1,5 +1,38 @@
 # Release Notes
 
+## v3.2.2 - Search View Snapshot & Auto-Return
+
+### ✨ New Features
+
+- **Search view snapshot / restore** - Before "Search All" runs, the current file-list state (entries, archive path, selection, page) is captured. The "← File List" button restores this snapshot exactly, preserving scroll position context instead of re-fetching the directory.
+- **Auto-return to file list** - After a successful conversion from search results, the UI automatically restores the pre-search file-list view when `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` is `true` (default). The setting is served from `/api/version` and respected by the frontend at runtime.
+- **New config setting** - `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` (default `true`) with legacy alias `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` via Pydantic `AliasChoices`.
+
+### 🐞 Bug Fixes
+
+- **Conversion return values** - `executeConversion` and `maybeConfirmDeletePlan` now return `boolean` success indicators, enabling callers to decide post-conversion behavior (e.g. auto-return).
+- **Snapshot invalidation** - Pre-search snapshot is cleared on volume switch and directory navigation so stale state is never restored.
+
+### 📖 Documentation
+
+- **README** - Added `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` and legacy alias to env var table.
+- **DEPLOYMENT.md** - Added new env var to deployment reference.
+- **DOCKER-COMPOSE.md** - Added new env var to compose reference.
+
+### 🧪 Tests
+
+- **Search auto-return config** - New `test_search_auto_return_default_and_legacy_alias` verifies the setting defaults to `true` and respects the legacy `CHD_` alias.
+
+### 📁 Files Changed
+
+- `app/config.py` - `search_auto_return_to_file_list` field with `AliasChoices`
+- `app/routes/info.py` - `/api/version` response includes `search_auto_return_to_file_list`
+- `static/js/app.js` - `capturePreSearchView` / `restorePreSearchView`, auto-return logic, boolean conversion returns, "← File List" button
+- `README.md`, `DEPLOYMENT.md`, `DOCKER-COMPOSE.md` - Env var docs
+- `tests/test_volume_discovery.py` - Config default + legacy alias test
+
+---
+
 ## v3.2.1 - CI Release Notes from Commit Log
 
 ### ⚙️ CI / CD
