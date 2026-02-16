@@ -1,5 +1,20 @@
 # Release Notes
 
+## v3.2.1 - CI Release Notes from Commit Log
+
+### ⚙️ CI / CD
+
+- **Auto-generated release body** - The `create-release` job now checks out the repo with full history and tags, derives the previous semver tag, and builds a changelog from `git log --no-merges` between the two tags. The result is written to `RELEASE_BODY.md` and passed via `body_path` instead of relying on GitHub's `generate_release_notes`.
+- **Previous-tag derivation** - New `previous_tag` output in the `release_meta` step finds the most recent `v*.*.*` tag excluding the current one, enabling accurate commit-range changelogs.
+- **Full changelog link** - The generated release body includes a GitHub compare URL (`previous_tag...current_tag`) for easy diff browsing.
+- **Fallback handling** - If no previous tag exists (first release) or no non-merge commits are found, sensible defaults are emitted instead of an empty body.
+
+### 📁 Files Changed
+
+- `.github/workflows/docker-image.yml` - Added checkout step with `fetch-depth: 0` and `fetch-tags: true`, commit-log changelog generation, `body_path` release body
+
+---
+
 ## v3.2.0 - Job Tabs & Queue Pagination
 
 ### ✨ New Features

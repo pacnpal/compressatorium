@@ -265,6 +265,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
       - name: Derive release metadata
         id: release_meta
         run: |
@@ -281,8 +287,36 @@ jobs:
             PRERELEASE=false
           fi
 
+          PREVIOUS_TAG="$(git tag --list 'v*.*.*' --sort=-v:refname | grep -Fvx "${TAG}" | head -n1 || true)"
+
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=${PREVIOUS_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes from commits
+        run: |
+          TAG="${{ steps.release_meta.outputs.tag }}"
+          PREVIOUS_TAG="${{ steps.release_meta.outputs.previous_tag }}"
+
+          if [[ -n "${PREVIOUS_TAG}" ]]; then
+            git log --no-merges --pretty='- %s' "${PREVIOUS_TAG}..${GITHUB_SHA}" > release_commits.txt
+          else
+            git log --no-merges --pretty='- %s' -n 1 "${GITHUB_SHA}" > release_commits.txt
+          fi
+
+          if [[ ! -s release_commits.txt ]]; then
+            echo "- No non-merge commits found in this release window." > release_commits.txt
+          fi
+
+          {
+            echo "## What's Changed"
+            echo
+            cat release_commits.txt
+            echo
+            if [[ -n "${PREVIOUS_TAG}" ]]; then
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG}"
+            fi
+          } > RELEASE_BODY.md
 
       - name: Create Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
@@ -290,7 +324,7 @@ jobs:
           tag_name: ${{ steps.release_meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: Release ${{ steps.release_meta.outputs.tag }}
-          generate_release_notes: true
+          body_path: RELEASE_BODY.md
           prerelease: ${{ steps.release_meta.outputs.prerelease == 'true' }}
           draft: false
           make_latest: ${{ steps.release_meta.outputs.prerelease != 'true' }}
