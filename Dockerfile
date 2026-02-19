@@ -47,6 +47,20 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # Install z3ds_compressor from builder stage
 COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
 
+# Install igir ROM collection manager (pre-built binary)
+ARG IGIR_VERSION=4.3.0
+RUN ARCH="$(dpkg --print-architecture)" && \
+    case "$ARCH" in \
+      amd64) IGIR_ARCH="x64" ;; \
+      arm64) IGIR_ARCH="arm64" ;; \
+      *) echo "Unsupported arch: $ARCH" && exit 1 ;; \
+    esac && \
+    wget -q "https://github.com/emmercm/igir/releases/download/v${IGIR_VERSION}/igir-${IGIR_VERSION}-linux-${IGIR_ARCH}.tar.gz" \
+         -O /tmp/igir.tar.gz && \
+    tar -xzf /tmp/igir.tar.gz -C /usr/local/bin/ && \
+    chmod +x /usr/local/bin/igir && \
+    rm /tmp/igir.tar.gz
+
 
 # Copy application
 COPY app/ /app/
@@ -68,7 +82,7 @@ ENV CHD_CHDMAN_IOPRIO_LEVEL=6
 ENV PYTHONUNBUFFERED=1
 
 # Default volume mount point
-VOLUME ["/data/games"]
+VOLUME ["/data/games", "/dats"]
 
 # Expose web port
 EXPOSE 8080
@@ -80,8 +94,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 # Run as non-root user
 RUN groupadd -r converter && useradd -r -g converter -s /sbin/nologin converter \
     && chown -R converter:converter /app /static /opt/venv \
-    && mkdir -p /data/games /config \
-    && chown converter:converter /data/games /config
+    && mkdir -p /data/games /config /dats \
+    && chown converter:converter /data/games /config /dats
 
 USER converter
 

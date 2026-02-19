@@ -115,13 +115,21 @@ if [[ "$MODE" == "cli" ]]; then
     echo "CLI conversion complete."
 else
     # Web UI mode (default)
-    echo "Starting CHD Converter Web UI..."
+    echo "Starting Compressatorium Web UI..."
     echo "Volume root: $MOUNT_ROOT"
     if [[ -n "$EXPLICIT_VOLUMES" ]]; then
         echo "Using explicit COMPRESSATORIUM_VOLUMES: $VOLUMES_EFFECTIVE"
     else
         echo "Discovered volumes: $VOLUMES_EFFECTIVE"
     fi
+    # Check igir availability
+    if command -v igir &>/dev/null; then
+        IGIR_VERSION=$(igir --version 2>/dev/null || echo "unknown")
+        echo "igir version: $IGIR_VERSION"
+    else
+        echo "Warning: igir binary not found — ROM management features will be unavailable"
+    fi
+
     echo "Access the web interface at http://localhost:8080"
     exec uvicorn main:app --host 0.0.0.0 --port 8080 --workers 1
 fi

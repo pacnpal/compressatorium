@@ -26,6 +26,25 @@ export const api = {
         return res.json();
     },
 
+    async trackFeatureEvent(event, value = 1) {
+        const res = await fetch(`${API_BASE}/feature-events`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ event, value })
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to track feature event' }));
+            throw new Error(error.detail || 'Failed to track feature event');
+        }
+        return res.json();
+    },
+
+    async getFeatureEvents() {
+        const res = await fetch(`${API_BASE}/feature-events`);
+        if (!res.ok) throw new Error('Failed to fetch feature events');
+        return res.json();
+    },
+
     // Volumes
     async getVolumes() {
         const res = await fetch(`${API_BASE}/volumes`);
@@ -640,6 +659,238 @@ export const api = {
         }
 
         return result;
+    },
+
+    // ──────────────────────── Igir ────────────────────────
+
+    async createIgirJob(request) {
+        const res = await fetch(`${API_BASE}/igir/jobs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request)
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to create igir job' }));
+            const detail = error.detail;
+            if (typeof detail === 'object' && detail.errors) {
+                throw new Error(detail.errors.join('; '));
+            }
+            throw new Error(typeof detail === 'string' ? detail : 'Failed to create igir job');
+        }
+        return res.json();
+    },
+
+    async getIgirJobs() {
+        const res = await fetch(`${API_BASE}/igir/jobs`);
+        if (!res.ok) throw new Error('Failed to fetch igir jobs');
+        return res.json();
+    },
+
+    async getIgirJob(jobId) {
+        const res = await fetch(`${API_BASE}/igir/jobs/${jobId}`);
+        if (!res.ok) throw new Error('Failed to fetch igir job');
+        return res.json();
+    },
+
+    async getIgirJobLog(jobId) {
+        const res = await fetch(`${API_BASE}/igir/jobs/${jobId}/log`);
+        if (!res.ok) throw new Error('Failed to fetch igir job log');
+        return res.json();
+    },
+
+    async cancelIgirJob(jobId) {
+        const res = await fetch(`${API_BASE}/igir/jobs/${jobId}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed to cancel igir job');
+        return res.json();
+    },
+
+    async cancelAllIgirJobs() {
+        const res = await fetch(`${API_BASE}/igir/jobs/cancel-all`, {
+            method: 'POST',
+            headers: { 'X-CHD-Action-Confirm': 'cancel-all-igir-jobs' }
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to cancel all igir jobs' }));
+            throw new Error(error.detail || 'Failed to cancel all igir jobs');
+        }
+        return res.json();
+    },
+
+    async deleteCompletedIgirJobs() {
+        const res = await fetch(`${API_BASE}/igir/jobs/completed`, {
+            method: 'DELETE',
+            headers: { 'X-CHD-Action-Confirm': 'clear-completed-igir-jobs' }
+        });
+        if (!res.ok) throw new Error('Failed to delete completed igir jobs');
+        return res.json();
+    },
+
+    async validateIgirRequest(request) {
+        const res = await fetch(`${API_BASE}/igir/validate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request)
+        });
+        if (!res.ok) throw new Error('Failed to validate igir request');
+        return res.json();
+    },
+
+    async igirPreflight(request) {
+        const res = await fetch(`${API_BASE}/igir/preflight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request)
+        });
+        if (!res.ok) throw new Error('Failed to run igir preflight');
+        return res.json();
+    },
+
+    async igirDryRun(request) {
+        const res = await fetch(`${API_BASE}/igir/dry-run`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request)
+        });
+        if (!res.ok) throw new Error('Failed to run igir dry-run');
+        return res.json();
+    },
+
+    async igirDryRunExecute(request) {
+        const res = await fetch(`${API_BASE}/igir/dry-run/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request)
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to execute igir dry-run' }));
+            const detail = error.detail;
+            if (typeof detail === 'object' && detail.errors) {
+                throw new Error(detail.errors.join('; '));
+            }
+            throw new Error(typeof detail === 'string' ? detail : 'Failed to execute igir dry-run');
+        }
+        return res.json();
+    },
+
+    async listDats(path = null) {
+        const params = path ? new URLSearchParams({ path }) : '';
+        const url = path ? buildApiUrl('/igir/dats', params) : `${API_BASE}/igir/dats`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Failed to list DAT files');
+        return res.json();
+    },
+
+    async searchDats() {
+        const res = await fetch(`${API_BASE}/igir/dats/search`);
+        if (!res.ok) throw new Error('Failed to search DAT files');
+        return res.json();
+    },
+
+    async getIgirStuckStatus() {
+        const res = await fetch(`${API_BASE}/igir/jobs/stuck-status`);
+        if (!res.ok) throw new Error('Failed to check igir stuck status');
+        return res.json();
+    },
+
+    async recoverIgirJobs() {
+        const res = await fetch(`${API_BASE}/igir/jobs/recover`, { method: 'POST' });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to recover igir jobs' }));
+            throw new Error(error.detail || 'Failed to recover igir jobs');
+        }
+        return res.json();
+    },
+
+    async getIgirVersion() {
+        const res = await fetch(`${API_BASE}/igir/version`);
+        if (!res.ok) throw new Error('Failed to get igir version');
+        return res.json();
+    },
+
+    async getIgirQuickSetup(inputPaths, goal = null) {
+        const payload = { input_paths: inputPaths };
+        if (goal) payload.goal = goal;
+        const res = await fetch(`${API_BASE}/igir/quick-setup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to generate igir quick setup' }));
+            throw new Error(error.detail || 'Failed to generate igir quick setup');
+        }
+        return res.json();
+    },
+
+    async trackIgirFeatureEvent(event, value = 1) {
+        const res = await fetch(`${API_BASE}/igir/feature-events`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ event, value })
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to track igir feature event' }));
+            throw new Error(error.detail || 'Failed to track igir feature event');
+        }
+        return res.json();
+    },
+
+    async getIgirFeatureEvents() {
+        const res = await fetch(`${API_BASE}/igir/feature-events`);
+        if (!res.ok) throw new Error('Failed to fetch igir feature events');
+        return res.json();
+    },
+
+    subscribeToIgirJobs(onUpdate) {
+        const eventSource = new EventSource(`${API_BASE}/igir/jobs/events`);
+
+        const safeParseAndUpdate = (type, e) => {
+            try {
+                if (e.data) {
+                    onUpdate({ type, data: JSON.parse(e.data) });
+                }
+            } catch (err) {
+                console.error(`Failed to parse igir SSE ${type} event:`, err, e.data);
+            }
+        };
+
+        eventSource.addEventListener('progress', (e) => safeParseAndUpdate('progress', e));
+        eventSource.addEventListener('complete', (e) => safeParseAndUpdate('complete', e));
+        eventSource.addEventListener('error', (e) => safeParseAndUpdate('error', e));
+        eventSource.addEventListener('status', (e) => safeParseAndUpdate('status', e));
+        eventSource.addEventListener('cancelled', (e) => safeParseAndUpdate('cancelled', e));
+
+        eventSource.onerror = (err) => {
+            console.error('Igir SSE connection error:', err);
+        };
+
+        return () => eventSource.close();
+    },
+
+    subscribeToIgirJob(jobId, onUpdate) {
+        const eventSource = new EventSource(`${API_BASE}/igir/jobs/${jobId}/events`);
+
+        const safeParseAndUpdate = (type, e) => {
+            try {
+                if (e.data) {
+                    onUpdate({ type, data: JSON.parse(e.data) });
+                }
+            } catch (err) {
+                console.error(`Failed to parse igir job SSE ${type} event:`, err, e.data);
+            }
+        };
+
+        eventSource.addEventListener('progress', (e) => safeParseAndUpdate('progress', e));
+        eventSource.addEventListener('complete', (e) => safeParseAndUpdate('complete', e));
+        eventSource.addEventListener('error', (e) => safeParseAndUpdate('error', e));
+        eventSource.addEventListener('status', (e) => safeParseAndUpdate('status', e));
+        eventSource.addEventListener('cancelled', (e) => safeParseAndUpdate('cancelled', e));
+
+        eventSource.onerror = (err) => {
+            console.error('Igir job SSE connection error:', err);
+        };
+
+        return () => eventSource.close();
     },
 
     async verifyBatchZ3DS(paths, { onProgress, onFileComplete } = {}) {

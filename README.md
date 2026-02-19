@@ -2,11 +2,11 @@
 
 > **Fork Notice:** This project is a fork of MarcTV's original Docker CHD Converter project with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
 
-Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), and **z3ds_compressor** (Nintendo 3DS).
+Multi-tool game disc image converter and ROM manager supporting **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), and **igir** (ROM collection management).
 
 ## ✨ Features
 
-* **🎮 Three Primary Tools:** Choose between CHDMAN, Dolphin, or 3DS compression
+* **🎮 Four Primary Tools:** Choose between CHDMAN, Dolphin, 3DS compression, or igir ROM management
 * **🌐 Web UI** for easy file browsing and conversion with intuitive tool selection
 * **📁 Nested directories** and **compressed archives** (ZIP, 7z, RAR) support
 * **💾 Multiple volume mounts** for organizing different game libraries
@@ -23,6 +23,7 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-too
 | **CHDMAN** | .gdi, .cue, .bin, .iso | .chd | CD/DVD/LaserDisc to CHD |
 | **Dolphin** | .iso, .gcm, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
+| **igir** | Any ROM format | Organized ROM sets | Copy, move, verify, clean using DAT files |
 
 ---
 
@@ -60,13 +61,14 @@ Both registries provide identical images with multi-architecture support (`linux
 
 ### 1. Select Your Primary Tool
 
-When you open the Web UI, you'll see three tool options at the top:
+When you open the Web UI, you'll see four tool options at the top:
 
 * **CHDMAN** - For converting CD/DVD/LaserDisc images to CHD format
 * **Dolphin** - For GameCube/Wii disc image conversions
 * **3DS** - For compressing Nintendo 3DS ROMs
+* **igir** - For ROM collection management (copy, move, organize, verify, clean)
 
-**Choose the tool that matches your files.** The interface will automatically show only relevant modes and file types.
+**Choose the tool that matches your task.** The interface will automatically show relevant modes and file types.
 
 ### 2. Browse and Select Files
 
@@ -295,6 +297,94 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 
 ---
 
+## igir ROM Collection Manager
+
+igir is a ROM collection manager that can copy, move, organize, verify, and clean ROM sets using DAT files from No-Intro, Redump, and other sources.
+
+### How to Use
+
+1. **Select Primary Tool:** Choose **igir** from the tool options at the top of the Web UI
+2. **Set Input/Output:** Browse and select input ROM directories/files and an output directory
+3. **Auto-Setup (optional):** Pick a workflow goal and click **Auto-Setup** to pre-fill commands, DATs, and safe defaults
+4. **Select Commands:** Choose one or more operations (copy, move, test, clean, report, etc.)
+5. **Select DAT Files:** Browse and select DAT files for ROM matching (mount your DATs to `/dats`)
+6. **Configure Filters:** Optionally filter by language, region, or exclude demos/betas/BIOS
+7. **1G1R:** Enable `--single` to keep only one ROM per game with language/region preferences
+8. **Validate / Preflight:** Use **Validate & Preview** and **Run Clean Dry-Run** to check issues before writing
+9. **Execute:** Click Execute to start the job; destructive jobs require typing `RUN`
+
+### Filter Presets
+
+The UI includes quick-apply filter presets:
+
+| Preset | Description |
+|--------|-------------|
+| **Only Retail** | Exclude BIOS, demos, betas, samples, prototypes, unlicensed, and bad dumps |
+| **Flash Cart (1G1R USA)** | Curated 1G1R set: USA retail, prefer verified English ROMs (great for flash carts) |
+| **Complete Collection** | All retail + licensed ROMs, exclude only bad dumps |
+| **Homebrew Only** | Only homebrew ROMs |
+| **All ROMs** | Clear all filters |
+
+### Additional Options
+
+| Option | CLI Flag | Description |
+|--------|----------|-------------|
+| DAT Mirror | `--dir-dat-mirror` | Organize output to mirror DAT structure |
+| Ignore Parent/Clone | `--dat-ignore-parent-clone` | Ignore parent/clone relationships in DATs |
+| Remove Headers | `--remove-headers` | Remove ROM headers (`all` or `known`) |
+| Patch Files | `--patch` | Apply IPS/UPS/APS/BPS/RUP patches |
+| Input Exclude | `--input-exclude` | Glob patterns to exclude from input |
+| Temp Dir | `--temp-dir` | Temporary directory (auto-configured via `IGIR_TEMP_DIR`) |
+
+### Volume Mount
+
+Mount your DAT files into the container at `/dats`:
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -v /path/to/config:/config \
+  -v /path/to/games:/data/games \
+  -v /path/to/dats:/dats \
+  pacnpal/compressatorium
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IGIR_PATH` | `/usr/local/bin/igir` | Path to igir binary |
+| `IGIR_DAT_PATH` | `/dats` | Root directory for DAT files |
+| `MAX_IGIR_CONCURRENT` | `1` | Maximum concurrent igir jobs |
+| `IGIR_TEMP_DIR` | `/config/igir-temp` | Temporary directory for igir operations |
+
+### REST API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/igir/jobs` | Create an igir job |
+| GET | `/api/igir/jobs` | List all igir jobs |
+| GET | `/api/igir/jobs/{id}` | Get a specific igir job |
+| DELETE | `/api/igir/jobs/{id}` | Cancel or delete an igir job |
+| POST | `/api/igir/jobs/cancel-all` | Cancel all igir jobs |
+| DELETE | `/api/igir/jobs/completed` | Clear completed igir jobs |
+| GET | `/api/igir/jobs/stuck-status` | Check if igir queue is stuck |
+| POST | `/api/igir/jobs/recover` | Recover igir jobs from stuck state |
+| GET | `/api/igir/jobs/events` | SSE stream for igir job progress |
+| GET | `/api/igir/jobs/{id}/events` | SSE stream for a single igir job |
+| POST | `/api/igir/validate` | Validate an igir job request |
+| POST | `/api/igir/preflight` | Validate + path safety checks + destructive risk factors |
+| POST | `/api/igir/dry-run` | Preview a clean operation |
+| POST | `/api/igir/dry-run/execute` | Execute clean-only dry-run and return candidate files |
+| POST | `/api/igir/quick-setup` | Generate auto-setup workflow recommendations |
+| POST | `/api/igir/feature-events` | Track igir feature-adoption events |
+| GET | `/api/igir/feature-events` | Read igir feature-adoption event counters |
+| GET | `/api/igir/dats` | List DAT files |
+| GET | `/api/igir/dats/search` | Search all DAT files |
+| GET | `/api/igir/version` | Get igir version |
+
+---
+
 ## CLI Mode (Batch Processing)
 
 For automated/headless conversion, use CLI mode. CLI mode runs CHDMAN only and processes
@@ -480,6 +570,10 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
+| `IGIR_PATH` | `/usr/local/bin/igir` | Path to igir binary |
+| `IGIR_DAT_PATH` | `/dats` | Root directory for DAT files (mount No-Intro/Redump DATs here) |
+| `MAX_IGIR_CONCURRENT` | `1` | Maximum concurrent igir jobs (igir is multi-threaded internally) |
+| `IGIR_TEMP_DIR` | `/config/igir-temp` | Temporary directory for igir operations |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (`1` = serial queue processing) |
 | `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
 | `MAX_VERIFY_CONCURRENCY` | `1` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |

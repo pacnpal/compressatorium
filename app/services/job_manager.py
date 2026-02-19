@@ -8,13 +8,14 @@ import tempfile
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from config import settings
 from fastapi.concurrency import run_in_threadpool
-from models import ConversionJob, ConversionMode, JobStatus
+from models import ConversionJob, ConversionMode, IgirJob, IgirJobCreateRequest, JobStatus
 from services.archive import archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
@@ -23,6 +24,7 @@ from services.dolphin_tool import dolphin_tool_service
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
 from services.z3ds_compress import z3ds_compress_service
+from services.igir import IgirProcessError, igir_service
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
@@ -51,6 +53,7 @@ class JobManager:
     STUCK_RECOVERY_COOLDOWN_SECONDS = 60
     ARCHIVED_JOB_TTL_SECONDS = 60 * 15
     MAX_ARCHIVED_JOBS = 2000
+    ACTIVE_QUEUE_STATUSES = (JobStatus.QUEUED, JobStatus.PROCESSING)
 
     def __init__(self, max_concurrent: int = 1, max_job_history: int = 500):
         self.jobs: OrderedDict[str, ConversionJob] = OrderedDict()
@@ -70,11 +73,30 @@ class JobManager:
         self._last_output_size_at: Dict[str, float] = {}
         self._running = False
         self._dispatcher_task: Optional[asyncio.Task] = None
+        self._igir_dispatcher_task: Optional[asyncio.Task] = None
         self._debug_task: Optional[asyncio.Task] = None
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._stuck_detected_at: Optional[float] = None
         self._last_stuck_recovery_at: float = 0
         self._create_lock = asyncio.Lock()
+
+        # Igir job management (parallel to conversion jobs)
+        self._igir_jobs: OrderedDict[str, IgirJob] = OrderedDict()
+        self._archived_igir_jobs: OrderedDict[str, Tuple[IgirJob, float]] = OrderedDict()
+        self._igir_requests: Dict[str, IgirJobCreateRequest] = {}
+        self._igir_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        self._igir_queued_job_ids: Set[str] = set()
+        self._igir_subscribers: Dict[str, List[asyncio.Queue]] = {}
+        self._igir_cancel_events: Dict[str, asyncio.Event] = {}
+        self.max_igir_concurrent = max(1, getattr(settings, "max_igir_concurrent", 1))
+        self._igir_semaphore = asyncio.Semaphore(
+            self.max_igir_concurrent,
+        )
+        self._igir_ticket_counter = 0
+        self._igir_last_progress_at: Dict[str, float] = {}
+        self._igir_output_logs: Dict[str, List[str]] = {}
+        self._igir_stuck_detected_at: Optional[float] = None
+        self._last_igir_stuck_recovery_at: float = 0
 
     def _enforce_queue_backpressure_locked(self, additional_jobs: int = 1) -> None:
         """Raise QueueBackpressureError when queue depth limits are exceeded.
@@ -89,17 +111,25 @@ class JobManager:
             return
 
         needed = max(1, int(additional_jobs))
-        current_depth = sum(
-            1
-            for job in self.jobs.values()
-            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
-        )
+        current_depth = self._active_queue_depth()
         if current_depth + needed > max_depth:
             raise QueueBackpressureError(
                 current_depth=current_depth,
                 max_depth=max_depth,
                 additional_jobs=needed,
             )
+
+    def _active_queue_depth(self) -> int:
+        """Return queued + processing job count across conversion and igir queues."""
+        conversion_depth = sum(
+            1 for job in self.jobs.values() if job.status in self.ACTIVE_QUEUE_STATUSES
+        )
+        igir_depth = sum(
+            1
+            for job in self._igir_jobs.values()
+            if job.status in self.ACTIVE_QUEUE_STATUSES
+        )
+        return conversion_depth + igir_depth
 
     def _queue_job_locked(
         self,
@@ -297,11 +327,7 @@ class JobManager:
 
     def get_queue_depth(self) -> int:
         """Return queued + processing job count for backpressure checks."""
-        return sum(
-            1
-            for job in self.jobs.values()
-            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
-        )
+        return self._active_queue_depth()
 
     def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
         """Return active job ids with their candidate paths (input/output)."""
@@ -722,9 +748,32 @@ class JobManager:
             return
         self._running = True
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
+        self._igir_dispatcher_task = asyncio.create_task(
+            self._igir_dispatcher_loop(),
+        )
         if settings.debug and settings.debug_heartbeat_interval > 0:
             self._debug_task = asyncio.create_task(self._debug_loop())
-        await self._dispatcher_task
+        try:
+            await self._dispatcher_task
+        finally:
+            self._running = False
+
+            tasks_to_cancel: list[asyncio.Task] = []
+            for task in (
+                self._dispatcher_task,
+                self._igir_dispatcher_task,
+                self._debug_task,
+            ):
+                if task and not task.done():
+                    task.cancel()
+                    tasks_to_cancel.append(task)
+
+            if tasks_to_cancel:
+                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
+            self._dispatcher_task = None
+            self._igir_dispatcher_task = None
+            self._debug_task = None
 
     async def _handle_background_maintenance(self, cleanup_counter: int) -> int:
         """Handle stuck state detection and periodic lock cleanup.
@@ -1534,6 +1583,518 @@ class JobManager:
             await self._prune_jobs(exclude_id=job_id)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Job %s finished status=%s", job_id, job.status.value)
+
+
+    # ============ Igir job management ============
+
+    def _enforce_igir_backpressure(self) -> None:
+        """Raise QueueBackpressureError when igir queue depth limits are exceeded."""
+        assert self._create_lock.locked(), (
+            "_enforce_igir_backpressure must be called with self._create_lock held"
+        )
+        max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+        if max_depth <= 0:
+            return
+        current_depth = self._active_queue_depth()
+        if current_depth + 1 > max_depth:
+            raise QueueBackpressureError(
+                current_depth=current_depth,
+                max_depth=max_depth,
+                additional_jobs=1,
+            )
+
+    def _enqueue_igir_job(self, job_id: str) -> bool:
+        """Enqueue an igir job if it is not already waiting in the queue."""
+        if job_id in self._igir_queued_job_ids:
+            return False
+        self._igir_ticket_counter += 1
+        self._igir_queue.put_nowait((self._igir_ticket_counter, job_id))
+        self._igir_queued_job_ids.add(job_id)
+        return True
+
+    async def create_igir_job(
+        self, request: IgirJobCreateRequest,
+    ) -> IgirJob:
+        """Create a new igir ROM management job."""
+        async with self._create_lock:
+            self._enforce_igir_backpressure()
+
+            job_id = str(uuid.uuid4())[:8]
+
+            job = IgirJob(
+                id=job_id,
+                commands=list(request.commands),
+                input_paths=list(request.input_paths),
+                output_path=request.output_path,
+                dat_paths=list(request.dat_paths) if request.dat_paths else None,
+                status=JobStatus.QUEUED,
+                progress=0,
+                created_at=datetime.now(timezone.utc),
+                command_preview=igir_service.build_command_preview(request),
+                options_summary=igir_service.build_options_summary(request),
+            )
+
+            self._igir_jobs[job_id] = job
+            self._igir_requests[job_id] = request
+            self._enqueue_igir_job(job_id)
+            self._igir_last_progress_at[job_id] = time.monotonic()
+
+        logger.info(
+            "Queued igir job %s commands=%s inputs=%d output=%s",
+            job_id,
+            [c.value for c in request.commands],
+            len(request.input_paths),
+            request.output_path,
+        )
+
+        await self._prune_igir_jobs(exclude_id=job_id)
+        return job
+
+    async def _prune_igir_jobs(self, *, exclude_id: Optional[str] = None):
+        if self.max_job_history <= 0:
+            return
+        if len(self._igir_jobs) <= self.max_job_history:
+            return
+
+        removable: list[str] = []
+        for candidate_id, candidate in self._igir_jobs.items():
+            if candidate_id == exclude_id:
+                continue
+            if candidate.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                removable.append(candidate_id)
+            if len(self._igir_jobs) - len(removable) <= self.max_job_history:
+                break
+
+        for candidate_id in removable:
+            await self.delete_igir_job(candidate_id)
+
+    def _prune_archived_igir_jobs(self) -> None:
+        if not self._archived_igir_jobs:
+            return
+        now = time.monotonic()
+        max_keep = max(self.MAX_ARCHIVED_JOBS, self.max_job_history * 2)
+        while self._archived_igir_jobs:
+            if len(self._archived_igir_jobs) > max_keep:
+                self._archived_igir_jobs.popitem(last=False)
+                continue
+            oldest_id, (_, archived_at) = next(iter(self._archived_igir_jobs.items()))
+            if now - archived_at <= self.ARCHIVED_JOB_TTL_SECONDS:
+                break
+            self._archived_igir_jobs.pop(oldest_id, None)
+
+    def _archive_igir_job(self, job: IgirJob) -> None:
+        archived = job.model_copy(deep=True)
+        self._archived_igir_jobs[archived.id] = (archived, time.monotonic())
+        self._prune_archived_igir_jobs()
+
+    def get_igir_job_log(self, job_id: str) -> Optional[List[str]]:
+        """Return the output log for an igir job, or None if not available."""
+        return self._igir_output_logs.get(job_id)
+
+    def get_igir_job(self, job_id: str) -> Optional[IgirJob]:
+        """Get an igir job by ID (live or recently archived)."""
+        job = self._igir_jobs.get(job_id)
+        if job is not None:
+            return job
+        self._prune_archived_igir_jobs()
+        archived = self._archived_igir_jobs.get(job_id)
+        if archived is None:
+            return None
+        archived_job, _ = archived
+        self._archived_igir_jobs[job_id] = (archived_job, time.monotonic())
+        return archived_job
+
+    def get_all_igir_jobs(self) -> List[IgirJob]:
+        """Get all igir jobs."""
+        return list(self._igir_jobs.values())
+
+    def igir_stuck_status(self) -> Dict[str, object]:
+        """Check if the igir job queue is stuck and return state info."""
+        has_queued = any(
+            job.status == JobStatus.QUEUED for job in self._igir_jobs.values()
+        )
+        has_processing = any(
+            job.status == JobStatus.PROCESSING for job in self._igir_jobs.values()
+        )
+        is_stuck = has_queued and not has_processing
+        now = time.monotonic()
+
+        result: Dict[str, object] = {
+            "is_stuck": is_stuck,
+            "queued_count": sum(
+                1 for j in self._igir_jobs.values() if j.status == JobStatus.QUEUED
+            ),
+            "processing_count": sum(
+                1 for j in self._igir_jobs.values() if j.status == JobStatus.PROCESSING
+            ),
+        }
+
+        if self._igir_stuck_detected_at is not None:
+            result["stuck_for_seconds"] = int(now - self._igir_stuck_detected_at)
+        if self._last_igir_stuck_recovery_at > 0:
+            result["last_recovery_seconds_ago"] = int(
+                now - self._last_igir_stuck_recovery_at
+            )
+
+        # Track stuck detection
+        if is_stuck:
+            if self._igir_stuck_detected_at is None:
+                self._igir_stuck_detected_at = now
+        else:
+            self._igir_stuck_detected_at = None
+
+        return result
+
+    async def recover_igir_stuck(self) -> Dict[str, object]:
+        """Attempt to recover igir jobs from a stuck state."""
+        now = time.monotonic()
+        if now - self._last_igir_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS:
+            return {
+                "success": False,
+                "message": "Recovery attempted too recently, please wait",
+                "cooldown_remaining": int(
+                    self.STUCK_RECOVERY_COOLDOWN_SECONDS
+                    - (now - self._last_igir_stuck_recovery_at)
+                ),
+            }
+
+        self._last_igir_stuck_recovery_at = now
+        logger.warning("Attempting recovery from igir stuck state")
+
+        # Re-queue any igir jobs that are stuck in QUEUED but not in the queue
+        requeued = 0
+        for job in self._igir_jobs.values():
+            if job.status == JobStatus.QUEUED and self._enqueue_igir_job(job.id):
+                requeued += 1
+
+        status = self.igir_stuck_status()
+        result = {
+            "success": True,
+            "message": "Recovery attempt completed",
+            "requeued_jobs": requeued,
+            "queued_jobs": status["queued_count"],
+            "processing_jobs": status["processing_count"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        logger.info(
+            "Igir stuck recovery completed: requeued=%d queued=%d processing=%d",
+            requeued,
+            status["queued_count"],
+            status["processing_count"],
+        )
+        return result
+
+    async def cancel_igir_job(self, job_id: str) -> bool:
+        """Cancel an igir job."""
+        job = self._igir_jobs.get(job_id)
+        if not job:
+            return False
+
+        if job.status == JobStatus.QUEUED:
+            job.status = JobStatus.CANCELLED
+            job.completed_at = datetime.now(timezone.utc)
+            cancel_event = self._igir_cancel_events.get(job_id)
+            if cancel_event:
+                cancel_event.set()
+            await self._notify_igir_subscribers(
+                job_id,
+                {"type": "cancelled", "job_id": job_id, "status": job.status.value},
+            )
+            await self._prune_igir_jobs(exclude_id=job_id)
+            return True
+
+        if job.status == JobStatus.PROCESSING:
+            cancel_event = self._igir_cancel_events.get(job_id)
+            if cancel_event:
+                cancel_event.set()
+            job.message = "Cancelling..."
+            await self._notify_igir_subscribers(
+                job_id,
+                {
+                    "type": "status",
+                    "job_id": job_id,
+                    "status": job.status.value,
+                    "progress": job.progress,
+                    "message": job.message,
+                },
+            )
+            return True
+
+        return False
+
+    async def delete_igir_job(self, job_id: str) -> bool:
+        """Delete an igir job from the list."""
+        if job_id in self._igir_jobs:
+            job = self._igir_jobs[job_id]
+            if job.status == JobStatus.PROCESSING:
+                await self.cancel_igir_job(job_id)
+            self._archive_igir_job(job)
+            self._igir_requests.pop(job_id, None)
+            self._igir_cancel_events.pop(job_id, None)
+            self._igir_last_progress_at.pop(job_id, None)
+            self._igir_output_logs.pop(job_id, None)
+            del self._igir_jobs[job_id]
+            return True
+        return False
+
+    async def cancel_all_igir_jobs(self) -> Dict[str, object]:
+        """Cancel all queued and processing igir jobs."""
+        queued_ids = [
+            job.id for job in self._igir_jobs.values()
+            if job.status == JobStatus.QUEUED
+        ]
+        processing_ids = [
+            job.id for job in self._igir_jobs.values()
+            if job.status == JobStatus.PROCESSING
+        ]
+        requested_ids: list[str] = []
+        for job_id in queued_ids + processing_ids:
+            if await self.cancel_igir_job(job_id):
+                requested_ids.append(job_id)
+        return {
+            "requested": len(requested_ids),
+            "queued": len(queued_ids),
+            "processing": len(processing_ids),
+            "job_ids": requested_ids,
+        }
+
+    async def clear_completed_igir_jobs(self) -> List[str]:
+        """Delete all completed, failed, and cancelled igir jobs."""
+        deleted_ids: list[str] = []
+        for job in list(self._igir_jobs.values()):
+            if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+                if await self.delete_igir_job(job.id):
+                    deleted_ids.append(job.id)
+        return deleted_ids
+
+    def subscribe_igir(self, job_id: str) -> asyncio.Queue:
+        """Subscribe to progress updates for an igir job."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        if job_id not in self._igir_subscribers:
+            self._igir_subscribers[job_id] = []
+        self._igir_subscribers[job_id].append(queue)
+        return queue
+
+    def unsubscribe_igir(self, job_id: str, queue: asyncio.Queue):
+        """Unsubscribe from igir job progress updates."""
+        if job_id in self._igir_subscribers:
+            try:
+                self._igir_subscribers[job_id].remove(queue)
+            except ValueError:
+                pass
+
+    async def _notify_igir_subscribers(self, job_id: str, data: dict):
+        """Notify all subscribers of an igir job update."""
+        if job_id in self._igir_subscribers:
+            for queue in self._igir_subscribers[job_id]:
+                try:
+                    queue.put_nowait(data)
+                except asyncio.QueueFull:
+                    pass
+
+    async def _igir_dispatcher_loop(self):
+        """Dispatcher loop for igir jobs (parallel to conversion dispatcher)."""
+        while self._running:
+            try:
+                _, job_id = await self._igir_queue.get()
+            except asyncio.CancelledError:
+                break
+            self._igir_queued_job_ids.discard(job_id)
+
+            try:
+                job = self._igir_jobs.get(job_id)
+                if not job:
+                    continue
+                if job.status == JobStatus.CANCELLED:
+                    # Queued jobs may be cancelled before dispatch begins; clear
+                    # per-job request/progress bookkeeping now to avoid leaks.
+                    self._igir_requests.pop(job_id, None)
+                    self._igir_last_progress_at.pop(job_id, None)
+                    self._igir_cancel_events.pop(job_id, None)
+                    await self._prune_igir_jobs(exclude_id=job_id)
+                    continue
+                await self._igir_semaphore.acquire()
+                try:
+                    if self.max_igir_concurrent == 1:
+                        await self._run_igir_job(job_id)
+                    else:
+                        asyncio.create_task(self._run_igir_job(job_id))
+                except Exception:
+                    # _run_igir_job() releases the semaphore in its finally block.
+                    # Only release here if task creation failed before _run_igir_job started.
+                    if self.max_igir_concurrent != 1:
+                        self._igir_semaphore.release()
+                    raise
+            except Exception as e:
+                logger.exception("Igir dispatcher error: %s", e)
+            finally:
+                self._igir_queue.task_done()
+
+    async def _run_igir_job(self, job_id: str):
+        """Run an igir job within the semaphore slot."""
+        try:
+            await self._process_igir_job(job_id)
+        finally:
+            self._igir_semaphore.release()
+
+    async def run_igir_preview(
+        self,
+        request: IgirJobCreateRequest,
+        *,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Execute a one-off igir run under standard backpressure and concurrency limits."""
+        async with self._create_lock:
+            self._enforce_igir_backpressure()
+
+        effective_cancel_event = cancel_event or asyncio.Event()
+        await self._igir_semaphore.acquire()
+        try:
+            async for update in igir_service.run(
+                request, cancel_event=effective_cancel_event,
+            ):
+                yield update
+        finally:
+            self._igir_semaphore.release()
+
+    async def _process_igir_job(self, job_id: str):
+        """Process a single igir job."""
+        job = self._igir_jobs.get(job_id)
+        request = self._igir_requests.get(job_id)
+        if not job or not request:
+            return
+
+        if job.status == JobStatus.CANCELLED:
+            return
+
+        cancel_event = asyncio.Event()
+        self._igir_cancel_events[job_id] = cancel_event
+
+        if job.status == JobStatus.CANCELLED:
+            cancel_event.set()
+            await self._notify_igir_subscribers(
+                job_id,
+                {"type": "cancelled", "job_id": job_id, "status": job.status.value},
+            )
+            self._igir_cancel_events.pop(job_id, None)
+            return
+
+        job.status = JobStatus.PROCESSING
+        job.started_at = datetime.now(timezone.utc)
+        await self._notify_igir_subscribers(
+            job_id,
+            {
+                "type": "status",
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": 0,
+                "message": "Starting igir...",
+            },
+        )
+
+        try:
+            async for update in igir_service.run(request, cancel_event=cancel_event):
+                if job.status == JobStatus.CANCELLED:
+                    break
+
+                job.progress = update.get("progress", job.progress)
+                job.message = update.get("message", job.message)
+                job.phase = update.get("phase", job.phase)
+                job.files_processed = update.get(
+                    "files_processed", job.files_processed,
+                )
+                job.files_total = update.get("files_total", job.files_total)
+                if update.get("files_found"):
+                    job.files_found = update["files_found"]
+                if update.get("report_output") is not None:
+                    job.report_output = update["report_output"]
+                if update.get("clean_dry_run_results") is not None:
+                    job.clean_dry_run_results = update["clean_dry_run_results"]
+                if update.get("output_log") is not None:
+                    self._igir_output_logs[job_id] = update["output_log"]
+                self._igir_last_progress_at[job_id] = time.monotonic()
+
+                await self._notify_igir_subscribers(
+                    job_id,
+                    {
+                        "type": "progress",
+                        "job_id": job_id,
+                        "status": job.status.value,
+                        "progress": job.progress,
+                        "message": job.message,
+                        "phase": job.phase,
+                        "files_processed": job.files_processed,
+                        "files_total": job.files_total,
+                    },
+                )
+
+            if job.status != JobStatus.CANCELLED:
+                job.status = JobStatus.COMPLETED
+                job.progress = 100
+                job.completed_at = datetime.now(timezone.utc)
+                await self._notify_igir_subscribers(
+                    job_id,
+                    {
+                        "type": "complete",
+                        "job_id": job_id,
+                        "status": job.status.value,
+                        "progress": 100,
+                        "message": job.message,
+                        "files_processed": job.files_processed,
+                        "files_total": job.files_total,
+                    },
+                )
+
+        except ConversionCancelled:
+            job.status = JobStatus.CANCELLED
+            job.completed_at = datetime.now(timezone.utc)
+            await self._notify_igir_subscribers(
+                job_id,
+                {"type": "cancelled", "job_id": job_id, "status": job.status.value},
+            )
+
+        except IgirProcessError as e:
+            logger.exception("igir job %s failed: %s", job_id, e)
+            job.status = JobStatus.FAILED
+            job.error_message = str(e)
+            job.completed_at = datetime.now(timezone.utc)
+            if e.output_log:
+                self._igir_output_logs[job_id] = e.output_log
+            await self._notify_igir_subscribers(
+                job_id,
+                {
+                    "type": "error",
+                    "job_id": job_id,
+                    "status": job.status.value,
+                    "error": str(e),
+                },
+            )
+
+        except Exception as e:
+            logger.exception("igir job %s failed: %s", job_id, e)
+            job.status = JobStatus.FAILED
+            job.error_message = str(e)
+            job.completed_at = datetime.now(timezone.utc)
+            await self._notify_igir_subscribers(
+                job_id,
+                {
+                    "type": "error",
+                    "job_id": job_id,
+                    "status": job.status.value,
+                    "error": str(e),
+                },
+            )
+
+        finally:
+            self._igir_cancel_events.pop(job_id, None)
+            self._igir_requests.pop(job_id, None)
+            self._igir_last_progress_at.pop(job_id, None)
+            await self._prune_igir_jobs(exclude_id=job_id)
 
 
 job_manager = JobManager(

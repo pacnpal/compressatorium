@@ -2,6 +2,12 @@
   "name": "compressatorium",
   "version": "3.2.3",
   "type": "module",
+  "scripts": {
+    "lint:js": "eslint static/js/**/*.js --max-warnings=0",
+    "check:esm": "node scripts/check-esm-imports.mjs",
+    "test:utils": "node scripts/test-app-utils.mjs",
+    "check:frontend": "npm run lint:js && npm run check:esm && npm run test:utils"
+  },
   "devDependencies": {
     "eslint": "^9.39.2",
     "@eslint/js": "^9.39.2",

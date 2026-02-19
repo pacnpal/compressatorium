@@ -107,6 +107,45 @@ curl -s -X POST http://localhost:8080/api/chd-metadata/scan
 curl -s http://localhost:8080/api/chd-metadata/scan/status
 ```
 
+### 4a. Igir Job Management
+
+- Create an igir job:
+
+```bash
+curl -s -X POST http://localhost:8080/api/igir/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"commands":["copy"],"input_paths":["/data/games/roms"],"output_path":"/data/games/sorted","dat_paths":["/dats/no-intro.dat"]}'
+```
+
+- List igir jobs:
+
+```bash
+curl -s http://localhost:8080/api/igir/jobs
+```
+
+- Cancel all igir jobs (requires confirmation header):
+
+```bash
+curl -s -X POST \
+  -H 'X-CHD-Action-Confirm: cancel-all-igir-jobs' \
+  http://localhost:8080/api/igir/jobs/cancel-all
+```
+
+- Clear completed igir jobs (requires confirmation header):
+
+```bash
+curl -s -X DELETE \
+  -H 'X-CHD-Action-Confirm: clear-completed-igir-jobs' \
+  http://localhost:8080/api/igir/jobs/completed
+```
+
+- Check igir stuck status + recover:
+
+```bash
+curl -s http://localhost:8080/api/igir/jobs/stuck-status
+curl -s -X POST http://localhost:8080/api/igir/jobs/recover
+```
+
 ### 5. Version + Release Workflow
 
 - `.version` is the source of truth for app + image tagging.

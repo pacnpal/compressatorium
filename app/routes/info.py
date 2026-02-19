@@ -3,12 +3,20 @@ import contextlib
 import json
 import logging
 import os
+import threading
 import time
 
 from config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from models import BulkVerifyRequest, CHDInfo, DolphinDiscInfo, MetadataBatchRequest, Z3DSInfo
+from models import (
+    BulkVerifyRequest,
+    CHDInfo,
+    DolphinDiscInfo,
+    FeatureEventRequest,
+    MetadataBatchRequest,
+    Z3DSInfo,
+)
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
 from services.dolphin_tool import (
@@ -29,6 +37,14 @@ router = APIRouter()
 # Lock for scanning to prevent concurrent scans
 _scan_lock = asyncio.Lock()
 _is_scanning = False
+_feature_event_lock = threading.Lock()
+_feature_event_counts: dict[str, int] = {}
+_supported_feature_events = {
+    "conversion_preset_saved",
+    "conversion_preset_applied",
+    "auto_queue_folder_clicked",
+    "auto_queue_folder_queued",
+}
 
 
 def _verification_backpressure_detail() -> str:
@@ -123,6 +139,30 @@ async def get_app_version() -> dict:
         "version": main_module.get_version(),
         "search_auto_return_to_file_list": settings.search_auto_return_to_file_list,
     }
+
+
+@router.post("/feature-events")
+async def track_feature_event(request: FeatureEventRequest) -> dict:
+    """Track lightweight in-app feature usage events."""
+    event = (request.event or "").strip().lower()
+    if event not in _supported_feature_events:
+        raise HTTPException(status_code=400, detail="Unsupported feature event")
+
+    increment = request.value if request.value > 0 else 1
+    with _feature_event_lock:
+        _feature_event_counts[event] = _feature_event_counts.get(event, 0) + increment
+        total = _feature_event_counts[event]
+
+    logger.info("feature event tracked event=%s total=%d", event, total)
+    return {"event": event, "total": total}
+
+
+@router.get("/feature-events")
+async def list_feature_events() -> dict:
+    """Return in-memory feature event counters."""
+    with _feature_event_lock:
+        snapshot = dict(_feature_event_counts)
+    return {"events": snapshot}
 
 
 # ============ Z3DS endpoints ============

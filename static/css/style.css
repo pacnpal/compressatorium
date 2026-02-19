@@ -2250,3 +2250,811 @@ header h1 span {
     opacity: 0.8;
     margin-top: 4px;
 }
+
+/* ============ Igir View ============ */
+
+.igir-view {
+    display: grid;
+    grid-template-columns: 1fr 350px;
+    gap: 20px;
+    min-height: calc(100vh - 200px);
+}
+
+@media (max-width: 1200px) {
+    .igir-view {
+        grid-template-columns: 1fr;
+    }
+}
+
+.igir-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.igir-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 12px;
+}
+
+.igir-section-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--text-primary);
+}
+
+.igir-accordion-trigger {
+    cursor: pointer;
+    user-select: none;
+    margin-bottom: 0;
+}
+
+.igir-accordion-trigger:hover {
+    color: var(--accent);
+}
+
+.igir-accordion-content {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* Commands */
+.igir-commands {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.igir-cmd {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid transparent;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.igir-cmd:hover {
+    border-color: var(--accent);
+}
+
+/* Command group color-coding */
+.igir-cmd.write.selected {
+    border-color: #4a9eff;
+    background: rgba(74, 158, 255, 0.15);
+}
+
+.igir-cmd.archive.selected {
+    border-color: #a855f7;
+    background: rgba(168, 85, 247, 0.15);
+}
+
+.igir-cmd.verify.selected {
+    border-color: var(--success);
+    background: rgba(78, 205, 196, 0.15);
+}
+
+.igir-cmd.organize.selected {
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.15);
+}
+
+.igir-cmd.selected {
+    border-color: var(--accent);
+    background: rgba(233, 69, 96, 0.15);
+}
+
+.igir-cmd.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.igir-cmd input[type="checkbox"] {
+    accent-color: var(--accent);
+}
+
+.igir-cmd-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent);
+    border: 1px solid var(--border);
+}
+
+/* Directory picker */
+.igir-dir-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.igir-dir-picker-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+
+.igir-dir-picker-selected {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.igir-dir-selected-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+
+.igir-dir-path {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.igir-dir-none {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.igir-dir-browser {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    max-height: 300px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.igir-dir-volumes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.igir-dir-breadcrumb {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    padding: 4px 8px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.igir-dir-list {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 180px;
+}
+
+.igir-dir-entry {
+    padding: 6px 10px;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.igir-dir-entry:hover {
+    background: var(--bg-tertiary);
+}
+
+.igir-dir-empty {
+    padding: 12px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.igir-dir-select-btn {
+    align-self: flex-end;
+}
+
+.igir-output-dir {
+    margin-top: 8px;
+}
+
+.igir-field-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 4px;
+}
+
+/* DAT browser */
+.dat-browser {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.dat-browser-toolbar {
+    display: flex;
+    gap: 8px;
+}
+
+.dat-search-input {
+    flex: 1;
+    padding: 6px 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+}
+
+.dat-browser-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.dat-count {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.dat-browser-list {
+    max-height: 250px;
+    overflow-y: auto;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+}
+
+.dat-entry {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.dat-entry:hover {
+    background: var(--bg-tertiary);
+}
+
+.dat-entry input[type="checkbox"] {
+    accent-color: var(--accent);
+}
+
+.dat-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dat-size {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.dat-empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.dat-dir {
+    margin-left: 4px;
+}
+
+.dat-dir-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.dat-dir-header:hover {
+    background: var(--bg-tertiary);
+}
+
+.dat-dir-arrow {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+.dat-dir-content {
+    margin-left: 16px;
+}
+
+/* Filter grid */
+.igir-filter-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.igir-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 6px;
+}
+
+.igir-filter-pair {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--bg-primary);
+    border-radius: 6px;
+    font-size: 0.82rem;
+}
+
+.igir-filter-label {
+    min-width: 70px;
+    font-weight: 500;
+}
+
+.igir-filter-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 0.82rem;
+}
+
+.igir-filter-toggle input[type="checkbox"] {
+    accent-color: var(--accent);
+}
+
+/* Toggle options */
+.igir-toggle-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.igir-toggle-option input[type="checkbox"] {
+    accent-color: var(--accent);
+}
+
+.igir-toggle-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+/* Fields */
+.igir-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.igir-field label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.igir-field input,
+.igir-field select {
+    padding: 6px 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+}
+
+.igir-1g1r-prefs {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+    padding-left: 12px;
+    border-left: 2px solid var(--border);
+}
+
+.igir-letter-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding-left: 12px;
+    border-left: 2px solid var(--border);
+}
+
+.igir-thread-options {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+}
+
+@media (max-width: 768px) {
+    .igir-thread-options {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Execute section */
+.igir-execute-section {
+    background: var(--bg-secondary);
+    border-color: var(--accent);
+}
+
+.igir-execute-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.igir-validation {
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+}
+
+.igir-validation.valid {
+    background: rgba(78, 205, 196, 0.1);
+    border: 1px solid var(--success);
+}
+
+.igir-validation.invalid {
+    background: rgba(255, 107, 107, 0.1);
+    border: 1px solid var(--error);
+}
+
+.igir-validation-errors {
+    color: var(--error);
+    margin-bottom: 8px;
+}
+
+.igir-validation-warnings {
+    color: var(--warning);
+    margin-bottom: 8px;
+}
+
+.igir-validation ul {
+    margin: 4px 0 0 16px;
+}
+
+.igir-command-preview {
+    margin-top: 8px;
+}
+
+.igir-command-preview code {
+    display: block;
+    margin-top: 4px;
+    padding: 8px 12px;
+    background: var(--bg-primary);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    word-break: break-all;
+    white-space: pre-wrap;
+    color: var(--text-secondary);
+}
+
+/* Igir Jobs Panel */
+.igir-jobs-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    height: fit-content;
+    position: sticky;
+    top: 20px;
+}
+
+.igir-jobs-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.igir-jobs-header h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.igir-jobs-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.igir-jobs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.igir-jobs-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+/* Igir Job Card */
+.igir-job-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.igir-job-card.success {
+    border-left: 3px solid var(--success);
+}
+
+.igir-job-card.error {
+    border-left: 3px solid var(--error);
+}
+
+.igir-job-card.warning {
+    border-left: 3px solid var(--warning);
+}
+
+.igir-job-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.igir-job-commands {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.igir-job-status {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.igir-job-status.queued {
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+}
+
+.igir-job-status.processing {
+    color: var(--accent);
+    background: rgba(233, 69, 96, 0.15);
+}
+
+.igir-job-status.completed {
+    color: var(--success);
+    background: rgba(78, 205, 196, 0.15);
+}
+
+.igir-job-status.failed {
+    color: var(--error);
+    background: rgba(255, 107, 107, 0.15);
+}
+
+.igir-job-status.cancelled {
+    color: var(--warning);
+    background: rgba(255, 217, 61, 0.15);
+}
+
+.igir-job-paths {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.igir-job-paths span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.igir-job-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.igir-job-progress-info {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.igir-job-phase {
+    font-style: italic;
+}
+
+.igir-job-message {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.igir-job-error {
+    font-size: 0.8rem;
+    color: var(--error);
+    word-break: break-word;
+}
+
+.igir-job-summary {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    opacity: 0.7;
+}
+
+.igir-job-elapsed {
+    font-size: 0.75rem;
+    color: var(--success);
+    font-style: italic;
+}
+
+.igir-job-report-details {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.igir-job-report-details summary {
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--text-primary);
+    padding: 4px 0;
+}
+
+.igir-job-report-details summary:hover {
+    color: var(--accent);
+}
+
+.igir-job-report-output {
+    margin-top: 4px;
+    padding: 8px 10px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    color: var(--text-secondary);
+}
+
+.igir-job-cmd-details {
+    margin-top: 4px;
+}
+
+.igir-job-cmd-details summary {
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    padding: 2px 0;
+}
+
+.igir-job-cmd-details summary:hover {
+    color: var(--accent);
+}
+
+.igir-job-cmd-preview {
+    margin-top: 4px;
+    padding: 6px 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 0.7rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--accent);
+    max-height: 80px;
+    overflow-y: auto;
+    user-select: all;
+}
+
+.igir-job-log-section {
+    margin-top: 6px;
+}
+
+.igir-job-log-btn {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+}
+
+.igir-job-output-log-wrapper {
+    margin-top: 6px;
+}
+
+.igir-job-log-header {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.igir-job-output-log {
+    margin: 0;
+    padding: 8px 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 0.65rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+    color: var(--text-secondary);
+}
+
+.igir-job-cancel {
+    align-self: flex-end;
+}
+
+/* Igir mobile adjustments */
+@media (max-width: 768px) {
+    .igir-view {
+        grid-template-columns: 1fr;
+    }
+
+    .igir-jobs-panel {
+        position: static;
+    }
+
+    .igir-filter-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .igir-commands {
+        gap: 6px;
+    }
+
+    .igir-cmd {
+        padding: 10px 12px;
+        min-height: 44px;
+    }
+}

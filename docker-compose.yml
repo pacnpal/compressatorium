@@ -21,6 +21,9 @@ services:
       - CHD_CHDMAN_NICE=10
       - CHD_CHDMAN_IOPRIO_CLASS=2
       - CHD_CHDMAN_IOPRIO_LEVEL=6
+      # igir ROM collection manager
+      # - IGIR_DAT_PATH=/dats
+      # - MAX_IGIR_CONCURRENT=1
     volumes:
       # Required: Persistent config storage
       - ./config:/config
@@ -35,6 +38,8 @@ services:
       #   └── PS1/
       # Syntax: /host/path:/container/path
       - ./games:/data/games
+      # Optional: mount DAT files for igir ROM matching (No-Intro, Redump, etc.)
+      # - ./dats:/dats
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]

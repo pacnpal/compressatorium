@@ -164,6 +164,11 @@ class MetadataBatchRequest(BaseModel):
     paths: list[str]
 
 
+class FeatureEventRequest(BaseModel):
+    event: str
+    value: int = 1
+
+
 class DeletePlanRequest(BaseModel):
     file_paths: list[str]
     mode: ConversionMode = ConversionMode.CREATECD
@@ -192,3 +197,234 @@ class Z3DSInfo(BaseModel):
     extension: str
     compressed: bool
     compression_type: str | None = None
+
+
+# ============ Igir Models ============
+
+
+class IgirCommand(str, Enum):
+    """Individual igir commands that can be combined in a single run."""
+    COPY = "copy"
+    MOVE = "move"
+    LINK = "link"
+    EXTRACT = "extract"
+    ZIP = "zip"
+    TEST = "test"
+    CLEAN = "clean"
+    REPORT = "report"
+    FIXDAT = "fixdat"
+    DIR2DAT = "dir2dat"
+    PLAYLIST = "playlist"
+
+
+class IgirLinkType(str, Enum):
+    # Primary igir values
+    HARDLINK = "hardlink"
+    SYMLINK = "symlink"
+    REFLINK = "reflink"
+    # Back-compat aliases used by earlier UI/API revisions
+    HARD = "hard"
+    SYMBOLIC = "symbolic"
+    RELATIVE = "relative"
+
+
+class IgirJobCreateRequest(BaseModel):
+    """Request to create an igir ROM management job.
+
+    Captures the full igir CLI surface area.  At least one command is required.
+    Only one write command (copy/move/link) may be specified per job.  Archive
+    commands (extract/zip) require an accompanying write command.
+    """
+
+    # Commands (at least one required)
+    commands: list[IgirCommand]
+
+    # Input / Output
+    input_paths: list[str]                        # --input (required, directories or globs)
+    output_path: str | None = None                # --output (required for write commands)
+    dat_paths: list[str] | None = None            # --dat (DAT files or directories)
+    input_exclude: list[str] | None = None        # --input-exclude
+    dat_exclude: list[str] | None = None          # --dat-exclude
+    patch: list[str] | None = None                # --patch
+    patch_exclude: list[str] | None = None        # --patch-exclude
+
+    # Input checksum options
+    input_checksum_quick: bool = False            # --input-checksum-quick
+    input_checksum_min: str | None = None         # --input-checksum-min
+    input_checksum_max: str | None = None         # --input-checksum-max
+    input_checksum_archives: str | None = None    # --input-checksum-archives (never|auto|always)
+
+    # DAT filtering/options
+    dat_name_regex: str | None = None             # --dat-name-regex
+    dat_name_regex_exclude: str | None = None     # --dat-name-regex-exclude
+    dat_description_regex: str | None = None      # --dat-description-regex
+    dat_description_regex_exclude: str | None = None  # --dat-description-regex-exclude
+    dat_combine: bool = False                     # --dat-combine
+    dat_ignore_parent_clone: bool = False         # --dat-ignore-parent-clone
+
+    # Link mode
+    link_mode: IgirLinkType | None = None         # --link-mode
+    symlink_relative: bool = False                # --symlink-relative
+    # Back-compat legacy toggle from previous UI versions
+    symlink: bool = False                         # legacy alias for link_mode=symlink
+
+    # Writing behavior
+    overwrite: bool = False                       # --overwrite
+    overwrite_invalid: bool = False               # --overwrite-invalid
+    fix_extension: str | None = None              # --fix-extension (auto|always|never)
+    move_delete_dirs: str | None = None           # --move-delete-dirs (never|auto|always)
+
+    # Output directory organization
+    dir_mirror: bool = False                      # --dir-mirror
+    dir_dat_mirror: bool = False                  # --dir-dat-mirror
+    dir_dat_name: bool = False                    # --dir-dat-name
+    dir_dat_description: bool = False             # --dir-dat-description
+    dir_letter: bool = False                      # --dir-letter
+    dir_letter_count: int | None = None           # --dir-letter-count
+    dir_letter_limit: int | None = None           # --dir-letter-limit
+    dir_letter_group: bool = False                # --dir-letter-group
+    dir_game_subdir: str | None = None            # --dir-game-subdir (never|multiple|always)
+
+    # Zip options
+    zip_format: str | None = None                 # --zip-format (torrentzip|rvzstd)
+    zip_exclude: str | None = None                # --zip-exclude
+    zip_dat_name: bool = False                    # --zip-dat-name
+
+    # Header and trim options
+    header: str | None = None                     # --header
+    remove_headers: str | None = None             # --remove-headers
+    trimmed_glob: str | None = None               # --trimmed-glob
+    trim_scan_archives: bool = False              # --trim-scan-archives
+
+    # ROM set options (DAT-dependent)
+    merge_roms: str | None = None                 # --merge-roms
+    merge_discs: bool = False                     # --merge-discs
+    exclude_disks: bool = False                   # --exclude-disks
+    allow_excess_sets: bool = False               # --allow-excess-sets
+    allow_incomplete_sets: bool = False           # --allow-incomplete-sets
+
+    # Filtering
+    filter_regex: str | None = None               # --filter-regex
+    filter_regex_exclude: str | None = None       # --filter-regex-exclude
+    filter_language: list[str] | None = None      # --filter-language (comma list)
+    filter_region: list[str] | None = None        # --filter-region (comma list)
+    filter_category_regex: str | None = None      # --filter-category-regex
+    no_bios: bool = False
+    only_bios: bool = False
+    no_device: bool = False
+    only_device: bool = False
+    no_unlicensed: bool = False
+    only_unlicensed: bool = False
+    only_retail: bool = False
+    no_debug: bool = False
+    only_debug: bool = False
+    no_demo: bool = False
+    only_demo: bool = False
+    no_beta: bool = False
+    only_beta: bool = False
+    no_sample: bool = False
+    only_sample: bool = False
+    no_prototype: bool = False
+    only_prototype: bool = False
+    no_program: bool = False
+    only_program: bool = False
+    no_aftermarket: bool = False
+    only_aftermarket: bool = False
+    no_homebrew: bool = False
+    only_homebrew: bool = False
+    no_unverified: bool = False
+    only_unverified: bool = False
+    no_bad: bool = False
+    only_bad: bool = False
+
+    # 1G1R (One Game One ROM)
+    single: bool = False                          # --single
+    prefer_game_regex: str | None = None          # --prefer-game-regex
+    prefer_rom_regex: str | None = None           # --prefer-rom-regex
+    prefer_verified: bool = False                 # --prefer-verified
+    prefer_good: bool = False                     # --prefer-good
+    prefer_language: list[str] | None = None      # --prefer-language (ordered comma list)
+    prefer_region: list[str] | None = None        # --prefer-region (ordered comma list)
+    prefer_revision: str | None = None            # --prefer-revision (older|newer)
+    prefer_retail: bool = False                   # --prefer-retail
+    prefer_parent: bool = False                   # --prefer-parent
+
+    # Command-specific output options
+    playlist_extensions: str | None = None        # --playlist-extensions
+    dir2dat_output: str | None = None             # --dir2dat-output
+    fixdat_output: str | None = None              # --fixdat-output
+    report_output: str | None = None              # --report-output
+
+    # Clean options
+    clean_exclude: list[str] | None = None        # --clean-exclude
+    clean_backup: str | None = None               # --clean-backup
+    clean_dry_run: bool = False                   # --clean-dry-run
+
+    # Threading/retry/cache/temp/debug
+    dat_threads: int | None = None                # --dat-threads
+    reader_threads: int | None = None             # --reader-threads
+    writer_threads: int | None = None             # --writer-threads
+    write_retry: int | None = None                # --write-retry
+    temp_dir: str | None = None                   # --temp-dir
+    disable_cache: bool = False                   # --disable-cache
+    cache_path: str | None = None                 # --cache-path
+    verbose: int = 0                              # 0=normal, 1=-v, 2=-vv, 3=-vvv
+
+
+class IgirQuickSetupRequest(BaseModel):
+    """Request payload for igir quick setup recommendations."""
+    input_paths: list[str]
+    goal: str | None = None
+
+
+class IgirFeatureEventRequest(BaseModel):
+    """Track lightweight feature-adoption events for igir UX improvements."""
+    event: str
+    value: int = 1
+
+
+class IgirJob(BaseModel):
+    """An igir ROM management job."""
+    id: str
+    commands: list[IgirCommand]
+    input_paths: list[str]
+    output_path: str | None = None
+    dat_paths: list[str] | None = None
+    status: JobStatus
+    progress: int = 0
+    message: str = ""
+    phase: str = ""
+    files_found: int = 0
+    files_processed: int = 0
+    files_total: int = 0
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None
+    report_output: str | None = None
+    command_preview: str = ""
+    options_summary: str = ""
+    clean_dry_run_results: list[str] | None = None
+
+
+class DatFileEntry(BaseModel):
+    """A single DAT file in the DAT directory."""
+    name: str
+    path: str
+    size: int
+    modified: str
+
+
+class DatDirectoryListing(BaseModel):
+    """Directory listing of the DAT mount."""
+    path: str
+    entries: list[DatFileEntry]
+    subdirectories: list[str]
+
+
+class IgirValidationResult(BaseModel):
+    """Result of validating an igir job request."""
+    valid: bool
+    errors: list[str]
+    warnings: list[str]
+    command_preview: str

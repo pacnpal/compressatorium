@@ -92,6 +92,24 @@ class Settings(BaseSettings):
     z3ds_compressor_path: str = Field(
         default="/usr/local/bin/z3ds_compressor", alias="Z3DS_COMPRESSOR_PATH",
     )
+
+    # igir binary path and configuration
+    igir_path: str = Field(default="/usr/local/bin/igir", alias="IGIR_PATH")
+    igir_dat_path: str = Field(
+        default="/dats",
+        alias="IGIR_DAT_PATH",
+        description="Root directory for DAT files mounted into the container",
+    )
+    max_igir_concurrent: int = Field(
+        default=1,
+        alias="MAX_IGIR_CONCURRENT",
+        description="Maximum concurrent igir jobs (igir is already multi-threaded internally)",
+    )
+    igir_temp_dir: str | None = Field(
+        default=None,
+        alias="IGIR_TEMP_DIR",
+        description="Temporary directory for igir operations",
+    )
     chdman_nice: int | None = Field(default=10, alias="CHD_CHDMAN_NICE")
     chdman_ioprio_class: int | None = Field(
         default=2,
@@ -131,6 +149,8 @@ class Settings(BaseSettings):
         """Set default paths after model initialization."""
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.data_dir) / "temp")
+        if self.igir_temp_dir is None:
+            self.igir_temp_dir = str(Path(self.data_dir) / "igir-temp")
         if self.concurrency_lock_dir is None:
             # Use a subdirectory under /tmp for ephemeral lock storage
             # This is secure in the container context because:

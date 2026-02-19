@@ -1,13 +1,25 @@
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from config import settings
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from routes import convert, files, info
+from routes import convert, files, igir, info
 from services.job_manager import job_manager
+
+
+class CacheControlledStaticFiles(StaticFiles):
+    """Static files with explicit JS module cache revalidation."""
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = super().file_response(full_path, stat_result, scope, status_code=status_code)
+        request_path = scope.get("path", "")
+        if isinstance(request_path, str) and request_path.startswith("/static/js/"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
 
 def get_version() -> str:
@@ -62,6 +74,7 @@ app = FastAPI(
 app.include_router(files.router, prefix="/api", tags=["files"])
 app.include_router(convert.router, prefix="/api", tags=["convert"])
 app.include_router(info.router, prefix="/api", tags=["info"])
+app.include_router(igir.router, prefix="/api", tags=["igir"])
 
 
 @app.on_event("startup")
@@ -94,13 +107,26 @@ async def startup_event():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "version": get_version()}
+    configured_igir = str(settings.igir_path or "").strip()
+    if configured_igir and os.path.isabs(configured_igir):
+        igir_available = os.path.isfile(configured_igir) and os.access(
+            configured_igir, os.X_OK,
+        )
+    elif configured_igir:
+        igir_available = shutil.which(configured_igir) is not None
+    else:
+        igir_available = False
+    return {
+        "status": "healthy",
+        "version": get_version(),
+        "igir_available": igir_available,
+    }
 
 
 # Serve static files
 static_dir = os.environ.get("STATIC_DIR", "/static")
 if os.path.exists(static_dir):
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    app.mount("/static", CacheControlledStaticFiles(directory=static_dir), name="static")
 
 
 @app.get("/")
