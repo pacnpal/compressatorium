@@ -11,6 +11,7 @@ import {
 import { buildCompressionValue, cloneSelectionMap } from './utils/stateUtils.js';
 import {
     DEFAULT_DOLPHIN_COMPRESSION_LEVEL,
+    MAX_VISIBLE_CREATING_PLACEHOLDERS,
     DEFAULT_PAGE_SIZE,
     DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST,
     ISO_TOOL_STORAGE_KEY,
@@ -61,7 +62,6 @@ import { loadStoredConversionPresets } from './utils/conversionPresetUtils.js';
 import {
     getFilterOptions,
     getPrimaryToolHint,
-    getPrimaryToolLabel,
     normalizeDolphinLevel,
 } from './utils/uiHelpers.js';
 
@@ -83,14 +83,14 @@ function App() {
     const [selectedFiles, setSelectedFiles] = useState(new Map());
     const [jobs, setJobs] = useState([]);
     const [creatingJobs, setCreatingJobs] = useState([]);
-    const [_hiddenJobIds, _setHiddenJobIds] = useState(new Set());
+    const [, setHiddenJobIds] = useState(new Set());
     const [loading, setLoading] = useState(false);
     const [conversionMode, setConversionMode] = useState('createcd');
     const [isoHandling, setIsoHandling] = useState(() => {
         try {
             const stored = localStorage.getItem(ISO_TOOL_STORAGE_KEY);
             return stored === 'chdman' || stored === 'dolphin' || stored === 'z3ds' || stored === 'igir' ? stored : null;
-        } catch (err) {
+        } catch {
             return null;
         }
     });
@@ -315,7 +315,7 @@ function App() {
         setJobs,
         setVerifiedCHDs,
         setStuckState,
-        setHiddenJobIds: _setHiddenJobIds,
+        setHiddenJobIds,
         deferJobUiUpdatesRef,
         progressRenderAtRef,
         queuedJobUpdatesRef,
@@ -1232,7 +1232,7 @@ function App() {
         setClearingCompletedJobs,
         setRecoveringStuck,
         setStuckState,
-        setHiddenJobIds: _setHiddenJobIds,
+        setHiddenJobIds,
     });
 
 
