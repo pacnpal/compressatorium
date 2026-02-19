@@ -35,6 +35,27 @@ router = APIRouter()
 logger = logging.getLogger("chd")
 
 
+def _enforce_queue_backpressure(additional_jobs: int = 1) -> None:
+    """Apply route-level queue backpressure using current configured limits.
+
+    JobManager also enforces this under lock; this check provides a fast fail path
+    before doing additional work in route handlers.
+    """
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    if max_depth <= 0:
+        return
+
+    needed = max(1, int(additional_jobs))
+    current_depth = job_manager.get_queue_depth()
+    if current_depth + needed > max_depth:
+        detail = QueueBackpressureError(
+            current_depth=current_depth,
+            max_depth=max_depth,
+            additional_jobs=needed,
+        ).detail
+        raise HTTPException(status_code=429, detail=detail)
+
+
 def normalize_output_dir(value: str | None) -> str | None:
     """Normalize and validate the output directory string.
 
@@ -466,6 +487,8 @@ async def create_job(request: JobCreateRequest):
                 detail=f"Delete-on-verify blocked: {exc}",
             )
 
+    _enforce_queue_backpressure(1)
+
     try:
         job = await job_manager.create_job(
             file_path,
@@ -708,9 +731,8 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             selected[key] = candidate
 
     if order:
-        # Job creation will enforce backpressure atomically under lock.
-        # No need for a pre-check here as it would race with the locked check.
-        pass
+        # Fast fail prior to enqueue attempts. JobManager still enforces under lock.
+        _enforce_queue_backpressure(len(order))
 
     job_specs = []
     for key in order:
