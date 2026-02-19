@@ -124,7 +124,8 @@ else
     fi
     # Check igir availability
     if command -v igir &>/dev/null; then
-        IGIR_VERSION=$(igir --version 2>/dev/null || echo "unknown")
+        IGIR_VERSION=$(igir --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+        IGIR_VERSION="${IGIR_VERSION:-unknown}"
         echo "igir version: $IGIR_VERSION"
     else
         echo "Warning: igir binary not found — ROM management features will be unavailable"

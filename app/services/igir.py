@@ -1131,26 +1131,66 @@ class IgirService:
 
         return await run_in_threadpool(_scan_recursive)
 
+    @staticmethod
+    def _extract_version(output: str) -> str | None:
+        """Extract a semantic version from igir CLI output."""
+        if not output:
+            return None
+
+        # Prefer versions explicitly attached to "igir" in the output.
+        prefixed = re.search(
+            r"\bigir(?:\s+|@|[\/:_-])v?(\d+\.\d+\.\d+)\b",
+            output,
+            re.IGNORECASE,
+        )
+        if prefixed:
+            return prefixed.group(1)
+
+        generic = re.search(r"\b(\d+\.\d+\.\d+)\b", output)
+        if generic:
+            return generic.group(1)
+
+        return None
+
     async def get_version(self) -> str:
         """Get the igir version string (cached after first call)."""
         if self._version_cache is not None:
             return self._version_cache
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                self.igir_path, "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(
-                process.communicate(), timeout=10,
-            )
-            version = stdout.decode("utf-8", errors="replace").strip()
-            self._version_cache = version or "unknown"
-            return self._version_cache
-        except Exception as e:
-            logger.warning("Failed to get igir version: %s", e)
+        probe_args = (("--version",), ("version",))
+        had_successful_probe = False
+        last_error: Exception | None = None
+
+        for args in probe_args:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    self.igir_path,
+                    *args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=10,
+                )
+                had_successful_probe = True
+                combined_output = "\n".join(
+                    part.decode("utf-8", errors="replace").strip()
+                    for part in (stdout, stderr)
+                    if part
+                ).strip()
+                version = self._extract_version(combined_output)
+                if version:
+                    self._version_cache = version
+                    return self._version_cache
+            except Exception as e:
+                last_error = e
+
+        if not had_successful_probe and last_error is not None:
+            logger.warning("Failed to get igir version: %s", last_error)
             return "unavailable"
+
+        self._version_cache = "unknown"
+        return self._version_cache
 
     @staticmethod
     def build_options_summary(request: IgirJobCreateRequest) -> str:

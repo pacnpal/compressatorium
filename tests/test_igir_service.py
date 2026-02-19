@@ -512,6 +512,75 @@ class TestRunOutputParsing:
         assert updates[-1]["clean_dry_run_results"] == ["Would delete /tmp/a.rom"]
 
 
+# ──────────────── get_version ────────────────
+
+
+class _FakeVersionProcess:
+    def __init__(self, stdout=b"", stderr=b""):
+        self._stdout = stdout
+        self._stderr = stderr
+
+    async def communicate(self):
+        return self._stdout, self._stderr
+
+
+class TestGetVersion:
+    @pytest.mark.asyncio
+    async def test_uses_fallback_probe_when_primary_has_no_semver(self, igir_svc, monkeypatch):
+        calls = []
+
+        async def _fake_create_subprocess_exec(*args, **_kwargs):
+            calls.append(args[1:])
+            if args[1:] == ("--version",):
+                return _FakeVersionProcess(
+                    stdout=b"Usage: igir [commands] [options]\nERROR: You must specify at least one command\n",
+                )
+            if args[1:] == ("version",):
+                return _FakeVersionProcess(stdout=b"igir 4.3.0\n")
+            raise AssertionError(f"Unexpected args: {args[1:]}")
+
+        monkeypatch.setattr(
+            "app.services.igir.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+
+        version = await igir_svc.get_version()
+
+        assert version == "4.3.0"
+        assert calls == [("--version",), ("version",)]
+
+    @pytest.mark.asyncio
+    async def test_returns_unknown_when_no_semver_found(self, igir_svc, monkeypatch):
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return _FakeVersionProcess(
+                stdout=b"Usage: igir [commands] [options]\n",
+                stderr=b"ERROR: You must specify at least one command\n",
+            )
+
+        monkeypatch.setattr(
+            "app.services.igir.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+
+        version = await igir_svc.get_version()
+
+        assert version == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_returns_unavailable_when_process_exec_fails(self, igir_svc, monkeypatch):
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            raise FileNotFoundError("igir")
+
+        monkeypatch.setattr(
+            "app.services.igir.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+
+        version = await igir_svc.get_version()
+
+        assert version == "unavailable"
+
+
 # ──────────────── build_options_summary ────────────────
 
 
