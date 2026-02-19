@@ -51,11 +51,11 @@ COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
 ARG IGIR_VERSION=4.3.0
 RUN ARCH="$(dpkg --print-architecture)" && \
     case "$ARCH" in \
-      amd64) IGIR_ARCH="x64" ;; \
-      arm64) IGIR_ARCH="arm64" ;; \
+      amd64) IGIR_ARCH="amd64" ;; \
+      arm64) IGIR_ARCH="arm64v8" ;; \
       *) echo "Unsupported arch: $ARCH" && exit 1 ;; \
     esac && \
-    wget -q "https://github.com/emmercm/igir/releases/download/v${IGIR_VERSION}/igir-${IGIR_VERSION}-linux-${IGIR_ARCH}.tar.gz" \
+    wget -q "https://github.com/emmercm/igir/releases/download/v${IGIR_VERSION}/igir-${IGIR_VERSION}-Linux-${IGIR_ARCH}.tar.gz" \
          -O /tmp/igir.tar.gz && \
     tar -xzf /tmp/igir.tar.gz -C /usr/local/bin/ && \
     chmod +x /usr/local/bin/igir && \
