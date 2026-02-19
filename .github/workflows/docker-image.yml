@@ -304,8 +304,8 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     needs: [build, scan]
-    # Avoid accidental releases from manual branch builds; release only on push events.
-    if: github.event_name == 'push'
+    # Release only when latest branch is updated (never from manual dispatch).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/latest'
     permissions:
       contents: write
     steps:
