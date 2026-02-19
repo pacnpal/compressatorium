@@ -1,4 +1,6 @@
 """Tests for igir API routes."""
+import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -146,6 +148,168 @@ async def test_list_igir_jobs(igir_test_env, mock_job_manager):
     """List igir jobs returns empty list."""
     result = await igir_routes.list_igir_jobs()
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_global_events_emit_terminal_job_without_active_subscription(monkeypatch):
+    """Global SSE should emit terminal jobs that complete before queue subscription."""
+    from datetime import datetime, timezone
+
+    terminal_job = IgirJob(
+        id="done1234",
+        commands=[IgirCommand.COPY],
+        input_paths=["/data/roms"],
+        output_path="/data/out",
+        status=JobStatus.COMPLETED,
+        progress=100,
+        message="done",
+        created_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+    )
+
+    class _FakeJobManager:
+        def get_all_igir_jobs(self):
+            return [terminal_job]
+
+        def subscribe_igir(self, _job_id):
+            raise AssertionError("Terminal job should not be subscribed")
+
+        def unsubscribe_igir(self, _job_id, _queue):
+            return None
+
+        def get_igir_job(self, job_id):
+            return terminal_job if job_id == terminal_job.id else None
+
+    class _FakeEventSourceResponse:
+        def __init__(self, generator):
+            self.generator = generator
+
+    monkeypatch.setattr(igir_routes, "job_manager", _FakeJobManager())
+    monkeypatch.setattr(igir_routes, "EventSourceResponse", _FakeEventSourceResponse)
+
+    response = await igir_routes.igir_job_events()
+    first_event = await asyncio.wait_for(anext(response.generator), timeout=1.0)
+
+    assert first_event["event"] == "complete"
+    payload = json.loads(first_event["data"])
+    assert payload["type"] == "complete"
+    assert payload["job"]["id"] == terminal_job.id
+    assert payload["status"] == JobStatus.COMPLETED.value
+
+    await response.generator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_global_events_skip_historical_terminal_jobs(monkeypatch):
+    """Global SSE should not replay terminal jobs that finished long before connect."""
+    from datetime import datetime, timedelta, timezone
+
+    terminal_job = IgirJob(
+        id="olddone1",
+        commands=[IgirCommand.COPY],
+        input_paths=["/data/roms"],
+        output_path="/data/out",
+        status=JobStatus.COMPLETED,
+        progress=100,
+        message="done",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+        completed_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+
+    class _FakeJobManager:
+        def get_all_igir_jobs(self):
+            return [terminal_job]
+
+        def subscribe_igir(self, _job_id):
+            raise AssertionError("Terminal job should not be subscribed")
+
+        def unsubscribe_igir(self, _job_id, _queue):
+            return None
+
+        def get_igir_job(self, job_id):
+            return terminal_job if job_id == terminal_job.id else None
+
+    class _FakeEventSourceResponse:
+        def __init__(self, generator):
+            self.generator = generator
+
+    monkeypatch.setattr(igir_routes, "job_manager", _FakeJobManager())
+    monkeypatch.setattr(igir_routes, "EventSourceResponse", _FakeEventSourceResponse)
+
+    response = await igir_routes.igir_job_events()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(anext(response.generator), timeout=0.25)
+
+    await response.generator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_global_events_do_not_duplicate_terminal_event_for_subscribed_job(monkeypatch):
+    """Global SSE should not emit synthetic terminal snapshots for active subscriptions."""
+    from datetime import datetime, timezone
+
+    processing_job = IgirJob(
+        id="done1234",
+        commands=[IgirCommand.COPY],
+        input_paths=["/data/roms"],
+        output_path="/data/out",
+        status=JobStatus.PROCESSING,
+        progress=20,
+        message="working",
+        created_at=datetime.now(timezone.utc),
+    )
+    completed_job = processing_job.model_copy(
+        update={
+            "status": JobStatus.COMPLETED,
+            "progress": 100,
+            "message": "done",
+            "completed_at": datetime.now(timezone.utc),
+        },
+    )
+
+    class _FakeJobManager:
+        def __init__(self):
+            self._calls = 0
+            self._queue = asyncio.Queue()
+
+        def get_all_igir_jobs(self):
+            self._calls += 1
+            if self._calls == 1:
+                return [processing_job]
+            if self._calls == 2:
+                self._queue.put_nowait(
+                    {
+                        "type": "complete",
+                        "job_id": completed_job.id,
+                        "status": JobStatus.COMPLETED.value,
+                    },
+                )
+            return [completed_job]
+
+        def subscribe_igir(self, _job_id):
+            return self._queue
+
+        def unsubscribe_igir(self, _job_id, _queue):
+            return None
+
+        def get_igir_job(self, job_id):
+            return completed_job if job_id == completed_job.id else None
+
+    class _FakeEventSourceResponse:
+        def __init__(self, generator):
+            self.generator = generator
+
+    monkeypatch.setattr(igir_routes, "job_manager", _FakeJobManager())
+    monkeypatch.setattr(igir_routes, "EventSourceResponse", _FakeEventSourceResponse)
+
+    response = await igir_routes.igir_job_events()
+    first_event = await asyncio.wait_for(anext(response.generator), timeout=1.0)
+    assert first_event["event"] == "complete"
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(anext(response.generator), timeout=0.25)
+
+    await response.generator.aclose()
 
 
 @pytest.mark.asyncio
@@ -443,6 +607,47 @@ async def test_dry_run_execute_returns_preview_lines(igir_test_env, monkeypatch)
     assert result["valid"] is True
     assert result["count"] == 2
     assert len(result["clean_dry_run_results"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_dry_run_execute_strips_output_path(igir_test_env, monkeypatch):
+    """Dry-run execute should not pass output_path into preview execution."""
+    request = IgirJobCreateRequest(
+        commands=[IgirCommand.COPY],
+        input_paths=[igir_test_env["roms_dir"]],
+        output_path=igir_test_env["output_dir"],
+        dat_paths=[f"{igir_test_env['dats_dir']}/set.dat"],
+    )
+
+    def _validate(preview_request):
+        assert preview_request.output_path is None
+        assert preview_request.commands == [IgirCommand.CLEAN]
+        assert preview_request.clean_dry_run is True
+        return IgirValidationResult(
+            valid=True,
+            errors=[],
+            warnings=[],
+            command_preview="igir clean --clean-dry-run ...",
+        )
+
+    monkeypatch.setattr(
+        igir_routes.igir_service,
+        "validate_request",
+        _validate,
+    )
+
+    async def _fake_preview_run(preview_request, cancel_event=None):
+        assert preview_request.output_path is None
+        yield {"phase": "done", "message": "done"}
+
+    monkeypatch.setattr(
+        igir_routes.job_manager,
+        "run_igir_preview",
+        _fake_preview_run,
+    )
+
+    result = await igir_routes.igir_dry_run_execute(request)
+    assert result["valid"] is True
 
 
 @pytest.mark.asyncio

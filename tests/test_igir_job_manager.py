@@ -15,6 +15,7 @@ from app.models import (
     IgirJobCreateRequest,
     JobStatus,
 )
+from app.services.chdman import ConversionCancelled
 from app.services.job_manager import JobManager, QueueBackpressureError
 
 
@@ -139,6 +140,73 @@ class TestIgirBackpressure:
             with pytest.raises(QueueBackpressureError):
                 jm._enforce_queue_backpressure_locked(1)
 
+    @pytest.mark.asyncio
+    async def test_preview_counts_toward_backpressure(
+        self, jm, basic_igir_request, monkeypatch,
+    ):
+        """Dry-run previews should consume queue-depth capacity while active."""
+        monkeypatch.setattr(
+            "app.services.job_manager.settings.max_queue_depth", 1,
+        )
+
+        preview_started = asyncio.Event()
+        preview_release = asyncio.Event()
+
+        async def _fake_run(_request, cancel_event=None):
+            preview_started.set()
+            yield {"progress": 0, "message": "starting", "phase": "starting"}
+            await preview_release.wait()
+            yield {"progress": 100, "message": "done", "phase": "done"}
+
+        monkeypatch.setattr("app.services.job_manager.igir_service.run", _fake_run)
+
+        async def _consume_preview():
+            async for _ in jm.run_igir_preview(basic_igir_request):
+                pass
+
+        preview_task = asyncio.create_task(_consume_preview())
+        await asyncio.wait_for(preview_started.wait(), timeout=1.0)
+
+        with pytest.raises(QueueBackpressureError):
+            await jm.create_igir_job(basic_igir_request)
+
+        preview_release.set()
+        await asyncio.wait_for(preview_task, timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_preview_cancellation_while_waiting_releases_backpressure_slot(
+        self, jm, basic_igir_request, monkeypatch,
+    ):
+        """Cancelled previews should release reserved capacity even before semaphore acquire."""
+        monkeypatch.setattr(
+            "app.services.job_manager.settings.max_queue_depth", 1,
+        )
+
+        async def _consume_preview():
+            async for _ in jm.run_igir_preview(basic_igir_request):
+                pass
+
+        await jm._igir_semaphore.acquire()
+        preview_task = asyncio.create_task(_consume_preview())
+        try:
+            for _ in range(100):
+                if jm._igir_preview_active == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert jm._igir_preview_active == 1
+
+            preview_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await preview_task
+        finally:
+            jm._igir_semaphore.release()
+
+        assert jm._igir_preview_active == 0
+
+        # Ensure leaked preview capacity does not block new submissions.
+        job = await jm.create_igir_job(basic_igir_request)
+        assert job.status == JobStatus.QUEUED
+
 
 # ──────────────── Archival ────────────────
 
@@ -193,6 +261,33 @@ class TestIgirArchival:
 
         # Should be in archive
         assert job_id in jm._archived_igir_jobs
+
+    @pytest.mark.asyncio
+    async def test_archived_lookup_refresh_moves_entry_to_lru_tail(
+        self, jm, basic_igir_request,
+    ):
+        """Refreshing an archived job should move it behind older entries."""
+        first = await jm.create_igir_job(basic_igir_request)
+        second = await jm.create_igir_job(basic_igir_request)
+        first.status = JobStatus.COMPLETED
+        second.status = JobStatus.COMPLETED
+        await jm.delete_igir_job(first.id)
+        await jm.delete_igir_job(second.id)
+
+        refreshed = jm.get_igir_job(first.id)
+        assert refreshed is not None
+        assert list(jm._archived_igir_jobs.keys())[-1] == first.id
+
+        stale_second = jm._archived_igir_jobs[second.id][0]
+        jm._archived_igir_jobs[second.id] = (
+            stale_second,
+            time.monotonic() - jm.ARCHIVED_JOB_TTL_SECONDS - 10,
+        )
+
+        jm._prune_archived_igir_jobs()
+
+        assert second.id not in jm._archived_igir_jobs
+        assert first.id in jm._archived_igir_jobs
 
     @pytest.mark.asyncio
     async def test_prune_igir_jobs_limits_history(self, jm, basic_igir_request):
@@ -343,6 +438,29 @@ class TestIgirRecovery:
         result2 = await jm.recover_igir_stuck()
         assert result2["success"] is True
 
+    @pytest.mark.asyncio
+    async def test_recovery_requires_true_stuck_state(self, jm, basic_igir_request):
+        """Recovery should not run when there is active igir processing."""
+        processing_job = await jm.create_igir_job(basic_igir_request)
+        queued_job = await jm.create_igir_job(basic_igir_request)
+        processing_job.status = JobStatus.PROCESSING
+
+        # Simulate dispatcher dequeuing jobs (including one waiting on semaphore).
+        while not jm._igir_queue.empty():
+            _ticket, dequeued_job_id = jm._igir_queue.get_nowait()
+            jm._igir_queue.task_done()
+            jm._igir_queued_job_ids.discard(dequeued_job_id)
+
+        assert queued_job.status == JobStatus.QUEUED
+        assert jm._igir_queue.qsize() == 0
+
+        result = await jm.recover_igir_stuck()
+        assert result["success"] is False
+        assert result["queued_jobs"] == 1
+        assert result["processing_jobs"] == 1
+        assert jm._igir_queue.qsize() == 0
+        assert jm._last_igir_stuck_recovery_at == 0
+
 
 class TestIgirDispatcher:
     @pytest.mark.asyncio
@@ -426,6 +544,109 @@ class TestIgirDispatcher:
             dispatcher_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await dispatcher_task
+
+    @pytest.mark.asyncio
+    async def test_dispatcher_cleans_metadata_when_cancelled_waiting_for_semaphore(
+        self, monkeypatch, tmp_path,
+    ):
+        """Cancelled jobs should release bookkeeping even if cancelled before _process_igir_job starts."""
+        monkeypatch.setattr(
+            "app.services.job_manager.settings.max_concurrent_jobs", 1,
+        )
+        monkeypatch.setattr(
+            "app.services.job_manager.settings.max_job_history", 500,
+        )
+        monkeypatch.setattr(
+            "app.services.job_manager.settings.max_igir_concurrent", 2,
+        )
+        monkeypatch.setattr(
+            "app.services.job_manager.settings.max_queue_depth", 0,
+        )
+        monkeypatch.setattr(
+            "app.services.job_manager.settings.concurrency_lock_dir",
+            str(tmp_path / "locks"),
+        )
+        monkeypatch.setattr(
+            "app.services.job_manager.igir_service.build_options_summary",
+            lambda req: "test summary",
+        )
+        monkeypatch.setattr(
+            "app.services.job_manager.igir_service.build_command_preview",
+            lambda req: "igir copy --input /data/roms --output /data/out",
+        )
+
+        local_jm = JobManager(max_concurrent=1, max_job_history=500)
+        request = IgirJobCreateRequest(
+            commands=[IgirCommand.COPY],
+            input_paths=["/data/roms"],
+            output_path="/data/out",
+        )
+
+        first = await local_jm.create_igir_job(request)
+        second = await local_jm.create_igir_job(request)
+        third = await local_jm.create_igir_job(request)
+
+        started = 0
+        both_started = asyncio.Event()
+        release_workers = asyncio.Event()
+
+        async def fake_run(_request, cancel_event=None):
+            nonlocal started
+            started += 1
+            if started >= 2:
+                both_started.set()
+            yield {"progress": 1, "message": "working", "phase": "starting"}
+            while not release_workers.is_set():
+                if cancel_event and cancel_event.is_set():
+                    raise ConversionCancelled("cancelled")
+                await asyncio.sleep(0.01)
+            yield {"progress": 100, "message": "done", "phase": "done"}
+
+        monkeypatch.setattr("app.services.job_manager.igir_service.run", fake_run)
+
+        local_jm._running = True
+        dispatcher_task = asyncio.create_task(local_jm._igir_dispatcher_loop())
+        try:
+            await asyncio.wait_for(both_started.wait(), timeout=1.0)
+
+            assert await local_jm.cancel_igir_job(third.id) is True
+            assert local_jm.get_igir_job(third.id).status == JobStatus.CANCELLED
+
+            release_workers.set()
+            await asyncio.wait_for(local_jm._igir_queue.join(), timeout=2.0)
+
+            # Let worker tasks finish their cleanup.
+            await asyncio.sleep(0.05)
+        finally:
+            local_jm._running = False
+            dispatcher_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await dispatcher_task
+
+        assert first.status in {JobStatus.COMPLETED, JobStatus.CANCELLED}
+        assert second.status in {JobStatus.COMPLETED, JobStatus.CANCELLED}
+        assert third.status == JobStatus.CANCELLED
+        assert third.id not in local_jm._igir_requests
+        assert third.id not in local_jm._igir_last_progress_at
+        assert third.id not in local_jm._igir_cancel_events
+
+
+class TestIgirSubscribers:
+    @pytest.mark.asyncio
+    async def test_terminal_update_replaces_full_subscriber_queue(self, jm):
+        """Terminal events should be delivered even when a subscriber queue is full."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        queue.put_nowait({"type": "progress", "job_id": "abc12345"})
+        jm._igir_subscribers["abc12345"] = [queue]
+
+        await jm._notify_igir_subscribers(
+            "abc12345",
+            {"type": "complete", "job_id": "abc12345", "status": JobStatus.COMPLETED.value},
+        )
+
+        assert queue.qsize() == 1
+        update = queue.get_nowait()
+        assert update["type"] == "complete"
 
 
 # ──────────────── Route Tests ────────────────

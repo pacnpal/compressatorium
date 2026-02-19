@@ -1,4 +1,6 @@
 """Tests for the igir service layer."""
+import asyncio
+
 import pytest
 
 from app.models import IgirCommand, IgirJobCreateRequest, IgirLinkType
@@ -417,6 +419,12 @@ class TestDetectPhase:
     def test_done_phase(self, igir_svc):
         assert igir_svc._detect_phase("Done in 42s") == "done"
 
+    def test_remove_line_not_misclassified_as_writing(self, igir_svc):
+        assert igir_svc._detect_phase("Would remove /roms/bad.zip") is None
+
+    def test_incomplete_line_not_misclassified_as_done(self, igir_svc):
+        assert igir_svc._detect_phase("Found 3 incomplete sets") is None
+
     def test_unknown_line(self, igir_svc):
         assert igir_svc._detect_phase("some random output") is None
 
@@ -440,6 +448,68 @@ class TestParseProgressLine:
         assert result["message"] == "Starting scan"
         assert result["phase"] == "scanning"
         assert result["progress"] == 0  # scanning starts at 0
+
+    def test_incomplete_message_keeps_existing_phase(self, igir_svc):
+        result = igir_svc._parse_progress_line("Found 3 incomplete sets", "matching")
+        assert result["phase"] == "matching"
+        assert result["progress"] == 20
+
+
+# ──────────────── run output parsing ────────────────
+
+
+class _FakeStdout:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def read(self, _size):
+        if self._chunks:
+            return self._chunks.pop(0)
+        await asyncio.sleep(0)
+        return b""
+
+
+class _FakeProcess:
+    def __init__(self, chunks, returncode=0):
+        self.stdout = _FakeStdout(chunks)
+        self.returncode = None
+        self.pid = 4242
+        self._final_returncode = returncode
+
+    async def wait(self):
+        if self.returncode is None:
+            self.returncode = self._final_returncode
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+
+    def kill(self):
+        self.returncode = -9
+
+
+class TestRunOutputParsing:
+    @pytest.mark.asyncio
+    async def test_trailing_buffer_line_is_parsed(self, igir_svc, monkeypatch):
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return _FakeProcess([b"Would delete /tmp/a.rom", b""])
+
+        monkeypatch.setattr(
+            "app.services.igir.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+
+        request = IgirJobCreateRequest(
+            commands=[IgirCommand.CLEAN],
+            input_paths=["/data/games/roms"],
+            dat_paths=["/dats/test.dat"],
+        )
+
+        updates = []
+        async for update in igir_svc.run(request):
+            updates.append(update)
+
+        assert updates[-1]["clean_dry_run_results"] == ["Would delete /tmp/a.rom"]
 
 
 # ──────────────── build_options_summary ────────────────

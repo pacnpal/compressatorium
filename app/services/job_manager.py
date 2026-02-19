@@ -95,6 +95,7 @@ class JobManager:
         self._igir_ticket_counter = 0
         self._igir_last_progress_at: Dict[str, float] = {}
         self._igir_output_logs: Dict[str, List[str]] = {}
+        self._igir_preview_active = 0
         self._igir_stuck_detected_at: Optional[float] = None
         self._last_igir_stuck_recovery_at: float = 0
 
@@ -129,7 +130,7 @@ class JobManager:
             for job in self._igir_jobs.values()
             if job.status in self.ACTIVE_QUEUE_STATUSES
         )
-        return conversion_depth + igir_depth
+        return conversion_depth + igir_depth + self._igir_preview_active
 
     def _queue_job_locked(
         self,
@@ -1701,10 +1702,11 @@ class JobManager:
         if job is not None:
             return job
         self._prune_archived_igir_jobs()
-        archived = self._archived_igir_jobs.get(job_id)
+        archived = self._archived_igir_jobs.pop(job_id, None)
         if archived is None:
             return None
         archived_job, _ = archived
+        # Refresh TTL and LRU order so pruning can continue scanning oldest entries.
         self._archived_igir_jobs[job_id] = (archived_job, time.monotonic())
         return archived_job
 
@@ -1751,6 +1753,15 @@ class JobManager:
 
     async def recover_igir_stuck(self) -> Dict[str, object]:
         """Attempt to recover igir jobs from a stuck state."""
+        status = self.igir_stuck_status()
+        if not status.get("is_stuck"):
+            return {
+                "success": False,
+                "message": "Igir queue is not stuck",
+                "queued_jobs": status.get("queued_count", 0),
+                "processing_jobs": status.get("processing_count", 0),
+            }
+
         now = time.monotonic()
         if now - self._last_igir_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS:
             return {
@@ -1891,11 +1902,26 @@ class JobManager:
     async def _notify_igir_subscribers(self, job_id: str, data: dict):
         """Notify all subscribers of an igir job update."""
         if job_id in self._igir_subscribers:
-            for queue in self._igir_subscribers[job_id]:
+            event_type = str(data.get("type", ""))
+            is_terminal_event = event_type in {"complete", "error", "cancelled"}
+            for queue in list(self._igir_subscribers[job_id]):
                 try:
                     queue.put_nowait(data)
                 except asyncio.QueueFull:
-                    pass
+                    if not is_terminal_event:
+                        continue
+
+                    # Ensure terminal updates are delivered by dropping stale
+                    # progress events from saturated subscriber queues.
+                    while True:
+                        try:
+                            queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    try:
+                        queue.put_nowait(data)
+                    except asyncio.QueueFull:
+                        pass
 
     async def _igir_dispatcher_loop(self):
         """Dispatcher loop for igir jobs (parallel to conversion dispatcher)."""
@@ -1949,18 +1975,27 @@ class JobManager:
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Execute a one-off igir run under standard backpressure and concurrency limits."""
+        preview_reserved = False
+        semaphore_acquired = False
         async with self._create_lock:
             self._enforce_igir_backpressure()
+            self._igir_preview_active += 1
+            preview_reserved = True
 
         effective_cancel_event = cancel_event or asyncio.Event()
-        await self._igir_semaphore.acquire()
         try:
+            await self._igir_semaphore.acquire()
+            semaphore_acquired = True
             async for update in igir_service.run(
                 request, cancel_event=effective_cancel_event,
             ):
                 yield update
         finally:
-            self._igir_semaphore.release()
+            if semaphore_acquired:
+                self._igir_semaphore.release()
+            if preview_reserved:
+                async with self._create_lock:
+                    self._igir_preview_active = max(0, self._igir_preview_active - 1)
 
     async def _process_igir_job(self, job_id: str):
         """Process a single igir job."""
@@ -1970,6 +2005,12 @@ class JobManager:
             return
 
         if job.status == JobStatus.CANCELLED:
+            # Job may be cancelled after dequeue but before processing starts.
+            # Ensure per-job bookkeeping is released on this early exit path.
+            self._igir_cancel_events.pop(job_id, None)
+            self._igir_requests.pop(job_id, None)
+            self._igir_last_progress_at.pop(job_id, None)
+            await self._prune_igir_jobs(exclude_id=job_id)
             return
 
         cancel_event = asyncio.Event()
@@ -1982,6 +2023,9 @@ class JobManager:
                 {"type": "cancelled", "job_id": job_id, "status": job.status.value},
             )
             self._igir_cancel_events.pop(job_id, None)
+            self._igir_requests.pop(job_id, None)
+            self._igir_last_progress_at.pop(job_id, None)
+            await self._prune_igir_jobs(exclude_id=job_id)
             return
 
         job.status = JobStatus.PROCESSING

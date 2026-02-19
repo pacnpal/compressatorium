@@ -30,11 +30,15 @@ _PHASE_PATTERNS = {
     "scanning": re.compile(r"Scanning\b", re.IGNORECASE),
     "hashing": re.compile(r"Hashing\b|Checksum", re.IGNORECASE),
     "matching": re.compile(r"Matching\b|Finding\b", re.IGNORECASE),
-    "writing": re.compile(r"Writ(?:ing|e)\b|Copy|Mov(?:ing|e)\b|Link|Extract|Zip", re.IGNORECASE),
+    "writing": re.compile(
+        r"\bWrit(?:ing|e)\b|\bCop(?:y|ying)\b|\bMov(?:ing|e)\b|"
+        r"\b(?:hard|sym|re)?link(?:ing)?\b|\bExtract(?:ing)?\b|(?<!\.)\bZip(?:ping)?\b",
+        re.IGNORECASE,
+    ),
     "testing": re.compile(r"Test(?:ing)?\b|Verif(?:y|ying)\b", re.IGNORECASE),
     "cleaning": re.compile(r"Clean(?:ing)?\b", re.IGNORECASE),
     "reporting": re.compile(r"Report(?:ing)?\b|Fixdat\b|dir2dat\b", re.IGNORECASE),
-    "done": re.compile(r"Done\b|Finish|Complete", re.IGNORECASE),
+    "done": re.compile(r"\bDone\b|\bFinish(?:ed|ing)?\b|\bComplete(?:d)?\b", re.IGNORECASE),
 }
 
 # Progress weight per phase for estimating overall progress
@@ -535,6 +539,39 @@ class IgirService:
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug("igir output: %s", line)
 
+            def _parse_progress_update(stripped: str) -> dict | None:
+                nonlocal current_phase, last_files_processed, last_files_total, files_found
+                if not stripped:
+                    return None
+                update = self._parse_progress_line(stripped, current_phase)
+                current_phase = update.get("phase", current_phase)
+                if "files_processed" in update:
+                    last_files_processed = update["files_processed"]
+                if "files_total" in update:
+                    last_files_total = update["files_total"]
+
+                # Capture files_found from scanning phase
+                if current_phase == "scanning":
+                    found_match = _FILES_FOUND_RE.search(stripped)
+                    if found_match:
+                        files_found = int(found_match.group(1))
+
+                # Capture report/fixdat/dir2dat output
+                if _REPORT_LINE_RE.search(stripped):
+                    report_lines.append(stripped)
+
+                # Capture clean dry-run output
+                if _CLEAN_DRY_RE.search(stripped):
+                    clean_dry_run_lines.append(stripped)
+
+                return {
+                    "progress": update.get("progress", 0),
+                    "message": update.get("message", ""),
+                    "phase": current_phase,
+                    "files_processed": last_files_processed,
+                    "files_total": last_files_total,
+                }
+
             try:
                 while True:
                     try:
@@ -566,37 +603,9 @@ class IgirService:
 
                             # Parse progress from this line
                             stripped = line.strip()
-                            if stripped:
-                                update = self._parse_progress_line(
-                                    stripped, current_phase,
-                                )
-                                current_phase = update.get("phase", current_phase)
-                                if "files_processed" in update:
-                                    last_files_processed = update["files_processed"]
-                                if "files_total" in update:
-                                    last_files_total = update["files_total"]
-
-                                # Capture files_found from scanning phase
-                                if current_phase == "scanning":
-                                    found_match = _FILES_FOUND_RE.search(stripped)
-                                    if found_match:
-                                        files_found = int(found_match.group(1))
-
-                                # Capture report/fixdat/dir2dat output
-                                if _REPORT_LINE_RE.search(stripped):
-                                    report_lines.append(stripped)
-
-                                # Capture clean dry-run output
-                                if _CLEAN_DRY_RE.search(stripped):
-                                    clean_dry_run_lines.append(stripped)
-
-                                yield {
-                                    "progress": update.get("progress", 0),
-                                    "message": update.get("message", ""),
-                                    "phase": current_phase,
-                                    "files_processed": last_files_processed,
-                                    "files_total": last_files_total,
-                                }
+                            progress_update = _parse_progress_update(stripped)
+                            if progress_update is not None:
+                                yield progress_update
 
                     if process.returncode is not None:
                         break
@@ -620,7 +629,11 @@ class IgirService:
                 await process.wait()
 
                 if buffer.strip():
+                    stripped = buffer.strip()
                     _record_line(buffer)
+                    progress_update = _parse_progress_update(stripped)
+                    if progress_update is not None:
+                        yield progress_update
 
             finally:
                 if cancel_task:

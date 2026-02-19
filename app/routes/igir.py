@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import settings
@@ -52,6 +53,13 @@ _SUPPORTED_FEATURE_EVENTS = {
 }
 _feature_event_counts: dict[str, int] = {}
 _feature_event_lock = threading.Lock()
+_TERMINAL_JOB_STATUSES = {
+    JobStatus.COMPLETED,
+    JobStatus.FAILED,
+    JobStatus.CANCELLED,
+}
+_TERMINAL_EVENT_TYPES = {"complete", "error", "cancelled"}
+_TERMINAL_SNAPSHOT_LOOKBACK_SECONDS = 5
 
 
 def _tokenize_auto_setup_text(value: str) -> set[str]:
@@ -264,6 +272,42 @@ def _is_glob_like(path: str) -> bool:
     return any(ch in path for ch in ("*", "?", "[", "]"))
 
 
+def _event_type_for_terminal_status(status: JobStatus) -> str:
+    if status == JobStatus.COMPLETED:
+        return "complete"
+    if status == JobStatus.FAILED:
+        return "error"
+    if status == JobStatus.CANCELLED:
+        return "cancelled"
+    return "status"
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _should_emit_terminal_snapshot(
+    job: IgirJob,
+    previous_status: JobStatus | None,
+    connection_started_at: datetime,
+) -> bool:
+    if previous_status is not None:
+        return previous_status not in _TERMINAL_JOB_STATUSES
+
+    reference_time = _as_utc(job.completed_at) or _as_utc(job.created_at)
+    if reference_time is None:
+        return False
+
+    lookback_cutoff = connection_started_at - timedelta(
+        seconds=_TERMINAL_SNAPSHOT_LOOKBACK_SECONDS,
+    )
+    return reference_time >= lookback_cutoff
+
+
 # ──────────────────────────── Job CRUD ────────────────────────────
 
 
@@ -302,16 +346,59 @@ async def igir_job_events():
 
     async def event_generator():
         queues: dict[str, asyncio.Queue] = {}
+        emitted_terminal_job_ids: set[str] = set()
+        last_seen_statuses: dict[str, JobStatus] = {}
+        connection_started_at = datetime.now(timezone.utc)
         try:
             while True:
                 try:
-                    # Subscribe to any new active jobs
-                    for job in job_manager.get_all_igir_jobs():
+                    jobs = job_manager.get_all_igir_jobs()
+                    active_job_ids = {job.id for job in jobs}
+                    emitted_terminal_job_ids.intersection_update(active_job_ids)
+                    last_seen_statuses = {
+                        job_id: status
+                        for job_id, status in last_seen_statuses.items()
+                        if job_id in active_job_ids
+                    }
+
+                    # Subscribe to active jobs and emit synthetic terminal snapshots
+                    # only when a job newly transitions to terminal (or was just
+                    # created/completed around connection start).
+                    for job in jobs:
+                        previous_status = last_seen_statuses.get(job.id)
                         if job.id not in queues and job.status in (
                             JobStatus.QUEUED,
                             JobStatus.PROCESSING,
                         ):
                             queues[job.id] = job_manager.subscribe_igir(job.id)
+                            last_seen_statuses[job.id] = job.status
+                            continue
+
+                        if (
+                            job.status in _TERMINAL_JOB_STATUSES
+                            and job.id not in queues
+                            and job.id not in emitted_terminal_job_ids
+                            and _should_emit_terminal_snapshot(
+                                job, previous_status, connection_started_at,
+                            )
+                        ):
+                            event_type = _event_type_for_terminal_status(job.status)
+                            emitted_terminal_job_ids.add(job.id)
+                            payload = {
+                                "type": event_type,
+                                "job_id": job.id,
+                                "status": job.status.value,
+                                "progress": job.progress,
+                                "message": job.message,
+                                "phase": job.phase,
+                                "job": job.model_dump(mode="json"),
+                            }
+                            yield {
+                                "event": event_type,
+                                "data": json.dumps(payload),
+                            }
+
+                        last_seen_statuses[job.id] = job.status
 
                     # Check all queues for updates
                     for job_id, queue in list(queues.items()):
@@ -323,17 +410,17 @@ async def igir_job_events():
                                     **update,
                                     "job": job.model_dump(mode="json"),
                                 }
+                                if job.status in _TERMINAL_JOB_STATUSES:
+                                    emitted_terminal_job_ids.add(job.id)
+
+                            event_type = update.get("type", "progress")
                             yield {
-                                "event": update.get("type", "progress"),
+                                "event": event_type,
                                 "data": json.dumps(update),
                             }
 
                             # Unsubscribe if job is done
-                            if update.get("type") in (
-                                "complete",
-                                "error",
-                                "cancelled",
-                            ):
+                            if event_type in _TERMINAL_EVENT_TYPES:
                                 job_manager.unsubscribe_igir(job_id, queue)
                                 del queues[job_id]
 
@@ -683,6 +770,9 @@ async def igir_dry_run_execute(request: IgirJobCreateRequest):
     preview_request = request.model_copy(deep=True)
     preview_request.commands = [IgirCommand.CLEAN]
     preview_request.clean_dry_run = True
+    # Prevent side effects during preview runs. IgirService.run() ensures
+    # output_path exists before launch, so unset it for clean dry-run execute.
+    preview_request.output_path = None
 
     validation = igir_service.validate_request(preview_request)
     if not validation.valid:
