@@ -163,6 +163,8 @@ jobs:
             type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/latest' || github.ref == 'refs/heads/main' }}
             # Branch name (e.g., latest, main)
             type=ref,event=branch
+            # Branch name for manual branch builds (workflow_dispatch)
+            type=raw,value=${{ github.ref_name }},enable=${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') }}
             # PR number (e.g., pr-123)
             type=ref,event=pr
             # Semantic version tags (e.g., v1.2.3 -> 1.2.3, 1.2, 1)

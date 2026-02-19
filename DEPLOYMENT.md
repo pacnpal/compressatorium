@@ -1,8 +1,8 @@
 # Deployment Readiness Audit
 
-This document contains the results of a comprehensive deployment readiness audit for the Docker CHD Converter Web UI.
+This document contains the results of a comprehensive deployment readiness audit for the Compressatorium Web UI.
 
-**Audit Date:** 2026-01-20  
+**Audit Date:** 2026-02-19  
 **Audit Scope:** Docker configuration, security, documentation, and deployment practices
 
 ---
@@ -40,11 +40,11 @@ This document contains the results of a comprehensive deployment readiness audit
 - **Base Image:** Using `debian:trixie-slim` (minimal base)
 - **Package Cleanup:** Properly cleans apt cache (`apt-get clean && rm -rf /var/lib/apt/lists/*`)
 - **Virtual Environment:** Uses Python venv for isolation
-- **Non-root User:** ⚠️ NOT IMPLEMENTED (see recommendations)
+- **Non-root User:** ✅ IMPLEMENTED (`converter` user)
 
 ### Health Check
 - **Status:** ✅ IMPLEMENTED
-- **Endpoint:** `/health` (returns `{"status": "healthy"}`)
+- **Endpoint:** `/health` (returns status, app version, and `igir_available`)
 - **Configuration:** 30s interval, 10s timeout, 3 retries
 - **Note:** Gracefully handles CLI mode (exits with 0)
 
@@ -66,6 +66,11 @@ This document contains the results of a comprehensive deployment readiness audit
 | `CHDMAN_MODE` | `createcd` | ✅ | CD/DVD conversion mode (CLI mode) |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | ✅ | Binary path override |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | ✅ | Dolphin tool binary path |
+| `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | ✅ | z3ds compressor binary path |
+| `IGIR_PATH` | `/usr/local/bin/igir` | ✅ | igir binary path |
+| `IGIR_DAT_PATH` | `/dats` | ✅ | DAT root for igir matching workflows |
+| `MAX_IGIR_CONCURRENT` | `1` | ✅ | Maximum concurrent igir jobs |
+| `IGIR_TEMP_DIR` | `/config/igir-temp` | ✅ | Temporary directory for igir operations |
 | `MAX_CONCURRENT_JOBS` | `1` | ✅ | Parallel job limit |
 | `MAX_JOB_HISTORY` | `500` | ✅ | Completed jobs to retain |
 | `CHD_CHDMAN_NICE` | `10` | ✅ | Nice level for chdman |
@@ -111,6 +116,9 @@ Volume precedence:
 
 ### Archive Support
 - **Status:** ✅ IMPLEMENTED
+- **Formats:** ZIP, 7z, RAR
+- **Dependencies:** `unrar-free`, `p7zip-full`, `py7zr`, `rarfile`
+- **Extraction:** Temporary extraction with cleanup
 
 ### Tuning and Host Recommendations
 
@@ -127,9 +135,6 @@ Volume precedence:
 - Prefer SSD/cache for `CHD_TEMP_DIR` and CHD output to reduce array contention.
 - Avoid running other heavy services during conversion.
 - Always set container CPU/memory limits on shared hosts.
-- **Formats:** ZIP, 7z, RAR
-- **Dependencies:** `unrar-free`, `p7zip-full`, `py7zr`, `rarfile`
-- **Extraction:** Temporary extraction with cleanup
 
 ---
 
@@ -157,15 +162,7 @@ Volume precedence:
 
 ### High Priority
 
-1. **Add Non-Root User** (Security)
-   ```dockerfile
-   # Add before WORKDIR
-   RUN groupadd -r chd && useradd -r -g chd chd
-   RUN chown -R chd:chd /app
-   USER chd
-   ```
-
-2. **Add .dockerignore File** (Build Optimization)
+1. **Add .dockerignore File** (Build Optimization)
    ```
    .git
    .github
@@ -182,8 +179,11 @@ Volume precedence:
    images
    ```
 
-3. **Resource Limits in Docker Compose** (Production Readiness)
+2. **Resource Limits in Docker Compose** (Production Readiness)
    Add memory and CPU limits to prevent resource exhaustion
+
+3. **DAT Mount Policy for igir Deployments** (Operational Safety)
+   If igir is enabled, mount DATs read-only where possible (for example, `-v /host/dats:/dats:ro`) to reduce accidental DAT modifications from external tooling.
 
 ### Medium Priority
 
@@ -269,6 +269,7 @@ Volume precedence:
 - [ ] Create game library directories on host
 - [ ] Ensure sufficient disk space for conversions
 - [ ] Configure `/data/*` mounts (or set explicit `COMPRESSATORIUM_VOLUMES`)
+- [ ] If using igir, mount DAT sources to `/dats` (read-only recommended)
 - [ ] Set appropriate concurrent job limits based on CPU
 - [ ] Review and adjust health check parameters if needed
 
@@ -279,11 +280,13 @@ Volume precedence:
 - [ ] Check health status: `docker-compose ps` (should show "healthy")
 - [ ] Access web UI: http://localhost:8080
 - [ ] Test API health endpoint: `curl http://localhost:8080/health`
+- [ ] If using igir, test availability endpoint: `curl http://localhost:8080/api/igir/version`
 
 ### Post-Deployment
 - [ ] Test file browsing in Web UI
 - [ ] Test conversion with a small test file
 - [ ] Verify CHD file is created successfully
+- [ ] If using igir, run a clean dry-run preview before destructive jobs
 - [ ] Check container logs: `docker-compose logs -f`
 - [ ] Monitor resource usage: `docker stats`
 - [ ] Set up automated backups of converted files (if needed)
@@ -331,11 +334,11 @@ The application is well-architected with good security practices:
 - ✅ Multi-platform support
 
 **Recommended before production deployment:**
-1. Add non-root user to Dockerfile
-2. Create .dockerignore file
-3. Add resource limits to docker-compose.yml
-4. Consider security headers for web UI
-5. Set up HTTPS if exposing externally
+1. Create .dockerignore file
+2. Add resource limits to docker-compose.yml
+3. Consider security headers for web UI
+4. Set up HTTPS if exposing externally
+5. If using igir, enforce a read-only DAT mount policy
 
 **The application can be safely deployed to development/staging environments immediately.**
 **For production deployment, implement the high-priority recommendations above.**

@@ -52,7 +52,7 @@ Both registries provide identical images with multi-architecture support (`linux
 | Tag | Description |
 |-----|-------------|
 | `latest` | Latest stable release from the main branch |
-| `vX.Y.Z` | Specific version (e.g., `v3.0.0`) |
+| `vX.Y.Z` | Specific version (e.g., `v4.0.0`) |
 | `sha-xxxxxxx` | Specific commit build |
 
 ---
@@ -88,7 +88,7 @@ When you open the Web UI, you'll see four tool options at the top:
 
 ## Web UI Mode (Default)
 
-The easiest way to use CHD Converter is through the web interface:
+The easiest way to use Compressatorium is through the web interface:
 
 ```bash
 docker run -d \
@@ -101,6 +101,7 @@ docker run -d \
 Then open **http://localhost:8080** in your browser.
 
 > **Required:** The `/config` volume must be mounted for persistent data storage.  
+> **igir DAT support (optional):** Mount DAT files to `/dats` to use igir matching workflows (`-v /path/to/dats:/dats`).  
 > **Volume discovery:** If `COMPRESSATORIUM_VOLUMES` is unset, the app scans `/data/*` at startup and auto-registers mounted game volumes (restart after mount changes).  
 > **Default temp location:** `/config/temp`. To use a different location, set `CHD_TEMP_DIR` and mount it.
 
@@ -239,7 +240,7 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 
 ### How to Use
 
-1. **Select Primary Tool:** Choose **3DS** from the three main options at the top of the Web UI
+1. **Select Primary Tool:** Choose **3DS** from the four main options at the top of the Web UI
 2. **Browse Files:** Navigate to your 3DS ROM directory
 3. **Select ROMs:** Check the boxes next to `.cci`, `.cia`, or `.3ds` files you want to compress
 4. **Compress:** Click the "Compress" button to start the conversion
@@ -311,6 +312,7 @@ igir is a ROM collection manager that can copy, move, organize, verify, and clea
 6. **Configure Filters:** Optionally filter by language, region, or exclude demos/betas/BIOS
 7. **1G1R:** Enable `--single` to keep only one ROM per game with language/region preferences
 8. **Validate / Preflight:** Use **Validate & Preview** and **Run Clean Dry-Run** to check issues before writing
+   - `Run Clean Dry-Run` forces a clean-only preview (`--clean-dry-run`) and ignores output path writes
 9. **Execute:** Click Execute to start the job; destructive jobs require typing `RUN`
 
 ### Filter Presets
@@ -375,7 +377,7 @@ docker run -d \
 | POST | `/api/igir/validate` | Validate an igir job request |
 | POST | `/api/igir/preflight` | Validate + path safety checks + destructive risk factors |
 | POST | `/api/igir/dry-run` | Preview a clean operation |
-| POST | `/api/igir/dry-run/execute` | Execute clean-only dry-run and return candidate files |
+| POST | `/api/igir/dry-run/execute` | Execute clean-only dry-run preview and return candidate files (no output directory creation/writes) |
 | POST | `/api/igir/quick-setup` | Generate auto-setup workflow recommendations |
 | POST | `/api/igir/feature-events` | Track igir feature-adoption events |
 | GET | `/api/igir/feature-events` | Read igir feature-adoption event counters |

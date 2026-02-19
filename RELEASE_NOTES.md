@@ -1,5 +1,32 @@
 # Release Notes
 
+## v4.0.0 - igir Platform Release & Documentation Refresh
+
+### ⚠️ Major Release Highlights
+
+- **igir is now a first-class tool** across the Web UI, REST API, runtime image, and queue management pipeline.
+- **Frontend architecture refactor** from a monolithic `static/js/app.js` into modular feature/components/hooks files, enabling clearer maintenance and safer iteration.
+- **Expanded CI quality gates** now run backend tests and frontend checks before image build/push.
+
+### ✨ New Capabilities
+
+- **ROM management workflows (igir)** including copy/move/link/extract/zip/test/clean/report/fixdat/dir2dat/playlist.
+- **Dedicated igir job queue APIs** with list/detail/cancel/cancel-all/clear-completed/stuck-status/recover endpoints and SSE streams.
+- **DAT discovery and browsing APIs** for mounted DAT collections (`/api/igir/dats`, `/api/igir/dats/search`).
+- **Preflight, validation, quick-setup, and dry-run endpoints** for safer execution planning before destructive actions.
+- **Container runtime support for igir** (binary installation, `/dats` volume support, and igir-specific env vars).
+
+### 🐞 Reliability Fixes
+
+- **Dry-run safety hardening** - `/api/igir/dry-run/execute` now strips `output_path` to avoid creating output directories during clean previews.
+- **Archived igir job pruning correctness** - archived lookup refresh now updates LRU ordering, preventing stale expired entries from being retained behind refreshed keys.
+
+### 📖 Documentation
+
+- **Comprehensive documentation pass** across `README.md`, `DOCKER-COMPOSE.md`, and `DEPLOYMENT.md` for igir workflows, env vars, deployment guidance, and current runtime behavior.
+
+---
+
 ## v3.2.3 - Batched Notifications, Deferred UI Updates & Job Index
 
 ### 🎨 UI / UX

@@ -15,6 +15,7 @@ docker-compose up -d
 **Default configuration:**
 - Port: 8080
 - Volume: `./games` → `/data/games`
+- Optional DAT volume (igir): `./dats` → `/dats`
 - Temp: `/config/temp` (inside `./config`)
 - Mode: Web UI
 - Concurrent jobs: 1
@@ -137,6 +138,10 @@ Volume behavior:
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode) |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
+| `IGIR_PATH` | `/usr/local/bin/igir` | Path to igir binary |
+| `IGIR_DAT_PATH` | `/dats` | DAT root path for igir workflows |
+| `MAX_IGIR_CONCURRENT` | `1` | Maximum concurrent igir jobs |
+| `IGIR_TEMP_DIR` | `/config/igir-temp` | Temporary working directory for igir |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
 | `MAX_JOB_HISTORY` | `500` | Completed jobs to retain in history |
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19) |
