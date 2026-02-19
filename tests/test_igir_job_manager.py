@@ -439,6 +439,17 @@ class TestIgirRecovery:
         assert result2["success"] is True
 
     @pytest.mark.asyncio
+    async def test_recovery_first_attempt_ignores_zero_timestamp_on_fresh_uptime(
+        self, jm, basic_igir_request, monkeypatch,
+    ):
+        """Initial recovery should not be throttled when last recovery timestamp is 0."""
+        await jm.create_igir_job(basic_igir_request)
+        monkeypatch.setattr("app.services.job_manager.time.monotonic", lambda: 10.0)
+
+        result = await jm.recover_igir_stuck()
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
     async def test_recovery_requires_true_stuck_state(self, jm, basic_igir_request):
         """Recovery should not run when there is active igir processing."""
         processing_job = await jm.create_igir_job(basic_igir_request)
@@ -460,6 +471,22 @@ class TestIgirRecovery:
         assert result["processing_jobs"] == 1
         assert jm._igir_queue.qsize() == 0
         assert jm._last_igir_stuck_recovery_at == 0
+
+
+class TestConversionRecovery:
+    @pytest.mark.asyncio
+    async def test_recovery_first_attempt_ignores_zero_timestamp_on_fresh_uptime(
+        self, jm, monkeypatch,
+    ):
+        """Conversion recovery should not cooldown-throttle when no prior recovery ran."""
+        monkeypatch.setattr("app.services.job_manager.time.monotonic", lambda: 10.0)
+        monkeypatch.setattr(
+            "app.services.job_manager.lock_manager.cleanup_stale_locks_periodic",
+            lambda: 0,
+        )
+
+        result = await jm.recover_from_stuck_state()
+        assert result["success"] is True
 
 
 class TestIgirDispatcher:

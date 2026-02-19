@@ -479,7 +479,10 @@ class JobManager:
         now = time.monotonic()
         
         # Prevent recovery spam (minimum cooldown between attempts)
-        if now - self._last_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS:
+        if (
+            self._last_stuck_recovery_at > 0
+            and now - self._last_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS
+        ):
             return {
                 "success": False,
                 "message": "Recovery attempted too recently, please wait",
@@ -1763,7 +1766,10 @@ class JobManager:
             }
 
         now = time.monotonic()
-        if now - self._last_igir_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS:
+        if (
+            self._last_igir_stuck_recovery_at > 0
+            and now - self._last_igir_stuck_recovery_at < self.STUCK_RECOVERY_COOLDOWN_SECONDS
+        ):
             return {
                 "success": False,
                 "message": "Recovery attempted too recently, please wait",
