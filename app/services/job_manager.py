@@ -19,6 +19,7 @@ from services.archive import archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
 from services.concurrency_manager import concurrency_manager
+from services.disc_id import embed_in_chd as disc_id_embed, extract_from_source as disc_id_from_source
 from services.dolphin_tool import dolphin_tool_service
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
@@ -1257,6 +1258,30 @@ class JobManager:
                         job.output_size = total_size if total_size > 0 else None
                     else:
                         job.output_size = os.path.getsize(job.output_path)
+
+                # Embed game ID / title into CHD metadata after createcd/createdvd.
+                # Uses the source file (input_path) which is still available at this
+                # point — even when delete-on-verify is requested.
+                if job.mode.value in {"createcd", "createdvd"} and os.path.exists(job.output_path):
+                    try:
+                        disc_info = await run_in_threadpool(disc_id_from_source, input_path)
+                        if disc_info and disc_info.get("game_id"):
+                            await disc_id_embed(
+                                job.output_path,
+                                disc_info["game_id"],
+                                disc_info.get("title"),
+                                settings.chdman_path,
+                            )
+                            logger.info(
+                                "Job %s embedded disc ID %r in %s",
+                                job_id,
+                                disc_info["game_id"],
+                                Path(job.output_path).name,
+                            )
+                    except Exception as _e:
+                        logger.debug(
+                            "Job %s disc ID embed skipped: %s", job_id, _e
+                        )
 
                 verified = False
                 source_deleted = False

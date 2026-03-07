@@ -150,6 +150,8 @@ class CHDInfo(BaseModel):
     data_sha1: str | None = None
     raw_data: str = ""
     media_type: str | None = None  # "dvd", "cd", or None
+    game_id: str | None = None    # disc serial / title ID (e.g. SLUS_20312)
+    title: str | None = None      # human-readable game title (when available)
 
 
 class BulkDeleteRequest(BaseModel):

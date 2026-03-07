@@ -11,6 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from models import BulkVerifyRequest, CHDInfo, DolphinDiscInfo, MetadataBatchRequest, Z3DSInfo
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
+from services.disc_id import extract_from_chd as disc_id_extract_from_chd
 from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
@@ -493,6 +494,14 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             asyncio.create_task(safe_flush())
             media_type = record.get("media_type")
 
+        # Extract game ID / title from embedded CHD tags or companion source file.
+        # This is best-effort and non-fatal.
+        disc_info: dict = {}
+        try:
+            disc_info = await disc_id_extract_from_chd(path, settings.chdman_path) or {}
+        except Exception as e:
+            logger.debug("disc_id extraction failed for %s: %s", path, e)
+
         return CHDInfo(
             file=path,
             input_file=info.get("input_file"),
@@ -509,6 +518,8 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             data_sha1=info.get("data_sha1"),
             raw_data=info.get("raw_data", ""),
             media_type=media_type,
+            game_id=disc_info.get("game_id"),
+            title=disc_info.get("title"),
         )
 
     except Exception as e:
