@@ -32,6 +32,7 @@ from app.services.disc_id import (
     _parse_param_sfo,
     _parse_system_cnf,
     embed_in_chd,
+    ensure_disc_id_embedded,
     extract_from_chd,
     extract_from_source,
 )
@@ -570,7 +571,7 @@ async def test_extract_from_chd_none_when_nothing(tmp_path):
 
 @pytest.mark.asyncio
 async def test_embed_in_chd_success(tmp_path):
-    calls: list[tuple] = []
+    calls: list[tuple[str, str]] = []
 
     async def fake_addmeta(chd_path, tag, value, chdman_path):
         calls.append((tag, value))
@@ -586,7 +587,7 @@ async def test_embed_in_chd_success(tmp_path):
 
 @pytest.mark.asyncio
 async def test_embed_in_chd_no_title(tmp_path):
-    calls: list[tuple] = []
+    calls: list[tuple[str, str]] = []
 
     async def fake_addmeta(chd_path, tag, value, chdman_path):
         calls.append((tag, value))
@@ -610,3 +611,158 @@ async def test_embed_in_chd_addmeta_failure():
         ok = await embed_in_chd("/fake/game.chd", "SLUS_20312", None, "chdman")
 
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# ensure_disc_id_embedded (retroactive tagging for existing CHDs)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ensure_disc_id_embedded_already_tagged(tmp_path):
+    """GAME tag already present → returns existing info, no addmeta call."""
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake")
+    addmeta_calls: list[str] = []
+
+    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
+        return {"GAME": "SLUS_20312", "NAME": "God of War"}.get(tag)
+
+    async def fake_addmeta(chd_path, tag, value, chdman_path):
+        addmeta_calls.append(tag)
+        return True
+
+    with (
+        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
+        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
+    ):
+        result = await ensure_disc_id_embedded(str(chd), "chdman")
+
+    assert result is not None
+    assert result["game_id"] == "SLUS_20312"
+    assert result["title"] == "God of War"
+    # No addmeta calls — tag already existed
+    assert addmeta_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_disc_id_embedded_gdro_fallback(tmp_path):
+    """No GAME tag, but GDRO present → embeds GAME/NAME from IP.BIN."""
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake")
+    ipbin = _make_ipbin("MK-51034  ", "DEAD OR ALIVE")
+    addmeta_calls: list[tuple[str, str]] = []
+
+    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
+        return None  # no GAME tag yet
+
+    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
+        return ipbin if tag == "GDRO" else None
+
+    async def fake_addmeta(chd_path, tag, value, chdman_path):
+        addmeta_calls.append((tag, value))
+        return True
+
+    with (
+        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
+        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
+        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
+    ):
+        result = await ensure_disc_id_embedded(str(chd), "chdman")
+
+    assert result is not None
+    assert result["game_id"] == "MK-51034"
+    assert any(t == TAG_GAME and "MK-51034" in v for t, v in addmeta_calls)
+
+
+@pytest.mark.asyncio
+async def test_ensure_disc_id_embedded_companion_iso(tmp_path):
+    """No GAME tag, no GDRO, companion ISO present → embeds from ISO."""
+    cnf = b"BOOT2 = cdrom0:\\SLUS_20999;1\n"
+    iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake")
+    (tmp_path / "game.iso").write_bytes(iso_bytes)
+    addmeta_calls: list[tuple[str, str]] = []
+
+    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_addmeta(chd_path, tag, value, chdman_path):
+        addmeta_calls.append((tag, value))
+        return True
+
+    with (
+        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
+        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
+        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
+    ):
+        result = await ensure_disc_id_embedded(str(chd), "chdman")
+
+    assert result is not None
+    assert result["game_id"] == "SLUS_20999"
+    assert any(t == TAG_GAME and v == "SLUS_20999" for t, v in addmeta_calls)
+
+
+@pytest.mark.asyncio
+async def test_ensure_disc_id_embedded_nothing_found(tmp_path):
+    """No GAME tag, no GDRO, no companion file → returns None, no addmeta."""
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake")
+    addmeta_calls: list[str] = []
+
+    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_addmeta(chd_path, tag, value, chdman_path):
+        addmeta_calls.append(tag)
+        return True
+
+    with (
+        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
+        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
+        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
+    ):
+        result = await ensure_disc_id_embedded(str(chd), "chdman")
+
+    assert result is None
+    assert addmeta_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_disc_id_embedded_psp_companion(tmp_path):
+    """PSP companion ISO → DISC_ID and TITLE embedded correctly."""
+    sfo = _make_param_sfo({"DISC_ID": "ULES00135", "TITLE": "Patapon"})
+    iso_bytes = _make_iso({"PSP_GAME/PARAM.SFO": sfo})
+    chd = tmp_path / "patapon.chd"
+    chd.write_bytes(b"fake")
+    (tmp_path / "patapon.iso").write_bytes(iso_bytes)
+    addmeta_calls: list[tuple[str, str]] = []
+
+    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_addmeta(chd_path, tag, value, chdman_path):
+        addmeta_calls.append((tag, value))
+        return True
+
+    with (
+        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
+        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
+        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
+    ):
+        result = await ensure_disc_id_embedded(str(chd), "chdman")
+
+    assert result is not None
+    assert result["game_id"] == "ULES00135"
+    assert result.get("title") == "Patapon"
+    assert any(t == TAG_GAME and v == "ULES00135" for t, v in addmeta_calls)
+    assert any(t == TAG_NAME and v == "Patapon" for t, v in addmeta_calls)

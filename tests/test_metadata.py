@@ -39,6 +39,7 @@ def scan_env(tmp_path, monkeypatch):
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
 
     calls = []
+    ensure_calls = []
 
     async def fake_info(path):
         calls.append(path)
@@ -50,11 +51,16 @@ def scan_env(tmp_path, monkeypatch):
     async def fake_flush_async():
         return None
 
+    async def fake_ensure_embedded(path, chdman_path):
+        ensure_calls.append(path)
+        return None
+
     monkeypatch.setattr(info_routes.chdman_service, "info", fake_info)
     monkeypatch.setattr(info_routes.chd_metadata_store, "set_metadata", fake_set_metadata)
     monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_embedded)
 
-    return {"chd_path": str(chd_path), "calls": calls}
+    return {"chd_path": str(chd_path), "calls": calls, "ensure_calls": ensure_calls}
 
 
 @pytest.mark.asyncio
@@ -75,6 +81,19 @@ async def test_scan_metadata_respects_cache(scan_env, monkeypatch):
     await info_routes.scan_metadata_task(force=False)
 
     assert scan_env["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_scan_metadata_retroactive_tagging_runs_for_all(scan_env, monkeypatch):
+    """Phase 2 (ensure_disc_id_embedded) runs for ALL CHDs, not just stale ones."""
+    async def fake_false(_): return False
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
+
+    # Even with cache fresh (no stale), the ensure pass still runs for all CHDs.
+    await info_routes.scan_metadata_task(force=False)
+
+    assert scan_env["calls"] == []  # phase 1: no info refresh (cache fresh)
+    assert scan_env["ensure_calls"] == [scan_env["chd_path"]]  # phase 2: ran for all
 
 
 

@@ -16,6 +16,13 @@ Source-file extraction:
   - PS2 / PS1 .iso: ISO 9660 → root/SYSTEM.CNF → BOOT2= / BOOT= line.
   - PSP .iso:       ISO 9660 → /PSP_GAME/PARAM.SFO → DISC_ID + TITLE keys.
   - Dreamcast .gdi: reads Track01.bin IP.BIN header (product number + title).
+
+Retroactive tagging (ensure_disc_id_embedded):
+  Existing CHDs that were created before conversion-time tagging was added can
+  be back-filled with GAME / NAME tags by calling ensure_disc_id_embedded().
+  It checks for an existing GAME tag first (fast, no modification) and only
+  runs GDRO / companion-file extraction + chdman addmeta when the tag is absent.
+  This is called automatically during every metadata scan.
 """
 
 from __future__ import annotations
@@ -580,6 +587,76 @@ async def embed_in_chd(
         # NAME tag is best-effort; don't fail the whole operation if it errors
         await _addmeta_text(chd_path, TAG_NAME, title, chdman_path)
     return True
+
+
+async def ensure_disc_id_embedded(
+    chd_path: str,
+    chdman_path: str = "chdman",
+) -> Optional[dict]:
+    """
+    Ensure a CHD file has GAME / NAME metadata tags embedded, back-filling
+    existing CHDs that were created before conversion-time tagging was added.
+
+    Algorithm (standards-compliant — all tags follow the 4-char MAME CHD
+    metadata format and are written via ``chdman addmeta``):
+
+      1. Fast-path: read the GAME tag.  If it is already present, return the
+         existing info without touching the file.
+      2. Try the standard Dreamcast GDRO (IP.BIN) tag that chdman embeds for
+         GDI-sourced CHDs.  Parse product number + title from the IP.BIN
+         binary, then embed GAME / NAME via addmeta.
+      3. Scan for a companion source file (.iso / .gdi / .cue / .bin) next to
+         the CHD, extract the disc serial, then embed GAME / NAME.
+      4. Return None if no identity information can be found.
+
+    Returns a dict with at least ``game_id`` on success, or None if the disc
+    ID could not be determined.
+    """
+    # --- Fast path: GAME tag already present ---------------------------------
+    existing = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
+    if existing and existing.strip():
+        game_id = existing.strip()
+        name_raw = await _dumpmeta_text(chd_path, TAG_NAME, chdman_path)
+        title = (name_raw or "").strip() or None
+        out: dict = {"game_id": game_id}
+        if title:
+            out["title"] = title
+        return out
+
+    # --- Strategy 2: standard Dreamcast GDRO tag -----------------------------
+    gdro = await _dumpmeta_bin(chd_path, "GDRO", chdman_path)
+    if gdro:
+        parsed = _parse_ipbin(gdro)
+        if parsed.get("game_id"):
+            logger.debug(
+                "disc_id: embedding game_id=%r from GDRO in %s",
+                parsed["game_id"],
+                chd_path,
+            )
+            await embed_in_chd(
+                chd_path, parsed["game_id"], parsed.get("title"), chdman_path
+            )
+            return parsed
+
+    # --- Strategy 3: companion source file -----------------------------------
+    chd_p = Path(chd_path)
+    for ext in (".iso", ".gdi", ".cue", ".bin"):
+        candidate = chd_p.with_suffix(ext)
+        if candidate.exists():
+            res = extract_from_source(str(candidate))
+            if res and res.get("game_id"):
+                logger.debug(
+                    "disc_id: embedding game_id=%r from companion %s in %s",
+                    res["game_id"],
+                    candidate.name,
+                    chd_path,
+                )
+                await embed_in_chd(
+                    chd_path, res["game_id"], res.get("title"), chdman_path
+                )
+                return res
+
+    return None
 
 
 # ===========================================================================

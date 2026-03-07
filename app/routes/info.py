@@ -11,7 +11,10 @@ from fastapi.concurrency import run_in_threadpool
 from models import BulkVerifyRequest, CHDInfo, DolphinDiscInfo, MetadataBatchRequest, Z3DSInfo
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
-from services.disc_id import extract_from_chd as disc_id_extract_from_chd
+from services.disc_id import (
+    ensure_disc_id_embedded as disc_id_ensure_embedded,
+    extract_from_chd as disc_id_extract_from_chd,
+)
 from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
@@ -90,7 +93,7 @@ async def scan_metadata_task(
         else:
             logger.info(f"Found {len(chd_paths)} CHD files needing metadata refresh")
 
-        # Process each path (chdman_service.info is already async)
+        # Phase 1: Update chdman info cache for stale / forced CHDs
         for path in chd_paths:
             try:
                 info = await chdman_service.info(path)
@@ -98,6 +101,24 @@ async def scan_metadata_task(
                 count += 1
             except Exception as e:
                 logger.warning(f"Failed to scan metadata for {path}: {e}")
+
+        # Phase 2: Retroactively embed GAME / NAME tags in any CHD that lacks
+        # them.  Covers CHDs created before conversion-time tagging was added.
+        # ensure_disc_id_embedded() returns immediately (no writes) when the
+        # GAME tag already exists, so this pass is safe to run every scan.
+        embed_count = 0
+        for path in all_paths:
+            try:
+                result = await disc_id_ensure_embedded(path, settings.chdman_path)
+                if result:
+                    embed_count += 1
+            except Exception as e:
+                logger.debug(f"disc_id ensure skipped for {path}: {e}")
+
+        if embed_count:
+            logger.info(
+                f"Disc ID scan: embedded GAME/NAME tags in {embed_count} CHD file(s)"
+            )
 
         # Flush all accumulated changes once at the end (async, non-blocking)
         await chd_metadata_store.flush_async()
