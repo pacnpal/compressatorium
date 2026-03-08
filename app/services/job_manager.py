@@ -1262,17 +1262,18 @@ class JobManager:
                 # Embed game ID / title into CHD metadata after createcd/createdvd.
                 # Uses the source file (input_path) which is still available at this
                 # point — even when delete-on-verify is requested.
-                # The serial is written as both GAME and NAME; see disc_id.py for
-                # the rationale (serials are the standard emulator lookup key).
+                # GAME tag = normalized serial (emulator DB lookup key).
+                # NAME tag = human-readable title when available, serial otherwise.
                 if job.mode.value in {"createcd", "createdvd"} and os.path.exists(job.output_path):
                     try:
                         disc_info = await run_in_threadpool(disc_id_from_source, input_path)
                         if disc_info and disc_info.get("game_id"):
                             game_id = disc_info["game_id"]
+                            title = disc_info.get("title") or game_id
                             embedded = await disc_id_embed(
                                 job.output_path,
                                 game_id,
-                                game_id,
+                                title,
                                 settings.chdman_path,
                             )
                             if embedded:

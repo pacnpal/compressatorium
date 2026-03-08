@@ -357,6 +357,14 @@ class CHDMetadataStore:
         
         should_persist = False
         with self._lock:
+            # Preserve disc_id_checked fields from any existing record so that
+            # a Phase 1 metadata refresh doesn't erase the Phase 2 disc-ID marker.
+            existing = self._records.get(normalized)
+            if existing:
+                if "disc_id_checked" in existing:
+                    record["disc_id_checked"] = existing["disc_id_checked"]
+                if "disc_id_checked_mtime" in existing:
+                    record["disc_id_checked_mtime"] = existing["disc_id_checked_mtime"]
             self._records[normalized] = record
             self._dirty = True
             self._version += 1  # Track modifications for async persist

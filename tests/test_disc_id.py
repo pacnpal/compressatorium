@@ -843,9 +843,9 @@ async def test_ensure_disc_id_embedded_gdro_fallback(tmp_path):
 
     assert result is not None
     assert result["game_id"] == "MK-51034"
-    # Serial used as the NAME (title) tag — emulators key on the serial for lookup
+    # Human-readable title from IP.BIN is used as the NAME tag when available
     assert any(t == TAG_GAME and "MK-51034" in v for t, v in addmeta_calls)
-    assert any(t == TAG_NAME and "MK-51034" in v for t, v in addmeta_calls)
+    assert any(t == TAG_NAME and "DEAD OR ALIVE" in v for t, v in addmeta_calls)
 
 
 @pytest.mark.asyncio
@@ -1027,5 +1027,5 @@ async def test_ensure_disc_id_embedded_psp_companion(tmp_path):
     assert result is not None
     assert result["game_id"] == "ULES00135"
     assert any(t == TAG_GAME and v == "ULES00135" for t, v in addmeta_calls)
-    # Serial used as the NAME (title) tag — not the human-readable "Patapon"
-    assert any(t == TAG_NAME and v == "ULES00135" for t, v in addmeta_calls)
+    # Human-readable title "Patapon" from PARAM.SFO is used as the NAME tag
+    assert any(t == TAG_NAME and v == "Patapon" for t, v in addmeta_calls)

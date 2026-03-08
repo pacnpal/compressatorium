@@ -851,15 +851,18 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
 
     Strategy (in order):
       1. Read our custom GAME / NAME tags (written by addmeta at conversion).
-      2. Read the Dreamcast GDRO IP.BIN tag (standard CD CHD tag).
-      3. Look for a companion source file (.iso / .gdi / .bin / .cue) beside
+      2. Read disc sectors directly from the CHD (DVD ISO 9660 via _CHDReader):
+         walks SYSTEM.CNF (PS2/PS1) or PSP_GAME/PARAM.SFO (PSP) in the CHD's
+         own ISO 9660 filesystem — the same approach used by libchdr-based emus.
+      3. Read the Dreamcast GDRO IP.BIN tag (standard CD CHD tag).
+      4. Look for a companion source file (.iso / .gdi / .bin / .cue) beside
          the CHD and extract from that.
 
     Returns a dict containing at least ``game_id`` when successful. The dict
     may also include ``title`` and/or ``platform`` depending on the extraction
-    strategy — ``platform`` is only present when the result comes from GDRO or
-    source-file extraction, not from the embedded GAME tag (Strategy 1).
-    Returns None if no ID could be found.
+    strategy — ``platform`` is only present when the result comes from disc
+    sector / GDRO / source-file extraction (Strategies 2–4), not from the
+    embedded GAME tag (Strategy 1). Returns None if no ID could be found.
     """
     # --- Strategy 1: our embedded GAME tag -----------------------------------
     result = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
@@ -978,7 +981,10 @@ async def ensure_disc_id_embedded(
             chd_path,
         )
         ok = await embed_in_chd(
-            chd_path, disc_result["game_id"], disc_result["game_id"], chdman_path
+            chd_path,
+            disc_result["game_id"],
+            disc_result.get("title") or disc_result["game_id"],
+            chdman_path,
         )
         if not ok:
             logger.warning(
@@ -998,7 +1004,10 @@ async def ensure_disc_id_embedded(
                 chd_path,
             )
             ok = await embed_in_chd(
-                chd_path, parsed["game_id"], parsed["game_id"], chdman_path
+                chd_path,
+                parsed["game_id"],
+                parsed.get("title") or parsed["game_id"],
+                chdman_path,
             )
             if not ok:
                 logger.warning(
@@ -1021,7 +1030,10 @@ async def ensure_disc_id_embedded(
                     chd_path,
                 )
                 ok = await embed_in_chd(
-                    chd_path, res["game_id"], res["game_id"], chdman_path
+                    chd_path,
+                    res["game_id"],
+                    res.get("title") or res["game_id"],
+                    chdman_path,
                 )
                 if not ok:
                     logger.warning(

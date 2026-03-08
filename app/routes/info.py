@@ -120,8 +120,7 @@ async def scan_metadata_task(
 
         if embed_count:
             logger.info(
-                f"Disc ID scan: ensured GAME/NAME tags for {embed_count} CHD file(s) "
-                f"(newly embedded or already present)"
+                f"Disc ID scan: ensured GAME/NAME tags for {embed_count} CHD file(s)"
             )
 
         # Flush all accumulated changes once at the end (async, non-blocking)

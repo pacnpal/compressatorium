@@ -914,7 +914,7 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                         `}
                         ${info.game_id && html`
                             <span class="info-label">Game ID</span>
-                            <span class="info-value" style="font-family: monospace">${info.game_id}</span>
+                            <span class="info-value">${info.game_id}</span>
                         `}
                         ${info.title && html`
                             <span class="info-label">Title</span>
@@ -1005,7 +1005,7 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                         `}
                         ${info.game_id && html`
                             <span class="info-label">Game ID</span>
-                            <span class="info-value" style="font-family: monospace">${info.game_id}</span>
+                            <span class="info-value">${info.game_id}</span>
                         `}
                         ${info.disc_number && html`
                             <span class="info-label">Disc Number</span>

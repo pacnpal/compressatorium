@@ -270,3 +270,21 @@ async def test_mark_disc_id_checked_creates_minimal_record(metadata_store, tmp_p
 
     # Record should exist and report as checked
     assert await metadata_store.is_disc_id_checked(path)
+
+
+@pytest.mark.asyncio
+async def test_set_metadata_preserves_disc_id_checked(metadata_store, tmp_path):
+    """set_metadata must not erase disc_id_checked fields from an existing record."""
+    chd = tmp_path / "game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    # Phase 2 marks the CHD as disc-id-checked
+    await metadata_store.mark_disc_id_checked(path)
+    assert await metadata_store.is_disc_id_checked(path)
+
+    # Phase 1 refreshes CHD metadata — must not erase the disc-id-checked flag
+    await metadata_store.set_metadata(path, {"raw_data": "Tag: DVD-VIDEO"}, persist=False)
+
+    # Flag must still be set after the metadata refresh
+    assert await metadata_store.is_disc_id_checked(path)
