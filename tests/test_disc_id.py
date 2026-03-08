@@ -24,8 +24,12 @@ from app.services.disc_id import (
     TAG_GAME,
     TAG_NAME,
     _BinSectorStream,
+    _CHDReader,
+    _CHDSectorStream,
+    _extract_from_chd_sectors,
     _extract_gdi,
     _extract_iso,
+    _normalize_ps_serial,
     _parse_ipbin,
     _parse_param_sfo,
     _parse_system_cnf,
@@ -168,30 +172,67 @@ def _make_iso(files: dict[str, bytes]) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# _parse_system_cnf
+# _normalize_ps_serial (PCSX2-compatible ExecutablePathToSerial)
+# ---------------------------------------------------------------------------
+
+def test_normalize_ps_serial_ps2_from_full_path():
+    """Full BOOT2 path → canonical PCSX2 form."""
+    assert _normalize_ps_serial("cdrom0:\\SLUS_203.12;1") == "SLUS-20312"
+
+
+def test_normalize_ps_serial_ps2_filename_only():
+    """Filename already stripped → same normalization."""
+    assert _normalize_ps_serial("SLUS_203.12") == "SLUS-20312"
+
+
+def test_normalize_ps_serial_ps1():
+    assert _normalize_ps_serial("cdrom:\\SLPS_123.45;1") == "SLPS-12345"
+
+
+def test_normalize_ps_serial_already_dash():
+    """If the separator is already a dash, still normalizes correctly."""
+    assert _normalize_ps_serial("SCES-503.08") == "SCES-50308"
+
+
+def test_normalize_ps_serial_no_dot_rejected():
+    """Serial without the canonical dot is rejected (non-standard format)."""
+    assert _normalize_ps_serial("SLUS_20312") is None
+
+
+def test_normalize_ps_serial_empty():
+    assert _normalize_ps_serial("") is None
+
+
+def test_normalize_ps_serial_garbage():
+    assert _normalize_ps_serial("not_a_serial") is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_system_cnf — now returns normalized serials
 # ---------------------------------------------------------------------------
 
 def test_parse_system_cnf_ps2():
-    data = b"BOOT2 = cdrom0:\\SLUS_20312;1\r\nVER = 1.00\r\n"
+    # Realistic PS2 SYSTEM.CNF — serial includes the canonical dot
+    data = b"BOOT2 = cdrom0:\\SLUS_203.12;1\r\nVER = 1.00\r\n"
     result = _parse_system_cnf(data)
-    assert result["game_id"] == "SLUS_20312"
+    assert result["game_id"] == "SLUS-20312"
     assert result["platform"] == "ps2"
 
 
 def test_parse_system_cnf_ps2_backslash_variants():
-    for line in (
-        b"BOOT2=cdrom0:\\SLUS_20312;1",
-        b"BOOT2 = cdrom0:/SLUS_20312;1",
-        b"BOOT2=cdrom:\\SLUS_20312;1",
+    for line, expected in (
+        (b"BOOT2=cdrom0:\\SLUS_203.12;1", "SLUS-20312"),
+        (b"BOOT2 = cdrom0:/SLUS_203.12;1", "SLUS-20312"),
+        (b"BOOT2=cdrom:\\SLUS_203.12;1", "SLUS-20312"),
     ):
         result = _parse_system_cnf(line)
-        assert result.get("game_id") == "SLUS_20312", f"failed for: {line}"
+        assert result.get("game_id") == expected, f"failed for: {line}"
 
 
 def test_parse_system_cnf_ps1():
     data = b"BOOT = cdrom:\\SLUS_123.45;1\n"
     result = _parse_system_cnf(data)
-    assert result["game_id"] == "SLUS_123.45"
+    assert result["game_id"] == "SLUS-12345"
     assert result["platform"] == "ps1"
 
 
@@ -323,13 +364,14 @@ def test_parse_ipbin_too_short():
 # ---------------------------------------------------------------------------
 
 def test_extract_iso_ps2(tmp_path):
-    cnf = b"BOOT2 = cdrom0:\\SLUS_20312;1\nVER = 1.00\n"
+    # Use the canonical PS2 serial format with dot (SLUS_XXX.YY)
+    cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\nVER = 1.00\n"
     iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
     iso_path = tmp_path / "game.iso"
     iso_path.write_bytes(iso_bytes)
     result = _extract_iso(str(iso_path))
     assert result is not None
-    assert result["game_id"] == "SLUS_20312"
+    assert result["game_id"] == "SLUS-20312"
     assert result["platform"] == "ps2"
 
 
@@ -365,12 +407,12 @@ def test_extract_iso_not_iso9660(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_extract_from_source_iso(tmp_path):
-    cnf = b"BOOT2 = cdrom0:\\SLUS_20312;1\n"
+    cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
     iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
     p = tmp_path / "game.iso"
     p.write_bytes(iso_bytes)
     result = extract_from_source(str(p))
-    assert result and result["game_id"] == "SLUS_20312"
+    assert result and result["game_id"] == "SLUS-20312"
 
 
 def test_extract_from_source_unknown_ext(tmp_path):
@@ -453,8 +495,139 @@ def test_bin_sector_stream_sector1_read():
 
 
 # ---------------------------------------------------------------------------
-# CHD extraction — async, with mocked subprocess helpers
+# _CHDReader / _CHDSectorStream / _extract_from_chd_sectors
 # ---------------------------------------------------------------------------
+
+def _make_chd_v5(iso_bytes: bytes, unit_bytes: int = 2048) -> bytes:
+    """
+    Build a minimal CHD v5 binary with uncompressed (COMP_NONE = type 4) hunks
+    wrapping the given ISO/disc data.  Used to test _CHDReader without needing
+    a real CHD file.
+    """
+    hunk_bytes = unit_bytes  # one sector per hunk for simplicity
+    # Pad to a multiple of hunk_bytes
+    pad = (-len(iso_bytes)) % hunk_bytes
+    padded = iso_bytes + b"\x00" * pad
+    num_hunks = len(padded) // hunk_bytes
+
+    map_offset = 124
+    data_offset = map_offset + num_hunks * 12  # 12 bytes per map entry
+
+    header = bytearray(124)
+    header[:8] = b"MComprHD"
+    struct.pack_into(">I", header, 8,  124)               # header_len
+    struct.pack_into(">I", header, 12, 5)                 # version
+    struct.pack_into(">Q", header, 16, len(padded))       # logical_bytes
+    struct.pack_into(">Q", header, 24, map_offset)        # map_offset
+    struct.pack_into(">Q", header, 32, 0)                 # meta_offset
+    struct.pack_into(">I", header, 40, hunk_bytes)        # hunk_bytes
+    struct.pack_into(">I", header, 44, unit_bytes)        # unit_bytes
+    # SHA1 fields + codec fields remain zero (COMP_NONE does not use codecs)
+
+    hunk_map = bytearray()
+    for i in range(num_hunks):
+        entry = bytearray(12)
+        entry[0] = 4  # COMP_NONE (uncompressed)
+        # file offset (6 bytes, big-endian, at bytes 4-9)
+        foff = data_offset + i * hunk_bytes
+        foff_be = foff.to_bytes(8, "big")
+        entry[4:10] = foff_be[2:]  # 6 LSBs of the 8-byte value
+        hunk_map.extend(entry)
+
+    return bytes(header) + bytes(hunk_map) + padded
+
+
+def test_chd_reader_opens_valid_chd(tmp_path):
+    iso = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"})
+    chd_bytes = _make_chd_v5(iso)
+    chd_path = tmp_path / "game.chd"
+    chd_path.write_bytes(chd_bytes)
+
+    with _CHDReader(str(chd_path)) as reader:
+        assert reader.open() is True
+        assert reader.unit_bytes == 2048
+
+
+def test_chd_reader_rejects_non_chd(tmp_path):
+    p = tmp_path / "fake.chd"
+    p.write_bytes(b"not a chd file" + b"\x00" * 200)
+    with _CHDReader(str(p)) as reader:
+        assert reader.open() is False
+
+
+def test_chd_reader_read_sector(tmp_path):
+    """_CHDReader.read_sector(16) should return the PVD sector bytes."""
+    iso = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"})
+    chd_bytes = _make_chd_v5(iso)
+    chd_path = tmp_path / "game.chd"
+    chd_path.write_bytes(chd_bytes)
+
+    pvd_magic = b"\x01CD001\x01"
+    with _CHDReader(str(chd_path)) as reader:
+        assert reader.open()
+        sector = reader.read_sector(16)
+        assert sector is not None
+        assert sector[:7] == pvd_magic
+
+
+def test_chd_sector_stream_read(tmp_path):
+    """_CHDSectorStream must present the same bytes as reading the raw ISO."""
+    iso = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"})
+    chd_bytes = _make_chd_v5(iso)
+    chd_path = tmp_path / "game.chd"
+    chd_path.write_bytes(chd_bytes)
+
+    with _CHDReader(str(chd_path)) as reader:
+        assert reader.open()
+        stream = _CHDSectorStream(reader, data_offset=0)
+        stream.seek(16 * 2048)
+        pvd = stream.read(2048)
+
+    assert pvd[:7] == b"\x01CD001\x01"
+
+
+def test_extract_from_chd_sectors_ps2(tmp_path):
+    """DVD CHD with PS2 SYSTEM.CNF → normalized serial returned."""
+    cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
+    iso = _make_iso({"SYSTEM.CNF": cnf})
+    chd_path = tmp_path / "game.chd"
+    chd_path.write_bytes(_make_chd_v5(iso))
+
+    result = _extract_from_chd_sectors(str(chd_path))
+    assert result is not None
+    assert result["game_id"] == "SLUS-20312"
+    assert result["platform"] == "ps2"
+
+
+def test_extract_from_chd_sectors_psp(tmp_path):
+    """DVD CHD with PSP PARAM.SFO → game_id extracted."""
+    sfo = _make_param_sfo({"DISC_ID": "ULES-00135", "TITLE": "Patapon"})
+    iso = _make_iso({"PSP_GAME/PARAM.SFO": sfo})
+    chd_path = tmp_path / "game.chd"
+    chd_path.write_bytes(_make_chd_v5(iso))
+
+    result = _extract_from_chd_sectors(str(chd_path))
+    assert result is not None
+    assert result["game_id"] == "ULES-00135"
+    assert result["title"] == "Patapon"
+
+
+def test_extract_from_chd_sectors_non_dvd_returns_none(tmp_path):
+    """CHD with 2352-byte sectors (CD) → returns None (handled elsewhere)."""
+    # Build a CHD that claims unit_bytes=2352
+    iso = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"})
+    chd_path = tmp_path / "cd_game.chd"
+    chd_path.write_bytes(_make_chd_v5(iso, unit_bytes=2352))
+
+    result = _extract_from_chd_sectors(str(chd_path))
+    assert result is None
+
+
+def test_extract_from_chd_sectors_fake_chd_returns_none(tmp_path):
+    """Non-CHD file → open() fails → returns None gracefully."""
+    p = tmp_path / "game.chd"
+    p.write_bytes(b"fake")
+    assert _extract_from_chd_sectors(str(p)) is None
 
 @pytest.mark.asyncio
 async def test_extract_from_chd_game_tag(tmp_path):
@@ -518,8 +691,9 @@ async def test_extract_from_chd_gdro_fallback(tmp_path):
 
 @pytest.mark.asyncio
 async def test_extract_from_chd_companion_iso_fallback(tmp_path):
-    """No tags, no GDRO → look for companion ISO."""
-    cnf = b"BOOT2 = cdrom0:\\SLUS_20999;1\n"
+    """No tags, no GDRO → look for companion ISO → normalized serial returned."""
+    # Use the canonical PS2 format with the dot (SLUS_XXX.YY)
+    cnf = b"BOOT2 = cdrom0:\\SLUS_209.99;1\n"
     iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake")
@@ -539,7 +713,7 @@ async def test_extract_from_chd_companion_iso_fallback(tmp_path):
         result = await extract_from_chd(str(chd), "chdman")
 
     assert result is not None
-    assert result["game_id"] == "SLUS_20999"
+    assert result["game_id"] == "SLUS-20999"
 
 
 @pytest.mark.asyncio
@@ -702,8 +876,9 @@ async def test_ensure_disc_id_embedded_gdro_embed_failure(tmp_path):
 
 @pytest.mark.asyncio
 async def test_ensure_disc_id_embedded_companion_iso(tmp_path):
-    """No GAME tag, no GDRO, companion ISO present → embeds serial as GAME and NAME."""
-    cnf = b"BOOT2 = cdrom0:\\SLUS_20999;1\n"
+    """No GAME tag, no GDRO, companion ISO present → embeds normalized serial as GAME and NAME."""
+    # Use the canonical PS2 format with the dot (SLUS_XXX.YY)
+    cnf = b"BOOT2 = cdrom0:\\SLUS_209.99;1\n"
     iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake")
@@ -728,16 +903,16 @@ async def test_ensure_disc_id_embedded_companion_iso(tmp_path):
         result = await ensure_disc_id_embedded(str(chd), "chdman")
 
     assert result is not None
-    assert result["game_id"] == "SLUS_20999"
-    assert any(t == TAG_GAME and v == "SLUS_20999" for t, v in addmeta_calls)
+    assert result["game_id"] == "SLUS-20999"
+    assert any(t == TAG_GAME and v == "SLUS-20999" for t, v in addmeta_calls)
     # Serial used as the NAME (title) tag for emulator lookup
-    assert any(t == TAG_NAME and v == "SLUS_20999" for t, v in addmeta_calls)
+    assert any(t == TAG_NAME and v == "SLUS-20999" for t, v in addmeta_calls)
 
 
 @pytest.mark.asyncio
 async def test_ensure_disc_id_embedded_companion_embed_failure(tmp_path):
     """embed_in_chd failure for companion file → returns None, not a false positive."""
-    cnf = b"BOOT2 = cdrom0:\\SLUS_20999;1\n"
+    cnf = b"BOOT2 = cdrom0:\\SLUS_209.99;1\n"
     iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake")
@@ -788,6 +963,38 @@ async def test_ensure_disc_id_embedded_nothing_found(tmp_path):
 
     assert result is None
     assert addmeta_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_disc_id_embedded_from_chd_sectors(tmp_path):
+    """No GAME tag → CHD sector reading finds SYSTEM.CNF → embeds normalized serial."""
+    cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
+    iso = _make_iso({"SYSTEM.CNF": cnf})
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(_make_chd_v5(iso))
+    addmeta_calls: list[tuple[str, str]] = []
+
+    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
+        return None  # no pre-existing GAME tag
+
+    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_addmeta(chd_path, tag, value, chdman_path):
+        addmeta_calls.append((tag, value))
+        return True
+
+    with (
+        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
+        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
+        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
+    ):
+        result = await ensure_disc_id_embedded(str(chd), "chdman")
+
+    assert result is not None
+    assert result["game_id"] == "SLUS-20312"
+    assert any(t == TAG_GAME and v == "SLUS-20312" for t, v in addmeta_calls)
+    assert any(t == TAG_NAME and v == "SLUS-20312" for t, v in addmeta_calls)
 
 
 @pytest.mark.asyncio

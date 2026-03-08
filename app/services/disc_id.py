@@ -2,15 +2,23 @@
 Disc ID / Title extractor for game disc images.
 
 Supports extracting game serial numbers and titles from:
+  - CHD files: reads disc sectors directly via a minimal CHD v5 reader
+    (the same mechanism as libchdr used by PCSX2 / AetherSX2 / NetherSX2)
   - ISO 9660 source files (.iso) used for PS2, PSP, and PS1
   - Dreamcast GDI images (.gdi + track files)
   - CHD files via chdman dumpmeta (reads embedded GAME/NAME tags or GDRO IP.BIN)
 
-Extraction strategy (in priority order):
+Serial normalization matches PCSX2's ExecutablePathToSerial:
+  SYSTEM.CNF "BOOT2 = cdrom0:\\SLUS_203.12;1"  →  "SLUS-20312"
+Emulator frontends and game database scrapers key on this normalized form.
+
+Extraction strategy for CHDs (in priority order):
   1. Read our embedded GAME / NAME tags written by addmeta at conversion time.
-  2. For CD CHDs: parse the Dreamcast GDRO (IP.BIN) metadata standard tag.
-  3. Look for a companion source file (.iso / .gdi / .cue / .bin) next to the CHD.
-  4. Return None if nothing is found.
+  2. Read disc sectors directly from the CHD (DVD CHDs, unit_bytes=2048):
+       ISO 9660 → SYSTEM.CNF (PS2/PS1) or PSP_GAME/PARAM.SFO (PSP).
+  3. For CD CHDs: parse the Dreamcast GDRO (IP.BIN) metadata standard tag.
+  4. Look for a companion source file (.iso / .gdi / .cue / .bin) next to the CHD.
+  5. Return None if nothing is found.
 
 Source-file extraction:
   - PS2 / PS1 .iso: ISO 9660 → root/SYSTEM.CNF → BOOT2= / BOOT= line.
@@ -21,18 +29,20 @@ Retroactive tagging (ensure_disc_id_embedded):
   Existing CHDs that were created before conversion-time tagging was added can
   be back-filled with GAME / NAME tags by calling ensure_disc_id_embedded().
   It checks for an existing GAME tag first (fast, no modification) and only
-  runs GDRO / companion-file extraction + chdman addmeta when the tag is absent.
-  This is called automatically during every metadata scan.
+  runs disc-sector / GDRO / companion-file extraction + chdman addmeta when
+  the tag is absent.  This is called automatically during every metadata scan.
 """
 
 from __future__ import annotations
 
 import asyncio
+import lzma as _lzma
 import logging
 import os
 import re
 import struct
 import tempfile
+import zlib as _zlib
 from pathlib import Path
 from typing import Optional
 
@@ -59,13 +69,17 @@ _RAW_SECTOR_HEADER_SIZE_MODE2 = 24   # Mode 2 Form 1 sector header
 # Regex patterns for SYSTEM.CNF parsing
 # ---------------------------------------------------------------------------
 _BOOT2_RE = re.compile(
-    r"BOOT2\s*=\s*cdrom0?[:\\\/]+([A-Z0-9_]+(?:\.[0-9]+)?)",
+    r"BOOT2\s*=\s*cdrom0?[:\\\/]+([A-Z0-9_.]+)",
     re.IGNORECASE,
 )
 _BOOT_RE = re.compile(
-    r"BOOT\s*=\s*cdrom[:\\\/]+([A-Z0-9_]+(?:\.[0-9]+)?)",
+    r"BOOT\s*=\s*cdrom[:\\\/]+([A-Z0-9_.]+)",
     re.IGNORECASE,
 )
+
+# PS1/PS2 disc serial pattern: 4 letters + _ or - + 3 digits + . + 2 digits
+# Matches the format validated by PCSX2's ExecutablePathToSerial.
+_PS_SERIAL_RE = re.compile(r"^[A-Z]{4}[_-][0-9]{3}\.[0-9]{2}", re.ASCII)
 
 # ---------------------------------------------------------------------------
 # SFO (PARAM.SFO) constants
@@ -201,6 +215,45 @@ def _find_file(f, root_lba: int, root_size: int, path_parts: list[str]) -> Optio
 # Format-specific parsers
 # ===========================================================================
 
+def _normalize_ps_serial(raw: str) -> Optional[str]:
+    """
+    Normalize a PlayStation disc serial to the canonical form used by PCSX2,
+    AetherSX2, and NetherSX2.
+
+    Mirrors PCSX2's ``ExecutablePathToSerial`` function:
+      1. Strip the path prefix up to and including the last \\ (or : if no \\).
+      2. Strip the ;N version suffix.
+      3. Validate against the PS1/PS2 serial pattern:
+         4 letters + (_ or -) + 3 digits + . + 2 digits.
+      4. Remove the dot, replace _ with -.
+
+    Examples::
+      cdrom0:\\SLUS_203.12;1  →  SLUS-20312
+      SCES_503.08             →  SCES-50308
+      SLPS_123.45;2           →  SLPS-12345
+      SLUS_20312              →  None  (no dot — non-standard, rejected)
+    """
+    s = raw.strip().upper()
+    # Strip path prefix (everything up to and including the last \\ or :)
+    bslash = s.rfind("\\")
+    if bslash >= 0:
+        s = s[bslash + 1:]
+    else:
+        colon = s.rfind(":")
+        if colon >= 0:
+            s = s[colon + 1:]
+    # Strip ;N version suffix
+    semi = s.find(";")
+    if semi >= 0:
+        s = s[:semi]
+    s = s.strip()
+    # Validate: must match the PS1/PS2 serial format ????_???.??
+    if not _PS_SERIAL_RE.match(s):
+        return None
+    # Remove the dot, replace _ with -
+    return s.replace(".", "").replace("_", "-")
+
+
 def _parse_system_cnf(data: bytes) -> dict:
     """Parse SYSTEM.CNF and return a dict with game_id and platform."""
     try:
@@ -210,13 +263,15 @@ def _parse_system_cnf(data: bytes) -> dict:
     # PS2
     m = _BOOT2_RE.search(text)
     if m:
-        raw = m.group(1).rstrip(";")
-        return {"game_id": raw, "platform": "ps2"}
+        normalized = _normalize_ps_serial(m.group(1))
+        if normalized:
+            return {"game_id": normalized, "platform": "ps2"}
     # PS1
     m = _BOOT_RE.search(text)
     if m:
-        raw = m.group(1).rstrip(";")
-        return {"game_id": raw, "platform": "ps1"}
+        normalized = _normalize_ps_serial(m.group(1))
+        if normalized:
+            return {"game_id": normalized, "platform": "ps1"}
     return {}
 
 
@@ -446,6 +501,279 @@ class _BinSectorStream:
         return bytes(result)
 
 
+# ===========================================================================
+# CHD v5 direct disc-sector reader
+# ===========================================================================
+# Implements the same low-level sector reading as libchdr — the C library used
+# by PCSX2, AetherSX2, NetherSX2, and Argosy Launcher — so we can extract
+# SYSTEM.CNF from the CHD's own disc content without a full extraction pass.
+
+class _CHDReader:
+    """
+    Minimal CHD v5 reader.
+
+    Reads individual disc sectors from a CHD file using the same hunk-map
+    lookup and decompression mechanism as libchdr.
+
+    Supported compression codecs:
+      • ZLIB (0x7A6C6962) — common for older CHD files
+      • LZMA (0x6C7A6D61) — default for ``chdman createdvd`` on modern MAME
+      • Uncompressed (hunk compression type 4)
+
+    CHD v5 uses big-endian byte order for all multi-byte header and map fields.
+    """
+
+    _MAGIC = b"MComprHD"
+    _HEADER_SIZE = 124
+    _VERSION = 5
+    _MAP_ENTRY_SIZE = 12   # bytes per hunk-map entry
+
+    # Hunk compression types (byte 0 of each 12-byte map entry)
+    _CTYPE_CODEC0 = 0    # compressed with codec[0]
+    _CTYPE_CODEC1 = 1    # compressed with codec[1]
+    _CTYPE_CODEC2 = 2    # compressed with codec[2]
+    _CTYPE_CODEC3 = 3    # compressed with codec[3]
+    _CTYPE_NONE   = 4    # uncompressed (raw hunk stored verbatim)
+    _CTYPE_SELF   = 5    # back-reference to an earlier hunk (not implemented)
+    _CTYPE_PARENT = 6    # reference to parent CHD           (not implemented)
+    _CTYPE_MINI   = 7    # 8-byte value replicated to fill the hunk
+
+    # Compression codec 4-char tags stored as big-endian uint32 in the header
+    _CODEC_ZLIB = 0x7A6C6962   # b'zlib'
+    _CODEC_LZMA = 0x6C7A6D61   # b'lzma'
+    _CODEC_ZSTD = 0x7A737464   # b'zstd'
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._f = None
+        self._hunk_bytes = 0
+        self._unit_bytes = 0
+        self._map_offset = 0
+        self._codecs: list[int] = [0, 0, 0, 0]
+        self._cache: dict[int, bytes] = {}
+
+    @property
+    def unit_bytes(self) -> int:
+        """Bytes per disc unit (sector): 2048 for DVD, 2352/2448 for CD."""
+        return self._unit_bytes
+
+    def open(self) -> bool:
+        """Open and validate the CHD v5 header.  Returns False on failure."""
+        try:
+            self._f = open(self._path, "rb")
+            hdr = self._f.read(self._HEADER_SIZE)
+            if len(hdr) < self._HEADER_SIZE or hdr[:8] != self._MAGIC:
+                return False
+            # All multi-byte fields are big-endian in CHD v5
+            hdr_len = struct.unpack_from(">I", hdr, 8)[0]
+            version = struct.unpack_from(">I", hdr, 12)[0]
+            if version != self._VERSION or hdr_len < self._HEADER_SIZE:
+                return False
+            self._map_offset = struct.unpack_from(">Q", hdr, 24)[0]
+            self._hunk_bytes = struct.unpack_from(">I", hdr, 40)[0]
+            self._unit_bytes = struct.unpack_from(">I", hdr, 44)[0]
+            self._codecs = list(struct.unpack_from(">4I", hdr, 108))
+            return self._hunk_bytes > 0 and self._unit_bytes > 0
+        except OSError:
+            return False
+
+    def close(self) -> None:
+        if self._f:
+            self._f.close()
+            self._f = None
+
+    def __enter__(self) -> "_CHDReader":
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()
+
+    def read_sector(self, lba: int) -> Optional[bytes]:
+        """
+        Read one disc unit (``unit_bytes``) at the given LBA.
+        Returns None on error or unsupported compression.
+        """
+        units_per_hunk = self._hunk_bytes // self._unit_bytes
+        hunk_idx = lba // units_per_hunk
+        hunk_off = (lba % units_per_hunk) * self._unit_bytes
+        hunk = self._get_hunk(hunk_idx)
+        if hunk is None or hunk_off + self._unit_bytes > len(hunk):
+            return None
+        return hunk[hunk_off : hunk_off + self._unit_bytes]
+
+    def _get_hunk(self, idx: int) -> Optional[bytes]:
+        if idx in self._cache:
+            return self._cache[idx]
+        data = self._decode_hunk(idx)
+        if data is not None and len(self._cache) < 64:
+            self._cache[idx] = data
+        return data
+
+    def _decode_hunk(self, idx: int) -> Optional[bytes]:
+        try:
+            self._f.seek(self._map_offset + idx * self._MAP_ENTRY_SIZE)
+            entry = self._f.read(self._MAP_ENTRY_SIZE)
+            if len(entry) < self._MAP_ENTRY_SIZE:
+                return None
+            ctype = entry[0]
+            # Compressed length: bytes 1–3, big-endian
+            clen = struct.unpack_from(">I", b"\x00" + entry[1:4])[0]
+            # File offset: bytes 4–9, big-endian
+            foff = struct.unpack_from(">Q", b"\x00\x00" + entry[4:10])[0]
+
+            if ctype == self._CTYPE_NONE:
+                self._f.seek(foff)
+                raw = self._f.read(self._hunk_bytes)
+                return raw if len(raw) == self._hunk_bytes else None
+
+            if ctype == self._CTYPE_MINI:
+                self._f.seek(foff)
+                mini = self._f.read(8)
+                if len(mini) < 8:
+                    return None
+                return (mini * ((self._hunk_bytes + 7) // 8))[: self._hunk_bytes]
+
+            if ctype in (self._CTYPE_CODEC0, self._CTYPE_CODEC1,
+                         self._CTYPE_CODEC2, self._CTYPE_CODEC3):
+                codec = self._codecs[ctype]
+                self._f.seek(foff)
+                compressed = self._f.read(clen)
+                if len(compressed) != clen:
+                    return None
+                return self._decompress(codec, compressed)
+
+            # COMP_SELF, COMP_PARENT — require CHD linkage; not needed here
+            return None
+        except Exception:
+            return None
+
+    def _decompress(self, codec: int, data: bytes) -> Optional[bytes]:
+        try:
+            if codec == self._CODEC_ZLIB:
+                return _zlib.decompress(data)
+            if codec == self._CODEC_LZMA:
+                # MAME stores LZMA as 5-byte prop header + raw LZMA1 stream,
+                # matching libchdr's lzma_decompress implementation.
+                if len(data) < 5:
+                    return None
+                lc = data[0] % 9
+                tmp = data[0] // 9
+                lp = tmp % 5
+                pb = tmp // 5
+                dict_size = struct.unpack_from("<I", data, 1)[0]
+                filters = [
+                    {
+                        "id": _lzma.FILTER_LZMA1,
+                        "lc": lc,
+                        "lp": lp,
+                        "pb": pb,
+                        "dict_size": dict_size,
+                    }
+                ]
+                return _lzma.decompress(
+                    data[5:], format=_lzma.FORMAT_RAW, filters=filters
+                )
+            if codec == self._CODEC_ZSTD:
+                try:
+                    import zstandard  # optional; not required for PS2/PS1
+                    return zstandard.ZstdDecompressor().decompress(
+                        data, max_output_size=self._hunk_bytes * 2
+                    )
+                except ImportError:
+                    return None
+            return None  # unsupported codec (e.g. FLAC for audio tracks)
+        except Exception:
+            return None
+
+
+class _CHDSectorStream:
+    """
+    Wraps a ``_CHDReader`` as a file-like object exposing 2048-byte logical
+    sectors — the same interface that ``_read_pvd`` and ``_find_file`` expect.
+
+    ``data_offset`` is the byte offset within each raw CHD sector where the
+    2048-byte user-data payload begins:
+      0  — DVD CHDs (unit_bytes=2048): pure ISO data, no framing
+      16 — Mode 1 CD sector (sync + header)
+      24 — Mode 2 Form 1 CD sector (sync + header + sub-header)
+    """
+
+    def __init__(self, reader: "_CHDReader", data_offset: int = 0) -> None:
+        self._reader = reader
+        self._data_offset = data_offset
+        self._pos = 0
+
+    def seek(self, pos: int) -> None:
+        self._pos = pos
+
+    def read(self, size: int) -> bytes:
+        result = bytearray()
+        remaining = size
+        pos = self._pos
+        while remaining > 0:
+            logical_lba = pos // _SECTOR_SIZE
+            offset_in = pos % _SECTOR_SIZE
+            chunk_sz = min(remaining, _SECTOR_SIZE - offset_in)
+            sector = self._reader.read_sector(logical_lba)
+            if sector is None:
+                break
+            user_data = sector[self._data_offset : self._data_offset + _SECTOR_SIZE]
+            if len(user_data) < _SECTOR_SIZE:
+                break
+            chunk = user_data[offset_in : offset_in + chunk_sz]
+            if not chunk:
+                break
+            result.extend(chunk)
+            pos += len(chunk)
+            remaining -= len(chunk)
+        self._pos = pos
+        return bytes(result)
+
+
+def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
+    """
+    Extract game identity by reading disc sectors directly from a CHD file.
+
+    This mirrors the approach used by PCSX2, AetherSX2, NetherSX2, and Argosy
+    Launcher, all of which use libchdr to read the CHD's raw disc sectors and
+    then walk the ISO 9660 filesystem to find SYSTEM.CNF or PARAM.SFO.
+
+    Currently handles DVD CHDs (unit_bytes=2048) where sectors are plain
+    2048-byte ISO data.  CD CHDs (unit_bytes=2352/2448) fall back to the GDRO
+    or companion-file strategies.
+
+    Returns a dict with a normalized ``game_id`` on success, or None.
+    """
+    try:
+        with _CHDReader(chd_path) as reader:
+            if not reader.open():
+                return None
+            if reader.unit_bytes != _SECTOR_SIZE:
+                # CD CHDs store 2352/2448-byte sectors with CD framing;
+                # handled separately via GDRO metadata or companion files.
+                return None
+            stream = _CHDSectorStream(reader, data_offset=0)
+            pvd = _read_pvd(stream)
+            if not pvd:
+                return None
+            root_lba, root_size = _pvd_root_dir(pvd)
+            # PS2 / PS1 DVD — SYSTEM.CNF in root
+            cnf = _find_file(stream, root_lba, root_size, ["SYSTEM.CNF"])
+            if cnf:
+                result = _parse_system_cnf(cnf)
+                if result.get("game_id"):
+                    return result
+            # PSP — /PSP_GAME/PARAM.SFO
+            sfo = _find_file(stream, root_lba, root_size, ["PSP_GAME", "PARAM.SFO"])
+            if sfo:
+                result = _parse_param_sfo(sfo)
+                if result.get("game_id"):
+                    return result
+    except Exception as e:
+        logger.debug("disc_id: CHD sector extraction failed for %s: %s", chd_path, e)
+    return None
+
+
 def _extract_cue(path: str) -> Optional[dict]:
     """
     Parse a .cue sheet, find the first DATA track's BIN file, and extract.
@@ -545,14 +873,21 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
                 out["title"] = title
             return out
 
-    # --- Strategy 2: Dreamcast GDRO (IP.BIN) ---------------------------------
+    # --- Strategy 2: read disc sectors directly (like PCSX2 / AetherSX2) ----
+    # For DVD CHDs (unit_bytes=2048) this reads SYSTEM.CNF / PARAM.SFO from
+    # the CHD's own ISO 9660 filesystem without any extraction pass.
+    disc_result = _extract_from_chd_sectors(chd_path)
+    if disc_result and disc_result.get("game_id"):
+        return disc_result
+
+    # --- Strategy 3: Dreamcast GDRO (IP.BIN) ---------------------------------
     gdro = await _dumpmeta_bin(chd_path, "GDRO", chdman_path)
     if gdro:
         parsed = _parse_ipbin(gdro)
         if parsed.get("game_id"):
             return parsed
 
-    # --- Strategy 3: companion source file -----------------------------------
+    # --- Strategy 4: companion source file -----------------------------------
     chd_p = Path(chd_path)
     for ext in (".iso", ".gdi", ".cue", ".bin"):
         candidate = chd_p.with_suffix(ext)
@@ -580,8 +915,8 @@ async def embed_in_chd(
     ``chdman addmeta``.  Returns True on success, False on failure.
 
     Tags written:
-      GAME — the disc serial / game ID (e.g. "SLUS_20312", "ULES00135",
-             "MK-51034")
+      GAME — the normalized disc serial (e.g. "SLUS-20312", "ULES-00135",
+             "MK-51034") in the form emulator frontends use for DB lookup
       NAME — the human-readable game title (optional)
     """
     ok = await _addmeta_text(chd_path, TAG_GAME, game_id, chdman_path)
@@ -606,12 +941,15 @@ async def ensure_disc_id_embedded(
 
       1. Fast-path: read the GAME tag.  If it is already present, return the
          existing info without touching the file.
-      2. Try the standard Dreamcast GDRO (IP.BIN) tag that chdman embeds for
+      2. Read disc sectors directly from the CHD (DVD CHDs): walks the ISO 9660
+         filesystem to find SYSTEM.CNF / PARAM.SFO, then embeds GAME / NAME.
+         The serial is normalized to the canonical emulator form (SLUS-20312).
+      3. Try the standard Dreamcast GDRO (IP.BIN) tag that chdman embeds for
          GDI-sourced CHDs.  Parse product number + title from the IP.BIN
          binary, then embed GAME / NAME via addmeta.
-      3. Scan for a companion source file (.iso / .gdi / .cue / .bin) next to
+      4. Scan for a companion source file (.iso / .gdi / .cue / .bin) next to
          the CHD, extract the disc serial, then embed GAME / NAME.
-      4. Return None if no identity information can be found.
+      5. Return None if no identity information can be found.
 
     The game serial is written as both the GAME tag and the NAME (title) tag.
     Emulator frontends and database scrapers key on the serial for game lookup,
@@ -631,7 +969,25 @@ async def ensure_disc_id_embedded(
             out["title"] = title
         return out
 
-    # --- Strategy 2: standard Dreamcast GDRO tag -----------------------------
+    # --- Strategy 2: read disc sectors directly (like PCSX2 / AetherSX2) ----
+    disc_result = _extract_from_chd_sectors(chd_path)
+    if disc_result and disc_result.get("game_id"):
+        logger.debug(
+            "disc_id: embedding game_id=%r from CHD sectors in %s",
+            disc_result["game_id"],
+            chd_path,
+        )
+        ok = await embed_in_chd(
+            chd_path, disc_result["game_id"], disc_result["game_id"], chdman_path
+        )
+        if not ok:
+            logger.warning(
+                "disc_id: failed to embed GAME/NAME tags in %s", chd_path
+            )
+            return None
+        return disc_result
+
+    # --- Strategy 3: standard Dreamcast GDRO tag -----------------------------
     gdro = await _dumpmeta_bin(chd_path, "GDRO", chdman_path)
     if gdro:
         parsed = _parse_ipbin(gdro)
@@ -651,7 +1007,7 @@ async def ensure_disc_id_embedded(
                 return None
             return parsed
 
-    # --- Strategy 3: companion source file -----------------------------------
+    # --- Strategy 4: companion source file -----------------------------------
     chd_p = Path(chd_path)
     for ext in (".iso", ".gdi", ".cue", ".bin"):
         candidate = chd_p.with_suffix(ext)

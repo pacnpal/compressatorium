@@ -544,7 +544,7 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             raw_data=info.get("raw_data", ""),
             media_type=media_type,
             game_id=disc_info.get("game_id"),
-            title=disc_info.get("game_id"),
+            title=disc_info.get("title") or disc_info.get("game_id"),
         )
 
     except Exception as e:
