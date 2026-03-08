@@ -104,12 +104,15 @@ async def scan_metadata_task(
 
         # Phase 2: Retroactively embed GAME / NAME tags in any CHD that lacks
         # them.  Covers CHDs created before conversion-time tagging was added.
-        # ensure_disc_id_embedded() returns immediately (no writes) when the
-        # GAME tag already exists, so this pass is safe to run every scan.
+        # Skip CHDs where disc ID has already been checked and the file has not
+        # changed since — avoids spawning a chdman subprocess on every scan.
         embed_count = 0
         for path in all_paths:
             try:
+                if await chd_metadata_store.is_disc_id_checked(path):
+                    continue
                 result = await disc_id_ensure_embedded(path, settings.chdman_path)
+                await chd_metadata_store.mark_disc_id_checked(path)
                 if result:
                     embed_count += 1
             except Exception as e:
@@ -117,7 +120,8 @@ async def scan_metadata_task(
 
         if embed_count:
             logger.info(
-                f"Disc ID scan: embedded GAME/NAME tags in {embed_count} CHD file(s)"
+                f"Disc ID scan: ensured GAME/NAME tags for {embed_count} CHD file(s) "
+                f"(newly embedded or already present)"
             )
 
         # Flush all accumulated changes once at the end (async, non-blocking)
@@ -540,7 +544,7 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             raw_data=info.get("raw_data", ""),
             media_type=media_type,
             game_id=disc_info.get("game_id"),
-            title=disc_info.get("title"),
+            title=disc_info.get("game_id"),
         )
 
     except Exception as e:

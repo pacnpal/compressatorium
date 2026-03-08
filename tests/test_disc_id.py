@@ -13,12 +13,10 @@ Covers:
 from __future__ import annotations
 
 import io
-import os
 import struct
-import tempfile
 import textwrap
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -646,7 +644,7 @@ async def test_ensure_disc_id_embedded_already_tagged(tmp_path):
 
 @pytest.mark.asyncio
 async def test_ensure_disc_id_embedded_gdro_fallback(tmp_path):
-    """No GAME tag, but GDRO present → embeds GAME/NAME from IP.BIN."""
+    """No GAME tag, but GDRO present → embeds serial as both GAME and NAME."""
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake")
     ipbin = _make_ipbin("MK-51034  ", "DEAD OR ALIVE")
@@ -671,12 +669,40 @@ async def test_ensure_disc_id_embedded_gdro_fallback(tmp_path):
 
     assert result is not None
     assert result["game_id"] == "MK-51034"
+    # Serial used as the NAME (title) tag — emulators key on the serial for lookup
     assert any(t == TAG_GAME and "MK-51034" in v for t, v in addmeta_calls)
+    assert any(t == TAG_NAME and "MK-51034" in v for t, v in addmeta_calls)
+
+
+@pytest.mark.asyncio
+async def test_ensure_disc_id_embedded_gdro_embed_failure(tmp_path):
+    """embed_in_chd failure (addmeta error) → returns None, not a false positive."""
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake")
+    ipbin = _make_ipbin("MK-51034  ", "DEAD OR ALIVE")
+
+    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
+        return ipbin if tag == "GDRO" else None
+
+    async def fake_addmeta(chd_path, tag, value, chdman_path):
+        return False  # simulate chdman failure
+
+    with (
+        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
+        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
+        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
+    ):
+        result = await ensure_disc_id_embedded(str(chd), "chdman")
+
+    assert result is None
 
 
 @pytest.mark.asyncio
 async def test_ensure_disc_id_embedded_companion_iso(tmp_path):
-    """No GAME tag, no GDRO, companion ISO present → embeds from ISO."""
+    """No GAME tag, no GDRO, companion ISO present → embeds serial as GAME and NAME."""
     cnf = b"BOOT2 = cdrom0:\\SLUS_20999;1\n"
     iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
     chd = tmp_path / "game.chd"
@@ -704,6 +730,36 @@ async def test_ensure_disc_id_embedded_companion_iso(tmp_path):
     assert result is not None
     assert result["game_id"] == "SLUS_20999"
     assert any(t == TAG_GAME and v == "SLUS_20999" for t, v in addmeta_calls)
+    # Serial used as the NAME (title) tag for emulator lookup
+    assert any(t == TAG_NAME and v == "SLUS_20999" for t, v in addmeta_calls)
+
+
+@pytest.mark.asyncio
+async def test_ensure_disc_id_embedded_companion_embed_failure(tmp_path):
+    """embed_in_chd failure for companion file → returns None, not a false positive."""
+    cnf = b"BOOT2 = cdrom0:\\SLUS_20999;1\n"
+    iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake")
+    (tmp_path / "game.iso").write_bytes(iso_bytes)
+
+    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_addmeta(chd_path, tag, value, chdman_path):
+        return False  # simulate chdman failure
+
+    with (
+        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
+        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
+        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
+    ):
+        result = await ensure_disc_id_embedded(str(chd), "chdman")
+
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -736,7 +792,7 @@ async def test_ensure_disc_id_embedded_nothing_found(tmp_path):
 
 @pytest.mark.asyncio
 async def test_ensure_disc_id_embedded_psp_companion(tmp_path):
-    """PSP companion ISO → DISC_ID and TITLE embedded correctly."""
+    """PSP companion ISO → serial used as GAME and NAME (title) for emulator lookup."""
     sfo = _make_param_sfo({"DISC_ID": "ULES00135", "TITLE": "Patapon"})
     iso_bytes = _make_iso({"PSP_GAME/PARAM.SFO": sfo})
     chd = tmp_path / "patapon.chd"
@@ -763,6 +819,6 @@ async def test_ensure_disc_id_embedded_psp_companion(tmp_path):
 
     assert result is not None
     assert result["game_id"] == "ULES00135"
-    assert result.get("title") == "Patapon"
     assert any(t == TAG_GAME and v == "ULES00135" for t, v in addmeta_calls)
-    assert any(t == TAG_NAME and v == "Patapon" for t, v in addmeta_calls)
+    # Serial used as the NAME (title) tag — not the human-readable "Patapon"
+    assert any(t == TAG_NAME and v == "ULES00135" for t, v in addmeta_calls)

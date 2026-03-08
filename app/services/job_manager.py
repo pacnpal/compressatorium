@@ -1262,22 +1262,33 @@ class JobManager:
                 # Embed game ID / title into CHD metadata after createcd/createdvd.
                 # Uses the source file (input_path) which is still available at this
                 # point — even when delete-on-verify is requested.
+                # The serial is written as both GAME and NAME; see disc_id.py for
+                # the rationale (serials are the standard emulator lookup key).
                 if job.mode.value in {"createcd", "createdvd"} and os.path.exists(job.output_path):
                     try:
                         disc_info = await run_in_threadpool(disc_id_from_source, input_path)
                         if disc_info and disc_info.get("game_id"):
-                            await disc_id_embed(
+                            game_id = disc_info["game_id"]
+                            embedded = await disc_id_embed(
                                 job.output_path,
-                                disc_info["game_id"],
-                                disc_info.get("title"),
+                                game_id,
+                                game_id,
                                 settings.chdman_path,
                             )
-                            logger.info(
-                                "Job %s embedded disc ID %r in %s",
-                                job_id,
-                                disc_info["game_id"],
-                                Path(job.output_path).name,
-                            )
+                            if embedded:
+                                logger.info(
+                                    "Job %s embedded disc ID %r in %s",
+                                    job_id,
+                                    game_id,
+                                    Path(job.output_path).name,
+                                )
+                            else:
+                                logger.debug(
+                                    "Job %s failed to embed disc ID %r in %s",
+                                    job_id,
+                                    game_id,
+                                    Path(job.output_path).name,
+                                )
                     except Exception as _e:
                         logger.debug(
                             "Job %s disc ID embed skipped: %s", job_id, _e

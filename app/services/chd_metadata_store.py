@@ -267,6 +267,44 @@ class CHDMetadataStore:
                 return None
             return record.get("media_type")
 
+    async def is_disc_id_checked(self, chd_path: str) -> bool:
+        """
+        Return True if disc ID extraction has already been attempted for this
+        CHD and the file has not been modified since.  Used by the metadata
+        scan to skip the ``chdman dumpmeta`` subprocess for already-processed
+        files, avoiding redundant work on every scan.
+        """
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        try:
+            current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
+        except OSError:
+            return False
+        with self._lock:
+            record = self._records.get(normalized)
+            if record is None or not record.get("disc_id_checked"):
+                return False
+            return record.get("disc_id_checked_mtime") == current_mtime
+
+    async def mark_disc_id_checked(self, chd_path: str) -> None:
+        """
+        Mark that disc ID extraction has been attempted for this CHD.
+        Stores the current file mtime so that ``is_disc_id_checked`` can
+        detect when the file is later modified (e.g. by a re-conversion).
+        Creates a minimal record if none exists yet.
+        """
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        try:
+            current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
+        except OSError:
+            current_mtime = None
+        with self._lock:
+            if normalized not in self._records:
+                self._records[normalized] = {"chd_path": normalized}
+            self._records[normalized]["disc_id_checked"] = True
+            self._records[normalized]["disc_id_checked_mtime"] = current_mtime
+            self._dirty = True
+            self._version += 1
+
     async def is_stale(self, chd_path: str) -> bool:
         """Check if cached metadata is stale (file modified since caching)."""
         normalized = await run_in_threadpool(self._normalize_path, chd_path)

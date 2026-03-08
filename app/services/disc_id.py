@@ -9,7 +9,7 @@ Supports extracting game serial numbers and titles from:
 Extraction strategy (in priority order):
   1. Read our embedded GAME / NAME tags written by addmeta at conversion time.
   2. For CD CHDs: parse the Dreamcast GDRO (IP.BIN) metadata standard tag.
-  3. Look for a companion source file (.iso / .gdi) next to the CHD.
+  3. Look for a companion source file (.iso / .gdi / .cue / .bin) next to the CHD.
   4. Return None if nothing is found.
 
 Source-file extraction:
@@ -133,7 +133,7 @@ def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
     entries: list[tuple[str, int, int, bool]] = []
     pos = 0
     while pos < len(data):
-        rec_len = data[pos] if pos < len(data) else 0
+        rec_len = data[pos]
         if rec_len == 0:
             # Advance to next sector boundary
             next_pos = ((pos // _SECTOR_SIZE) + 1) * _SECTOR_SIZE
@@ -527,7 +527,11 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
       3. Look for a companion source file (.iso / .gdi / .bin / .cue) beside
          the CHD and extract from that.
 
-    Returns a dict with at least ``game_id`` and ``platform`` keys, or None.
+    Returns a dict containing at least ``game_id`` when successful. The dict
+    may also include ``title`` and/or ``platform`` depending on the extraction
+    strategy — ``platform`` is only present when the result comes from GDRO or
+    source-file extraction, not from the embedded GAME tag (Strategy 1).
+    Returns None if no ID could be found.
     """
     # --- Strategy 1: our embedded GAME tag -----------------------------------
     result = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
@@ -609,6 +613,10 @@ async def ensure_disc_id_embedded(
          the CHD, extract the disc serial, then embed GAME / NAME.
       4. Return None if no identity information can be found.
 
+    The game serial is written as both the GAME tag and the NAME (title) tag.
+    Emulator frontends and database scrapers key on the serial for game lookup,
+    so using the serial as the title ensures maximum compatibility.
+
     Returns a dict with at least ``game_id`` on success, or None if the disc
     ID could not be determined.
     """
@@ -633,9 +641,14 @@ async def ensure_disc_id_embedded(
                 parsed["game_id"],
                 chd_path,
             )
-            await embed_in_chd(
-                chd_path, parsed["game_id"], parsed.get("title"), chdman_path
+            ok = await embed_in_chd(
+                chd_path, parsed["game_id"], parsed["game_id"], chdman_path
             )
+            if not ok:
+                logger.warning(
+                    "disc_id: failed to embed GAME/NAME tags in %s", chd_path
+                )
+                return None
             return parsed
 
     # --- Strategy 3: companion source file -----------------------------------
@@ -651,9 +664,14 @@ async def ensure_disc_id_embedded(
                     candidate.name,
                     chd_path,
                 )
-                await embed_in_chd(
-                    chd_path, res["game_id"], res.get("title"), chdman_path
+                ok = await embed_in_chd(
+                    chd_path, res["game_id"], res["game_id"], chdman_path
                 )
+                if not ok:
+                    logger.warning(
+                        "disc_id: failed to embed GAME/NAME tags in %s", chd_path
+                    )
+                    return None
                 return res
 
     return None
