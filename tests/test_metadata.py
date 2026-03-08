@@ -288,3 +288,49 @@ async def test_set_metadata_preserves_disc_id_checked(metadata_store, tmp_path):
 
     # Flag must still be set after the metadata refresh
     assert await metadata_store.is_disc_id_checked(path)
+
+
+@pytest.mark.asyncio
+async def test_get_and_update_disc_id_info(metadata_store, tmp_path):
+    """update_disc_id_info stores game_id/title; get_disc_id_info retrieves them."""
+    chd = tmp_path / "game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    # Nothing stored yet
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id is None
+    assert title is None
+
+    # Store disc-id info
+    await metadata_store.update_disc_id_info(path, "SLUS-20312", "God of War")
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "SLUS-20312"
+    assert title == "God of War"
+
+
+@pytest.mark.asyncio
+async def test_update_disc_id_info_no_title(metadata_store, tmp_path):
+    """update_disc_id_info works when title is None."""
+    chd = tmp_path / "ps2game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    await metadata_store.update_disc_id_info(path, "SCES-50330", None)
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "SCES-50330"
+    assert title is None
+
+
+@pytest.mark.asyncio
+async def test_update_disc_id_info_creates_stub_record(metadata_store, tmp_path):
+    """update_disc_id_info creates a minimal record even when no info was cached yet."""
+    chd = tmp_path / "fresh.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    # No set_metadata call prior — record doesn't exist
+    await metadata_store.update_disc_id_info(path, "ULES-00135", "Patapon")
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "ULES-00135"
+    assert title == "Patapon"

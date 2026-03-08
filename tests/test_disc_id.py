@@ -629,6 +629,57 @@ def test_extract_from_chd_sectors_fake_chd_returns_none(tmp_path):
     p.write_bytes(b"fake")
     assert _extract_from_chd_sectors(str(p)) is None
 
+
+def _make_chd_v5_mini(iso_bytes: bytes) -> bytes:
+    """
+    Build a minimal CHD v5 binary where all hunks use COMP_MINI (type 7).
+    The 8-byte fill value is stored directly in map entry bytes 4-11.
+    Only useful for all-zero ISO data (fill = b'\\x00' * 8).
+    """
+    unit_bytes = 2048
+    hunk_bytes = unit_bytes
+    pad = (-len(iso_bytes)) % hunk_bytes
+    padded = iso_bytes + b"\x00" * pad
+    num_hunks = len(padded) // hunk_bytes
+
+    map_offset = 124
+
+    header = bytearray(124)
+    header[:8] = b"MComprHD"
+    struct.pack_into(">I", header, 8,  124)
+    struct.pack_into(">I", header, 12, 5)
+    struct.pack_into(">Q", header, 16, len(padded))
+    struct.pack_into(">Q", header, 24, map_offset)
+    struct.pack_into(">Q", header, 32, 0)
+    struct.pack_into(">I", header, 40, hunk_bytes)
+    struct.pack_into(">I", header, 44, unit_bytes)
+
+    hunk_map = bytearray()
+    for _ in range(num_hunks):
+        entry = bytearray(12)
+        entry[0] = 7          # CTYPE_MINI
+        # bytes 1-3: compressed length = 0 (unused for MINI)
+        # bytes 4-11: the 8-byte fill value stored inline (all zeros here)
+        hunk_map.extend(entry)
+
+    # No data section — MINI hunks store their fill value in the map entry itself
+    return bytes(header) + bytes(hunk_map)
+
+
+def test_chd_reader_ctype_mini_fill(tmp_path):
+    """CTYPE_MINI hunks: fill value is read directly from map entry bytes 4-11."""
+    # Build a CHD where every hunk is MINI-compressed with an all-zero fill.
+    # The CHD sector-read should return all-zero sectors (not garbage from a bad seek).
+    iso = bytearray(2048 * 20)  # 20 sectors of zeros
+    chd_path = tmp_path / "mini.chd"
+    chd_path.write_bytes(_make_chd_v5_mini(bytes(iso)))
+
+    with _CHDReader(str(chd_path)) as reader:
+        assert reader.open() is True
+        sector = reader.read_sector(0)
+        assert sector is not None
+        assert sector == b"\x00" * 2048, "MINI hunk must return the fill value, not file bytes"
+
 @pytest.mark.asyncio
 async def test_extract_from_chd_game_tag(tmp_path):
     """GAME tag found via dumpmeta → returned as game_id."""

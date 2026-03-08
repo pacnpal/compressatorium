@@ -1290,9 +1290,9 @@ class JobManager:
                                     game_id,
                                     Path(job.output_path).name,
                                 )
-                    except Exception as _e:
+                    except Exception as e:
                         logger.debug(
-                            "Job %s disc ID embed skipped: %s", job_id, _e
+                            "Job %s disc ID embed skipped: %s", job_id, e
                         )
 
                 verified = False

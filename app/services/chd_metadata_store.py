@@ -447,6 +447,40 @@ class CHDMetadataStore:
                 return None, None
             return record.get("metadata"), record.get("media_type")
 
+    async def get_disc_id_info(self, chd_path: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Return the cached ``(game_id, title)`` pair for *chd_path*, or
+        ``(None, None)`` if disc-ID info has not been stored yet.
+
+        Used by the ``/api/info`` route to skip the ``chdman dumpmeta``
+        subprocess when the result is already known.
+        """
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        with self._lock:
+            record = self._records.get(normalized)
+            if record is None:
+                return None, None
+            return record.get("game_id"), record.get("title")
+
+    async def update_disc_id_info(
+        self, chd_path: str, game_id: Optional[str], title: Optional[str]
+    ) -> None:
+        """
+        Store the ``game_id`` and ``title`` fields in the cached record for
+        *chd_path*.  Creates a minimal stub record when none exists yet.
+
+        This allows the ``/api/info`` route to return disc-ID info without
+        spawning a ``chdman dumpmeta`` subprocess on every request.
+        """
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        with self._lock:
+            if normalized not in self._records:
+                self._records[normalized] = {"chd_path": normalized}
+            self._records[normalized]["game_id"] = game_id
+            self._records[normalized]["title"] = title
+            self._dirty = True
+            self._version += 1
+
     def all_records(self):
         """Return all cached records."""
         with self._lock:

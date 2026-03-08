@@ -518,13 +518,30 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             asyncio.create_task(safe_flush())
             media_type = record.get("media_type")
 
-        # Extract game ID / title from embedded CHD tags or companion source file.
-        # This is best-effort and non-fatal.
-        disc_info: dict = {}
-        try:
-            disc_info = await disc_id_extract_from_chd(path, settings.chdman_path) or {}
-        except Exception as e:
-            logger.debug("disc_id extraction failed for %s: %s", path, e)
+        # Extract game ID / title.  Prefer the cached value in the metadata
+        # store (written by Phase 2 of the scan or by a prior /api/info call)
+        # to avoid spawning chdman subprocesses on every request.
+        cached_game_id, cached_title = await chd_metadata_store.get_disc_id_info(path)
+        if cached_game_id is not None:
+            disc_info: dict = {"game_id": cached_game_id}
+            if cached_title is not None:
+                disc_info["title"] = cached_title
+        else:
+            disc_info = {}
+            try:
+                disc_info = await disc_id_extract_from_chd(path, settings.chdman_path) or {}
+            except Exception as e:
+                logger.debug("disc_id extraction failed for %s: %s", path, e)
+            if disc_info.get("game_id") is not None:
+                await chd_metadata_store.update_disc_id_info(
+                    path, disc_info.get("game_id"), disc_info.get("title")
+                )
+
+        game_id = disc_info.get("game_id")
+        # Only surface a distinct human-readable title; skip when it equals
+        # the serial (e.g. PS2/PS1 CHDs where we wrote serial as both tags).
+        raw_title = disc_info.get("title")
+        title = raw_title if raw_title and raw_title != game_id else None
 
         return CHDInfo(
             file=path,
@@ -542,8 +559,8 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             data_sha1=info.get("data_sha1"),
             raw_data=info.get("raw_data", ""),
             media_type=media_type,
-            game_id=disc_info.get("game_id"),
-            title=disc_info.get("title") or disc_info.get("game_id"),
+            game_id=game_id,
+            title=title,
         )
 
     except Exception as e:

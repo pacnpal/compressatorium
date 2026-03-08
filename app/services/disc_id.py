@@ -627,10 +627,9 @@ class _CHDReader:
                 return raw if len(raw) == self._hunk_bytes else None
 
             if ctype == self._CTYPE_MINI:
-                self._f.seek(foff)
-                mini = self._f.read(8)
-                if len(mini) < 8:
-                    return None
+                # For COMP_MINI hunks in CHD v5, the 8-byte fill value is stored
+                # directly in bytes 4–11 of the map entry, not at a file offset.
+                mini = entry[4:12]
                 return (mini * ((self._hunk_bytes + 7) // 8))[: self._hunk_bytes]
 
             if ctype in (self._CTYPE_CODEC0, self._CTYPE_CODEC1,
@@ -954,9 +953,12 @@ async def ensure_disc_id_embedded(
          the CHD, extract the disc serial, then embed GAME / NAME.
       5. Return None if no identity information can be found.
 
-    The game serial is written as both the GAME tag and the NAME (title) tag.
-    Emulator frontends and database scrapers key on the serial for game lookup,
-    so using the serial as the title ensures maximum compatibility.
+    The GAME tag always stores the normalized game serial. The NAME (title) tag
+    stores a human-readable game title when one is available (e.g., from PSP
+    PARAM.SFO or Dreamcast IP.BIN), falling back to the serial when no title
+    can be extracted. Emulator frontends and database scrapers key on the serial
+    for game lookup, so this fallback ensures maximum compatibility while
+    preserving real titles when possible.
 
     Returns a dict with at least ``game_id`` on success, or None if the disc
     ID could not be determined.
