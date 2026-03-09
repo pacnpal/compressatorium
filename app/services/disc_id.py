@@ -791,7 +791,7 @@ def _extract_cue(path: str) -> Optional[dict]:
                             result = _extract_bin(str(bin_path))
                             if result:
                                 return result
-                        break
+                            break
     except Exception as e:
         logger.debug("disc_id: CUE extraction failed for %s: %s", path, e)
     return None

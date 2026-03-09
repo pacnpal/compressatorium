@@ -475,6 +475,26 @@ def test_extract_cue_bin_missing(tmp_path):
     assert result is None
 
 
+def test_extract_cue_fallback_to_second_file(tmp_path):
+    """When the first FILE entry is missing, the second FILE entry is tried."""
+    cnf = b"BOOT = cdrom:\\SLPS_123.45;1\n"
+    bin_path = tmp_path / "track02.bin"
+    bin_path.write_bytes(_make_mode1_bin(_make_iso({"SYSTEM.CNF": cnf})))
+
+    cue_path = tmp_path / "game.cue"
+    cue_path.write_text(
+        'FILE "nonexistent.bin" BINARY\n'
+        "  TRACK 01 MODE1/2352\n"
+        f'FILE "{bin_path.name}" BINARY\n'
+        "  TRACK 02 MODE1/2352\n"
+        "    INDEX 01 00:00:00\n"
+    )
+
+    result = _extract_cue(str(cue_path))
+    assert result is not None
+    assert result["game_id"] == "SLPS-12345"
+
+
 def test_extract_from_source_cue(tmp_path):
     """extract_from_source dispatches to _extract_cue for .cue files."""
     cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
