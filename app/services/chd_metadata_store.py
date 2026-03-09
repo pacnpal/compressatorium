@@ -486,6 +486,8 @@ class CHDMetadataStore:
             self._dirty = True
             self._version += 1
 
+        await self._persist_async()
+
     def all_records(self):
         """Return all cached records."""
         with self._lock:

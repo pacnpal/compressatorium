@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import io
 import struct
-import textwrap
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +25,7 @@ from app.services.disc_id import (
     _BinSectorStream,
     _CHDReader,
     _CHDSectorStream,
+    _extract_cue,
     _extract_from_chd_sectors,
     _extract_gdi,
     _extract_iso,
@@ -422,6 +422,77 @@ def test_extract_from_source_unknown_ext(tmp_path):
     assert result is None
 
 
+def _make_mode1_bin(iso_bytes: bytes) -> bytes:
+    """
+    Wrap a flat ISO 9660 image (2048-byte sectors) in Mode 1 2352-byte sectors.
+
+    Each physical sector = 16-byte header + 2048-byte payload + 288-byte ECC pad.
+    This produces a BIN that ``_extract_bin`` can parse (it probes for the PVD at
+    sector 16 with a 16-byte offset).
+    """
+    SECTOR = 2352
+    HEADER = 16  # Mode 1
+    DATA = 2048
+    TAIL = SECTOR - HEADER - DATA  # 288
+    num = (len(iso_bytes) + DATA - 1) // DATA
+    buf = bytearray()
+    for i in range(num):
+        buf += b"\x00" * HEADER
+        chunk = iso_bytes[i * DATA : (i + 1) * DATA]
+        buf += chunk.ljust(DATA, b"\x00")
+        buf += b"\x00" * TAIL
+    return bytes(buf)
+
+
+# ---------------------------------------------------------------------------
+# CUE extraction
+# ---------------------------------------------------------------------------
+
+def test_extract_cue_ps1(tmp_path):
+    """CUE sheet pointing to a Mode 1 BIN with a PS1 SYSTEM.CNF is extracted."""
+    cnf = b"BOOT = cdrom:\\SLPS_123.45;1\n"
+    bin_path = tmp_path / "track01.bin"
+    bin_path.write_bytes(_make_mode1_bin(_make_iso({"SYSTEM.CNF": cnf})))
+
+    cue_path = tmp_path / "game.cue"
+    cue_path.write_text(
+        f'FILE "{bin_path.name}" BINARY\n'
+        "  TRACK 01 MODE1/2352\n"
+        "    INDEX 01 00:00:00\n"
+    )
+
+    result = _extract_cue(str(cue_path))
+    assert result is not None
+    assert result["game_id"] == "SLPS-12345"
+
+
+def test_extract_cue_bin_missing(tmp_path):
+    """CUE sheet whose BIN file is absent returns None without raising."""
+    cue_path = tmp_path / "game.cue"
+    cue_path.write_text('FILE "nonexistent.bin" BINARY\n  TRACK 01 MODE1/2352\n')
+
+    result = _extract_cue(str(cue_path))
+    assert result is None
+
+
+def test_extract_from_source_cue(tmp_path):
+    """extract_from_source dispatches to _extract_cue for .cue files."""
+    cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
+    bin_path = tmp_path / "track01.bin"
+    bin_path.write_bytes(_make_mode1_bin(_make_iso({"SYSTEM.CNF": cnf})))
+
+    cue_path = tmp_path / "game.cue"
+    cue_path.write_text(
+        f'FILE "{bin_path.name}" BINARY\n'
+        "  TRACK 01 MODE1/2352\n"
+        "    INDEX 01 00:00:00\n"
+    )
+
+    result = extract_from_source(str(cue_path))
+    assert result is not None
+    assert result["game_id"] == "SLUS-20312"
+
+
 # ---------------------------------------------------------------------------
 # GDI extraction
 # ---------------------------------------------------------------------------
@@ -679,6 +750,7 @@ def test_chd_reader_ctype_mini_fill(tmp_path):
         sector = reader.read_sector(0)
         assert sector is not None
         assert sector == b"\x00" * 2048, "MINI hunk must return the fill value, not file bytes"
+
 
 @pytest.mark.asyncio
 async def test_extract_from_chd_game_tag(tmp_path):
