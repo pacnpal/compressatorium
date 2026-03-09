@@ -878,7 +878,8 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
     # --- Strategy 2: read disc sectors directly (like PCSX2 / AetherSX2) ----
     # For DVD CHDs (unit_bytes=2048) this reads SYSTEM.CNF / PARAM.SFO from
     # the CHD's own ISO 9660 filesystem without any extraction pass.
-    disc_result = _extract_from_chd_sectors(chd_path)
+    _loop = asyncio.get_running_loop()
+    disc_result = await _loop.run_in_executor(None, _extract_from_chd_sectors, chd_path)
     if disc_result and disc_result.get("game_id"):
         return disc_result
 
@@ -894,7 +895,7 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
     for ext in (".iso", ".gdi", ".cue", ".bin"):
         candidate = chd_p.with_suffix(ext)
         if candidate.exists():
-            res = extract_from_source(str(candidate))
+            res = await _loop.run_in_executor(None, extract_from_source, str(candidate))
             if res and res.get("game_id"):
                 logger.debug(
                     "disc_id: found game_id from companion %s: %s",
@@ -975,7 +976,8 @@ async def ensure_disc_id_embedded(
         return out
 
     # --- Strategy 2: read disc sectors directly (like PCSX2 / AetherSX2) ----
-    disc_result = _extract_from_chd_sectors(chd_path)
+    _loop = asyncio.get_running_loop()
+    disc_result = await _loop.run_in_executor(None, _extract_from_chd_sectors, chd_path)
     if disc_result and disc_result.get("game_id"):
         logger.debug(
             "disc_id: embedding game_id=%r from CHD sectors in %s",
@@ -1023,7 +1025,7 @@ async def ensure_disc_id_embedded(
     for ext in (".iso", ".gdi", ".cue", ".bin"):
         candidate = chd_p.with_suffix(ext)
         if candidate.exists():
-            res = extract_from_source(str(candidate))
+            res = await _loop.run_in_executor(None, extract_from_source, str(candidate))
             if res and res.get("game_id"):
                 logger.debug(
                     "disc_id: embedding game_id=%r from companion %s in %s",

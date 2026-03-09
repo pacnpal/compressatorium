@@ -129,7 +129,6 @@ async def test_scan_metadata_skips_disc_id_already_checked(scan_env, monkeypatch
     assert scan_env["marked_paths"] == []  # not re-marked
 
 
-
 @pytest.fixture
 def metadata_store_path(tmp_path):
     return tmp_path / "chd_metadata.json"
@@ -334,3 +333,24 @@ async def test_update_disc_id_info_creates_stub_record(metadata_store, tmp_path)
     game_id, title = await metadata_store.get_disc_id_info(path)
     assert game_id == "ULES-00135"
     assert title == "Patapon"
+
+
+@pytest.mark.asyncio
+async def test_set_metadata_preserves_game_id_and_title(metadata_store, tmp_path):
+    """set_metadata must not erase game_id/title cached by update_disc_id_info."""
+    chd = tmp_path / "game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    # Cache disc-id info (as the /api/info route would after a cache miss)
+    await metadata_store.update_disc_id_info(path, "SLUS-20312", "God of War")
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "SLUS-20312"
+    assert title == "God of War"
+
+    # Phase 1 metadata refresh — must not erase the cached disc-ID fields
+    await metadata_store.set_metadata(path, {"raw_data": "Tag: DVD-VIDEO"}, persist=False)
+
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "SLUS-20312"
+    assert title == "God of War"
