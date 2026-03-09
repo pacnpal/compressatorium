@@ -522,20 +522,22 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
         # store (written by Phase 2 of the scan or by a prior /api/info call)
         # to avoid spawning chdman subprocesses on every request.
         cached_game_id, cached_title = await chd_metadata_store.get_disc_id_info(path)
+        disc_info: dict = {}
         if cached_game_id is not None:
-            disc_info: dict = {"game_id": cached_game_id}
+            disc_info = {"game_id": cached_game_id}
             if cached_title is not None:
                 disc_info["title"] = cached_title
-        else:
-            disc_info = {}
+        elif not await chd_metadata_store.is_disc_id_checked(path):
+            # Not yet attempted — run the extractor and cache the outcome (even
+            # "nothing found") so subsequent /api/info calls skip the subprocess.
             try:
                 disc_info = await disc_id_extract_from_chd(path, settings.chdman_path) or {}
             except Exception as e:
                 logger.debug("disc_id extraction failed for %s: %s", path, e)
-            if disc_info.get("game_id") is not None:
-                await chd_metadata_store.update_disc_id_info(
-                    path, disc_info.get("game_id"), disc_info.get("title")
-                )
+            await chd_metadata_store.update_disc_id_info(
+                path, disc_info.get("game_id"), disc_info.get("title")
+            )
+            await chd_metadata_store.mark_disc_id_checked(path)
 
         game_id = disc_info.get("game_id")
         # Only surface a distinct human-readable title; skip when it equals

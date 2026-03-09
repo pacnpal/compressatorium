@@ -19,7 +19,8 @@ from services.archive import archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
 from services.concurrency_manager import concurrency_manager
-from services.disc_id import embed_in_chd as disc_id_embed, extract_from_source as disc_id_from_source
+from services.disc_id import embed_in_chd as disc_id_embed
+from services.disc_id import extract_from_source as disc_id_from_source
 from services.dolphin_tool import dolphin_tool_service
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
