@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import time
 from pathlib import Path
 
 import pytest
@@ -242,8 +241,10 @@ async def test_disc_id_checked_invalidated_on_mtime_change(metadata_store, tmp_p
     await metadata_store.mark_disc_id_checked(path)
     assert await metadata_store.is_disc_id_checked(path)
 
-    # Simulate file modification (update mtime)
-    time.sleep(0.01)
+    # Bump the mtime by 2 s via os.utime so the change is visible even on
+    # filesystems with 1-second mtime resolution (avoids a flaky sleep).
+    stat = chd.stat()
+    os.utime(chd, (stat.st_atime, stat.st_mtime + 2))
     chd.write_text("modified")
 
     # Should be False — file changed since last check
