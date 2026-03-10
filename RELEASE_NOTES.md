@@ -1,5 +1,43 @@
 # Release Notes
 
+## v3.3.0 - Game ID & Title Extraction for CD and DVD CHDs
+
+### ✨ New Features
+
+- **Game ID & Title in CHD Inspector** — PS1, PS2, PSP, and Dreamcast game serials are extracted from CHD sector data (via `SYSTEM.CNF`, `PARAM.SFO`, and `IP.BIN`) and displayed in the CHD info modal. Human-readable titles (e.g. "Patapon", "DEAD OR ALIVE 2") are shown when available; the serial is used as a fallback title.
+- **CHD metadata tagging at conversion time** — When a CD or DVD CHD is created, the game serial is embedded as a `GAME` tag and the title as a `NAME` tag inside the CHD file itself, making it readable by emulator frontends and database scrapers.
+- **Retroactive game ID tagging** — The metadata scan (Phase 2) now loops over all CHDs and embeds `GAME`/`NAME` tags into any file that doesn't have them yet. Already-tagged and previously-scanned files are skipped efficiently.
+- **Persistent disc-ID cache** — Extracted game IDs and titles are stored in the metadata cache (`chd_metadata.json`). The `/api/info` endpoint reads from the cache first; `chdman dumpmeta` subprocesses are only spawned on a cache miss, and "nothing found" results are also cached to prevent repeated subprocess calls for unsupported discs.
+
+### 🔬 Implementation Details
+
+- `app/services/disc_id.py` — New service implementing:
+  - `_CHDReader` — minimal CHD v5 sector reader (ZLIB, LZMA, ZSTD, NONE, MINI compression)
+  - `extract_from_source()` — PS1/PS2 `.iso`/`.bin`/`.cue`/`.gdi` serial extractor
+  - `extract_from_chd()` — four-strategy extractor (embedded GAME tag → sector read → Dreamcast GDRO → companion source files)
+  - `ensure_disc_id_embedded()` — retroactive CHD tagger called during metadata scan
+- `app/services/chd_metadata_store.py` — Added `get_disc_id_info()`, `update_disc_id_info()`, `is_disc_id_checked()`, and `mark_disc_id_checked()`; `set_metadata()` now preserves `game_id`, `title`, `disc_id_checked`, and `disc_id_checked_mtime` during Phase 1 metadata refreshes
+- `app/routes/info.py` — `/api/info` uses the metadata cache; CHDs already scanned (Phase 2 or prior `/api/info` call) with no game ID skip re-extraction
+- `app/models.py` — `CHDInfo` model extended with optional `game_id` and `title` fields
+- `static/js/app.js` — CHD info modal shows "Game ID" and "Title" rows when values are present
+
+### 🧪 Tests
+
+- 12 new tests covering `_CHDReader` MINI hunk decoding, `_extract_cue` (including missing-file fallback and multi-file fallback), source-file extraction, CHD sector extraction, metadata store disc-ID methods, and retroactive embedding
+
+### 📁 Files Changed
+
+- `app/services/disc_id.py` — New service (source extractor + CHD reader + retroactive tagger)
+- `app/services/job_manager.py` — Embeds `GAME`/`NAME` tags at conversion time
+- `app/services/chd_metadata_store.py` — Disc-ID cache methods; `set_metadata()` field preservation
+- `app/routes/info.py` — `/api/info` disc-ID cache lookup + Phase 2 retroactive tagging
+- `app/models.py` — `CHDInfo.game_id` / `CHDInfo.title` fields
+- `static/js/app.js` — Game ID and Title rows in CHD info modal
+- `tests/test_disc_id.py` — Comprehensive disc-ID extraction tests
+- `tests/test_metadata.py` — Metadata store disc-ID caching tests
+
+---
+
 ## v3.2.3 - Batched Notifications, Deferred UI Updates & Job Index
 
 ### 🎨 UI / UX
