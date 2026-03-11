@@ -195,6 +195,13 @@ async def scan_metadata_task(
             try:
                 if await chd_metadata_store.is_disc_id_checked(path):
                     already_checked += 1
+                    # Still update progress so the scan doesn't appear stuck at 60%
+                    if phase2_total > 0:
+                        await job_manager.update_external_job(
+                            scan_job_id,
+                            progress=60 + int(37 * idx2 / phase2_total),
+                            message=f"Phase 2 [{idx2}/{phase2_total}]: {os.path.basename(path)} (already checked)",
+                        )
                     continue
                 logger.info("Phase 2: Scanning disc ID for %s", os.path.basename(path))
                 result = await disc_id_ensure_embedded(path, settings.chdman_path)

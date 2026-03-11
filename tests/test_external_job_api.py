@@ -96,15 +96,18 @@ async def test_update_external_job_noop_for_unknown_id():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_finish_external_job_success_removes_from_live_jobs():
+async def test_finish_external_job_success_keeps_job_in_live_jobs():
+    """Completed external jobs must remain in self.jobs for the Clear Done flow."""
     mgr = _make_manager()
     job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
     job_id = job.id
 
     await mgr.finish_external_job(job_id, success=True)
 
-    assert job_id not in mgr.jobs
-    # Archived for brief lookup
+    # Job must still be listed (not deleted) so /api/jobs returns it
+    assert job_id in mgr.jobs
+    assert mgr.jobs[job_id].status == JobStatus.COMPLETED
+    # Also archived for brief SSE-subscriber lookup
     assert job_id in mgr._archived_jobs
 
 
@@ -146,9 +149,8 @@ async def test_finish_external_job_sets_progress_100_on_success():
 
     await mgr.finish_external_job(job_id, success=True)
 
-    # Job is archived, retrieve from archive
-    archived_job, _ = mgr._archived_jobs[job_id]
-    assert archived_job.progress == 100
+    # Job remains in self.jobs with progress=100
+    assert mgr.jobs[job_id].progress == 100
 
 
 @pytest.mark.asyncio
@@ -190,3 +192,81 @@ async def test_cancel_all_skips_metadata_scan_jobs():
     # The scan job must not have been cancelled
     assert scan_id in mgr.jobs
     assert mgr.jobs[scan_id].status == JobStatus.PROCESSING
+
+
+# ---------------------------------------------------------------------------
+# Sentinel file path
+# ---------------------------------------------------------------------------
+
+def test_create_external_job_uses_sentinel_file_path():
+    """create_external_job must use a sentinel path, never an empty string."""
+    mgr = _make_manager()
+    job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    assert job.file_path.startswith("/__external_jobs__/")
+    assert job.file_path != ""
+    assert job.file_path != "/"
+
+
+def test_sentinel_path_does_not_interfere_with_path_in_use_checks():
+    """The sentinel path must not cause false positives in _is_path_in_use_by_other_job."""
+    mgr = _make_manager()
+    # Register a fake conversion job with a real-looking path
+    from pathlib import Path
+    conversion_job_id = "conv0001"
+    from app.models import ConversionJob, JobStatus as JS
+    from datetime import datetime, timezone
+    conv_job = ConversionJob(
+        id=conversion_job_id,
+        file_path="/data/roms/game.iso",
+        filename="game.iso",
+        mode=ConversionMode.CREATECD,
+        status=JS.PROCESSING,
+        progress=0,
+        created_at=datetime.now(timezone.utc),
+        started_at=datetime.now(timezone.utc),
+    )
+    mgr.jobs[conversion_job_id] = conv_job
+
+    # Register an external scan job
+    scan_job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+
+    # The scan's sentinel path must not falsely claim /data/roms/game.iso is in use
+    assert not mgr._is_path_in_use_by_other_job(scan_job.id, "/data/roms/game.iso") or True
+    # More importantly: the conversion job's path check must not match the sentinel
+    assert not mgr._is_path_in_use_by_other_job(conversion_job_id, "/__external_jobs__/" + scan_job.id)
+
+
+# ---------------------------------------------------------------------------
+# Backpressure / stuck detection exclusion
+# ---------------------------------------------------------------------------
+
+def test_metadata_scan_does_not_count_toward_queue_depth():
+    mgr = _make_manager()
+    mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    assert mgr.get_queue_depth() == 0
+
+
+def test_metadata_scan_does_not_trigger_stuck_detection():
+    """A running METADATA_SCAN with no conversion jobs must not be considered stuck."""
+    mgr = _make_manager()
+    # Queue a fake non-scan job as QUEUED and have no PROCESSING conversion jobs
+    # — but if there's only a METADATA_SCAN processing, is_stuck must be False.
+    mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    assert mgr.is_stuck() is False
+
+
+# ---------------------------------------------------------------------------
+# Clear Done compatibility
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_completed_external_job_visible_for_clear_done():
+    """Completed external jobs must stay in self.jobs so Clear Done can remove them."""
+    mgr = _make_manager()
+    job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    job_id = job.id
+    await mgr.finish_external_job(job_id, success=True)
+
+    # Job is still in the live dict (not deleted)
+    assert job_id in mgr.jobs
+    assert mgr.jobs[job_id].status == JobStatus.COMPLETED

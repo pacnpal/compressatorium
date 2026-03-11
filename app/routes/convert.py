@@ -286,6 +286,11 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
 @router.post("/jobs", response_model=ConversionJob)
 async def create_job(request: JobCreateRequest):
     """Create a single conversion job."""
+    if request.mode == ConversionMode.METADATA_SCAN:
+        raise HTTPException(
+            status_code=400,
+            detail="metadata_scan is not a valid conversion mode",
+        )
     compression = normalize_compression(request.compression)
     mode = request.mode.value
     output_dir = normalize_output_dir(request.output_dir)
@@ -486,6 +491,11 @@ async def create_job(request: JobCreateRequest):
 @router.post("/jobs/batch", response_model=list[ConversionJob])
 async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
+    if request.mode == ConversionMode.METADATA_SCAN:
+        raise HTTPException(
+            status_code=400,
+            detail="metadata_scan is not a valid conversion mode",
+        )
     compression = normalize_compression(request.compression)
     mode = request.mode.value
     is_dolphin = _is_dolphin_mode(mode)

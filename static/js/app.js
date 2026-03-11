@@ -4668,7 +4668,10 @@ function App() {
     const processingJobsCount = jobs.filter(j => j.status === 'processing' && j.mode !== 'metadata_scan').length;
     const activeJobsCount = queuedJobsCount + processingJobsCount;
     const hasActiveJobs = activeJobsCount > 0;
-    const hasCompletedJobs = jobs.some(j => ['completed', 'failed', 'cancelled'].includes(j.status));
+    const hasCompletedJobs = jobs.some(j =>
+        ['completed', 'failed', 'cancelled'].includes(j.status)
+        && (showMetadataJobs || j.mode !== 'metadata_scan')
+    );
     const selectableEntriesOnPage = paginatedEntries.filter(e => canSelectEntry(e));
     const allSelectedOnPage = selectableEntriesOnPage.length > 0
         && selectableEntriesOnPage.every((entry) => selectedFiles.has(entry.path));

@@ -95,6 +95,7 @@ class JobManager:
             1
             for job in self.jobs.values()
             if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+            and job.mode != ConversionMode.METADATA_SCAN
         )
         if current_depth + needed > max_depth:
             raise QueueBackpressureError(
@@ -297,7 +298,9 @@ class JobManager:
         job_id = str(uuid.uuid4())[:8]
         job = ConversionJob(
             id=job_id,
-            file_path="",
+            # Use a sentinel path that will never resolve to a real volume path
+            # so that path-in-use checks cannot accidentally match this job.
+            file_path=f"/__external_jobs__/{job_id}",
             filename=filename,
             mode=mode,
             status=JobStatus.PROCESSING,
@@ -371,7 +374,9 @@ class JobManager:
             },
         )
         self._archive_job_for_lookup(job)
-        del self.jobs[job_id]
+        # Keep the job in self.jobs with its terminal status so that:
+        # - /api/jobs continues to list it until the user clears it
+        # - the normal "Clear Done" flow can remove it alongside conversion jobs
 
     def get_job_for_lookup(self, job_id: str) -> Optional[ConversionJob]:
         """Get a live job, or a recently archived one that was deleted from history."""
@@ -392,11 +397,16 @@ class JobManager:
         return list(self.jobs.values())
 
     def get_queue_depth(self) -> int:
-        """Return queued + processing job count for backpressure checks."""
+        """Return queued + processing job count for backpressure checks.
+
+        External jobs (e.g. METADATA_SCAN) are excluded so they cannot
+        consume queue capacity or trigger false backpressure errors.
+        """
         return sum(
             1
             for job in self.jobs.values()
             if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+            and job.mode != ConversionMode.METADATA_SCAN
         )
 
     def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
@@ -485,6 +495,8 @@ class JobManager:
                 continue
             if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
                 continue
+            if job.mode == ConversionMode.METADATA_SCAN:
+                continue
             for candidate in self._candidate_paths(job):
                 cand_path = self._normalize_path(candidate)
                 if cand_path is None:
@@ -495,22 +507,40 @@ class JobManager:
 
     def _get_queued_and_processing_jobs(self) -> tuple[list[str], list[str]]:
         """Get lists of queued and processing job IDs.
-        
+
+        External jobs (e.g. METADATA_SCAN) are excluded so they cannot
+        mask a stuck conversion queue or skew health metrics.
+
         Returns:
             Tuple of (queued_job_ids, processing_job_ids)
         """
-        queued_job_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
-        processing_job_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        queued_job_ids = [
+            job.id for job in self.jobs.values()
+            if job.status == JobStatus.QUEUED and job.mode != ConversionMode.METADATA_SCAN
+        ]
+        processing_job_ids = [
+            job.id for job in self.jobs.values()
+            if job.status == JobStatus.PROCESSING and job.mode != ConversionMode.METADATA_SCAN
+        ]
         return queued_job_ids, processing_job_ids
 
     def is_stuck(self) -> bool:
         """Check if the job queue is stuck (queued jobs but none processing).
-        
+
+        External jobs (e.g. METADATA_SCAN) are excluded so a running scan
+        cannot mask a stuck conversion queue.
+
         Returns:
-            True if jobs are queued but none are processing, False otherwise
+            True if conversion jobs are queued but none are processing, False otherwise
         """
-        has_queued = any(job.status == JobStatus.QUEUED for job in self.jobs.values())
-        has_processing = any(job.status == JobStatus.PROCESSING for job in self.jobs.values())
+        has_queued = any(
+            job.status == JobStatus.QUEUED and job.mode != ConversionMode.METADATA_SCAN
+            for job in self.jobs.values()
+        )
+        has_processing = any(
+            job.status == JobStatus.PROCESSING and job.mode != ConversionMode.METADATA_SCAN
+            for job in self.jobs.values()
+        )
         return has_queued and not has_processing
 
     def get_stuck_state_info(self) -> Dict[str, object]:
