@@ -78,7 +78,7 @@ This document contains the results of a comprehensive deployment readiness audit
 | `CHD_VERIFY_TIMEOUT` | `0` | ✅ | Timeout for `chdman verify` (0 disables) |
 | `CHD_VERIFY_PROGRESS_TIMEOUT` | `0` | ✅ | Timeout without verify output (0 disables) |
 | `LOGLEVEL` | `INFO` | ✅ | Log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `CHD_LOG_PATH` | (none) | ✅ | Log file path (stdout only if unset) |
+| `LOG_PATH` | (none) | ✅ | Log file path (stdout only if unset) |
 | `CHD_DEBUG_HEARTBEAT` | `30` | ✅ | Maintenance loop interval (seconds) |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | ✅ | Debug progress log interval |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | ✅ | Debug progress timeout |

@@ -110,7 +110,7 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = Field(default="INFO", alias="LOGLEVEL")
-    log_path: str | None = Field(default=None, alias="CHD_LOG_PATH")
+    log_path: str | None = Field(default=None, alias="LOG_PATH")
     debug_heartbeat_interval: int = Field(default=30, alias="CHD_DEBUG_HEARTBEAT")
     debug_progress_interval: int = Field(
         default=30,
