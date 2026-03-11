@@ -187,9 +187,11 @@ The mobile interface features a card-based layout with touch-friendly controls (
 - SHA1 and Data SHA1 checksums displayed
 - Raw chdman output available for advanced inspection
 - Dolphin disc info shows game ID, region, format, compression, and raw output
+- **Game ID & Title** — PS1, PS2, PSP, and Dreamcast game serials are extracted from CHD sector data (SYSTEM.CNF, PARAM.SFO, IP.BIN) and displayed in the info modal; human-readable titles are shown when available (e.g. "Patapon", "DEAD OR ALIVE 2")
 
 **CHD Metadata Cache**
 - Background metadata scan with CD/DVD badges
+- **Retroactive game ID tagging** — scan embeds `GAME` and `NAME` metadata tags into existing CHDs that don't have them yet; future scans skip already-tagged files
 - "Scan Metadata" and "Force Rescan" actions to refresh cached metadata
 - Cache stored in `/config/chd_metadata.json`
 

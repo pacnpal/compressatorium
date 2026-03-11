@@ -11,6 +11,10 @@ from fastapi.concurrency import run_in_threadpool
 from models import BulkVerifyRequest, CHDInfo, DolphinDiscInfo, MetadataBatchRequest, Z3DSInfo
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
+from services.disc_id import (
+    ensure_disc_id_embedded as disc_id_ensure_embedded,
+    extract_from_chd as disc_id_extract_from_chd,
+)
 from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
@@ -89,7 +93,7 @@ async def scan_metadata_task(
         else:
             logger.info(f"Found {len(chd_paths)} CHD files needing metadata refresh")
 
-        # Process each path (chdman_service.info is already async)
+        # Phase 1: Update chdman info cache for stale / forced CHDs
         for path in chd_paths:
             try:
                 info = await chdman_service.info(path)
@@ -97,6 +101,27 @@ async def scan_metadata_task(
                 count += 1
             except Exception as e:
                 logger.warning(f"Failed to scan metadata for {path}: {e}")
+
+        # Phase 2: Retroactively embed GAME / NAME tags in any CHD that lacks
+        # them.  Covers CHDs created before conversion-time tagging was added.
+        # Skip CHDs where disc ID has already been checked and the file has not
+        # changed since — avoids spawning a chdman subprocess on every scan.
+        embed_count = 0
+        for path in all_paths:
+            try:
+                if await chd_metadata_store.is_disc_id_checked(path):
+                    continue
+                result = await disc_id_ensure_embedded(path, settings.chdman_path)
+                await chd_metadata_store.mark_disc_id_checked(path)
+                if result:
+                    embed_count += 1
+            except Exception as e:
+                logger.debug(f"disc_id ensure skipped for {path}: {e}")
+
+        if embed_count:
+            logger.info(
+                f"Disc ID scan: ensured GAME/NAME tags for {embed_count} CHD file(s)"
+            )
 
         # Flush all accumulated changes once at the end (async, non-blocking)
         await chd_metadata_store.flush_async()
@@ -493,6 +518,33 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             asyncio.create_task(safe_flush())
             media_type = record.get("media_type")
 
+        # Extract game ID / title.  Prefer the cached value in the metadata
+        # store (written by Phase 2 of the scan or by a prior /api/info call)
+        # to avoid spawning chdman subprocesses on every request.
+        cached_game_id, cached_title = await chd_metadata_store.get_disc_id_info(path)
+        disc_info: dict = {}
+        if cached_game_id is not None:
+            disc_info = {"game_id": cached_game_id}
+            if cached_title is not None:
+                disc_info["title"] = cached_title
+        elif not await chd_metadata_store.is_disc_id_checked(path):
+            # Not yet attempted — run the extractor and cache the outcome (even
+            # "nothing found") so subsequent /api/info calls skip the subprocess.
+            try:
+                disc_info = await disc_id_extract_from_chd(path, settings.chdman_path) or {}
+            except Exception as e:
+                logger.debug("disc_id extraction failed for %s: %s", path, e)
+            await chd_metadata_store.update_disc_id_info(
+                path, disc_info.get("game_id"), disc_info.get("title")
+            )
+            await chd_metadata_store.mark_disc_id_checked(path)
+
+        game_id = disc_info.get("game_id")
+        # Only surface a distinct human-readable title; skip when it equals
+        # the serial (e.g. PS2/PS1 CHDs where we wrote serial as both tags).
+        raw_title = disc_info.get("title")
+        title = raw_title if raw_title and raw_title != game_id else None
+
         return CHDInfo(
             file=path,
             input_file=info.get("input_file"),
@@ -509,6 +561,8 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             data_sha1=info.get("data_sha1"),
             raw_data=info.get("raw_data", ""),
             media_type=media_type,
+            game_id=game_id,
+            title=title,
         )
 
     except Exception as e:

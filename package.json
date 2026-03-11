@@ -1,6 +1,6 @@
 {
   "name": "compressatorium",
-  "version": "3.2.3",
+  "version": "3.3.0",
   "type": "module",
   "devDependencies": {
     "eslint": "^9.39.2",

@@ -912,6 +912,14 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                             <span class="info-label">Media Type</span>
                             <span class="info-value">${info.media_type.toUpperCase()}</span>
                         `}
+                        ${info.game_id && html`
+                            <span class="info-label">Game ID</span>
+                            <span class="info-value">${info.game_id}</span>
+                        `}
+                        ${info.title && html`
+                            <span class="info-label">Title</span>
+                            <span class="info-value">${info.title}</span>
+                        `}
                         ${info.file_version && html`
                             <span class="info-label">CHD Version</span>
                             <span class="info-value">${info.file_version}</span>
@@ -997,7 +1005,7 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                         `}
                         ${info.game_id && html`
                             <span class="info-label">Game ID</span>
-                            <span class="info-value" style="font-family: monospace">${info.game_id}</span>
+                            <span class="info-value">${info.game_id}</span>
                         `}
                         ${info.disc_number && html`
                             <span class="info-label">Disc Number</span>

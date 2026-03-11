@@ -39,6 +39,9 @@ def scan_env(tmp_path, monkeypatch):
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
 
     calls = []
+    ensure_calls = []
+    disc_id_checked_paths: set[str] = set()
+    marked_paths: list[str] = []
 
     async def fake_info(path):
         calls.append(path)
@@ -50,11 +53,30 @@ def scan_env(tmp_path, monkeypatch):
     async def fake_flush_async():
         return None
 
+    async def fake_ensure_embedded(path, chdman_path):
+        ensure_calls.append(path)
+        return None
+
+    async def fake_is_disc_id_checked(path):
+        return path in disc_id_checked_paths
+
+    async def fake_mark_disc_id_checked(path):
+        marked_paths.append(path)
+
     monkeypatch.setattr(info_routes.chdman_service, "info", fake_info)
     monkeypatch.setattr(info_routes.chd_metadata_store, "set_metadata", fake_set_metadata)
     monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_disc_id_checked", fake_is_disc_id_checked)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "mark_disc_id_checked", fake_mark_disc_id_checked)
+    monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_embedded)
 
-    return {"chd_path": str(chd_path), "calls": calls}
+    return {
+        "chd_path": str(chd_path),
+        "calls": calls,
+        "ensure_calls": ensure_calls,
+        "disc_id_checked_paths": disc_id_checked_paths,
+        "marked_paths": marked_paths,
+    }
 
 
 @pytest.mark.asyncio
@@ -76,6 +98,34 @@ async def test_scan_metadata_respects_cache(scan_env, monkeypatch):
 
     assert scan_env["calls"] == []
 
+
+@pytest.mark.asyncio
+async def test_scan_metadata_retroactive_tagging_runs_for_all(scan_env, monkeypatch):
+    """Phase 2 runs for CHDs not yet marked as disc-id-checked."""
+    async def fake_false(_): return False
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
+
+    # is_disc_id_checked returns False (not yet checked) → Phase 2 runs
+    await info_routes.scan_metadata_task(force=False)
+
+    assert scan_env["calls"] == []  # phase 1: no info refresh (cache fresh)
+    assert scan_env["ensure_calls"] == [scan_env["chd_path"]]  # phase 2: ran
+    assert scan_env["marked_paths"] == [scan_env["chd_path"]]  # marked after run
+
+
+@pytest.mark.asyncio
+async def test_scan_metadata_skips_disc_id_already_checked(scan_env, monkeypatch):
+    """Phase 2 skips CHDs that are already marked as disc-id-checked (mtime unchanged)."""
+    async def fake_false(_): return False
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
+
+    # Pre-mark the CHD as already checked
+    scan_env["disc_id_checked_paths"].add(scan_env["chd_path"])
+
+    await info_routes.scan_metadata_task(force=False)
+
+    assert scan_env["ensure_calls"] == []  # phase 2: skipped
+    assert scan_env["marked_paths"] == []  # not re-marked
 
 
 @pytest.fixture
@@ -165,3 +215,143 @@ async def test_metadata_persist_version_gate(metadata_store, metadata_store_path
         data = json.load(f)
         assert real_a in data
         assert real_b in data
+
+
+@pytest.mark.asyncio
+async def test_mark_and_check_disc_id(metadata_store, tmp_path):
+    """mark_disc_id_checked → is_disc_id_checked returns True for unchanged file."""
+    chd = tmp_path / "game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    assert not await metadata_store.is_disc_id_checked(path)
+
+    await metadata_store.mark_disc_id_checked(path)
+
+    assert await metadata_store.is_disc_id_checked(path)
+
+
+@pytest.mark.asyncio
+async def test_disc_id_checked_invalidated_on_mtime_change(metadata_store, tmp_path):
+    """is_disc_id_checked returns False when file mtime changes after marking."""
+    chd = tmp_path / "game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    await metadata_store.mark_disc_id_checked(path)
+    assert await metadata_store.is_disc_id_checked(path)
+
+    # Bump the mtime by 2 s via os.utime so the change is visible even on
+    # filesystems with 1-second mtime resolution (avoids a flaky sleep).
+    stat = chd.stat()
+    os.utime(chd, (stat.st_atime, stat.st_mtime + 2))
+    chd.write_text("modified")
+
+    # Should be False — file changed since last check
+    assert not await metadata_store.is_disc_id_checked(path)
+
+
+@pytest.mark.asyncio
+async def test_disc_id_checked_missing_file(metadata_store, tmp_path):
+    """is_disc_id_checked returns False for a file that does not exist."""
+    path = str(tmp_path / "nonexistent.chd")
+    assert not await metadata_store.is_disc_id_checked(path)
+
+
+@pytest.mark.asyncio
+async def test_mark_disc_id_checked_creates_minimal_record(metadata_store, tmp_path):
+    """mark_disc_id_checked creates a record even when no info was cached yet."""
+    chd = tmp_path / "fresh.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    # No set_metadata call — no existing record
+    await metadata_store.mark_disc_id_checked(path)
+
+    # Record should exist and report as checked
+    assert await metadata_store.is_disc_id_checked(path)
+
+
+@pytest.mark.asyncio
+async def test_set_metadata_preserves_disc_id_checked(metadata_store, tmp_path):
+    """set_metadata must not erase disc_id_checked fields from an existing record."""
+    chd = tmp_path / "game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    # Phase 2 marks the CHD as disc-id-checked
+    await metadata_store.mark_disc_id_checked(path)
+    assert await metadata_store.is_disc_id_checked(path)
+
+    # Phase 1 refreshes CHD metadata — must not erase the disc-id-checked flag
+    await metadata_store.set_metadata(path, {"raw_data": "Tag: DVD-VIDEO"}, persist=False)
+
+    # Flag must still be set after the metadata refresh
+    assert await metadata_store.is_disc_id_checked(path)
+
+
+@pytest.mark.asyncio
+async def test_get_and_update_disc_id_info(metadata_store, tmp_path):
+    """update_disc_id_info stores game_id/title; get_disc_id_info retrieves them."""
+    chd = tmp_path / "game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    # Nothing stored yet
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id is None
+    assert title is None
+
+    # Store disc-id info
+    await metadata_store.update_disc_id_info(path, "SLUS-20312", "God of War")
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "SLUS-20312"
+    assert title == "God of War"
+
+
+@pytest.mark.asyncio
+async def test_update_disc_id_info_no_title(metadata_store, tmp_path):
+    """update_disc_id_info works when title is None."""
+    chd = tmp_path / "ps2game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    await metadata_store.update_disc_id_info(path, "SCES-50330", None)
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "SCES-50330"
+    assert title is None
+
+
+@pytest.mark.asyncio
+async def test_update_disc_id_info_creates_stub_record(metadata_store, tmp_path):
+    """update_disc_id_info creates a minimal record even when no info was cached yet."""
+    chd = tmp_path / "fresh.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    # No set_metadata call prior — record doesn't exist
+    await metadata_store.update_disc_id_info(path, "ULES-00135", "Patapon")
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "ULES-00135"
+    assert title == "Patapon"
+
+
+@pytest.mark.asyncio
+async def test_set_metadata_preserves_game_id_and_title(metadata_store, tmp_path):
+    """set_metadata must not erase game_id/title cached by update_disc_id_info."""
+    chd = tmp_path / "game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    # Cache disc-id info (as the /api/info route would after a cache miss)
+    await metadata_store.update_disc_id_info(path, "SLUS-20312", "God of War")
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "SLUS-20312"
+    assert title == "God of War"
+
+    # Phase 1 metadata refresh — must not erase the cached disc-ID fields
+    await metadata_store.set_metadata(path, {"raw_data": "Tag: DVD-VIDEO"}, persist=False)
+
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "SLUS-20312"
+    assert title == "God of War"

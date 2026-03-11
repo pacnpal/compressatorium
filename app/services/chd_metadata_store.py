@@ -267,6 +267,44 @@ class CHDMetadataStore:
                 return None
             return record.get("media_type")
 
+    async def is_disc_id_checked(self, chd_path: str) -> bool:
+        """
+        Return True if disc ID extraction has already been attempted for this
+        CHD and the file has not been modified since.  Used by the metadata
+        scan to skip the ``chdman dumpmeta`` subprocess for already-processed
+        files, avoiding redundant work on every scan.
+        """
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        try:
+            current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
+        except OSError:
+            return False
+        with self._lock:
+            record = self._records.get(normalized)
+            if record is None or not record.get("disc_id_checked"):
+                return False
+            return record.get("disc_id_checked_mtime") == current_mtime
+
+    async def mark_disc_id_checked(self, chd_path: str) -> None:
+        """
+        Mark that disc ID extraction has been attempted for this CHD.
+        Stores the current file mtime so that ``is_disc_id_checked`` can
+        detect when the file is later modified (e.g. by a re-conversion).
+        Creates a minimal record if none exists yet.
+        """
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        try:
+            current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
+        except OSError:
+            current_mtime = None
+        with self._lock:
+            if normalized not in self._records:
+                self._records[normalized] = {"chd_path": normalized}
+            self._records[normalized]["disc_id_checked"] = True
+            self._records[normalized]["disc_id_checked_mtime"] = current_mtime
+            self._dirty = True
+            self._version += 1
+
     async def is_stale(self, chd_path: str) -> bool:
         """Check if cached metadata is stale (file modified since caching)."""
         normalized = await run_in_threadpool(self._normalize_path, chd_path)
@@ -319,6 +357,19 @@ class CHDMetadataStore:
         
         should_persist = False
         with self._lock:
+            # Preserve disc_id_checked fields and disc-ID-derived game_id/title
+            # from any existing record so that a Phase 1 metadata refresh doesn't
+            # erase the Phase 2 disc-ID marker or cached disc identity.
+            existing = self._records.get(normalized)
+            if existing:
+                if "disc_id_checked" in existing:
+                    record["disc_id_checked"] = existing["disc_id_checked"]
+                if "disc_id_checked_mtime" in existing:
+                    record["disc_id_checked_mtime"] = existing["disc_id_checked_mtime"]
+                if "game_id" in existing:
+                    record["game_id"] = existing["game_id"]
+                if "title" in existing:
+                    record["title"] = existing["title"]
             self._records[normalized] = record
             self._dirty = True
             self._version += 1  # Track modifications for async persist
@@ -400,6 +451,42 @@ class CHDMetadataStore:
             if record is None:
                 return None, None
             return record.get("metadata"), record.get("media_type")
+
+    async def get_disc_id_info(self, chd_path: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Return the cached ``(game_id, title)`` pair for *chd_path*, or
+        ``(None, None)`` if disc-ID info has not been stored yet.
+
+        Used by the ``/api/info`` route to skip the ``chdman dumpmeta``
+        subprocess when the result is already known.
+        """
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        with self._lock:
+            record = self._records.get(normalized)
+            if record is None:
+                return None, None
+            return record.get("game_id"), record.get("title")
+
+    async def update_disc_id_info(
+        self, chd_path: str, game_id: Optional[str], title: Optional[str]
+    ) -> None:
+        """
+        Store the ``game_id`` and ``title`` fields in the cached record for
+        *chd_path*.  Creates a minimal stub record when none exists yet.
+
+        This allows the ``/api/info`` route to return disc-ID info without
+        spawning a ``chdman dumpmeta`` subprocess on every request.
+        """
+        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        with self._lock:
+            if normalized not in self._records:
+                self._records[normalized] = {"chd_path": normalized}
+            self._records[normalized]["game_id"] = game_id
+            self._records[normalized]["title"] = title
+            self._dirty = True
+            self._version += 1
+
+        await self._persist_async()
 
     def all_records(self):
         """Return all cached records."""
