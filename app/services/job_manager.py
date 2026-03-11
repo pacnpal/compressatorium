@@ -725,7 +725,7 @@ class JobManager:
         self._running = True
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
 
-        # Only start the debug loop if the configured heartbeat interval is positive.
+        # Only start the maintenance loop if the configured heartbeat interval is positive.
         debug_interval = getattr(settings, "debug_heartbeat_interval", None)
         if isinstance(debug_interval, (int, float)) and debug_interval > 0:
             self._debug_task = asyncio.create_task(self._debug_loop())
@@ -733,7 +733,8 @@ class JobManager:
             self._debug_task = None
             if debug_interval is not None:
                 logger.warning(
-                    "Debug heartbeat disabled: non-positive CHD_DEBUG_HEARTBEAT value %r",
+                    "Maintenance loop disabled: non-positive CHD_DEBUG_HEARTBEAT value %r. "
+                    "Stuck-job detection and stale lock cleanup will not run.",
                     debug_interval,
                 )
         await self._dispatcher_task

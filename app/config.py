@@ -110,7 +110,11 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = Field(default="INFO", alias="LOGLEVEL")
-    log_path: str | None = Field(default=None, alias="LOG_PATH")
+    log_path: str | None = Field(
+        default=None,
+        alias="LOG_PATH",
+        validation_alias=AliasChoices("LOG_PATH", "CHD_DEBUG_LOG_PATH"),
+    )
     debug_heartbeat_interval: int = Field(default=30, alias="CHD_DEBUG_HEARTBEAT")
     debug_progress_interval: int = Field(
         default=30,
@@ -142,6 +146,13 @@ class Settings(BaseSettings):
             # 4. Locks don't persist across container restarts
             # The fixed path is intentional to allow multiple processes to share locks
             self.concurrency_lock_dir = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'chd-locks')
+        # CHD_DEBUG=true backwards compatibility: map to LOGLEVEL=DEBUG when LOGLEVEL
+        # is not explicitly set, preserving existing deployments that relied on CHD_DEBUG.
+        if (
+            os.environ.get("CHD_DEBUG", "").lower() == "true"
+            and not os.environ.get("LOGLEVEL")
+        ):
+            self.log_level = "DEBUG"
 
     @property
     def volumes(self) -> list[str]:

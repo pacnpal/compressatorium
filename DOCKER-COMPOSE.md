@@ -148,7 +148,7 @@ Volume behavior:
 | `CHD_INFO_TIMEOUT` | `60` | Timeout in seconds for `chdman info` (0 disables) |
 | `CHD_VERIFY_TIMEOUT` | `0` | Timeout in seconds for `chdman verify` (0 disables) |
 | `CHD_VERIFY_PROGRESS_TIMEOUT` | `0` | Timeout in seconds without verify output (0 disables) |
-| `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `LOG_PATH` | (none) | Path to log file (stdout only if unset) |
 | `CHD_DEBUG_HEARTBEAT` | `30` | Maintenance loop interval (seconds) |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval |

@@ -4,8 +4,8 @@
 
 ### ✨ New Features
 
-- **`LOGLEVEL` environment variable** — Replaces the removed `CHD_DEBUG` flag. Set to `DEBUG`, `INFO`, `WARNING`, or `ERROR` to control log verbosity. Defaults to `INFO` so useful operational logs are visible out of the box without any configuration.
-- **`LOG_PATH`** — Replaces the removed `CHD_DEBUG_LOG_PATH`. Optionally write logs to a file in addition to stdout, at any log level (not just debug).
+- **`LOGLEVEL` environment variable** — Replaces the removed `CHD_DEBUG` flag. Set to `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` to control log verbosity. Defaults to `INFO` so useful operational logs are visible out of the box without any configuration. Legacy `CHD_DEBUG=true` is still honoured and maps to `LOGLEVEL=DEBUG` for backwards compatibility.
+- **`LOG_PATH`** — Replaces the removed `CHD_DEBUG_LOG_PATH`. Optionally write logs to a file in addition to stdout, at any log level (not just debug). Legacy `CHD_DEBUG_LOG_PATH` is still read for backwards compatibility.
 
 ### 🔍 Enhanced Metadata Scan Logging
 
