@@ -4560,7 +4560,7 @@ function App() {
     };
 
     const handleRequestCancelAll = () => {
-        const activeCount = jobs.filter(j => ['queued', 'processing'].includes(j.status)).length;
+        const activeCount = jobs.filter(j => ['queued', 'processing'].includes(j.status) && j.mode !== 'metadata_scan').length;
         if (activeCount === 0) {
             notify('No active jobs to cancel', 'info');
             return;
@@ -4574,6 +4574,7 @@ function App() {
         try {
             const result = await api.cancelAllJobs();
             setJobs(prev => prev.map((job) => {
+                if (job.mode === 'metadata_scan') return job;
                 if (job.status === 'queued') {
                     return { ...job, status: 'cancelled' };
                 }
@@ -4663,8 +4664,8 @@ function App() {
     };
 
 
-    const queuedJobsCount = jobs.filter(j => j.status === 'queued').length;
-    const processingJobsCount = jobs.filter(j => j.status === 'processing').length;
+    const queuedJobsCount = jobs.filter(j => j.status === 'queued' && j.mode !== 'metadata_scan').length;
+    const processingJobsCount = jobs.filter(j => j.status === 'processing' && j.mode !== 'metadata_scan').length;
     const activeJobsCount = queuedJobsCount + processingJobsCount;
     const hasActiveJobs = activeJobsCount > 0;
     const hasCompletedJobs = jobs.some(j => ['completed', 'failed', 'cancelled'].includes(j.status));

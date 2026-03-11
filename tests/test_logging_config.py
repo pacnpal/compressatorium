@@ -44,6 +44,15 @@ def test_loglevel_takes_precedence_over_chd_debug(monkeypatch):
     assert Settings().log_level == "INFO"
 
 
+def test_explicit_log_level_kwarg_wins_over_chd_debug(monkeypatch):
+    """An explicit log_level kwarg (e.g. in tests) must not be overridden by CHD_DEBUG=true."""
+    monkeypatch.setenv("CHD_DEBUG", "true")
+    monkeypatch.delenv("LOGLEVEL", raising=False)
+
+    # log_level is in __pydantic_fields_set__ so the CHD_DEBUG compat block must skip it
+    assert Settings(log_level="WARNING").log_level == "WARNING"
+
+
 def test_log_path_default_is_none(monkeypatch):
     monkeypatch.delenv("LOG_PATH", raising=False)
     monkeypatch.delenv("CHD_DEBUG_LOG_PATH", raising=False)

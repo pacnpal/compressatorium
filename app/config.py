@@ -147,10 +147,13 @@ class Settings(BaseSettings):
             # The fixed path is intentional to allow multiple processes to share locks
             self.concurrency_lock_dir = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'chd-locks')
         # CHD_DEBUG=true backwards compatibility: map to LOGLEVEL=DEBUG when LOGLEVEL
-        # is not explicitly set, preserving existing deployments that relied on CHD_DEBUG.
+        # is not explicitly set in the environment and log_level was not explicitly
+        # provided to Settings (e.g. via constructor argument in tests).
+        # This ensures explicit config always wins over the legacy env-var fallback.
         if (
             os.environ.get("CHD_DEBUG", "").lower() == "true"
             and not os.environ.get("LOGLEVEL")
+            and "log_level" not in getattr(self, "__pydantic_fields_set__", set())
         ):
             self.log_level = "DEBUG"
 

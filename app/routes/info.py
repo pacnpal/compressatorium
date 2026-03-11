@@ -8,7 +8,7 @@ import time
 from config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from models import BulkVerifyRequest, CHDInfo, ConversionJob, ConversionMode, DolphinDiscInfo, JobStatus, MetadataBatchRequest, Z3DSInfo
+from models import BulkVerifyRequest, CHDInfo, ConversionMode, DolphinDiscInfo, MetadataBatchRequest, Z3DSInfo
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
 from services.disc_id import (
