@@ -103,14 +103,13 @@ async def scan_metadata_task(
             if force or await chd_metadata_store.is_stale(path):
                 chd_paths.append(path)
 
-        cached_count = len(all_paths) - len(chd_paths)
         if force:
             logger.info(
-                "Phase 1: Force-refreshing metadata for all %d CHD file(s) (%d previously cached)",
+                "Phase 1: Force-refreshing metadata for all %d CHD file(s)",
                 len(chd_paths),
-                cached_count,
             )
         else:
+            cached_count = len(all_paths) - len(chd_paths)
             logger.info(
                 "Phase 1: %d CHD file(s) need metadata refresh, %d already up-to-date",
                 len(chd_paths),
@@ -180,7 +179,7 @@ async def scan_metadata_task(
                     )
                 else:
                     logger.info(
-                        "Phase 2: No disc ID found for %s — file marked as checked",
+                        "Phase 2: No disc ID embedded for %s (not found or embed failed) — file marked as checked",
                         os.path.basename(path),
                     )
             except Exception as e:

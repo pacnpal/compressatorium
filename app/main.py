@@ -33,7 +33,14 @@ def configure_logging() -> None:
     if logger.handlers:
         return
 
-    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    level = getattr(logging, settings.log_level.upper(), None)
+    if level is None:
+        level = logging.INFO
+        logging.warning(
+            "Unknown LOGLEVEL %r — defaulting to INFO. "
+            "Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL",
+            settings.log_level,
+        )
     logger.setLevel(level)
     logger.propagate = False
 
