@@ -310,6 +310,12 @@ class JobManager:
             started_at=datetime.now(timezone.utc),
         )
         self.jobs[job_id] = job
+        # Enforce max_job_history for external jobs too (best-effort; only runs
+        # when there is a running event loop, i.e. production, not sync tests).
+        try:
+            asyncio.get_running_loop().create_task(self._prune_jobs())
+        except RuntimeError:
+            pass
         return job
 
     async def update_external_job(
@@ -694,10 +700,12 @@ class JobManager:
             a cancellation request.
         """
         queued_ids = [
-            job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED
+            job.id for job in self.jobs.values()
+            if job.status == JobStatus.QUEUED and job.mode != ConversionMode.METADATA_SCAN
         ]
         processing_ids = [
-            job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING
+            job.id for job in self.jobs.values()
+            if job.status == JobStatus.PROCESSING and job.mode != ConversionMode.METADATA_SCAN
         ]
         requested_ids: list[str] = []
 

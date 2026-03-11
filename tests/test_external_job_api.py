@@ -230,8 +230,9 @@ def test_sentinel_path_does_not_interfere_with_path_in_use_checks():
     # Register an external scan job
     scan_job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
 
-    # The scan's sentinel path must not falsely claim /data/roms/game.iso is in use
-    assert not mgr._is_path_in_use_by_other_job(scan_job.id, "/data/roms/game.iso") or True
+    # Path-in-use detection is unaffected by the scan job: conv_job genuinely
+    # holds /data/roms/game.iso, so the check correctly returns True.
+    assert mgr._is_path_in_use_by_other_job(scan_job.id, "/data/roms/game.iso")
     # More importantly: the conversion job's path check must not match the sentinel
     assert not mgr._is_path_in_use_by_other_job(conversion_job_id, "/__external_jobs__/" + scan_job.id)
 

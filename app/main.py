@@ -33,14 +33,11 @@ def configure_logging() -> None:
     if logger.handlers:
         return
 
-    level = getattr(logging, settings.log_level.upper(), None)
-    if level is None:
+    level_str = settings.log_level.upper()
+    level = getattr(logging, level_str, None)
+    invalid_level = level is None
+    if invalid_level:
         level = logging.INFO
-        logging.warning(
-            "Unknown LOGLEVEL %r — defaulting to INFO. "
-            "Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL",
-            settings.log_level,
-        )
     logger.setLevel(level)
     logger.propagate = False
 
@@ -57,6 +54,13 @@ def configure_logging() -> None:
         file_handler = logging.FileHandler(settings.log_path)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
+
+    if invalid_level:
+        logger.warning(
+            "Unknown LOGLEVEL %r — defaulting to INFO. "
+            "Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL",
+            settings.log_level,
+        )
 
 
 app = FastAPI(

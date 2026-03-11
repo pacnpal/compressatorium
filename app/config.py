@@ -152,7 +152,7 @@ class Settings(BaseSettings):
         # This ensures explicit config always wins over the legacy env-var fallback.
         if (
             os.environ.get("CHD_DEBUG", "").lower() == "true"
-            and not os.environ.get("LOGLEVEL")
+            and "LOGLEVEL" not in os.environ
             and "log_level" not in getattr(self, "__pydantic_fields_set__", set())
         ):
             self.log_level = "DEBUG"
