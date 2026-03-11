@@ -33,7 +33,11 @@ def configure_logging() -> None:
     if logger.handlers:
         return
 
-    level = logging.DEBUG if settings.debug else logging.INFO
+    level_str = settings.log_level.upper()
+    level = getattr(logging, level_str, None)
+    invalid_level = level is None
+    if invalid_level:
+        level = logging.INFO
     logger.setLevel(level)
     logger.propagate = False
 
@@ -43,13 +47,20 @@ def configure_logging() -> None:
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
 
-    if settings.debug_log_path:
-        log_dir = os.path.dirname(settings.debug_log_path)
+    if settings.log_path:
+        log_dir = os.path.dirname(settings.log_path)
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
-        file_handler = logging.FileHandler(settings.debug_log_path)
+        file_handler = logging.FileHandler(settings.log_path)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
+
+    if invalid_level:
+        logger.warning(
+            "Unknown LOGLEVEL %r — defaulting to INFO. "
+            "Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL",
+            settings.log_level,
+        )
 
 
 app = FastAPI(

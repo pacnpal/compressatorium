@@ -95,6 +95,7 @@ class JobManager:
             1
             for job in self.jobs.values()
             if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+            and job.mode != ConversionMode.METADATA_SCAN
         )
         if current_depth + needed > max_depth:
             raise QueueBackpressureError(
@@ -279,6 +280,112 @@ class JobManager:
         self._archived_jobs[archived.id] = (archived, time.monotonic())
         self._prune_archived_jobs()
 
+    # ------------------------------------------------------------------
+    # External-job API (for tasks that manage their own execution, e.g.
+    # metadata scans).  These jobs bypass the conversion queue and must
+    # be driven entirely by the caller.
+    # ------------------------------------------------------------------
+
+    def create_external_job(
+        self,
+        filename: str,
+        mode: ConversionMode,
+        message: str = "",
+    ) -> ConversionJob:
+        """Create and register an externally-managed job that bypasses the
+        conversion queue.  The caller drives state changes via
+        :meth:`update_external_job` and :meth:`finish_external_job`."""
+        job_id = str(uuid.uuid4())[:8]
+        job = ConversionJob(
+            id=job_id,
+            # Use a sentinel path that will never resolve to a real volume path
+            # so that path-in-use checks cannot accidentally match this job.
+            file_path=f"/__external_jobs__/{job_id}",
+            filename=filename,
+            mode=mode,
+            status=JobStatus.PROCESSING,
+            progress=0,
+            message=message,
+            created_at=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc),
+        )
+        self.jobs[job_id] = job
+        # Enforce max_job_history for external jobs too (best-effort; only runs
+        # when there is a running event loop, i.e. production, not sync tests).
+        try:
+            asyncio.get_running_loop().create_task(self._prune_jobs())
+        except RuntimeError:
+            pass
+        return job
+
+    async def update_external_job(
+        self,
+        job_id: str,
+        *,
+        progress: Optional[int] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        """Update the progress/message of an externally-managed job and
+        notify SSE subscribers."""
+        job = self.jobs.get(job_id)
+        if job is None:
+            return
+        if progress is not None:
+            job.progress = max(0, min(100, progress))
+        if message is not None:
+            job.message = message
+        await self._notify_subscribers(
+            job_id,
+            {
+                "type": "progress",
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": job.progress,
+                "message": job.message,
+            },
+        )
+
+    async def finish_external_job(
+        self,
+        job_id: str,
+        *,
+        success: bool,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Mark an externally-managed job as complete or failed, notify
+        subscribers, and archive it."""
+        job = self.jobs.get(job_id)
+        if job is None:
+            return
+        job.status = JobStatus.COMPLETED if success else JobStatus.FAILED
+        if success:
+            job.progress = 100
+        job.completed_at = datetime.now(timezone.utc)
+        if error_message is not None:
+            job.error_message = error_message
+        # Clean up any spurious cancel state that may have been set by
+        # cancel_all while the external task was still running.
+        self._cancel_events.pop(job_id, None)
+        self._cancelled.discard(job_id)
+        event_type = "complete" if success else "error"
+        await self._notify_subscribers(
+            job_id,
+            {
+                "type": event_type,
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": job.progress,
+                "message": job.message,
+                "error_message": job.error_message,
+            },
+        )
+        self._archive_job_for_lookup(job)
+        # Keep the job in self.jobs with its terminal status so that:
+        # - /api/jobs continues to list it until the user clears it
+        # - the normal "Clear Done" flow can remove it alongside conversion jobs
+        # Enforce max_job_history on completion (exclude_id preserves this job).
+        await self._prune_jobs(exclude_id=job_id)
+
     def get_job_for_lookup(self, job_id: str) -> Optional[ConversionJob]:
         """Get a live job, or a recently archived one that was deleted from history."""
         job = self.jobs.get(job_id)
@@ -298,11 +405,16 @@ class JobManager:
         return list(self.jobs.values())
 
     def get_queue_depth(self) -> int:
-        """Return queued + processing job count for backpressure checks."""
+        """Return queued + processing job count for backpressure checks.
+
+        External jobs (e.g. METADATA_SCAN) are excluded so they cannot
+        consume queue capacity or trigger false backpressure errors.
+        """
         return sum(
             1
             for job in self.jobs.values()
             if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+            and job.mode != ConversionMode.METADATA_SCAN
         )
 
     def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
@@ -391,6 +503,8 @@ class JobManager:
                 continue
             if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
                 continue
+            if job.mode == ConversionMode.METADATA_SCAN:
+                continue
             for candidate in self._candidate_paths(job):
                 cand_path = self._normalize_path(candidate)
                 if cand_path is None:
@@ -401,22 +515,40 @@ class JobManager:
 
     def _get_queued_and_processing_jobs(self) -> tuple[list[str], list[str]]:
         """Get lists of queued and processing job IDs.
-        
+
+        External jobs (e.g. METADATA_SCAN) are excluded so they cannot
+        mask a stuck conversion queue or skew health metrics.
+
         Returns:
             Tuple of (queued_job_ids, processing_job_ids)
         """
-        queued_job_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED]
-        processing_job_ids = [job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING]
+        queued_job_ids = [
+            job.id for job in self.jobs.values()
+            if job.status == JobStatus.QUEUED and job.mode != ConversionMode.METADATA_SCAN
+        ]
+        processing_job_ids = [
+            job.id for job in self.jobs.values()
+            if job.status == JobStatus.PROCESSING and job.mode != ConversionMode.METADATA_SCAN
+        ]
         return queued_job_ids, processing_job_ids
 
     def is_stuck(self) -> bool:
         """Check if the job queue is stuck (queued jobs but none processing).
-        
+
+        External jobs (e.g. METADATA_SCAN) are excluded so a running scan
+        cannot mask a stuck conversion queue.
+
         Returns:
-            True if jobs are queued but none are processing, False otherwise
+            True if conversion jobs are queued but none are processing, False otherwise
         """
-        has_queued = any(job.status == JobStatus.QUEUED for job in self.jobs.values())
-        has_processing = any(job.status == JobStatus.PROCESSING for job in self.jobs.values())
+        has_queued = any(
+            job.status == JobStatus.QUEUED and job.mode != ConversionMode.METADATA_SCAN
+            for job in self.jobs.values()
+        )
+        has_processing = any(
+            job.status == JobStatus.PROCESSING and job.mode != ConversionMode.METADATA_SCAN
+            for job in self.jobs.values()
+        )
         return has_queued and not has_processing
 
     def get_stuck_state_info(self) -> Dict[str, object]:
@@ -519,6 +651,11 @@ class JobManager:
         if not job:
             return False
 
+        # Externally-managed jobs (e.g. metadata scans) are not cancellable
+        # through the normal dispatcher mechanism.
+        if job.mode == ConversionMode.METADATA_SCAN:
+            return False
+
         if job.status == JobStatus.QUEUED:
             self._cancelled.add(job_id)
             job.status = JobStatus.CANCELLED
@@ -565,10 +702,12 @@ class JobManager:
             a cancellation request.
         """
         queued_ids = [
-            job.id for job in self.jobs.values() if job.status == JobStatus.QUEUED
+            job.id for job in self.jobs.values()
+            if job.status == JobStatus.QUEUED and job.mode != ConversionMode.METADATA_SCAN
         ]
         processing_ids = [
-            job.id for job in self.jobs.values() if job.status == JobStatus.PROCESSING
+            job.id for job in self.jobs.values()
+            if job.status == JobStatus.PROCESSING and job.mode != ConversionMode.METADATA_SCAN
         ]
         requested_ids: list[str] = []
 
@@ -724,8 +863,19 @@ class JobManager:
             return
         self._running = True
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
-        if settings.debug and settings.debug_heartbeat_interval > 0:
+
+        # Only start the maintenance loop if the configured heartbeat interval is positive.
+        debug_interval = getattr(settings, "debug_heartbeat_interval", None)
+        if isinstance(debug_interval, (int, float)) and debug_interval > 0:
             self._debug_task = asyncio.create_task(self._debug_loop())
+        else:
+            self._debug_task = None
+            if debug_interval is not None:
+                logger.warning(
+                    "Maintenance loop disabled: non-positive CHD_DEBUG_HEARTBEAT value %r. "
+                    "Stuck-job detection and stale lock cleanup will not run.",
+                    debug_interval,
+                )
         await self._dispatcher_task
 
     async def _handle_background_maintenance(self, cleanup_counter: int) -> int:
