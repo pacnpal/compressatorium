@@ -724,8 +724,7 @@ class JobManager:
             return
         self._running = True
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
-        if settings.debug and settings.debug_heartbeat_interval > 0:
-            self._debug_task = asyncio.create_task(self._debug_loop())
+        self._debug_task = asyncio.create_task(self._debug_loop())
         await self._dispatcher_task
 
     async def _handle_background_maintenance(self, cleanup_counter: int) -> int:

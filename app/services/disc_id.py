@@ -979,7 +979,7 @@ async def ensure_disc_id_embedded(
     _loop = asyncio.get_running_loop()
     disc_result = await _loop.run_in_executor(None, _extract_from_chd_sectors, chd_path)
     if disc_result and disc_result.get("game_id"):
-        logger.debug(
+        logger.info(
             "disc_id: embedding game_id=%r from CHD sectors in %s",
             disc_result["game_id"],
             chd_path,
@@ -1002,7 +1002,7 @@ async def ensure_disc_id_embedded(
     if gdro:
         parsed = _parse_ipbin(gdro)
         if parsed.get("game_id"):
-            logger.debug(
+            logger.info(
                 "disc_id: embedding game_id=%r from GDRO in %s",
                 parsed["game_id"],
                 chd_path,
@@ -1027,7 +1027,7 @@ async def ensure_disc_id_embedded(
         if candidate.exists():
             res = await _loop.run_in_executor(None, extract_from_source, str(candidate))
             if res and res.get("game_id"):
-                logger.debug(
+                logger.info(
                     "disc_id: embedding game_id=%r from companion %s in %s",
                     res["game_id"],
                     candidate.name,

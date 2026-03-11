@@ -58,18 +58,28 @@ async def scan_metadata_task(
     """Background task to scan all volumes for missing CHD metadata."""
     global _is_scanning
     # Note: _is_scanning is already set to True by the trigger endpoint
-    logger.info("Starting background metadata scan...")
+    scan_start = time.monotonic()
     count = 0
+    embed_count = 0
     scan_token = lane_token
     if scan_token is None:
         scan_token = await workload_limiter.acquire("metadata_scan")
     _is_scanning = True
 
+    volumes = settings.volumes
+    logger.info(
+        "Metadata scan starting (force=%s) across %d volume(s): %s",
+        force,
+        len(volumes),
+        ", ".join(volumes) if volumes else "(none)",
+    )
+
     def collect_all_chd_paths():
         """Collect ALL CHD paths from volumes (runs in thread pool)."""
         paths = []
-        for volume in settings.volumes:
+        for volume in volumes:
             if not os.path.exists(volume):
+                logger.warning("Volume not found, skipping: %s", volume)
                 continue
             for root, _, files in os.walk(volume):
                 for file in files:
@@ -81,6 +91,11 @@ async def scan_metadata_task(
         # Run blocking filesystem traversal in thread pool
         loop = asyncio.get_running_loop()
         all_paths = await loop.run_in_executor(None, collect_all_chd_paths)
+        logger.info(
+            "Discovery complete: found %d CHD file(s) across %d volume(s)",
+            len(all_paths),
+            len(volumes),
+        )
 
         # Filter stales asynchronously
         chd_paths = []
@@ -88,51 +103,114 @@ async def scan_metadata_task(
             if force or await chd_metadata_store.is_stale(path):
                 chd_paths.append(path)
 
+        cached_count = len(all_paths) - len(chd_paths)
         if force:
-            logger.info(f"Found {len(chd_paths)} CHD files for forced metadata refresh")
+            logger.info(
+                "Phase 1: Force-refreshing metadata for all %d CHD file(s) (%d previously cached)",
+                len(chd_paths),
+                cached_count,
+            )
         else:
-            logger.info(f"Found {len(chd_paths)} CHD files needing metadata refresh")
+            logger.info(
+                "Phase 1: %d CHD file(s) need metadata refresh, %d already up-to-date",
+                len(chd_paths),
+                cached_count,
+            )
 
         # Phase 1: Update chdman info cache for stale / forced CHDs
-        for path in chd_paths:
+        phase1_total = len(chd_paths)
+        for idx, path in enumerate(chd_paths, start=1):
+            logger.info(
+                "Phase 1 [%d/%d]: Extracting metadata from %s",
+                idx,
+                phase1_total,
+                os.path.basename(path),
+            )
             try:
                 info = await chdman_service.info(path)
                 await chd_metadata_store.set_metadata(path, info, persist=False)
                 count += 1
+                logger.info(
+                    "Phase 1 [%d/%d]: Metadata cached for %s",
+                    idx,
+                    phase1_total,
+                    os.path.basename(path),
+                )
             except Exception as e:
-                logger.warning(f"Failed to scan metadata for {path}: {e}")
+                logger.warning(
+                    "Phase 1 [%d/%d]: Failed to extract metadata from %s: %s",
+                    idx,
+                    phase1_total,
+                    path,
+                    e,
+                )
+
+        logger.info(
+            "Phase 1 complete: metadata refreshed for %d/%d CHD file(s)",
+            count,
+            phase1_total,
+        )
 
         # Phase 2: Retroactively embed GAME / NAME tags in any CHD that lacks
         # them.  Covers CHDs created before conversion-time tagging was added.
         # Skip CHDs where disc ID has already been checked and the file has not
         # changed since — avoids spawning a chdman subprocess on every scan.
-        embed_count = 0
+        phase2_total = len(all_paths)
+        already_checked = 0
+        newly_checked = 0
+        logger.info(
+            "Phase 2: Checking GAME/NAME disc ID tags for %d CHD file(s)...",
+            phase2_total,
+        )
         for path in all_paths:
             try:
                 if await chd_metadata_store.is_disc_id_checked(path):
+                    already_checked += 1
                     continue
+                logger.info("Phase 2: Scanning disc ID for %s", os.path.basename(path))
                 result = await disc_id_ensure_embedded(path, settings.chdman_path)
                 await chd_metadata_store.mark_disc_id_checked(path)
+                newly_checked += 1
                 if result:
                     embed_count += 1
+                    logger.info(
+                        "Phase 2: Disc ID tags written to %s (game_id=%r)",
+                        os.path.basename(path),
+                        result.get("game_id"),
+                    )
+                else:
+                    logger.info(
+                        "Phase 2: No disc ID found for %s — file marked as checked",
+                        os.path.basename(path),
+                    )
             except Exception as e:
-                logger.debug(f"disc_id ensure skipped for {path}: {e}")
+                logger.debug("Phase 2: disc_id ensure skipped for %s: %s", path, e)
 
-        if embed_count:
-            logger.info(
-                f"Disc ID scan: ensured GAME/NAME tags for {embed_count} CHD file(s)"
-            )
+        logger.info(
+            "Phase 2 complete: %d already checked, %d newly checked, %d disc ID tag(s) embedded",
+            already_checked,
+            newly_checked,
+            embed_count,
+        )
 
         # Flush all accumulated changes once at the end (async, non-blocking)
+        logger.info("Flushing metadata store to disk...")
         await chd_metadata_store.flush_async()
+        logger.info("Metadata store flushed.")
 
     except Exception as e:
-        logger.error(f"Metadata scan failed: {e}")
+        logger.error("Metadata scan failed: %s", e)
     finally:
         if scan_token:
             scan_token.release()
         _is_scanning = False
-        logger.info(f"Metadata scan complete. Updated {count} files.")
+        elapsed = time.monotonic() - scan_start
+        logger.info(
+            "Metadata scan complete: %d metadata refreshed, %d disc ID(s) embedded, elapsed %.1fs",
+            count,
+            embed_count,
+            elapsed,
+        )
 
 
 @router.get("/version")

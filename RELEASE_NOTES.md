@@ -1,5 +1,42 @@
 # Release Notes
 
+## v3.3.1 - Structured Logging with LOGLEVEL
+
+### ✨ New Features
+
+- **`LOGLEVEL` environment variable** — Replaces the removed `CHD_DEBUG` flag. Set to `DEBUG`, `INFO`, `WARNING`, or `ERROR` to control log verbosity. Defaults to `INFO` so useful operational logs are visible out of the box without any configuration.
+- **`CHD_LOG_PATH`** — Replaces the removed `CHD_DEBUG_LOG_PATH`. Optionally write logs to a file in addition to stdout, at any log level (not just debug).
+
+### 🔍 Enhanced Metadata Scan Logging
+
+Metadata scans now emit detailed, structured `INFO`-level logs covering every stage, so users can fully understand what the application is doing by inspecting logs:
+
+- **Scan start** — Logs `force` mode, number of volumes, and their paths.
+- **Discovery** — Logs how many CHD files were found across how many volumes; warns on any missing/inaccessible volume.
+- **Phase 1 (metadata extraction)** — Logs each file with a `[n/total]` counter as its `chdman info` metadata is extracted and cached. Logs success per file; warns on failure.
+- **Phase 1 summary** — Reports how many files were refreshed vs already up-to-date.
+- **Phase 2 (disc ID tagging)** — Logs when each previously-unchecked CHD is scanned for a GAME/NAME tag. When a disc ID is successfully embedded into the CHD file, logs the filename and extracted `game_id`. When no disc ID can be found, logs that the file was marked as checked.
+- **Phase 2 summary** — Reports already-checked, newly-checked, and embedded tag counts.
+- **Flush** — Logs when the metadata store is being persisted and when it completes.
+- **Final summary** — Reports total metadata refreshed, disc IDs embedded, and total elapsed time.
+
+Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also promoted from `DEBUG` to `INFO` so the source of each embedded tag (CHD sectors, GDRO, or companion file) is visible in normal operation.
+
+### 🛠 Internal Changes
+
+- The background maintenance loop (stuck-job detection, stale lock cleanup) now always runs, not only when `LOGLEVEL=DEBUG`. It was previously gated behind `CHD_DEBUG=true`, meaning stuck-job recovery silently didn't operate in production.
+
+### 📁 Files Changed
+
+- `app/config.py` — Removed `debug`/`CHD_DEBUG`; added `log_level`/`LOGLEVEL` (default `INFO`) and `log_path`/`CHD_LOG_PATH`
+- `app/main.py` — `configure_logging()` parses `LOGLEVEL` instead of the old boolean flag
+- `app/services/job_manager.py` — Maintenance loop always starts; removed `settings.debug` gate
+- `app/routes/info.py` — Comprehensive structured INFO logging throughout `scan_metadata_task`
+- `app/services/disc_id.py` — Embedding log calls promoted from `DEBUG` to `INFO`
+- `README.md`, `DEPLOYMENT.md`, `DOCKER-COMPOSE.md` — Updated env var tables
+
+---
+
 ## v3.3.0 - Game ID & Title Extraction for CD and DVD CHDs
 
 ### ✨ New Features

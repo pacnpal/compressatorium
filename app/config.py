@@ -108,9 +108,9 @@ class Settings(BaseSettings):
         alias="CHD_VERIFY_PROGRESS_TIMEOUT",
     )
 
-    # Debug logging
-    debug: bool = Field(default=False, alias="CHD_DEBUG")
-    debug_log_path: str | None = Field(default=None, alias="CHD_DEBUG_LOG_PATH")
+    # Logging
+    log_level: str = Field(default="INFO", alias="LOGLEVEL")
+    log_path: str | None = Field(default=None, alias="CHD_LOG_PATH")
     debug_heartbeat_interval: int = Field(default=30, alias="CHD_DEBUG_HEARTBEAT")
     debug_progress_interval: int = Field(
         default=30,
