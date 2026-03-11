@@ -1,6 +1,5 @@
 """Tests for JobManager external-job API and METADATA_SCAN non-cancellability."""
 
-import asyncio
 import pytest
 
 from app.models import ConversionMode, JobStatus
@@ -211,7 +210,6 @@ def test_sentinel_path_does_not_interfere_with_path_in_use_checks():
     """The sentinel path must not cause false positives in _is_path_in_use_by_other_job."""
     mgr = _make_manager()
     # Register a fake conversion job with a real-looking path
-    from pathlib import Path
     conversion_job_id = "conv0001"
     from app.models import ConversionJob, JobStatus as JS
     from datetime import datetime, timezone

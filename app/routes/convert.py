@@ -186,6 +186,11 @@ def get_unique_output_path_for_extractcd(base_path: str) -> str:
 @router.post("/jobs/check-duplicates", response_model=list[DuplicateInfo])
 async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
+    if request.mode == ConversionMode.METADATA_SCAN:
+        raise HTTPException(
+            status_code=400,
+            detail="metadata_scan is not a valid conversion mode",
+        )
     results = []
     mode = request.mode.value
     output_dir = normalize_output_dir(request.output_dir)
