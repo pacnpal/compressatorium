@@ -248,8 +248,8 @@ def test_metadata_scan_does_not_count_toward_queue_depth():
 def test_metadata_scan_does_not_trigger_stuck_detection():
     """A running METADATA_SCAN with no conversion jobs must not be considered stuck."""
     mgr = _make_manager()
-    # Queue a fake non-scan job as QUEUED and have no PROCESSING conversion jobs
-    # — but if there's only a METADATA_SCAN processing, is_stuck must be False.
+    # With only a METADATA_SCAN processing and no conversion jobs enqueued,
+    # is_stuck must remain False.
     mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
     assert mgr.is_stuck() is False
 
