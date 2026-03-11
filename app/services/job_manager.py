@@ -383,6 +383,8 @@ class JobManager:
         # Keep the job in self.jobs with its terminal status so that:
         # - /api/jobs continues to list it until the user clears it
         # - the normal "Clear Done" flow can remove it alongside conversion jobs
+        # Enforce max_job_history on completion (exclude_id preserves this job).
+        await self._prune_jobs(exclude_id=job_id)
 
     def get_job_for_lookup(self, job_id: str) -> Optional[ConversionJob]:
         """Get a live job, or a recently archived one that was deleted from history."""

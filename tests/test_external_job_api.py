@@ -271,3 +271,27 @@ async def test_completed_external_job_visible_for_clear_done():
     # Job is still in the live dict (not deleted)
     assert job_id in mgr.jobs
     assert mgr.jobs[job_id].status == JobStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_finish_external_job_prunes_old_completed_jobs():
+    """finish_external_job() must enforce max_job_history so old terminal jobs
+    don't accumulate indefinitely (the just-finished job is preserved)."""
+    mgr = JobManager(max_concurrent=1, max_job_history=3)
+
+    # Fill history with 3 already-completed external jobs
+    for i in range(3):
+        j = mgr.create_external_job(f"OldScan{i}", ConversionMode.METADATA_SCAN)
+        await mgr.finish_external_job(j.id, success=True)
+
+    # All 3 are visible so far
+    assert len(mgr.jobs) == 3
+
+    # Adding a 4th and finishing it should prune the oldest to keep ≤ max_job_history
+    j4 = mgr.create_external_job("NewScan", ConversionMode.METADATA_SCAN)
+    await mgr.finish_external_job(j4.id, success=True)
+
+    # After pruning, total should not exceed max_job_history (3)
+    assert len(mgr.jobs) <= 3
+    # The just-finished job must be preserved
+    assert j4.id in mgr.jobs
