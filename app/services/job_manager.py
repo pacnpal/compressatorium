@@ -279,6 +279,100 @@ class JobManager:
         self._archived_jobs[archived.id] = (archived, time.monotonic())
         self._prune_archived_jobs()
 
+    # ------------------------------------------------------------------
+    # External-job API (for tasks that manage their own execution, e.g.
+    # metadata scans).  These jobs bypass the conversion queue and must
+    # be driven entirely by the caller.
+    # ------------------------------------------------------------------
+
+    def create_external_job(
+        self,
+        filename: str,
+        mode: ConversionMode,
+        message: str = "",
+    ) -> ConversionJob:
+        """Create and register an externally-managed job that bypasses the
+        conversion queue.  The caller drives state changes via
+        :meth:`update_external_job` and :meth:`finish_external_job`."""
+        job_id = str(uuid.uuid4())[:8]
+        job = ConversionJob(
+            id=job_id,
+            file_path="",
+            filename=filename,
+            mode=mode,
+            status=JobStatus.PROCESSING,
+            progress=0,
+            message=message,
+            created_at=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc),
+        )
+        self.jobs[job_id] = job
+        return job
+
+    async def update_external_job(
+        self,
+        job_id: str,
+        *,
+        progress: Optional[int] = None,
+        message: Optional[str] = None,
+    ) -> None:
+        """Update the progress/message of an externally-managed job and
+        notify SSE subscribers."""
+        job = self.jobs.get(job_id)
+        if job is None:
+            return
+        if progress is not None:
+            job.progress = max(0, min(100, progress))
+        if message is not None:
+            job.message = message
+        await self._notify_subscribers(
+            job_id,
+            {
+                "type": "progress",
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": job.progress,
+                "message": job.message,
+            },
+        )
+
+    async def finish_external_job(
+        self,
+        job_id: str,
+        *,
+        success: bool,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Mark an externally-managed job as complete or failed, notify
+        subscribers, and archive it."""
+        job = self.jobs.get(job_id)
+        if job is None:
+            return
+        job.status = JobStatus.COMPLETED if success else JobStatus.FAILED
+        if success:
+            job.progress = 100
+        job.completed_at = datetime.now(timezone.utc)
+        if error_message is not None:
+            job.error_message = error_message
+        # Clean up any spurious cancel state that may have been set by
+        # cancel_all while the external task was still running.
+        self._cancel_events.pop(job_id, None)
+        self._cancelled.discard(job_id)
+        event_type = "complete" if success else "error"
+        await self._notify_subscribers(
+            job_id,
+            {
+                "type": event_type,
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": job.progress,
+                "message": job.message,
+                "error_message": job.error_message,
+            },
+        )
+        self._archive_job_for_lookup(job)
+        del self.jobs[job_id]
+
     def get_job_for_lookup(self, job_id: str) -> Optional[ConversionJob]:
         """Get a live job, or a recently archived one that was deleted from history."""
         job = self.jobs.get(job_id)
@@ -517,6 +611,11 @@ class JobManager:
         """Cancel a job."""
         job = self.jobs.get(job_id)
         if not job:
+            return False
+
+        # Externally-managed jobs (e.g. metadata scans) are not cancellable
+        # through the normal dispatcher mechanism.
+        if job.mode == ConversionMode.METADATA_SCAN:
             return False
 
         if job.status == JobStatus.QUEUED:

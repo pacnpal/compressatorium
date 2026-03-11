@@ -1183,6 +1183,36 @@ header h1 span {
     color: var(--success);
 }
 
+/* Metadata-jobs visibility toggle in the Jobs panel header */
+.metadata-jobs-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    transition: all 0.2s ease;
+    -webkit-user-select: none;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.metadata-jobs-toggle:hover {
+    background: var(--bg-primary);
+}
+
+.metadata-jobs-toggle input[type="checkbox"] {
+    accent-color: var(--accent, #7c6af7);
+    cursor: pointer;
+}
+
+.metadata-jobs-toggle span {
+    white-space: nowrap;
+}
+
 .subtitle {
     font-size: 0.85rem;
     color: var(--text-secondary);

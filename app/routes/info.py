@@ -8,7 +8,7 @@ import time
 from config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from models import BulkVerifyRequest, CHDInfo, DolphinDiscInfo, MetadataBatchRequest, Z3DSInfo
+from models import BulkVerifyRequest, CHDInfo, ConversionJob, ConversionMode, DolphinDiscInfo, JobStatus, MetadataBatchRequest, Z3DSInfo
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
 from services.disc_id import (
@@ -20,6 +20,7 @@ from services.dolphin_tool import (
     dolphin_tool_service,
 )
 from services.workload_limiter import WorkloadToken, workload_limiter
+from services.job_manager import job_manager
 from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
 from services.verification_store import verification_store
 from sse_starlette.sse import EventSourceResponse
@@ -74,6 +75,14 @@ async def scan_metadata_task(
         ", ".join(volumes) if volumes else "(none)",
     )
 
+    # Create a job entry so the scan is visible in the Jobs panel.
+    scan_job = job_manager.create_external_job(
+        filename="Metadata Scan",
+        mode=ConversionMode.METADATA_SCAN,
+        message=f"Starting scan across {len(volumes)} volume(s)\u2026",
+    )
+    scan_job_id = scan_job.id
+
     def collect_all_chd_paths():
         """Collect ALL CHD paths from volumes (runs in thread pool)."""
         paths = []
@@ -87,14 +96,22 @@ async def scan_metadata_task(
                         paths.append(os.path.join(root, file))
         return paths
 
+    scan_success = False
+    scan_error: str | None = None
     try:
         # Run blocking filesystem traversal in thread pool
         loop = asyncio.get_running_loop()
         all_paths = await loop.run_in_executor(None, collect_all_chd_paths)
+        total_files = len(all_paths)
         logger.info(
             "Discovery complete: found %d CHD file(s) across %d volume(s)",
-            len(all_paths),
+            total_files,
             len(volumes),
+        )
+        await job_manager.update_external_job(
+            scan_job_id,
+            progress=5,
+            message=f"Found {total_files} CHD file(s) \u2014 starting metadata refresh\u2026",
         )
 
         # Filter stales asynchronously
@@ -116,7 +133,8 @@ async def scan_metadata_task(
                 cached_count,
             )
 
-        # Phase 1: Update chdman info cache for stale / forced CHDs
+        # Phase 1: Update chdman info cache for stale / forced CHDs.
+        # Progress band: 5 % → 60 %.
         phase1_total = len(chd_paths)
         for idx, path in enumerate(chd_paths, start=1):
             logger.info(
@@ -143,6 +161,12 @@ async def scan_metadata_task(
                     path,
                     e,
                 )
+            if phase1_total > 0:
+                await job_manager.update_external_job(
+                    scan_job_id,
+                    progress=5 + int(55 * idx / phase1_total),
+                    message=f"Phase 1 [{idx}/{phase1_total}]: {os.path.basename(path)}",
+                )
 
         logger.info(
             "Phase 1 complete: metadata refreshed for %d/%d CHD file(s)",
@@ -154,6 +178,7 @@ async def scan_metadata_task(
         # them.  Covers CHDs created before conversion-time tagging was added.
         # Skip CHDs where disc ID has already been checked and the file has not
         # changed since — avoids spawning a chdman subprocess on every scan.
+        # Progress band: 60 % → 97 %.
         phase2_total = len(all_paths)
         already_checked = 0
         newly_checked = 0
@@ -161,7 +186,12 @@ async def scan_metadata_task(
             "Phase 2: Checking GAME/NAME disc ID tags for %d CHD file(s)...",
             phase2_total,
         )
-        for path in all_paths:
+        await job_manager.update_external_job(
+            scan_job_id,
+            progress=60,
+            message=f"Phase 2: Checking disc ID tags for {phase2_total} CHD file(s)\u2026",
+        )
+        for idx2, path in enumerate(all_paths, start=1):
             try:
                 if await chd_metadata_store.is_disc_id_checked(path):
                     already_checked += 1
@@ -184,6 +214,12 @@ async def scan_metadata_task(
                     )
             except Exception as e:
                 logger.debug("Phase 2: disc_id ensure skipped for %s: %s", path, e)
+            if phase2_total > 0:
+                await job_manager.update_external_job(
+                    scan_job_id,
+                    progress=60 + int(37 * idx2 / phase2_total),
+                    message=f"Phase 2 [{idx2}/{phase2_total}]: {os.path.basename(path)}",
+                )
 
         logger.info(
             "Phase 2 complete: %d already checked, %d newly checked, %d disc ID tag(s) embedded",
@@ -194,11 +230,18 @@ async def scan_metadata_task(
 
         # Flush all accumulated changes once at the end (async, non-blocking)
         logger.info("Flushing metadata store to disk...")
+        await job_manager.update_external_job(
+            scan_job_id,
+            progress=97,
+            message="Flushing metadata store to disk\u2026",
+        )
         await chd_metadata_store.flush_async()
         logger.info("Metadata store flushed.")
+        scan_success = True
 
     except Exception as e:
         logger.error("Metadata scan failed: %s", e)
+        scan_error = str(e)
     finally:
         if scan_token:
             scan_token.release()
@@ -209,6 +252,22 @@ async def scan_metadata_task(
             count,
             embed_count,
             elapsed,
+        )
+        if scan_success:
+            final_msg = (
+                f"{count} refreshed, {embed_count} disc ID(s) embedded \u2014 {elapsed:.1f}s"
+            )
+        else:
+            final_msg = f"Scan failed: {scan_error or 'unknown error'}"
+        await job_manager.update_external_job(
+            scan_job_id,
+            progress=100 if scan_success else scan_job.progress,
+            message=final_msg,
+        )
+        await job_manager.finish_external_job(
+            scan_job_id,
+            success=scan_success,
+            error_message=scan_error,
         )
 
 

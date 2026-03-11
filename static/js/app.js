@@ -3,6 +3,7 @@ import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
+const SHOW_METADATA_JOBS_STORAGE_KEY = 'compressatorium_show_metadata_jobs';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
 const DEFAULT_PAGE_SIZE = '50';
 const DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST = true;
@@ -824,7 +825,9 @@ function JobList({
 
                     ${job.status === 'completed' && html`
                         <div class="job-success" style="color: var(--success); font-size: 0.8rem; padding-left: 24px;">
-                            Job complete${job.output_size ? ` - ${formatSize(job.output_size)}` : ''}
+                            ${job.mode === 'metadata_scan'
+                                ? (job.message || 'Scan complete')
+                                : `Job complete${job.output_size ? ` - ${formatSize(job.output_size)}` : ''}`}
                         </div>
                     `}
 
@@ -833,7 +836,7 @@ function JobList({
                     `}
 
                     <div class="job-actions">
-                        ${['queued', 'processing'].includes(job.status) && html`
+                        ${['queued', 'processing'].includes(job.status) && job.mode !== 'metadata_scan' && html`
                             <button class="btn btn-sm btn-secondary" onClick=${() => onCancel(job.id)} title="Cancel this job">
                                 Cancel
                             </button>
@@ -2544,6 +2547,13 @@ function App() {
     const [cancellingAllJobs, setCancellingAllJobs] = useState(false);
     const [showClearDoneModal, setShowClearDoneModal] = useState(false);
     const [clearingCompletedJobs, setClearingCompletedJobs] = useState(false);
+    const [showMetadataJobs, setShowMetadataJobs] = useState(() => {
+        try {
+            return localStorage.getItem(SHOW_METADATA_JOBS_STORAGE_KEY) === 'true';
+        } catch (err) {
+            return false;
+        }
+    });
 
     // Ref to track current path for use in callbacks
     const currentPathRef = useRef(null);
@@ -2609,6 +2619,14 @@ function App() {
             // Ignore persistence failures (private mode, disabled storage).
         }
     }, [isoHandling]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(SHOW_METADATA_JOBS_STORAGE_KEY, showMetadataJobs ? 'true' : 'false');
+        } catch (err) {
+            // Ignore persistence failures (private mode, disabled storage).
+        }
+    }, [showMetadataJobs]);
 
     // Refresh file list for current directory or archive (transparent merge to avoid flicker)
     const refreshFileList = useCallback((showSpinner = false) => {
@@ -2851,21 +2869,28 @@ function App() {
 
     const queueJobs = useMemo(() => {
         const activeServerJobs = jobs.filter(
-            (job) => !['completed', 'failed', 'cancelled'].includes(job.status),
+            (job) => !['completed', 'failed', 'cancelled'].includes(job.status)
+                  && (showMetadataJobs || job.mode !== 'metadata_scan'),
         );
         return creatingJobs.length > 0
             ? [...creatingJobs, ...activeServerJobs]
             : activeServerJobs;
-    }, [creatingJobs, jobs]);
+    }, [creatingJobs, jobs, showMetadataJobs]);
 
     const completedJobs = useMemo(
-        () => jobs.filter((job) => job.status === 'completed'),
-        [jobs],
+        () => jobs.filter(
+            (job) => job.status === 'completed'
+                  && (showMetadataJobs || job.mode !== 'metadata_scan'),
+        ),
+        [jobs, showMetadataJobs],
     );
 
     const issueJobs = useMemo(
-        () => jobs.filter((job) => ['failed', 'cancelled'].includes(job.status)),
-        [jobs],
+        () => jobs.filter(
+            (job) => ['failed', 'cancelled'].includes(job.status)
+                  && (showMetadataJobs || job.mode !== 'metadata_scan'),
+        ),
+        [jobs, showMetadataJobs],
     );
 
     const displayedJobs = useMemo(() => {
@@ -5227,6 +5252,19 @@ function App() {
                             >
                                 ↻
                             </button>
+                            <label class="metadata-jobs-toggle" title="Include metadata scan jobs in the jobs list">
+                                <input
+                                    type="checkbox"
+                                    id="show-metadata-jobs"
+                                    checked=${showMetadataJobs}
+                                    onChange=${() => {
+                                        setShowMetadataJobs(prev => !prev);
+                                        setJobCurrentPage(1);
+                                    }}
+                                    aria-label="Show metadata scan jobs"
+                                />
+                                <span>Show scans</span>
+                            </label>
                         </div>
                     </div>
                     ${stuckState?.is_stuck && html`

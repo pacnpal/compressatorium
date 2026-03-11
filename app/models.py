@@ -21,6 +21,7 @@ class ConversionMode(str, Enum):
     DOLPHIN_GCZ = "dolphin_gcz"
     DOLPHIN_ISO = "dolphin_iso"
     Z3DS_COMPRESS = "z3ds_compress"
+    METADATA_SCAN = "metadata_scan"
 
 
 class DuplicateAction(str, Enum):
