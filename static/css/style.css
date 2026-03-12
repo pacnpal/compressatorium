@@ -1506,6 +1506,18 @@ header h1 span {
     color: var(--accent-hover);
 }
 
+.github-icon {
+    height: 20px;
+    width: auto;
+    fill: currentColor;
+    display: block;
+    transition: opacity 0.2s;
+}
+
+.app-footer a:hover .github-icon {
+    opacity: 0.8;
+}
+
 /* CHD Media Type Badges */
 .file-item .status.media-badge {
     font-weight: 600;
