@@ -205,6 +205,10 @@ async def scan_metadata_task(
                     continue
                 logger.info("Phase 2: Scanning disc ID for %s", os.path.basename(path))
                 result = await disc_id_ensure_embedded(path, settings.chdman_path)
+                if result and result.get("game_id"):
+                    await chd_metadata_store.update_disc_id_info(
+                        path, result["game_id"], result.get("title")
+                    )
                 await chd_metadata_store.mark_disc_id_checked(path)
                 newly_checked += 1
                 if result:
