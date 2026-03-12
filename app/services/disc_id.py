@@ -985,8 +985,12 @@ async def ensure_disc_id_embedded(
     for game lookup, so this fallback ensures maximum compatibility while
     preserving real titles when possible.
 
-    Returns a dict with at least ``game_id`` on success, or None if the disc
-    ID could not be determined.
+    Returns a dict with at least ``game_id`` when disc identity information was
+    found — regardless of whether the GAME/NAME tags were successfully embedded
+    into the CHD file.  When embedding fails (e.g. the file is read-only or
+    ``chdman`` is unavailable), the disc ID is still returned so callers can
+    cache it for display; a ``WARNING`` is logged in that case.
+    Returns None only when no disc ID could be found at all.
     """
     # --- Fast path: GAME tag already present ---------------------------------
     existing = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
@@ -1016,9 +1020,10 @@ async def ensure_disc_id_embedded(
         )
         if not ok:
             logger.warning(
-                "disc_id: failed to embed GAME/NAME tags in %s", chd_path
+                "disc_id: failed to embed GAME/NAME tags in %s"
+                " — disc ID will be cached for display only",
+                chd_path,
             )
-            return None
         return disc_result
 
     # --- Strategy 3: standard Dreamcast GDRO tag -----------------------------
@@ -1039,9 +1044,10 @@ async def ensure_disc_id_embedded(
             )
             if not ok:
                 logger.warning(
-                    "disc_id: failed to embed GAME/NAME tags in %s", chd_path
+                    "disc_id: failed to embed GAME/NAME tags in %s"
+                    " — disc ID will be cached for display only",
+                    chd_path,
                 )
-                return None
             return parsed
 
     # --- Strategy 4: companion source file -----------------------------------
@@ -1065,9 +1071,10 @@ async def ensure_disc_id_embedded(
                 )
                 if not ok:
                     logger.warning(
-                        "disc_id: failed to embed GAME/NAME tags in %s", chd_path
+                        "disc_id: failed to embed GAME/NAME tags in %s"
+                        " — disc ID will be cached for display only",
+                        chd_path,
                     )
-                    return None
                 return res
 
     return None
