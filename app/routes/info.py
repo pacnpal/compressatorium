@@ -223,13 +223,13 @@ async def scan_metadata_task(
                 if result:
                     embed_count += 1
                     logger.info(
-                        "Phase 2: Disc ID tags written to %s (game_id=%r)",
+                        "Phase 2: Disc ID found for %s (game_id=%r)",
                         os.path.basename(path),
                         result.get("game_id"),
                     )
                 else:
                     logger.info(
-                        "Phase 2: No disc ID embedded for %s (not found or embed failed) — file marked as checked",
+                        "Phase 2: No disc ID found for %s — file marked as checked",
                         os.path.basename(path),
                     )
             except Exception as e:
@@ -242,7 +242,7 @@ async def scan_metadata_task(
                 )
 
         logger.info(
-            "Phase 2 complete: %d already checked, %d newly checked, %d disc ID tag(s) embedded",
+            "Phase 2 complete: %d already checked, %d newly checked, %d disc ID(s) found",
             already_checked,
             newly_checked,
             embed_count,
@@ -268,14 +268,14 @@ async def scan_metadata_task(
         _is_scanning = False
         elapsed = time.monotonic() - scan_start
         logger.info(
-            "Metadata scan complete: %d metadata refreshed, %d disc ID(s) embedded, elapsed %.1fs",
+            "Metadata scan complete: %d metadata refreshed, %d disc ID(s) found, elapsed %.1fs",
             count,
             embed_count,
             elapsed,
         )
         if scan_success:
             final_msg = (
-                f"{count} refreshed, {embed_count} disc ID(s) embedded \u2014 {elapsed:.1f}s"
+                f"{count} refreshed, {embed_count} disc ID(s) found \u2014 {elapsed:.1f}s"
             )
         else:
             final_msg = f"Scan failed: {scan_error or 'unknown error'}"

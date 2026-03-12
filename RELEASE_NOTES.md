@@ -1,5 +1,25 @@
 # Release Notes
 
+## v3.3.2 - CD CHD Sector Extraction Fix
+
+### 🐛 Bug Fixes
+
+- **PS1 serial extraction from CD CHDs** — `_extract_from_chd_sectors` previously returned `None` for all CD-based CHDs (unit_bytes=2352/2448), meaning PS1 game serials could only be extracted from companion `.bin`/`.cue` files or if those CHDs were already tagged at conversion time.  The function now probes both **Mode 2 Form 1** (24-byte header) and **Mode 1** (16-byte header) sector framing when reading 2352- or 2448-byte CD sectors, allowing it to walk the embedded ISO 9660 filesystem directly — exactly as libchdr-based emulators (PCSX2, AetherSX2, NetherSX2) do.  For CHDs created from Mode 2 Form 1 BIN/CUE images (the most common PS1 format), extraction now succeeds without requiring a companion source file.
+
+### 🧪 Tests
+
+- Added `test_extract_from_chd_sectors_ps1_cd_mode1` — verifies PS1 serial extraction from a CD CHD with 2352-byte Mode 1 sectors.
+- Added `test_extract_from_chd_sectors_ps1_cd_mode2` — verifies PS1 serial extraction from a CD CHD with 2352-byte Mode 2 Form 1 sectors.
+- Added `test_extract_from_chd_sectors_cd_no_recognizable_content` — confirms that a CD CHD with no ISO 9660 filesystem still returns `None` gracefully.
+- Replaced the now-obsolete `test_extract_from_chd_sectors_non_dvd_returns_none` test (which verified the old early-return shortcut) with the three new tests above.
+
+### 📁 Files Changed
+
+- `app/services/disc_id.py` — `_extract_from_chd_sectors` extended to handle CD CHDs; docstrings updated throughout
+- `tests/test_disc_id.py` — Three new CD CHD extraction tests; module docstring updated
+
+---
+
 ## v3.3.1 - Structured Logging with LOGLEVEL
 
 ### ✨ New Features

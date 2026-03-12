@@ -7,6 +7,7 @@ Covers:
   - PSP PARAM.SFO binary parsing
   - Dreamcast GDI track parsing
   - BIN sector-stream adapter
+  - CD CHD sector extraction (Mode 1 and Mode 2 Form 1)
   - CHD extraction stubs (dumpmeta / companion-file paths)
 """
 
@@ -25,6 +26,7 @@ from app.services.disc_id import (
     _BinSectorStream,
     _CHDReader,
     _CHDSectorStream,
+    _RAW_SECTOR_HEADER_SIZE_MODE2,
     _extract_cue,
     _extract_from_chd_sectors,
     _extract_gdi,
@@ -703,12 +705,61 @@ def test_extract_from_chd_sectors_psp(tmp_path):
     assert result["title"] == "Patapon"
 
 
-def test_extract_from_chd_sectors_non_dvd_returns_none(tmp_path):
-    """CHD with 2352-byte sectors (CD) → returns None (handled elsewhere)."""
-    # Build a CHD that claims unit_bytes=2352
-    iso = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"})
-    chd_path = tmp_path / "cd_game.chd"
-    chd_path.write_bytes(_make_chd_v5(iso, unit_bytes=2352))
+def test_extract_from_chd_sectors_ps1_cd_mode1(tmp_path):
+    """CD CHD with PS1 SYSTEM.CNF in Mode 1 (2352-byte) sectors → serial extracted."""
+    cnf = b"BOOT = cdrom:\\SLPS_123.45;1\n"
+    iso = _make_iso({"SYSTEM.CNF": cnf})
+    mode1_bin = _make_mode1_bin(iso)  # wraps ISO in 2352-byte Mode 1 sectors
+    chd_path = tmp_path / "ps1_game.chd"
+    chd_path.write_bytes(_make_chd_v5(mode1_bin, unit_bytes=2352))
+
+    result = _extract_from_chd_sectors(str(chd_path))
+    assert result is not None
+    assert result["game_id"] == "SLPS-12345"
+    assert result["platform"] == "ps1"
+
+
+def _make_mode2_bin(iso_bytes: bytes) -> bytes:
+    """
+    Wrap a flat ISO 9660 image (2048-byte sectors) in Mode 2 Form 1 2352-byte
+    sectors (24-byte header + 2048-byte payload + 280-byte ECC pad).
+
+    This is the most common format for PS1 discs burned from BIN/CUE images.
+    """
+    SECTOR = 2352
+    HEADER = _RAW_SECTOR_HEADER_SIZE_MODE2  # 24 bytes (Mode 2 Form 1)
+    DATA = 2048
+    TAIL = SECTOR - HEADER - DATA  # 280
+    num = (len(iso_bytes) + DATA - 1) // DATA
+    buf = bytearray()
+    for i in range(num):
+        buf += b"\x00" * HEADER
+        chunk = iso_bytes[i * DATA : (i + 1) * DATA]
+        buf += chunk.ljust(DATA, b"\x00")
+        buf += b"\x00" * TAIL
+    return bytes(buf)
+
+
+def test_extract_from_chd_sectors_ps1_cd_mode2(tmp_path):
+    """CD CHD with PS1 SYSTEM.CNF in Mode 2 Form 1 (2352-byte) sectors → serial extracted."""
+    cnf = b"BOOT = cdrom:\\SLPS_678.90;1\n"
+    iso = _make_iso({"SYSTEM.CNF": cnf})
+    mode2_bin = _make_mode2_bin(iso)  # wraps ISO in 2352-byte Mode 2 Form 1 sectors
+    chd_path = tmp_path / "ps1_mode2.chd"
+    chd_path.write_bytes(_make_chd_v5(mode2_bin, unit_bytes=2352))
+
+    result = _extract_from_chd_sectors(str(chd_path))
+    assert result is not None
+    assert result["game_id"] == "SLPS-67890"
+    assert result["platform"] == "ps1"
+
+
+def test_extract_from_chd_sectors_cd_no_recognizable_content(tmp_path):
+    """CD CHD whose sectors contain no ISO 9660 filesystem → returns None."""
+    # 2352-byte sectors filled with garbage (no PVD magic at any offset)
+    garbage = b"\xAB\xCD" * (2352 * 32 // 2)
+    chd_path = tmp_path / "unknown_cd.chd"
+    chd_path.write_bytes(_make_chd_v5(garbage, unit_bytes=2352))
 
     result = _extract_from_chd_sectors(str(chd_path))
     assert result is None
@@ -993,7 +1044,7 @@ async def test_ensure_disc_id_embedded_gdro_fallback(tmp_path):
 
 @pytest.mark.asyncio
 async def test_ensure_disc_id_embedded_gdro_embed_failure(tmp_path):
-    """embed_in_chd failure (addmeta error) → returns None, not a false positive."""
+    """embed_in_chd failure (addmeta error) → disc ID still returned for caching, not None."""
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake")
     ipbin = _make_ipbin("MK-51034  ", "DEAD OR ALIVE")
@@ -1014,7 +1065,10 @@ async def test_ensure_disc_id_embedded_gdro_embed_failure(tmp_path):
     ):
         result = await ensure_disc_id_embedded(str(chd), "chdman")
 
-    assert result is None
+    # Even though embedding failed, the extracted disc ID is returned so it
+    # can be cached in the metadata store and displayed in the UI.
+    assert result is not None
+    assert result["game_id"] == "MK-51034"
 
 
 @pytest.mark.asyncio
@@ -1054,7 +1108,7 @@ async def test_ensure_disc_id_embedded_companion_iso(tmp_path):
 
 @pytest.mark.asyncio
 async def test_ensure_disc_id_embedded_companion_embed_failure(tmp_path):
-    """embed_in_chd failure for companion file → returns None, not a false positive."""
+    """embed_in_chd failure for companion file → disc ID still returned for caching."""
     cnf = b"BOOT2 = cdrom0:\\SLUS_209.99;1\n"
     iso_bytes = _make_iso({"SYSTEM.CNF": cnf})
     chd = tmp_path / "game.chd"
@@ -1077,7 +1131,10 @@ async def test_ensure_disc_id_embedded_companion_embed_failure(tmp_path):
     ):
         result = await ensure_disc_id_embedded(str(chd), "chdman")
 
-    assert result is None
+    # Embedding failed but the extracted serial is still returned so callers
+    # can cache it in the metadata store and show it in the UI.
+    assert result is not None
+    assert result["game_id"] == "SLUS-20999"
 
 
 @pytest.mark.asyncio
@@ -1138,6 +1195,41 @@ async def test_ensure_disc_id_embedded_from_chd_sectors(tmp_path):
     assert result["game_id"] == "SLUS-20312"
     assert any(t == TAG_GAME and v == "SLUS-20312" for t, v in addmeta_calls)
     assert any(t == TAG_NAME and v == "SLUS-20312" for t, v in addmeta_calls)
+
+
+@pytest.mark.asyncio
+async def test_ensure_disc_id_embedded_sector_embed_failure(tmp_path):
+    """Sector extraction finds disc ID but embed_in_chd fails → disc ID still returned.
+
+    This covers the case where the CHD is on a read-only filesystem or chdman
+    addmeta is unavailable.  The extracted game_id must still be returned so
+    Phase 2 can cache it in the metadata store for display in the UI.
+    """
+    cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"
+    iso = _make_iso({"SYSTEM.CNF": cnf})
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(_make_chd_v5(iso))
+
+    async def fake_dumpmeta_text(chd_path, tag, chdman_path):
+        return None  # no pre-existing GAME tag
+
+    async def fake_dumpmeta_bin(chd_path, tag, chdman_path):
+        return None
+
+    async def fake_addmeta(chd_path, tag, value, chdman_path):
+        return False  # simulate chdman / filesystem failure
+
+    with (
+        patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dumpmeta_text),
+        patch("app.services.disc_id._dumpmeta_bin", side_effect=fake_dumpmeta_bin),
+        patch("app.services.disc_id._addmeta_text", side_effect=fake_addmeta),
+    ):
+        result = await ensure_disc_id_embedded(str(chd), "chdman")
+
+    # The game_id is still returned even though embedding failed, so it can
+    # be cached in the metadata store and shown in the CHD inspector.
+    assert result is not None
+    assert result["game_id"] == "SLUS-20312"
 
 
 @pytest.mark.asyncio

@@ -14,8 +14,10 @@ Emulator frontends and game database scrapers key on this normalized form.
 
 Extraction strategy for CHDs (in priority order):
   1. Read our embedded GAME / NAME tags written by addmeta at conversion time.
-  2. Read disc sectors directly from the CHD (DVD CHDs, unit_bytes=2048):
-       ISO 9660 → SYSTEM.CNF (PS2/PS1) or PSP_GAME/PARAM.SFO (PSP).
+  2. Read disc sectors directly from the CHD (via a minimal CHD v5 reader):
+       DVD CHDs (unit_bytes=2048): plain 2048-byte ISO sectors.
+       CD CHDs (unit_bytes=2352/2448): Mode 1 and Mode 2 Form 1 framing are
+       both probed automatically, so PS1 BIN/CUE-sourced CHDs are supported.
   3. For CD CHDs: parse the Dreamcast GDRO (IP.BIN) metadata standard tag.
   4. Look for a companion source file (.iso / .gdi / .cue / .bin) next to the CHD.
   5. Return None if nothing is found.
@@ -737,9 +739,11 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
     Launcher, all of which use libchdr to read the CHD's raw disc sectors and
     then walk the ISO 9660 filesystem to find SYSTEM.CNF or PARAM.SFO.
 
-    Currently handles DVD CHDs (unit_bytes=2048) where sectors are plain
-    2048-byte ISO data.  CD CHDs (unit_bytes=2352/2448) fall back to the GDRO
-    or companion-file strategies.
+    Handles both DVD CHDs (unit_bytes=2048, plain ISO sectors) and CD CHDs
+    (unit_bytes=2352/2448, Mode 1 or Mode 2 Form 1 framing with 16- or 24-byte
+    sector headers).  For CD CHDs, both header sizes are probed automatically so
+    PS1 discs compressed from Mode 2 Form 1 BINs and those from Mode 1 BINs are
+    both supported.
 
     Returns a dict with a normalized ``game_id`` on success, or None.
     """
@@ -747,27 +751,43 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
         with _CHDReader(chd_path) as reader:
             if not reader.open():
                 return None
-            if reader.unit_bytes != _SECTOR_SIZE:
-                # CD CHDs store 2352/2448-byte sectors with CD framing;
-                # handled separately via GDRO metadata or companion files.
+
+            if reader.unit_bytes == _SECTOR_SIZE:
+                # DVD CHDs: plain 2048-byte ISO sectors, no CD framing.
+                data_offsets: list[int] = [0]
+            elif reader.unit_bytes in (2352, 2448):
+                # CD CHDs: 2352- or 2448-byte physical sectors with a CD sector
+                # frame header preceding the 2048-byte user-data payload.
+                # Try Mode 2 Form 1 (24-byte header) first — the most common PS1
+                # format — then fall back to Mode 1 (16-byte header).
+                data_offsets = [
+                    _RAW_SECTOR_HEADER_SIZE_MODE2,
+                    _RAW_SECTOR_HEADER_SIZE_MODE1,
+                ]
+            else:
                 return None
-            stream = _CHDSectorStream(reader, data_offset=0)
-            pvd = _read_pvd(stream)
-            if not pvd:
-                return None
-            root_lba, root_size = _pvd_root_dir(pvd)
-            # PS2 / PS1 DVD — SYSTEM.CNF in root
-            cnf = _find_file(stream, root_lba, root_size, ["SYSTEM.CNF"])
-            if cnf:
-                result = _parse_system_cnf(cnf)
-                if result.get("game_id"):
-                    return result
-            # PSP — /PSP_GAME/PARAM.SFO
-            sfo = _find_file(stream, root_lba, root_size, ["PSP_GAME", "PARAM.SFO"])
-            if sfo:
-                result = _parse_param_sfo(sfo)
-                if result.get("game_id"):
-                    return result
+
+            for data_offset in data_offsets:
+                stream = _CHDSectorStream(reader, data_offset=data_offset)
+                pvd = _read_pvd(stream)
+                if not pvd:
+                    continue
+                root_lba, root_size = _pvd_root_dir(pvd)
+
+                # PS2 / PS1 — SYSTEM.CNF in root
+                cnf = _find_file(stream, root_lba, root_size, ["SYSTEM.CNF"])
+                if cnf:
+                    result = _parse_system_cnf(cnf)
+                    if result.get("game_id"):
+                        return result
+
+                # PSP — /PSP_GAME/PARAM.SFO
+                sfo = _find_file(stream, root_lba, root_size, ["PSP_GAME", "PARAM.SFO"])
+                if sfo:
+                    result = _parse_param_sfo(sfo)
+                    if result.get("game_id"):
+                        return result
+
     except Exception as e:
         logger.debug("disc_id: CHD sector extraction failed for %s: %s", chd_path, e)
     return None
@@ -850,9 +870,11 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
 
     Strategy (in order):
       1. Read our custom GAME / NAME tags (written by addmeta at conversion).
-      2. Read disc sectors directly from the CHD (DVD ISO 9660 via _CHDReader):
-         walks SYSTEM.CNF (PS2/PS1) or PSP_GAME/PARAM.SFO (PSP) in the CHD's
-         own ISO 9660 filesystem — the same approach used by libchdr-based emus.
+      2. Read disc sectors directly from the CHD via _CHDReader:
+         walks the ISO 9660 filesystem to find SYSTEM.CNF (PS2/PS1) or
+         PSP_GAME/PARAM.SFO (PSP).  Handles both DVD CHDs (2048-byte sectors)
+         and CD CHDs (2352/2448-byte sectors with Mode 1 or Mode 2 Form 1
+         framing) — the same approach used by libchdr-based emulators.
       3. Read the Dreamcast GDRO IP.BIN tag (standard CD CHD tag).
       4. Look for a companion source file (.iso / .gdi / .bin / .cue) beside
          the CHD and extract from that.
@@ -922,6 +944,12 @@ async def embed_in_chd(
              "MK-51034") in the form emulator frontends use for DB lookup
       NAME — the human-readable game title (optional)
     """
+    logger.debug(
+        "disc_id: embed_in_chd game_id=%r title=%r in %s",
+        game_id,
+        title,
+        chd_path,
+    )
     ok = await _addmeta_text(chd_path, TAG_GAME, game_id, chdman_path)
     if not ok:
         return False
@@ -944,8 +972,10 @@ async def ensure_disc_id_embedded(
 
       1. Fast-path: read the GAME tag.  If it is already present, return the
          existing info without touching the file.
-      2. Read disc sectors directly from the CHD (DVD CHDs): walks the ISO 9660
-         filesystem to find SYSTEM.CNF / PARAM.SFO, then embeds GAME / NAME.
+      2. Read disc sectors directly from the CHD via _CHDReader: walks the
+         ISO 9660 filesystem to find SYSTEM.CNF / PARAM.SFO, then embeds
+         GAME / NAME.  Handles both DVD CHDs (2048-byte sectors) and CD CHDs
+         (2352/2448-byte sectors with Mode 1 or Mode 2 Form 1 framing).
          The serial is normalized to the canonical emulator form (SLUS-20312).
       3. Try the standard Dreamcast GDRO (IP.BIN) tag that chdman embeds for
          GDI-sourced CHDs.  Parse product number + title from the IP.BIN
@@ -961,8 +991,12 @@ async def ensure_disc_id_embedded(
     for game lookup, so this fallback ensures maximum compatibility while
     preserving real titles when possible.
 
-    Returns a dict with at least ``game_id`` on success, or None if the disc
-    ID could not be determined.
+    Returns a dict with at least ``game_id`` when disc identity information was
+    found — regardless of whether the GAME/NAME tags were successfully embedded
+    into the CHD file.  When embedding fails (e.g. the file is read-only or
+    ``chdman`` is unavailable), the disc ID is still returned so callers can
+    cache it for display; a ``WARNING`` is logged in that case.
+    Returns None only when no disc ID could be found at all.
     """
     # --- Fast path: GAME tag already present ---------------------------------
     existing = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
@@ -970,6 +1004,12 @@ async def ensure_disc_id_embedded(
         game_id = existing.strip()
         name_raw = await _dumpmeta_text(chd_path, TAG_NAME, chdman_path)
         title = (name_raw or "").strip() or None
+        logger.debug(
+            "disc_id: GAME tag already present game_id=%r title=%r in %s",
+            game_id,
+            title,
+            chd_path,
+        )
         out: dict = {"game_id": game_id}
         if title:
             out["title"] = title
@@ -992,9 +1032,10 @@ async def ensure_disc_id_embedded(
         )
         if not ok:
             logger.warning(
-                "disc_id: failed to embed GAME/NAME tags in %s", chd_path
+                "disc_id: failed to embed GAME/NAME tags in %s"
+                " — disc ID will be cached for display only",
+                chd_path,
             )
-            return None
         return disc_result
 
     # --- Strategy 3: standard Dreamcast GDRO tag -----------------------------
@@ -1015,9 +1056,10 @@ async def ensure_disc_id_embedded(
             )
             if not ok:
                 logger.warning(
-                    "disc_id: failed to embed GAME/NAME tags in %s", chd_path
+                    "disc_id: failed to embed GAME/NAME tags in %s"
+                    " — disc ID will be cached for display only",
+                    chd_path,
                 )
-                return None
             return parsed
 
     # --- Strategy 4: companion source file -----------------------------------
@@ -1041,9 +1083,10 @@ async def ensure_disc_id_embedded(
                 )
                 if not ok:
                     logger.warning(
-                        "disc_id: failed to embed GAME/NAME tags in %s", chd_path
+                        "disc_id: failed to embed GAME/NAME tags in %s"
+                        " — disc ID will be cached for display only",
+                        chd_path,
                     )
-                    return None
                 return res
 
     return None
@@ -1058,6 +1101,12 @@ async def _addmeta_text(
 ) -> bool:
     """Write a text metadata tag to *chd_path* using chdman addmeta."""
     try:
+        logger.debug(
+            "disc_id: addmeta tag=%s value=%r in %s",
+            tag,
+            value,
+            chd_path,
+        )
         proc = await asyncio.create_subprocess_exec(
             chdman_path,
             "addmeta",
@@ -1076,6 +1125,7 @@ async def _addmeta_text(
                 stderr.decode(errors="replace").strip(),
             )
             return False
+        logger.debug("disc_id: addmeta tag=%s written successfully in %s", tag, chd_path)
         return True
     except Exception as e:
         logger.warning("disc_id: addmeta tag=%s error: %s", tag, e)
