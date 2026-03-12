@@ -1010,6 +1010,10 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                             <span class="info-label">Game ID</span>
                             <span class="info-value">${info.game_id}</span>
                         `}
+                        ${info.title_id && html`
+                            <span class="info-label">Title ID</span>
+                            <span class="info-value" style="font-family: monospace">${info.title_id}</span>
+                        `}
                         ${info.disc_number && html`
                             <span class="info-label">Disc Number</span>
                             <span class="info-value">${info.disc_number}</span>
