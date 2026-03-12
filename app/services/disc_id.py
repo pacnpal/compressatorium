@@ -944,6 +944,12 @@ async def embed_in_chd(
              "MK-51034") in the form emulator frontends use for DB lookup
       NAME — the human-readable game title (optional)
     """
+    logger.debug(
+        "disc_id: embed_in_chd game_id=%r title=%r in %s",
+        game_id,
+        title,
+        chd_path,
+    )
     ok = await _addmeta_text(chd_path, TAG_GAME, game_id, chdman_path)
     if not ok:
         return False
@@ -998,6 +1004,12 @@ async def ensure_disc_id_embedded(
         game_id = existing.strip()
         name_raw = await _dumpmeta_text(chd_path, TAG_NAME, chdman_path)
         title = (name_raw or "").strip() or None
+        logger.debug(
+            "disc_id: GAME tag already present game_id=%r title=%r in %s",
+            game_id,
+            title,
+            chd_path,
+        )
         out: dict = {"game_id": game_id}
         if title:
             out["title"] = title
@@ -1089,6 +1101,12 @@ async def _addmeta_text(
 ) -> bool:
     """Write a text metadata tag to *chd_path* using chdman addmeta."""
     try:
+        logger.debug(
+            "disc_id: addmeta tag=%s value=%r in %s",
+            tag,
+            value,
+            chd_path,
+        )
         proc = await asyncio.create_subprocess_exec(
             chdman_path,
             "addmeta",
@@ -1107,6 +1125,7 @@ async def _addmeta_text(
                 stderr.decode(errors="replace").strip(),
             )
             return False
+        logger.debug("disc_id: addmeta tag=%s written successfully in %s", tag, chd_path)
         return True
     except Exception as e:
         logger.warning("disc_id: addmeta tag=%s error: %s", tag, e)
