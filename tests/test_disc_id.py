@@ -7,6 +7,7 @@ Covers:
   - PSP PARAM.SFO binary parsing
   - Dreamcast GDI track parsing
   - BIN sector-stream adapter
+  - CD CHD sector extraction (Mode 1 and Mode 2 Form 1)
   - CHD extraction stubs (dumpmeta / companion-file paths)
 """
 
@@ -25,6 +26,7 @@ from app.services.disc_id import (
     _BinSectorStream,
     _CHDReader,
     _CHDSectorStream,
+    _RAW_SECTOR_HEADER_SIZE_MODE2,
     _extract_cue,
     _extract_from_chd_sectors,
     _extract_gdi,
@@ -703,12 +705,61 @@ def test_extract_from_chd_sectors_psp(tmp_path):
     assert result["title"] == "Patapon"
 
 
-def test_extract_from_chd_sectors_non_dvd_returns_none(tmp_path):
-    """CHD with 2352-byte sectors (CD) → returns None (handled elsewhere)."""
-    # Build a CHD that claims unit_bytes=2352
-    iso = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"})
-    chd_path = tmp_path / "cd_game.chd"
-    chd_path.write_bytes(_make_chd_v5(iso, unit_bytes=2352))
+def test_extract_from_chd_sectors_ps1_cd_mode1(tmp_path):
+    """CD CHD with PS1 SYSTEM.CNF in Mode 1 (2352-byte) sectors → serial extracted."""
+    cnf = b"BOOT = cdrom:\\SLPS_123.45;1\n"
+    iso = _make_iso({"SYSTEM.CNF": cnf})
+    mode1_bin = _make_mode1_bin(iso)  # wraps ISO in 2352-byte Mode 1 sectors
+    chd_path = tmp_path / "ps1_game.chd"
+    chd_path.write_bytes(_make_chd_v5(mode1_bin, unit_bytes=2352))
+
+    result = _extract_from_chd_sectors(str(chd_path))
+    assert result is not None
+    assert result["game_id"] == "SLPS-12345"
+    assert result["platform"] == "ps1"
+
+
+def _make_mode2_bin(iso_bytes: bytes) -> bytes:
+    """
+    Wrap a flat ISO 9660 image (2048-byte sectors) in Mode 2 Form 1 2352-byte
+    sectors (24-byte header + 2048-byte payload + 280-byte ECC pad).
+
+    This is the most common format for PS1 discs burned from BIN/CUE images.
+    """
+    SECTOR = 2352
+    HEADER = _RAW_SECTOR_HEADER_SIZE_MODE2  # 24 bytes (Mode 2 Form 1)
+    DATA = 2048
+    TAIL = SECTOR - HEADER - DATA  # 280
+    num = (len(iso_bytes) + DATA - 1) // DATA
+    buf = bytearray()
+    for i in range(num):
+        buf += b"\x00" * HEADER
+        chunk = iso_bytes[i * DATA : (i + 1) * DATA]
+        buf += chunk.ljust(DATA, b"\x00")
+        buf += b"\x00" * TAIL
+    return bytes(buf)
+
+
+def test_extract_from_chd_sectors_ps1_cd_mode2(tmp_path):
+    """CD CHD with PS1 SYSTEM.CNF in Mode 2 Form 1 (2352-byte) sectors → serial extracted."""
+    cnf = b"BOOT = cdrom:\\SLPS_678.90;1\n"
+    iso = _make_iso({"SYSTEM.CNF": cnf})
+    mode2_bin = _make_mode2_bin(iso)  # wraps ISO in 2352-byte Mode 2 Form 1 sectors
+    chd_path = tmp_path / "ps1_mode2.chd"
+    chd_path.write_bytes(_make_chd_v5(mode2_bin, unit_bytes=2352))
+
+    result = _extract_from_chd_sectors(str(chd_path))
+    assert result is not None
+    assert result["game_id"] == "SLPS-67890"
+    assert result["platform"] == "ps1"
+
+
+def test_extract_from_chd_sectors_cd_no_recognizable_content(tmp_path):
+    """CD CHD whose sectors contain no ISO 9660 filesystem → returns None."""
+    # 2352-byte sectors filled with garbage (no PVD magic at any offset)
+    garbage = b"\xAB\xCD" * (2352 * 32 // 2)
+    chd_path = tmp_path / "unknown_cd.chd"
+    chd_path.write_bytes(_make_chd_v5(garbage, unit_bytes=2352))
 
     result = _extract_from_chd_sectors(str(chd_path))
     assert result is None
