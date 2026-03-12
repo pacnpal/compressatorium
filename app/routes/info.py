@@ -153,6 +153,13 @@ async def scan_metadata_task(
                     phase1_total,
                     os.path.basename(path),
                 )
+                logger.debug(
+                    "Phase 1 [%d/%d]: Metadata for %s: %s",
+                    idx,
+                    phase1_total,
+                    os.path.basename(path),
+                    info,
+                )
             except Exception as e:
                 logger.warning(
                     "Phase 1 [%d/%d]: Failed to extract metadata from %s: %s",
