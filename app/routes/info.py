@@ -145,13 +145,22 @@ async def scan_metadata_task(
             )
             try:
                 info = await chdman_service.info(path)
-                await chd_metadata_store.set_metadata(path, info, persist=False)
+                record = await chd_metadata_store.set_metadata(path, info, persist=False)
                 count += 1
                 logger.info(
                     "Phase 1 [%d/%d]: Metadata cached for %s",
                     idx,
                     phase1_total,
                     os.path.basename(path),
+                )
+                logger.debug(
+                    "Phase 1 [%d/%d]: Metadata for %s: game_id=%r, title=%r, info=%s",
+                    idx,
+                    phase1_total,
+                    os.path.basename(path),
+                    record.get("game_id"),
+                    record.get("title"),
+                    info,
                 )
             except Exception as e:
                 logger.warning(
