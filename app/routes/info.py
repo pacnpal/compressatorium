@@ -1291,13 +1291,19 @@ async def get_dolphin_info(
         return DolphinDiscInfo(
             file=path,
             game_id=info.get("game_id"),
+            # dolphin-tool outputs "Internal Name:" in its plain-text format;
+            # "game_name" / "name" cover any future JSON-mode keys.
             game_name=info.get("game_name") or info.get("internal_name") or info.get("name"),
             title_id=info.get("title_id"),
             disc_number=info.get("disc_number") or info.get("disc"),
             revision=info.get("revision"),
             region=info.get("region"),
+            country=info.get("country"),
             format=info.get("format"),
+            # dolphin-tool outputs "Compression Method:" in plain-text mode;
+            # "compression" covers any future JSON-mode key.
             compression=info.get("compression") or info.get("compression_method"),
+            compression_level=info.get("compression_level"),
             block_size=info.get("block_size"),
             file_size=info.get("file_size"),
             raw_data=info.get("raw_data", ""),

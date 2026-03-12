@@ -180,8 +180,10 @@ class DolphinDiscInfo(BaseModel):
     disc_number: str | None = None
     revision: str | None = None
     region: str | None = None
+    country: str | None = None
     format: str | None = None
     compression: str | None = None
+    compression_level: str | None = None
     block_size: str | None = None
     file_size: str | None = None
     raw_data: str = ""
