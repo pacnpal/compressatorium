@@ -355,3 +355,66 @@ async def test_set_metadata_preserves_game_id_and_title(metadata_store, tmp_path
     game_id, title = await metadata_store.get_disc_id_info(path)
     assert game_id == "SLUS-20312"
     assert title == "God of War"
+
+
+@pytest.mark.asyncio
+async def test_update_disc_id_info_persist_false_does_not_flush(metadata_store, tmp_path, monkeypatch):
+    """update_disc_id_info(persist=False) stores in memory without triggering a disk flush."""
+    chd = tmp_path / "game.chd"
+    chd.write_text("fake")
+    path = str(chd)
+
+    persist_calls: list = []
+
+    async def fake_persist_async():
+        persist_calls.append(1)
+
+    monkeypatch.setattr(metadata_store, "_persist_async", fake_persist_async)
+
+    await metadata_store.update_disc_id_info(path, "SLUS-20312", "God of War", persist=False)
+
+    # Data is in memory
+    game_id, title = await metadata_store.get_disc_id_info(path)
+    assert game_id == "SLUS-20312"
+    assert title == "God of War"
+    # No flush triggered
+    assert persist_calls == []
+
+
+@pytest.mark.asyncio
+async def test_scan_phase2_caches_game_id_when_disc_id_found(scan_env, monkeypatch):
+    """Phase 2 calls update_disc_id_info(persist=False) when ensure_disc_id_embedded returns a game_id.
+
+    Regression test: Phase 2 previously embedded the GAME/NAME tags into the CHD file
+    but never populated the metadata cache, so subsequent /api/info requests returned
+    no game_id even though the tag was physically in the file.
+    """
+    async def fake_false(_): return False
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
+
+    # Stub ensure_disc_id_embedded to return a found game_id
+    async def fake_ensure_with_result(path, chdman_path):
+        scan_env["ensure_calls"].append(path)
+        return {"game_id": "SLUS-20312", "title": "God of War"}
+
+    monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_with_result)
+
+    # Track update_disc_id_info calls (game_id, title, persist)
+    update_calls: list[tuple] = []
+
+    async def fake_update_disc_id_info(path, game_id, title, persist=True):
+        update_calls.append((game_id, title, persist))
+
+    monkeypatch.setattr(
+        info_routes.chd_metadata_store, "update_disc_id_info", fake_update_disc_id_info
+    )
+
+    await info_routes.scan_metadata_task(force=False)
+
+    # ensure_disc_id_embedded was called
+    assert scan_env["ensure_calls"] == [scan_env["chd_path"]]
+    # update_disc_id_info was called with the returned game_id/title and persist=False
+    assert len(update_calls) == 1
+    assert update_calls[0] == ("SLUS-20312", "God of War", False)
+    # CHD was marked as checked
+    assert scan_env["marked_paths"] == [scan_env["chd_path"]]

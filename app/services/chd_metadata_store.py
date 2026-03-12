@@ -468,7 +468,8 @@ class CHDMetadataStore:
             return record.get("game_id"), record.get("title")
 
     async def update_disc_id_info(
-        self, chd_path: str, game_id: Optional[str], title: Optional[str]
+        self, chd_path: str, game_id: Optional[str], title: Optional[str],
+        persist: bool = True,
     ) -> None:
         """
         Store the ``game_id`` and ``title`` fields in the cached record for
@@ -476,6 +477,12 @@ class CHDMetadataStore:
 
         This allows the ``/api/info`` route to return disc-ID info without
         spawning a ``chdman dumpmeta`` subprocess on every request.
+
+        Args:
+            persist: If True (default), immediately flush to disk.  Pass
+                     False during batch operations (e.g. Phase 2 of the
+                     metadata scan) to defer persistence to the final
+                     ``flush_async()`` call, avoiding a per-CHD disk write.
         """
         normalized = await run_in_threadpool(self._normalize_path, chd_path)
         with self._lock:
@@ -486,7 +493,8 @@ class CHDMetadataStore:
             self._dirty = True
             self._version += 1
 
-        await self._persist_async()
+        if persist:
+            await self._persist_async()
 
     def all_records(self):
         """Return all cached records."""
