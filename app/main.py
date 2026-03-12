@@ -29,18 +29,25 @@ def get_version() -> str:
 
 
 def configure_logging() -> None:
+    # getLevelName() returns an int for known level names (DEBUG, INFO, WARNING,
+    # ERROR, CRITICAL — plus legacy aliases WARN=WARNING and FATAL=CRITICAL)
+    # and a "Level <name>" string for unknown values — unlike
+    # getattr(logging, name, None) which can return non-integer logging
+    # attributes (classes, format strings, etc.) for non-level names.
+    level_str = settings.log_level.strip().upper()
+    level = logging.getLevelName(level_str)
+    invalid_level = not isinstance(level, int)
+    if invalid_level:
+        level = logging.INFO
+
     logger = logging.getLogger("chd")
+    # Always update the level so re-calls (e.g. test isolation or reloads)
+    # respect the current LOGLEVEL setting, even when handlers already exist.
+    logger.setLevel(level)
     if logger.handlers:
         return
 
-    level_str = settings.log_level.upper()
-    level = getattr(logging, level_str, None)
-    invalid_level = level is None
-    if invalid_level:
-        level = logging.INFO
-    logger.setLevel(level)
     logger.propagate = False
-
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 
     stream_handler = logging.StreamHandler()

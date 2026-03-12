@@ -176,11 +176,14 @@ class DolphinDiscInfo(BaseModel):
     file: str
     game_id: str | None = None
     game_name: str | None = None
+    title_id: str | None = None
     disc_number: str | None = None
     revision: str | None = None
     region: str | None = None
+    country: str | None = None
     format: str | None = None
     compression: str | None = None
+    compression_level: str | None = None
     block_size: str | None = None
     file_size: str | None = None
     raw_data: str = ""

@@ -911,6 +911,10 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                         <span class="info-label">File</span>
                         <span class="info-value">${filename}</span>
 
+                        ${info.input_file && html`
+                            <span class="info-label">Source File</span>
+                            <span class="info-value">${info.input_file}</span>
+                        `}
                         ${info.media_type && html`
                             <span class="info-label">Media Type</span>
                             <span class="info-value">${info.media_type.toUpperCase()}</span>
@@ -930,6 +934,14 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                         ${info.logical_size && html`
                             <span class="info-label">Logical Size</span>
                             <span class="info-value">${info.logical_size}</span>
+                        `}
+                        ${info.unit_size && html`
+                            <span class="info-label">Unit Size</span>
+                            <span class="info-value">${info.unit_size}</span>
+                        `}
+                        ${info.total_units && html`
+                            <span class="info-label">Total Units</span>
+                            <span class="info-value">${info.total_units}</span>
                         `}
                         ${info.chd_size && html`
                             <span class="info-label">Compressed Size</span>
@@ -1010,6 +1022,10 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                             <span class="info-label">Game ID</span>
                             <span class="info-value">${info.game_id}</span>
                         `}
+                        ${info.title_id && html`
+                            <span class="info-label">Title ID</span>
+                            <span class="info-value" style="font-family: monospace">${info.title_id}</span>
+                        `}
                         ${info.disc_number && html`
                             <span class="info-label">Disc Number</span>
                             <span class="info-value">${info.disc_number}</span>
@@ -1022,6 +1038,10 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                             <span class="info-label">Region</span>
                             <span class="info-value">${info.region}</span>
                         `}
+                        ${info.country && html`
+                            <span class="info-label">Country</span>
+                            <span class="info-value">${info.country}</span>
+                        `}
                         ${info.format && html`
                             <span class="info-label">Format</span>
                             <span class="info-value">${info.format}</span>
@@ -1029,6 +1049,10 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
                         ${info.compression && html`
                             <span class="info-label">Compression</span>
                             <span class="info-value">${info.compression}</span>
+                        `}
+                        ${info.compression_level && html`
+                            <span class="info-label">Compression Level</span>
+                            <span class="info-value">${info.compression_level}</span>
                         `}
                         ${info.block_size && html`
                             <span class="info-label">Block Size</span>
