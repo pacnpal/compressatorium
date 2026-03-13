@@ -1286,13 +1286,15 @@ async def _dumpmeta_raw(
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            logger.debug(
-                "disc_id: dumpmeta tag=%s not found or failed (rc=%d) in %s: %s",
-                tag,
-                proc.returncode,
-                chd_path,
-                stderr.decode(errors="replace").strip(),
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                stderr_text = stderr.decode(errors="replace").strip()
+                logger.debug(
+                    "disc_id: dumpmeta tag=%s not found or failed (rc=%d) in %s: %s",
+                    tag,
+                    proc.returncode,
+                    chd_path,
+                    stderr_text,
+                )
             return None
         with open(tmp_path, "rb") as f:
             return f.read()
