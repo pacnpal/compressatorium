@@ -565,18 +565,43 @@ class _CHDReader:
             self._f = open(self._path, "rb")
             hdr = self._f.read(self._HEADER_SIZE)
             if len(hdr) < self._HEADER_SIZE or hdr[:8] != self._MAGIC:
+                logger.debug(
+                    "disc_id: CHD open failed — bad magic or short header in %s",
+                    self._path,
+                )
                 return False
             # All multi-byte fields are big-endian in CHD v5
             hdr_len = struct.unpack_from(">I", hdr, 8)[0]
             version = struct.unpack_from(">I", hdr, 12)[0]
             if version != self._VERSION or hdr_len < self._HEADER_SIZE:
+                logger.debug(
+                    "disc_id: CHD open failed — version=%d hdr_len=%d in %s",
+                    version,
+                    hdr_len,
+                    self._path,
+                )
                 return False
             self._map_offset = struct.unpack_from(">Q", hdr, 24)[0]
             self._hunk_bytes = struct.unpack_from(">I", hdr, 40)[0]
             self._unit_bytes = struct.unpack_from(">I", hdr, 44)[0]
             self._codecs = list(struct.unpack_from(">4I", hdr, 108))
-            return self._hunk_bytes > 0 and self._unit_bytes > 0
-        except OSError:
+            if not (self._hunk_bytes > 0 and self._unit_bytes > 0):
+                logger.debug(
+                    "disc_id: CHD open failed — hunk_bytes=%d unit_bytes=%d in %s",
+                    self._hunk_bytes,
+                    self._unit_bytes,
+                    self._path,
+                )
+                return False
+            logger.debug(
+                "disc_id: CHD opened unit_bytes=%d hunk_bytes=%d in %s",
+                self._unit_bytes,
+                self._hunk_bytes,
+                self._path,
+            )
+            return True
+        except OSError as e:
+            logger.debug("disc_id: CHD open OSError for %s: %s", self._path, e)
             return False
 
     def close(self) -> None:
@@ -747,14 +772,21 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
 
     Returns a dict with a normalized ``game_id`` on success, or None.
     """
+    logger.debug("disc_id: _extract_from_chd_sectors starting for %s", chd_path)
     try:
         with _CHDReader(chd_path) as reader:
             if not reader.open():
+                logger.debug("disc_id: CHD reader failed to open %s", chd_path)
                 return None
 
             if reader.unit_bytes == _SECTOR_SIZE:
                 # DVD CHDs: plain 2048-byte ISO sectors, no CD framing.
                 data_offsets: list[int] = [0]
+                logger.debug(
+                    "disc_id: %s detected as DVD CHD (unit_bytes=%d)",
+                    chd_path,
+                    reader.unit_bytes,
+                )
             elif reader.unit_bytes in (2352, 2448):
                 # CD CHDs: 2352- or 2448-byte physical sectors with a CD sector
                 # frame header preceding the 2048-byte user-data payload.
@@ -764,14 +796,37 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
                     _RAW_SECTOR_HEADER_SIZE_MODE2,
                     _RAW_SECTOR_HEADER_SIZE_MODE1,
                 ]
+                logger.debug(
+                    "disc_id: %s detected as CD CHD (unit_bytes=%d) — probing"
+                    " Mode 2 Form 1 (offset=%d) then Mode 1 (offset=%d)",
+                    chd_path,
+                    reader.unit_bytes,
+                    _RAW_SECTOR_HEADER_SIZE_MODE2,
+                    _RAW_SECTOR_HEADER_SIZE_MODE1,
+                )
             else:
+                logger.debug(
+                    "disc_id: %s has unsupported unit_bytes=%d — skipping sector extraction",
+                    chd_path,
+                    reader.unit_bytes,
+                )
                 return None
 
             for data_offset in data_offsets:
                 stream = _CHDSectorStream(reader, data_offset=data_offset)
                 pvd = _read_pvd(stream)
                 if not pvd:
+                    logger.debug(
+                        "disc_id: no ISO 9660 PVD at data_offset=%d in %s",
+                        data_offset,
+                        chd_path,
+                    )
                     continue
+                logger.debug(
+                    "disc_id: ISO 9660 PVD found at data_offset=%d in %s",
+                    data_offset,
+                    chd_path,
+                )
                 root_lba, root_size = _pvd_root_dir(pvd)
 
                 # PS2 / PS1 — SYSTEM.CNF in root
@@ -779,17 +834,38 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
                 if cnf:
                     result = _parse_system_cnf(cnf)
                     if result.get("game_id"):
+                        logger.debug(
+                            "disc_id: game_id=%r (platform=%r) from SYSTEM.CNF in %s",
+                            result["game_id"],
+                            result.get("platform"),
+                            chd_path,
+                        )
                         return result
+                    logger.debug(
+                        "disc_id: SYSTEM.CNF found but no valid game_id in %s",
+                        chd_path,
+                    )
 
                 # PSP — /PSP_GAME/PARAM.SFO
                 sfo = _find_file(stream, root_lba, root_size, ["PSP_GAME", "PARAM.SFO"])
                 if sfo:
                     result = _parse_param_sfo(sfo)
                     if result.get("game_id"):
+                        logger.debug(
+                            "disc_id: game_id=%r (platform=%r) from PARAM.SFO in %s",
+                            result["game_id"],
+                            result.get("platform"),
+                            chd_path,
+                        )
                         return result
+                    logger.debug(
+                        "disc_id: PARAM.SFO found but no valid game_id in %s",
+                        chd_path,
+                    )
 
     except Exception as e:
         logger.debug("disc_id: CHD sector extraction failed for %s: %s", chd_path, e)
+    logger.debug("disc_id: no game_id found via sector extraction in %s", chd_path)
     return None
 
 
@@ -892,10 +968,17 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
         if game_id:
             name_result = await _dumpmeta_text(chd_path, TAG_NAME, chdman_path)
             title = (name_result or "").strip() or None
+            logger.debug(
+                "disc_id: Strategy 1 (GAME tag) found game_id=%r title=%r in %s",
+                game_id,
+                title,
+                chd_path,
+            )
             out: dict = {"game_id": game_id}
             if title:
                 out["title"] = title
             return out
+    logger.debug("disc_id: Strategy 1 (GAME tag) not present in %s", chd_path)
 
     # --- Strategy 2: read disc sectors directly (like PCSX2 / AetherSX2) ----
     # For DVD CHDs (unit_bytes=2048) this reads SYSTEM.CNF / PARAM.SFO from
@@ -903,14 +986,31 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
     _loop = asyncio.get_running_loop()
     disc_result = await _loop.run_in_executor(None, _extract_from_chd_sectors, chd_path)
     if disc_result and disc_result.get("game_id"):
+        logger.debug(
+            "disc_id: Strategy 2 (CHD sectors) found game_id=%r in %s",
+            disc_result["game_id"],
+            chd_path,
+        )
         return disc_result
+    logger.debug("disc_id: Strategy 2 (CHD sectors) found no game_id in %s", chd_path)
 
     # --- Strategy 3: Dreamcast GDRO (IP.BIN) ---------------------------------
     gdro = await _dumpmeta_bin(chd_path, "GDRO", chdman_path)
     if gdro:
         parsed = _parse_ipbin(gdro)
         if parsed.get("game_id"):
+            logger.debug(
+                "disc_id: Strategy 3 (GDRO/IP.BIN) found game_id=%r in %s",
+                parsed["game_id"],
+                chd_path,
+            )
             return parsed
+        logger.debug(
+            "disc_id: Strategy 3 (GDRO/IP.BIN) tag present but no valid game_id in %s",
+            chd_path,
+        )
+    else:
+        logger.debug("disc_id: Strategy 3 (GDRO) tag not found in %s", chd_path)
 
     # --- Strategy 4: companion source file -----------------------------------
     chd_p = Path(chd_path)
@@ -920,12 +1020,15 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
             res = await _loop.run_in_executor(None, extract_from_source, str(candidate))
             if res and res.get("game_id"):
                 logger.debug(
-                    "disc_id: found game_id from companion %s: %s",
+                    "disc_id: Strategy 4 (companion %s) found game_id=%r in %s",
                     candidate.name,
-                    res,
+                    res["game_id"],
+                    chd_path,
                 )
                 return res
+    logger.debug("disc_id: Strategy 4 (companion file) found no game_id for %s", chd_path)
 
+    logger.debug("disc_id: all strategies exhausted — no game_id found for %s", chd_path)
     return None
 
 
@@ -1037,6 +1140,9 @@ async def ensure_disc_id_embedded(
                 chd_path,
             )
         return disc_result
+    logger.debug(
+        "disc_id: ensure Strategy 2 (CHD sectors) found no game_id in %s", chd_path
+    )
 
     # --- Strategy 3: standard Dreamcast GDRO tag -----------------------------
     gdro = await _dumpmeta_bin(chd_path, "GDRO", chdman_path)
@@ -1061,6 +1167,14 @@ async def ensure_disc_id_embedded(
                     chd_path,
                 )
             return parsed
+        logger.debug(
+            "disc_id: ensure Strategy 3 (GDRO) tag present but no valid game_id in %s",
+            chd_path,
+        )
+    else:
+        logger.debug(
+            "disc_id: ensure Strategy 3 (GDRO) tag not found in %s", chd_path
+        )
 
     # --- Strategy 4: companion source file -----------------------------------
     chd_p = Path(chd_path)
@@ -1089,6 +1203,10 @@ async def ensure_disc_id_embedded(
                     )
                 return res
 
+    logger.debug(
+        "disc_id: ensure_disc_id_embedded exhausted all strategies — no game_id found for %s",
+        chd_path,
+    )
     return None
 
 
@@ -1166,8 +1284,17 @@ async def _dumpmeta_raw(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        _, stderr = await proc.communicate()
         if proc.returncode != 0:
+            if logger.isEnabledFor(logging.DEBUG):
+                stderr_text = stderr.decode(errors="replace").strip()
+                logger.debug(
+                    "disc_id: dumpmeta tag=%s not found or failed (rc=%d) in %s: %s",
+                    tag,
+                    proc.returncode,
+                    chd_path,
+                    stderr_text,
+                )
             return None
         with open(tmp_path, "rb") as f:
             return f.read()
