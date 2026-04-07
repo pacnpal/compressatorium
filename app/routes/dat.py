@@ -117,32 +117,33 @@ async def match_batch(request: MatchBatchRequest):
     if not dat_store.has_dats():
         return {"results": {p: {"path": p, "matched": False} for p in request.paths}}
 
-    # Check cached matches first
+    # Check cached matches first (cache keyed by original paths)
     cached = dat_store.get_matches_batch(request.paths)
-    results = {}
-    to_compute = []
+    results: dict[str, dict] = {}
+    to_compute: list[tuple[str, str]] = []  # (original_path, normalized_path)
 
     for path in request.paths:
-        if not is_within_configured_volumes(path):
+        normalized_path = os.path.abspath(path)
+        if not is_within_configured_volumes(normalized_path):
             results[path] = {"path": path, "matched": False, "error": "access denied"}
             continue
         if cached.get(path) is not None:
             results[path] = cached[path]
         else:
-            to_compute.append(path)
+            to_compute.append((path, normalized_path))
 
     # Compute matches for uncached files
-    new_matches = {}
-    for path in to_compute:
-        exists = await run_in_threadpool(os.path.isfile, path)
+    new_matches: dict[str, dict] = {}
+    for original_path, normalized_path in to_compute:
+        exists = await run_in_threadpool(os.path.isfile, normalized_path)
         if not exists:
-            result = {"path": path, "matched": False}
+            result = {"path": original_path, "matched": False}
         else:
-            result = await _match_single_file(path)
-        results[path] = result
-        new_matches[path] = result
+            result = await _match_single_file(normalized_path)
+        results[original_path] = result
+        new_matches[original_path] = result
 
-    # Cache new results
+    # Cache new results (using original path keys)
     if new_matches:
         await dat_store.set_matches_batch(new_matches)
 
