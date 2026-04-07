@@ -45,12 +45,17 @@ RUN apt-get update -o Acquire::Retries=3 && \
       util-linux \
       unrar-free \
       p7zip-full \
-      dolphin-emu \
       wget \
       unzip \
       zstd \
       bash \
       ca-certificates && \
+    # Install dolphin-emu only where available/practical
+    if [ "$TARGETARCH" = "amd64" ]; then \
+      apt-get install -y --no-install-recommends dolphin-emu; \
+    else \
+      echo "Skipping dolphin-emu on ${TARGETARCH}"; \
+    fi && \
     # --- Install pinned mame-tools from snapshot ---
     MAME_DEB="mame-tools_${MAME_TOOLS_VERSION}_${TARGETARCH}.deb" && \
     if [ "$TARGETARCH" = "amd64" ]; then \
@@ -68,8 +73,11 @@ RUN apt-get update -o Acquire::Retries=3 && \
     chdman 2>&1 | head -1 | grep -q "0\.285" && \
     # --- Clean up ---
     rm -rf /var/lib/apt/lists/* && \
-    printf '#!/bin/bash\nexec /usr/games/dolphin-tool "$@"\n' > /usr/local/bin/dolphin-tool && \
-    chmod +x /usr/local/bin/dolphin-tool && \
+    # Only create dolphin-tool wrapper if the binary exists
+    if command -v /usr/games/dolphin-tool >/dev/null 2>&1; then \
+      printf '#!/bin/bash\nexec /usr/games/dolphin-tool "$@"\n' > /usr/local/bin/dolphin-tool && \
+      chmod +x /usr/local/bin/dolphin-tool; \
+    fi && \
     python3 -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir "pip>=25.3"
 
