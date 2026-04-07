@@ -449,7 +449,7 @@ function Breadcrumb({ path, volume, onNavigate }) {
     `;
 }
 
-function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, onCompress, conversionMode, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected, isoHandling, onToggleIsoHandling }) {
+function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, onCompress, conversionMode, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected, isoHandling, onToggleIsoHandling, datMatches }) {
     const visibleEntries = Array.isArray(entries)
         ? entries.filter((entry) => !isMacMetadataName(entry?.name || ''))
         : [];
@@ -5400,6 +5400,7 @@ function App() {
                                 allSelected=${allSelectedOnPage}
                                 isoHandling=${isoHandling}
                                 onToggleIsoHandling=${handleIsoHandlingToggle}
+                                datMatches=${datMatches}
                             />`
         }
                     </div>

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
-import xml.etree.ElementTree as ET
+
+import defusedxml.ElementTree as ET
 
 logger = logging.getLogger("chd.dat_parser")
 
@@ -16,6 +17,8 @@ def parse_dat(xml_content: str) -> tuple[dict, list[dict]]:
     """Parse a Logiqx XML DAT file.
 
     Uses iterparse for memory efficiency on large DAT files.
+    defusedxml is used to prevent XXE (XML External Entity) and related XML
+    injection attacks from untrusted DAT uploads.
 
     Returns:
         (header_info, entries) where header_info has name/description/version
@@ -25,10 +28,8 @@ def parse_dat(xml_content: str) -> tuple[dict, list[dict]]:
     entries: list[dict] = []
 
     try:
-        # Use a parser that disables external entities to prevent XXE attacks
-        parser = ET.XMLParser()
         context = ET.iterparse(
-            _string_to_file(xml_content), events=("end",), parser=parser,
+            _string_to_file(xml_content), events=("end",),
         )
 
         for event, elem in context:

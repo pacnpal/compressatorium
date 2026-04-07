@@ -2,6 +2,7 @@
 
 import logging
 import os
+import tempfile
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
@@ -32,24 +33,38 @@ async def import_dat(file: UploadFile = File(...)):
             detail="File must be a .dat or .xml file",
         )
 
-    # Read with size limit to prevent memory exhaustion
+    # Stream upload to a temp file to avoid holding the full content in memory
     max_size = 100 * 1024 * 1024  # 100MB
-    chunks = []
     total = 0
-    while True:
-        chunk = await file.read(65536)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_size:
-            raise HTTPException(status_code=400, detail="DAT file too large (max 100MB)")
-        chunks.append(chunk)
-    content = b"".join(chunks)
-
+    tmp_path = None
     try:
-        xml_content = content.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="File is not valid UTF-8 text")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".dat") as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await file.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_size:
+                    raise HTTPException(
+                        status_code=400, detail="DAT file too large (max 100MB)"
+                    )
+                await run_in_threadpool(tmp.write, chunk)
+
+        def _read_tmp():
+            with open(tmp_path, encoding="utf-8") as fh:
+                return fh.read()
+
+        try:
+            xml_content = await run_in_threadpool(_read_tmp)
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="File is not valid UTF-8 text")
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     try:
         result = await dat_store.import_dat(xml_content)

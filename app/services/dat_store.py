@@ -134,6 +134,7 @@ class DATStore:
                     added += 1
                 if entry.get("md5"):
                     self._hashes_md5[entry["md5"]] = record
+            self._matches.clear()
             self._version += 1
 
         await run_in_threadpool(self._persist)
