@@ -32,6 +32,8 @@ ARG MAME_TOOLS_VERSION="0.285+dfsg1-1"
 ARG MAME_TOOLS_SHA256_AMD64="d99e82887aab57d9a66b2f1ffd80210aabeb064808a6d05f69af1584049fd195"
 ARG MAME_TOOLS_SHA256_ARM64="6388bff0f6242dfd3a09c63c6e25ab94e0a64fe7cf2b3b0170f89ff7c13340a8"
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Install system dependencies, pinned mame-tools, create wrapper script, and prepare venv
 RUN apt-get update && \
     apt-get upgrade -y && \
