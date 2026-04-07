@@ -733,7 +733,50 @@ export const api = {
         }
 
         return result;
-    }
+    },
+
+    // DAT file management
+    async importDAT(file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch(`${API_BASE}/dat/import`, {
+            method: 'POST',
+            body: formData,
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to import DAT' }));
+            throw new Error(error.detail || 'Failed to import DAT');
+        }
+        return res.json();
+    },
+
+    async listDATs() {
+        const res = await fetch(`${API_BASE}/dat/list`);
+        if (!res.ok) throw new Error('Failed to list DATs');
+        return res.json();
+    },
+
+    async deleteDAT(datId) {
+        const res = await fetch(`${API_BASE}/dat/${datId}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed to delete DAT');
+        return res.json();
+    },
+
+    async getDATStats() {
+        const res = await fetch(`${API_BASE}/dat/stats`);
+        if (!res.ok) throw new Error('Failed to get DAT stats');
+        return res.json();
+    },
+
+    async matchBatch(paths) {
+        const res = await fetch(`${API_BASE}/dat/match-batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths }),
+        });
+        if (!res.ok) throw new Error('Failed to match files');
+        return res.json();
+    },
 };
 
 // Format file size

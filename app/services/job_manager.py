@@ -23,6 +23,7 @@ from services.disc_id import embed_in_chd as disc_id_embed
 from services.disc_id import extract_from_source as disc_id_from_source
 from services.dolphin_tool import dolphin_tool_service
 from services.lock_manager import lock_manager
+from services.nkit2 import nkit2_service
 from services.verification_store import verification_store
 from services.z3ds_compress import z3ds_compress_service
 from utils.delete_plan import build_delete_plan
@@ -1346,7 +1347,9 @@ class JobManager:
                         os.remove(bin_path)
 
             _convert_service = (
-                dolphin_tool_service
+                nkit2_service
+                if job.mode == ConversionMode.NKIT2_RVZ
+                else dolphin_tool_service
                 if job.mode.value.startswith("dolphin_")
                 else z3ds_compress_service
                 if job.mode == ConversionMode.Z3DS_COMPRESS
@@ -1495,6 +1498,7 @@ class JobManager:
                         _verify_service = (
                             dolphin_tool_service
                             if job.mode.value.startswith("dolphin_")
+                            or job.mode == ConversionMode.NKIT2_RVZ
                             else chdman_service
                         )
                         verify_result = await _verify_service.verify(
