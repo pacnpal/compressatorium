@@ -1,7 +1,8 @@
 FROM debian:trixie-slim AS builder
 
 # Install build dependencies
-RUN apt-get update && \
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -o Acquire::Retries=3 && \
     apt-get install -y --no-install-recommends \
     git \
     build-essential \
@@ -35,8 +36,8 @@ ARG MAME_TOOLS_SHA256_ARM64="6388bff0f6242dfd3a09c63c6e25ab94e0a64fe7cf2b3b0170f
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install system dependencies, pinned mame-tools, create wrapper script, and prepare venv
-RUN apt-get update && \
-    apt-get upgrade -y && \
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -o Acquire::Retries=3 && \
     apt-get install -y --no-install-recommends \
       python3 \
       python3-pip \
@@ -66,7 +67,6 @@ RUN apt-get update && \
     # --- Verify chdman version ---
     chdman 2>&1 | head -1 | grep -q "0\.285" && \
     # --- Clean up ---
-    apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     printf '#!/bin/bash\nexec /usr/games/dolphin-tool "$@"\n' > /usr/local/bin/dolphin-tool && \
     chmod +x /usr/local/bin/dolphin-tool && \
