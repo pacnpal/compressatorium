@@ -98,13 +98,16 @@ async def get_dat_stats():
 @router.post("/dat/match")
 async def match_file(request: MatchRequest):
     """Match a single file against imported DATs."""
-    if not is_within_configured_volumes(request.path):
+    # Normalize the requested path to avoid traversal or malformed paths
+    normalized_path = os.path.abspath(request.path)
+
+    if not is_within_configured_volumes(normalized_path):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    if not os.path.isfile(request.path):
+    if not os.path.isfile(normalized_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    result = await _match_single_file(request.path)
+    result = await _match_single_file(normalized_path)
     return result
 
 
