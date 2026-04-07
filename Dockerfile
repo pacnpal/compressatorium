@@ -50,9 +50,10 @@ RUN apt-get update -o Acquire::Retries=3 && \
       zstd \
       bash \
       ca-certificates && \
-    # Install dolphin-emu only where available/practical
+    # Install dolphin-emu only where available/practical (non-fatal)
     if [ "$TARGETARCH" = "amd64" ]; then \
-      apt-get install -y --no-install-recommends dolphin-emu; \
+      apt-get install -y --no-install-recommends dolphin-emu || \
+        echo "WARNING: dolphin-emu install failed on amd64; continuing without it"; \
     else \
       echo "Skipping dolphin-emu on ${TARGETARCH}"; \
     fi && \
@@ -67,10 +68,10 @@ RUN apt-get update -o Acquire::Retries=3 && \
     fi && \
     wget -q "${MAME_TOOLS_SNAPSHOT}/${MAME_DEB}" -O /tmp/mame-tools.deb && \
     echo "${EXPECTED_SHA256}  /tmp/mame-tools.deb" | sha256sum -c - && \
-    apt-get install -y --no-install-recommends /tmp/mame-tools.deb && \
+    dpkg -i /tmp/mame-tools.deb || apt-get install -y -f --no-install-recommends && \
     rm /tmp/mame-tools.deb && \
-    # --- Verify chdman version ---
-    chdman 2>&1 | head -1 | grep -q "0\.285" && \
+    # --- Verify chdman version (capture fully to avoid SIGPIPE under pipefail) ---
+    CHDMAN_VER="$(chdman 2>&1 || true)" && echo "$CHDMAN_VER" | grep -q "0\.285" && \
     # --- Clean up ---
     rm -rf /var/lib/apt/lists/* && \
     # Only create dolphin-tool wrapper if the binary exists
