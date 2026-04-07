@@ -1,3 +1,6 @@
+# ============ Claude Code ============
+.claude/settings.local.json
+
 # ============ Operating System ============
 # macOS
 .DS_Store
