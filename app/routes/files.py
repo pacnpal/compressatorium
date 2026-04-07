@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 
@@ -13,9 +14,10 @@ from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, Z3DS_OUTPUT_FORM
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
-from utils.path_utils import get_volume_name_for_path, is_within_configured_volumes
+from utils.path_utils import ensure_path_within_volumes, get_volume_name_for_path, is_within_configured_volumes
 
 router = APIRouter()
+logger = logging.getLogger("chd.files")
 DOLPHIN_OUTPUT_EXTENSIONS = tuple(
     dict.fromkeys(ext for _, ext in DOLPHIN_OUTPUT_FORMATS.values()),
 )
@@ -127,12 +129,15 @@ async def list_files(
     summarize_archives: bool = Query(True, description="Include archive summaries"),
 ):
     """List files in a directory."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    try:
+        resolved = ensure_path_within_volumes(path, treat_archives=False)
+    except ValueError:
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes",
         )
 
-    if not os.path.isdir(path):
+    resolved_str = str(resolved)
+    if not os.path.isdir(resolved_str):
         raise HTTPException(status_code=404, detail="Directory not found")
 
     # Determine which volume this path belongs to
@@ -267,12 +272,15 @@ async def search_files(
     include_archives: bool = Query(True, description="Search inside archives"),
 ) -> dict:
     """Search for convertible files in a directory tree."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    try:
+        resolved = ensure_path_within_volumes(path, treat_archives=False)
+    except ValueError:
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes",
         )
 
-    if not os.path.isdir(path):
+    resolved_str = str(resolved)
+    if not os.path.isdir(resolved_str):
         raise HTTPException(status_code=404, detail="Directory not found")
 
     def scan_directory(
@@ -428,15 +436,18 @@ async def list_archive(
     path: str = Query(..., description="Path to archive file"),
 ) -> dict:
     """List convertible files inside an archive."""
-    if not is_within_configured_volumes(path, treat_archives=False):
+    try:
+        resolved = ensure_path_within_volumes(path, treat_archives=False)
+    except ValueError:
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes",
         )
 
-    if not os.path.isfile(path):
+    resolved_str = str(resolved)
+    if not os.path.isfile(resolved_str):
         raise HTTPException(status_code=404, detail="Archive not found")
 
-    if not archive_service.is_archive(path):
+    if not archive_service.is_archive(resolved_str):
         raise HTTPException(status_code=400, detail="Not a supported archive format")
 
     contents_result = await run_in_threadpool(
@@ -613,7 +624,8 @@ async def delete_files_batch(request: BulkDeleteRequest) -> dict:
 
             return {"path": path, "success": True}
         except OSError as e:
-            return {"path": path, "success": False, "error": str(e)}
+            logger.warning("Delete failed for %s: %s", path, e)
+            return {"path": path, "success": False, "error": "File operation failed"}
 
     # Process all files
     for path in request.paths:
