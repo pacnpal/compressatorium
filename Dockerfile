@@ -16,12 +16,26 @@ RUN g++ -O3 src/*.cpp -o z3ds_compressor -lzstd && \
 
 FROM debian:trixie-slim
 
+# ---------------------------------------------------------------------------
+# Immutable pin: mame-tools 0.285+dfsg1-1 from snapshot.debian.org
+#
+# All runtime deps (libflac14, libsdl2-2.0-0, libutf8proc3, zlib1g, etc.)
+# are satisfiable from trixie-slim's own repos — no foreign sources needed.
+#
+# snapshot.debian.org URLs are content-addressed and timestamp-locked;
+# the .deb behind a given URL will never change.
+# ---------------------------------------------------------------------------
+ARG TARGETARCH
 
-# Install system dependencies, create wrapper script, and prepare venv
+ARG MAME_TOOLS_SNAPSHOT="https://snapshot.debian.org/archive/debian/20260213T023117Z/pool/main/m/mame"
+ARG MAME_TOOLS_VERSION="0.285+dfsg1-1"
+ARG MAME_TOOLS_SHA256_AMD64="d99e82887aab57d9a66b2f1ffd80210aabeb064808a6d05f69af1584049fd195"
+ARG MAME_TOOLS_SHA256_ARM64="6388bff0f6242dfd3a09c63c6e25ab94e0a64fe7cf2b3b0170f89ff7c13340a8"
+
+# Install system dependencies, pinned mame-tools, create wrapper script, and prepare venv
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-      mame-tools \
       python3 \
       python3-pip \
       python3-venv \
@@ -32,21 +46,38 @@ RUN apt-get update && \
       wget \
       unzip \
       zstd \
-      bash && \
+      bash \
+      ca-certificates && \
+    # --- Install pinned mame-tools from snapshot ---
+    MAME_DEB="mame-tools_${MAME_TOOLS_VERSION}_${TARGETARCH}.deb" && \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+      EXPECTED_SHA256="${MAME_TOOLS_SHA256_AMD64}"; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+      EXPECTED_SHA256="${MAME_TOOLS_SHA256_ARM64}"; \
+    else \
+      echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1; \
+    fi && \
+    wget -q "${MAME_TOOLS_SNAPSHOT}/${MAME_DEB}" -O /tmp/mame-tools.deb && \
+    echo "${EXPECTED_SHA256}  /tmp/mame-tools.deb" | sha256sum -c - && \
+    apt-get install -y --no-install-recommends /tmp/mame-tools.deb && \
+    rm /tmp/mame-tools.deb && \
+    # --- Verify chdman version ---
+    chdman 2>&1 | head -1 | grep -q "0\.285" && \
+    # --- Clean up ---
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     printf '#!/bin/bash\nexec /usr/games/dolphin-tool "$@"\n' > /usr/local/bin/dolphin-tool && \
     chmod +x /usr/local/bin/dolphin-tool && \
     python3 -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir "pip>=25.3"
+
 ENV PATH="/opt/venv/bin:$PATH"
+
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Install z3ds_compressor for 3DS ROM compression
 # Install z3ds_compressor from builder stage
 COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
-
 
 # Copy application
 COPY app/ /app/
