@@ -4,7 +4,6 @@ import os
 import re
 from pathlib import Path
 
-from config import settings
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from models import (
