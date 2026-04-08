@@ -115,6 +115,13 @@ def _resolve_and_group_paths(
     Both os.path.realpath and is_within_configured_volumes perform filesystem
     I/O, so this helper is intended to be called inside run_in_threadpool.
 
+    os.path.realpath is called with the default strict=False, so it does not
+    raise for broken symlinks or symlink loops — it returns a best-effort path.
+    is_within_configured_volumes internally uses Path.resolve(strict=False),
+    which can raise RuntimeError for symlink loops; that exception is caught
+    inside path_utils._resolve_path, which returns None, causing the volume
+    check to return False and the path to be added to denied_normalized.
+
     Returns:
         normalized_to_originals: resolved_path → list of original input paths
             that resolve to it (so alias inputs share one cache lookup).
