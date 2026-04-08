@@ -99,7 +99,7 @@ async def get_dat_stats():
 async def match_file(request: MatchRequest):
     """Match a single file against imported DATs."""
     # Normalize the requested path to avoid traversal or malformed paths
-    normalized_path = os.path.abspath(request.path)
+    normalized_path = os.path.normpath(os.path.abspath(request.path))
 
     if not is_within_configured_volumes(normalized_path):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -117,33 +117,41 @@ async def match_batch(request: MatchBatchRequest):
     if not dat_store.has_dats():
         return {"results": {p: {"path": p, "matched": False} for p in request.paths}}
 
-    # Check cached matches first (cache keyed by original paths)
-    cached = dat_store.get_matches_batch(request.paths)
-    results: dict[str, dict] = {}
-    to_compute: list[tuple[str, str]] = []  # (original_path, normalized_path)
+    # Normalize all input paths upfront for consistent volume checks,
+    # file existence checks, hashing, cache keys, and result path fields.
+    path_map = {
+        p: os.path.normpath(os.path.abspath(p)) for p in request.paths
+    }
 
-    for path in request.paths:
-        normalized_path = os.path.abspath(path)
+    # Check cached matches using normalized paths
+    cached = dat_store.get_matches_batch(list(path_map.values()))
+    results: dict[str, dict] = {}
+    to_compute: list[str] = []  # normalized paths
+
+    for original_path, normalized_path in path_map.items():
         if not is_within_configured_volumes(normalized_path):
-            results[path] = {"path": path, "matched": False, "error": "access denied"}
+            results[original_path] = {"path": normalized_path, "matched": False, "error": "access denied"}
             continue
-        if cached.get(path) is not None:
-            results[path] = cached[path]
+        if cached.get(normalized_path) is not None:
+            results[original_path] = cached[normalized_path]
         else:
-            to_compute.append((path, normalized_path))
+            to_compute.append(normalized_path)
 
     # Compute matches for uncached files
     new_matches: dict[str, dict] = {}
-    for original_path, normalized_path in to_compute:
+    # Build a reverse map from normalized path → original path for O(1) lookup
+    normalized_to_original = {n: o for o, n in path_map.items()}
+    for normalized_path in to_compute:
+        original_path = normalized_to_original[normalized_path]
         exists = await run_in_threadpool(os.path.isfile, normalized_path)
         if not exists:
-            result = {"path": original_path, "matched": False}
+            result = {"path": normalized_path, "matched": False}
         else:
             result = await _match_single_file(normalized_path)
         results[original_path] = result
-        new_matches[original_path] = result
+        new_matches[normalized_path] = result
 
-    # Cache new results (using original path keys)
+    # Cache new results using normalized path keys
     if new_matches:
         await dat_store.set_matches_batch(new_matches)
 
@@ -184,12 +192,11 @@ async def _match_single_file(file_path: str) -> dict:
 
     record = dat_store.lookup_sha1(file_sha1)
     if record:
-        dat_info = _get_dat_name(record.get("dat_id", ""))
         return {
             "path": file_path,
             "matched": True,
             "dat_id": record.get("dat_id"),
-            "dat_name": dat_info,
+            "dat_name": dat_store.get_dat_name(record.get("dat_id", "")),
             "game_name": record.get("game_name"),
             "rom_name": record.get("rom_name"),
             "match_type": "file_sha1",
@@ -201,56 +208,41 @@ async def _match_single_file(file_path: str) -> dict:
 
 async def _try_chd_header_match(file_path: str) -> dict | None:
     """Try matching CHD file using header SHA1 and data_SHA1 from metadata store."""
-    try:
-        from services.chd_metadata_store import chd_metadata_store
-        metadata = chd_metadata_store.get(file_path)
-        if not metadata:
-            return None
+    from services.chd_metadata_store import chd_metadata_store
+    metadata = await chd_metadata_store.get_metadata(file_path)
+    if not metadata:
+        return None
 
-        # Try overall SHA1 from CHD header
-        sha1 = metadata.get("sha1", "").strip().lower()
-        if sha1:
-            record = dat_store.lookup_sha1(sha1)
-            if record:
-                dat_info = _get_dat_name(record.get("dat_id", ""))
-                return {
-                    "path": file_path,
-                    "matched": True,
-                    "dat_id": record.get("dat_id"),
-                    "dat_name": dat_info,
-                    "game_name": record.get("game_name"),
-                    "rom_name": record.get("rom_name"),
-                    "match_type": "chd_sha1",
-                    "file_hash": sha1,
-                }
+    # Try overall SHA1 from CHD header
+    sha1 = metadata.get("sha1", "").strip().lower()
+    if sha1:
+        record = dat_store.lookup_sha1(sha1)
+        if record:
+            return {
+                "path": file_path,
+                "matched": True,
+                "dat_id": record.get("dat_id"),
+                "dat_name": dat_store.get_dat_name(record.get("dat_id", "")),
+                "game_name": record.get("game_name"),
+                "rom_name": record.get("rom_name"),
+                "match_type": "chd_sha1",
+                "file_hash": sha1,
+            }
 
-        # Try data SHA1 (uncompressed content hash)
-        data_sha1 = metadata.get("data_sha1", "").strip().lower()
-        if data_sha1:
-            record = dat_store.lookup_sha1(data_sha1)
-            if record:
-                dat_info = _get_dat_name(record.get("dat_id", ""))
-                return {
-                    "path": file_path,
-                    "matched": True,
-                    "dat_id": record.get("dat_id"),
-                    "dat_name": dat_info,
-                    "game_name": record.get("game_name"),
-                    "rom_name": record.get("rom_name"),
-                    "match_type": "chd_data_sha1",
-                    "file_hash": data_sha1,
-                }
-
-    except Exception as exc:
-        logger.debug("CHD header match failed for %s: %s", file_path, exc)
+    # Try data SHA1 (uncompressed content hash)
+    data_sha1 = metadata.get("data_sha1", "").strip().lower()
+    if data_sha1:
+        record = dat_store.lookup_sha1(data_sha1)
+        if record:
+            return {
+                "path": file_path,
+                "matched": True,
+                "dat_id": record.get("dat_id"),
+                "dat_name": dat_store.get_dat_name(record.get("dat_id", "")),
+                "game_name": record.get("game_name"),
+                "rom_name": record.get("rom_name"),
+                "match_type": "chd_data_sha1",
+                "file_hash": data_sha1,
+            }
 
     return None
-
-
-def _get_dat_name(dat_id: str) -> str:
-    """Get DAT name from ID."""
-    dats = dat_store.list_dats()
-    for dat in dats:
-        if dat.get("id") == dat_id:
-            return dat.get("name", "Unknown")
-    return "Unknown"

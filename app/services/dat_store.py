@@ -177,6 +177,12 @@ class DATStore:
         with self._lock:
             return list(self._dats.values())
 
+    def get_dat_name(self, dat_id: str) -> str:
+        """Return the name of the DAT with the given ID, or 'Unknown'."""
+        with self._lock:
+            dat = self._dats.get(dat_id)
+            return dat.get("name", "Unknown") if dat else "Unknown"
+
     def lookup_sha1(self, sha1: str) -> dict | None:
         with self._lock:
             return self._hashes_sha1.get(sha1.lower())

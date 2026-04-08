@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import os
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -247,9 +248,10 @@ async def test_match_batch_uses_cache(tmp_path, isolated_dat_store, monkeypatch)
 
     iso = tmp_path / "cached.iso"
     iso.write_bytes(b"x")
-    path = str(iso)
+    # Use the normalized path as both cache key and request path
+    path = os.path.normpath(os.path.abspath(str(iso)))
 
-    # Seed the cache manually
+    # Seed the cache manually with the normalized path
     cached_result = {"path": path, "matched": True, "game_name": "Cached Game"}
     await isolated_dat_store.set_match(path, cached_result)
 
@@ -297,3 +299,98 @@ async def test_match_batch_cache_cleared_after_new_import(tmp_path, isolated_dat
 
     assert result["results"][path]["matched"] is True
     assert result["results"][path]["game_name"] == "Another Game"
+
+
+# ---------------------------------------------------------------------------
+# DATStore.get_dat_name  (O(1) lookup)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_dat_name_returns_name(isolated_dat_store):
+    """get_dat_name returns the correct name for a known DAT ID."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    imported = await dat_routes.import_dat(file=upload)
+    dat_id = imported["id"]
+
+    assert isolated_dat_store.get_dat_name(dat_id) == "Test Redump DAT"
+
+
+@pytest.mark.asyncio
+async def test_get_dat_name_unknown(isolated_dat_store):
+    """get_dat_name returns 'Unknown' for an unrecognized DAT ID."""
+    assert isolated_dat_store.get_dat_name("nonexistent-id") == "Unknown"
+
+
+# ---------------------------------------------------------------------------
+# _try_chd_header_match  (CHD metadata-backed SHA1 matching)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
+    """CHD files are matched via their cached header SHA1."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake chd")
+    chd_path = str(chd)
+
+    # Mock chd_metadata_store.get_metadata to return sha1 matching the DAT entry
+    mock_metadata_store = MagicMock()
+    mock_metadata_store.get_metadata = AsyncMock(
+        return_value={"sha1": "aabbccddaabbccddaabbccddaabbccddaabbccdd", "data_sha1": ""}
+    )
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+
+    # Patch inside the function's module-level import
+    with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
+        result = await dat_routes._try_chd_header_match(chd_path)
+
+    assert result is not None
+    assert result["matched"] is True
+    assert result["match_type"] == "chd_sha1"
+    assert result["game_name"] == "Test Game"
+
+
+@pytest.mark.asyncio
+async def test_chd_header_match_no_metadata(tmp_path, isolated_dat_store):
+    """_try_chd_header_match returns None when no cached metadata exists."""
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake chd")
+
+    mock_metadata_store = MagicMock()
+    mock_metadata_store.get_metadata = AsyncMock(return_value=None)
+
+    with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
+        result = await dat_routes._try_chd_header_match(str(chd))
+
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Path normalization in match_batch
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_match_batch_normalizes_paths(tmp_path, isolated_dat_store, monkeypatch):
+    """match-batch normalizes paths before cache lookup and file checks."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    iso = tmp_path / "game.iso"
+    iso.write_bytes(b"x")
+    normal_path = os.path.normpath(os.path.abspath(str(iso)))
+    # Provide a non-normalized variant (double slash)
+    unnorm_path = str(iso).replace(str(tmp_path), str(tmp_path) + "/")
+
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value=target_sha1))
+
+    request = dat_routes.MatchBatchRequest(paths=[unnorm_path])
+    result = await dat_routes.match_batch(request)
+
+    # Result should be accessible via the original (input) key
+    assert result["results"][unnorm_path]["matched"] is True
+    # The path field in the result should be the normalized form
+    assert result["results"][unnorm_path]["path"] == normal_path
