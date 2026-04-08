@@ -4962,7 +4962,7 @@ function App() {
 
             ${showDatPanel && html`<${DATPanel}
                 onClose=${() => setShowDatPanel(false)}
-                onImported=${() => { setDatsImported(true); setDatMatches(new Map()); }}
+                onImported=${(hasDats) => { setDatsImported(Boolean(hasDats)); setDatMatches(new Map()); }}
             />`}
 
             <div class="main-layout">
