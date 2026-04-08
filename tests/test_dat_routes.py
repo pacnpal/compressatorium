@@ -467,9 +467,10 @@ async def test_match_file_symlink_loop_returns_4xx_not_500(tmp_path, monkeypatch
     request = dat_routes.MatchRequest(path=str(loop))
     with pytest.raises(HTTPException) as exc_info:
         await dat_routes.match_file(request)
-    # Path.resolve(strict=False) raises RuntimeError for a symlink loop, which
-    # _resolve_path catches and converts to None → is_within_configured_volumes
-    # returns False → 403 Access Denied (not an unhandled 500).
+    # os.path.realpath returns the unresolved symlink path for a loop (handles
+    # ELOOP without raising). is_within_configured_volumes then calls
+    # _resolve_path → Path.resolve() raises RuntimeError → caught → returns
+    # None → volume check returns False → 403 (not an unhandled 500).
     assert exc_info.value.status_code == 403
 
 
@@ -520,8 +521,11 @@ async def test_match_batch_symlink_loop_returns_denied_not_500(tmp_path, isolate
     request = dat_routes.MatchBatchRequest(paths=[str(loop)])
     result = await dat_routes.match_batch(request)
 
-    # Must not raise; the symlink loop is caught by _resolve_path (which traps
-    # RuntimeError from Path.resolve) → volume check returns False → access denied.
+    # Must not raise; the symlink loop is caught by is_within_configured_volumes:
+    # os.path.realpath returns the unresolved symlink path (handles ELOOP
+    # gracefully), then is_within_configured_volumes calls _resolve_path →
+    # Path.resolve() raises RuntimeError for the loop → caught → returns None
+    # → volume check returns False → access denied.
     assert str(loop) in result["results"]
     path_result = result["results"][str(loop)]
     assert path_result["matched"] is False
