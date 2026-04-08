@@ -64,7 +64,13 @@ class DATStore:
                         self._matches = matches if isinstance(matches, dict) else {}
             except json.JSONDecodeError:
                 backup = self._store_path.with_suffix(".corrupt")
-                self._store_path.rename(backup)
+                try:
+                    self._store_path.rename(backup)
+                except OSError:
+                    logger.warning(
+                        "dat_store: could not rename corrupt store to %s; clearing state",
+                        backup,
+                    )
                 self._dats = {}
                 self._hashes_sha1 = {}
                 self._hashes_md5 = {}

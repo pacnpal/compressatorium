@@ -151,7 +151,7 @@ async def test_delete_dat_happy_path(isolated_dat_store):
 @pytest.mark.asyncio
 async def test_delete_dat_not_found(isolated_dat_store):
     """Deleting a nonexistent DAT raises 404."""
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         await dat_routes.delete_dat(dat_id="doesnotexist")
     assert exc_info.value.status_code == 404
 
@@ -165,7 +165,7 @@ async def test_match_file_access_denied(tmp_path, isolated_dat_store, monkeypatc
     """match_file raises 403 for paths outside configured volumes."""
     monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: False)
     request = dat_routes.MatchRequest(path="/outside/file.iso")
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         await dat_routes.match_file(request)
     assert exc_info.value.status_code == 403
 
@@ -175,7 +175,7 @@ async def test_match_file_not_found(tmp_path, isolated_dat_store, monkeypatch):
     """match_file raises 404 when the file does not exist on disk."""
     monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
     request = dat_routes.MatchRequest(path=str(tmp_path / "nonexistent.iso"))
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         await dat_routes.match_file(request)
     assert exc_info.value.status_code == 404
 
