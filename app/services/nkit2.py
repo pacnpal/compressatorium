@@ -391,9 +391,6 @@ class NKit2Service:
     @staticmethod
     def is_convertible(filename: str) -> bool:
         """Check if a file is convertible by NKit2."""
-        lower = filename.lower()
-        if lower.endswith(".nkit.iso"):
-            return True
         ext = Path(filename).suffix.lower()
         return ext in NKIT2_CONVERTIBLE_EXTENSIONS
 
