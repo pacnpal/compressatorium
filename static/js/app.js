@@ -248,7 +248,7 @@ function DATPanel({ onClose, onImported }) {
             </div>
             <div class="dat-panel-body">
                 <p class="compression-note">
-                    Import Logiqx XML DAT files from <a href="https://github.com/MetalSlug/MAMERedump" target="_blank" rel="noopener">MAME Redump</a> to verify your compressed files match known-good hashes.
+                    Import Logiqx XML DAT files from <a href="https://github.com/MetalSlug/MAMERedump" target="_blank" rel="noopener noreferrer">MAME Redump</a> to verify your compressed files match known-good hashes.
                 </p>
                 <div class="dat-import">
                     <label class="btn btn-primary${importing ? ' disabled' : ''}">

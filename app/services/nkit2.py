@@ -97,6 +97,20 @@ class NKit2Service:
         if output_dir:
             await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
 
+        # Snapshot RVZ files that already exist in the output directory so
+        # the post-conversion fallback only considers newly-created files.
+        stem = Path(input_path).stem
+        _output_dir = Path(output_dir) if output_dir else Path(".")
+
+        def _snapshot_existing_rvz() -> set[Path]:
+            return {
+                p.resolve()
+                for p in _output_dir.glob(f"{stem}*.rvz")
+                if p.is_file()
+            }
+
+        pre_existing_rvz: set[Path] = await run_in_threadpool(_snapshot_existing_rvz)
+
         cmd = self._build_convert_command(input_path, output_path)
 
         def _preexec():
@@ -317,16 +331,18 @@ class NKit2Service:
 
         # NKit2 may name the output differently; if our expected output_path
         # doesn't exist, look for .rvz files in the output directory.
-        # Filter out pre-existing files by comparing against the resolved
-        # expected path, then pick the newest match to avoid ambiguity.
+        # Only consider files that were NOT present before the conversion
+        # started (using the pre-snapshot), then pick the newest one.
         if not os.path.exists(output_path):
-            output_dir = Path(os.path.dirname(output_path))
-            stem = Path(input_path).stem
             output_path_resolved = Path(output_path).resolve()
             candidates = [
                 candidate
-                for candidate in output_dir.glob(f"{stem}*.rvz")
-                if candidate.is_file() and candidate.resolve() != output_path_resolved
+                for candidate in _output_dir.glob(f"{stem}*.rvz")
+                if (
+                    candidate.is_file()
+                    and candidate.resolve() != output_path_resolved
+                    and candidate.resolve() not in pre_existing_rvz
+                )
             ]
             if candidates:
                 candidate = max(
@@ -334,6 +350,12 @@ class NKit2Service:
                     key=lambda p: (p.stat().st_mtime_ns, str(p)),
                 )
                 os.rename(str(candidate), output_path)
+
+        if not os.path.exists(output_path):
+            raise RuntimeError(
+                "NKit2 exited successfully but produced no output file at "
+                f"{output_path!r}"
+            )
 
         yield {"progress": 100, "message": "Conversion complete"}
 

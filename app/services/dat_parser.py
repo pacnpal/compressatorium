@@ -8,6 +8,7 @@ import os
 import re
 
 import defusedxml.ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 logger = logging.getLogger("chd.dat_parser")
 
@@ -70,6 +71,8 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
 
     except ET.ParseError as exc:
         raise ValueError(f"Invalid XML DAT file: {exc}") from exc
+    except DefusedXmlException as exc:
+        raise ValueError(f"DAT file contains forbidden XML content: {exc}") from exc
 
     if not header.get("name"):
         header["name"] = "Unknown DAT"

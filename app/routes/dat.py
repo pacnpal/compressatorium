@@ -143,11 +143,13 @@ async def match_batch(request: MatchBatchRequest):
         exists = await run_in_threadpool(os.path.isfile, normalized_path)
         if not exists:
             result = {"path": normalized_path, "matched": False}
+            # Don't cache missing-file results: the file may appear later and
+            # a stale negative entry would not be cleared by prune_missing.
         else:
             result = await _match_single_file(normalized_path)
+            new_matches[normalized_path] = result
         for original_path in normalized_to_originals[normalized_path]:
             results[original_path] = result
-        new_matches[normalized_path] = result
 
     # Cache new results using normalized path keys
     if new_matches:
