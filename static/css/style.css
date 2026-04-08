@@ -464,6 +464,11 @@ header h1 span {
     color: var(--bg-primary);
 }
 
+.file-item .status.dat-match {
+    background: #2196F3;
+    color: white;
+}
+
 .file-item .status.iso-handling {
     background: var(--warning);
     color: var(--bg-primary);
@@ -2291,4 +2296,61 @@ header h1 span {
     font-size: 0.85em;
     opacity: 0.8;
     margin-top: 4px;
+}
+
+/* DAT Panel */
+.dat-panel .dat-panel-body {
+    padding: 12px 0;
+}
+
+.dat-import {
+    margin: 12px 0;
+}
+
+.dat-import label.disabled {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.dat-message {
+    padding: 8px 12px;
+    margin: 8px 0;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    font-size: 0.9em;
+}
+
+.dat-stats {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 8px 0;
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
+.dat-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 0.9em;
+}
+
+.dat-table th,
+.dat-table td {
+    padding: 6px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+.dat-table th {
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.dat-empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
 }

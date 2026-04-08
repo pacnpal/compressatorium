@@ -21,8 +21,33 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-too
 | Tool | Input Formats | Output Formats | Use Case |
 |------|--------------|----------------|----------|
 | **CHDMAN** | .gdi, .cue, .bin, .iso | .chd | CD/DVD/LaserDisc to CHD |
+| **NKit2** | .iso, .gcz, .wia, .rvz, .wbfs | .rvz | Redump-compatible RVZ (GameCube/Wii) |
 | **Dolphin** | .iso, .gcm, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
+
+### MAME Redump DAT Integration
+
+Compressatorium supports importing [MAME Redump](https://github.com/MetalSlug/MAMERedump) DAT files (Logiqx XML format) to verify that your compressed files match known-good Redump hashes. This enables hash-based matching with tools like [Hasheous](https://github.com/gaseous-project/hasheous) and [RomM](https://github.com/rommapp/romm).
+
+- **CHD files**: Matched via header SHA1 (codec-independent, works with any compression setting on chdman 0.285)
+- **RVZ files**: Matched via file-level SHA1 (requires NKit2 for byte-identical output matching MAME Redump)
+- **DAT management**: Import, list, and delete DATs via the web UI "DAT Files" button
+- **Match badges**: Files matching a DAT entry show a blue "DAT" badge in the file list
+
+### NKit2 Integration
+
+[NKit2](https://github.com/Nanook/NKit) produces Redump-compatible RVZ output (zstd:19 128k) that is byte-identical to MAME Redump sets. NKit2 is optional — place self-contained Linux binaries in `vendor/nkit2/linux-amd64/` and `vendor/nkit2/linux-arm64/` before building the Docker image. When NKit2 is unavailable, Dolphin RVZ mode remains available as a fallback.
+
+> **Note:** The Docker image build requires [BuildKit](https://docs.docker.com/build/buildkit/) (Docker 23.0+ enables it by default). For older Docker versions, set `DOCKER_BUILDKIT=1` before building:
+> ```bash
+> DOCKER_BUILDKIT=1 docker build -t pacnpal/compressatorium .
+> ```
+
+| Setting | Value | Notes |
+|---------|-------|-------|
+| Format | RVZ | Dolphin-compatible |
+| Compression | zstd level 19 | Fixed, not user-configurable |
+| Block size | 128k | Matches MAME Redump |
 
 ---
 
@@ -286,10 +311,18 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
+| `NKIT2_PATH` | `/opt/nkit/nkit` | Path to NKit2 binary |
 
 ### REST API Endpoints
 
 - `POST /api/jobs` or `POST /api/jobs/batch` - Queue 3DS compression jobs (use `mode: "z3ds_compress"`)
+- `POST /api/jobs` or `POST /api/jobs/batch` - Queue NKit2 RVZ jobs (use `mode: "nkit2_rvz"`)
+- `POST /api/dat/import` - Import a MAME Redump DAT file (multipart upload)
+- `GET /api/dat/list` - List imported DATs
+- `DELETE /api/dat/{dat_id}` - Delete an imported DAT
+- `POST /api/dat/match` - Match a single file against DATs
+- `POST /api/dat/match-batch` - Batch match files against DATs
+- `GET /api/dat/stats` - DAT store statistics
 - `GET /api/z3ds-info?path=/path/to/rom.cci` - Get file information (size, format, compression status)
 - `GET /api/z3ds-verify?path=/path/to/rom.zcci` - Verify compressed 3DS output integrity
 - `GET /api/z3ds-verify/events?path=/path/to/rom.zcci` - SSE stream for 3DS verify progress

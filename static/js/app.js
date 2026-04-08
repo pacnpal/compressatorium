@@ -4,7 +4,7 @@ import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
 const SHOW_METADATA_JOBS_STORAGE_KEY = 'compressatorium_show_metadata_jobs';
-const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '5';
+const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '19';
 const DEFAULT_PAGE_SIZE = '50';
 const DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST = true;
 const MAX_VISIBLE_CREATING_PLACEHOLDERS = 100;
@@ -180,7 +180,8 @@ const MODE_GROUPS = [
         id: 'dolphin',
         label: 'Dolphin (GameCube/Wii)',
         options: [
-            { value: 'dolphin_rvz', label: 'Convert to RVZ (recommended)' },
+            { value: 'nkit2_rvz', label: 'NKit2 RVZ (Redump-compatible)' },
+            { value: 'dolphin_rvz', label: 'Convert to RVZ' },
             { value: 'dolphin_wia', label: 'Convert to WIA' },
             { value: 'dolphin_gcz', label: 'Convert to GCZ' },
             { value: 'dolphin_iso', label: 'Convert to ISO (extract)' }
@@ -194,6 +195,110 @@ const MODE_GROUPS = [
         ]
     }
 ];
+
+// ============ DAT Panel Component ============
+
+function DATPanel({ onClose, onImported }) {
+    const [dats, setDats] = useState([]);
+    const [stats, setStats] = useState(null);
+    const [importing, setImporting] = useState(false);
+    const [message, setMessage] = useState(null);
+
+    const loadDats = useCallback(() => {
+        api.listDATs().then(setDats).catch(() => {});
+        api.getDATStats().then(setStats).catch(() => {});
+    }, []);
+
+    useEffect(() => { loadDats(); }, []);
+
+    const handleImport = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setImporting(true);
+        setMessage(null);
+        try {
+            const result = await api.importDAT(file);
+            setMessage(`Imported: ${result.name} (${result.file_count} entries, ${result.hashes_added} hashes)`);
+            loadDats();
+            if (onImported) onImported(true);
+        } catch (err) {
+            setMessage(`Error: ${err.message}`);
+        } finally {
+            setImporting(false);
+            e.target.value = '';
+        }
+    };
+
+    const handleDelete = async (datId, datName) => {
+        if (!confirm(`Delete DAT "${datName}" and all its hash entries?`)) return;
+        try {
+            await api.deleteDAT(datId);
+            const hasDats = dats.filter(d => d.id !== datId).length > 0;
+            loadDats();
+            if (onImported) onImported(hasDats);
+        } catch (err) {
+            setMessage(`Error: ${err.message}`);
+        }
+    };
+
+    return html`
+        <div class="help-panel dat-panel">
+            <div class="help-header">
+                <h3>MAME Redump DAT Files</h3>
+                <button class="btn btn-secondary" onClick=${onClose}>Close</button>
+            </div>
+            <div class="dat-panel-body">
+                <p class="compression-note">
+                    Import Logiqx XML DAT files from <a href="https://github.com/MetalSlug/MAMERedump" target="_blank" rel="noopener noreferrer">MAME Redump</a> to verify your compressed files match known-good hashes.
+                </p>
+                <div class="dat-import">
+                    <label class="btn btn-primary${importing ? ' disabled' : ''}">
+                        ${importing ? 'Importing...' : 'Import DAT File'}
+                        <input type="file" accept=".dat,.xml" onChange=${handleImport} disabled=${importing} style="display:none" />
+                    </label>
+                </div>
+                ${message && html`<div class="dat-message">${message}</div>`}
+                ${stats && html`
+                    <div class="dat-stats">
+                        <span>DATs: ${stats.total_dats}</span>
+                        <span>SHA1 Hashes: ${stats.total_sha1_hashes}</span>
+                        <span>Matched: ${stats.total_matches}</span>
+                        <span>Scanned: ${stats.total_scanned}</span>
+                    </div>
+                `}
+                ${dats.length > 0 && html`
+                    <table class="dat-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Version</th>
+                                <th>Entries</th>
+                                <th>Imported</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${dats.map(dat => html`
+                                <tr key=${dat.id}>
+                                    <td title=${dat.description || dat.name}>${dat.name}</td>
+                                    <td>${dat.version || '-'}</td>
+                                    <td>${dat.file_count}</td>
+                                    <td>${new Date(dat.imported_at).toLocaleDateString()}</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-danger" onClick=${() => handleDelete(dat.id, dat.name)}>Delete</button>
+                                    </td>
+                                </tr>
+                            `)}
+                        </tbody>
+                    </table>
+                `}
+                ${dats.length === 0 && html`
+                    <p class="dat-empty">No DAT files imported. Import a MAME Redump DAT to enable hash matching.</p>
+                `}
+            </div>
+        </div>
+    `;
+}
 
 // ============ Help Component ============
 
@@ -346,7 +451,7 @@ function Breadcrumb({ path, volume, onNavigate }) {
     `;
 }
 
-function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, onCompress, conversionMode, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected, isoHandling, onToggleIsoHandling }) {
+function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelect, onShowInfo, onBrowseArchive, onRename, onDelete, onVerify, onCompress, conversionMode, verifiedCHDs, verifyProgress, chdMetadata, error, sortBy, sortOrder, onSort, onSelectAll, allSelected, isoHandling, onToggleIsoHandling, datMatches }) {
     const visibleEntries = Array.isArray(entries)
         ? entries.filter((entry) => !isMacMetadataName(entry?.name || ''))
         : [];
@@ -663,6 +768,9 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                     )}
                         ${isVerified(entry) && html`
                             <span class="status verified" title="Integrity verified">✓ Verified</span>
+                        `}
+                        ${datMatches.get(entry.path)?.matched && html`
+                            <span class="status dat-match" title="${datMatches.get(entry.path).dat_name}: ${datMatches.get(entry.path).game_name}">DAT ✓</span>
                         `}
                         ${isVerifying && html`
                             <span class="status convertible" title="Verifying integrity">
@@ -2557,6 +2665,10 @@ function App() {
     const [chdMetadata, setChdMetadata] = useState(new Map()); // path -> { media_type: "dvd"|"cd"|null }
     const [forceRescanRunning, setForceRescanRunning] = useState(false);
     const [appVersion, setAppVersion] = useState(null); // App version from backend
+    const [nkit2Available, setNkit2Available] = useState(false); // NKit2 tool availability
+    const [datMatches, setDatMatches] = useState(new Map()); // path -> match result
+    const [datsImported, setDatsImported] = useState(false); // whether any DATs are loaded
+    const [showDatPanel, setShowDatPanel] = useState(false); // DAT management panel visibility
     const [searchAutoReturnToFileList, setSearchAutoReturnToFileList] = useState(DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST);
     const [sortBy, setSortBy] = useState('name'); // 'name', 'size', 'status'
     const [sortOrder, setSortOrder] = useState('asc'); // 'asc', 'desc'
@@ -3113,6 +3225,30 @@ function App() {
             .catch(err => console.warn('Failed to fetch CHD metadata:', err)); // Silently fail - badges are optional
     }, [displayedEntries, forceRescanRunning, jobs, creatingJobs]);
 
+    // Fetch DAT match status for visible files
+    useEffect(() => {
+        if (!datsImported) return;
+        const matchableExts = new Set(['.chd', '.rvz', '.wia', '.gcz']);
+        const paths = displayedEntries
+            .filter(e => matchableExts.has(e.extension?.toLowerCase()))
+            .map(e => e.path)
+            .filter(p => !datMatches.has(p));
+        if (paths.length === 0) return;
+        api.matchBatch(paths)
+            .then(data => {
+                if (data.results) {
+                    setDatMatches(prev => {
+                        const next = new Map(prev);
+                        Object.entries(data.results).forEach(([path, result]) => {
+                            next.set(path, result);
+                        });
+                        return next;
+                    });
+                }
+            })
+            .catch(() => {});
+    }, [displayedEntries, datsImported, datMatches]);
+
     // Load app version on mount
     useEffect(() => {
         api.getVersion()
@@ -3121,8 +3257,15 @@ function App() {
                 if (typeof data.search_auto_return_to_file_list === 'boolean') {
                     setSearchAutoReturnToFileList(data.search_auto_return_to_file_list);
                 }
+                if (typeof data.nkit2_available === 'boolean') {
+                    setNkit2Available(data.nkit2_available);
+                }
             })
             .catch(err => console.warn('Failed to fetch app version:', err));
+        // Check if any DATs are imported
+        api.getDATStats()
+            .then(stats => setDatsImported(stats.total_dats > 0))
+            .catch(() => {});
     }, []);
 
     // Load files when path changes
@@ -3206,6 +3349,7 @@ function App() {
             let cancelledCount = 0;
             const verifiedPathsToAdd = new Set();
             const verifiedPathsToRemove = new Set();
+            const completedOutputPaths = new Set();
 
             setJobs(prevJobs => {
                 let nextJobs = prevJobs;
@@ -3308,6 +3452,11 @@ function App() {
                         if (update.data.source_deleted && updatedJob.file_path?.toLowerCase().endsWith('.chd')) {
                             verifiedPathsToRemove.add(updatedJob.file_path);
                         }
+                        // Invalidate DAT match cache for the output file so
+                        // its badge is re-fetched after a successful conversion.
+                        if (updatedJob.output_path) {
+                            completedOutputPaths.add(updatedJob.output_path);
+                        }
                     } else if (update.type === 'error') {
                         failedCount += 1;
                     } else if (update.type === 'cancelled') {
@@ -3347,6 +3496,20 @@ function App() {
                         next.add(path);
                     }
                     for (const path of verifiedPathsToRemove) {
+                        next.delete(path);
+                    }
+                    return next;
+                });
+            }
+
+            // Remove completed output paths from the DAT match cache so the
+            // next effect run re-fetches their badge state (handles overwrite).
+            if (completedOutputPaths.size > 0) {
+                setDatMatches(prev => {
+                    const toRemove = [...completedOutputPaths].filter(p => prev.has(p));
+                    if (toRemove.length === 0) return prev;
+                    const next = new Map(prev);
+                    for (const path of toRemove) {
                         next.delete(path);
                     }
                     return next;
@@ -3882,6 +4045,8 @@ function App() {
             outputFilename = `${stem}.raw`;
         } else if (conversionMode === 'extractld') {
             outputFilename = `${stem}.avi`;
+        } else if (conversionMode === 'nkit2_rvz') {
+            outputFilename = `${stem}.rvz`;
         } else if (conversionMode === 'dolphin_rvz') {
             outputFilename = `${stem}.rvz`;
         } else if (conversionMode === 'dolphin_wia') {
@@ -4109,7 +4274,7 @@ function App() {
 
     const dolphinCompressionOptions = [
         { value: 'none', label: 'No compression', description: 'Uncompressed output.' },
-        { value: 'zstd', label: 'zstd', description: 'Best balance of speed and compression (recommended).' },
+        { value: 'zstd', label: 'zstd', description: 'Best balance of speed and compression. Level 19 matches MAME Redump.' },
         { value: 'bzip2', label: 'bzip2', description: 'Good compression, slower.' },
         { value: 'lzma', label: 'lzma', description: 'High compression ratio.' },
         { value: 'lzma2', label: 'lzma2', description: 'Improved LZMA variant.' },
@@ -4119,10 +4284,11 @@ function App() {
     const isExtractMode = conversionMode.startsWith('extract');
     const isCopyMode = conversionMode === 'copy';
     const isDolphinMode = conversionMode.startsWith('dolphin_');
+    const isNkit2Mode = conversionMode === 'nkit2_rvz';
     const isZ3dsMode = conversionMode === 'z3ds_compress';
     const isDolphinCompressible = isDolphinMode && !['dolphin_iso', 'dolphin_gcz'].includes(conversionMode);
     const activeCompressionOptions = isDolphinCompressible ? dolphinCompressionOptions : compressionOptions;
-    const compressionSupported = isCreateMode || isCopyMode || isDolphinCompressible;
+    const compressionSupported = (isCreateMode || isCopyMode || isDolphinCompressible) && !isNkit2Mode;
     const dolphinCodecValues = isDolphinCompressible
         ? new Set(activeCompressionOptions.map((opt) => opt.value))
         : null;
@@ -4277,7 +4443,9 @@ function App() {
             }
         }
     }, [visibleModeGroups, conversionMode]);
-    const compressionMetaText = !compressionSupported
+    const compressionMetaText = isNkit2Mode
+        ? 'Fixed: zstd:19 128k (Redump-compatible)'
+        : !compressionSupported
         ? 'Compression options not applicable for this mode'
         : isDolphinCompressible
             ? (selectedDolphinCodec === 'none'
@@ -4748,6 +4916,13 @@ function App() {
                     </button>
                     <button
                         class="btn btn-secondary help-btn"
+                        onClick=${() => setShowDatPanel(!showDatPanel)}
+                        title="Manage MAME Redump DAT files"
+                    >
+                        DAT Files
+                    </button>
+                    <button
+                        class="btn btn-secondary help-btn"
                         onClick=${() => setShowHelp(!showHelp)}
                         title="Show help"
                     >
@@ -4805,6 +4980,11 @@ function App() {
         </div>
 
             ${showHelp && html`<${HelpPanel} onClose=${() => setShowHelp(false)} isoHandling=${isoHandling} />`}
+
+            ${showDatPanel && html`<${DATPanel}
+                onClose=${() => setShowDatPanel(false)}
+                onImported=${(hasDats) => { setDatsImported(Boolean(hasDats)); setDatMatches(new Map()); }}
+            />`}
 
             <div class="main-layout">
                 <!-- Volumes Panel -->
@@ -4917,7 +5097,10 @@ function App() {
                                     ${visibleModeGroups.map((group) => html`
                                         <optgroup label=${group.label}>
                                             ${group.options.map((opt) => html`
-                                                <option value=${opt.value}>${opt.label}</option>
+                                                <option
+                                                    value=${opt.value}
+                                                    disabled=${opt.value === 'nkit2_rvz' && !nkit2Available}
+                                                >${opt.label}${opt.value === 'nkit2_rvz' && !nkit2Available ? ' (not installed)' : ''}</option>
                                             `)}
                                         </optgroup>
                                     `)}
@@ -4965,7 +5148,11 @@ function App() {
                                                 title="Dolphin codecs require a compression level"
                                             />
                                             <span class="compression-level-hint">
-                                                ${dolphinLevelEnabled ? 'Higher = smaller, slower.' : 'Select a codec to set level.'}
+                                                ${dolphinLevelEnabled
+                                                    ? (normalizedDolphinLevel === '19' && compressionSelection.includes('zstd')
+                                                        ? 'Redump-compatible (zstd:19 128k).'
+                                                        : 'Higher = smaller, slower. 19 = Redump-compatible.')
+                                                    : 'Select a codec to set level.'}
                                             </span>
                                         </div>
                                     `}
@@ -5091,7 +5278,7 @@ function App() {
                                     <li><strong>ISO</strong>: uncompressed extraction.</li>
                                 </ul>
                                 <p class="compression-note">
-                                    If unsure, start with <strong>zstd</strong> at level <strong>${normalizedDolphinLevel}</strong>.
+                                    If unsure, use <strong>zstd</strong> at level <strong>19</strong> for Redump-compatible output (matches MAME Redump DATs).
                                 </p>
                             ` : html`
                                 <ul>
@@ -5108,7 +5295,7 @@ function App() {
                                     If unsure, choose <strong>zlib</strong>. It's the most compatible choice.
                                 </p>
                                 <p class="compression-note">
-                                    Omitting <code>-c</code> would use chdman defaults; this app always sends an explicit choice.
+                                    CHD header hashes are independent of compression codec. Any codec produces Redump-compatible hashes with chdman 0.285.
                                 </p>
                             `}
                         </div>
@@ -5235,6 +5422,7 @@ function App() {
                                 allSelected=${allSelectedOnPage}
                                 isoHandling=${isoHandling}
                                 onToggleIsoHandling=${handleIsoHandlingToggle}
+                                datMatches=${datMatches}
                             />`
         }
                     </div>

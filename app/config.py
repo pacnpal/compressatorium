@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     z3ds_compressor_path: str = Field(
         default="/usr/local/bin/z3ds_compressor", alias="Z3DS_COMPRESSOR_PATH",
     )
+
+    # NKit2 binary path
+    nkit2_path: str = Field(
+        default="/opt/nkit/nkit", alias="NKIT2_PATH",
+    )
     chdman_nice: int | None = Field(default=10, alias="CHD_CHDMAN_NICE")
     chdman_ioprio_class: int | None = Field(
         default=2,

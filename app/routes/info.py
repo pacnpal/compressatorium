@@ -296,6 +296,7 @@ async def get_app_version() -> dict:
     """Get the application version."""
     # Use importlib for reliable import regardless of how app is started
     import importlib
+    from services.nkit2 import nkit2_service
     try:
         main_module = importlib.import_module("main")
     except ModuleNotFoundError:
@@ -303,6 +304,7 @@ async def get_app_version() -> dict:
     return {
         "version": main_module.get_version(),
         "search_auto_return_to_file_list": settings.search_auto_return_to_file_list,
+        "nkit2_available": nkit2_service.is_available(),
     }
 
 

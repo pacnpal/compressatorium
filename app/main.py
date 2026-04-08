@@ -6,7 +6,7 @@ from config import settings
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from routes import convert, files, info
+from routes import convert, dat, files, info
 from services.job_manager import job_manager
 
 
@@ -80,6 +80,7 @@ app = FastAPI(
 app.include_router(files.router, prefix="/api", tags=["files"])
 app.include_router(convert.router, prefix="/api", tags=["convert"])
 app.include_router(info.router, prefix="/api", tags=["info"])
+app.include_router(dat.router, prefix="/api", tags=["dat"])
 
 
 @app.on_event("startup")

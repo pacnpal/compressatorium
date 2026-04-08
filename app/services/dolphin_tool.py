@@ -19,7 +19,7 @@ DOLPHIN_OUTPUT_FORMATS = {
     "dolphin_gcz": ("gcz", ".gcz"),
     "dolphin_iso": ("iso", ".iso"),
 }
-DEFAULT_DOLPHIN_COMPRESSION_LEVEL = "5"
+DEFAULT_DOLPHIN_COMPRESSION_LEVEL = "19"
 
 logger = logging.getLogger("chd.dolphin_tool")
 
