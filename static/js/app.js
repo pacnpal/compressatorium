@@ -3349,6 +3349,7 @@ function App() {
             let cancelledCount = 0;
             const verifiedPathsToAdd = new Set();
             const verifiedPathsToRemove = new Set();
+            const completedOutputPaths = new Set();
 
             setJobs(prevJobs => {
                 let nextJobs = prevJobs;
@@ -3451,6 +3452,11 @@ function App() {
                         if (update.data.source_deleted && updatedJob.file_path?.toLowerCase().endsWith('.chd')) {
                             verifiedPathsToRemove.add(updatedJob.file_path);
                         }
+                        // Invalidate DAT match cache for the output file so
+                        // its badge is re-fetched after a successful conversion.
+                        if (updatedJob.output_path) {
+                            completedOutputPaths.add(updatedJob.output_path);
+                        }
                     } else if (update.type === 'error') {
                         failedCount += 1;
                     } else if (update.type === 'cancelled') {
@@ -3490,6 +3496,20 @@ function App() {
                         next.add(path);
                     }
                     for (const path of verifiedPathsToRemove) {
+                        next.delete(path);
+                    }
+                    return next;
+                });
+            }
+
+            // Remove completed output paths from the DAT match cache so the
+            // next effect run re-fetches their badge state (handles overwrite).
+            if (completedOutputPaths.size > 0) {
+                setDatMatches(prev => {
+                    const toRemove = [...completedOutputPaths].filter(p => prev.has(p));
+                    if (toRemove.length === 0) return prev;
+                    const next = new Map(prev);
+                    for (const path of toRemove) {
                         next.delete(path);
                     }
                     return next;

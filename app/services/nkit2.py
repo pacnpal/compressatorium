@@ -177,20 +177,35 @@ class NKit2Service:
 
         def _update_output_activity(now: float):
             nonlocal last_output_size, last_activity_at
-            if not output_path:
-                return
+            # Check the expected output path and any newly-created *.rvz files
+            # in the output directory.  NKit2 may write the converted file under
+            # a different filename and only rename it to output_path after the
+            # process exits, so output-size growth would never be observed if we
+            # only watched output_path.
+            paths_to_check: list[str] = [output_path] if output_path else []
             try:
-                if not os.path.exists(output_path):
-                    return
-                size = os.path.getsize(output_path)
+                for p in _output_dir.glob(f"{stem}*.rvz"):
+                    if p.is_file() and p.resolve() not in pre_existing_rvz:
+                        paths_to_check.append(str(p))
             except OSError:
+                pass
+            total_size = 0
+            found_any = False
+            for path in paths_to_check:
+                try:
+                    if os.path.exists(path):
+                        total_size += os.path.getsize(path)
+                        found_any = True
+                except OSError:
+                    pass
+            if not found_any:
                 return
             if last_output_size is None:
-                last_output_size = size
+                last_output_size = total_size
                 last_activity_at = now
                 return
-            if size > last_output_size:
-                last_output_size = size
+            if total_size > last_output_size:
+                last_output_size = total_size
                 last_activity_at = now
 
         async def _check_stall(now: float) -> bool:
