@@ -91,8 +91,9 @@ async def get_dat_stats():
 @router.post("/dat/match")
 async def match_file(request: MatchRequest):
     """Match a single file against imported DATs."""
-    # Normalize the requested path to avoid traversal or malformed paths
-    normalized_path = os.path.normpath(os.path.abspath(request.path))
+    # Resolve the requested path (normalize, make absolute, follow symlinks)
+    # to prevent directory traversal and symlink-based path injection
+    normalized_path = os.path.realpath(request.path)
 
     if not is_within_configured_volumes(normalized_path):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -116,7 +117,7 @@ async def match_batch(request: MatchBatchRequest):
     # resolve to the same path share a single cache lookup and a single hash.
     normalized_to_originals: dict[str, list[str]] = {}
     for p in request.paths:
-        normalized = os.path.normpath(os.path.abspath(p))
+        normalized = os.path.realpath(p)
         normalized_to_originals.setdefault(normalized, []).append(p)
 
     # Check cached matches using normalized paths
