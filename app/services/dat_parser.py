@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import os
 import re
 
 import defusedxml.ElementTree as ET
@@ -13,10 +15,13 @@ _SHA1_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _MD5_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
-def parse_dat(xml_content: str) -> tuple[dict, list[dict]]:
-    """Parse a Logiqx XML DAT file.
+def parse_dat(source: str) -> tuple[dict, list[dict]]:
+    """Parse a Logiqx XML DAT file from a file path or XML string.
 
-    Uses iterparse for memory efficiency on large DAT files.
+    Accepts either a filesystem path (preferred — enables true iterparse
+    streaming from disk) or a raw XML string.  Passing a path avoids loading
+    the entire document into memory before parsing begins.
+
     defusedxml is used to prevent XXE (XML External Entity) and related XML
     injection attacks from untrusted DAT uploads.
 
@@ -28,9 +33,14 @@ def parse_dat(xml_content: str) -> tuple[dict, list[dict]]:
     entries: list[dict] = []
 
     try:
-        context = ET.iterparse(
-            _string_to_file(xml_content), events=("end",),
-        )
+        if os.path.isfile(source):
+            # Stream directly from disk — no in-memory copy of the XML.
+            context = ET.iterparse(source, events=("end",))
+        else:
+            # Fallback: treat source as a raw XML string.
+            context = ET.iterparse(
+                io.BytesIO(source.encode("utf-8")), events=("end",),
+            )
 
         for event, elem in context:
             tag = _strip_ns(elem.tag)
@@ -100,9 +110,3 @@ def _strip_ns(tag: str) -> str:
     if "}" in tag:
         return tag.rsplit("}", 1)[1]
     return tag
-
-
-def _string_to_file(content: str):
-    """Convert a string to a file-like object for iterparse."""
-    import io
-    return io.BytesIO(content.encode("utf-8"))

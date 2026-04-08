@@ -6,6 +6,7 @@ import os
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.routes import dat as dat_routes
 
@@ -75,7 +76,7 @@ async def test_import_dat_happy_path(isolated_dat_store):
     assert result["name"] == "Test Redump DAT"
     assert result["version"] == "1.0"
     assert result["file_count"] == 1
-    assert result["hashes_added"] == 1
+    assert result["hashes_added"] == 2  # 1 SHA1 + 1 MD5
 
     dats = isolated_dat_store.list_dats()
     assert len(dats) == 1
@@ -86,7 +87,7 @@ async def test_import_dat_happy_path(isolated_dat_store):
 async def test_import_dat_wrong_extension():
     """Uploading a file with a disallowed extension is rejected (400)."""
     upload = _make_upload_file(SAMPLE_DAT_XML, filename="test.txt")
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         await dat_routes.import_dat(file=upload)
     assert exc_info.value.status_code == 400
 
@@ -95,7 +96,7 @@ async def test_import_dat_wrong_extension():
 async def test_import_dat_invalid_xml(isolated_dat_store):
     """Uploading malformed XML is rejected with 400."""
     upload = _make_upload_file("this is not xml", filename="bad.dat")
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         await dat_routes.import_dat(file=upload)
     assert exc_info.value.status_code == 400
 

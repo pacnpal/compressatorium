@@ -51,25 +51,18 @@ async def import_dat(file: UploadFile = File(...)):
                     )
                 await run_in_threadpool(tmp.write, chunk)
 
-        def _read_tmp():
-            with open(tmp_path, encoding="utf-8") as fh:
-                return fh.read()
-
         try:
-            xml_content = await run_in_threadpool(_read_tmp)
-        except UnicodeDecodeError:
-            raise HTTPException(status_code=400, detail="File is not valid UTF-8 text")
+            # Pass the temp file path (not its contents) so parse_dat() can
+            # iterparse directly from disk without a second in-memory copy.
+            result = await dat_store.import_dat(tmp_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     finally:
         if tmp_path:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-
-    try:
-        result = await dat_store.import_dat(xml_content)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
 
     return result
 

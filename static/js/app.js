@@ -3246,7 +3246,7 @@ function App() {
                 }
             })
             .catch(() => {});
-    }, [displayedEntries, datsImported]);
+    }, [displayedEntries, datsImported, datMatches]);
 
     // Load app version on mount
     useEffect(() => {

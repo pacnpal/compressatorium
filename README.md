@@ -38,6 +38,11 @@ Compressatorium supports importing [MAME Redump](https://github.com/MetalSlug/MA
 
 [NKit2](https://github.com/Nanook/NKit) produces Redump-compatible RVZ output (zstd:19 128k) that is byte-identical to MAME Redump sets. NKit2 is optional — place self-contained Linux binaries in `vendor/nkit2/linux-amd64/` and `vendor/nkit2/linux-arm64/` before building the Docker image. When NKit2 is unavailable, Dolphin RVZ mode remains available as a fallback.
 
+> **Note:** The Docker image build requires [BuildKit](https://docs.docker.com/build/buildkit/) (Docker 23.0+ enables it by default). For older Docker versions, set `DOCKER_BUILDKIT=1` before building:
+> ```bash
+> DOCKER_BUILDKIT=1 docker build -t pacnpal/compressatorium .
+> ```
+
 | Setting | Value | Notes |
 |---------|-------|-------|
 | Format | RVZ | Dolphin-compatible |

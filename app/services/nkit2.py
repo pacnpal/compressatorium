@@ -316,15 +316,24 @@ class NKit2Service:
             )
 
         # NKit2 may name the output differently; if our expected output_path
-        # doesn't exist, look for .rvz files in the output directory
+        # doesn't exist, look for .rvz files in the output directory.
+        # Filter out pre-existing files by comparing against the resolved
+        # expected path, then pick the newest match to avoid ambiguity.
         if not os.path.exists(output_path):
-            output_dir = os.path.dirname(output_path)
+            output_dir = Path(os.path.dirname(output_path))
             stem = Path(input_path).stem
-            for candidate in Path(output_dir).glob(f"{stem}*.rvz"):
-                if candidate.is_file():
-                    # Rename to expected output path
-                    os.rename(str(candidate), output_path)
-                    break
+            output_path_resolved = Path(output_path).resolve()
+            candidates = [
+                candidate
+                for candidate in output_dir.glob(f"{stem}*.rvz")
+                if candidate.is_file() and candidate.resolve() != output_path_resolved
+            ]
+            if candidates:
+                candidate = max(
+                    candidates,
+                    key=lambda p: (p.stat().st_mtime_ns, str(p)),
+                )
+                os.rename(str(candidate), output_path)
 
         yield {"progress": 100, "message": "Conversion complete"}
 

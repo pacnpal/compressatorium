@@ -103,9 +103,13 @@ class DATStore:
                 if tmp_path.exists():
                     tmp_path.unlink()
 
-    async def import_dat(self, xml_content: str) -> dict:
-        """Parse and import a DAT file. Returns import summary."""
-        header, entries = await run_in_threadpool(parse_dat, xml_content)
+    async def import_dat(self, source: str) -> dict:
+        """Parse and import a DAT file.
+
+        ``source`` may be either a filesystem path to the DAT file (preferred,
+        enables true streaming) or a raw XML string.  Returns import summary.
+        """
+        header, entries = await run_in_threadpool(parse_dat, source)
 
         dat_id = str(uuid.uuid4())[:8]
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -134,6 +138,7 @@ class DATStore:
                     added += 1
                 if entry.get("md5"):
                     self._hashes_md5[entry["md5"]] = record
+                    added += 1
             self._matches.clear()
             self._version += 1
 
