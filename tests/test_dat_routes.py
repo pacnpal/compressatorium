@@ -1,9 +1,7 @@
 """Tests for MAME Redump DAT file management routes."""
 
-import hashlib
-import io
 import os
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException

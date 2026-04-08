@@ -42,11 +42,18 @@ class NKit2Service:
         The trailing :16 is a thread-count hint; it does not affect the
         output format or compression parameters.
         The output directory is derived from output_path.
+
+        asyncio.create_subprocess_exec is used (not shell=True), so arguments
+        are passed directly to the OS with no shell interpolation.
         """
         output_dir = os.path.dirname(output_path)
 
+        # Resolve the binary to an absolute path so the exec call always
+        # starts with a fully-qualified, verified executable.
+        nkit2_bin = os.path.realpath(self.nkit2_path)
+
         cmd = [
-            self.nkit2_path,
+            nkit2_bin,
             input_path,
             "-task", "convert",
             "-cfg", "n",

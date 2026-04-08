@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ class DATStore:
         except OSError:
             if explicit_path:
                 raise
-            fallback_root = Path(os.environ.get("TMPDIR", "/tmp")) / "compressatorium"
+            fallback_root = Path(tempfile.gettempdir()) / "compressatorium"
             fallback_root.mkdir(parents=True, exist_ok=True)
             self._store_path = fallback_root / self._store_path.name
 
