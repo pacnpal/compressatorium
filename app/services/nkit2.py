@@ -39,6 +39,8 @@ class NKit2Service:
         """Build NKit2 conversion command for Redump-compatible RVZ output.
 
         Uses fixed settings: rvz:zstd:19:128k to match MAME Redump DATs.
+        The trailing :16 is a thread-count hint; it does not affect the
+        output format or compression parameters.
         The output directory is derived from output_path.
         """
         output_dir = os.path.dirname(output_path)

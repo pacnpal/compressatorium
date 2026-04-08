@@ -24,7 +24,7 @@ from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
-from services.nkit2 import NKIT2_CONVERTIBLE_EXTENSIONS, nkit2_service
+from services.nkit2 import nkit2_service
 from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
 from services.job_manager import QueueBackpressureError, job_manager
 from services.lock_manager import lock_manager

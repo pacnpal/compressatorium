@@ -119,36 +119,41 @@ async def match_batch(request: MatchBatchRequest):
 
     # Normalize all input paths upfront for consistent volume checks,
     # file existence checks, hashing, cache keys, and result path fields.
-    path_map = {
-        p: os.path.normpath(os.path.abspath(p)) for p in request.paths
-    }
+    # Group original paths by their normalized form so that two inputs that
+    # resolve to the same path share a single cache lookup and a single hash.
+    normalized_to_originals: dict[str, list[str]] = {}
+    for p in request.paths:
+        normalized = os.path.normpath(os.path.abspath(p))
+        normalized_to_originals.setdefault(normalized, []).append(p)
 
     # Check cached matches using normalized paths
-    cached = dat_store.get_matches_batch(list(path_map.values()))
+    cached = dat_store.get_matches_batch(list(normalized_to_originals.keys()))
     results: dict[str, dict] = {}
     to_compute: list[str] = []  # normalized paths
 
-    for original_path, normalized_path in path_map.items():
+    for normalized_path, original_paths in normalized_to_originals.items():
         if not is_within_configured_volumes(normalized_path):
-            results[original_path] = {"path": normalized_path, "matched": False, "error": "access denied"}
+            result = {"path": normalized_path, "matched": False, "error": "access denied"}
+            for original_path in original_paths:
+                results[original_path] = result
             continue
-        if cached.get(normalized_path) is not None:
-            results[original_path] = cached[normalized_path]
+        cached_result = cached.get(normalized_path)
+        if cached_result is not None:
+            for original_path in original_paths:
+                results[original_path] = cached_result
         else:
             to_compute.append(normalized_path)
 
     # Compute matches for uncached files
     new_matches: dict[str, dict] = {}
-    # Build a reverse map from normalized path → original path for O(1) lookup
-    normalized_to_original = {n: o for o, n in path_map.items()}
     for normalized_path in to_compute:
-        original_path = normalized_to_original[normalized_path]
         exists = await run_in_threadpool(os.path.isfile, normalized_path)
         if not exists:
             result = {"path": normalized_path, "matched": False}
         else:
             result = await _match_single_file(normalized_path)
-        results[original_path] = result
+        for original_path in normalized_to_originals[normalized_path]:
+            results[original_path] = result
         new_matches[normalized_path] = result
 
     # Cache new results using normalized path keys

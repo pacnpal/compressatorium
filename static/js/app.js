@@ -234,6 +234,7 @@ function DATPanel({ onClose, onImported }) {
         try {
             await api.deleteDAT(datId);
             loadDats();
+            if (onImported) onImported();
         } catch (err) {
             setMessage(`Error: ${err.message}`);
         }

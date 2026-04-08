@@ -93,8 +93,9 @@ COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
 # Install NKit2 for Redump-compatible RVZ output (optional, non-fatal)
 # Self-contained .NET build — no runtime dependency needed.
 # Place Linux binaries in vendor/nkit2/linux-{amd64,arm64}/ before building.
-COPY vendor/nkit2/ /tmp/nkit2/
-RUN mkdir -p /opt/nkit && \
+# Use a BuildKit bind mount so the vendor tree is never written into an image layer.
+RUN --mount=type=bind,source=vendor/nkit2,target=/tmp/nkit2 \
+    mkdir -p /opt/nkit && \
     if [ -d "/tmp/nkit2/linux-${TARGETARCH}" ]; then \
       cp -a /tmp/nkit2/linux-${TARGETARCH}/. /opt/nkit/; \
     fi && \
@@ -103,8 +104,7 @@ RUN mkdir -p /opt/nkit && \
       echo "NKit2 installed successfully"; \
     else \
       echo "WARNING: NKit2 binary not found for ${TARGETARCH}; NKit2 RVZ mode will be unavailable"; \
-    fi && \
-    rm -rf /tmp/nkit2
+    fi
 
 # Copy application
 COPY app/ /app/

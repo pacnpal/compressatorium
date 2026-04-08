@@ -394,3 +394,31 @@ async def test_match_batch_normalizes_paths(tmp_path, isolated_dat_store, monkey
     assert result["results"][unnorm_path]["matched"] is True
     # The path field in the result should be the normalized form
     assert result["results"][unnorm_path]["path"] == normal_path
+
+
+@pytest.mark.asyncio
+async def test_match_batch_duplicate_normalized_paths(tmp_path, isolated_dat_store, monkeypatch):
+    """Two input paths that normalize to the same file share a single result."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    iso = tmp_path / "game.iso"
+    iso.write_bytes(b"x")
+    normal_path = os.path.normpath(os.path.abspath(str(iso)))
+    # Two spelling variants that normalize to the same path
+    variant_a = normal_path
+    variant_b = str(iso).replace(str(tmp_path), str(tmp_path) + "/")
+
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    compute_mock = AsyncMock(return_value=target_sha1)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", compute_mock)
+
+    request = dat_routes.MatchBatchRequest(paths=[variant_a, variant_b])
+    result = await dat_routes.match_batch(request)
+
+    # Both original keys should appear in results
+    assert result["results"][variant_a]["matched"] is True
+    assert result["results"][variant_b]["matched"] is True
+    # SHA1 should only have been computed once (shared result)
+    assert compute_mock.call_count == 1
