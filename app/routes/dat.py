@@ -91,18 +91,45 @@ async def get_dat_stats():
 @router.post("/dat/match")
 async def match_file(request: MatchRequest):
     """Match a single file against imported DATs."""
-    # Resolve the requested path (normalize, make absolute, follow symlinks)
-    # to prevent directory traversal and symlink-based path injection
-    normalized_path = os.path.realpath(request.path)
+    # Resolve symlinks in a thread pool to avoid blocking the async event loop.
+    # os.path.realpath and is_within_configured_volumes both perform filesystem
+    # I/O; running them in the thread pool also ensures resolution errors (e.g.
+    # on network filesystems) surface as a 4xx rather than an unhandled 500.
+    normalized_path = await run_in_threadpool(os.path.realpath, request.path)
 
-    if not is_within_configured_volumes(normalized_path):
+    if not await run_in_threadpool(is_within_configured_volumes, normalized_path):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    if not os.path.isfile(normalized_path):
+    if not await run_in_threadpool(os.path.isfile, normalized_path):
         raise HTTPException(status_code=404, detail="File not found")
 
     result = await _match_single_file(normalized_path)
     return result
+
+
+def _resolve_and_group_paths(
+    paths: list[str],
+) -> tuple[dict[str, list[str]], set[str]]:
+    """Resolve paths and group by resolved form; identify denied paths.
+
+    Both os.path.realpath and is_within_configured_volumes perform filesystem
+    I/O, so this helper is intended to be called inside run_in_threadpool.
+
+    Returns:
+        normalized_to_originals: resolved_path → list of original input paths
+            that resolve to it (so alias inputs share one cache lookup).
+        denied_normalized: resolved paths that lie outside configured volumes.
+    """
+    normalized_to_originals: dict[str, list[str]] = {}
+    for p in paths:
+        normalized = os.path.realpath(p)
+        normalized_to_originals.setdefault(normalized, []).append(p)
+    denied_normalized = {
+        norm
+        for norm in normalized_to_originals
+        if not is_within_configured_volumes(norm)
+    }
+    return normalized_to_originals, denied_normalized
 
 
 @router.post("/dat/match-batch")
@@ -111,14 +138,11 @@ async def match_batch(request: MatchBatchRequest):
     if not dat_store.has_dats():
         return {"results": {p: {"path": p, "matched": False} for p in request.paths}}
 
-    # Normalize all input paths upfront for consistent volume checks,
-    # file existence checks, hashing, cache keys, and result path fields.
-    # Group original paths by their normalized form so that two inputs that
-    # resolve to the same path share a single cache lookup and a single hash.
-    normalized_to_originals: dict[str, list[str]] = {}
-    for p in request.paths:
-        normalized = os.path.realpath(p)
-        normalized_to_originals.setdefault(normalized, []).append(p)
+    # Resolve all paths and check volume membership in a single thread-pool
+    # call to avoid blocking the async event loop with filesystem I/O.
+    normalized_to_originals, denied_normalized = await run_in_threadpool(
+        _resolve_and_group_paths, request.paths
+    )
 
     # Check cached matches using normalized paths
     cached = dat_store.get_matches_batch(list(normalized_to_originals.keys()))
@@ -126,7 +150,7 @@ async def match_batch(request: MatchBatchRequest):
     to_compute: list[str] = []  # normalized paths
 
     for normalized_path, original_paths in normalized_to_originals.items():
-        if not is_within_configured_volumes(normalized_path):
+        if normalized_path in denied_normalized:
             result = {"path": normalized_path, "matched": False, "error": "access denied"}
             for original_path in original_paths:
                 results[original_path] = result

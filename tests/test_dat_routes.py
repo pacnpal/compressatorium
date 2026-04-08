@@ -421,3 +421,103 @@ async def test_match_batch_duplicate_normalized_paths(tmp_path, isolated_dat_sto
     assert result["results"][variant_b]["matched"] is True
     # SHA1 should only have been computed once (shared result)
     assert compute_mock.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Security: symlink-based path traversal and symlink loops
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_match_file_symlink_escaping_volume_denied(tmp_path, monkeypatch):
+    """Symlink inside a configured volume that resolves outside the volume is rejected with 403."""
+    from config import settings as app_settings
+
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "secret.iso"
+    target.write_bytes(b"secret content")
+
+    # Symlink inside the volume that points to a file outside the volume
+    link = volume / "link.iso"
+    link.symlink_to(target)
+
+    # Limit configured volumes to only `volume`; the resolved target lies outside it
+    monkeypatch.setattr(app_settings, "chd_volumes", str(volume))
+    request = dat_routes.MatchRequest(path=str(link))
+    with pytest.raises(HTTPException) as exc_info:
+        await dat_routes.match_file(request)
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_match_file_symlink_loop_returns_4xx_not_500(tmp_path, monkeypatch):
+    """A symlink loop is rejected with a 4xx status, not an unhandled 500."""
+    from config import settings as app_settings
+
+    volume = tmp_path / "volume"
+    volume.mkdir()
+
+    # Create a self-referential symlink loop inside the volume
+    loop = volume / "loop.iso"
+    loop.symlink_to(loop)
+
+    monkeypatch.setattr(app_settings, "chd_volumes", str(volume))
+    request = dat_routes.MatchRequest(path=str(loop))
+    with pytest.raises(HTTPException) as exc_info:
+        await dat_routes.match_file(request)
+    assert exc_info.value.status_code in (400, 403, 404)
+
+
+@pytest.mark.asyncio
+async def test_match_batch_symlink_escaping_volume_denied(tmp_path, isolated_dat_store, monkeypatch):
+    """Batch: symlink inside volume resolving outside is denied per-path with an error."""
+    from config import settings as app_settings
+
+    # Load a DAT so the batch endpoint proceeds past the early-exit check
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "secret.iso"
+    target.write_bytes(b"secret content")
+
+    link = volume / "link.iso"
+    link.symlink_to(target)
+
+    monkeypatch.setattr(app_settings, "chd_volumes", str(volume))
+    request = dat_routes.MatchBatchRequest(paths=[str(link)])
+    result = await dat_routes.match_batch(request)
+
+    path_result = result["results"][str(link)]
+    assert path_result["matched"] is False
+    assert "access denied" in path_result.get("error", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_match_batch_symlink_loop_returns_denied_not_500(tmp_path, isolated_dat_store, monkeypatch):
+    """Batch: a symlink loop path is denied per-path, not an unhandled 500."""
+    from config import settings as app_settings
+
+    # Load a DAT so the batch endpoint proceeds past the early-exit check
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    volume = tmp_path / "volume"
+    volume.mkdir()
+
+    loop = volume / "loop.iso"
+    loop.symlink_to(loop)
+
+    monkeypatch.setattr(app_settings, "chd_volumes", str(volume))
+    request = dat_routes.MatchBatchRequest(paths=[str(loop)])
+    result = await dat_routes.match_batch(request)
+
+    # Must not raise; the path should have a result (denied or not-found, not 500)
+    assert str(loop) in result["results"]
+    path_result = result["results"][str(loop)]
+    assert path_result["matched"] is False
