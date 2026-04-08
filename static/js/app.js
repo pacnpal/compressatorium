@@ -220,7 +220,7 @@ function DATPanel({ onClose, onImported }) {
             const result = await api.importDAT(file);
             setMessage(`Imported: ${result.name} (${result.file_count} entries, ${result.hashes_added} hashes)`);
             loadDats();
-            if (onImported) onImported();
+            if (onImported) onImported(true);
         } catch (err) {
             setMessage(`Error: ${err.message}`);
         } finally {
@@ -233,8 +233,9 @@ function DATPanel({ onClose, onImported }) {
         if (!confirm(`Delete DAT "${datName}" and all its hash entries?`)) return;
         try {
             await api.deleteDAT(datId);
+            const hasDats = dats.filter(d => d.id !== datId).length > 0;
             loadDats();
-            if (onImported) onImported();
+            if (onImported) onImported(hasDats);
         } catch (err) {
             setMessage(`Error: ${err.message}`);
         }
