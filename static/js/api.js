@@ -788,7 +788,9 @@ export const api = {
         });
         if (!res.ok) {
             const error = await res.json().catch(() => ({ detail: 'Failed to start sync' }));
-            throw new Error(error.detail || 'Failed to start sync');
+            const err = new Error(error.detail || 'Failed to start sync');
+            err.status = res.status;
+            throw err;
         }
         return res.json();
     },

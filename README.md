@@ -31,7 +31,7 @@ Compressatorium supports one-click sync of [MAME Redump](https://github.com/Meta
 - **One-click sync**: Click "Sync from MAME Redump" in the DAT panel to download all ~69 DATs automatically from GitHub
 - **Auto-sync**: Set `MAMEREDUMP_AUTO_SYNC=true` to sync DATs on container startup when none are loaded
 - **CHD files**: Matched via header SHA1 (codec-independent, works with any compression setting on chdman 0.285)
-- **RVZ files**: Matched via file-level SHA1
+- **RVZ files**: Matched via file-level SHA1 only when the RVZ bytes are identical to the DAT's recorded SHA1; RVZs produced by Dolphin may not be byte-identical to MAME Redump sets and may therefore not match
 - **DAT management**: Import, list, and delete DATs via the web UI "DAT Files" button
 - **Match badges**: Files matching a DAT entry show a blue "DAT" badge in the file list
 

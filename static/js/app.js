@@ -256,6 +256,17 @@ function DATPanel({ onClose, onImported }) {
         try {
             await api.syncMAMERedump();
         } catch (err) {
+            if (err?.status === 409) {
+                // A sync is already running (e.g. auto-sync); keep polling.
+                try {
+                    const status = await api.getSyncStatus();
+                    setSyncProgress(status.progress);
+                    setSyncing(status.syncing !== false);
+                } catch {
+                    setSyncing(true);
+                }
+                return;
+            }
             setSyncing(false);
             setMessage(`Error: ${err.message}`);
         }

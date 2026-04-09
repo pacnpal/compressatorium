@@ -182,9 +182,10 @@ class DATSyncService:
         """Download a DAT file to a temp file and return the temp path."""
         url = self._raw_url(path, ref=ref)
         self._require_https(url)
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "compressatorium-dat-sync/1.0"},
-        )
+        headers = {"User-Agent": "compressatorium-dat-sync/1.0"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # nosec B310
             fd, tmp_path = tempfile.mkstemp(suffix=".dat")
             try:
