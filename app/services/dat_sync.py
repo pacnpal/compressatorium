@@ -23,6 +23,10 @@ _DAT_DIRS = ["MAME Redump", "MAME Redump/MAME"]
 # Timeout for individual HTTP requests (seconds).
 _HTTP_TIMEOUT = 30
 
+# Maximum size (bytes) allowed for a single DAT file download.
+# Matches the 100 MB cap enforced for manual DAT uploads.
+_MAX_DAT_SIZE = 100 * 1024 * 1024
+
 
 class DATSyncService:
     """Fetches MAME Redump DAT files from GitHub and imports them."""
@@ -182,9 +186,10 @@ class DATSyncService:
         """Download a DAT file to a temp file and return the temp path."""
         url = self._raw_url(path, ref=ref)
         self._require_https(url)
+        # Do NOT send the GitHub token to raw.githubusercontent.com — the PAT
+        # is only needed for api.github.com rate-limiting, and sending it to
+        # third-party CDN hosts needlessly widens the token exposure surface.
         headers = {"User-Agent": "compressatorium-dat-sync/1.0"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # nosec B310
             fd, tmp_path = tempfile.mkstemp(suffix=".dat")
@@ -299,6 +304,14 @@ class DATSyncService:
                 files_imported=imported,
                 file_index=i,
             )
+
+            # Reject files that exceed the per-file size cap before downloading.
+            file_size = file_info.get("size", 0)
+            if file_size > _MAX_DAT_SIZE:
+                err_msg = f"{name}: file too large ({file_size} bytes, max {_MAX_DAT_SIZE})"
+                errors.append(err_msg)
+                logger.warning("dat_sync: skipping oversized file %s", err_msg)
+                continue
 
             tmp_path = None
             try:

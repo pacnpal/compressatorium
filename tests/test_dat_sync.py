@@ -328,6 +328,44 @@ async def test_sync_preserves_existing_dats_when_all_downloads_fail(sync_service
 
 
 @pytest.mark.asyncio
+async def test_sync_skips_oversized_files(sync_service, tmp_path):
+    """Files whose reported size exceeds _MAX_DAT_SIZE are skipped with an error."""
+    from app.services.dat_sync import _MAX_DAT_SIZE
+
+    dat_file = tmp_path / "small.dat"
+    dat_file.write_text('<datafile><header><name>Small</name></header></datafile>')
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[])
+    mock_dat_store.import_dat = AsyncMock(return_value={"id": "small-dat"})
+    mock_dat_store.delete_dat = AsyncMock()
+
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [
+                 # This file is too large and should be skipped without downloading.
+                 {"name": "huge.dat", "path": "MAME Redump/huge.dat", "size": _MAX_DAT_SIZE + 1},
+                 # This file is fine and will be imported.
+                 {"name": "small.dat", "path": "MAME Redump/small.dat", "size": 100},
+             ],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)) as mock_download, \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync(tag="0.285")
+
+    # Oversized file causes a partial-failure result.
+    assert result["status"] == "complete_with_errors"
+    assert len(result["errors"]) == 1
+    assert "huge.dat" in result["errors"][0]
+    assert result["error"] is not None
+    # _download_dat called only for the non-oversized file.
+    mock_download.assert_called_once()
+    # small.dat was imported (files_imported=1), but rolled back due to partial failure.
+    assert result["files_imported"] == 1
+    mock_dat_store.delete_dat.assert_called_once_with("small-dat")
+
+
+@pytest.mark.asyncio
 async def test_sync_sets_error_progress_on_exception(sync_service):
     """sync() sets progress status=error when _do_sync raises."""
     mock_dat_store = MagicMock()
