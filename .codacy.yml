@@ -23,3 +23,9 @@ exclude_paths:
   - "**/*.bundle.js"
   - ".codacy/**"
   - "config/pmd/**"
+  # Binary files that crash the CLI SARIF generator (MalformedInputException)
+  - ".local-bin/**"
+  - "**/*.png"
+  - "**/*.ico"
+  - "verify_test.py"
+  - "ui.png"
