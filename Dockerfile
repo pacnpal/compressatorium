@@ -109,11 +109,14 @@ RUN --mount=type=bind,source=vendor/nkit2,target=/tmp/nkit2 \
 # Copy application
 COPY app/ /app/
 COPY static/ /static/
-COPY .version /app/.version
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 WORKDIR /app
+
+# Version injected from GitHub release tag at build time
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
 
 # Configuration
 ENV COMPRESSATORIUM_MOUNT_ROOT="/data"
