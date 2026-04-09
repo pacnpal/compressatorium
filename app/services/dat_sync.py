@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 import tempfile
 import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -125,7 +123,11 @@ class DATSyncService:
 
     def _fetch_json(self, url: str) -> list | dict:
         req = urllib.request.Request(
-            url, headers={"Accept": "application/vnd.github.v3+json"},
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "compressatorium-dat-sync/1.0",
+            },
         )
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -166,7 +168,9 @@ class DATSyncService:
     def _download_dat(self, path: str, ref: str) -> str:
         """Download a DAT file to a temp file and return the temp path."""
         url = self._raw_url(path, ref=ref)
-        req = urllib.request.Request(url)
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "compressatorium-dat-sync/1.0"},
+        )
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
             fd, tmp_path = tempfile.mkstemp(suffix=".dat")
             try:
@@ -221,23 +225,23 @@ class DATSyncService:
             tag = await run_in_threadpool(self._fetch_latest_tag)
             logger.info("dat_sync: resolved latest tag: %s", tag)
 
-        # Check if already synced to this tag.
-        if self._state.get("last_sync_tag") == tag:
-            with self._lock:
-                self._progress["status"] = "already_synced"
-            return {
-                "status": "already_synced",
-                "tag": tag,
-                "message": f"Already synced to {tag}",
-            }
-
-        # Clear existing DATs before re-syncing to a new version.
+        # Check if already synced to this tag, but only fast-path if DATs are present.
         existing_dats = dat_store.list_dats()
-        for dat in existing_dats:
-            await dat_store.delete_dat(dat["id"])
-        logger.info("dat_sync: cleared %d existing DATs for fresh sync", len(existing_dats))
+        if self._state.get("last_sync_tag") == tag:
+            if existing_dats:
+                with self._lock:
+                    self._progress["status"] = "already_synced"
+                return {
+                    "status": "already_synced",
+                    "tag": tag,
+                    "message": f"Already synced to {tag}",
+                }
+            logger.warning(
+                "dat_sync: state reports tag %s already synced, but DAT store is empty; forcing re-sync",
+                tag,
+            )
 
-        # List all DAT files.
+        # List all DAT files before touching existing data.
         self._update_progress(status="listing files")
         all_files: list[dict] = []
         for directory in _DAT_DIRS:
@@ -254,6 +258,11 @@ class DATSyncService:
             return {"status": "error", "tag": tag, "message": "No DAT files found"}
 
         logger.info("dat_sync: found %d DAT files for tag %s", len(all_files), tag)
+
+        # Clear existing DATs only after we've confirmed new ones are available.
+        for dat in existing_dats:
+            await dat_store.delete_dat(dat["id"])
+        logger.info("dat_sync: cleared %d existing DATs for fresh sync", len(existing_dats))
 
         # Download and import each DAT.
         imported = 0

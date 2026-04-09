@@ -109,8 +109,8 @@ async def startup_event():
             async def _auto_sync():
                 try:
                     await dat_sync_service.sync()
-                except Exception as exc:
-                    logger.error("Auto-sync failed: %s", exc)
+                except Exception:
+                    logger.exception("Auto-sync failed")
 
             asyncio.create_task(_auto_sync())
 

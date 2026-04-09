@@ -226,8 +226,8 @@ async def sync_mameredump(request: SyncRequest | None = None):
     async def _run_sync():
         try:
             await svc.sync(tag=tag)
-        except Exception as exc:
-            logger.error("dat_sync background task failed: %s", exc)
+        except Exception:
+            logger.exception("dat_sync background task failed")
 
     asyncio.create_task(_run_sync())
     return {"status": "started", "message": "Sync started"}

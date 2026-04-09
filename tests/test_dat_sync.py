@@ -109,14 +109,38 @@ def test_list_dat_files_filters_non_dat(sync_service):
 
 @pytest.mark.asyncio
 async def test_sync_already_synced(sync_service):
-    """Sync returns early when already synced to the requested tag."""
+    """Sync returns early when already synced to the requested tag and DATs are present."""
     sync_service._state = {"last_sync_tag": "0.285"}
     mock_dat_store = MagicMock()
-    mock_dat_store.list_dats = MagicMock(return_value=[])
+    mock_dat_store.list_dats = MagicMock(return_value=[{"id": "abc", "name": "Test DAT"}])
     mock_dat_store.delete_dat = AsyncMock()
     with patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
         result = await sync_service.sync(tag="0.285")
     assert result["status"] == "already_synced"
+
+
+@pytest.mark.asyncio
+async def test_sync_resyncs_when_dats_empty(sync_service, tmp_path):
+    """Sync re-runs when tag matches but DAT store is empty (e.g., after manual deletion)."""
+    sync_service._state = {"last_sync_tag": "0.285"}
+    dat_file = tmp_path / "sample.dat"
+    dat_file.write_text("<datafile></datafile>")
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[])
+    mock_dat_store.delete_dat = AsyncMock()
+    mock_dat_store.import_dat = AsyncMock(return_value={"id": "abc", "name": "Test", "file_count": 1, "hashes_added": 1})
+
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync(tag="0.285")
+
+    assert result["status"] == "complete"
+    assert result["files_imported"] == 1
 
 
 @pytest.mark.asyncio
@@ -167,7 +191,7 @@ async def test_sync_downloads_and_imports(sync_service, tmp_path):
 
 @pytest.mark.asyncio
 async def test_sync_handles_download_error(sync_service, tmp_path):
-    """Sync continues when individual file download fails."""
+    """Sync continues when individual file download/import fails."""
     mock_dat_store = MagicMock()
     mock_dat_store.list_dats = MagicMock(return_value=[])
     mock_dat_store.delete_dat = AsyncMock()
@@ -182,11 +206,12 @@ async def test_sync_handles_download_error(sync_service, tmp_path):
              [],
          ]), \
          patch.object(sync_service, "_download_dat", side_effect=[
-             str(tmp_path / "nonexistent.dat"),
-             OSError("Network error"),
+             OSError("Network error for good.dat"),
+             OSError("Network error for bad.dat"),
          ]), \
          patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
         result = await sync_service.sync()
 
     assert result["status"] == "complete"
-    assert len(result["errors"]) >= 1
+    assert len(result["errors"]) == 2
+    mock_dat_store.import_dat.assert_not_called()
