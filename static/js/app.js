@@ -247,7 +247,7 @@ function DATPanel({ onClose, onImported }) {
 
         timer = setTimeout(poll, 1000);
         return () => { cancelled = true; clearTimeout(timer); };
-    }, [syncing]);
+    }, [syncing, loadDats, onImported]);
 
     const handleSync = async () => {
         setSyncing(true);

@@ -299,12 +299,14 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
 | `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo for DAT sync |
 | `MAMEREDUMP_AUTO_SYNC` | `false` | Auto-sync DATs on startup if none loaded |
+| `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub PAT — raises API rate limit from 60 to 5 000 req/hr for DAT sync |
 
 ### REST API Endpoints
 
 - `POST /api/jobs` or `POST /api/jobs/batch` - Queue 3DS compression jobs (use `mode: "z3ds_compress"`)
 - `POST /api/dat/sync` - Sync all DATs from MAME Redump GitHub (one-click)
 - `GET /api/dat/sync/status` - Check sync progress
+- `POST /api/dat/sync/cancel` - Cancel an in-progress DAT sync
 - `POST /api/dat/import` - Import a MAME Redump DAT file (multipart upload)
 - `GET /api/dat/list` - List imported DATs
 - `DELETE /api/dat/{dat_id}` - Delete an imported DAT
