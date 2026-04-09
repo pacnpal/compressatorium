@@ -278,13 +278,18 @@ class DATSyncService:
         logger.info("dat_sync: found %d DAT files for tag %s", len(all_files), tag)
 
         # Download and import each DAT.
+        # Track the IDs of newly imported DATs so they can be rolled back if
+        # any errors occur, keeping the DAT store consistent (no mixed sets).
         # Deletion of existing DATs is deferred until ALL new files have been
-        # successfully imported.  Any failure (download error, rate-limit,
-        # outage, etc.) leaves the previous working DAT set fully intact.
+        # successfully imported with zero errors.
         imported = 0
         errors: list[str] = []
+        new_dat_ids: list[str] = []
         for i, file_info in enumerate(all_files):
             if self._is_cancelled():
+                # Roll back any DATs imported in this run before aborting.
+                for new_id in new_dat_ids:
+                    await dat_store.delete_dat(new_id)
                 return self._cancelled_result(tag)
 
             name = file_info["name"]
@@ -300,7 +305,8 @@ class DATSyncService:
                 tmp_path = await run_in_threadpool(
                     self._download_dat, file_info["path"], tag,
                 )
-                await dat_store.import_dat(tmp_path)
+                result = await dat_store.import_dat(tmp_path)
+                new_dat_ids.append(result["id"])
                 imported += 1
             except Exception as exc:
                 err_msg = f"{name}: {exc}"
@@ -313,9 +319,8 @@ class DATSyncService:
                     except OSError:
                         pass
 
-        # Only delete old DATs after all new ones import without error, so a
-        # partial sync never wipes the previously working set.
         if not errors:
+            # Full success: delete old DATs (new ones already in store).
             for dat in existing_dats:
                 await dat_store.delete_dat(dat["id"])
             if existing_dats:
@@ -323,12 +328,23 @@ class DATSyncService:
                     "dat_sync: cleared %d existing DATs after full successful sync",
                     len(existing_dats),
                 )
-        elif existing_dats:
-            logger.warning(
-                "dat_sync: %d error(s) during sync; preserving %d existing DATs",
-                len(errors),
-                len(existing_dats),
-            )
+        else:
+            # Partial failure: roll back newly imported DATs so the store
+            # stays in a clean, known-good state (previous working set intact).
+            for new_id in new_dat_ids:
+                await dat_store.delete_dat(new_id)
+            if new_dat_ids:
+                logger.warning(
+                    "dat_sync: rolled back %d new DATs due to %d error(s)",
+                    len(new_dat_ids),
+                    len(errors),
+                )
+            if existing_dats:
+                logger.warning(
+                    "dat_sync: %d error(s) during sync; preserving %d existing DATs",
+                    len(errors),
+                    len(existing_dats),
+                )
 
         # Persist sync state.  Only record last_sync_tag when the sync
         # completed with zero errors and all files were imported, so that the
@@ -349,19 +365,24 @@ class DATSyncService:
             }
         await run_in_threadpool(self._save_state)
 
+        final_status = "complete_with_errors" if errors else "complete"
+        error_summary = f"Sync completed with {len(errors)} error(s)" if errors else None
+
         self._update_progress(
-            status="complete",
+            status=final_status,
             files_imported=imported,
             errors=errors,
+            error=error_summary,
         )
-        logger.info("dat_sync: complete — %d imported, %d errors", imported, len(errors))
+        logger.info("dat_sync: %s — %d imported, %d errors", final_status, imported, len(errors))
 
         return {
-            "status": "complete",
+            "status": final_status,
             "tag": tag,
             "files_imported": imported,
             "files_total": len(all_files),
             "errors": errors,
+            "error": error_summary,
             "message": f"Synced {imported}/{len(all_files)} DATs from MAME Redump {tag}",
         }
 

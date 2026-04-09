@@ -229,8 +229,9 @@ async def test_sync_handles_download_error(sync_service, tmp_path):
          patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
         result = await sync_service.sync()
 
-    assert result["status"] == "complete"
+    assert result["status"] == "complete_with_errors"
     assert len(result["errors"]) == 2
+    assert result["error"] is not None
     mock_dat_store.import_dat.assert_not_called()
     # All downloads failed so existing DATs must NOT have been deleted.
     mock_dat_store.delete_dat.assert_not_called()
@@ -292,10 +293,11 @@ async def test_sync_preserves_existing_dats_on_partial_failure(sync_service, tmp
          patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
         result = await sync_service.sync(tag="0.285")
 
-    assert result["status"] == "complete"
+    assert result["status"] == "complete_with_errors"
     assert len(result["errors"]) == 1
-    # Partial failure — existing DATs must NOT have been deleted.
-    mock_dat_store.delete_dat.assert_not_called()
+    assert result["error"] is not None
+    # Partial failure: newly imported "new-dat" must be rolled back, old DAT preserved.
+    mock_dat_store.delete_dat.assert_called_once_with("new-dat")
     # last_sync_tag must NOT be saved so next sync can retry the missing file.
     assert "last_sync_tag" not in sync_service._state
 
@@ -318,9 +320,10 @@ async def test_sync_preserves_existing_dats_when_all_downloads_fail(sync_service
          patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
         result = await sync_service.sync(tag="0.285")
 
-    assert result["status"] == "complete"
+    assert result["status"] == "complete_with_errors"
     assert len(result["errors"]) == 1
-    # No successful imports → existing DATs must survive.
+    assert result["error"] is not None
+    # No successful imports → no rollback needed, existing DATs must survive.
     mock_dat_store.delete_dat.assert_not_called()
 
 
