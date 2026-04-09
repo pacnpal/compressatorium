@@ -211,7 +211,7 @@ class LockManager:
                 except OSError as e:
                     # Other error (permission denied, etc.)
                     lock_handle.close()
-                    print(f"Failed to acquire lock for {normalized_path}: {e}")
+                    logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
                     return False
 
                 # Now that we have the lock, check if CHD already exists (atomic with lock)
@@ -261,8 +261,8 @@ class LockManager:
                     try:
                         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
                         lock_handle.close()
-                    except Exception as e:
-                        print(f"Error releasing lock for {normalized_path}: {e}")
+                    except Exception:
+                        logger.error("Error releasing lock for %s", normalized_path, exc_info=True)
                     finally:
                         del self._lock_handles[normalized_path]
 
@@ -271,8 +271,8 @@ class LockManager:
                     try:
                         if os.path.exists(lock_file_path):
                             os.remove(lock_file_path)
-                    except Exception as e:
-                        print(f"Failed to remove lock file {lock_file_path}: {e}")
+                    except Exception:
+                        logger.error("Failed to remove lock file %s", lock_file_path, exc_info=True)
 
     def stats(self) -> dict:
         with self._lock_mutex:
