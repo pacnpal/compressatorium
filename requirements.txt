@@ -6,4 +6,5 @@ pydantic-settings>=2.1.0
 py7zr>=0.20.1
 rarfile>=4.1
 defusedxml>=0.7.1
+python-multipart>=0.0.7
 
