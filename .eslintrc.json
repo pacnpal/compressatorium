@@ -1,0 +1,12 @@
+{
+  "_comment": "ESLint 8 legacy config for Codacy CLI compatibility. The project uses eslint.config.mjs (ESLint 9 flat config) which ignores this file.",
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "parserOptions": {
+    "ecmaVersion": "latest",
+    "sourceType": "module"
+  },
+  "rules": {}
+}

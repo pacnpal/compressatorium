@@ -58,10 +58,12 @@ jobs:
           # This will handover control about PR rejection to the GitHub side
           max-allowed-issues: 2147483647
 
-      # Ensure a valid SARIF file exists before uploading (CLI may produce empty output on failure)
+      # Ensure a valid SARIF file exists before uploading
+      # The CLI runs in Docker as root, so results.sarif may be root-owned
       - name: Validate SARIF output
         if: always()
         run: |
+          sudo chown "$(id -u):$(id -g)" results.sarif 2>/dev/null || true
           if [ ! -s results.sarif ] || ! python3 -c "import json, sys; json.load(open('results.sarif'))" 2>/dev/null; then
             echo '{"$schema":"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json","version":"2.1.0","runs":[{"tool":{"driver":{"name":"CodacyCLI","rules":[]}},"results":[]}]}' > results.sarif
             echo "::warning::Codacy CLI produced empty or invalid SARIF — substituted empty result set"
