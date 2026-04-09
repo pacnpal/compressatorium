@@ -193,8 +193,8 @@ class DATSyncService:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # nosec B310
             # Validate Content-Length before reading (if the header is present).
-            cl = resp.headers.get("Content-Length")
-            if cl and cl.isdigit() and int(cl) > _MAX_DAT_SIZE:
+            cl = resp.headers.get("Content-Length", "").strip()
+            if cl.isdigit() and int(cl) > _MAX_DAT_SIZE:
                 raise ValueError(
                     f"DAT Content-Length {cl} bytes for {path} exceeds limit of {_MAX_DAT_SIZE}"
                 )

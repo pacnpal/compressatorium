@@ -237,9 +237,12 @@ async def sync_mameredump(request: SyncRequest | None = None):
     task.add_done_callback(_log_bg_error)
 
     # Yield to the event loop so the background task can enter svc.sync() and
-    # claim the syncing lock before we respond.  If it fails immediately (e.g. a
-    # near-simultaneous request already claimed the lock), task.done() will be
-    # True and we can return the correct error code here.
+    # claim the syncing lock before we respond.  svc.sync() acquires _syncing
+    # under a threading.Lock (no awaits before that point), so a single yield
+    # is guaranteed to be sufficient — after one asyncio.sleep(0) the task has
+    # either raised RuntimeError (lock already held) or set _syncing=True.
+    # If it fails immediately (e.g. a near-simultaneous request already claimed
+    # the lock), task.done() will be True and we can return the correct status.
     await asyncio.sleep(0)
 
     if task.done():

@@ -387,10 +387,10 @@ async def test_sync_sets_error_progress_on_exception(sync_service):
 def test_download_dat_rejects_large_content_length(sync_service, monkeypatch):
     """_download_dat raises ValueError when Content-Length header exceeds _MAX_DAT_SIZE."""
     from app.services.dat_sync import _MAX_DAT_SIZE
-    import io
     import urllib.request
 
-    large_cl = str(_MAX_DAT_SIZE + 1)
+    # Use a whitespace-padded value to also exercise the .strip() handling.
+    large_cl = f"  {_MAX_DAT_SIZE + 1}  "
 
     class MockResp:
         headers = {"Content-Length": large_cl}
@@ -414,7 +414,8 @@ def test_download_dat_aborts_mid_stream_if_oversized(sync_service, monkeypatch, 
 
     # Simulate a response that omits Content-Length but streams oversized data.
     chunk = b"x" * 65536
-    # We need enough chunks to exceed _MAX_DAT_SIZE.
+    # We need more chunks than fit in _MAX_DAT_SIZE to reliably cross the limit:
+    # one extra to push bytes_written over the cap, plus one more as a safety margin.
     chunks_needed = (_MAX_DAT_SIZE // len(chunk)) + 2
     call_count = [0]
 
