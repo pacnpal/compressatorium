@@ -199,6 +199,7 @@ async def test_sync_handles_download_error(sync_service, tmp_path):
 
     with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
+             # _list_dat_files is called once per _DAT_DIRS entry (2 dirs).
              [
                  {"name": "good.dat", "path": "MAME Redump/good.dat", "size": 100},
                  {"name": "bad.dat", "path": "MAME Redump/bad.dat", "size": 100},
