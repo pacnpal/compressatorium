@@ -121,7 +121,15 @@ class DATSyncService:
         encoded = urllib.parse.quote(path, safe="/")
         return f"https://raw.githubusercontent.com/{self._repo}/{ref}/{encoded}"
 
+    @staticmethod
+    def _require_https(url: str) -> None:
+        """Raise ValueError if *url* does not use the https scheme."""
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https":
+            raise ValueError(f"Only https URLs are permitted; got scheme '{parsed.scheme}'")
+
     def _fetch_json(self, url: str) -> list | dict:
+        self._require_https(url)
         req = urllib.request.Request(
             url,
             headers={
@@ -129,7 +137,7 @@ class DATSyncService:
                 "User-Agent": "compressatorium-dat-sync/1.0",
             },
         )
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
             return json.loads(resp.read().decode("utf-8"))
 
     def _fetch_latest_tag(self) -> str:
@@ -168,10 +176,11 @@ class DATSyncService:
     def _download_dat(self, path: str, ref: str) -> str:
         """Download a DAT file to a temp file and return the temp path."""
         url = self._raw_url(path, ref=ref)
+        self._require_https(url)
         req = urllib.request.Request(
             url, headers={"User-Agent": "compressatorium-dat-sync/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
             fd, tmp_path = tempfile.mkstemp(suffix=".dat")
             try:
                 with os.fdopen(fd, "wb") as fh:

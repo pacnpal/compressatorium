@@ -90,6 +90,22 @@ def test_raw_url(sync_service):
     assert "raw.githubusercontent.com/MetalSlug/MAMERedump/0.285/MAME%20Redump/test.dat" in url
 
 
+def test_require_https_rejects_non_https(sync_service):
+    """_require_https raises ValueError for non-https schemes."""
+    with pytest.raises(ValueError, match="Only https URLs"):
+        sync_service._require_https("http://example.com/foo")
+    with pytest.raises(ValueError, match="Only https URLs"):
+        sync_service._require_https("file:///etc/passwd")
+    with pytest.raises(ValueError, match="Only https URLs"):
+        sync_service._require_https("ftp://example.com/foo")
+
+
+def test_require_https_allows_https(sync_service):
+    """_require_https does not raise for https URLs."""
+    sync_service._require_https("https://api.github.com/repos/foo/bar")
+    sync_service._require_https("https://raw.githubusercontent.com/foo/bar/main/test.dat")
+
+
 def test_list_dat_files_filters_non_dat(sync_service):
     """_list_dat_files only returns .dat files."""
     mock_contents = [
