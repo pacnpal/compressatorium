@@ -232,3 +232,72 @@ async def test_sync_handles_download_error(sync_service, tmp_path):
     assert result["status"] == "complete"
     assert len(result["errors"]) == 2
     mock_dat_store.import_dat.assert_not_called()
+    # All downloads failed so existing DATs must NOT have been deleted.
+    mock_dat_store.delete_dat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_defers_deletion_until_first_import(sync_service, tmp_path):
+    """Existing DATs are only deleted after the first successful import."""
+    dat_file = tmp_path / "sample.dat"
+    dat_file.write_text("<datafile></datafile>")
+
+    existing_dat = {"id": "old-dat", "name": "Old DAT"}
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[existing_dat])
+    mock_dat_store.delete_dat = AsyncMock()
+    mock_dat_store.import_dat = AsyncMock(return_value={
+        "id": "new-dat", "name": "New DAT", "file_count": 1, "hashes_added": 1,
+    })
+
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync(tag="0.285")
+
+    assert result["status"] == "complete"
+    # Old DAT deleted only after the new one was imported successfully.
+    mock_dat_store.delete_dat.assert_called_once_with("old-dat")
+
+
+@pytest.mark.asyncio
+async def test_sync_preserves_existing_dats_when_all_downloads_fail(sync_service, tmp_path):
+    """If all downloads fail, existing DATs are preserved (not deleted)."""
+    existing_dat = {"id": "old-dat", "name": "Old DAT"}
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[existing_dat])
+    mock_dat_store.delete_dat = AsyncMock()
+    mock_dat_store.import_dat = AsyncMock()
+
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", side_effect=OSError("Network failure")), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync(tag="0.285")
+
+    assert result["status"] == "complete"
+    assert len(result["errors"]) == 1
+    # No successful imports → existing DATs must survive.
+    mock_dat_store.delete_dat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_sets_error_progress_on_exception(sync_service):
+    """sync() sets progress status=error when _do_sync raises."""
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[])
+
+    with patch.object(sync_service, "_fetch_latest_tag", side_effect=OSError("DNS failure")), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        with pytest.raises(OSError):
+            await sync_service.sync()
+
+    assert sync_service._progress["status"] == "error"
+    assert "DNS failure" in sync_service._progress["error"]

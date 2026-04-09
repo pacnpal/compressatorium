@@ -213,12 +213,17 @@ function DATPanel({ onClose, onImported }) {
 
     useEffect(() => { loadDats(); }, []);
 
-    // Poll sync status while syncing
+    // Poll sync status while syncing (self-scheduling setTimeout prevents overlapping requests)
     useEffect(() => {
         if (!syncing) return;
-        const interval = setInterval(async () => {
+        let cancelled = false;
+        let timer = null;
+
+        const poll = async () => {
+            if (cancelled) return;
             try {
                 const status = await api.getSyncStatus();
+                if (cancelled) return;
                 setSyncProgress(status.progress);
                 if (!status.syncing) {
                     setSyncing(false);
@@ -234,10 +239,14 @@ function DATPanel({ onClose, onImported }) {
                     }
                     loadDats();
                     if (onImported) onImported(true);
+                    return; // stop polling
                 }
             } catch { /* ignore poll errors */ }
-        }, 1000);
-        return () => clearInterval(interval);
+            if (!cancelled) timer = setTimeout(poll, 1000);
+        };
+
+        timer = setTimeout(poll, 1000);
+        return () => { cancelled = true; clearTimeout(timer); };
     }, [syncing]);
 
     const handleSync = async () => {

@@ -34,6 +34,7 @@ class DATSyncService:
         self._progress: dict = {}
         self._state_path: Path | None = None
         self._repo: str | None = None
+        self._token: str | None = None
         self._state: dict = {}
         self._explicit_state_path = state_path
 
@@ -46,6 +47,10 @@ class DATSyncService:
         except ImportError:
             from app.config import settings
         self._repo = settings.mameredump_repo
+        # Optional GitHub PAT — raises the unauthenticated rate limit from
+        # 60 req/hour to 5 000 req/hour.  Set MAMEREDUMP_GITHUB_TOKEN in the
+        # container environment to use it.
+        self._token = os.environ.get("MAMEREDUMP_GITHUB_TOKEN") or None
         data_dir = os.environ.get("CHD_DATA_DIR", "/config")
         if self._explicit_state_path:
             self._state_path = Path(self._explicit_state_path)
@@ -130,13 +135,13 @@ class DATSyncService:
 
     def _fetch_json(self, url: str) -> list | dict:
         self._require_https(url)
-        req = urllib.request.Request(
-            url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "compressatorium-dat-sync/1.0",
-            },
-        )
+        headers: dict[str, str] = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "compressatorium-dat-sync/1.0",
+        }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
             return json.loads(resp.read().decode("utf-8"))
 
@@ -213,6 +218,9 @@ class DATSyncService:
 
         try:
             return await self._do_sync(tag)
+        except Exception as exc:
+            self._update_progress(status="error", error=str(exc))
+            raise
         finally:
             with self._lock:
                 self._syncing = False
@@ -268,12 +276,11 @@ class DATSyncService:
 
         logger.info("dat_sync: found %d DAT files for tag %s", len(all_files), tag)
 
-        # Clear existing DATs only after we've confirmed new ones are available.
-        for dat in existing_dats:
-            await dat_store.delete_dat(dat["id"])
-        logger.info("dat_sync: cleared %d existing DATs for fresh sync", len(existing_dats))
-
         # Download and import each DAT.
+        # We defer deletion of existing DATs until the first successful import so
+        # that a total download failure (rate-limit, outage, etc.) does not wipe
+        # the user's working DAT set.
+        deleted_existing = False
         imported = 0
         errors: list[str] = []
         for i, file_info in enumerate(all_files):
@@ -295,6 +302,17 @@ class DATSyncService:
                 )
                 await dat_store.import_dat(tmp_path)
                 imported += 1
+
+                # First successful import — now safe to clear old DATs.
+                if not deleted_existing:
+                    for dat in existing_dats:
+                        await dat_store.delete_dat(dat["id"])
+                    logger.info(
+                        "dat_sync: cleared %d existing DATs after first successful import",
+                        len(existing_dats),
+                    )
+                    deleted_existing = True
+
             except Exception as exc:
                 err_msg = f"{name}: {exc}"
                 errors.append(err_msg)
