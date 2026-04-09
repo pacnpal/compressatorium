@@ -1,0 +1,25 @@
+---
+engines:
+  pmd:
+    enabled: true
+    config_file: config/pmd/ruleset.xml
+  eslint:
+    enabled: true
+  pylint:
+    enabled: true
+  semgrep:
+    enabled: true
+  trivy:
+    enabled: true
+  bandit:
+    enabled: true
+
+exclude_paths:
+  - "node_modules/**"
+  - ".venv/**"
+  - "app/.venv/**"
+  - "**/*.min.js"
+  - "**/*.min.css"
+  - "**/*.bundle.js"
+  - ".codacy/**"
+  - "config/pmd/**"
