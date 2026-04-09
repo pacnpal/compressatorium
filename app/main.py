@@ -1,6 +1,5 @@
 import logging
 import os
-from pathlib import Path
 
 from config import settings
 from fastapi import FastAPI
@@ -11,21 +10,12 @@ from services.job_manager import job_manager
 
 
 def get_version() -> str:
-    """Read version from .version file at project root."""
-    # Try multiple possible locations for the .version file
-    possible_paths = [
-        Path(__file__).parent.parent / ".version",  # /app/../.version
-        Path("/app/.version"),  # Docker container path
-        Path(".version"),  # Current working directory
-    ]
-    for version_path in possible_paths:
-        try:
-            if version_path.exists():
-                return version_path.read_text().strip()
-        except OSError:
-            # File exists but unreadable, try next location
-            continue
-    return "0.0.0"
+    """Return app version from APP_VERSION env var (set by Docker build arg).
+
+    In production containers the version is injected at build time from the
+    GitHub release tag.  Local / dev runs fall back to "dev".
+    """
+    return os.environ.get("APP_VERSION", "dev")
 
 
 def configure_logging() -> None:

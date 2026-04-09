@@ -78,12 +78,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read version from .version file
+      - name: Extract version from release tag
         id: version
         run: |
-          VERSION=$(tr -d '\n\r ' < .version)
+          VERSION="${GITHUB_REF_NAME#v}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Read version: ${VERSION}"
+          echo "Version from release tag: ${VERSION}"
 
       - name: Extract Docker metadata
         id: meta
@@ -93,8 +93,6 @@ jobs:
             ${{ env.DOCKERHUB_IMAGE }}
             ${{ env.GHCR_IMAGE }}
           tags: |
-            # Version from .version file
-            type=raw,value=${{ steps.version.outputs.version }}
             # Semantic version tags from the release tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -123,6 +121,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: APP_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true
