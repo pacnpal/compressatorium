@@ -1,10 +1,10 @@
 ---
 engines:
+  eslint:
+    enabled: false  # Project uses ESLint 9 flat config; Codacy CLI bundles ESLint 8
   pmd:
     enabled: true
     config_file: config/pmd/ruleset.xml
-  eslint:
-    enabled: true
   pylint:
     enabled: true
   semgrep:
