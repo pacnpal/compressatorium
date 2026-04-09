@@ -123,7 +123,7 @@ class DATSyncService:
         encoded = urllib.parse.quote(path, safe="/")
         url = f"https://api.github.com/repos/{self._repo}/contents/{encoded}"
         if ref:
-            url += f"?ref={ref}"
+            url += f"?{urllib.parse.urlencode({'ref': ref})}"
         return url
 
     def _raw_url(self, path: str, ref: str = "main") -> str:
