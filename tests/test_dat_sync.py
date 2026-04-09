@@ -378,3 +378,62 @@ async def test_sync_sets_error_progress_on_exception(sync_service):
 
     assert sync_service._progress["status"] == "error"
     assert "DNS failure" in sync_service._progress["error"]
+
+
+# ---------------------------------------------------------------------------
+# _download_dat streaming size guard
+# ---------------------------------------------------------------------------
+
+def test_download_dat_rejects_large_content_length(sync_service, monkeypatch):
+    """_download_dat raises ValueError when Content-Length header exceeds _MAX_DAT_SIZE."""
+    from app.services.dat_sync import _MAX_DAT_SIZE
+    import io
+    import urllib.request
+
+    large_cl = str(_MAX_DAT_SIZE + 1)
+
+    class MockResp:
+        headers = {"Content-Length": large_cl}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: MockResp())
+
+    with pytest.raises(ValueError, match="Content-Length"):
+        sync_service._download_dat("MAME Redump/test.dat", "0.285")
+
+
+def test_download_dat_aborts_mid_stream_if_oversized(sync_service, monkeypatch, tmp_path):
+    """_download_dat raises ValueError and cleans up temp file when streamed bytes exceed _MAX_DAT_SIZE."""
+    from app.services.dat_sync import _MAX_DAT_SIZE
+    import urllib.request
+
+    # Simulate a response that omits Content-Length but streams oversized data.
+    chunk = b"x" * 65536
+    # We need enough chunks to exceed _MAX_DAT_SIZE.
+    chunks_needed = (_MAX_DAT_SIZE // len(chunk)) + 2
+    call_count = [0]
+
+    class MockResp:
+        headers = {}  # No Content-Length
+
+        def read(self, size):
+            call_count[0] += 1
+            if call_count[0] <= chunks_needed:
+                return chunk
+            return b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: MockResp())
+
+    with pytest.raises(ValueError, match="exceeded size limit"):
+        sync_service._download_dat("MAME Redump/test.dat", "0.285")

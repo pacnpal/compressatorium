@@ -224,12 +224,36 @@ async def sync_mameredump(request: SyncRequest | None = None):
     tag = request.tag if request else None
 
     async def _run_sync():
-        try:
-            await svc.sync(tag=tag)
-        except Exception:
-            logger.exception("dat_sync background task failed")
+        await svc.sync(tag=tag)
 
-    asyncio.create_task(_run_sync())
+    task = asyncio.create_task(_run_sync())
+
+    def _log_bg_error(t: asyncio.Task) -> None:
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.exception("dat_sync background task failed", exc_info=exc)
+
+    task.add_done_callback(_log_bg_error)
+
+    # Yield to the event loop so the background task can enter svc.sync() and
+    # claim the syncing lock before we respond.  If it fails immediately (e.g. a
+    # near-simultaneous request already claimed the lock), task.done() will be
+    # True and we can return the correct error code here.
+    await asyncio.sleep(0)
+
+    if task.done():
+        try:
+            task.result()
+        except RuntimeError as exc:
+            if "Sync already in progress" in str(exc):
+                raise HTTPException(status_code=409, detail="Sync already in progress")
+            logger.exception("dat_sync background task failed at startup")
+            raise HTTPException(status_code=500, detail="Failed to start sync")
+        except Exception:
+            logger.exception("dat_sync background task failed at startup")
+            raise HTTPException(status_code=500, detail="Failed to start sync")
+
     return {"status": "started", "message": "Sync started"}
 
 

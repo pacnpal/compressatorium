@@ -192,13 +192,26 @@ class DATSyncService:
         headers = {"User-Agent": "compressatorium-dat-sync/1.0"}
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # nosec B310
+            # Validate Content-Length before reading (if the header is present).
+            cl = resp.headers.get("Content-Length")
+            if cl and cl.isdigit() and int(cl) > _MAX_DAT_SIZE:
+                raise ValueError(
+                    f"DAT Content-Length {cl} bytes for {path} exceeds limit of {_MAX_DAT_SIZE}"
+                )
             fd, tmp_path = tempfile.mkstemp(suffix=".dat")
+            bytes_written = 0
             try:
                 with os.fdopen(fd, "wb") as fh:
                     while True:
                         chunk = resp.read(65536)
                         if not chunk:
                             break
+                        bytes_written += len(chunk)
+                        if bytes_written > _MAX_DAT_SIZE:
+                            raise ValueError(
+                                f"DAT download for {path} exceeded size limit of"
+                                f" {_MAX_DAT_SIZE} bytes mid-stream"
+                            )
                         fh.write(chunk)
             except Exception:
                 os.unlink(tmp_path)

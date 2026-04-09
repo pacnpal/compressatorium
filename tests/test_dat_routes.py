@@ -549,6 +549,18 @@ async def test_sync_mameredump_starts_sync(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sync_mameredump_409_on_race_condition(monkeypatch):
+    """POST /dat/sync returns 409 when the background task detects a concurrent sync."""
+    mock_svc = MagicMock()
+    mock_svc.is_syncing = False  # passes early check
+    mock_svc.sync = AsyncMock(side_effect=RuntimeError("Sync already in progress"))
+    monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await dat_routes.sync_mameredump(request=None)
+    assert exc_info.value.status_code == 409
+
+@pytest.mark.asyncio
 async def test_sync_mameredump_409_when_already_syncing(monkeypatch):
     """POST /dat/sync returns 409 when a sync is already in progress."""
     mock_svc = MagicMock()
