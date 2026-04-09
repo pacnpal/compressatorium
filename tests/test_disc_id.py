@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import io
 import struct
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -286,7 +285,6 @@ def _make_param_sfo(fields: dict[str, str]) -> bytes:
 
     index = bytearray()
     for i, (k, v) in enumerate(zip(keys, values)):
-        enc_v = v.encode("utf-8") + b"\x00"
         index.extend(
             struct.pack(
                 "<HHIII",

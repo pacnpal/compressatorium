@@ -20,7 +20,7 @@ async def compute_file_sha1(file_path: str) -> str:
 
 def _sha1_sync(file_path: str) -> str:
     """Synchronous SHA1 computation."""
-    h = hashlib.sha1(usedforsecurity=False)
+    h = hashlib.sha1(usedforsecurity=False)  # nosec # nosemgrep: insecure-hash-algorithm-sha1
     with open(file_path, "rb") as f:
         while True:
             chunk = f.read(_CHUNK_SIZE)
@@ -37,7 +37,7 @@ async def compute_file_sha1_with_size(file_path: str) -> tuple[str, int]:
 
 def _sha1_with_size_sync(file_path: str) -> tuple[str, int]:
     """Synchronous SHA1 + size computation."""
-    h = hashlib.sha1(usedforsecurity=False)
+    h = hashlib.sha1(usedforsecurity=False)  # nosec # nosemgrep: insecure-hash-algorithm-sha1
     size = 0
     with open(file_path, "rb") as f:
         while True:

@@ -182,7 +182,11 @@ def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
                 is_dir = bool(flags & 0x02)
                 entries.append((name, entry_lba, entry_size, is_dir))
             except Exception:
-                pass
+                logger.debug(
+                    "Skipping malformed ISO 9660 directory entry at offset %d",
+                    pos,
+                    exc_info=True,
+                )
 
         pos += rec_len
     return entries
