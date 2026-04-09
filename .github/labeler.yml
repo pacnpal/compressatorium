@@ -1,0 +1,55 @@
+# Configuration for the actions/labeler workflow
+# https://github.com/actions/labeler
+
+python:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/*.py'
+
+javascript:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/*.js'
+      - '**/*.mjs'
+
+docker:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'Dockerfile'
+      - 'docker-compose*.yml'
+      - 'entrypoint.sh'
+
+tests:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'tests/**'
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/*.md'
+      - 'docs/**'
+
+dependencies:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'requirements*.txt'
+      - 'package.json'
+      - 'package-lock.json'
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '.github/**'
+
+frontend:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'static/**'
+      - 'eslint.config.js'
+
+config:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'config/**'
+      - 'app/config.py'
