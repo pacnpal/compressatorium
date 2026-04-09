@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ruleset name="Project rules"
+         xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0 https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
+
+  <description>PMD rules for Compressatorium. Focuses on ECMAScript (JS) analysis
+  since this project has no Java source. Java rules are included to prevent
+  PMD "No rules found" errors.</description>
+
+  <!-- ECMAScript / JavaScript rules (actively used) -->
+  <rule ref="category/ecmascript/bestpractices.xml/AvoidWithStatement"/>
+  <rule ref="category/ecmascript/bestpractices.xml/ConsistentReturn"/>
+  <rule ref="category/ecmascript/bestpractices.xml/UseBaseWithParseInt"/>
+  <rule ref="category/ecmascript/codestyle.xml/AssignmentInOperand">
+    <properties>
+      <property name="allowWhile" value="false"/>
+      <property name="allowIf" value="false"/>
+      <property name="allowFor" value="false"/>
+    </properties>
+  </rule>
+  <rule ref="category/ecmascript/codestyle.xml/UnnecessaryBlock"/>
+  <rule ref="category/ecmascript/errorprone.xml/EqualComparison"/>
+
+  <!-- Java rules (no Java in project; included to satisfy PMD rule loading) -->
+  <rule ref="category/java/bestpractices.xml"/>
+  <rule ref="category/java/codestyle.xml"/>
+  <rule ref="category/java/errorprone.xml"/>
+  <rule ref="category/java/design.xml"/>
+
+</ruleset>
