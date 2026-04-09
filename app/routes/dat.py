@@ -1,5 +1,6 @@
 """API routes for MAME Redump DAT file management and hash matching."""
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -22,6 +23,10 @@ class MatchRequest(BaseModel):
 
 class MatchBatchRequest(BaseModel):
     paths: list[str]
+
+
+class SyncRequest(BaseModel):
+    tag: str | None = None
 
 
 @router.post("/dat/import")
@@ -195,6 +200,51 @@ async def prune_missing():
     """Remove match cache entries for files that no longer exist."""
     removed = await dat_store.prune_missing()
     return {"removed": removed}
+
+
+# ---------------------------------------------------------------------------
+# MAMERedump sync endpoints
+# ---------------------------------------------------------------------------
+
+def _get_sync_service():
+    from services.dat_sync import dat_sync_service
+    return dat_sync_service
+
+
+@router.post("/dat/sync")
+async def sync_mameredump(request: SyncRequest | None = None):
+    """Trigger a sync of all DAT files from the MAMERedump GitHub repo.
+
+    The sync runs in the background. Poll ``/dat/sync/status`` for progress.
+    """
+    svc = _get_sync_service()
+    if svc.is_syncing:
+        raise HTTPException(status_code=409, detail="Sync already in progress")
+
+    tag = request.tag if request else None
+
+    async def _run_sync():
+        try:
+            await svc.sync(tag=tag)
+        except Exception as exc:
+            logger.error("dat_sync background task failed: %s", exc)
+
+    asyncio.create_task(_run_sync())
+    return {"status": "started", "message": "Sync started"}
+
+
+@router.get("/dat/sync/status")
+async def sync_status():
+    """Return the current sync status."""
+    return _get_sync_service().get_status()
+
+
+@router.post("/dat/sync/cancel")
+async def sync_cancel():
+    """Cancel an in-progress sync."""
+    if _get_sync_service().cancel():
+        return {"status": "cancelling"}
+    raise HTTPException(status_code=409, detail="No sync in progress")
 
 
 async def _match_single_file(file_path: str) -> dict:

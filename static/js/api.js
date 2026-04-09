@@ -777,6 +777,36 @@ export const api = {
         if (!res.ok) throw new Error('Failed to match files');
         return res.json();
     },
+
+    // MAMERedump sync
+    async syncMAMERedump(tag = null) {
+        const body = tag ? JSON.stringify({ tag }) : '{}';
+        const res = await fetch(`${API_BASE}/dat/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to start sync' }));
+            throw new Error(error.detail || 'Failed to start sync');
+        }
+        return res.json();
+    },
+
+    async getSyncStatus() {
+        const res = await fetch(`${API_BASE}/dat/sync/status`);
+        if (!res.ok) throw new Error('Failed to get sync status');
+        return res.json();
+    },
+
+    async cancelSync() {
+        const res = await fetch(`${API_BASE}/dat/sync/cancel`, { method: 'POST' });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to cancel sync' }));
+            throw new Error(error.detail || 'Failed to cancel sync');
+        }
+        return res.json();
+    },
 };
 
 // Format file size

@@ -93,9 +93,13 @@ class Settings(BaseSettings):
         default="/usr/local/bin/z3ds_compressor", alias="Z3DS_COMPRESSOR_PATH",
     )
 
-    # NKit2 binary path
-    nkit2_path: str = Field(
-        default="/opt/nkit/nkit", alias="NKIT2_PATH",
+    # MAMERedump DAT sync
+    mameredump_repo: str = Field(
+        default="MetalSlug/MAMERedump", alias="MAMEREDUMP_REPO",
+    )
+    mameredump_auto_sync: bool = Field(
+        default=False, alias="MAMEREDUMP_AUTO_SYNC",
+        description="Auto-sync DATs from MAMERedump on startup if none loaded",
     )
     chdman_nice: int | None = Field(default=10, alias="CHD_CHDMAN_NICE")
     chdman_ioprio_class: int | None = Field(

@@ -180,7 +180,6 @@ const MODE_GROUPS = [
         id: 'dolphin',
         label: 'Dolphin (GameCube/Wii)',
         options: [
-            { value: 'nkit2_rvz', label: 'NKit2 RVZ (Redump-compatible)' },
             { value: 'dolphin_rvz', label: 'Convert to RVZ' },
             { value: 'dolphin_wia', label: 'Convert to WIA' },
             { value: 'dolphin_gcz', label: 'Convert to GCZ' },
@@ -203,6 +202,9 @@ function DATPanel({ onClose, onImported }) {
     const [stats, setStats] = useState(null);
     const [importing, setImporting] = useState(false);
     const [message, setMessage] = useState(null);
+    const [syncing, setSyncing] = useState(false);
+    const [syncProgress, setSyncProgress] = useState(null);
+    const [showManualImport, setShowManualImport] = useState(false);
 
     const loadDats = useCallback(() => {
         api.listDATs().then(setDats).catch(() => {});
@@ -210,6 +212,51 @@ function DATPanel({ onClose, onImported }) {
     }, []);
 
     useEffect(() => { loadDats(); }, []);
+
+    // Poll sync status while syncing
+    useEffect(() => {
+        if (!syncing) return;
+        const interval = setInterval(async () => {
+            try {
+                const status = await api.getSyncStatus();
+                setSyncProgress(status.progress);
+                if (!status.syncing) {
+                    setSyncing(false);
+                    const p = status.progress || {};
+                    if (p.status === 'complete') {
+                        setMessage(`Synced ${p.files_imported} DATs from MAME Redump`);
+                    } else if (p.status === 'already_synced') {
+                        setMessage('Already up to date');
+                    } else if (p.status === 'cancelled') {
+                        setMessage('Sync cancelled');
+                    } else if (p.error) {
+                        setMessage(`Sync error: ${p.error}`);
+                    }
+                    loadDats();
+                    if (onImported) onImported(true);
+                }
+            } catch { /* ignore poll errors */ }
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [syncing]);
+
+    const handleSync = async () => {
+        setSyncing(true);
+        setMessage(null);
+        setSyncProgress(null);
+        try {
+            await api.syncMAMERedump();
+        } catch (err) {
+            setSyncing(false);
+            setMessage(`Error: ${err.message}`);
+        }
+    };
+
+    const handleCancelSync = async () => {
+        try {
+            await api.cancelSync();
+        } catch { /* ignore */ }
+    };
 
     const handleImport = async (e) => {
         const file = e.target.files?.[0];
@@ -241,6 +288,11 @@ function DATPanel({ onClose, onImported }) {
         }
     };
 
+    const syncTotal = syncProgress?.files_total || 0;
+    const syncImported = syncProgress?.files_imported || 0;
+    const syncFile = syncProgress?.current_file || '';
+    const syncPct = syncTotal > 0 ? Math.round((syncImported / syncTotal) * 100) : 0;
+
     return html`
         <div class="help-panel dat-panel">
             <div class="help-header">
@@ -249,14 +301,37 @@ function DATPanel({ onClose, onImported }) {
             </div>
             <div class="dat-panel-body">
                 <p class="compression-note">
-                    Import Logiqx XML DAT files from <a href="https://github.com/MetalSlug/MAMERedump" target="_blank" rel="noopener noreferrer">MAME Redump</a> to verify your compressed files match known-good hashes.
+                    Sync all <a href="https://github.com/MetalSlug/MAMERedump" target="_blank" rel="noopener noreferrer">MAME Redump</a> DAT files with one click to verify your compressed files match known-good Redump hashes.
                 </p>
-                <div class="dat-import">
-                    <label class="btn btn-primary${importing ? ' disabled' : ''}">
-                        ${importing ? 'Importing...' : 'Import DAT File'}
-                        <input type="file" accept=".dat,.xml" onChange=${handleImport} disabled=${importing} style="display:none" />
-                    </label>
+
+                <div class="dat-sync-section">
+                    ${syncing ? html`
+                        <div class="dat-sync-progress">
+                            <div class="dat-sync-bar-container">
+                                <div class="dat-sync-bar" style="width: ${syncPct}%"></div>
+                            </div>
+                            <span class="dat-sync-text">${syncImported}/${syncTotal} DATs${syncFile ? ` — ${syncFile}` : ''}</span>
+                            <button class="btn btn-sm btn-secondary" onClick=${handleCancelSync}>Cancel</button>
+                        </div>
+                    ` : html`
+                        <button class="btn btn-primary" onClick=${handleSync} disabled=${importing}>
+                            Sync from MAME Redump
+                        </button>
+                        <button class="btn btn-sm btn-secondary" onClick=${() => setShowManualImport(!showManualImport)} style="margin-left: 8px">
+                            ${showManualImport ? 'Hide' : 'Import Custom DAT'}
+                        </button>
+                    `}
                 </div>
+
+                ${showManualImport && !syncing && html`
+                    <div class="dat-import" style="margin-top: 8px">
+                        <label class="btn btn-sm btn-secondary${importing ? ' disabled' : ''}">
+                            ${importing ? 'Importing...' : 'Choose DAT File'}
+                            <input type="file" accept=".dat,.xml" onChange=${handleImport} disabled=${importing} style="display:none" />
+                        </label>
+                    </div>
+                `}
+
                 ${message && html`<div class="dat-message">${message}</div>`}
                 ${stats && html`
                     <div class="dat-stats">
@@ -292,8 +367,8 @@ function DATPanel({ onClose, onImported }) {
                         </tbody>
                     </table>
                 `}
-                ${dats.length === 0 && html`
-                    <p class="dat-empty">No DAT files imported. Import a MAME Redump DAT to enable hash matching.</p>
+                ${dats.length === 0 && !syncing && html`
+                    <p class="dat-empty">No DAT files loaded. Click "Sync from MAME Redump" to import all DATs automatically.</p>
                 `}
             </div>
         </div>
@@ -2665,7 +2740,6 @@ function App() {
     const [chdMetadata, setChdMetadata] = useState(new Map()); // path -> { media_type: "dvd"|"cd"|null }
     const [forceRescanRunning, setForceRescanRunning] = useState(false);
     const [appVersion, setAppVersion] = useState(null); // App version from backend
-    const [nkit2Available, setNkit2Available] = useState(false); // NKit2 tool availability
     const [datMatches, setDatMatches] = useState(new Map()); // path -> match result
     const [datsImported, setDatsImported] = useState(false); // whether any DATs are loaded
     const [showDatPanel, setShowDatPanel] = useState(false); // DAT management panel visibility
@@ -3256,9 +3330,6 @@ function App() {
                 setAppVersion(data.version);
                 if (typeof data.search_auto_return_to_file_list === 'boolean') {
                     setSearchAutoReturnToFileList(data.search_auto_return_to_file_list);
-                }
-                if (typeof data.nkit2_available === 'boolean') {
-                    setNkit2Available(data.nkit2_available);
                 }
             })
             .catch(err => console.warn('Failed to fetch app version:', err));
@@ -4045,8 +4116,6 @@ function App() {
             outputFilename = `${stem}.raw`;
         } else if (conversionMode === 'extractld') {
             outputFilename = `${stem}.avi`;
-        } else if (conversionMode === 'nkit2_rvz') {
-            outputFilename = `${stem}.rvz`;
         } else if (conversionMode === 'dolphin_rvz') {
             outputFilename = `${stem}.rvz`;
         } else if (conversionMode === 'dolphin_wia') {
@@ -4284,11 +4353,10 @@ function App() {
     const isExtractMode = conversionMode.startsWith('extract');
     const isCopyMode = conversionMode === 'copy';
     const isDolphinMode = conversionMode.startsWith('dolphin_');
-    const isNkit2Mode = conversionMode === 'nkit2_rvz';
     const isZ3dsMode = conversionMode === 'z3ds_compress';
     const isDolphinCompressible = isDolphinMode && !['dolphin_iso', 'dolphin_gcz'].includes(conversionMode);
     const activeCompressionOptions = isDolphinCompressible ? dolphinCompressionOptions : compressionOptions;
-    const compressionSupported = (isCreateMode || isCopyMode || isDolphinCompressible) && !isNkit2Mode;
+    const compressionSupported = (isCreateMode || isCopyMode || isDolphinCompressible);
     const dolphinCodecValues = isDolphinCompressible
         ? new Set(activeCompressionOptions.map((opt) => opt.value))
         : null;
@@ -4443,9 +4511,7 @@ function App() {
             }
         }
     }, [visibleModeGroups, conversionMode]);
-    const compressionMetaText = isNkit2Mode
-        ? 'Fixed: zstd:19 128k (Redump-compatible)'
-        : !compressionSupported
+    const compressionMetaText = !compressionSupported
         ? 'Compression options not applicable for this mode'
         : isDolphinCompressible
             ? (selectedDolphinCodec === 'none'
@@ -5099,8 +5165,7 @@ function App() {
                                             ${group.options.map((opt) => html`
                                                 <option
                                                     value=${opt.value}
-                                                    disabled=${opt.value === 'nkit2_rvz' && !nkit2Available}
-                                                >${opt.label}${opt.value === 'nkit2_rvz' && !nkit2Available ? ' (not installed)' : ''}</option>
+                                                >${opt.label}</option>
                                             `)}
                                         </optgroup>
                                     `)}

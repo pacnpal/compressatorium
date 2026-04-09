@@ -23,7 +23,6 @@ from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
-from services.nkit2 import nkit2_service
 from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
 from services.job_manager import QueueBackpressureError, job_manager
 from services.lock_manager import lock_manager
@@ -89,7 +88,6 @@ def supports_delete_on_verify(mode: str) -> bool:
         mode.startswith("create")
         or mode == "copy"
         or mode.startswith("dolphin_")
-        or mode == ConversionMode.NKIT2_RVZ.value
         or mode == ConversionMode.Z3DS_COMPRESS.value
     )
 
@@ -98,15 +96,7 @@ def _is_dolphin_mode(mode: str) -> bool:
     return mode.startswith("dolphin_")
 
 
-def _is_nkit2_mode(mode: str) -> bool:
-    return mode == ConversionMode.NKIT2_RVZ.value
-
-
 def _get_output_path(mode, input_path, output_dir, *, treat_as_stem=False):
-    if _is_nkit2_mode(mode):
-        return nkit2_service.get_output_path_for_mode(
-            mode, input_path, output_dir, treat_as_stem=treat_as_stem,
-        )
     if _is_dolphin_mode(mode):
         return dolphin_tool_service.get_output_path_for_mode(
             mode, input_path, output_dir, treat_as_stem=treat_as_stem,
@@ -256,7 +246,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
     if not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy/Dolphin/NKit2/3DS modes",
+            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
         )
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -309,17 +299,11 @@ async def create_job(request: JobCreateRequest):
     mode = request.mode.value
     output_dir = normalize_output_dir(request.output_dir)
     is_dolphin = _is_dolphin_mode(mode)
-    is_nkit2 = _is_nkit2_mode(mode)
     is_z3ds = mode == ConversionMode.Z3DS_COMPRESS.value
     if compression and mode.startswith("extract"):
         raise HTTPException(
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
-        )
-    if compression and is_nkit2:
-        raise HTTPException(
-            status_code=400,
-            detail="NKit2 uses fixed Redump-compatible compression (zstd:19 128k)",
         )
     if compression and not is_dolphin and ":" in compression:
         raise HTTPException(
@@ -341,15 +325,10 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail="Dolphin compression supports only one codec at a time",
         )
-    if is_nkit2 and not nkit2_service.is_available():
-        raise HTTPException(
-            status_code=400,
-            detail="NKit2 is not available. Place NKit2 binaries in the container or use Dolphin RVZ mode instead.",
-        )
     if request.delete_on_verify and not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS/NKit2 modes",
+            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
         )
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(
@@ -373,10 +352,10 @@ async def create_job(request: JobCreateRequest):
     display_filename = None
 
     if "::" in request.file_path:
-        if mode.startswith("extract") or mode == "copy" or is_dolphin or is_nkit2 or is_z3ds:
+        if mode.startswith("extract") or mode == "copy" or is_dolphin or is_z3ds:
             raise HTTPException(
                 status_code=400,
-                detail="Archive inputs are not supported for extract/copy/dolphin/nkit2/z3ds_compress modes",
+                detail="Archive inputs are not supported for extract/copy/dolphin/z3ds_compress modes",
             )
         archive_path, internal_path = request.file_path.split("::", 1)
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
@@ -424,14 +403,6 @@ async def create_job(request: JobCreateRequest):
         raise HTTPException(
             status_code=400, detail="Create modes require non-CHD input files",
         )
-
-    if is_nkit2:
-        if not nkit2_service.is_convertible(file_path):
-            raise HTTPException(
-                status_code=400,
-                detail="NKit2 RVZ mode requires GameCube/Wii disc images "
-                       "(.iso, .gcz, .wia, .rvz, .wbfs)",
-            )
 
     if is_dolphin:
         ext = Path(file_path).suffix.lower()
@@ -532,18 +503,12 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     compression = normalize_compression(request.compression)
     mode = request.mode.value
     is_dolphin = _is_dolphin_mode(mode)
-    is_nkit2 = _is_nkit2_mode(mode)
     is_z3ds = mode == ConversionMode.Z3DS_COMPRESS.value
     output_dir = normalize_output_dir(request.output_dir)
     if compression and mode.startswith("extract"):
         raise HTTPException(
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
-        )
-    if compression and is_nkit2:
-        raise HTTPException(
-            status_code=400,
-            detail="NKit2 uses fixed Redump-compatible compression (zstd:19 128k)",
         )
     if compression and not is_dolphin and ":" in compression:
         raise HTTPException(
@@ -565,15 +530,10 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             status_code=400,
             detail="Dolphin compression supports only one codec at a time",
         )
-    if is_nkit2 and not nkit2_service.is_available():
-        raise HTTPException(
-            status_code=400,
-            detail="NKit2 is not available. Place NKit2 binaries in the container or use Dolphin RVZ mode instead.",
-        )
     if request.delete_on_verify and not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy/Dolphin/NKit2/3DS modes",
+            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
         )
     if request.delete_on_verify:
         disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -627,7 +587,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
 
         # Handle archive files
         if "::" in file_path:
-            if mode.startswith("extract") or mode == "copy" or is_dolphin or is_nkit2 or is_z3ds:
+            if mode.startswith("extract") or mode == "copy" or is_dolphin or is_z3ds:
                 skipped.append(file_path)
                 continue
             archive_path, internal_path = file_path.split("::", 1)
@@ -676,11 +636,6 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if mode.startswith("create") and file_path.lower().endswith(".chd"):
             skipped.append(file_path)
             continue
-
-        if is_nkit2:
-            if not nkit2_service.is_convertible(file_path):
-                skipped.append(file_path)
-                continue
 
         if is_dolphin:
             ext = Path(file_path).suffix.lower()

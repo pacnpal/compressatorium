@@ -1,0 +1,192 @@
+"""Tests for MAME Redump DAT sync service."""
+
+import json
+import threading
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.services.dat_sync import DATSyncService
+
+
+# ---------------------------------------------------------------------------
+# DATSyncService unit tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sync_service(tmp_path):
+    """Create a DATSyncService with isolated state (bypasses lazy init)."""
+    svc = DATSyncService.__new__(DATSyncService)
+    svc._repo = "MetalSlug/MAMERedump"
+    svc._state_path = tmp_path / "dat_sync.json"
+    svc._explicit_state_path = str(svc._state_path)
+    svc._lock = threading.Lock()
+    svc._syncing = False
+    svc._cancel = False
+    svc._progress = {}
+    svc._state = {}
+    return svc
+
+
+def test_status_default(sync_service):
+    """Default status has no sync in progress and empty fields."""
+    status = sync_service.get_status()
+    assert status["syncing"] is False
+    assert status["last_sync_tag"] == ""
+    assert status["last_sync_at"] == ""
+    assert status["last_sync_files"] == 0
+
+
+def test_state_persistence(sync_service):
+    """State round-trips through save/load."""
+    sync_service._state = {
+        "last_sync_tag": "0.285",
+        "last_sync_at": "2026-02-12T20:00:00Z",
+        "last_sync_files": 69,
+    }
+    sync_service._save_state()
+    assert sync_service._state_path.exists()
+
+    loaded = json.loads(sync_service._state_path.read_text())
+    assert loaded["last_sync_tag"] == "0.285"
+    assert loaded["last_sync_files"] == 69
+
+
+def test_state_load_missing_file(sync_service):
+    """Loading state when file doesn't exist returns empty dict."""
+    state = sync_service._load_state()
+    assert state == {}
+
+
+def test_state_load_corrupt_file(sync_service):
+    """Loading corrupt JSON returns empty dict."""
+    sync_service._state_path.write_text("not json{{{")
+    state = sync_service._load_state()
+    assert state == {}
+
+
+def test_cancel_when_not_syncing(sync_service):
+    """cancel() returns False when no sync is in progress."""
+    assert sync_service.cancel() is False
+
+
+def test_cancel_when_syncing(sync_service):
+    """cancel() returns True and sets flag when syncing."""
+    sync_service._syncing = True
+    assert sync_service.cancel() is True
+    assert sync_service._cancel is True
+
+
+def test_github_api_url(sync_service):
+    """_github_api_url builds correct URLs."""
+    url = sync_service._github_api_url("MAME Redump", ref="0.285")
+    assert "repos/MetalSlug/MAMERedump/contents/MAME%20Redump" in url
+    assert "ref=0.285" in url
+
+
+def test_raw_url(sync_service):
+    """_raw_url builds correct raw content URLs."""
+    url = sync_service._raw_url("MAME Redump/test.dat", ref="0.285")
+    assert "raw.githubusercontent.com/MetalSlug/MAMERedump/0.285/MAME%20Redump/test.dat" in url
+
+
+def test_list_dat_files_filters_non_dat(sync_service):
+    """_list_dat_files only returns .dat files."""
+    mock_contents = [
+        {"name": "test.dat", "path": "MAME Redump/test.dat", "type": "file", "size": 100},
+        {"name": "README.md", "path": "MAME Redump/README.md", "type": "file", "size": 50},
+        {"name": "MAME", "path": "MAME Redump/MAME", "type": "dir"},
+    ]
+    with patch.object(sync_service, "_fetch_json", return_value=mock_contents):
+        files = sync_service._list_dat_files("MAME Redump", "main")
+    assert len(files) == 1
+    assert files[0]["name"] == "test.dat"
+
+
+# ---------------------------------------------------------------------------
+# Async sync tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sync_already_synced(sync_service):
+    """Sync returns early when already synced to the requested tag."""
+    sync_service._state = {"last_sync_tag": "0.285"}
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[])
+    mock_dat_store.delete_dat = AsyncMock()
+    with patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync(tag="0.285")
+    assert result["status"] == "already_synced"
+
+
+@pytest.mark.asyncio
+async def test_sync_prevents_concurrent(sync_service):
+    """Sync raises when already in progress."""
+    sync_service._syncing = True
+    with pytest.raises(RuntimeError, match="already in progress"):
+        await sync_service.sync()
+
+
+@pytest.mark.asyncio
+async def test_sync_downloads_and_imports(sync_service, tmp_path):
+    """Sync downloads DAT files and imports them into the store."""
+    dat_file = tmp_path / "sample.dat"
+    dat_file.write_text("""\
+<?xml version="1.0"?>
+<datafile>
+  <header><name>Test</name><version>0.285</version></header>
+  <game name="G"><rom name="g.iso" size="1024"
+    sha1="aabbccddaabbccddaabbccddaabbccddaabbccdd"/></game>
+</datafile>
+""")
+
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[])
+    mock_dat_store.delete_dat = AsyncMock()
+    mock_dat_store.import_dat = AsyncMock(return_value={
+        "id": "abc123", "name": "Test", "file_count": 1, "hashes_added": 1,
+    })
+
+    # _list_dat_files is called once per _DAT_DIRS entry (2 dirs).
+    # Return 1 file for first dir, empty for second.
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync()
+
+    assert result["status"] == "complete"
+    assert result["files_imported"] == 1
+    assert result["tag"] == "0.285"
+    assert sync_service._state["last_sync_tag"] == "0.285"
+    mock_dat_store.import_dat.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_handles_download_error(sync_service, tmp_path):
+    """Sync continues when individual file download fails."""
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[])
+    mock_dat_store.delete_dat = AsyncMock()
+    mock_dat_store.import_dat = AsyncMock()
+
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [
+                 {"name": "good.dat", "path": "MAME Redump/good.dat", "size": 100},
+                 {"name": "bad.dat", "path": "MAME Redump/bad.dat", "size": 100},
+             ],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", side_effect=[
+             str(tmp_path / "nonexistent.dat"),
+             OSError("Network error"),
+         ]), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync()
+
+    assert result["status"] == "complete"
+    assert len(result["errors"]) >= 1
