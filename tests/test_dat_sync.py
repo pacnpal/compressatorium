@@ -237,8 +237,8 @@ async def test_sync_handles_download_error(sync_service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sync_defers_deletion_until_first_import(sync_service, tmp_path):
-    """Existing DATs are only deleted after the first successful import."""
+async def test_sync_defers_deletion_until_all_imports_succeed(sync_service, tmp_path):
+    """Existing DATs are only deleted after ALL new files are imported successfully."""
     dat_file = tmp_path / "sample.dat"
     dat_file.write_text("<datafile></datafile>")
 
@@ -260,8 +260,44 @@ async def test_sync_defers_deletion_until_first_import(sync_service, tmp_path):
         result = await sync_service.sync(tag="0.285")
 
     assert result["status"] == "complete"
-    # Old DAT deleted only after the new one was imported successfully.
+    # Old DAT deleted only after all new ones were imported without errors.
     mock_dat_store.delete_dat.assert_called_once_with("old-dat")
+    assert sync_service._state.get("last_sync_tag") == "0.285"
+
+
+@pytest.mark.asyncio
+async def test_sync_preserves_existing_dats_on_partial_failure(sync_service, tmp_path):
+    """If some imports fail, existing DATs are preserved and last_sync_tag is NOT saved."""
+    dat_file = tmp_path / "good.dat"
+    dat_file.write_text("<datafile></datafile>")
+
+    existing_dat = {"id": "old-dat", "name": "Old DAT"}
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[existing_dat])
+    mock_dat_store.delete_dat = AsyncMock()
+    mock_dat_store.import_dat = AsyncMock(side_effect=[
+        {"id": "new-dat", "name": "New DAT", "file_count": 1, "hashes_added": 1},
+        OSError("Import failed for second file"),
+    ])
+
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [
+                 {"name": "good.dat", "path": "MAME Redump/good.dat", "size": 100},
+                 {"name": "bad.dat", "path": "MAME Redump/bad.dat", "size": 100},
+             ],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync(tag="0.285")
+
+    assert result["status"] == "complete"
+    assert len(result["errors"]) == 1
+    # Partial failure — existing DATs must NOT have been deleted.
+    mock_dat_store.delete_dat.assert_not_called()
+    # last_sync_tag must NOT be saved so next sync can retry the missing file.
+    assert "last_sync_tag" not in sync_service._state
 
 
 @pytest.mark.asyncio

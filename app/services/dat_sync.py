@@ -142,7 +142,7 @@ class DATSyncService:
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # nosec B310
             return json.loads(resp.read().decode("utf-8"))
 
     def _fetch_latest_tag(self) -> str:
@@ -185,7 +185,7 @@ class DATSyncService:
         req = urllib.request.Request(
             url, headers={"User-Agent": "compressatorium-dat-sync/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # nosec B310
             fd, tmp_path = tempfile.mkstemp(suffix=".dat")
             try:
                 with os.fdopen(fd, "wb") as fh:
@@ -277,10 +277,9 @@ class DATSyncService:
         logger.info("dat_sync: found %d DAT files for tag %s", len(all_files), tag)
 
         # Download and import each DAT.
-        # We defer deletion of existing DATs until the first successful import so
-        # that a total download failure (rate-limit, outage, etc.) does not wipe
-        # the user's working DAT set.
-        deleted_existing = False
+        # Deletion of existing DATs is deferred until ALL new files have been
+        # successfully imported.  Any failure (download error, rate-limit,
+        # outage, etc.) leaves the previous working DAT set fully intact.
         imported = 0
         errors: list[str] = []
         for i, file_info in enumerate(all_files):
@@ -302,17 +301,6 @@ class DATSyncService:
                 )
                 await dat_store.import_dat(tmp_path)
                 imported += 1
-
-                # First successful import — now safe to clear old DATs.
-                if not deleted_existing:
-                    for dat in existing_dats:
-                        await dat_store.delete_dat(dat["id"])
-                    logger.info(
-                        "dat_sync: cleared %d existing DATs after first successful import",
-                        len(existing_dats),
-                    )
-                    deleted_existing = True
-
             except Exception as exc:
                 err_msg = f"{name}: {exc}"
                 errors.append(err_msg)
@@ -324,13 +312,40 @@ class DATSyncService:
                     except OSError:
                         pass
 
-        # Persist sync state.
+        # Only delete old DATs after all new ones import without error, so a
+        # partial sync never wipes the previously working set.
+        if not errors:
+            for dat in existing_dats:
+                await dat_store.delete_dat(dat["id"])
+            if existing_dats:
+                logger.info(
+                    "dat_sync: cleared %d existing DATs after full successful sync",
+                    len(existing_dats),
+                )
+        elif existing_dats:
+            logger.warning(
+                "dat_sync: %d error(s) during sync; preserving %d existing DATs",
+                len(errors),
+                len(existing_dats),
+            )
+
+        # Persist sync state.  Only record last_sync_tag when the sync
+        # completed with zero errors and all files were imported, so that the
+        # already_synced fast-path is not triggered prematurely and the next
+        # run can retry any missing/failed files.
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        self._state = {
-            "last_sync_tag": tag,
-            "last_sync_at": now,
-            "last_sync_files": imported,
-        }
+        if not errors and imported == len(all_files):
+            self._state = {
+                "last_sync_tag": tag,
+                "last_sync_at": now,
+                "last_sync_files": imported,
+            }
+        else:
+            # Partial sync: record progress but omit tag so retry is possible.
+            self._state = {
+                "last_sync_at": now,
+                "last_sync_files": imported,
+            }
         await run_in_threadpool(self._save_state)
 
         self._update_progress(
