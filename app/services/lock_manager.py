@@ -157,7 +157,7 @@ class LockManager:
                         try:
                             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
                         except Exception:
-                            logger.debug("Failed to release lock during staleness check")
+                            logger.debug("Failed to release lock during staleness check", exc_info=True)
             
             # If we successfully acquired the lock, the file is stale - remove it
             if acquired:
@@ -221,7 +221,7 @@ class LockManager:
                         try:
                             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
                         except Exception:
-                            logger.debug("Failed to release lock for existing file: %s", normalized_path)
+                            logger.debug("Failed to release lock for existing file: %s", normalized_path, exc_info=True)
                         lock_handle.close()
                         lock_handle = None
                         # Clean up lock file since we're not using it
@@ -229,7 +229,7 @@ class LockManager:
                             if os.path.exists(lock_file_path):
                                 os.remove(lock_file_path)
                         except Exception:
-                            logger.debug("Failed to clean up lock file: %s", lock_file_path)
+                            logger.debug("Failed to clean up lock file: %s", lock_file_path, exc_info=True)
                         return False
 
                 # Successfully acquired the lock and file doesn't exist
@@ -243,8 +243,8 @@ class LockManager:
                     try:
                         lock_handle.close()
                     except Exception:
-                        logger.debug("Failed to close lock handle for: %s", normalized_path)
-                print(f"Failed to acquire lock for {normalized_path}: {e}")
+                        logger.debug("Failed to close lock handle for: %s", normalized_path, exc_info=True)
+                logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
                 return False
 
     def release_lock(self, output_path: str):
