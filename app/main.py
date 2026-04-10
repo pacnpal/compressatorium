@@ -99,6 +99,10 @@ async def startup_event():
     )
     asyncio.create_task(job_manager.process_queue())
 
+    # Initialise the set used to hold strong references to background tasks so
+    # they are not garbage-collected before they finish.
+    app.state.background_tasks = set()
+
     # Auto-sync MAMERedump DATs on startup if configured and no DATs loaded.
     if settings.mameredump_auto_sync:
         from services.dat_store import dat_store
@@ -115,7 +119,6 @@ async def startup_event():
             # Store a strong reference so the Task is not garbage-collected
             # before it completes; done callback removes it.
             _auto_sync_task = asyncio.create_task(_auto_sync())
-            app.state.background_tasks = getattr(app.state, "background_tasks", set())
             app.state.background_tasks.add(_auto_sync_task)
             _auto_sync_task.add_done_callback(app.state.background_tasks.discard)
 
