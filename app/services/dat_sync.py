@@ -94,14 +94,22 @@ class DATSyncService:
         return {}
 
     def _save_state(self) -> None:
+        tmp = None
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._state_path.with_suffix(f".tmp.{os.getpid()}")
             with tmp.open("w", encoding="utf-8") as fh:
                 json.dump(self._state, fh, indent=2)
             tmp.replace(self._state_path)
+            tmp = None  # replace() succeeded; nothing to clean up
         except OSError as exc:
             logger.warning("dat_sync: failed to save state: %s", exc)
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # Public status interface

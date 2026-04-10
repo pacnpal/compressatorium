@@ -112,7 +112,12 @@ async def startup_event():
                 except Exception:
                     logger.exception("Auto-sync failed")
 
-            asyncio.create_task(_auto_sync())
+            # Store a strong reference so the Task is not garbage-collected
+            # before it completes; done callback removes it.
+            _auto_sync_task = asyncio.create_task(_auto_sync())
+            app.state.background_tasks = getattr(app.state, "background_tasks", set())
+            app.state.background_tasks.add(_auto_sync_task)
+            _auto_sync_task.add_done_callback(app.state.background_tasks.discard)
 
 
 @app.get("/health")
