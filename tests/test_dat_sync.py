@@ -21,6 +21,8 @@ def sync_service(tmp_path):
     svc._state_path = tmp_path / "dat_sync.json"
     svc._explicit_state_path = str(svc._state_path)
     svc._lock = threading.Lock()
+    svc._init_lock = threading.Lock()
+    svc._initialized = True  # pre-initialised; skip lazy init in tests
     svc._syncing = False
     svc._cancel = False
     svc._progress = {}

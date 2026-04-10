@@ -33,6 +33,8 @@ class DATSyncService:
 
     def __init__(self, state_path: str | None = None) -> None:
         self._lock = threading.Lock()
+        self._init_lock = threading.Lock()
+        self._initialized = False
         self._syncing = False
         self._cancel = False
         self._progress: dict = {}
@@ -43,24 +45,38 @@ class DATSyncService:
         self._explicit_state_path = state_path
 
     def _ensure_init(self) -> None:
-        """Lazy init that defers settings import until first use."""
-        if self._repo is not None:
+        """Lazy init that defers settings import until first use.
+
+        Guarded by a dedicated init lock so that concurrent callers block
+        until all fields are fully populated.  The ``_initialized`` flag is
+        only flipped to ``True`` after every field has been set, so a second
+        caller that races past the first check will re-enter the lock and
+        wait rather than proceeding with partially-initialised state.
+        """
+        if self._initialized:
             return
-        try:
-            from config import settings
-        except ImportError:
-            from app.config import settings
-        self._repo = settings.mameredump_repo
-        # Optional GitHub PAT — raises the unauthenticated rate limit from
-        # 60 req/hour to 5 000 req/hour.  Set MAMEREDUMP_GITHUB_TOKEN in the
-        # container environment to use it.
-        self._token = os.environ.get("MAMEREDUMP_GITHUB_TOKEN") or None
-        data_dir = os.environ.get("CHD_DATA_DIR", "/config")
-        if self._explicit_state_path:
-            self._state_path = Path(self._explicit_state_path)
-        else:
-            self._state_path = Path(data_dir) / "dat_sync.json"
-        self._state = self._load_state()
+        with self._init_lock:
+            # Re-check inside the lock in case another thread just finished.
+            if self._initialized:
+                return
+            try:
+                from config import settings
+            except ImportError:
+                from app.config import settings
+            repo = settings.mameredump_repo
+            token = os.environ.get("MAMEREDUMP_GITHUB_TOKEN") or None
+            data_dir = os.environ.get("CHD_DATA_DIR", "/config")
+            if self._explicit_state_path:
+                state_path = Path(self._explicit_state_path)
+            else:
+                state_path = Path(data_dir) / "dat_sync.json"
+            # Assign all fields before setting the sentinel so that any
+            # thread waiting on _init_lock sees a fully-initialised object.
+            self._repo = repo
+            self._token = token
+            self._state_path = state_path
+            self._state = self._load_state()
+            self._initialized = True
 
     # ------------------------------------------------------------------
     # Persistent state (tracks last sync to avoid redundant re-imports)
