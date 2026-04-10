@@ -401,7 +401,7 @@ def test_download_dat_rejects_large_content_length(sync_service, monkeypatch):
         def __exit__(self, *args):
             pass
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: MockResp())
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: MockResp())
 
     with pytest.raises(ValueError, match="Content-Length"):
         sync_service._download_dat("MAME Redump/test.dat", "0.285")
@@ -434,7 +434,7 @@ def test_download_dat_aborts_mid_stream_if_oversized(sync_service, monkeypatch, 
         def __exit__(self, *args):
             pass
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: MockResp())
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: MockResp())
 
     with pytest.raises(ValueError, match="exceeded size limit"):
         sync_service._download_dat("MAME Redump/test.dat", "0.285")
