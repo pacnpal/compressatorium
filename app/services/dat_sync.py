@@ -332,8 +332,7 @@ class DATSyncService:
         for i, file_info in enumerate(all_files):
             if self._is_cancelled():
                 # Roll back any DATs imported in this run before aborting.
-                for new_id in new_dat_ids:
-                    await dat_store.delete_dat(new_id)
+                await dat_store.delete_dats_bulk(new_dat_ids)
                 return self._cancelled_result(tag)
 
             name = file_info["name"]
@@ -357,7 +356,7 @@ class DATSyncService:
                 tmp_path = await run_in_threadpool(
                     self._download_dat, file_info["path"], tag,
                 )
-                result = await dat_store.import_dat(tmp_path)
+                result = await dat_store.import_dat_no_persist(tmp_path)
                 new_dat_ids.append(result["id"])
                 imported += 1
                 self._update_progress(
@@ -378,23 +377,25 @@ class DATSyncService:
                         pass
 
         if not errors:
-            # Full success: delete old DATs (new ones already in store).
-            for dat in existing_dats:
-                await dat_store.delete_dat(dat["id"])
-            if existing_dats:
+            # Full success: persist all new DATs in one write, then remove old
+            # ones in a single bulk delete so the whole sync is O(1) disk writes.
+            await dat_store.persist()
+            old_ids = [d["id"] for d in existing_dats]
+            deleted = await dat_store.delete_dats_bulk(old_ids)
+            if deleted:
                 logger.info(
                     "dat_sync: cleared %d existing DATs after full successful sync",
-                    len(existing_dats),
+                    deleted,
                 )
         else:
             # Partial failure: roll back newly imported DATs so the store
             # stays in a clean, known-good state (previous working set intact).
-            for new_id in new_dat_ids:
-                await dat_store.delete_dat(new_id)
-            if new_dat_ids:
+            # Use a bulk delete so the rollback is a single disk write.
+            rolled_back = await dat_store.delete_dats_bulk(new_dat_ids)
+            if rolled_back:
                 logger.warning(
                     "dat_sync: rolled back %d new DATs due to %d error(s)",
-                    len(new_dat_ids),
+                    rolled_back,
                     len(errors),
                 )
             if existing_dats:

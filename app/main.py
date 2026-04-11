@@ -105,6 +105,14 @@ async def startup_event():
     app.state.background_tasks.add(process_queue_task)
     process_queue_task.add_done_callback(app.state.background_tasks.discard)
 
+    def _log_process_queue_error(t: asyncio.Task) -> None:
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.exception("process_queue task exited unexpectedly", exc_info=exc)
+
+    process_queue_task.add_done_callback(_log_process_queue_error)
+
     # Auto-sync MAMERedump DATs on startup if configured and no DATs loaded.
     if settings.mameredump_auto_sync:
         from services.dat_store import dat_store
