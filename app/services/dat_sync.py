@@ -381,11 +381,12 @@ class DATSyncService:
             # also persists the store exactly once (new-only set on disk).
             # We intentionally skip an earlier persist() call so we never
             # write a mixed (old+new) state to disk, keeping the store
-            # crash-safe.  When there are no old IDs, delete_dats_bulk is a
-            # no-op and we call persist() ourselves to flush the new set.
+            # crash-safe. When there are no old IDs, or when old IDs were
+            # already removed before the bulk delete runs, explicitly persist
+            # so the newly imported DATs are flushed to disk.
             old_ids = [d["id"] for d in existing_dats]
             deleted = await dat_store.delete_dats_bulk(old_ids)
-            if not old_ids:
+            if not old_ids or deleted == 0:
                 await dat_store.persist()
             if deleted:
                 logger.info(
