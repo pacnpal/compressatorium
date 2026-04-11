@@ -788,7 +788,7 @@ export const api = {
         });
         if (!res.ok) {
             const error = await res.json().catch(() => null);
-            const detail = error !== null && typeof error === 'object' && 'detail' in error ? error.detail : undefined;
+            const detail = error !== null && typeof error === 'object' && Object.prototype.hasOwnProperty.call(error, 'detail') ? error.detail : undefined;
             const message = typeof detail === 'string' ? detail : 'Failed to start sync';
             const err = new Error(message);
             err.status = res.status;
@@ -807,7 +807,7 @@ export const api = {
         const res = await fetch(`${API_BASE}/dat/sync/cancel`, { method: 'POST' });
         if (!res.ok) {
             const error = await res.json().catch(() => null);
-            const detail = error !== null && typeof error === 'object' && 'detail' in error ? error.detail : undefined;
+            const detail = error !== null && typeof error === 'object' && Object.prototype.hasOwnProperty.call(error, 'detail') ? error.detail : undefined;
             const message = typeof detail === 'string' ? detail : 'Failed to cancel sync';
             throw new Error(message);
         }
