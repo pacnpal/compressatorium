@@ -206,9 +206,13 @@ function DATPanel({ onClose, onImported }) {
     const [syncProgress, setSyncProgress] = useState(null);
     const [showManualImport, setShowManualImport] = useState(false);
 
-    const loadDats = useCallback(() => {
-        api.listDATs().then(setDats).catch(() => {});
-        api.getDATStats().then(setStats).catch(() => {});
+    const loadDats = useCallback(async () => {
+        let freshDats = [];
+        await Promise.all([
+            api.listDATs().then(d => { freshDats = d; setDats(d); }).catch(() => {}),
+            api.getDATStats().then(setStats).catch(() => {}),
+        ]);
+        return freshDats;
     }, []);
 
     useEffect(() => { loadDats(); }, []);
@@ -237,8 +241,9 @@ function DATPanel({ onClose, onImported }) {
                     } else if (p.error) {
                         setMessage(`Sync error: ${p.error}`);
                     }
-                    loadDats();
-                    if (onImported) onImported(true);
+                    loadDats().then(freshDats => {
+                        if (onImported) onImported(freshDats.length > 0);
+                    });
                     return; // stop polling
                 }
             } catch { /* ignore poll errors */ }
@@ -274,8 +279,9 @@ function DATPanel({ onClose, onImported }) {
                         } else if (p.error) {
                             setMessage(`Sync error: ${p.error}`);
                         }
-                        loadDats();
-                        if (onImported) onImported(true);
+                        loadDats().then(freshDats => {
+                            if (onImported) onImported(freshDats.length > 0);
+                        });
                     } else {
                         setSyncing(true);
                     }
