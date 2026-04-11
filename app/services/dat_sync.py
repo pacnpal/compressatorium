@@ -377,11 +377,16 @@ class DATSyncService:
                         pass
 
         if not errors:
-            # Full success: persist all new DATs in one write, then remove old
-            # ones in a single bulk delete so the whole sync is O(1) disk writes.
-            await dat_store.persist()
+            # Full success: remove old DATs in a single bulk delete, which
+            # also persists the store exactly once (new-only set on disk).
+            # We intentionally skip an earlier persist() call so we never
+            # write a mixed (old+new) state to disk, keeping the store
+            # crash-safe.  When there are no old IDs, delete_dats_bulk is a
+            # no-op and we call persist() ourselves to flush the new set.
             old_ids = [d["id"] for d in existing_dats]
             deleted = await dat_store.delete_dats_bulk(old_ids)
+            if not old_ids:
+                await dat_store.persist()
             if deleted:
                 logger.info(
                     "dat_sync: cleared %d existing DATs after full successful sync",
@@ -425,7 +430,7 @@ class DATSyncService:
         await run_in_threadpool(self._save_state)
 
         final_status = "complete_with_errors" if errors else "complete"
-        error_summary = f"Sync completed with {len(errors)} error(s)" if errors else None
+        error_summary = f"Sync completed with {len(errors)} error(s)" if errors else ""
 
         self._update_progress(
             status=final_status,
