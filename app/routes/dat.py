@@ -238,7 +238,10 @@ async def sync_mameredump(http_request: Request, request: SyncRequest | None = N
         if not t.cancelled():
             exc = t.exception()
             if exc is not None:
-                logger.exception("dat_sync background task failed", exc_info=exc)
+                logger.error(
+                    "dat_sync background task failed",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
 
     task.add_done_callback(_log_bg_error)
 
