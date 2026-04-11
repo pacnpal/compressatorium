@@ -536,6 +536,13 @@ async def test_match_batch_symlink_loop_returns_denied_not_500(tmp_path, isolate
 # /dat/sync  /dat/sync/status  /dat/sync/cancel
 # ---------------------------------------------------------------------------
 
+def _make_mock_request():
+    """Return a minimal mock HTTP Request with app.state.background_tasks."""
+    mock_req = MagicMock()
+    mock_req.app.state.background_tasks = set()
+    return mock_req
+
+
 @pytest.mark.asyncio
 async def test_sync_mameredump_starts_sync(monkeypatch):
     """POST /dat/sync starts a background sync and returns status=started."""
@@ -544,7 +551,7 @@ async def test_sync_mameredump_starts_sync(monkeypatch):
     mock_svc.sync = AsyncMock(return_value={"status": "complete"})
     monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
 
-    result = await dat_routes.sync_mameredump(request=None)
+    result = await dat_routes.sync_mameredump(http_request=_make_mock_request(), request=None)
     assert result["status"] == "started"
 
 
@@ -557,7 +564,7 @@ async def test_sync_mameredump_409_on_race_condition(monkeypatch):
     monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
 
     with pytest.raises(HTTPException) as exc_info:
-        await dat_routes.sync_mameredump(request=None)
+        await dat_routes.sync_mameredump(http_request=_make_mock_request(), request=None)
     assert exc_info.value.status_code == 409
 
 @pytest.mark.asyncio
@@ -568,7 +575,7 @@ async def test_sync_mameredump_409_when_already_syncing(monkeypatch):
     monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
 
     with pytest.raises(HTTPException) as exc_info:
-        await dat_routes.sync_mameredump(request=None)
+        await dat_routes.sync_mameredump(http_request=_make_mock_request(), request=None)
     assert exc_info.value.status_code == 409
 
 
@@ -623,7 +630,10 @@ async def test_sync_mameredump_passes_tag(monkeypatch):
     mock_svc.sync = AsyncMock(return_value={"status": "complete"})
     monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
 
-    await dat_routes.sync_mameredump(request=dat_routes.SyncRequest(tag="0.285"))
+    await dat_routes.sync_mameredump(
+        http_request=_make_mock_request(),
+        request=dat_routes.SyncRequest(tag="0.285"),
+    )
     # Give the background task a chance to start
     import asyncio
     await asyncio.sleep(0)

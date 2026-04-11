@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
@@ -15,10 +15,6 @@ from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
 logger = logging.getLogger("chd.dat")
-
-# Keep strong references to background tasks so they are not garbage-collected
-# before they finish.  Tasks remove themselves from this set via done callback.
-_background_tasks: set[asyncio.Task] = set()
 
 
 class MatchRequest(BaseModel):
@@ -216,7 +212,7 @@ def _get_sync_service():
 
 
 @router.post("/dat/sync")
-async def sync_mameredump(request: SyncRequest | None = None):
+async def sync_mameredump(http_request: Request, request: SyncRequest | None = None):
     """Trigger a sync of all DAT files from the MAMERedump GitHub repo.
 
     The sync runs in the background. Poll ``/dat/sync/status`` for progress.
@@ -233,9 +229,10 @@ async def sync_mameredump(request: SyncRequest | None = None):
     task = asyncio.create_task(_run_sync())
 
     # Keep a strong reference so the Task isn't garbage-collected before it
-    # finishes; the done callback removes it from the set.
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    # finishes; the done callback removes it from the shared app-level set.
+    bg_tasks: set[asyncio.Task] = http_request.app.state.background_tasks
+    bg_tasks.add(task)
+    task.add_done_callback(bg_tasks.discard)
 
     def _log_bg_error(t: asyncio.Task) -> None:
         if not t.cancelled():
