@@ -258,10 +258,27 @@ function DATPanel({ onClose, onImported }) {
         } catch (err) {
             if (err?.status === 409) {
                 // A sync is already running (e.g. auto-sync); keep polling.
+                // If it finished just before we checked, run completion handling.
                 try {
                     const status = await api.getSyncStatus();
                     setSyncProgress(status.progress);
-                    setSyncing(status.syncing !== false);
+                    if (status.syncing === false) {
+                        setSyncing(false);
+                        const p = status.progress || {};
+                        if (p.status === 'complete') {
+                            setMessage(`Synced ${p.files_imported} DATs from MAME Redump`);
+                        } else if (p.status === 'already_synced') {
+                            setMessage('Already up to date');
+                        } else if (p.status === 'cancelled') {
+                            setMessage('Sync cancelled');
+                        } else if (p.error) {
+                            setMessage(`Sync error: ${p.error}`);
+                        }
+                        loadDats();
+                        if (onImported) onImported(true);
+                    } else {
+                        setSyncing(true);
+                    }
                 } catch {
                     setSyncing(true);
                 }

@@ -65,11 +65,10 @@ class DATSyncService:
                 from app.config import settings
             repo = settings.mameredump_repo
             token = os.environ.get("MAMEREDUMP_GITHUB_TOKEN") or None
-            data_dir = os.environ.get("CHD_DATA_DIR", "/config")
             if self._explicit_state_path:
                 state_path = Path(self._explicit_state_path)
             else:
-                state_path = Path(data_dir) / "dat_sync.json"
+                state_path = Path(settings.data_dir) / "dat_sync.json"
             # Assign all fields before setting the sentinel so that any
             # thread waiting on _init_lock sees a fully-initialised object.
             self._repo = repo
@@ -238,7 +237,10 @@ class DATSyncService:
                             )
                         fh.write(chunk)
             except Exception:
-                os.unlink(tmp_path)
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
                 raise
         return tmp_path
 
@@ -358,6 +360,12 @@ class DATSyncService:
                 result = await dat_store.import_dat(tmp_path)
                 new_dat_ids.append(result["id"])
                 imported += 1
+                self._update_progress(
+                    status="importing",
+                    current_file=name,
+                    files_imported=imported,
+                    file_index=i,
+                )
             except Exception as exc:
                 err_msg = f"{name}: {exc}"
                 errors.append(err_msg)
