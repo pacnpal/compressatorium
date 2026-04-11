@@ -218,8 +218,9 @@ class DATStore:
     async def delete_dats_bulk(self, dat_ids: list[str]) -> int:
         """Delete multiple DATs and their hash entries in a single disk write.
 
-        Returns the number of DATs actually removed.  Persists once at the
-        end, regardless of how many IDs are provided, keeping I/O at O(1).
+        Returns the number of DATs actually removed.  Persists only when at
+        least one ID is found and removed; returns 0 immediately for an empty
+        list or when none of the provided IDs exist in the store.
         """
         if not dat_ids:
             return 0

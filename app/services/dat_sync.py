@@ -150,8 +150,9 @@ class DATSyncService:
         return url
 
     def _raw_url(self, path: str, ref: str = "main") -> str:
-        encoded = urllib.parse.quote(path, safe="/")
-        return f"https://raw.githubusercontent.com/{self._repo}/{ref}/{encoded}"
+        encoded_path = urllib.parse.quote(path, safe="/")
+        encoded_ref = urllib.parse.quote(ref, safe="")
+        return f"https://raw.githubusercontent.com/{self._repo}/{encoded_ref}/{encoded_path}"
 
     @staticmethod
     def _require_https(url: str) -> None:
