@@ -110,11 +110,13 @@ class DATStore:
                 if tmp_path.exists():
                     tmp_path.unlink()
 
-    async def import_dat(self, source: str) -> dict:
-        """Parse and import a DAT file.
+    async def _import_dat_core(self, source: str) -> tuple[dict, dict]:
+        """Parse a DAT file and insert it into the in-memory store.
 
-        ``source`` may be either a filesystem path to the DAT file (preferred,
-        enables true streaming) or a raw XML string.  Returns import summary.
+        Shared implementation used by :meth:`import_dat` and
+        :meth:`import_dat_no_persist`.  Returns ``(dat_info, result_dict)``
+        where ``result_dict`` is the dict returned to callers.  Does **not**
+        call :meth:`_persist`; the caller decides whether to flush.
         """
         header, entries = await run_in_threadpool(parse_dat, source)
 
@@ -149,9 +151,7 @@ class DATStore:
             self._matches.clear()
             self._version += 1
 
-        await run_in_threadpool(self._persist)
-
-        return {
+        result = {
             "id": dat_id,
             "name": dat_info["name"],
             "version": dat_info["version"],
@@ -159,6 +159,17 @@ class DATStore:
             "hashes_added": added,
             "message": f"Imported {len(entries)} entries from {dat_info['name']}",
         }
+        return dat_info, result
+
+    async def import_dat(self, source: str) -> dict:
+        """Parse and import a DAT file.
+
+        ``source`` may be either a filesystem path to the DAT file (preferred,
+        enables true streaming) or a raw XML string.  Returns import summary.
+        """
+        _dat_info, result = await self._import_dat_core(source)
+        await run_in_threadpool(self._persist)
+        return result
 
     async def import_dat_no_persist(self, source: str) -> dict:
         """Parse and import a DAT file without flushing to disk.
@@ -168,47 +179,8 @@ class DATStore:
         once afterward to achieve O(1) disk writes regardless of the number
         of DATs imported.
         """
-        header, entries = await run_in_threadpool(parse_dat, source)
-
-        dat_id = str(uuid.uuid4())[:8]
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-        dat_info = {
-            "id": dat_id,
-            "name": header.get("name", "Unknown DAT"),
-            "description": header.get("description", ""),
-            "version": header.get("version", ""),
-            "imported_at": now,
-            "file_count": len(entries),
-        }
-
-        added = 0
-        with self._lock:
-            self._dats[dat_id] = dat_info
-            for entry in entries:
-                record = {
-                    "dat_id": dat_id,
-                    "game_name": entry["game_name"],
-                    "rom_name": entry["rom_name"],
-                    "size": entry["size"],
-                }
-                if entry.get("sha1"):
-                    self._hashes_sha1[entry["sha1"]] = record
-                    added += 1
-                if entry.get("md5"):
-                    self._hashes_md5[entry["md5"]] = record
-                    added += 1
-            self._matches.clear()
-            self._version += 1
-
-        return {
-            "id": dat_id,
-            "name": dat_info["name"],
-            "version": dat_info["version"],
-            "file_count": len(entries),
-            "hashes_added": added,
-            "message": f"Imported {len(entries)} entries from {dat_info['name']}",
-        }
+        _dat_info, result = await self._import_dat_core(source)
+        return result
 
     async def persist(self) -> None:
         """Explicitly flush the current in-memory state to disk.
@@ -254,7 +226,7 @@ class DATStore:
         dat_id_set = set(dat_ids)
         removed = 0
         with self._lock:
-            for dat_id in dat_ids:
+            for dat_id in dat_id_set:
                 if dat_id in self._dats:
                     del self._dats[dat_id]
                     removed += 1
