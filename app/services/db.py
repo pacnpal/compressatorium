@@ -316,8 +316,10 @@ def apply_migrations(target: Engine | None = None) -> None:
     2. **Pre-Alembic DB** (no ``alembic_version`` row but the
        baseline tables exist).  This is the case for anyone who
        installed the SQLite-migration release before Alembic existed.
-       We ``alembic stamp head`` — no DDL is emitted, we just record
-       that the schema is already at revision ``0001``.
+       We first ``alembic stamp 0001`` to record the baseline revision,
+       then run ``alembic upgrade head`` so any post-baseline migrations
+       are applied.  Alembic will create the ``alembic_version`` table
+       if it doesn't already exist.
     3. **Fresh DB** (no ``alembic_version`` row, no baseline tables).
        Run ``alembic upgrade head`` to build the schema from scratch.
 

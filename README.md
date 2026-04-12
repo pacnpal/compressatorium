@@ -558,8 +558,8 @@ On first startup after upgrading from a JSON-backed install, the app automatical
 Schema is managed by [Alembic](https://alembic.sqlalchemy.org/). On every startup:
 
 1. If the DB already has an `alembic_version` row, Alembic runs `upgrade head`.
-2. If the DB has the baseline tables but no `alembic_version` (pre-Alembic install), Alembic *stamps* head — no DDL runs, it just records that the schema is at revision `0001`.
-3. If the DB is empty, Alembic builds the schema from scratch.
+2. If the DB has the baseline tables but no `alembic_version` (pre-Alembic install), Alembic stamps the baseline revision (`0001`) and then runs `upgrade head` if later migrations are present. Alembic will create the `alembic_version` table as part of this process.
+3. If the DB is empty, Alembic initializes it by applying the migration chain up to `head`.
 
 To evolve the schema:
 
