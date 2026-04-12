@@ -732,7 +732,7 @@ async def get_chd_metadata_batch(
     request: MetadataBatchRequest,
 ) -> dict:
     """Get cached metadata for multiple CHD files.
-    
+
     For every requested path, an entry is returned. Invalid or non-CHD paths
     will have media_type=None, cached=False, and an error field.
     """

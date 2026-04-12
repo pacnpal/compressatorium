@@ -1,0 +1,13 @@
+# Bandit configuration.
+#
+# Tests legitimately use `assert` — that is how pytest reports failures.
+# B101 (assert_used) fires on every one, which generates hundreds of
+# false positives.  We also skip B404 (subprocess import) and B603
+# (subprocess without shell=True): the app deliberately shells out to
+# chdman / dolphin-tool / z3ds_compressor and every such call uses
+# arg-list invocation (shell=False) by design.
+
+[bandit]
+exclude_dirs = tests,app/.venv,.venv,node_modules,static/vendor
+
+skips = B101,B404,B603
