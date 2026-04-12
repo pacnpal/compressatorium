@@ -24,8 +24,27 @@ logger = logging.getLogger("chd.dat")
 
 # Guards concurrent bulk match jobs. Only one DAT-match background job runs
 # at a time; concurrent requests return 409 (matches the /dat/sync pattern).
-_match_job_lock = asyncio.Lock()
+#
+# Lazy-initialised: on Python 3.10+ ``asyncio.Lock()`` no longer binds a loop
+# at construction (the deprecated ``loop=`` kwarg is gone), but its internal
+# waiter state still ties to whichever loop first touches it.  pytest-asyncio
+# creates a fresh event loop per test, so a module-level Lock constructed at
+# import time can end up wedged to a stale loop across test runs.  Binding
+# on first ``async with`` keeps the Lock local to the *current* loop and
+# sidesteps any cold-import-order surprises.
+_match_job_lock: asyncio.Lock | None = None
 _active_match_job_id: str | None = None
+
+
+def _get_match_job_lock() -> asyncio.Lock:
+    """Return the module-level match-job lock, creating it on first use.
+
+    Must be called from a running event loop so the Lock binds to it.
+    """
+    global _match_job_lock  # noqa: PLW0603 — intentional module-level state
+    if _match_job_lock is None:
+        _match_job_lock = asyncio.Lock()
+    return _match_job_lock
 
 
 class MatchRequest(BaseModel):
@@ -308,7 +327,7 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
     if not to_compute:
         return {"status": "idle", "results": results}
 
-    async with _match_job_lock:
+    async with _get_match_job_lock():
         if _active_match_job_id is not None:
             existing = job_manager.get_job_for_lookup(_active_match_job_id)
             if existing is not None and existing.status.value in ("queued", "processing"):
@@ -393,6 +412,13 @@ async def _run_match_job(
 
             result, cacheable = await _hash_one_for_job(normalized_path)
             if cacheable:
+                # Per-file writes are intentional: each one is a single-row
+                # upsert against the SQLite-backed ``dat_matches`` table
+                # (post-v3.6.0 the store is no longer the JSON file that
+                # would rewrite on every change), and it makes the cache
+                # durable against the job being cancelled or the process
+                # crashing mid-run.  Batching to end-of-job would sacrifice
+                # progressive frontend rendering for no meaningful I/O win.
                 try:
                     await dat_store.set_matches_batch({normalized_path: result})
                 except Exception as exc:  # pragma: no cover — best-effort cache write
@@ -424,7 +450,7 @@ async def _run_match_job(
             success=job_success,
             error_message=job_error,
         )
-        async with _match_job_lock:
+        async with _get_match_job_lock():
             if _active_match_job_id == job_id:
                 _active_match_job_id = None
 

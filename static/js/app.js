@@ -3487,25 +3487,51 @@ function App() {
         const isTerminal = !!matchJob
             && ['completed', 'failed', 'cancelled'].includes(matchJob.status);
 
+        // Skip the poll when the job's observable state hasn't advanced
+        // since our last tick — every single SSE progress message from
+        // *any* job causes this effect to re-run, so without this guard
+        // we'd re-hit the backend dozens of times per second for
+        // unrelated jobs.  Track (status, progress) as the change signal.
+        const stateSig = matchJob ? `${matchJob.status}:${matchJob.progress}` : 'missing';
+        if (!isTerminal && active.lastState === stateSig) return;
+        active.lastState = stateSig;
+
+        // Only the paths that haven't resolved yet need to be looked up.
+        // A path whose badge is already {pending:false, matched:...} from
+        // a prior tick doesn't change just because the job advanced to
+        // the next file.  This turns the every-SSE-tick cost from O(all
+        // submitted paths) into O(paths still in flight).
+        const pendingPaths = paths.filter(p => {
+            const entry = datMatches.get(p);
+            return !entry || entry.pending === true || entry.request_error === true;
+        });
+
         let cancelled = false;
-        api.getMatchCache(paths)
-            .then(data => {
-                if (cancelled || !data.results) return;
-                setDatMatches(prev => {
-                    const next = new Map(prev);
-                    Object.entries(data.results).forEach(([path, result]) => {
-                        next.set(path, result);
+        // On terminal tick, always run one final poll even if no paths
+        // look pending locally — the last in-flight result may land in
+        // the cache between our second-to-last poll and the terminal
+        // jobs-list update.
+        const lookupPaths = isTerminal ? paths : pendingPaths;
+        if (lookupPaths.length > 0) {
+            api.getMatchCache(lookupPaths)
+                .then(data => {
+                    if (cancelled || !data.results) return;
+                    setDatMatches(prev => {
+                        const next = new Map(prev);
+                        Object.entries(data.results).forEach(([path, result]) => {
+                            next.set(path, result);
+                        });
+                        return next;
                     });
-                    return next;
-                });
-            })
-            .catch(() => { /* silent — next tick will retry */ });
+                })
+                .catch(() => { /* silent — next tick will retry */ });
+        }
 
         if (isTerminal) {
             activeMatchJobRef.current = null;
         }
         return () => { cancelled = true; };
-    }, [jobs]);
+    }, [jobs, datMatches]);
 
     // Cancel any pending DAT-match retry timer on unmount only.
     // This must be a separate effect with empty deps so the cleanup doesn't
