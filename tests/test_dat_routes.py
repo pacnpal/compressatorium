@@ -737,6 +737,172 @@ async def test_match_respects_concurrency_cap(tmp_path, isolated_dat_store, monk
 
 
 @pytest.mark.asyncio
+async def test_match_batch_job_creates_external_job_with_progress(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """match-batch/job registers an external job, hashes serially, writes
+    per-path results into the match cache, and reports progress."""
+    from fastapi import BackgroundTasks
+    from services.job_manager import job_manager
+    from models import JobStatus
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+
+    files = []
+    for i in range(3):
+        iso = tmp_path / f"game{i}.iso"
+        iso.write_bytes(b"x")
+        files.append(str(iso))
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    # Only one of three hashes returns a match — verifies counting.
+    monkeypatch.setattr(
+        dat_routes, "compute_file_sha1",
+        AsyncMock(side_effect=[target_sha1, "deadbeef" * 5, "cafebabe" * 5]),
+    )
+    # Reset any leftover active-job sentinel from prior tests.
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+
+    bg = BackgroundTasks()
+    request = dat_routes.MatchBatchRequest(paths=files)
+    response = await dat_routes.match_batch_job(request, bg)
+
+    assert response["status"] == "started"
+    job_id = response["job_id"]
+    assert job_manager.jobs[job_id].mode.value == "dat_match"
+
+    # Execute the registered background tasks (FastAPI would do this
+    # after sending the response in production).
+    for task in bg.tasks:
+        await task()
+
+    final_job = job_manager.get_job_for_lookup(job_id)
+    assert final_job.status == JobStatus.COMPLETED
+    assert final_job.progress == 100
+
+    # All three paths should now be in the match cache.
+    for p in files:
+        cached = isolated_dat_store.get_match(os.path.realpath(p))
+        assert cached is not None
+    # Exactly one is matched.
+    matched_count = sum(
+        1 for p in files if isolated_dat_store.get_match(os.path.realpath(p)).get("matched")
+    )
+    assert matched_count == 1
+
+
+@pytest.mark.asyncio
+async def test_match_batch_job_cache_hits_short_circuit(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """When every path is already cached, no job is created (status=idle)."""
+    from fastapi import BackgroundTasks
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    iso = tmp_path / "cached.iso"
+    iso.write_bytes(b"x")
+    path = os.path.realpath(str(iso))
+    await isolated_dat_store.set_match(path, {"path": path, "matched": True})
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    compute_mock = AsyncMock()
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", compute_mock)
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+
+    bg = BackgroundTasks()
+    request = dat_routes.MatchBatchRequest(paths=[path])
+    response = await dat_routes.match_batch_job(request, bg)
+
+    assert response["status"] == "idle"
+    assert response["results"][path]["matched"] is True
+    assert bg.tasks == []
+    compute_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_match_batch_job_concurrent_rejected(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A second match-batch/job while one is active returns 409."""
+    from fastapi import BackgroundTasks
+    from services.job_manager import job_manager
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    iso = tmp_path / "a.iso"
+    iso.write_bytes(b"x")
+    path = str(iso)
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value="a" * 40))
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+
+    bg1 = BackgroundTasks()
+    response1 = await dat_routes.match_batch_job(
+        dat_routes.MatchBatchRequest(paths=[path]), bg1,
+    )
+    assert response1["status"] == "started"
+    job_id = response1["job_id"]
+    # Do NOT run the background task yet — the job stays "processing",
+    # so the second request should be rejected.
+    assert job_manager.jobs[job_id].status.value == "processing"
+
+    bg2 = BackgroundTasks()
+    iso2 = tmp_path / "b.iso"
+    iso2.write_bytes(b"x")
+    with pytest.raises(HTTPException) as exc_info:
+        await dat_routes.match_batch_job(
+            dat_routes.MatchBatchRequest(paths=[str(iso2)]), bg2,
+        )
+    assert exc_info.value.status_code == 409
+
+    # Drain the first job so subsequent tests aren't polluted.
+    for task in bg1.tasks:
+        await task()
+
+
+@pytest.mark.asyncio
+async def test_match_cache_lookup_is_read_only(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """/dat/matches/lookup never invokes the hasher, even for uncached paths."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    cached_iso = tmp_path / "cached.iso"
+    cached_iso.write_bytes(b"x")
+    cached_path = os.path.realpath(str(cached_iso))
+    await isolated_dat_store.set_match(
+        cached_path, {"path": cached_path, "matched": True, "game_name": "Hit"},
+    )
+
+    uncached_iso = tmp_path / "uncached.iso"
+    uncached_iso.write_bytes(b"x")
+    uncached_path = str(uncached_iso)
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("hasher must not be called from cache-only lookup")
+
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", _boom)
+
+    request = dat_routes.MatchCacheLookupRequest(paths=[cached_path, uncached_path])
+    response = await dat_routes.match_cache_lookup(request)
+
+    assert cached_path in response["results"]
+    assert response["results"][cached_path]["game_name"] == "Hit"
+    # Uncached path is simply absent from the results map — the frontend
+    # leaves the pending sentinel in place until the job writes it.
+    assert uncached_path not in response["results"]
+
+
+@pytest.mark.asyncio
 async def test_match_file_hit_respects_size_cap_off(tmp_path, isolated_dat_store, monkeypatch):
     """With MATCH_MAX_FILE_SIZE=0 (disabled), any file is hashed and matched."""
     upload = _make_upload_file(SAMPLE_DAT_XML)

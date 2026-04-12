@@ -16,6 +16,12 @@ const PAGE_SIZE_OPTIONS = [
     { value: 'all', label: 'All' }
 ];
 const isMacMetadataName = (name) => name === '.DS_Store' || name.startsWith('._') || name === '__MACOSX';
+// Externally-managed job modes (metadata scan, DAT match) are driven by
+// job_manager.{create,update,finish}_external_job and show up in the Jobs
+// panel alongside conversion jobs, but must be filtered out of the
+// conversion-queue counts and behaviour (cancellable, etc.).
+const EXTERNAL_SCAN_MODES = new Set(['metadata_scan', 'dat_match']);
+const isExternalScanMode = (mode) => EXTERNAL_SCAN_MODES.has(mode);
 const Z3DS_SOURCE_EXTENSIONS = ['.3ds', '.cci', '.cia'];
 const Z3DS_VERIFY_EXTENSIONS = ['.z3ds', '.zcci', '.zcia'];
 const Z3DS_INFO_EXTENSIONS = [...Z3DS_SOURCE_EXTENSIONS, ...Z3DS_VERIFY_EXTENSIONS];
@@ -1065,7 +1071,7 @@ function JobList({
 
                     ${job.status === 'completed' && html`
                         <div class="job-success" style="color: var(--success); font-size: 0.8rem; padding-left: 24px;">
-                            ${job.mode === 'metadata_scan'
+                            ${isExternalScanMode(job.mode)
                                 ? (job.message || 'Scan complete')
                                 : `Job complete${job.output_size ? ` - ${formatSize(job.output_size)}` : ''}`}
                         </div>
@@ -1076,7 +1082,7 @@ function JobList({
                     `}
 
                     <div class="job-actions">
-                        ${['queued', 'processing'].includes(job.status) && job.mode !== 'metadata_scan' && html`
+                        ${['queued', 'processing'].includes(job.status) && !isExternalScanMode(job.mode) && html`
                             <button class="btn btn-sm btn-secondary" onClick=${() => onCancel(job.id)} title="Cancel this job">
                                 Cancel
                             </button>
@@ -2834,6 +2840,10 @@ function App() {
     const jobUpdateFlushTimeoutRef = useRef(null);
     const completionRefreshTimeoutRef = useRef(null);
     const datMatchRetryTimerRef = useRef(null);
+    // Tracks the active DAT-match background job: its id and the list of
+    // paths that were submitted so we can poll the cache-only lookup endpoint
+    // as per-file results land. Cleared when the job completes or fails.
+    const activeMatchJobRef = useRef(null);
     const preSearchViewRef = useRef(null); // List/archive view snapshot before Search All
     const deferJobUiUpdatesRef = useRef(false); // Pause job-driven rerenders during active select interactions
 
@@ -3138,7 +3148,7 @@ function App() {
     const queueJobs = useMemo(() => {
         const activeServerJobs = jobs.filter(
             (job) => !['completed', 'failed', 'cancelled'].includes(job.status)
-                  && (showMetadataJobs || job.mode !== 'metadata_scan'),
+                  && (showMetadataJobs || !isExternalScanMode(job.mode)),
         );
         return creatingJobs.length > 0
             ? [...creatingJobs, ...activeServerJobs]
@@ -3148,7 +3158,7 @@ function App() {
     const completedJobs = useMemo(
         () => jobs.filter(
             (job) => job.status === 'completed'
-                  && (showMetadataJobs || job.mode !== 'metadata_scan'),
+                  && (showMetadataJobs || !isExternalScanMode(job.mode)),
         ),
         [jobs, showMetadataJobs],
     );
@@ -3156,7 +3166,7 @@ function App() {
     const issueJobs = useMemo(
         () => jobs.filter(
             (job) => ['failed', 'cancelled'].includes(job.status)
-                  && (showMetadataJobs || job.mode !== 'metadata_scan'),
+                  && (showMetadataJobs || !isExternalScanMode(job.mode)),
         ),
         [jobs, showMetadataJobs],
     );
@@ -3404,8 +3414,10 @@ function App() {
             return next;
         });
 
-        api.matchBatch(paths)
+        api.startMatchJob(paths)
             .then(data => {
+                // Merge any cached results returned synchronously (paths that
+                // were already in dat_matches).
                 if (data.results) {
                     setDatMatches(prev => {
                         const next = new Map(prev);
@@ -3414,6 +3426,13 @@ function App() {
                         });
                         return next;
                     });
+                }
+                // If the backend spawned a background job, remember it so
+                // the jobs-update effect can poll the cache-only lookup as
+                // progress lands. Paths still carrying their {pending:true}
+                // sentinel flip to concrete results as the job advances.
+                if (data.status === 'started' && data.job_id) {
+                    activeMatchJobRef.current = { jobId: data.job_id, paths };
                 }
             })
             .catch(() => {
@@ -3446,6 +3465,41 @@ function App() {
             });
 
     }, [displayedEntries, datsImported, datMatches]);
+
+    // While a DAT-match background job is active, poll the read-only
+    // cache-lookup endpoint whenever the jobs list updates (i.e. the SSE
+    // stream delivered a progress event for any job). Paths that the job
+    // has finished hashing will appear in the cache and flip their badges
+    // from "DAT …" to the concrete result — progressive rather than
+    // all-at-once at the end. On terminal job state, do one final lookup
+    // and clear the tracking ref so the effect stops polling.
+    useEffect(() => {
+        const active = activeMatchJobRef.current;
+        if (!active) return;
+        const { jobId, paths } = active;
+        const matchJob = jobs.find(j => j.id === jobId);
+        const isTerminal = !matchJob
+            || ['completed', 'failed', 'cancelled'].includes(matchJob.status);
+
+        let cancelled = false;
+        api.getMatchCache(paths)
+            .then(data => {
+                if (cancelled || !data.results) return;
+                setDatMatches(prev => {
+                    const next = new Map(prev);
+                    Object.entries(data.results).forEach(([path, result]) => {
+                        next.set(path, result);
+                    });
+                    return next;
+                });
+            })
+            .catch(() => { /* silent — next tick will retry */ });
+
+        if (isTerminal) {
+            activeMatchJobRef.current = null;
+        }
+        return () => { cancelled = true; };
+    }, [jobs]);
 
     // Cancel any pending DAT-match retry timer on unmount only.
     // This must be a separate effect with empty deps so the cleanup doesn't
@@ -4953,7 +5007,7 @@ function App() {
     };
 
     const handleRequestCancelAll = () => {
-        const activeCount = jobs.filter(j => ['queued', 'processing'].includes(j.status) && j.mode !== 'metadata_scan').length;
+        const activeCount = jobs.filter(j => ['queued', 'processing'].includes(j.status) && !isExternalScanMode(j.mode)).length;
         if (activeCount === 0) {
             notify('No active jobs to cancel', 'info');
             return;
@@ -4967,7 +5021,7 @@ function App() {
         try {
             const result = await api.cancelAllJobs();
             setJobs(prev => prev.map((job) => {
-                if (job.mode === 'metadata_scan') return job;
+                if (isExternalScanMode(job.mode)) return job;
                 if (job.status === 'queued') {
                     return { ...job, status: 'cancelled' };
                 }
@@ -5057,13 +5111,13 @@ function App() {
     };
 
 
-    const queuedJobsCount = jobs.filter(j => j.status === 'queued' && j.mode !== 'metadata_scan').length;
-    const processingJobsCount = jobs.filter(j => j.status === 'processing' && j.mode !== 'metadata_scan').length;
+    const queuedJobsCount = jobs.filter(j => j.status === 'queued' && !isExternalScanMode(j.mode)).length;
+    const processingJobsCount = jobs.filter(j => j.status === 'processing' && !isExternalScanMode(j.mode)).length;
     const activeJobsCount = queuedJobsCount + processingJobsCount;
     const hasActiveJobs = activeJobsCount > 0;
     const hasCompletedJobs = jobs.some(j =>
         ['completed', 'failed', 'cancelled'].includes(j.status)
-        && (showMetadataJobs || j.mode !== 'metadata_scan')
+        && (showMetadataJobs || !isExternalScanMode(j.mode))
     );
     const selectableEntriesOnPage = paginatedEntries.filter(e => canSelectEntry(e));
     const allSelectedOnPage = selectableEntriesOnPage.length > 0

@@ -778,6 +778,38 @@ export const api = {
         return res.json();
     },
 
+    // Start a background DAT-match job. Returns either
+    //   { status: 'idle', results }                  — everything was cached
+    // or
+    //   { status: 'started', job_id, results }       — job hashing in flight
+    async startMatchJob(paths) {
+        const res = await fetch(`${API_BASE}/dat/match-batch/job`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths }),
+        });
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({ detail: 'Failed to start DAT match job' }));
+            const err = new Error(error.detail || 'Failed to start DAT match job');
+            err.status = res.status;
+            throw err;
+        }
+        return res.json();
+    },
+
+    // Cache-only lookup used to progressively pick up results while a
+    // background match job is writing to the cache. Never hashes.
+    async getMatchCache(paths) {
+        if (!paths || paths.length === 0) return { results: {} };
+        const res = await fetch(`${API_BASE}/dat/matches/lookup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths }),
+        });
+        if (!res.ok) throw new Error('Failed to look up DAT match cache');
+        return res.json();
+    },
+
     // MAMERedump sync
     async syncMAMERedump(tag = null) {
         const body = tag ? JSON.stringify({ tag }) : '{}';

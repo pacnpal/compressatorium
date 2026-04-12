@@ -148,6 +148,14 @@ disable = [
     "C0302",
     "too-many-lines",
 
+    # --- Meta-warnings ----------------------------------------------
+    # `locally-disabled` fires on every inline `# pylint: disable=X`
+    # pragma.  We use those pragmas deliberately (e.g. migrations/env.py
+    # wrong-import-position); silencing the meta rule lets them stand
+    # without also generating a second alert about the pragma itself.
+    "I0011",
+    "locally-disabled",
+
     # --- Codacy-sandbox false positives ------------------------------
     # Codacy runs pylint without the project venv or `app/` on
     # sys.path, so it cannot resolve first-party modules

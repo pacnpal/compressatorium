@@ -67,11 +67,14 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
                     if _strip_ns(child.tag) == "description" and child.text:
                         game_name = child.text.strip()
                         break
-                # Walk ALL <rom> descendants — Logiqx datafiles place them as
-                # direct children, but MAME softlist DATs nest them inside
-                # <part><dataarea><rom>. iter() handles both shapes.
+                # Walk ALL hash-carrying descendants. Logiqx datafiles place
+                # <rom> as direct children; MAME softlist DATs nest them inside
+                # <part><dataarea><rom>; and CD-based softlists (Amiga CD,
+                # Amiga CD32, Bandai Pippin, Konami FireBeat, etc.) carry their
+                # track hashes in <disk> elements under <part><diskarea>.
+                # iter() handles all three shapes.
                 for rom in elem.iter():
-                    if _strip_ns(rom.tag) != "rom":
+                    if _strip_ns(rom.tag) not in ("rom", "disk"):
                         continue
                     entry = _parse_rom_element(rom, game_name)
                     if entry:
