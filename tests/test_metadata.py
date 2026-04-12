@@ -130,7 +130,8 @@ async def test_scan_metadata_skips_disc_id_already_checked(scan_env, monkeypatch
 
 @pytest.fixture
 def metadata_store_path(tmp_path):
-    return tmp_path / "chd_metadata.json"
+    # SQLite file per test. Name kept as "chd_metadata.db" for clarity.
+    return tmp_path / "chd_metadata.db"
 
 
 @pytest.fixture
@@ -138,10 +139,9 @@ def metadata_store(metadata_store_path):
     return CHDMetadataStore(str(metadata_store_path))
 
 
-def test_metadata_store_falls_back_when_default_config_unwritable(monkeypatch, tmp_path):
-    monkeypatch.delenv("CHD_METADATA_STORE", raising=False)
-    monkeypatch.delenv("CHD_DATA_DIR", raising=False)
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
+def test_db_path_resolution_falls_back_when_default_config_unwritable(monkeypatch, tmp_path):
+    """Data-dir fallback semantics (moved out of the old JSON store)."""
+    from app.services.db import resolve_db_path
 
     original_mkdir = Path.mkdir
 
@@ -151,10 +151,12 @@ def test_metadata_store_falls_back_when_default_config_unwritable(monkeypatch, t
         return original_mkdir(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "mkdir", guarded_mkdir)
-    store = CHDMetadataStore()
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
 
-    assert store._store_path.parent == tmp_path / "compressatorium"
-    assert store._store_path.name == "chd_metadata.json"
+    # No explicit path, default data_dir=/config — should fall back to TMPDIR.
+    resolved = resolve_db_path(None, data_dir="/config")
+    assert Path(resolved).parent == tmp_path / "compressatorium"
+    assert Path(resolved).name == "compressatorium.db"
 
 
 @pytest.mark.asyncio
@@ -174,14 +176,12 @@ async def test_concurrent_metadata_writes(metadata_store, metadata_store_path, t
 
     await asyncio.gather(*[set_one(p) for p in paths])
 
-    # Verify all records are in memory
+    # Verify all records are present in the DB.
     records = metadata_store.all_records()
     assert len(records) == count
-
-    # Verify disk state is consistent
-    with open(metadata_store_path) as f:
-        data = json.load(f)
-        assert len(data) == count
+    # Spot check: each normalized path is present exactly once.
+    real_paths = {os.path.realpath(p) for p in paths}
+    assert {r["chd_path"] for r in records} == real_paths
 
 
 @pytest.mark.asyncio
@@ -207,14 +207,13 @@ async def test_metadata_persist_version_gate(metadata_store, metadata_store_path
         spam_b(),
     )
 
-    # Both should be present
+    # Both should be present in the DB.
     real_a = os.path.realpath(path_a)
     real_b = os.path.realpath(path_b)
 
-    with open(metadata_store_path) as f:
-        data = json.load(f)
-        assert real_a in data
-        assert real_b in data
+    paths_on_disk = {r["chd_path"] for r in metadata_store.all_records()}
+    assert real_a in paths_on_disk
+    assert real_b in paths_on_disk
 
 
 @pytest.mark.asyncio

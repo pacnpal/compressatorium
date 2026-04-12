@@ -80,6 +80,21 @@ async def startup_event():
 
     configure_logging()
     logger = logging.getLogger("chd")
+
+    # Initialise the SQLite DB and run any pending JSON → SQLite migrations
+    # BEFORE any store is touched (dat_store.has_dats() below needs it).
+    from pathlib import Path
+    from services import db as _db
+
+    db_path = _db.resolve_db_path(settings.db_path, data_dir=settings.data_dir)
+    _config_dir = Path(settings.data_dir)
+    _db.init_and_migrate(
+        db_path,
+        dat_store_json=_config_dir / "dat_store.json",
+        verification_json=_config_dir / "verified_chds.json",
+        chd_metadata_json=_config_dir / "chd_metadata.json",
+        dat_sync_json=_config_dir / "dat_sync.json",
+    )
     explicit_volumes = [v.strip() for v in str(settings.chd_volumes).split(",") if v.strip()]
     discovered_volumes = [] if explicit_volumes else settings.scan_data_mounts_on_startup()
     logger.info(f"Compressatorium v{get_version()} starting...")

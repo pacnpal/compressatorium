@@ -61,8 +61,9 @@ This document contains the results of a comprehensive deployment readiness audit
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | ✅ | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | ✅ | Temporary working directory for archive extraction (auto-created) |
 | `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd-locks` | ✅ | Directory for job lock files (ephemeral, auto-cleaned on restart) |
-| `CHD_METADATA_STORE` | `/config/chd_metadata.json` | ✅ | CHD metadata cache file path |
-| `CHD_VERIFICATION_STORE` | `/config/verified_chds.json` | ✅ | Verification store file path |
+| `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | ✅ | Unified SQLite database; replaces the legacy JSON stores |
+| `CHD_METADATA_STORE` | *(deprecated)* | ✅ | Legacy JSON path; auto-migrated to SQLite on first startup, renamed to `.migrated.bak` |
+| `CHD_VERIFICATION_STORE` | *(deprecated)* | ✅ | Legacy JSON path; auto-migrated to SQLite on first startup, renamed to `.migrated.bak` |
 | `CHDMAN_MODE` | `createcd` | ✅ | CD/DVD conversion mode (CLI mode) |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | ✅ | Binary path override |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | ✅ | Dolphin tool binary path |

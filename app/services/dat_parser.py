@@ -57,16 +57,25 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
                         header["version"] = child.text.strip()
                 elem.clear()
 
-            elif tag == "game" or tag == "machine":
+            elif tag in ("game", "machine", "software"):
                 game_name = elem.get("name", "").strip()
+                # Prefer <description> text for the human-readable name when
+                # present (softlist entries typically carry the full title in
+                # <description> while the short-id is in name=""). Fall back
+                # to the name attribute.
                 for child in elem:
-                    child_tag = _strip_ns(child.tag)
-                    if child_tag == "description" and child.text and not game_name:
+                    if _strip_ns(child.tag) == "description" and child.text:
                         game_name = child.text.strip()
-                    elif child_tag == "rom":
-                        entry = _parse_rom_element(child, game_name)
-                        if entry:
-                            entries.append(entry)
+                        break
+                # Walk ALL <rom> descendants — Logiqx datafiles place them as
+                # direct children, but MAME softlist DATs nest them inside
+                # <part><dataarea><rom>. iter() handles both shapes.
+                for rom in elem.iter():
+                    if _strip_ns(rom.tag) != "rom":
+                        continue
+                    entry = _parse_rom_element(rom, game_name)
+                    if entry:
+                        entries.append(entry)
                 elem.clear()
 
     except ET.ParseError as exc:

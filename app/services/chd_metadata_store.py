@@ -1,22 +1,26 @@
-"""
-Persistent store for CHD file metadata (chdman info output).
-Caches metadata to avoid re-running chdman info on every request.
-Uses file modification time (mtime) for cache invalidation.
+"""SQLite-backed CHD metadata cache.
+
+Caches ``chdman info`` output (and disc-ID information) per CHD file
+with mtime-based invalidation.  Public API is unchanged from the
+previous JSON implementation; internals now dispatch to SQLAlchemy.
 """
 
-import asyncio
-import json
+from __future__ import annotations
+
+import logging
 import os
 import re
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, Optional
-from fastapi.concurrency import run_in_threadpool
+from typing import Any, Dict, List, Optional
 
-# Shared executor for async file I/O
-_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chd_metadata")
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy import delete, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from services import db as _db
+
+logger = logging.getLogger("chd.chd_metadata_store")
+
 
 # =============================================================================
 # MEDIA TYPE DETECTION - Single Source of Truth
@@ -35,153 +39,63 @@ CD_COMPRESSION_CODECS = frozenset(["cdzl", "cdzs", "cdlz", "cdfl"])
 # =============================================================================
 
 
+def _utcnow_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 class CHDMetadataStore:
     """Persists CHD metadata across application restarts."""
 
-    def __init__(self, store_path: Optional[str] = None):
-        base_path = store_path or os.environ.get("CHD_METADATA_STORE")
-        explicit_path = bool(base_path)
-        if base_path:
-            self._store_path = Path(base_path)
+    def __init__(
+        self,
+        store_path: Optional[str] = None,
+        *,
+        session_factory: sessionmaker[Session] | None = None,
+    ) -> None:
+        if session_factory is not None:
+            self._session_factory = session_factory
+            self._own_engine: Engine | None = None
+        elif store_path is not None:
+            self._own_engine = _db.make_engine(str(store_path))
+            _db.Base.metadata.create_all(self._own_engine)
+            self._session_factory = sessionmaker(
+                bind=self._own_engine, expire_on_commit=False, future=True,
+            )
         else:
-            default_dir = Path(os.environ.get("CHD_DATA_DIR", "/config"))
-            self._store_path = default_dir / "chd_metadata.json"
-        try:
-            self._store_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            if explicit_path:
-                raise
-            fallback_root = Path(os.environ.get("TMPDIR", "/tmp")) / "compressatorium"
-            fallback_root.mkdir(parents=True, exist_ok=True)
-            self._store_path = fallback_root / self._store_path.name
+            self._own_engine = None
+            self._session_factory = None
 
-        self._lock = threading.Lock()
-        self._records: Dict[str, Dict] = {}
-        self._load()
-
-    def _load(self):
-        if self._store_path.exists():
-            try:
-                with self._store_path.open("r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                    if isinstance(data, dict):
-                        self._records = data
-            except json.JSONDecodeError:
-                # Corrupted cache, start fresh but keep file for inspection
-                backup = self._store_path.with_suffix(".corrupt")
-                self._store_path.rename(backup)
-                self._records = {}
-        else:
-            self._records = {}
-        
-        # Dirty flag for batched updates
-        self._dirty = False
-        # Version counter for dirty tracking (monotonically increasing)
-        self._version = 0
-        # Separate lock for serializing file writes
-        self._write_lock = threading.Lock()
-
-    def _persist(self):
-        """
-        Synchronous persist - writes self._records to disk.
-        
-        Uses version checking to ensure consistent writes while minimizing
-        lock hold time. Implements last-write-wins: only commits if version
-        hasn't changed since snapshot.
-        """
-        # Capture version and snapshot under lock
-        with self._lock:
-            snapshot_version = self._version
-            records_snapshot = dict(self._records)
-        
-        # Do file I/O outside _lock to minimize lock contention
-        with self._write_lock:
-            tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
-            try:
-                with tmp_path.open("w", encoding="utf-8") as fh:
-                    json.dump(records_snapshot, fh, indent=2)
-                
-                # Version-gated replace: only commit if version still matches
-                with self._lock:
-                    if self._version == snapshot_version:
-                        tmp_path.replace(self._store_path)
-                        self._dirty = False
-                    # else: discard stale write, newer snapshot will be written
-            finally:
-                # Clean up temp file if it still exists (stale or failed)
-                if tmp_path.exists():
-                    tmp_path.unlink()
-
-    async def _persist_async(self):
-        """Non-blocking persist using thread pool executor.
-        
-        Uses the same pattern as sync _persist:
-        1. Snapshot under _lock
-        2. Write to temp under _write_lock
-        3. Version-gated replace under _lock (only commits if version matches)
-        """
-        loop = asyncio.get_event_loop()
-        
-        # Capture version and snapshot under lock (fast, in-memory)
-        with self._lock:
-            snapshot_version = self._version
-            records_copy = dict(self._records)
-        
-        def do_write():
-            # File I/O under _write_lock only (not holding _lock)
-            with self._write_lock:
-                tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
-                try:
-                    with tmp_path.open("w", encoding="utf-8") as fh:
-                        json.dump(records_copy, fh, indent=2)
-                    
-                    # Version-gated replace: only commit if version still matches
-                    with self._lock:
-                        if self._version == snapshot_version:
-                            tmp_path.replace(self._store_path)
-                            self._dirty = False
-                            return True
-                        # else: discard stale write, newer snapshot will be written
-                        return False
-                finally:
-                    # Clean up temp file if it still exists (stale or failed)
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-        
-        try:
-            await loop.run_in_executor(_executor, do_write)
-        except Exception:
-            # On failure, dirty flag remains True so next flush will retry
-            raise
+    def _session(self) -> Session:
+        if self._session_factory is not None:
+            return self._session_factory()
+        if _db.SessionLocal is None:
+            raise RuntimeError(
+                "CHDMetadataStore: db.SessionLocal not initialized — call "
+                "db.init_engine() before using the store.",
+            )
+        return _db.SessionLocal()
 
     @staticmethod
     def _normalize_path(path: str) -> str:
         return os.path.realpath(path)
 
+    # ------------------------------------------------------------------
+    # Media-type extraction (unchanged)
+    # ------------------------------------------------------------------
+
     @staticmethod
     def extract_media_type(info: dict) -> Optional[str]:
-        """
-        Extract media type (dvd/cd) from CHD metadata.
-        
-        Uses patterns defined in MEDIA_TYPE_PATTERNS constants.
-        Returns 'dvd' if Tag contains DVD, 'cd' if it contains CD patterns.
-        """
+        """Extract media type (dvd/cd) from CHD metadata."""
         raw_data = info.get("raw_data", "")
 
-        tag_values = set()
-        metadata_tags = set()
+        tag_values: set[str] = set()
+        metadata_tags: set[str] = set()
 
-        # Look for metadata lines containing Tag info
-        # Example patterns:
-        # - "Metadata: Tag:GDROM"
-        # - "Metadata: CHCD, Tag: CD-ROM"
-        # - "Tag: DVD-VIDEO"
-        # - "Tag='CHT2'" (quoted format)
-        for line in raw_data.splitlines():
+        for line in raw_data.splitlines() if isinstance(raw_data, str) else []:
             if not line:
                 continue
             for match in re.finditer(r"Tag\s*[:=]\s*([^,\s]+)", line, re.IGNORECASE):
-                # Strip quotes from tag values (handles Tag='CHT2' format)
                 tag_value = match.group(1).strip().strip("'\"").upper()
                 tag_values.add(tag_value)
             meta_match = re.search(r"^\s*Metadata:\s*([^,]+)", line, re.IGNORECASE)
@@ -196,22 +110,17 @@ class CHDMetadataStore:
                 metadata_tags.add(entry.strip().upper())
 
         def matches_dvd(value: str) -> bool:
-            """Check if value matches any DVD pattern."""
             normalized = value.upper()
             return any(pat in normalized for pat in DVD_TAG_PATTERNS)
 
         def matches_cd(value: str) -> bool:
-            """Check if value matches any CD pattern or CD metadata prefix."""
             normalized = re.sub(r"[^A-Z0-9]", "", value.upper())
-            # Check tag patterns
             if any(pat.replace("-", "") in normalized for pat in CD_TAG_PATTERNS):
                 return True
-            # Check metadata prefixes (handles Tag='CHT2' format)
             if any(normalized.startswith(prefix) for prefix in CD_METADATA_PREFIXES):
                 return True
             return False
 
-        # Check tag values for DVD first (higher priority)
         for tag_value in tag_values:
             if matches_dvd(tag_value):
                 return "dvd"
@@ -219,18 +128,15 @@ class CHDMetadataStore:
             if matches_cd(tag_value):
                 return "cd"
 
-        # Check metadata tags for DVD first
         for meta_value in metadata_tags:
             if matches_dvd(meta_value):
                 return "dvd"
         for meta_value in metadata_tags:
-            # Check CD metadata prefixes (CHCD, CHT2, CHTR, etc.)
             if any(meta_value.startswith(prefix) for prefix in CD_METADATA_PREFIXES):
                 return "cd"
             if matches_cd(meta_value):
                 return "cd"
 
-        # Fallback: check for common patterns in metadata field
         metadata = info.get("metadata", "")
         if isinstance(metadata, str):
             metadata_upper = metadata.upper()
@@ -241,319 +147,297 @@ class CHDMetadataStore:
             if any(metadata_upper.startswith(prefix) for prefix in CD_METADATA_PREFIXES):
                 return "cd"
 
-        # Additional heuristic: check compression type for CD-specific codecs
         compression = info.get("compression", "")
         if isinstance(compression, str):
             if any(codec in compression.lower() for codec in CD_COMPRESSION_CODECS):
                 return "cd"
-        
+
         return None
 
+    # ------------------------------------------------------------------
+    # Queries
+    # ------------------------------------------------------------------
+
+    def _get_sync(self, chd_path: str) -> Optional[_db.CHDMetadata]:
+        normalized = self._normalize_path(chd_path)
+        with self._session() as session:
+            return session.get(_db.CHDMetadata, normalized)
+
     async def get_metadata(self, chd_path: str) -> Optional[dict]:
-        """Get cached metadata for a CHD file."""
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        with self._lock:
-            record = self._records.get(normalized)
-            if record is None:
-                return None
-            return record.get("metadata")
+        row = await run_in_threadpool(self._get_sync, chd_path)
+        return None if row is None else row.metadata_json
 
     async def get_media_type(self, chd_path: str) -> Optional[str]:
-        """Get just the media type (dvd/cd) for a CHD file."""
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        with self._lock:
-            record = self._records.get(normalized)
-            if record is None:
-                return None
-            return record.get("media_type")
+        row = await run_in_threadpool(self._get_sync, chd_path)
+        return None if row is None else row.media_type
+
+    async def get_full_info(self, chd_path: str) -> tuple[Optional[dict], Optional[str]]:
+        row = await run_in_threadpool(self._get_sync, chd_path)
+        if row is None:
+            return None, None
+        return row.metadata_json, row.media_type
+
+    async def get_disc_id_info(self, chd_path: str) -> tuple[Optional[str], Optional[str]]:
+        row = await run_in_threadpool(self._get_sync, chd_path)
+        if row is None:
+            return None, None
+        return row.game_id, row.title
 
     async def is_disc_id_checked(self, chd_path: str) -> bool:
-        """
-        Return True if disc ID extraction has already been attempted for this
-        CHD and the file has not been modified since.  Used by the metadata
-        scan to skip the ``chdman dumpmeta`` subprocess for already-processed
-        files, avoiding redundant work on every scan.
-        """
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
+        normalized = self._normalize_path(chd_path)
         try:
             current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
         except OSError:
             return False
-        with self._lock:
-            record = self._records.get(normalized)
-            if record is None or not record.get("disc_id_checked"):
-                return False
-            return record.get("disc_id_checked_mtime") == current_mtime
-
-    async def mark_disc_id_checked(self, chd_path: str) -> None:
-        """
-        Mark that disc ID extraction has been attempted for this CHD.
-        Stores the current file mtime so that ``is_disc_id_checked`` can
-        detect when the file is later modified (e.g. by a re-conversion).
-        Creates a minimal record if none exists yet.
-        """
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        try:
-            current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
-        except OSError:
-            current_mtime = None
-        with self._lock:
-            if normalized not in self._records:
-                self._records[normalized] = {"chd_path": normalized}
-            self._records[normalized]["disc_id_checked"] = True
-            self._records[normalized]["disc_id_checked_mtime"] = current_mtime
-            self._dirty = True
-            self._version += 1
+        row = await run_in_threadpool(self._get_sync, chd_path)
+        if row is None or not row.disc_id_checked:
+            return False
+        return row.disc_id_checked_mtime == current_mtime
 
     async def is_stale(self, chd_path: str) -> bool:
-        """Check if cached metadata is stale (file modified since caching)."""
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        
+        normalized = self._normalize_path(chd_path)
         try:
             current_mtime = await run_in_threadpool(os.path.getmtime, normalized)
         except OSError:
-            # File doesn't exist or not accessible - treat as stale
+            # File missing / unreadable → treat as stale.
             return True
-        
-        with self._lock:
-            record = self._records.get(normalized)
-            if record is None:
-                return True
-            cached_mtime = record.get("mtime")
-            if cached_mtime is None:
-                return True
-            return current_mtime != cached_mtime
-
-    async def set_metadata(self, chd_path: str, info: dict, persist: bool = True) -> dict:
-        """
-        Cache metadata for a CHD file.
-        
-        Args:
-            chd_path: Path to the CHD file
-            info: Full chdman info output dict
-            persist: If True, immediately persist to disk. Set to False for batch updates.
-            
-        Returns:
-            The record that was stored (includes extracted media_type)
-        """
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        
-        try:
-            mtime = await run_in_threadpool(os.path.getmtime, normalized)
-        except OSError:
-            mtime = None
-        
-        # CPU bound, but fast enough to run on event loop usually. 
-        # If very complex, could offload, but extract_media_type is regex/string ops.
-        media_type = self.extract_media_type(info)
-        
-        record = {
-            "chd_path": normalized,
-            "metadata": info,
-            "media_type": media_type,
-            "mtime": mtime,
-            "cached_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
-        
-        should_persist = False
-        with self._lock:
-            # Preserve disc_id_checked fields and disc-ID-derived game_id/title
-            # from any existing record so that a Phase 1 metadata refresh doesn't
-            # erase the Phase 2 disc-ID marker or cached disc identity.
-            existing = self._records.get(normalized)
-            if existing:
-                if "disc_id_checked" in existing:
-                    record["disc_id_checked"] = existing["disc_id_checked"]
-                if "disc_id_checked_mtime" in existing:
-                    record["disc_id_checked_mtime"] = existing["disc_id_checked_mtime"]
-                if "game_id" in existing:
-                    record["game_id"] = existing["game_id"]
-                if "title" in existing:
-                    record["title"] = existing["title"]
-            self._records[normalized] = record
-            self._dirty = True
-            self._version += 1  # Track modifications for async persist
-            should_persist = persist
-        
-        if should_persist:
-            await self._persist_async()
-        
-        return record
-
-    async def clear(self, chd_path: str):
-        """Remove cached metadata for a CHD file."""
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        should_persist = False
-        with self._lock:
-            if normalized in self._records:
-                del self._records[normalized]
-                self._version += 1
-                self._dirty = True
-                should_persist = True
-        
-        if should_persist:
-            await self._persist_async()
-
-    async def move(self, old_path: str, new_path: str):
-        """Update cache when a CHD file is renamed/moved."""
-        old_normalized = await run_in_threadpool(self._normalize_path, old_path)
-        new_normalized = await run_in_threadpool(self._normalize_path, new_path)
-        
-        # Pre-fetch mtime for new path to minimize lock time and ensure atomicity of the swap
-        try:
-            new_mtime = await run_in_threadpool(os.path.getmtime, new_normalized)
-        except OSError:
-            new_mtime = None
-
-        should_persist = False
-        with self._lock:
-            # Atomic check-and-move
-            if old_normalized in self._records:
-                record = self._records.pop(old_normalized)
-                
-                # Update record structure
-                record["chd_path"] = new_normalized
-                record["mtime"] = new_mtime
-                self._records[new_normalized] = record
-                
-                self._version += 1
-                self._dirty = True
-                should_persist = True
-        
-        if should_persist:
-            await self._persist_async()
+        row = await run_in_threadpool(self._get_sync, chd_path)
+        if row is None or row.mtime is None:
+            return True
+        return current_mtime != row.mtime
 
     async def get_batch(self, chd_paths: list) -> Dict[str, dict]:
-        """Get cached metadata for multiple CHD files at once."""
-        result = {}
-        # Normalize all paths first (offloaded)
-        # We can do this in parallel or serial. Serial is fine for now as it's run_in_threadpool.
-        # Actually, let's just do it one by one or mapped.
-        normalized_map = {}
-        for path in chd_paths:
-            normalized_map[path] = await run_in_threadpool(self._normalize_path, path)
+        """Bulk fetch: returns ``{path: {"media_type": str|None, "cached": True}}``
+        for every cached entry.  Un-cached paths are simply absent."""
+        if not chd_paths:
+            return {}
+        norm_map = {
+            p: await run_in_threadpool(self._normalize_path, p) for p in chd_paths
+        }
+        unique_norms = list(set(norm_map.values()))
 
-        with self._lock:
-            for original_path, normalized in normalized_map.items():
-                record = self._records.get(normalized)
-                if record is not None:
-                    result[original_path] = {
-                        "media_type": record.get("media_type"),
-                        "cached": True,
-                    }
-        return result
+        def _fetch() -> dict[str, str | None]:
+            with self._session() as session:
+                rows = session.scalars(
+                    select(_db.CHDMetadata).where(_db.CHDMetadata.chd_path.in_(unique_norms))
+                ).all()
+                return {r.chd_path: r.media_type for r in rows}
 
-    async def get_full_info(self, chd_path: str) -> tuple[Optional[dict], Optional[str]]:
-        """Get both metadata and media_type in one call."""
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        with self._lock:
-            record = self._records.get(normalized)
-            if record is None:
-                return None, None
-            return record.get("metadata"), record.get("media_type")
+        by_norm = await run_in_threadpool(_fetch)
+        return {
+            orig: {"media_type": by_norm[norm], "cached": True}
+            for orig, norm in norm_map.items()
+            if norm in by_norm
+        }
 
-    async def get_disc_id_info(self, chd_path: str) -> tuple[Optional[str], Optional[str]]:
+    # ------------------------------------------------------------------
+    # Writes
+    # ------------------------------------------------------------------
+
+    def _set_metadata_sync(self, chd_path: str, info: dict) -> dict:
+        normalized = self._normalize_path(chd_path)
+        try:
+            mtime = os.path.getmtime(normalized)
+        except OSError:
+            mtime = None
+
+        media_type = self.extract_media_type(info)
+        now = _utcnow_iso()
+
+        with self._session() as session:
+            existing = session.get(_db.CHDMetadata, normalized)
+            if existing is not None:
+                # Preserve disc-ID bookkeeping fields (set by Phase 2)
+                # across a Phase 1 metadata refresh.
+                existing.metadata_json = info
+                existing.media_type = media_type
+                existing.mtime = mtime
+                existing.cached_at = now
+                row = existing
+            else:
+                row = _db.CHDMetadata(
+                    chd_path=normalized,
+                    metadata_json=info,
+                    media_type=media_type,
+                    mtime=mtime,
+                    cached_at=now,
+                    disc_id_checked=False,
+                )
+                session.add(row)
+            session.commit()
+
+            return {
+                "chd_path": row.chd_path,
+                "metadata": row.metadata_json,
+                "media_type": row.media_type,
+                "mtime": row.mtime,
+                "cached_at": row.cached_at,
+                "disc_id_checked": row.disc_id_checked,
+                "disc_id_checked_mtime": row.disc_id_checked_mtime,
+                "game_id": row.game_id,
+                "title": row.title,
+            }
+
+    async def set_metadata(self, chd_path: str, info: dict, persist: bool = True) -> dict:
+        """Cache metadata for a CHD file.
+
+        ``persist`` is kept for interface parity; SQLite always commits
+        per call so the flag is effectively a no-op (the old JSON code
+        used it to batch writes).
         """
-        Return the cached ``(game_id, title)`` pair for *chd_path*, or
-        ``(None, None)`` if disc-ID info has not been stored yet.
+        _ = persist
+        return await run_in_threadpool(self._set_metadata_sync, chd_path, info)
 
-        Used by the ``/api/info`` route to skip the ``chdman dumpmeta``
-        subprocess when the result is already known.
-        """
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        with self._lock:
-            record = self._records.get(normalized)
-            if record is None:
-                return None, None
-            return record.get("game_id"), record.get("title")
+    def _mark_disc_id_checked_sync(self, chd_path: str) -> None:
+        normalized = self._normalize_path(chd_path)
+        try:
+            current_mtime: float | None = os.path.getmtime(normalized)
+        except OSError:
+            current_mtime = None
+        with self._session() as session:
+            existing = session.get(_db.CHDMetadata, normalized)
+            if existing is None:
+                session.add(_db.CHDMetadata(
+                    chd_path=normalized,
+                    disc_id_checked=True,
+                    disc_id_checked_mtime=current_mtime,
+                ))
+            else:
+                existing.disc_id_checked = True
+                existing.disc_id_checked_mtime = current_mtime
+            session.commit()
+
+    async def mark_disc_id_checked(self, chd_path: str) -> None:
+        await run_in_threadpool(self._mark_disc_id_checked_sync, chd_path)
+
+    def _update_disc_id_info_sync(
+        self, chd_path: str, game_id: Optional[str], title: Optional[str],
+    ) -> None:
+        normalized = self._normalize_path(chd_path)
+        with self._session() as session:
+            existing = session.get(_db.CHDMetadata, normalized)
+            if existing is None:
+                session.add(_db.CHDMetadata(
+                    chd_path=normalized,
+                    game_id=game_id,
+                    title=title,
+                ))
+            else:
+                existing.game_id = game_id
+                existing.title = title
+            session.commit()
 
     async def update_disc_id_info(
         self, chd_path: str, game_id: Optional[str], title: Optional[str],
         persist: bool = True,
     ) -> None:
-        """
-        Store the ``game_id`` and ``title`` fields in the cached record for
-        *chd_path*.  Creates a minimal stub record when none exists yet.
+        """Store disc-ID info. ``persist`` is a no-op — kept for interface parity."""
+        _ = persist
+        await run_in_threadpool(self._update_disc_id_info_sync, chd_path, game_id, title)
 
-        This allows the ``/api/info`` route to return disc-ID info without
-        spawning a ``chdman dumpmeta`` subprocess on every request.
+    def _clear_sync(self, chd_path: str) -> None:
+        normalized = self._normalize_path(chd_path)
+        with self._session() as session:
+            session.execute(
+                delete(_db.CHDMetadata).where(_db.CHDMetadata.chd_path == normalized)
+            )
+            session.commit()
 
-        Args:
-            persist: If True (default), immediately flush to disk.  Pass
-                     False during batch operations (e.g. Phase 2 of the
-                     metadata scan) to defer persistence to the final
-                     ``flush_async()`` call, avoiding a per-CHD disk write.
-        """
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        with self._lock:
-            if normalized not in self._records:
-                self._records[normalized] = {"chd_path": normalized}
-            self._records[normalized]["game_id"] = game_id
-            self._records[normalized]["title"] = title
-            self._dirty = True
-            self._version += 1
+    async def clear(self, chd_path: str) -> None:
+        await run_in_threadpool(self._clear_sync, chd_path)
 
-        if persist:
-            await self._persist_async()
+    def _move_sync(self, old_path: str, new_path: str) -> None:
+        old_normalized = self._normalize_path(old_path)
+        new_normalized = self._normalize_path(new_path)
+        try:
+            new_mtime: float | None = os.path.getmtime(new_normalized)
+        except OSError:
+            new_mtime = None
 
-    def all_records(self):
-        """Return all cached records."""
-        with self._lock:
-            return list(self._records.values())
+        with self._session() as session:
+            old = session.get(_db.CHDMetadata, old_normalized)
+            if old is None:
+                return
+            # Copy fields, drop old, insert new.  Using ``session.delete``
+            # + ``add`` rather than UPDATE so PK change is explicit.
+            payload = {
+                "chd_path": new_normalized,
+                "metadata_json": old.metadata_json,
+                "media_type": old.media_type,
+                "mtime": new_mtime,
+                "cached_at": old.cached_at,
+                "disc_id_checked": old.disc_id_checked,
+                "disc_id_checked_mtime": old.disc_id_checked_mtime,
+                "game_id": old.game_id,
+                "title": old.title,
+            }
+            session.delete(old)
+            session.flush()
+            existing_new = session.get(_db.CHDMetadata, new_normalized)
+            if existing_new is not None:
+                for k, v in payload.items():
+                    setattr(existing_new, k, v)
+            else:
+                session.add(_db.CHDMetadata(**payload))
+            session.commit()
+
+    async def move(self, old_path: str, new_path: str) -> None:
+        await run_in_threadpool(self._move_sync, old_path, new_path)
+
+    # ------------------------------------------------------------------
+    # Housekeeping
+    # ------------------------------------------------------------------
+
+    def all_records(self) -> List[dict]:
+        with self._session() as session:
+            rows = session.scalars(select(_db.CHDMetadata)).all()
+            return [
+                {
+                    "chd_path": r.chd_path,
+                    "metadata": r.metadata_json,
+                    "media_type": r.media_type,
+                    "mtime": r.mtime,
+                    "cached_at": r.cached_at,
+                    "disc_id_checked": r.disc_id_checked,
+                    "disc_id_checked_mtime": r.disc_id_checked_mtime,
+                    "game_id": r.game_id,
+                    "title": r.title,
+                }
+                for r in rows
+            ]
+
+    def _prune_missing_sync(self) -> int:
+        with self._session() as session:
+            paths = session.scalars(select(_db.CHDMetadata.chd_path)).all()
+            missing = [p for p in paths if not os.path.exists(p)]
+            if not missing:
+                return 0
+            session.execute(
+                delete(_db.CHDMetadata).where(_db.CHDMetadata.chd_path.in_(missing))
+            )
+            session.commit()
+            return len(missing)
 
     async def prune_missing(self) -> int:
-        """Remove cache entries for CHD files that no longer exist."""
-        def _check_and_prune():
-            # 1. Snapshot keys safely
-            with self._lock:
-                keys = list(self._records.keys())
-            
-            # 2. Check existence (blocking I/O)
-            removed = []
-            for path in keys:
-                if not os.path.exists(path):
-                    removed.append(path)
-            
-            # 3. Remove missing from records with lock AND snapshot for persist
-            should_persist = False
-            if removed:
-                with self._lock:
-                    for path in removed:
-                        if path in self._records:
-                            del self._records[path]
-                    self._version += 1
-                    self._dirty = True
-                    should_persist = True
-            
-            # 4. Return whether we need to persist and the count
-            return removed, should_persist
+        return await run_in_threadpool(self._prune_missing_sync)
 
-        removed, should_persist = await run_in_threadpool(_check_and_prune)
-        
-        if should_persist:
-            await self._persist_async()
-        
-        return len(removed)
+    # ------------------------------------------------------------------
+    # Legacy dirty/flush interface (kept as no-ops).  SQLite commits
+    # synchronously per-call, so there is nothing to flush.
+    # ------------------------------------------------------------------
 
     def is_dirty(self) -> bool:
-        """Check if there are unpersisted changes."""
-        with self._lock:
-            return self._dirty
+        return False
 
-    async def flush_async(self):
-        """Persist any dirty changes asynchronously."""
-        if self.is_dirty():
-            await self._persist_async()
+    async def flush_async(self) -> None:
+        return None
 
-    def flush(self):
-        """Persist any dirty changes synchronously."""
-        should_persist = False
-        with self._lock:
-            if self._dirty:
-                should_persist = True
-        
-        if should_persist:
-            self._persist()
+    def flush(self) -> None:
+        return None
+
+    async def _persist_async(self) -> None:  # pragma: no cover — kept for test compat
+        """Legacy hook some tests monkeypatch.  No-op under SQLite."""
+        return None
 
 
 # Singleton instance

@@ -1,197 +1,176 @@
-import json
+"""SQLite-backed verification store.
+
+Records which CHD/Dolphin image files have been successfully integrity-
+verified.  Public API matches the legacy JSON store 1:1.
+"""
+
+from __future__ import annotations
+
+import logging
 import os
-import threading
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
+from sqlalchemy import delete, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from services import db as _db
+
+logger = logging.getLogger("chd.verification_store")
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class VerificationStore:
     """Persists disc/image verification results across application restarts."""
 
-    def __init__(self, store_path: str | None = None) -> None:
-        base_path = store_path or os.environ.get("CHD_VERIFICATION_STORE")
-        explicit_path = bool(base_path)
-        if base_path:
-            self._store_path = Path(base_path)
+    def __init__(
+        self,
+        store_path: str | None = None,
+        *,
+        session_factory: sessionmaker[Session] | None = None,
+    ) -> None:
+        if session_factory is not None:
+            self._session_factory = session_factory
+            self._own_engine: Engine | None = None
+        elif store_path is not None:
+            self._own_engine = _db.make_engine(str(store_path))
+            _db.Base.metadata.create_all(self._own_engine)
+            self._session_factory = sessionmaker(
+                bind=self._own_engine, expire_on_commit=False, future=True,
+            )
         else:
-            default_dir = Path(os.environ.get("CHD_DATA_DIR", "/config"))
-            self._store_path = default_dir / "verified_chds.json"
-        try:
-            self._store_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            if explicit_path:
-                raise
-            fallback_root = Path(os.environ.get("TMPDIR", "/tmp")) / "compressatorium"
-            fallback_root.mkdir(parents=True, exist_ok=True)
-            self._store_path = fallback_root / self._store_path.name
+            self._own_engine = None
+            self._session_factory = None
 
-        self._lock = threading.Lock()
-        self._write_lock = threading.Lock()
-        self._records: dict[str, dict[str, str | None]] = {}
-        self._version = 0
-        self._last_persisted_version = 0
-        self._load()
-
-    def _load(self):
-        if self._store_path.exists():
-            try:
-                with self._store_path.open("r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                    if isinstance(data, dict):
-                        self._records = data
-            except json.JSONDecodeError:
-                # Corrupted cache, start fresh but keep file for inspection
-                backup = self._store_path.with_suffix(".corrupt")
-                self._store_path.rename(backup)
-                self._records = {}
-        else:
-            self._records = {}
-
-        # Reset version after load
-        self._version = 0
-        self._last_persisted_version = 0
-
-    def _persist(self):
-        """Synchronously persist records to disk. Should be called in threadpool.
-        Acquires _write_lock to serialize writes.
-        Checks if persistence is needed by comparing _version with _last_persisted_version.
-        """
-        # Acquire write lock first to serialize disk operations
-        with self._write_lock:
-            # Check if we need to write
-            with self._lock:
-                if self._version <= self._last_persisted_version:
-                    return
-                snapshot = dict(self._records)
-                version_to_write = self._version
-
-            # Perform serialization to temp file without holding the main _lock
-            tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
-            try:
-                with tmp_path.open("w", encoding="utf-8") as fh:
-                    json.dump(snapshot, fh, indent=2)
-
-                # Critical section: Check version again and replace under lock
-                # We only replace if the file on disk corresponds to version_to_write.
-                # If _version changed in the meantime, we DO NOT write stale data.
-                # We rely on the fact that another _persist task is queued for the newer version.
-                with self._lock:
-                    if self._version == version_to_write:
-                        tmp_path.replace(self._store_path)
-                        self._last_persisted_version = version_to_write
-                    # If version changed, we discard this write. The next task handles it.
-            except Exception:
-                if tmp_path.exists():
-                    tmp_path.unlink()
-                raise
-            finally:
-                if tmp_path.exists():
-                    tmp_path.unlink()
+    def _session(self) -> Session:
+        if self._session_factory is not None:
+            return self._session_factory()
+        if _db.SessionLocal is None:
+            raise RuntimeError(
+                "VerificationStore: db.SessionLocal not initialized — call "
+                "db.init_engine() before using the store.",
+            )
+        return _db.SessionLocal()
 
     @staticmethod
-    def _normalize_path(path: str) -> str:
+    def _normalize(path: str) -> str:
         return os.path.realpath(path)
 
-    async def mark_verified(self, chd_path: str, *, source_path: str | None = None):
-        # Normalize paths in threadpool to avoid blocking main loop with disk I/O
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        normalized_source = None
-        if source_path:
-            normalized_source = await run_in_threadpool(self._normalize_path, source_path)
+    # ------------------------------------------------------------------
 
-        record = {
-            "chd_path": normalized,
-            "source_path": normalized_source,
-            "verified_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
+    def _mark_sync(self, chd_path: str, source_path: str | None) -> None:
+        normalized = self._normalize(chd_path)
+        normalized_source = self._normalize(source_path) if source_path else None
+        with self._session() as session:
+            existing = session.get(_db.Verification, normalized)
+            if existing is not None:
+                existing.source_path = normalized_source
+                existing.verified_at = _utcnow_iso()
+            else:
+                session.add(_db.Verification(
+                    chd_path=normalized,
+                    source_path=normalized_source,
+                    verified_at=_utcnow_iso(),
+                ))
+            session.commit()
 
-        # Update in-memory state
-        with self._lock:
-            self._records[normalized] = record
-            self._version += 1
+    async def mark_verified(self, chd_path: str, *, source_path: str | None = None) -> None:
+        await run_in_threadpool(self._mark_sync, chd_path, source_path)
 
-        # Trigger persistence
-        await run_in_threadpool(self._persist)
+    def _clear_sync(self, chd_path: str) -> None:
+        normalized = self._normalize(chd_path)
+        with self._session() as session:
+            session.execute(
+                delete(_db.Verification).where(_db.Verification.chd_path == normalized)
+            )
+            session.commit()
 
-    async def clear(self, chd_path: str):
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        should_persist = False
+    async def clear(self, chd_path: str) -> None:
+        await run_in_threadpool(self._clear_sync, chd_path)
 
-        with self._lock:
-            if normalized in self._records:
-                del self._records[normalized]
-                self._version += 1
-                should_persist = True
+    def _move_sync(self, old_path: str, new_path: str) -> None:
+        old_normalized = self._normalize(old_path)
+        new_normalized = self._normalize(new_path)
+        with self._session() as session:
+            old = session.get(_db.Verification, old_normalized)
+            if old is None:
+                return
+            # Preserve source_path/verified_at across the rename.
+            source_path = old.source_path
+            verified_at = old.verified_at
+            session.delete(old)
+            session.flush()
+            # Upsert under the new key.
+            existing = session.get(_db.Verification, new_normalized)
+            if existing is not None:
+                existing.source_path = source_path
+                existing.verified_at = verified_at
+            else:
+                session.add(_db.Verification(
+                    chd_path=new_normalized,
+                    source_path=source_path,
+                    verified_at=verified_at,
+                ))
+            session.commit()
 
-        if should_persist:
-            await run_in_threadpool(self._persist)
+    async def move(self, old_path: str, new_path: str) -> None:
+        await run_in_threadpool(self._move_sync, old_path, new_path)
 
-    async def move(self, old_path: str, new_path: str):
-        old_normalized = await run_in_threadpool(self._normalize_path, old_path)
-        new_normalized = await run_in_threadpool(self._normalize_path, new_path)
-        should_persist = False
+    # ------------------------------------------------------------------
 
-        with self._lock:
-            # Use pop to remove old record
-            old_record = self._records.pop(old_normalized, None)
-            if old_record:
-                # Create a NEW record dict (copy) to avoid mutating shared state
-                new_record = old_record.copy()
-                new_record["chd_path"] = new_normalized
-                self._records[new_normalized] = new_record
-
-                self._version += 1
-                should_persist = True
-
-        if should_persist:
-            await run_in_threadpool(self._persist)
+    def _is_verified_sync(self, chd_path: str) -> bool:
+        normalized = self._normalize(chd_path)
+        with self._session() as session:
+            return session.get(_db.Verification, normalized) is not None
 
     async def is_verified(self, chd_path: str) -> bool:
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        with self._lock:
-            return normalized in self._records
+        return await run_in_threadpool(self._is_verified_sync, chd_path)
+
+    def _get_record_sync(self, chd_path: str) -> dict[str, str | None] | None:
+        normalized = self._normalize(chd_path)
+        with self._session() as session:
+            row = session.get(_db.Verification, normalized)
+            if row is None:
+                return None
+            return {
+                "chd_path": row.chd_path,
+                "source_path": row.source_path,
+                "verified_at": row.verified_at,
+            }
 
     async def get_record(self, chd_path: str) -> dict[str, str | None] | None:
-        normalized = await run_in_threadpool(self._normalize_path, chd_path)
-        with self._lock:
-            return self._records.get(normalized)
+        return await run_in_threadpool(self._get_record_sync, chd_path)
 
-    def all_records(self):
-        with self._lock:
-            return list(self._records.values())
+    def all_records(self) -> list[dict[str, str | None]]:
+        with self._session() as session:
+            rows = session.scalars(select(_db.Verification)).all()
+            return [
+                {
+                    "chd_path": r.chd_path,
+                    "source_path": r.source_path,
+                    "verified_at": r.verified_at,
+                }
+                for r in rows
+            ]
+
+    def _prune_missing_sync(self) -> int:
+        with self._session() as session:
+            paths = session.scalars(select(_db.Verification.chd_path)).all()
+            missing = [p for p in paths if not os.path.exists(p)]
+            if not missing:
+                return 0
+            session.execute(
+                delete(_db.Verification).where(_db.Verification.chd_path.in_(missing))
+            )
+            session.commit()
+            return len(missing)
 
     async def prune_missing(self) -> int:
-        """Remove cache entries for CHD files that no longer exist."""
-        def _check_and_prune():
-            # This method runs in threadpool.
-            # 1. Snapshot keys safely
-            with self._lock:
-                keys = list(self._records.keys())
-
-            # 2. Check existence (blocking I/O)
-            missing = []
-            for path in keys:
-                if not os.path.exists(path):
-                    missing.append(path)
-
-            # 3. Remove missing from records with lock AND snapshot for persist
-            removed_count = 0
-            if missing:
-                with self._lock:
-                    for path in missing:
-                        if path in self._records:
-                            del self._records[path]
-                    self._version += 1
-                removed_count = len(missing)
-
-                # 4. Persist
-                self._persist()
-
-            return removed_count
-
-        return await run_in_threadpool(_check_and_prune)
+        return await run_in_threadpool(self._prune_missing_sync)
 
 
 verification_store = VerificationStore()

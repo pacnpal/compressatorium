@@ -1,11 +1,12 @@
 """Tests for MAME Redump DAT sync service."""
 
-import json
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
+from app.services import db as _db
 from app.services.dat_sync import DATSyncService
 
 
@@ -15,10 +16,18 @@ from app.services.dat_sync import DATSyncService
 
 @pytest.fixture
 def sync_service(tmp_path):
-    """Create a DATSyncService with isolated state (bypasses lazy init)."""
+    """Create a DATSyncService with isolated state (bypasses lazy init).
+
+    Each test gets its own SQLite file + sessionmaker so state is
+    completely isolated.
+    """
+    engine = _db.make_engine(str(tmp_path / "dat_sync.db"))
+    _db.Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+
     svc = DATSyncService.__new__(DATSyncService)
     svc._repo = "MetalSlug/MAMERedump"
-    svc._state_path = tmp_path / "dat_sync.json"
+    svc._state_path = tmp_path / "dat_sync.db"  # informational only now
     svc._explicit_state_path = str(svc._state_path)
     svc._lock = threading.Lock()
     svc._init_lock = threading.Lock()
@@ -27,6 +36,7 @@ def sync_service(tmp_path):
     svc._cancel = False
     svc._progress = {}
     svc._state = {}
+    svc._session_factory = session_factory
     return svc
 
 
@@ -40,31 +50,36 @@ def test_status_default(sync_service):
 
 
 def test_state_persistence(sync_service):
-    """State round-trips through save/load."""
+    """State round-trips through save/load against the DB."""
     sync_service._state = {
         "last_sync_tag": "0.285",
         "last_sync_at": "2026-02-12T20:00:00Z",
         "last_sync_files": 69,
     }
     sync_service._save_state()
-    assert sync_service._state_path.exists()
 
-    loaded = json.loads(sync_service._state_path.read_text())
+    loaded = sync_service._load_state()
     assert loaded["last_sync_tag"] == "0.285"
     assert loaded["last_sync_files"] == 69
 
 
-def test_state_load_missing_file(sync_service):
-    """Loading state when file doesn't exist returns empty dict."""
+def test_state_load_missing_row_returns_empty(sync_service):
+    """Loading state with no row in the DB returns an empty dict."""
     state = sync_service._load_state()
     assert state == {}
 
 
-def test_state_load_corrupt_file(sync_service):
-    """Loading corrupt JSON returns empty dict."""
-    sync_service._state_path.write_text("not json{{{")
-    state = sync_service._load_state()
-    assert state == {}
+def test_state_upsert_overwrites_previous_save(sync_service):
+    """Saving twice leaves only the latest values in the singleton row."""
+    sync_service._state = {"last_sync_tag": "0.280", "last_sync_files": 50}
+    sync_service._save_state()
+
+    sync_service._state = {"last_sync_tag": "0.285", "last_sync_files": 69}
+    sync_service._save_state()
+
+    loaded = sync_service._load_state()
+    assert loaded["last_sync_tag"] == "0.285"
+    assert loaded["last_sync_files"] == 69
 
 
 def test_cancel_when_not_syncing(sync_service):

@@ -1,10 +1,8 @@
 """Tests for verification store persistence and concurrency behavior."""
 
-# Ruff: allow `assert` in test code.
 # ruff: noqa: S101
 
 import asyncio
-import json
 import os
 from pathlib import Path
 
@@ -15,105 +13,83 @@ from app.services.verification_store import VerificationStore
 
 @pytest.fixture(name="store_path")
 def _store_path(tmp_path: Path) -> Path:
-    """Provide the filesystem path for the verification store fixture."""
-    return tmp_path / "verified_chds.json"
+    """Per-test SQLite path for the verification store."""
+    return tmp_path / "verifications.db"
 
 
 @pytest.fixture(name="verification_store")
 def _verification_store(store_path: Path) -> VerificationStore:
-    """Create a verification store bound to the temporary fixture path."""
-    # Initialize store with the temp path.
-    # We cheat and inject it since `VerificationStore.__init__` uses env vars.
+    """Create a verification store bound to a temporary SQLite DB."""
     return VerificationStore(str(store_path))
 
 
-def test_verification_store_falls_back_when_default_config_unwritable(monkeypatch, tmp_path: Path):
-    monkeypatch.delenv("CHD_VERIFICATION_STORE", raising=False)
-    monkeypatch.delenv("CHD_DATA_DIR", raising=False)
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
+def test_verification_store_defaults_to_no_session_when_db_uninitialized():
+    """A bare VerificationStore() with no args and no db.init_engine()
+    must not touch the filesystem at construction time.  Accessing it
+    *later* should raise a clear error rather than corrupt state."""
+    from app.services import db as _db
 
-    original_mkdir = Path.mkdir
-
-    def guarded_mkdir(self, *args, **kwargs):
-        if os.fspath(self) == "/config":
-            raise OSError(30, "Read-only file system")
-        return original_mkdir(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "mkdir", guarded_mkdir)
-    store = VerificationStore()
-
-    assert store._store_path.parent == tmp_path / "compressatorium"
-    assert store._store_path.name == "verified_chds.json"
+    original = _db.SessionLocal
+    _db.SessionLocal = None
+    try:
+        store = VerificationStore()  # no store_path, no session_factory
+        with pytest.raises(RuntimeError, match="SessionLocal not initialized"):
+            store.all_records()
+    finally:
+        _db.SessionLocal = original
 
 
 @pytest.mark.asyncio
 async def test_async_mark_verified(
     verification_store: VerificationStore,
-    store_path: Path,
     tmp_path: Path,
 ) -> None:
-    """Verify that marking a CHD as verified persists and resolves real paths."""
-    # Use tmp_path for portable test structure
+    """Marking a CHD persists the record and resolves the real path."""
     path = str(tmp_path / "test.chd")
     real_path = os.path.realpath(path)
     await verification_store.mark_verified(path)
 
-    # Store uses realpath internally, methods are now async
     assert await verification_store.is_verified(path)
     assert await verification_store.is_verified(real_path)
 
-    assert store_path.exists()
+    record = await verification_store.get_record(path)
+    assert record is not None
+    assert record["chd_path"] == real_path
 
-    store_json = await asyncio.to_thread(store_path.read_text, encoding="utf-8")
-    data = json.loads(store_json)
-    assert data[real_path]["chd_path"] == real_path
 
 @pytest.mark.asyncio
 async def test_concurrent_writes(
     verification_store: VerificationStore,
-    store_path: Path,
     tmp_path: Path,
 ) -> None:
-    """Test safe concurrent updates."""
+    """Simultaneous mark_verified calls all persist without data loss."""
     count = 50
-    # Create valid paths in tmp_path
     paths = [str(tmp_path / f"file_{i}.chd") for i in range(count)]
-    real_paths = [os.path.realpath(p) for p in paths]
+    real_paths = {os.path.realpath(p) for p in paths}
 
-    async def verify_one(p: str) -> None:
-        await verification_store.mark_verified(p)
+    await asyncio.gather(*[verification_store.mark_verified(p) for p in paths])
 
-    await asyncio.gather(*[verify_one(p) for p in paths])
+    records = verification_store.all_records()
+    assert len(records) == count
+    assert {r["chd_path"] for r in records} == real_paths
 
-    # Check memory state
-    assert len(verification_store.all_records()) == count
-
-    # Check disk state
-    store_json = await asyncio.to_thread(store_path.read_text, encoding="utf-8")
-    data = json.loads(store_json)
-    assert len(data) == count
-    for p in real_paths:
-        assert p in data
 
 @pytest.mark.asyncio
 async def test_race_condition_persistence(
     verification_store: VerificationStore,
-    store_path: Path,
     tmp_path: Path,
 ) -> None:
-    """Simulate a race condition: state changes while another write is in-flight."""
+    """Interleaved writes to two different paths both durably persist."""
     path_a = str(tmp_path / "a.chd")
     path_b = str(tmp_path / "b.chd")
     real_a = os.path.realpath(path_a)
     real_b = os.path.realpath(path_b)
 
-    # Helper to constantly update B while A is being written
     async def spam_b() -> None:
         for _ in range(20):
             await verification_store.mark_verified(path_b)
             await asyncio.sleep(0.001)
 
-    # Trigger A then B concurrently
     await asyncio.gather(
         verification_store.mark_verified(path_a),
         spam_b(),
@@ -122,7 +98,35 @@ async def test_race_condition_persistence(
     assert await verification_store.is_verified(path_a)
     assert await verification_store.is_verified(path_b)
 
-    store_json = await asyncio.to_thread(store_path.read_text, encoding="utf-8")
-    data = json.loads(store_json)
-    assert real_a in data
-    assert real_b in data
+    paths_on_disk = {r["chd_path"] for r in verification_store.all_records()}
+    assert real_a in paths_on_disk
+    assert real_b in paths_on_disk
+
+
+@pytest.mark.asyncio
+async def test_clear_removes_record(
+    verification_store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    path = str(tmp_path / "file.chd")
+    await verification_store.mark_verified(path)
+    assert await verification_store.is_verified(path)
+    await verification_store.clear(path)
+    assert not await verification_store.is_verified(path)
+
+
+@pytest.mark.asyncio
+async def test_move_preserves_metadata(
+    verification_store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    old = str(tmp_path / "old.chd")
+    new = str(tmp_path / "new.chd")
+    await verification_store.mark_verified(old, source_path=str(tmp_path / "src.iso"))
+    await verification_store.move(old, new)
+
+    assert not await verification_store.is_verified(old)
+    assert await verification_store.is_verified(new)
+    record = await verification_store.get_record(new)
+    assert record is not None
+    assert record["source_path"] == os.path.realpath(str(tmp_path / "src.iso"))

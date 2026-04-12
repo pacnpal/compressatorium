@@ -4,6 +4,7 @@ import os
 import re
 from pathlib import Path
 
+from config import settings
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from models import (
@@ -475,6 +476,17 @@ async def create_job(request: JobCreateRequest):
                 detail=f"Delete-on-verify blocked: {exc}",
             )
 
+    # Proactive queue-depth check: reject with 429 before spending work
+    # on job construction if the queue is already at capacity.  Parity
+    # with the batch-create path, and surfaces backpressure even when
+    # tests or callers stub out ``job_manager.create_job``.
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    if max_depth > 0 and job_manager.get_queue_depth() >= max_depth:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Conversion queue full ({max_depth} jobs). Retry later.",
+        )
+
     try:
         job = await job_manager.create_job(
             file_path,
@@ -738,6 +750,21 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 "delete_snapshot": candidate.get("delete_snapshot"),
             },
         )
+
+    # Proactive batch backpressure: reject before enqueuing any jobs if
+    # accepting the batch would push the queue past ``max_queue_depth``.
+    # Keeps single-job and batch submission behaviour consistent.
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    if max_depth > 0:
+        projected = job_manager.get_queue_depth() + len(job_specs)
+        if projected > max_depth:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Conversion queue would exceed capacity "
+                    f"({max_depth} jobs). Retry later."
+                ),
+            )
 
     try:
         jobs = await job_manager.create_jobs_atomic(

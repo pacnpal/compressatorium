@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     # Persistent data directory
     data_dir: str = Field(default="/config", alias="CHD_DATA_DIR")
 
+    # Unified SQLite database path.  Defaults to <data_dir>/compressatorium.db.
+    db_path: str | None = Field(
+        default=None,
+        alias="COMPRESSATORIUM_DB_PATH",
+        description="SQLite database file; default: <CHD_DATA_DIR>/compressatorium.db",
+    )
+
     # Web UI behavior
     search_auto_return_to_file_list: bool = Field(
         default=True,
