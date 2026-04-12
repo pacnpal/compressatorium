@@ -18,10 +18,11 @@ if [[ $# -lt 1 ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRATCH_DB="$(mktemp -u -t compressatorium_scratch.XXXXXX).db"
+SCRATCH_DIR="$(mktemp -d -t compressatorium_scratch.XXXXXX)"
+SCRATCH_DB="$SCRATCH_DIR/compressatorium.db"
 
 cleanup() {
-  rm -f "$SCRATCH_DB" "${SCRATCH_DB}-journal" "${SCRATCH_DB}-wal" "${SCRATCH_DB}-shm" 2>/dev/null || true
+  rm -rf "$SCRATCH_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
 

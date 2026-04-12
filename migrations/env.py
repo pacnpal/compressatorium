@@ -37,8 +37,9 @@ if config.config_file_name is not None:
 
 
 # Resolve the DB URL.  Precedence:
-#   1. ``COMPRESSATORIUM_ALEMBIC_URL`` env var (tests, ad-hoc ops).
-#   2. ``main_option("sqlalchemy.url")`` — anything the CLI passed via -x.
+#   1. ``COMPRESSATORIUM_ALEMBIC_URL`` env var (tests, ad-hoc CLI ops).
+#   2. ``main_option("sqlalchemy.url")`` — explicitly set by the app via
+#      ``_alembic_config()`` or in ``alembic.ini``.
 #   3. Runtime settings (``settings.db_path``).
 def _resolve_url() -> str:
     override = os.environ.get("COMPRESSATORIUM_ALEMBIC_URL")
@@ -76,7 +77,28 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations against a live engine."""
+    """Run migrations against a live engine.
+
+    If the caller injected a connection via ``config.attributes["connection"]``
+    (e.g. ``apply_migrations()`` in ``app/services/db.py``), that connection is
+    reused so migrations run against the same DB as the already-open engine.
+    This is important for ``sqlite:///:memory:`` targets and ensures any
+    connection-level PRAGMAs set by the application carry through.
+    """
+    injected_conn = context.config.attributes.get("connection")
+    if injected_conn is not None:
+        # Reuse the connection provided by the application.
+        context.configure(
+            connection=injected_conn,
+            target_metadata=target_metadata,
+            render_as_batch=True,
+            compare_type=True,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+        return
+
+    # Normal path (CLI / ad-hoc scripts): build a fresh engine from the URL.
     url = _resolve_url()
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = url
@@ -92,6 +114,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             render_as_batch=True,
+            compare_type=True,
         )
 
         with context.begin_transaction():

@@ -246,16 +246,58 @@ _BASELINE_TABLES: frozenset[str] = frozenset({
 def _alembic_config(target: Engine):
     """Build an ``alembic.config.Config`` pointed at *target*.
 
-    Migrations live at ``<repo_root>/migrations/`` (see alembic.ini).
     The sqlalchemy URL is injected here so it matches the already-open
     engine exactly — there is no separate DB resolution path.
+
+    Alembic assets may live in different places depending on how the app
+    is packaged (development repo vs. Docker image).  We therefore support
+    explicit environment overrides and a small set of runtime-relative
+    fallback locations instead of assuming a single directory layout.
+
+    Search order:
+    1. ``ALEMBIC_INI_PATH`` + ``ALEMBIC_SCRIPT_LOCATION`` env vars (explicit
+       override, useful in containers or custom deployments).
+    2. ``<repo_root>/migrations/`` — resolved relative to this file (dev
+       environment where ``app/services/db.py`` sits three levels down from
+       the repo root).
+    3. ``<cwd>/migrations/`` — works when the app is started from the repo
+       root or a directory that contains a ``migrations/`` sub-directory.
+    4. ``<db.py parent>/migrations/`` — last-resort sibling lookup.
     """
     from alembic.config import Config
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    cfg = Config(str(repo_root / "migrations" / "alembic.ini"))
-    cfg.set_main_option("script_location", str(repo_root / "migrations"))
-    cfg.set_main_option("sqlalchemy.url", str(target.url))
-    return cfg
+
+    def _candidate_locations() -> list[tuple[Path, Path]]:
+        env_ini = os.getenv("ALEMBIC_INI_PATH")
+        env_script = os.getenv("ALEMBIC_SCRIPT_LOCATION")
+        if env_ini and env_script:
+            return [(Path(env_ini), Path(env_script))]
+
+        here = Path(__file__).resolve()
+        repo_root = here.parent.parent.parent
+        cwd = Path.cwd()
+
+        return [
+            (repo_root / "migrations" / "alembic.ini", repo_root / "migrations"),
+            (cwd / "migrations" / "alembic.ini", cwd / "migrations"),
+            (here.parent / "migrations" / "alembic.ini", here.parent / "migrations"),
+        ]
+
+    for ini_path, script_location in _candidate_locations():
+        if ini_path.is_file() and script_location.is_dir():
+            cfg = Config(str(ini_path))
+            cfg.set_main_option("script_location", str(script_location))
+            cfg.set_main_option("sqlalchemy.url", str(target.url))
+            return cfg
+
+    searched = ", ".join(
+        f"(ini={ini_path}, scripts={script_location})"
+        for ini_path, script_location in _candidate_locations()
+    )
+    raise RuntimeError(
+        "Alembic configuration not found. Set ALEMBIC_INI_PATH and "
+        "ALEMBIC_SCRIPT_LOCATION to the runtime locations of alembic.ini "
+        f"and the migrations directory. Searched: {searched}",
+    )
 
 
 def apply_migrations(target: Engine | None = None) -> None:
@@ -290,13 +332,15 @@ def apply_migrations(target: Engine | None = None) -> None:
 
     cfg = _alembic_config(eng)
 
-    with eng.begin() as conn:
+    with eng.connect() as conn:
         ctx = MigrationContext.configure(conn)
         current_rev = ctx.get_current_revision()
 
     if current_rev is not None:
         logger.info("db.alembic: current revision %s; running upgrade head", current_rev)
-        command.upgrade(cfg, "head")
+        with eng.connect() as conn:
+            cfg.attributes["connection"] = conn
+            command.upgrade(cfg, "head")
         return
 
     inspector = inspect(eng)
@@ -306,11 +350,21 @@ def apply_migrations(target: Engine | None = None) -> None:
             "db.alembic: baseline schema present without alembic_version; "
             "stamping as revision 0001 (pre-Alembic install)",
         )
-        command.stamp(cfg, "head")
+        # Stamp the explicit baseline revision first, then upgrade to head.
+        # Stamping "head" directly would skip any post-baseline migrations that
+        # have since been added; stamping "0001" + upgrading is always correct.
+        with eng.connect() as conn:
+            cfg.attributes["connection"] = conn
+            command.stamp(cfg, "0001")
+        with eng.connect() as conn:
+            cfg.attributes["connection"] = conn
+            command.upgrade(cfg, "head")
         return
 
     logger.info("db.alembic: fresh database; running upgrade head")
-    command.upgrade(cfg, "head")
+    with eng.connect() as conn:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "head")
 
 
 def get_session() -> Session:
