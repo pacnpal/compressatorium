@@ -267,20 +267,26 @@ def _alembic_config(target: Engine):
     from alembic.config import Config
 
     def _candidate_locations() -> list[tuple[Path, Path]]:
-        env_ini = os.getenv("ALEMBIC_INI_PATH")
-        env_script = os.getenv("ALEMBIC_SCRIPT_LOCATION")
-        if env_ini and env_script:
-            return [(Path(env_ini), Path(env_script))]
-
         here = Path(__file__).resolve()
         repo_root = here.parent.parent.parent
         cwd = Path.cwd()
 
-        return [
+        candidates: list[tuple[Path, Path]] = []
+
+        # Explicit env-var override comes first so operators can redirect
+        # migrations to a custom location (e.g. in containers) while still
+        # going through the same existence-check as the built-in candidates.
+        env_ini = os.getenv("ALEMBIC_INI_PATH")
+        env_script = os.getenv("ALEMBIC_SCRIPT_LOCATION")
+        if env_ini and env_script:
+            candidates.append((Path(env_ini), Path(env_script)))
+
+        candidates.extend([
             (repo_root / "migrations" / "alembic.ini", repo_root / "migrations"),
             (cwd / "migrations" / "alembic.ini", cwd / "migrations"),
             (here.parent / "migrations" / "alembic.ini", here.parent / "migrations"),
-        ]
+        ])
+        return candidates
 
     for ini_path, script_location in _candidate_locations():
         if ini_path.is_file() and script_location.is_dir():
@@ -333,6 +339,8 @@ def apply_migrations(target: Engine | None = None) -> None:
     cfg = _alembic_config(eng)
 
     with eng.connect() as conn:
+        # Direct MigrationContext read — not an Alembic command, so no
+        # cfg.attributes injection needed here.
         ctx = MigrationContext.configure(conn)
         current_rev = ctx.get_current_revision()
 
@@ -353,11 +361,10 @@ def apply_migrations(target: Engine | None = None) -> None:
         # Stamp the explicit baseline revision first, then upgrade to head.
         # Stamping "head" directly would skip any post-baseline migrations that
         # have since been added; stamping "0001" + upgrading is always correct.
+        # Both operations share the same connection so they see a consistent DB state.
         with eng.connect() as conn:
             cfg.attributes["connection"] = conn
             command.stamp(cfg, "0001")
-        with eng.connect() as conn:
-            cfg.attributes["connection"] = conn
             command.upgrade(cfg, "head")
         return
 
