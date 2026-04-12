@@ -7,12 +7,17 @@ engines:
     config_file: config/pmd/ruleset.xml
   pylint:
     enabled: true
+    config_file: .pylintrc
   semgrep:
     enabled: true
   trivy:
     enabled: true
   bandit:
     enabled: true
+    config_file: .codacy/tools-configs/bandit.yaml
+  prospector:
+    enabled: true
+    config_file: .prospector.yaml
 
 exclude_paths:
   - "node_modules/**"

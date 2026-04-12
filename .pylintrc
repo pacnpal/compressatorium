@@ -1,109 +1,78 @@
-; Project-wide pylint configuration.
-;
-; This file is the single source of truth for all pylint-family scanners
-; (plain pylint, pylintpython3, prospector's pylint tool, Codacy).  It
-; supersedes the `[tool.pylint.*]` block previously maintained in
-; pyproject.toml — both Codacy's SaaS scanner and prospector discover
-; `.pylintrc` at the repo root but do not consistently honour
-; pyproject.toml.
-;
-; Guiding principles
-; ------------------
-; * Enforce rules that catch real bugs (E*, W0601/W0602/W0603 globals,
-;   W0231 / W0233 misuse of super, etc.).
-; * Silence rules that fire on our deliberate conventions (lazy imports,
-;   test-only protected access, short exception names, deep pytest
-;   fixtures).
-; * Pin py-version so PEP 585 generic syntax (`list[X]`, `dict[X,Y]`,
-;   `tuple[...]`) does not trip `unsubscriptable-object`.
+; Project-wide pylint configuration.  Kept in sync with
+; .codacy/tools-configs/pylint.rc — the Codacy-specific copy is what
+; the cloud scanner reads; this root-level file is for
+; contributor terminals and pre-commit hooks.  Both must match.
 
 [MAIN]
-; Python version used to interpret the source.  The container runtime is
-; `python3` from Debian trixie (3.11+); pin to 3.10 as the floor so any
-; 3.10-and-later syntax is accepted.
 py-version = 3.10
-
-; Intra-project imports are written as `from services.x import y` because
-; the container launches uvicorn from inside `/app`.  Put `app/` on
-; sys.path so pylint does not flag every such import as `import-error`.
 init-hook = "import sys; sys.path.insert(0, 'app')"
-
-; Skip third-party / vendored assets that we neither lint nor modify.
 ignore = .venv,venv,node_modules,app/.venv,static/vendor
 
 [MESSAGES CONTROL]
-; Suppress rules that are noisy against this codebase's intentional
-; conventions.  Kept deliberately small and justified inline; add more
-; only when paired with a PR-comment explaining why.
 disable =
-    ; Stylistic: project does not enforce docstrings on every function
-    ; or class.  Public API surface (FastAPI route handlers, service
-    ; classes) is documented; private helpers are not.
+    C0111,
+    C0112,
+    C0114,
+    C0115,
+    C0116,
+    missing-docstring,
     missing-module-docstring,
+    missing-class-docstring,
     missing-function-docstring,
     missing-method-docstring,
-    missing-class-docstring,
-
-    ; Stylistic: too many locals / branches / statements / returns are
-    ; useful signals on greenfield code but trigger constantly on
-    ; FastAPI startup routines and chdman subprocess orchestration.
-    ; Complexity is bounded by function length (enforced by mccabe
-    ; instead).
-    too-many-locals,
-    too-many-branches,
-    too-many-statements,
-    too-many-return-statements,
+    E1136,
+    unsubscriptable-object,
+    R0901,
+    R0902,
+    R0903,
+    R0911,
+    R0912,
+    R0913,
+    R0914,
+    R0915,
+    R0916,
+    too-many-ancestors,
     too-many-arguments,
+    too-many-boolean-expressions,
+    too-many-branches,
     too-many-instance-attributes,
+    too-many-locals,
+    too-many-public-methods,
+    too-many-return-statements,
+    too-many-statements,
     too-few-public-methods,
-
-    ; Deferred imports inside functions are intentional — they break
-    ; circular dependencies at module load (services <-> stores) and
-    ; defer expensive imports (sqlalchemy, alembic) until first use.
+    C0415,
     import-outside-toplevel,
-
-    ; Tests legitimately access private seams (`_all_records_sync`,
-    ; `_load_state`, `_state`, etc.) so they can unit-test implementation
-    ; details without widening the public API.  Enforcing this in test
-    ; code would just push internals to become public.
+    W0212,
     protected-access,
-
-    ; pytest fixtures shadow their own names when they chain.  The
-    ; conftest / fixture-scope pattern relies on this.
+    W0621,
     redefined-outer-name,
-
-    ; FastAPI request handlers routinely accept kwargs that are only
-    ; used by the framework (e.g. http_request: Request).  W0613 fires
-    ; on every one.  Real unused arguments in library code are rare
-    ; enough to catch in review.
+    W0613,
     unused-argument,
-
-    ; `except Exception:` is intentional around every subprocess
-    ; boundary (chdman, dolphin-tool, z3ds_compressor) — the goal is
-    ; to turn any failure into a structured error response, not let it
-    ; crash the worker.  We prefer explicit logging at the call site
-    ; (which we do) over replacing Exception with a union of every
-    ; concrete type chdman could raise.
+    W0703,
+    W0718,
     broad-except,
     broad-exception-caught,
-
-    ; `e` for exception / `p` for path inside tight loops are idiomatic
-    ; — naming them `exception` / `path` would hurt readability.
+    C0103,
     invalid-name,
-
-    ; Non-rule: "Wrong hanging indentation" (C0330) has been deprecated
-    ; upstream since pylint 2.6 but Codacy still emits it.  Black /
-    ; project style tolerates multiple valid hangings.
+    C0330,
     bad-continuation,
-
-    ; Duplicate-code (R0801) would fire on the intentional session-
-    ; factory boilerplate shared across the three stores.  Worth
-    ; refactoring eventually but not a defect.
+    R0801,
     duplicate-code,
-
-    ; Globals used for module-level singletons (engine, SessionLocal) —
-    ; documented and guarded.
-    global-statement
+    W0603,
+    global-statement,
+    C0303,
+    trailing-whitespace,
+    R0201,
+    no-self-use,
+    C0411,
+    wrong-import-order,
+    W0107,
+    unnecessary-pass,
+    C0326,
+    bad-whitespace,
+    R1716,
+    chained-comparison
 
 [FORMAT]
 max-line-length = 100

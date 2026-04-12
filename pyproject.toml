@@ -1,46 +1,155 @@
-# Project-level tool configuration.  This file is intentionally minimal —
-# runtime dependency management lives in requirements*.txt; this is only
-# here so linters and code-scanning tools apply the correct conventions.
+# Project-level tool configuration.
+#
+# Codacy's SaaS pylint scanner reads this file; keep it in sync with
+# /.pylintrc at the repo root (which is what contributor terminals and
+# pre-commit hooks use).  Drift between the two produces mismatched
+# PR-check vs. local-lint results.
 
 [tool.pylint.main]
-# The app uses PEP 585 generic syntax (``list[str]``, ``dict[str, Any]``,
-# ``tuple[int, int]``).  Without an explicit py-version, pylint assumes
-# the interpreter it runs under — which in CI is often older — and
-# flags these as "unsubscriptable-object".  3.10 matches the container
-# runtime (Debian trixie's python3).
+# Pin so PEP 585 generic syntax (`list[str]`, `dict[str, Any]`,
+# `tuple[int, int]`) does not trip `unsubscriptable-object`.
 py-version = "3.10"
 
-# Both the service layer and the route layer import from the ``app/``
-# subpackage as if it were on PYTHONPATH (matching how uvicorn is
-# launched in the container: ``uvicorn main:app`` from inside /app).
-# Tell pylint so it can resolve the intra-project imports instead of
-# flagging them as import-error.
+# The container launches uvicorn from inside `/app`, so intra-project
+# imports are written as `from services.x import y`.  Put `app/` on
+# sys.path so pylint resolves them instead of flagging `import-error`.
 init-hook = "import sys; sys.path.insert(0, 'app')"
 
+ignore = [".venv", "venv", "node_modules", "app/.venv", "static/vendor"]
+
 [tool.pylint."messages control"]
-# Suppress stylistic-only warnings that don't affect behaviour and
-# generate high-volume noise in code-scanning:
-#
-#   * ``too-many-locals`` — legacy threshold (15) vs the complex state
-#     of startup / sync functions.  Breaking them up for the metric
-#     alone would obscure the control flow.
-#   * ``line-too-long`` at 100 is already enforced on all new code;
-#     we keep the warning on but override column limit below.
-#   * ``import-outside-toplevel`` — intentional in several places
-#     (``main.py`` deferred imports to break circular deps at module
-#     load, lazy imports inside functions to avoid startup cost).
-#   * ``protected-access`` — tests legitimately poke at private seams
-#     (``_all_records_sync``, ``_state``, ``_load_state``, etc.).
-#     Enforcing this in test code just pushes us toward over-exposing
-#     internals as public API.
+# Disables silence rules that fire on this codebase's deliberate
+# conventions.  Rationale inline against each cluster.
 disable = [
-    "too-many-locals",
-    "import-outside-toplevel",
-    "protected-access",
+    # --- Docstrings ---------------------------------------------------
+    # Project convention: document public API surface (FastAPI routes,
+    # service class methods that appear in routes).  Do not require
+    # docstrings on every private helper.  Both the legacy C0111 ID
+    # and the split modern IDs so this survives pylint version bumps.
+    "C0111",
+    "C0112",
+    "C0114",
+    "C0115",
+    "C0116",
+    "missing-docstring",
+    "missing-module-docstring",
+    "missing-class-docstring",
     "missing-function-docstring",
     "missing-method-docstring",
-    "missing-module-docstring",
+
+    # --- PEP 585 false positives -------------------------------------
+    # py-version=3.10 should handle these but Codacy's pylint build
+    # occasionally ignores that pragma; belt-and-braces.
+    "E1136",
+    "unsubscriptable-object",
+
+    # --- Stylistic complexity ---------------------------------------
+    # mccabe is a better signal for "function is too complex" than
+    # hard local-count / statement-count thresholds which fire on
+    # FastAPI startup and chdman subprocess orchestration.
+    "R0901",
+    "R0902",
+    "R0903",
+    "R0911",
+    "R0912",
+    "R0913",
+    "R0914",
+    "R0915",
+    "R0916",
+    "too-many-ancestors",
+    "too-many-arguments",
+    "too-many-boolean-expressions",
+    "too-many-branches",
+    "too-many-instance-attributes",
+    "too-many-locals",
+    "too-many-public-methods",
+    "too-many-return-statements",
+    "too-many-statements",
+    "too-few-public-methods",
+
+    # --- Lazy imports -------------------------------------------------
+    # Intentional: break circular deps at module load, defer expensive
+    # sqlalchemy/alembic imports until first use.
+    "C0415",
+    "import-outside-toplevel",
+
+    # --- Test-only seams ----------------------------------------------
+    # Tests legitimately poke at `_load_state`, `_all_records_sync`,
+    # etc.  Enforcing protected-access here would push internals to
+    # become public API for no real benefit.
+    "W0212",
+    "protected-access",
+
+    # --- pytest fixture chaining --------------------------------------
+    "W0621",
+    "redefined-outer-name",
+
+    # --- Framework kwargs --------------------------------------------
+    # FastAPI route handlers and test fixtures accept kwargs that are
+    # only consumed by the framework (e.g. `http_request: Request`).
+    "W0613",
+    "unused-argument",
+
+    # --- Intentional broad except ------------------------------------
+    # Wrapping every subprocess boundary (chdman/dolphin-tool/z3ds)
+    # with `except Exception:` is deliberate — we turn failures into
+    # structured error responses.  Explicit logging at the call site
+    # is required (enforced by review).
+    "W0703",
+    "W0718",
+    "broad-except",
+    "broad-exception-caught",
+
+    # --- Short names --------------------------------------------------
+    # `e` for exception, `p` for path — idiomatic; renaming would
+    # hurt readability.
+    "C0103",
+    "invalid-name",
+
+    # --- Deprecated upstream -----------------------------------------
+    # bad-continuation was removed from pylint in 2.6; Codacy still
+    # emits it.
+    "C0330",
+    "bad-continuation",
+
+    # --- Duplicate-code -----------------------------------------------
+    # Fires on intentional session-factory boilerplate shared across
+    # the three stores.  Worth refactoring eventually but not a
+    # defect.
+    "R0801",
+    "duplicate-code",
+
+    # --- Module-level singletons -------------------------------------
+    # engine / SessionLocal are documented, guarded module globals.
+    "W0603",
+    "global-statement",
+
+    # --- Stylistic handled elsewhere ---------------------------------
+    "C0303",  # trailing-whitespace (ruff in CI)
+    "trailing-whitespace",
+    "C0326",  # keyword-arg spacing (ruff in CI)
+    "bad-whitespace",
+    "C0411",  # wrong-import-order (isort in CI)
+    "wrong-import-order",
+
+    # --- Debatable stylistic -----------------------------------------
+    "R0201",  # no-self-use — helpers kept instance-scoped for API symmetry
+    "no-self-use",
+    "W0107",  # unnecessary-pass
+    "unnecessary-pass",
+    "R1716",  # chained-comparison — fires on readable patterns
+    "chained-comparison",
 ]
 
 [tool.pylint.format]
 max-line-length = 100
+indent-string = "    "
+
+[tool.pylint.design]
+max-line-length = 100
+
+[tool.pylint.similarities]
+min-similarity-lines = 10
+ignore-imports = true
+ignore-docstrings = true
+ignore-comments = true

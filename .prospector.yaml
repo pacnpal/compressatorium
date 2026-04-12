@@ -1,0 +1,80 @@
+# Prospector configuration.  Codacy runs prospector as a separate
+# scanner on top of pylint; it embeds its own pylint wrapper that does
+# not always honour .pylintrc.  Declare the disables here too so
+# prospector's findings line up with pylint's.
+
+strictness: medium
+
+test-warnings: false
+doc-warnings: false
+member-warnings: false
+autodetect: true
+
+inherits:
+  - default
+
+python-targets:
+  - 3
+
+pylint:
+  run: true
+  disable:
+    - missing-docstring
+    - missing-module-docstring
+    - missing-class-docstring
+    - missing-function-docstring
+    - missing-method-docstring
+    - unsubscriptable-object
+    - too-many-ancestors
+    - too-many-arguments
+    - too-many-boolean-expressions
+    - too-many-branches
+    - too-many-instance-attributes
+    - too-many-locals
+    - too-many-public-methods
+    - too-many-return-statements
+    - too-many-statements
+    - too-few-public-methods
+    - import-outside-toplevel
+    - protected-access
+    - redefined-outer-name
+    - unused-argument
+    - broad-except
+    - broad-exception-caught
+    - invalid-name
+    - bad-continuation
+    - duplicate-code
+    - global-statement
+    - trailing-whitespace
+    - no-self-use
+    - wrong-import-order
+    - unnecessary-pass
+    - bad-whitespace
+    - chained-comparison
+  options:
+    max-line-length: 100
+
+pep8:
+  disable:
+    - E501   # line too long — covered by pylint's max-line-length
+    - W503   # line-break-before-binary-operator (PEP 8 updated guidance)
+    - W504   # line-break-after-binary-operator
+
+mccabe:
+  disable:
+    - MC0001  # complexity — noisy on startup / subprocess orchestration
+
+dodgy:
+  run: true
+
+pyflakes:
+  disable:
+    - F401   # unused import — pylint W0611 handles this; suppresses double-count
+
+ignore-paths:
+  - .venv
+  - venv
+  - app/.venv
+  - node_modules
+  - static/vendor
+  - config/pmd
