@@ -2833,6 +2833,7 @@ function App() {
     const queuedJobUpdatesRef = useRef(new Map()); // jobId -> latest SSE payload
     const jobUpdateFlushTimeoutRef = useRef(null);
     const completionRefreshTimeoutRef = useRef(null);
+    const datMatchRetryTimerRef = useRef(null);
     const preSearchViewRef = useRef(null); // List/archive view snapshot before Search All
     const deferJobUiUpdatesRef = useRef(false); // Pause job-driven rerenders during active select interactions
 
@@ -3429,7 +3430,11 @@ function App() {
                     }
                     return next;
                 });
-                setTimeout(() => {
+                // Clear any previously-scheduled retry before setting a new one
+                // so that repeated failures don't accumulate dangling timers.
+                clearTimeout(datMatchRetryTimerRef.current);
+                datMatchRetryTimerRef.current = setTimeout(() => {
+                    datMatchRetryTimerRef.current = null;
                     setDatMatches(prev => {
                         const next = new Map(prev);
                         for (const p of paths) {
@@ -3439,6 +3444,13 @@ function App() {
                     });
                 }, RETRY_MS);
             });
+
+        return () => {
+            // Cancel any pending retry timer when the effect re-runs or the
+            // component unmounts so stale setDatMatches calls don't fire.
+            clearTimeout(datMatchRetryTimerRef.current);
+            datMatchRetryTimerRef.current = null;
+        };
     }, [displayedEntries, datsImported, datMatches]);
 
     // Load app version on mount
