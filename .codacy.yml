@@ -32,14 +32,12 @@ exclude_paths:
   # preact.mjs, htm.mjs, etc. are pre-built distributions from upstream.
   - "static/vendor/**"
   # Tests use `assert` as the pytest failure mechanism (B101) and monkey-
-  # patch module internals.  Bandit skips these via .bandit's exclude_dirs
-  # but other scanners (jshint, pmd) don't need to look here either —
-  # they'd flag every fixture's fake kwargs.  Keep test code linted by
-  # pylint (our .pylintrc explicitly allows unused-argument and
-  # protected-access) and by ruff (enforced in CI), and skip the other
-  # scanners.
-  # (Bandit specifically is gated in .bandit, not here, so SAST on app/
-  # code still runs.)
+  # patch module internals.  Codacy's bandit wrapper does not honour the
+  # config_file's exclude_dirs in practice (observed 98 B101 alerts in
+  # tests/ even with .codacy/tools-configs/bandit.yaml set).  Exclude at
+  # the Codacy level instead.  Test code is still linted by pylint/ruff
+  # in CI; SAST on app/ code continues to run.
+  - "tests/**"
   - "config/pmd/**"
   # Binary files that crash the CLI SARIF generator (MalformedInputException)
   - ".local-bin/**"

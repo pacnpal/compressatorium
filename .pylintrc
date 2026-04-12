@@ -75,6 +75,8 @@ disable =
     chained-comparison,
     C0302,
     too-many-lines,
+    I0011,
+    locally-disabled,
     E0611,
     no-name-in-module,
     E0401,

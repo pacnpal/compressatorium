@@ -52,6 +52,9 @@ pylint:
     - bad-whitespace
     - chained-comparison
     - too-many-lines
+    - locally-disabled   # meta-warning that fires on every inline
+                         # `# pylint: disable=...` pragma; silencing
+                         # the meta rule lets us keep targeted pragmas.
     - no-name-in-module
     - import-error
     - no-member
@@ -64,6 +67,9 @@ pep8:
     - E501   # line too long — covered by pylint's max-line-length
     - W503   # line-break-before-binary-operator (PEP 8 updated guidance)
     - W504   # line-break-after-binary-operator
+    - E901   # syntax-error — FP on PEP 570 `/` positional-only marker
+             # in `app/config.py`; same cause as pylint E0001 and
+             # pyflakes F999 disables above.
 
 mccabe:
   disable:
