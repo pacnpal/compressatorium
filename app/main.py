@@ -88,12 +88,36 @@ async def startup_event():
 
     db_path = _db.resolve_db_path(settings.db_path, data_dir=settings.data_dir)
     _config_dir = Path(settings.data_dir)
+
+    def _resolve_legacy_json_store(env_var: str, default_filename: str) -> Path:
+        """Return the JSON migration source path, honouring any legacy env-var override."""
+        default_path = _config_dir / default_filename
+        legacy_override = os.environ.get(env_var)
+        if not legacy_override:
+            return default_path
+        resolved_path = Path(legacy_override)
+        if resolved_path.exists():
+            logger.info(
+                "db.migrate: using legacy JSON store override for migration %s=%s",
+                env_var,
+                resolved_path,
+            )
+            if resolved_path != default_path and default_path.exists():
+                logger.warning(
+                    "db.migrate: legacy JSON store override %s=%s will be used for migration; "
+                    "default store %s also exists and will not be imported in this run",
+                    env_var,
+                    resolved_path,
+                    default_path,
+                )
+        return resolved_path
+
     _db.init_and_migrate(
         db_path,
-        dat_store_json=_config_dir / "dat_store.json",
-        verification_json=_config_dir / "verified_chds.json",
-        chd_metadata_json=_config_dir / "chd_metadata.json",
-        dat_sync_json=_config_dir / "dat_sync.json",
+        dat_store_json=_resolve_legacy_json_store("CHD_DAT_STORE", "dat_store.json"),
+        verification_json=_resolve_legacy_json_store("CHD_VERIFICATION_STORE", "verified_chds.json"),
+        chd_metadata_json=_resolve_legacy_json_store("CHD_METADATA_STORE", "chd_metadata.json"),
+        dat_sync_json=_resolve_legacy_json_store("CHD_DAT_SYNC_STORE", "dat_sync.json"),
     )
     explicit_volumes = [v.strip() for v in str(settings.chd_volumes).split(",") if v.strip()]
     discovered_volumes = [] if explicit_volumes else settings.scan_data_mounts_on_startup()

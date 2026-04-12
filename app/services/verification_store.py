@@ -149,7 +149,10 @@ class VerificationStore:
     async def get_record(self, chd_path: str) -> dict[str, str | None] | None:
         return await run_in_threadpool(self._get_record_sync, chd_path)
 
-    def all_records(self) -> list[dict[str, str | None]]:
+    async def all_records(self) -> list[dict[str, str | None]]:
+        return await run_in_threadpool(self._all_records_sync)
+
+    def _all_records_sync(self) -> list[dict[str, str | None]]:
         with self._session() as session:
             rows = session.scalars(select(_db.Verification)).all()
             return [

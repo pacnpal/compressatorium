@@ -268,14 +268,21 @@ class DATStore:
     def _delete_dats_bulk_sync(self, dat_ids: list[str]) -> int:
         if not dat_ids:
             return 0
+        # Chunk to stay under SQLite's bind-parameter limit (default 999).
+        chunk_size = 900
         with self._session() as session:
-            existing = session.scalars(
-                select(_db.DAT.id).where(_db.DAT.id.in_(dat_ids))
-            ).all()
+            existing: list[str] = []
+            for i in range(0, len(dat_ids), chunk_size):
+                chunk = dat_ids[i:i + chunk_size]
+                existing.extend(session.scalars(
+                    select(_db.DAT.id).where(_db.DAT.id.in_(chunk))
+                ).all())
             if not existing:
                 return 0
-            session.execute(delete(_db.DATMatch).where(_db.DATMatch.dat_id.in_(existing)))
-            session.execute(delete(_db.DAT).where(_db.DAT.id.in_(existing)))
+            for i in range(0, len(existing), chunk_size):
+                chunk = existing[i:i + chunk_size]
+                session.execute(delete(_db.DATMatch).where(_db.DATMatch.dat_id.in_(chunk)))
+                session.execute(delete(_db.DAT).where(_db.DAT.id.in_(chunk)))
             session.commit()
             return len(existing)
 

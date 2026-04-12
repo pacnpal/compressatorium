@@ -317,7 +317,7 @@ class DATSyncService:
             logger.info("dat_sync: resolved latest tag: %s", tag)
 
         # Check if already synced to this tag, but only fast-path if DATs are present.
-        existing_dats = dat_store.list_dats()
+        existing_dats = await run_in_threadpool(dat_store.list_dats)
         if self._state.get("last_sync_tag") == tag:
             if existing_dats:
                 with self._lock:

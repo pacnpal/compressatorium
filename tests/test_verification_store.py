@@ -34,7 +34,7 @@ def test_verification_store_defaults_to_no_session_when_db_uninitialized():
     try:
         store = VerificationStore()  # no store_path, no session_factory
         with pytest.raises(RuntimeError, match="SessionLocal not initialized"):
-            store.all_records()
+            store._all_records_sync()
     finally:
         _db.SessionLocal = original
 
@@ -69,7 +69,7 @@ async def test_concurrent_writes(
 
     await asyncio.gather(*[verification_store.mark_verified(p) for p in paths])
 
-    records = verification_store.all_records()
+    records = await verification_store.all_records()
     assert len(records) == count
     assert {r["chd_path"] for r in records} == real_paths
 
@@ -98,7 +98,7 @@ async def test_race_condition_persistence(
     assert await verification_store.is_verified(path_a)
     assert await verification_store.is_verified(path_b)
 
-    paths_on_disk = {r["chd_path"] for r in verification_store.all_records()}
+    paths_on_disk = {r["chd_path"] for r in await verification_store.all_records()}
     assert real_a in paths_on_disk
     assert real_b in paths_on_disk
 
