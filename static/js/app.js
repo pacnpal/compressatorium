@@ -887,9 +887,17 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                         ${isVerified(entry) && html`
                             <span class="status verified" title="Integrity verified">✓ Verified</span>
                         `}
-                        ${datMatches.get(entry.path)?.matched && html`
-                            <span class="status dat-match" title="${datMatches.get(entry.path).dat_name}: ${datMatches.get(entry.path).game_name}">DAT ✓</span>
-                        `}
+                        ${(() => {
+                            const m = datMatches.get(entry.path);
+                            if (!m) return null;
+                            if (m.pending) {
+                                return html`<span class="status dat-pending" title="Hashing for DAT match...">DAT …</span>`;
+                            }
+                            if (m.matched) {
+                                return html`<span class="status dat-match" title="${m.dat_name}: ${m.game_name}">DAT ✓</span>`;
+                            }
+                            return null;
+                        })()}
                         ${isVerifying && html`
                             <span class="status convertible" title="Verifying integrity">
                                 ${(() => {
@@ -3342,15 +3350,46 @@ function App() {
             .catch(err => console.warn('Failed to fetch CHD metadata:', err)); // Silently fail - badges are optional
     }, [displayedEntries, forceRescanRunning, jobs, creatingJobs]);
 
-    // Fetch DAT match status for visible files
+    // Fetch DAT match status for visible files.
+    //
+    // Extensions covered:
+    //   .chd .rvz .wia .gcz .wbfs — container formats (cheap: CHD hashes
+    //                                live in the header; others are
+    //                                small or already cached on the
+    //                                server via the header fast-path).
+    //   .iso .bin                 — raw disc images (requires full SHA1;
+    //                                backend gates concurrency via
+    //                                MAX_MATCH_CONCURRENCY).
+    //   .3ds .cci .cia            — 3DS formats.
+    //
+    // Intentionally excluded: .cue, .gdi. Those are text manifests;
+    // hashing them matches nothing in a Redump DAT (the DAT matches the
+    // track data, not the manifest), so showing "DAT ✗" next to them
+    // would be misleading.
     useEffect(() => {
         if (!datsImported) return;
-        const matchableExts = new Set(['.chd', '.rvz', '.wia', '.gcz']);
+        const matchableExts = new Set([
+            '.chd', '.rvz', '.wia', '.gcz', '.wbfs',
+            '.iso', '.bin',
+            '.3ds', '.cci', '.cia',
+        ]);
         const paths = displayedEntries
             .filter(e => matchableExts.has(e.extension?.toLowerCase()))
             .map(e => e.path)
             .filter(p => !datMatches.has(p));
         if (paths.length === 0) return;
+
+        // Mark all submitted paths as pending so the UI shows "DAT …"
+        // while the (potentially slow) backend hashing runs. Without
+        // this the badge cell is just empty and the user can't tell
+        // whether matching is in-flight or the file is genuinely
+        // unknown.
+        setDatMatches(prev => {
+            const next = new Map(prev);
+            for (const p of paths) next.set(p, { pending: true });
+            return next;
+        });
+
         api.matchBatch(paths)
             .then(data => {
                 if (data.results) {
@@ -3363,7 +3402,17 @@ function App() {
                     });
                 }
             })
-            .catch(() => {});
+            .catch(() => {
+                // Clear pending state on failure so the user isn't stuck
+                // with a perma-spinner.
+                setDatMatches(prev => {
+                    const next = new Map(prev);
+                    for (const p of paths) {
+                        if (next.get(p)?.pending) next.delete(p);
+                    }
+                    return next;
+                });
+            });
     }, [displayedEntries, datsImported, datMatches]);
 
     // Load app version on mount

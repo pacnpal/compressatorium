@@ -9,8 +9,10 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
+from config import settings
 from services.dat_store import dat_store
 from services.file_hasher import compute_file_sha1
+from services.workload_limiter import workload_limiter
 from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
@@ -302,9 +304,28 @@ async def _match_single_file(file_path: str) -> dict:
         if match:
             return match
 
-    # File-level SHA1 (works for any format)
+    # Defense-in-depth: respect the operator-configured size cap so
+    # browsing a folder of 8 GB Wii ISOs doesn't stampede the hasher.
+    size_cap = max(0, int(getattr(settings, "match_max_file_size", 0) or 0))
+    if size_cap > 0:
+        try:
+            size_bytes = await run_in_threadpool(os.path.getsize, file_path)
+        except OSError:
+            size_bytes = 0
+        if size_bytes > size_cap:
+            return {
+                **base_result,
+                "reason": "file too large",
+                "file_size": size_bytes,
+            }
+
+    # File-level SHA1 (works for any format). Gate under the "match"
+    # workload lane so ``MAX_MATCH_CONCURRENCY`` bounds how many full-
+    # file hashes run at once when a directory of uncached files is
+    # browsed.
     try:
-        file_sha1 = await compute_file_sha1(file_path)
+        async with await workload_limiter.acquire("match"):
+            file_sha1 = await compute_file_sha1(file_path)
     except OSError as exc:
         logger.warning("Failed to hash %s: %s", file_path, exc)
         return base_result

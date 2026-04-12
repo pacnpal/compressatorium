@@ -469,6 +469,15 @@ header h1 span {
     color: white;
 }
 
+.file-item .status.dat-pending {
+    /* In-flight hash computation. Muted so it doesn't compete with
+       the green "Verified" / blue "DAT ✓" confirmations. */
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px dashed var(--text-secondary);
+    opacity: 0.7;
+}
+
 .file-item .status.iso-handling {
     background: var(--warning);
     color: var(--bg-primary);

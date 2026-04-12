@@ -66,6 +66,23 @@ class Settings(BaseSettings):
         alias="MAX_METADATA_SCAN_CONCURRENCY",
         description="Maximum concurrent metadata scan tasks",
     )
+    max_match_concurrency: int = Field(
+        default=1,
+        alias="MAX_MATCH_CONCURRENCY",
+        description=(
+            "Maximum concurrent DAT-match hashing operations. Matching a raw "
+            "ISO/WBFS requires full-file SHA1; bound this to protect "
+            "disk/CPU when many uncached files are browsed at once."
+        ),
+    )
+    match_max_file_size: int = Field(
+        default=0,
+        alias="MATCH_MAX_FILE_SIZE",
+        description=(
+            "If non-zero, skip DAT hash-matching for files larger than this "
+            "many bytes. 0 disables the cap (match any size)."
+        ),
+    )
     concurrency_lock_dir: str | None = Field(
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",

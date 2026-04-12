@@ -638,3 +638,114 @@ async def test_sync_mameredump_passes_tag(monkeypatch):
     import asyncio
     await asyncio.sleep(0)
     mock_svc.sync.assert_called_once_with(tag="0.285")
+
+
+# ---------------------------------------------------------------------------
+# Match concurrency + size cap (Deliverable 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_match_skips_oversized_file(tmp_path, isolated_dat_store, monkeypatch):
+    """When MATCH_MAX_FILE_SIZE is set, files larger than the cap are
+    reported as unmatched *without* running the SHA1 hasher."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    huge = tmp_path / "huge.iso"
+    huge.write_bytes(b"x" * 1024)
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    # Tiny cap (10 bytes) guarantees the 1 KB file trips it.
+    monkeypatch.setattr(dat_routes.settings, "match_max_file_size", 10)
+
+    hash_mock = AsyncMock(return_value="dead" * 10)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", hash_mock)
+
+    request = dat_routes.MatchRequest(path=str(huge))
+    result = await dat_routes.match_file(request)
+
+    assert result["matched"] is False
+    assert result.get("reason") == "file too large"
+    # Critical: the hasher must NOT have been invoked.
+    hash_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_match_respects_concurrency_cap(tmp_path, isolated_dat_store, monkeypatch):
+    """With MAX_MATCH_CONCURRENCY=1, simultaneous match_file calls
+    execute compute_file_sha1 serially (never two at once)."""
+    import asyncio as _asyncio
+
+    from app.services import workload_limiter as _wl
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    # Rebuild the workload_limiter with match_limit=1 for this test.
+    # (Default is already 1, but we set it explicitly so the test is
+    # self-documenting and robust to future default changes.)
+    original_limiter = dat_routes.workload_limiter
+    new_limiter = _wl.WorkloadLimiter(
+        verify_limit=1, metadata_scan_limit=1, match_limit=1,
+    )
+    monkeypatch.setattr(dat_routes, "workload_limiter", new_limiter)
+    _ = original_limiter  # silence lint; restoration handled by monkeypatch
+
+    active = 0
+    peak = 0
+    barrier = _asyncio.Event()
+
+    async def _fake_hash(path):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            # Wait until all callers are in-flight before returning, so
+            # if the limiter is NOT serialising we'd observe peak > 1.
+            await _asyncio.wait_for(barrier.wait(), timeout=0.2)
+        except _asyncio.TimeoutError:
+            # Expected: under serial execution, only one caller ever
+            # enters this function at a time, so the barrier is never
+            # set by anyone else.
+            pass
+        active -= 1
+        return "a" * 40  # a sha1 that is NOT in the loaded DAT
+
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", _fake_hash)
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+
+    paths = []
+    for i in range(5):
+        p = tmp_path / f"f{i}.iso"
+        p.write_bytes(b"x")
+        paths.append(p)
+
+    requests = [
+        dat_routes.match_file(dat_routes.MatchRequest(path=str(p)))
+        for p in paths
+    ]
+    await _asyncio.gather(*requests)
+
+    # Under match_limit=1 the hasher runs strictly one at a time.
+    assert peak == 1, f"concurrency cap breached: peak={peak}"
+
+
+@pytest.mark.asyncio
+async def test_match_file_hit_respects_size_cap_off(tmp_path, isolated_dat_store, monkeypatch):
+    """With MATCH_MAX_FILE_SIZE=0 (disabled), any file is hashed and matched."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    iso = tmp_path / "any-size.iso"
+    iso.write_bytes(b"whatever")
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    monkeypatch.setattr(dat_routes.settings, "match_max_file_size", 0)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value=target_sha1))
+
+    request = dat_routes.MatchRequest(path=str(iso))
+    result = await dat_routes.match_file(request)
+
+    assert result["matched"] is True
