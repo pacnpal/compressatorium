@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -66,6 +67,9 @@ class DATStore:
             self._session_factory = None  # resolved lazily from db.SessionLocal
         # Staging area for import_dat_no_persist() — committed atomically by persist().
         self._pending_imports: list[tuple[dict, list[dict[str, Any]]]] = []
+        # Lock serialises concurrent append (import_dat_no_persist) / read+clear
+        # (_persist_sync) / clear (discard_pending) calls from different threads.
+        self._pending_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Session plumbing
@@ -225,7 +229,8 @@ class DATStore:
                 "hashes_added": added,
                 "message": f"Imported {len(entries)} entries from {dat_info['name']}",
             }
-            self._pending_imports.append((dat_info, hash_rows))
+            with self._pending_lock:
+                self._pending_imports.append((dat_info, hash_rows))
             return dat_info, result
 
         _dat_info, result = await run_in_threadpool(_stage)
@@ -233,10 +238,13 @@ class DATStore:
 
     def _persist_sync(self) -> None:
         """Commit all staged DATs in a single transaction and clear the staging area."""
-        if not self._pending_imports:
+        with self._pending_lock:
+            pending = list(self._pending_imports)
+            self._pending_imports = []
+        if not pending:
             return
         with self._session() as session:
-            for dat_info, hash_rows in self._pending_imports:
+            for dat_info, hash_rows in pending:
                 dat_row = _db.DAT(
                     id=dat_info["id"],
                     name=dat_info["name"],
@@ -268,7 +276,6 @@ class DATStore:
             # Importing new DATs invalidates the match cache.
             session.execute(delete(_db.DATMatch))
             session.commit()
-        self._pending_imports = []
 
     async def persist(self) -> None:
         """Commit all DATs staged by :meth:`import_dat_no_persist` in a single transaction."""
@@ -276,7 +283,8 @@ class DATStore:
 
     async def discard_pending(self) -> None:
         """Discard all staged DATs without writing them to the database."""
-        self._pending_imports = []
+        with self._pending_lock:
+            self._pending_imports = []
 
     # ------------------------------------------------------------------
     # Delete

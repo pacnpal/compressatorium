@@ -174,8 +174,9 @@ async def startup_event():
 
     # Auto-sync MAMERedump DATs on startup if configured and no DATs loaded.
     if settings.mameredump_auto_sync:
+        from fastapi.concurrency import run_in_threadpool
         from services.dat_store import dat_store
-        if not dat_store.has_dats():
+        if not await run_in_threadpool(dat_store.has_dats):
             from services.dat_sync import dat_sync_service
             logger.info("MAMEREDUMP_AUTO_SYNC enabled and no DATs loaded — starting background sync")
 

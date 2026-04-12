@@ -268,7 +268,10 @@ class CHDMetadataStore:
             stmt = stmt.on_conflict_do_update(
                 index_elements=["chd_path"],
                 set_={
-                    "metadata": stmt.excluded.metadata,
+                    # Use column-name key lookup instead of attribute access to
+                    # avoid colliding with SQLAlchemy's own .metadata descriptor
+                    # (CHDMetadata.metadata_json maps to SQL column "metadata").
+                    "metadata": stmt.excluded["metadata"],
                     "media_type": stmt.excluded.media_type,
                     "mtime": stmt.excluded.mtime,
                     "cached_at": stmt.excluded.cached_at,
