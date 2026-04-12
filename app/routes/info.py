@@ -918,7 +918,7 @@ async def list_verified() -> dict:
     """List verified output paths."""
     await verification_store.prune_missing()
     verified = []
-    for record in verification_store.all_records():
+    for record in await verification_store.all_records():
         chd_path = record.get("chd_path")
         if chd_path and await run_in_threadpool(is_within_configured_volumes, chd_path, treat_archives=False):
             verified.append(chd_path)

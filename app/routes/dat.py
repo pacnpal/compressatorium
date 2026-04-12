@@ -75,7 +75,7 @@ async def import_dat(file: UploadFile = File(...)):
 @router.get("/dat/list")
 async def list_dats():
     """List all imported DATs."""
-    return dat_store.list_dats()
+    return await run_in_threadpool(dat_store.list_dats)
 
 
 @router.delete("/dat/{dat_id}")
@@ -90,7 +90,7 @@ async def delete_dat(dat_id: str):
 @router.get("/dat/stats")
 async def get_dat_stats():
     """Get DAT store statistics."""
-    return dat_store.get_stats()
+    return await run_in_threadpool(dat_store.get_stats)
 
 
 @router.post("/dat/match")
@@ -147,7 +147,7 @@ def _resolve_and_group_paths(
 @router.post("/dat/match-batch")
 async def match_batch(request: MatchBatchRequest):
     """Match multiple files against imported DATs."""
-    if not dat_store.has_dats():
+    if not await run_in_threadpool(dat_store.has_dats):
         return {"results": {p: {"path": p, "matched": False} for p in request.paths}}
 
     # Resolve all paths and check volume membership in a single thread-pool
@@ -157,7 +157,7 @@ async def match_batch(request: MatchBatchRequest):
     )
 
     # Check cached matches using normalized paths
-    cached = dat_store.get_matches_batch(list(normalized_to_originals.keys()))
+    cached = await run_in_threadpool(dat_store.get_matches_batch, list(normalized_to_originals.keys()))
     results: dict[str, dict] = {}
     to_compute: list[str] = []  # normalized paths
 
@@ -293,7 +293,7 @@ async def _match_single_file(file_path: str) -> dict:
     ext = os.path.splitext(file_path)[1].lower()
     base_result = {"path": file_path, "matched": False}
 
-    if not dat_store.has_dats():
+    if not await run_in_threadpool(dat_store.has_dats):
         return base_result
 
     # For CHD files, try the header hashes first (fast, already cached)
@@ -309,13 +309,14 @@ async def _match_single_file(file_path: str) -> dict:
         logger.warning("Failed to hash %s: %s", file_path, exc)
         return base_result
 
-    record = dat_store.lookup_sha1(file_sha1)
+    record = await run_in_threadpool(dat_store.lookup_sha1, file_sha1)
     if record:
+        dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
         return {
             "path": file_path,
             "matched": True,
             "dat_id": record.get("dat_id"),
-            "dat_name": dat_store.get_dat_name(record.get("dat_id", "")),
+            "dat_name": dat_name,
             "game_name": record.get("game_name"),
             "rom_name": record.get("rom_name"),
             "match_type": "file_sha1",
@@ -335,13 +336,14 @@ async def _try_chd_header_match(file_path: str) -> dict | None:
     # Try overall SHA1 from CHD header
     sha1 = metadata.get("sha1", "").strip().lower()
     if sha1:
-        record = dat_store.lookup_sha1(sha1)
+        record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
         if record:
+            dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
             return {
                 "path": file_path,
                 "matched": True,
                 "dat_id": record.get("dat_id"),
-                "dat_name": dat_store.get_dat_name(record.get("dat_id", "")),
+                "dat_name": dat_name,
                 "game_name": record.get("game_name"),
                 "rom_name": record.get("rom_name"),
                 "match_type": "chd_sha1",
@@ -351,13 +353,14 @@ async def _try_chd_header_match(file_path: str) -> dict | None:
     # Try data SHA1 (uncompressed content hash)
     data_sha1 = metadata.get("data_sha1", "").strip().lower()
     if data_sha1:
-        record = dat_store.lookup_sha1(data_sha1)
+        record = await run_in_threadpool(dat_store.lookup_sha1, data_sha1)
         if record:
+            dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
             return {
                 "path": file_path,
                 "matched": True,
                 "dat_id": record.get("dat_id"),
-                "dat_name": dat_store.get_dat_name(record.get("dat_id", "")),
+                "dat_name": dat_name,
                 "game_name": record.get("game_name"),
                 "rom_name": record.get("rom_name"),
                 "match_type": "chd_data_sha1",

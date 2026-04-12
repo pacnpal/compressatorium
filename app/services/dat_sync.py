@@ -14,6 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.orm import Session, sessionmaker
+
+from services import db as _db
 
 logger = logging.getLogger("chd.dat_sync")
 
@@ -31,7 +34,12 @@ _MAX_DAT_SIZE = 100 * 1024 * 1024
 class DATSyncService:
     """Fetches MAME Redump DAT files from GitHub and imports them."""
 
-    def __init__(self, state_path: str | None = None) -> None:
+    def __init__(
+        self,
+        state_path: str | None = None,
+        *,
+        session_factory: sessionmaker[Session] | None = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._init_lock = threading.Lock()
         self._initialized = False
@@ -43,6 +51,8 @@ class DATSyncService:
         self._token: str | None = None
         self._state: dict = {}
         self._explicit_state_path = state_path
+        # Optional private sessionmaker, for tests that want an isolated DB.
+        self._session_factory: sessionmaker[Session] | None = session_factory
 
     def _ensure_init(self) -> None:
         """Lazy init that defers settings import until first use.
@@ -81,34 +91,52 @@ class DATSyncService:
     # Persistent state (tracks last sync to avoid redundant re-imports)
     # ------------------------------------------------------------------
 
+    def _session(self) -> Session:
+        if self._session_factory is not None:
+            return self._session_factory()
+        if _db.SessionLocal is None:
+            raise RuntimeError(
+                "DATSyncService: db.SessionLocal not initialized — call "
+                "db.init_engine() before using the service.",
+            )
+        return _db.SessionLocal()
+
     def _load_state(self) -> dict:
+        """Load sync state from the DB (``dat_sync_state`` singleton row)."""
         try:
-            if self._state_path.exists():
-                with self._state_path.open("r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                    if isinstance(data, dict):
-                        return data
-        except (json.JSONDecodeError, OSError) as exc:
+            with self._session() as session:
+                row = session.get(_db.DATSyncState, 1)
+                if row is None:
+                    return {}
+                return {
+                    "last_sync_tag": row.last_sync_tag or "",
+                    "last_sync_at": row.last_sync_at or "",
+                    "last_sync_files": row.last_sync_files or 0,
+                }
+        except Exception as exc:
             logger.warning("dat_sync: failed to load state: %s", exc)
-        return {}
+            return {}
 
     def _save_state(self) -> None:
-        tmp = None
+        """Upsert sync state into the singleton ``dat_sync_state`` row."""
         try:
-            self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._state_path.with_suffix(f".tmp.{os.getpid()}")
-            with tmp.open("w", encoding="utf-8") as fh:
-                json.dump(self._state, fh, indent=2)
-            tmp.replace(self._state_path)
-            tmp = None  # replace() succeeded; nothing to clean up
-        except OSError as exc:
+            with self._session() as session:
+                row = session.get(_db.DATSyncState, 1)
+                if row is None:
+                    row = _db.DATSyncState(
+                        id=1,
+                        last_sync_tag=self._state.get("last_sync_tag") or None,
+                        last_sync_at=self._state.get("last_sync_at") or None,
+                        last_sync_files=int(self._state.get("last_sync_files", 0) or 0),
+                    )
+                    session.add(row)
+                else:
+                    row.last_sync_tag = self._state.get("last_sync_tag") or None
+                    row.last_sync_at = self._state.get("last_sync_at") or None
+                    row.last_sync_files = int(self._state.get("last_sync_files", 0) or 0)
+                session.commit()
+        except Exception as exc:
             logger.warning("dat_sync: failed to save state: %s", exc)
-        finally:
-            if tmp is not None:
-                try:
-                    tmp.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     # ------------------------------------------------------------------
     # Public status interface
@@ -289,7 +317,7 @@ class DATSyncService:
             logger.info("dat_sync: resolved latest tag: %s", tag)
 
         # Check if already synced to this tag, but only fast-path if DATs are present.
-        existing_dats = dat_store.list_dats()
+        existing_dats = await run_in_threadpool(dat_store.list_dats)
         if self._state.get("last_sync_tag") == tag:
             if existing_dats:
                 with self._lock:
@@ -332,8 +360,8 @@ class DATSyncService:
         new_dat_ids: list[str] = []
         for i, file_info in enumerate(all_files):
             if self._is_cancelled():
-                # Roll back any DATs imported in this run before aborting.
-                await dat_store.delete_dats_bulk(new_dat_ids)
+                # Discard any DATs staged in this run before aborting.
+                await dat_store.discard_pending()
                 return self._cancelled_result(tag)
 
             name = file_info["name"]
@@ -378,31 +406,26 @@ class DATSyncService:
                         pass
 
         if not errors:
-            # Full success: remove old DATs in a single bulk delete, which
-            # also persists the store exactly once (new-only set on disk).
-            # We intentionally skip an earlier persist() call so we never
-            # write a mixed (old+new) state to disk, keeping the store
-            # crash-safe. When there are no old IDs, or when old IDs were
-            # already removed before the bulk delete runs, explicitly persist
-            # so the newly imported DATs are flushed to disk.
+            # Full success: commit all staged DATs atomically, then remove the
+            # old set. New DATs are visible before old ones are removed, but
+            # there is never a window where neither exists.
             old_ids = [d["id"] for d in existing_dats]
-            deleted = await dat_store.delete_dats_bulk(old_ids)
-            if not old_ids or deleted == 0:
-                await dat_store.persist()
-            if deleted:
-                logger.info(
-                    "dat_sync: cleared %d existing DATs after full successful sync",
-                    deleted,
-                )
+            await dat_store.persist()
+            if old_ids:
+                deleted = await dat_store.delete_dats_bulk(old_ids)
+                if deleted:
+                    logger.info(
+                        "dat_sync: cleared %d existing DATs after full successful sync",
+                        deleted,
+                    )
         else:
-            # Partial failure: roll back newly imported DATs so the store
-            # stays in a clean, known-good state (previous working set intact).
-            # Use a bulk delete so the rollback is a single disk write.
-            rolled_back = await dat_store.delete_dats_bulk(new_dat_ids)
-            if rolled_back:
+            # Partial failure: discard all staged (uncommitted) new DATs so the
+            # store stays in a clean, known-good state (previous working set intact).
+            await dat_store.discard_pending()
+            if new_dat_ids:
                 logger.warning(
-                    "dat_sync: rolled back %d new DATs due to %d error(s)",
-                    rolled_back,
+                    "dat_sync: discarded %d staged new DATs due to %d error(s)",
+                    len(new_dat_ids),
                     len(errors),
                 )
             if existing_dats:

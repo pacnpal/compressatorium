@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 from typing import Optional
@@ -13,12 +14,35 @@ def strip_archive_path(path: str) -> str:
 
 
 def _resolve_path(raw_path: str, *, strict: bool = False) -> Optional[Path]:
-    """Safely resolve a user-supplied path without following non-existent segments."""
+    """Safely resolve a user-supplied path without following non-existent segments.
+
+    Explicitly rejects symlink loops: prior to Python 3.13, ``Path.resolve()``
+    raised :class:`RuntimeError` for an infinite-loop symlink, which this
+    helper caught and treated as "cannot be safely resolved".  Python 3.13+
+    instead returns the path unchanged from ``resolve()``, which would let a
+    dangling loop slip past the volume-containment check as if it were a real
+    file.  We restore the pre-3.13 semantics by probing the path with
+    ``os.stat`` (follows symlinks) — ELOOP surfaces as ``OSError`` and we
+    return ``None`` so the caller rejects the path.
+    """
     try:
         path_obj = Path(raw_path).expanduser()
-        return path_obj.resolve(strict=strict)
+        resolved = path_obj.resolve(strict=strict)
     except (OSError, RuntimeError):
         return None
+
+    # Additional ELOOP probe for Python 3.13+ where ``resolve()`` no longer
+    # raises for symlink loops.
+    try:
+        os.stat(resolved)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return None
+        # ENOENT / EACCES / other — not necessarily a security issue; fall
+        # through and let the caller decide.  strict=False callers expect
+        # non-existent paths to be resolvable (used for "would this output
+        # path be valid?" checks).
+    return resolved
 
 
 def _resolve_volume(volume_path: str) -> Optional[Path]:

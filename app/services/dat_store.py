@@ -1,127 +1,100 @@
-"""Persistence store for MAME Redump DAT files and hash matching."""
+"""SQLite-backed DAT store + match cache.
+
+Public API is identical to the legacy JSON-backed implementation so that
+route code and tests require no changes to their call sites.  Internally
+every method dispatches to a short SQLAlchemy query executed in a
+thread pool (matches the existing ``run_in_threadpool`` pattern).
+"""
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
+from services import db as _db
 from services.dat_parser import parse_dat
 
 logger = logging.getLogger("chd.dat_store")
 
 
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 class DATStore:
     """Persists imported DAT files and hash lookup index."""
 
-    def __init__(self, store_path: str | None = None) -> None:
-        base_path = store_path or os.environ.get("CHD_DAT_STORE")
-        explicit_path = bool(base_path)
-        if base_path:
-            self._store_path = Path(base_path)
-        else:
-            default_dir = Path(os.environ.get("CHD_DATA_DIR", "/config"))
-            self._store_path = default_dir / "dat_store.json"
-        try:
-            self._store_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            if explicit_path:
-                raise
-            fallback_root = Path(tempfile.gettempdir()) / "compressatorium"
-            fallback_root.mkdir(parents=True, exist_ok=True)
-            self._store_path = fallback_root / self._store_path.name
+    def __init__(
+        self,
+        store_path: str | None = None,
+        *,
+        session_factory: sessionmaker[Session] | None = None,
+    ) -> None:
+        """Construct a store.
 
-        self._lock = threading.Lock()
-        self._write_lock = threading.Lock()
-        self._dats: dict[str, dict] = {}
-        self._hashes_sha1: dict[str, dict] = {}
-        self._hashes_md5: dict[str, dict] = {}
-        self._matches: dict[str, dict] = {}
-        self._version = 0
-        self._last_persisted_version = 0
-        self._load()
-
-    def _load(self):
-        if self._store_path.exists():
-            try:
-                with self._store_path.open("r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                    if isinstance(data, dict):
-                        dats = data.get("dats", {})
-                        self._dats = dats if isinstance(dats, dict) else {}
-                        sha1_hashes = data.get("hashes", {}).get("sha1", {})
-                        self._hashes_sha1 = sha1_hashes if isinstance(sha1_hashes, dict) else {}
-                        md5_hashes = data.get("hashes", {}).get("md5", {})
-                        self._hashes_md5 = md5_hashes if isinstance(md5_hashes, dict) else {}
-                        matches = data.get("matches", {})
-                        self._matches = matches if isinstance(matches, dict) else {}
-            except json.JSONDecodeError:
-                backup = self._store_path.with_suffix(".corrupt")
-                try:
-                    self._store_path.rename(backup)
-                except OSError:
-                    logger.warning(
-                        "dat_store: could not rename corrupt store to %s; clearing state",
-                        backup,
-                    )
-                self._dats = {}
-                self._hashes_sha1 = {}
-                self._hashes_md5 = {}
-                self._matches = {}
-        self._version = 0
-        self._last_persisted_version = 0
-
-    def _persist(self):
-        with self._write_lock:
-            with self._lock:
-                if self._version <= self._last_persisted_version:
-                    return
-                snapshot = {
-                    "dats": dict(self._dats),
-                    "hashes": {
-                        "sha1": dict(self._hashes_sha1),
-                        "md5": dict(self._hashes_md5),
-                    },
-                    "matches": dict(self._matches),
-                }
-                version_to_write = self._version
-
-            tmp_path = self._store_path.with_suffix(f".tmp.{os.getpid()}")
-            try:
-                with tmp_path.open("w", encoding="utf-8") as fh:
-                    json.dump(snapshot, fh, indent=2)
-
-                with self._lock:
-                    if self._version == version_to_write:
-                        tmp_path.replace(self._store_path)
-                        self._last_persisted_version = version_to_write
-            except Exception:
-                if tmp_path.exists():
-                    tmp_path.unlink()
-                raise
-            finally:
-                if tmp_path.exists():
-                    tmp_path.unlink()
-
-    async def _import_dat_core(self, source: str) -> tuple[dict, dict]:
-        """Parse a DAT file and insert it into the in-memory store.
-
-        Shared implementation used by :meth:`import_dat` and
-        :meth:`import_dat_no_persist`.  Returns ``(dat_info, result_dict)``
-        where ``result_dict`` is the dict returned to callers.  Does **not**
-        call :meth:`_persist`; the caller decides whether to flush.
+        * ``session_factory`` — if provided, use this ``sessionmaker``
+          directly.  Preferred in tests that build an isolated engine.
+        * ``store_path`` — legacy constructor argument.  If given,
+          treat it as a SQLite database file and build a private
+          engine for this store (isolated from the module-level DB).
+          This preserves the test fixture pattern
+          ``DATStore(store_path=tmp_path / "dat_store.json")`` — the
+          path is still unique-per-test, it just happens to be a
+          SQLite file now.
+        * Neither — use the process-wide ``db.SessionLocal``.
         """
-        header, entries = await run_in_threadpool(parse_dat, source)
+        if session_factory is not None:
+            self._session_factory = session_factory
+            self._own_engine: Engine | None = None
+        elif store_path is not None:
+            self._own_engine = _db.make_engine(str(store_path))
+            _db.Base.metadata.create_all(self._own_engine)
+            self._session_factory = sessionmaker(
+                bind=self._own_engine, expire_on_commit=False, future=True,
+            )
+        else:
+            self._own_engine = None
+            self._session_factory = None  # resolved lazily from db.SessionLocal
+        # Staging area for import_dat_no_persist() — committed atomically by persist().
+        self._pending_imports: list[tuple[dict, list[dict[str, Any]]]] = []
+        # Lock serialises concurrent append (import_dat_no_persist) / read+clear
+        # (_persist_sync) / clear (discard_pending) calls from different threads.
+        self._pending_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Session plumbing
+    # ------------------------------------------------------------------
+
+    def _session(self) -> Session:
+        if self._session_factory is not None:
+            return self._session_factory()
+        if _db.SessionLocal is None:
+            raise RuntimeError(
+                "DATStore: db.SessionLocal not initialized — call "
+                "db.init_engine() before using the store.",
+            )
+        return _db.SessionLocal()
+
+    # ------------------------------------------------------------------
+    # Import
+    # ------------------------------------------------------------------
+
+    def _import_dat_sync(self, source: str) -> tuple[dict, dict]:
+        """Parse *source* and insert all entries into the DB in one transaction."""
+        header, entries = parse_dat(source)
 
         dat_id = str(uuid.uuid4())[:8]
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        now = _utcnow_iso()
 
         dat_info = {
             "id": dat_id,
@@ -133,23 +106,68 @@ class DATStore:
         }
 
         added = 0
-        with self._lock:
-            self._dats[dat_id] = dat_info
+        with self._session() as session:
+            dat_row = _db.DAT(
+                id=dat_id,
+                name=dat_info["name"],
+                description=dat_info["description"],
+                version=dat_info["version"],
+                imported_at=now,
+                file_count=len(entries),
+            )
+            session.add(dat_row)
+            # bulk_insert_mappings bypasses the unit-of-work, so flush
+            # the DAT row first or the FK from dat_hashes will fail.
+            session.flush()
+
+            hash_rows: list[dict[str, Any]] = []
             for entry in entries:
-                record = {
-                    "dat_id": dat_id,
-                    "game_name": entry["game_name"],
-                    "rom_name": entry["rom_name"],
-                    "size": entry["size"],
-                }
                 if entry.get("sha1"):
-                    self._hashes_sha1[entry["sha1"]] = record
+                    hash_rows.append({
+                        "hash": entry["sha1"],
+                        "hash_type": "sha1",
+                        "dat_id": dat_id,
+                        "game_name": entry["game_name"],
+                        "rom_name": entry["rom_name"],
+                        "size": entry["size"],
+                    })
                     added += 1
                 if entry.get("md5"):
-                    self._hashes_md5[entry["md5"]] = record
+                    hash_rows.append({
+                        "hash": entry["md5"],
+                        "hash_type": "md5",
+                        "dat_id": dat_id,
+                        "game_name": entry["game_name"],
+                        "rom_name": entry["rom_name"],
+                        "size": entry["size"],
+                    })
                     added += 1
-            self._matches.clear()
-            self._version += 1
+
+            if hash_rows:
+                # Use INSERT OR REPLACE (ON CONFLICT DO UPDATE) so that
+                # importing an updated DAT whose hashes overlap with an
+                # existing DAT set never raises a UNIQUE constraint error.
+                chunk_size = 900
+                for i in range(0, len(hash_rows), chunk_size):
+                    chunk = hash_rows[i:i + chunk_size]
+                    stmt = sqlite_insert(_db.DATHash).values(chunk)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["hash", "hash_type"],
+                        set_={
+                            "dat_id": stmt.excluded.dat_id,
+                            "game_name": stmt.excluded.game_name,
+                            "rom_name": stmt.excluded.rom_name,
+                            "size": stmt.excluded.size,
+                        },
+                    )
+                    session.execute(stmt)
+
+            # Importing a new DAT invalidates the match cache (a
+            # previously-"unmatched" file may now match, or a previously
+            # matched file may now match against a different DAT).
+            session.execute(delete(_db.DATMatch))
+
+            session.commit()
 
         result = {
             "id": dat_id,
@@ -162,172 +180,377 @@ class DATStore:
         return dat_info, result
 
     async def import_dat(self, source: str) -> dict:
-        """Parse and import a DAT file.
-
-        ``source`` may be either a filesystem path to the DAT file (preferred,
-        enables true streaming) or a raw XML string.  Returns import summary.
-        """
-        _dat_info, result = await self._import_dat_core(source)
-        await run_in_threadpool(self._persist)
+        """Parse and import a DAT file (path or XML string)."""
+        _dat_info, result = await run_in_threadpool(self._import_dat_sync, source)
         return result
 
     async def import_dat_no_persist(self, source: str) -> dict:
-        """Parse and import a DAT file without flushing to disk.
+        """Stage a DAT in memory; call :meth:`persist` to atomically commit all staged DATs."""
+        def _stage() -> tuple[dict, dict]:
+            header, entries = parse_dat(source)
+            dat_id = str(uuid.uuid4())[:8]
+            now = _utcnow_iso()
+            dat_info = {
+                "id": dat_id,
+                "name": header.get("name", "Unknown DAT"),
+                "description": header.get("description", ""),
+                "version": header.get("version", ""),
+                "imported_at": now,
+                "file_count": len(entries),
+            }
+            added = 0
+            hash_rows: list[dict[str, Any]] = []
+            for entry in entries:
+                if entry.get("sha1"):
+                    hash_rows.append({
+                        "hash": entry["sha1"],
+                        "hash_type": "sha1",
+                        "dat_id": dat_id,
+                        "game_name": entry["game_name"],
+                        "rom_name": entry["rom_name"],
+                        "size": entry["size"],
+                    })
+                    added += 1
+                if entry.get("md5"):
+                    hash_rows.append({
+                        "hash": entry["md5"],
+                        "hash_type": "md5",
+                        "dat_id": dat_id,
+                        "game_name": entry["game_name"],
+                        "rom_name": entry["rom_name"],
+                        "size": entry["size"],
+                    })
+                    added += 1
+            result = {
+                "id": dat_id,
+                "name": dat_info["name"],
+                "version": dat_info["version"],
+                "file_count": len(entries),
+                "hashes_added": added,
+                "message": f"Imported {len(entries)} entries from {dat_info['name']}",
+            }
+            with self._pending_lock:
+                self._pending_imports.append((dat_info, hash_rows))
+            return dat_info, result
 
-        Identical to :meth:`import_dat` but skips the final ``_persist()``
-        call.  Use this inside a bulk-import loop and call :meth:`persist`
-        once afterward to achieve O(1) disk writes regardless of the number
-        of DATs imported.
-        """
-        _dat_info, result = await self._import_dat_core(source)
+        _dat_info, result = await run_in_threadpool(_stage)
         return result
+
+    def _persist_sync(self) -> None:
+        """Commit all staged DATs in a single transaction and clear the staging area."""
+        with self._pending_lock:
+            pending = list(self._pending_imports)
+            self._pending_imports = []
+        if not pending:
+            return
+        with self._session() as session:
+            for dat_info, hash_rows in pending:
+                dat_row = _db.DAT(
+                    id=dat_info["id"],
+                    name=dat_info["name"],
+                    description=dat_info["description"],
+                    version=dat_info["version"],
+                    imported_at=dat_info["imported_at"],
+                    file_count=dat_info["file_count"],
+                )
+                session.add(dat_row)
+                session.flush()
+                if hash_rows:
+                    # Use INSERT OR REPLACE so that staging a new DAT set
+                    # while old DATs are still present never raises a UNIQUE
+                    # constraint error on overlapping (hash, hash_type) pairs.
+                    chunk_size = 900
+                    for i in range(0, len(hash_rows), chunk_size):
+                        chunk = hash_rows[i:i + chunk_size]
+                        stmt = sqlite_insert(_db.DATHash).values(chunk)
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=["hash", "hash_type"],
+                            set_={
+                                "dat_id": stmt.excluded.dat_id,
+                                "game_name": stmt.excluded.game_name,
+                                "rom_name": stmt.excluded.rom_name,
+                                "size": stmt.excluded.size,
+                            },
+                        )
+                        session.execute(stmt)
+            # Importing new DATs invalidates the match cache.
+            session.execute(delete(_db.DATMatch))
+            session.commit()
 
     async def persist(self) -> None:
-        """Explicitly flush the current in-memory state to disk.
+        """Commit all DATs staged by :meth:`import_dat_no_persist` in a single transaction."""
+        await run_in_threadpool(self._persist_sync)
 
-        Use after a bulk-import loop (calling :meth:`import_dat_no_persist`
-        for each file) to persist all imported DATs in a single write.
-        """
-        await run_in_threadpool(self._persist)
+    async def discard_pending(self) -> None:
+        """Discard all staged DATs without writing them to the database."""
+        with self._pending_lock:
+            self._pending_imports = []
 
-    async def delete_dat(self, dat_id: str) -> bool:
-        """Delete a DAT and all its hash entries."""
-        with self._lock:
-            if dat_id not in self._dats:
+    # ------------------------------------------------------------------
+    # Delete
+    # ------------------------------------------------------------------
+
+    def _delete_dat_sync(self, dat_id: str) -> bool:
+        with self._session() as session:
+            row = session.get(_db.DAT, dat_id)
+            if row is None:
                 return False
-            del self._dats[dat_id]
-            # Remove hash entries belonging to this DAT
-            self._hashes_sha1 = {
-                k: v for k, v in self._hashes_sha1.items()
-                if v.get("dat_id") != dat_id
-            }
-            self._hashes_md5 = {
-                k: v for k, v in self._hashes_md5.items()
-                if v.get("dat_id") != dat_id
-            }
-            # Remove matches from this DAT
-            self._matches = {
-                k: v for k, v in self._matches.items()
-                if v.get("dat_id") != dat_id
-            }
-            self._version += 1
-
-        await run_in_threadpool(self._persist)
+            # Matches don't cascade (FK is SET NULL) — drop them
+            # explicitly so the behaviour matches the legacy store.
+            session.execute(delete(_db.DATMatch).where(_db.DATMatch.dat_id == dat_id))
+            # Hashes cascade via FK ON DELETE CASCADE.
+            session.delete(row)
+            session.commit()
         return True
 
-    async def delete_dats_bulk(self, dat_ids: list[str]) -> int:
-        """Delete multiple DATs and their hash entries in a single disk write.
+    async def delete_dat(self, dat_id: str) -> bool:
+        return await run_in_threadpool(self._delete_dat_sync, dat_id)
 
-        Returns the number of DATs actually removed.  Persists only when at
-        least one ID is found and removed; returns 0 immediately for an empty
-        list or when none of the provided IDs exist in the store.
-        """
+    def _delete_dats_bulk_sync(self, dat_ids: list[str]) -> int:
         if not dat_ids:
             return 0
-        dat_id_set = set(dat_ids)
-        removed = 0
-        with self._lock:
-            for dat_id in dat_id_set:
-                if dat_id in self._dats:
-                    del self._dats[dat_id]
-                    removed += 1
-            if removed:
-                self._hashes_sha1 = {
-                    k: v for k, v in self._hashes_sha1.items()
-                    if v.get("dat_id") not in dat_id_set
-                }
-                self._hashes_md5 = {
-                    k: v for k, v in self._hashes_md5.items()
-                    if v.get("dat_id") not in dat_id_set
-                }
-                self._matches = {
-                    k: v for k, v in self._matches.items()
-                    if v.get("dat_id") not in dat_id_set
-                }
-                self._version += 1
-        if removed:
-            await run_in_threadpool(self._persist)
-        return removed
+        # Chunk to stay under SQLite's bind-parameter limit (default 999).
+        chunk_size = 900
+        with self._session() as session:
+            existing: list[str] = []
+            for i in range(0, len(dat_ids), chunk_size):
+                chunk = dat_ids[i:i + chunk_size]
+                existing.extend(session.scalars(
+                    select(_db.DAT.id).where(_db.DAT.id.in_(chunk))
+                ).all())
+            if not existing:
+                return 0
+            for i in range(0, len(existing), chunk_size):
+                chunk = existing[i:i + chunk_size]
+                session.execute(delete(_db.DATMatch).where(_db.DATMatch.dat_id.in_(chunk)))
+                session.execute(delete(_db.DAT).where(_db.DAT.id.in_(chunk)))
+            session.commit()
+            return len(existing)
+
+    async def delete_dats_bulk(self, dat_ids: list[str]) -> int:
+        return await run_in_threadpool(self._delete_dats_bulk_sync, list(dat_ids))
+
+    # ------------------------------------------------------------------
+    # Lookups
+    # ------------------------------------------------------------------
 
     def list_dats(self) -> list[dict]:
-        with self._lock:
-            return list(self._dats.values())
+        with self._session() as session:
+            rows = session.scalars(select(_db.DAT)).all()
+            return [
+                {
+                    "id": r.id,
+                    "name": r.name,
+                    "description": r.description,
+                    "version": r.version,
+                    "imported_at": r.imported_at,
+                    "file_count": r.file_count,
+                }
+                for r in rows
+            ]
 
     def get_dat_name(self, dat_id: str) -> str:
-        """Return the name of the DAT with the given ID, or 'Unknown'."""
-        with self._lock:
-            dat = self._dats.get(dat_id)
-            return dat.get("name", "Unknown") if dat else "Unknown"
+        with self._session() as session:
+            row = session.get(_db.DAT, dat_id)
+            return row.name if row is not None else "Unknown"
+
+    def _lookup_hash(self, hex_hash: str, hash_type: str) -> dict | None:
+        with self._session() as session:
+            row = session.execute(
+                select(_db.DATHash).where(
+                    _db.DATHash.hash == hex_hash.lower(),
+                    _db.DATHash.hash_type == hash_type,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "dat_id": row.dat_id,
+                "game_name": row.game_name,
+                "rom_name": row.rom_name,
+                "size": row.size,
+            }
 
     def lookup_sha1(self, sha1: str) -> dict | None:
-        with self._lock:
-            return self._hashes_sha1.get(sha1.lower())
+        return self._lookup_hash(sha1, "sha1")
 
     def lookup_md5(self, md5: str) -> dict | None:
-        with self._lock:
-            return self._hashes_md5.get(md5.lower())
+        return self._lookup_hash(md5, "md5")
+
+    # ------------------------------------------------------------------
+    # Match cache
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize(path: str) -> str:
+        return os.path.normpath(path)
 
     def get_match(self, file_path: str) -> dict | None:
-        normalized = os.path.normpath(file_path)
-        with self._lock:
-            return self._matches.get(normalized)
+        normalized = self._normalize(file_path)
+        with self._session() as session:
+            row = session.get(_db.DATMatch, normalized)
+            return dict(row.payload) if row is not None else None
 
-    async def set_match(self, file_path: str, match: dict):
-        normalized = os.path.normpath(file_path)
-        with self._lock:
-            self._matches[normalized] = match
-            self._version += 1
-        await run_in_threadpool(self._persist)
+    def _upsert_match_sync(self, file_path: str, match: dict) -> None:
+        normalized = self._normalize(file_path)
+        with self._session() as session:
+            dat_id = match.get("dat_id")
+            # Guard against dat_id referencing a non-existent DAT (e.g.,
+            # deleted between match and persist).  Null it out rather
+            # than violate the FK.
+            if dat_id is not None:
+                if session.get(_db.DAT, dat_id) is None:
+                    dat_id = None
+            payload = dict(match)
+            existing = session.get(_db.DATMatch, normalized)
+            if existing is not None:
+                existing.matched = bool(match.get("matched", False))
+                existing.dat_id = dat_id
+                existing.game_name = match.get("game_name")
+                existing.rom_name = match.get("rom_name")
+                existing.match_type = match.get("match_type")
+                existing.file_hash = match.get("file_hash")
+                existing.payload = payload
+            else:
+                session.add(_db.DATMatch(
+                    path=normalized,
+                    matched=bool(match.get("matched", False)),
+                    dat_id=dat_id,
+                    game_name=match.get("game_name"),
+                    rom_name=match.get("rom_name"),
+                    match_type=match.get("match_type"),
+                    file_hash=match.get("file_hash"),
+                    payload=payload,
+                ))
+            session.commit()
 
-    async def set_matches_batch(self, matches: dict[str, dict]):
-        """Set multiple match results at once."""
+    async def set_match(self, file_path: str, match: dict) -> None:
+        await run_in_threadpool(self._upsert_match_sync, file_path, match)
+
+    def _set_matches_batch_sync(self, matches: dict[str, dict]) -> None:
         if not matches:
             return
-        resolved = {os.path.normpath(p): m for p, m in matches.items()}
-        with self._lock:
-            self._matches.update(resolved)
-            self._version += 1
-        await run_in_threadpool(self._persist)
+        normalized_matches = {
+            self._normalize(raw_path): match
+            for raw_path, match in matches.items()
+        }
+
+        # Resolve valid dat_ids once and prefetch existing match rows for the
+        # whole batch to avoid an N+1 session.get() loop.
+        with self._session() as session:
+            valid_dat_ids = set(session.scalars(select(_db.DAT.id)).all())
+            # Prefetch existing rows in chunks to stay under SQLite's
+            # 999 bind-parameter limit.
+            chunk_size = 900
+            norm_keys = list(normalized_matches.keys())
+            existing_matches: dict[str, _db.DATMatch] = {}
+            for i in range(0, len(norm_keys), chunk_size):
+                chunk = norm_keys[i:i + chunk_size]
+                for row in session.scalars(
+                    select(_db.DATMatch).where(_db.DATMatch.path.in_(chunk))
+                ).all():
+                    existing_matches[row.path] = row
+
+            for normalized, match in normalized_matches.items():
+                dat_id = match.get("dat_id")
+                if dat_id is not None and dat_id not in valid_dat_ids:
+                    dat_id = None
+                payload = dict(match)
+                existing = existing_matches.get(normalized)
+                if existing is not None:
+                    existing.matched = bool(match.get("matched", False))
+                    existing.dat_id = dat_id
+                    existing.game_name = match.get("game_name")
+                    existing.rom_name = match.get("rom_name")
+                    existing.match_type = match.get("match_type")
+                    existing.file_hash = match.get("file_hash")
+                    existing.payload = payload
+                else:
+                    session.add(_db.DATMatch(
+                        path=normalized,
+                        matched=bool(match.get("matched", False)),
+                        dat_id=dat_id,
+                        game_name=match.get("game_name"),
+                        rom_name=match.get("rom_name"),
+                        match_type=match.get("match_type"),
+                        file_hash=match.get("file_hash"),
+                        payload=payload,
+                    ))
+            session.commit()
+
+    async def set_matches_batch(self, matches: dict[str, dict]) -> None:
+        await run_in_threadpool(self._set_matches_batch_sync, dict(matches))
 
     def get_matches_batch(self, file_paths: list[str]) -> dict[str, dict | None]:
-        result = {}
-        with self._lock:
-            for path in file_paths:
-                normalized = os.path.normpath(path)
-                result[path] = self._matches.get(normalized)
-        return result
+        if not file_paths:
+            return {}
+        normalized_map = {p: self._normalize(p) for p in file_paths}
+        unique_norms = list(set(normalized_map.values()))
+        # Chunk to stay under SQLite's bind-parameter limit (default 999).
+        chunk_size = 900
+        by_norm: dict[str, dict] = {}
+        with self._session() as session:
+            for i in range(0, len(unique_norms), chunk_size):
+                chunk = unique_norms[i:i + chunk_size]
+                rows = session.scalars(
+                    select(_db.DATMatch).where(_db.DATMatch.path.in_(chunk))
+                ).all()
+                by_norm.update({r.path: dict(r.payload) for r in rows})
+        return {orig: by_norm.get(norm) for orig, norm in normalized_map.items()}
+
+    # ------------------------------------------------------------------
+    # Stats / housekeeping
+    # ------------------------------------------------------------------
 
     def get_stats(self) -> dict:
-        with self._lock:
-            matched = sum(1 for m in self._matches.values() if m.get("matched"))
-            unmatched = sum(1 for m in self._matches.values() if not m.get("matched"))
+        with self._session() as session:
+            total_dats = session.query(_db.DAT).count()
+            total_sha1 = session.query(_db.DATHash).filter(
+                _db.DATHash.hash_type == "sha1"
+            ).count()
+            total_md5 = session.query(_db.DATHash).filter(
+                _db.DATHash.hash_type == "md5"
+            ).count()
+            matched = session.query(_db.DATMatch).filter(
+                _db.DATMatch.matched.is_(True)
+            ).count()
+            unmatched = session.query(_db.DATMatch).filter(
+                _db.DATMatch.matched.is_(False)
+            ).count()
             return {
-                "total_dats": len(self._dats),
-                "total_sha1_hashes": len(self._hashes_sha1),
-                "total_md5_hashes": len(self._hashes_md5),
+                "total_dats": total_dats,
+                "total_sha1_hashes": total_sha1,
+                "total_md5_hashes": total_md5,
                 "total_matches": matched,
                 "total_unmatched": unmatched,
-                "total_scanned": len(self._matches),
+                "total_scanned": matched + unmatched,
             }
 
     def has_dats(self) -> bool:
-        with self._lock:
-            return len(self._dats) > 0
+        with self._session() as session:
+            return session.query(_db.DAT).limit(1).first() is not None
 
-    async def prune_missing(self) -> int:
-        def _check_and_prune():
-            with self._lock:
-                keys = list(self._matches.keys())
-            missing = [p for p in keys if not os.path.exists(p)]
-            if missing:
-                with self._lock:
-                    for path in missing:
-                        self._matches.pop(path, None)
-                    self._version += 1
-                self._persist()
+    def _prune_missing_sync(self) -> int:
+        with self._session() as session:
+            paths = session.scalars(select(_db.DATMatch.path)).all()
+            missing = [p for p in paths if not os.path.exists(p)]
+            if not missing:
+                return 0
+            # Chunk to stay under SQLite's bind-parameter limit (default 999).
+            chunk_size = 900
+            for i in range(0, len(missing), chunk_size):
+                chunk = missing[i:i + chunk_size]
+                session.execute(delete(_db.DATMatch).where(_db.DATMatch.path.in_(chunk)))
+            session.commit()
             return len(missing)
 
-        return await run_in_threadpool(_check_and_prune)
+    async def prune_missing(self) -> int:
+        return await run_in_threadpool(self._prune_missing_sync)
 
+
+# ---------------------------------------------------------------------------
+# Module-level singleton.  Lazy — only resolves ``db.SessionLocal`` on first
+# method call, so import order is irrelevant.
+# ---------------------------------------------------------------------------
 
 dat_store = DATStore()
