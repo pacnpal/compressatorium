@@ -9,7 +9,7 @@
     "property-no-unknown": [
       true,
       {
-        "ignoreProperties": ["/^gap/", "/^inset/", "/^aspect-ratio/"]
+        "ignoreProperties": ["/^gap/", "/^inset/", "/^aspect-ratio/", "/^accent-color/"]
       }
     ]
   }

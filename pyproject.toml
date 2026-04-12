@@ -140,6 +140,30 @@ disable = [
     "R1716",  # chained-comparison — fires on readable patterns
     "chained-comparison",
 
+    # --- Additional stylistic / complexity noise ---------------------
+    # too-many-nested-blocks fires on route handlers with per-request
+    # branching that pylint flattens poorly; mccabe is a better signal.
+    "R1702",
+    "too-many-nested-blocks",
+
+    # consider-using-get — stylistic nit; `if k in d: d[k]` is often
+    # clearer than `d.get(k, default)` when the default is not trivial.
+    "R1715",
+    "consider-using-get",
+
+    # cell-var-from-loop — fires on async closures that capture loop
+    # variables.  Our pattern is to `await` the closure within the
+    # same iteration (see `app/routes/info.py:run_verify`), so the
+    # captured vars cannot drift before use; the classic late-binding
+    # bug the rule warns about does not apply.
+    "W0640",
+    "cell-var-from-loop",
+
+    # logging-fstring-interpolation — we accept the small perf cost of
+    # eager f-string formatting for log-message readability.
+    "W1203",
+    "logging-fstring-interpolation",
+
     # --- Module size ------------------------------------------------
     # too-many-lines default threshold (1000) fires on deliberately
     # cohesive units (job_manager, info routes, disc_id).  Splitting

@@ -1,5 +1,20 @@
 ---
 engines:
+  csslint:
+    # CSSLint's parser predates CSS custom properties (var(--...)),
+    # grid `fr` units, and other modern syntax — every `:root` and
+    # `grid-template-columns` declaration in style.css trips a fatal
+    # `CSSLint_errors` parse failure (21 alerts, plus several stylistic
+    # nits).  Stylelint (modern, configured in .stylelintrc.json)
+    # covers the same space properly.
+    enabled: false
+  remarklint:
+    # Disabled: the `list-item-bullet-indent` rule fires on every
+    # bullet in RELEASE_NOTES.md / walkthrough.md (23 alerts).  We
+    # keep markdown style enforcement out of the Codacy dashboard;
+    # docs are rendered by GitHub which is forgiving about bullet
+    # indentation.
+    enabled: false
   eslint:
     enabled: false  # Project uses ESLint 9 flat config; Codacy CLI bundles ESLint 8
   pmd:
