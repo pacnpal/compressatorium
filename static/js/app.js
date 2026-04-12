@@ -896,8 +896,11 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             if (m.matched) {
                                 return html`<span class="status dat-match" title="${m.dat_name}: ${m.game_name}">DAT ✓</span>`;
                             }
-                            if (m.error) {
+                            if (m.request_error === true) {
                                 return html`<span class="status dat-error" title="DAT match failed — will retry">DAT !</span>`;
+                            }
+                            if (typeof m.error === 'string' && m.error) {
+                                return html`<span class="status dat-error" title="${`DAT match failed — ${m.error}`}">DAT !</span>`;
                             }
                             return null;
                         })()}
@@ -3383,9 +3386,11 @@ function App() {
             .filter(p => {
                 const m = datMatches.get(p);
                 if (!m) return true;
-                // Re-submit if the last request errored out more than 30 s ago.
+                // Re-submit if the last network request failed more than 30 s ago.
+                // Only request_error (set by the catch handler) is retryable;
+                // backend-provided string errors (m.error) are not.
                 const RETRY_MS = 30_000;
-                return m.error && Date.now() - m.ts >= RETRY_MS;
+                return m.request_error === true && Date.now() - m.ts >= RETRY_MS;
             });
         if (paths.length === 0) return;
 
@@ -3413,14 +3418,16 @@ function App() {
                 }
             })
             .catch(() => {
-                // Replace the pending sentinel with an error sentinel so the
-                // user sees "DAT !" instead of a perma-spinner. Storing the
-                // timestamp (ts) lets the effect re-submit after a 30 s delay.
+                // Replace the pending sentinel with a retryable error sentinel so
+                // the user sees "DAT !" instead of a perma-spinner.  Using a
+                // dedicated `request_error` field (not `error`) avoids colliding
+                // with the string `error` field that backend responses can carry.
+                // Storing the timestamp (ts) lets the effect re-submit after 30 s.
                 const now = Date.now();
                 setDatMatches(prev => {
                     const next = new Map(prev);
                     for (const p of paths) {
-                        if (next.get(p)?.pending) next.set(p, { error: true, ts: now });
+                        if (next.get(p)?.pending) next.set(p, { request_error: true, ts: now });
                     }
                     return next;
                 });
