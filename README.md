@@ -553,6 +553,24 @@ The `/config` volume is **required** and must be mounted for the application to 
 
 On first startup after upgrading from a JSON-backed install, the app automatically imports `dat_store.json`, `verified_chds.json`, `chd_metadata.json`, and `dat_sync.json` into the new SQLite database. The originals are renamed to `<name>.migrated.bak` — **never deleted** — so you can always roll back. Migration is transactional, idempotent, and validates row counts; a failed or corrupt file is quarantined (`.corrupt` suffix) without blocking the other stores. These migration guarantees are described above in this section.
 
+#### Schema changes (for developers)
+
+Schema is managed by [Alembic](https://alembic.sqlalchemy.org/). On every startup:
+
+1. If the DB already has an `alembic_version` row, Alembic runs `upgrade head`.
+2. If the DB has the baseline tables but no `alembic_version` (pre-Alembic install), Alembic *stamps* head — no DDL runs, it just records that the schema is at revision `0001`.
+3. If the DB is empty, Alembic builds the schema from scratch.
+
+To evolve the schema:
+
+```bash
+scripts/new_migration.sh "add foo column to dats"
+# review migrations/versions/NNNN_*.py
+# commit the new migration alongside your ORM changes
+```
+
+The test `test_no_model_drift_after_upgrade` fails if `Base.metadata` drifts from the migration chain — it runs on every test run and catches forgotten migrations.
+
 ### Ephemeral Runtime Data
 
 The application also uses a non-persistent directory for runtime lock files:
