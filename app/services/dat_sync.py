@@ -288,7 +288,12 @@ class DATSyncService:
                 raise RuntimeError("Sync already in progress")
             self._syncing = True
             self._cancel = False
-            self._progress = {"status": "starting", "files_total": 0, "files_imported": 0, "errors": []}
+            self._progress = {
+                "status": "starting",
+                "files_total": 0,
+                "files_imported": 0,
+                "errors": [],
+            }
 
         try:
             return await self._do_sync(tag)
@@ -328,7 +333,8 @@ class DATSyncService:
                     "message": f"Already synced to {tag}",
                 }
             logger.warning(
-                "dat_sync: state reports tag %s already synced, but DAT store is empty; forcing re-sync",
+                "dat_sync: state reports tag %s already synced,"
+                " but DAT store is empty; forcing re-sync",
                 tag,
             )
 

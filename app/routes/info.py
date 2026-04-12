@@ -8,7 +8,14 @@ import time
 from config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from models import BulkVerifyRequest, CHDInfo, ConversionMode, DolphinDiscInfo, MetadataBatchRequest, Z3DSInfo
+from models import (
+    BulkVerifyRequest,
+    CHDInfo,
+    ConversionMode,
+    DolphinDiscInfo,
+    MetadataBatchRequest,
+    Z3DSInfo,
+)
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
 from services.disc_id import (
@@ -209,7 +216,10 @@ async def scan_metadata_task(
                         await job_manager.update_external_job(
                             scan_job_id,
                             progress=60 + int(37 * idx2 / phase2_total),
-                            message=f"Phase 2 [{idx2}/{phase2_total}]: {os.path.basename(path)} (already checked)",
+                            message=(
+                                f"Phase 2 [{idx2}/{phase2_total}]: "
+                                f"{os.path.basename(path)} (already checked)"
+                            ),
                         )
                     continue
                 logger.info("Phase 2: Scanning disc ID for %s", os.path.basename(path))
@@ -669,7 +679,8 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
                 except Exception as e:
                     logger.warning(f"Background metadata flush failed: {e}")
 
-            # Use BackgroundTasks if available, but here we are in a route without it passed explicitly for flush
+            # Use BackgroundTasks if available, but here we are in a route without it passed
+            # explicitly for flush
             # We can spawn a task
             asyncio.create_task(safe_flush())
             media_type = record.get("media_type")
@@ -920,7 +931,9 @@ async def list_verified() -> dict:
     verified = []
     for record in await verification_store.all_records():
         chd_path = record.get("chd_path")
-        if chd_path and await run_in_threadpool(is_within_configured_volumes, chd_path, treat_archives=False):
+        if chd_path and await run_in_threadpool(
+            is_within_configured_volumes, chd_path, treat_archives=False
+        ):
             verified.append(chd_path)
     return {"verified": verified}
 

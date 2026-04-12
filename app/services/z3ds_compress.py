@@ -87,7 +87,16 @@ class Z3DSCompressService:
             if len(header) < 0x20:
                 raise ValueError("Invalid Z3DS file: header is too short")
 
-            magic, _underlying_magic, _version, _reserved, header_size, metadata_size, _compressed_size, _uncompressed_size = struct.unpack(
+            (
+                magic,
+                _underlying_magic,
+                _version,
+                _reserved,
+                header_size,
+                metadata_size,
+                _compressed_size,
+                _uncompressed_size,
+            ) = struct.unpack(
                 "<4s4sBBHIQQ",
                 header,
             )
@@ -129,8 +138,10 @@ class Z3DSCompressService:
         self,
         input_path: str,
         output_path: str,
-        mode: str = "z3ds_compress",  # Unused but required for interface consistency with chdman/dolphin services
-        compression: str | None = None,  # Unused but required for interface consistency
+        # `mode` and `compression` are unused here but required for interface
+        # consistency with chdman/dolphin services.
+        mode: str = "z3ds_compress",
+        compression: str | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         try:
@@ -225,7 +236,9 @@ class Z3DSCompressService:
                         last_activity_at = time.monotonic()
 
                         while True:
-                            sep_positions = [i for i in (buffer.find("\r"), buffer.find("\n")) if i >= 0]
+                            sep_positions = [
+                                i for i in (buffer.find("\r"), buffer.find("\n")) if i >= 0
+                            ]
                             if not sep_positions:
                                 break
                             sep_index = min(sep_positions)
@@ -257,10 +270,15 @@ class Z3DSCompressService:
                                     if input_size > 0:
                                         # Expect output to be ~50% of input
                                         expected_output_size = input_size * 0.5
-                                        progress = min(95, int((current_size / expected_output_size) * 90 + 5))
+                                        progress = min(
+                                            95,
+                                            int((current_size / expected_output_size) * 90 + 5),
+                                        )
                                         yield {
                                             "progress": progress,
-                                            "message": f"Compressing... ({current_size // (1024*1024)} MB)",
+                                            "message": (
+                                                f"Compressing... ({current_size // (1024*1024)} MB)"
+                                            ),
                                         }
                         except OSError:
                             pass

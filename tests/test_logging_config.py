@@ -66,7 +66,9 @@ def test_log_path_set_via_env_var():
 
 def test_log_path_set_via_legacy_chd_debug_log_path():
     """CHD_DEBUG_LOG_PATH must still populate log_path for existing deployments."""
-    assert Settings(CHD_DEBUG_LOG_PATH="/var/log/chd-debug.log").log_path == "/var/log/chd-debug.log"
+    assert (
+        Settings(CHD_DEBUG_LOG_PATH="/var/log/chd-debug.log").log_path == "/var/log/chd-debug.log"
+    )
 
 
 def test_log_path_takes_precedence_over_legacy(monkeypatch):

@@ -161,7 +161,9 @@ async def test_sync_resyncs_when_dats_empty(sync_service, tmp_path):
     mock_dat_store = MagicMock()
     mock_dat_store.list_dats = MagicMock(return_value=[])
     mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
-    mock_dat_store.import_dat_no_persist = AsyncMock(return_value={"id": "abc", "name": "Test", "file_count": 1, "hashes_added": 1})
+    mock_dat_store.import_dat_no_persist = AsyncMock(
+        return_value={"id": "abc", "name": "Test", "file_count": 1, "hashes_added": 1}
+    )
     mock_dat_store.persist = AsyncMock()
 
     with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
@@ -445,7 +447,9 @@ def test_download_dat_rejects_large_content_length(sync_service, monkeypatch):
 
 
 def test_download_dat_aborts_mid_stream_if_oversized(sync_service, monkeypatch, tmp_path):
-    """_download_dat raises ValueError and cleans up temp file when streamed bytes exceed _MAX_DAT_SIZE."""
+    """_download_dat raises ValueError and cleans up temp file when streamed bytes exceed
+    _MAX_DAT_SIZE.
+    """
     from app.services.dat_sync import _MAX_DAT_SIZE
     import urllib.request
 

@@ -51,6 +51,11 @@ pylint:
     - unnecessary-pass
     - bad-whitespace
     - chained-comparison
+    - too-many-lines
+    - no-name-in-module
+    - import-error
+    - no-member
+    - syntax-error
   options:
     max-line-length: 100
 

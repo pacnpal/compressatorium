@@ -210,7 +210,8 @@ class ConcurrencyManager:
                     try:
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
-                        # Best-effort unlock; closing the file descriptor below will release the lock if still held.
+                        # Best-effort unlock; closing the file descriptor below will release the
+                        # lock if still held.
                         pass
                     finally:
                         try:
@@ -229,7 +230,8 @@ class ConcurrencyManager:
                         try:
                             os.remove(ticket_path)
                         except OSError:
-                            # Best-effort stale ticket cleanup; ignore if the file was already removed.
+                            # Best-effort stale ticket cleanup; ignore if the file was already
+                            # removed.
                             pass
                         continue
                     payload, legacy = self._load_ticket_payload(ticket_path)
@@ -255,7 +257,8 @@ class ConcurrencyManager:
                         try:
                             os.remove(ticket_path)
                         except OSError:
-                            # Best-effort stale ticket cleanup; ignore if the file was already removed.
+                            # Best-effort stale ticket cleanup; ignore if the file was already
+                            # removed.
                             pass
             finally:
                 for path, handle in slot_handles:
@@ -264,12 +267,14 @@ class ConcurrencyManager:
                             if os.path.exists(path):
                                 os.remove(path)
                         except OSError:
-                            # Best-effort cleanup: ignore failures to remove temporary slot lock files.
+                            # Best-effort cleanup: ignore failures to remove temporary slot lock
+                            # files.
                             pass
                     try:
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
-                        # Best-effort unlock; closing the file descriptor below will release the lock if still held.
+                        # Best-effort unlock; closing the file descriptor below will release the
+                        # lock if still held.
                         pass
                     finally:
                         try:

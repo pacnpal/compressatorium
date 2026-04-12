@@ -205,7 +205,8 @@ class ChdmanService:
                 return False
             stall_error = (
                 "Conversion stalled: no progress increase or output growth for "
-                f"{stall_timeout}s (progress={last_progress_value}%, output_size={last_output_size})"
+                f"{stall_timeout}s (progress={last_progress_value}%,"
+                f" output_size={last_output_size})"
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(

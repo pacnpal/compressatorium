@@ -193,7 +193,9 @@ async def startup_event():
         from services.dat_store import dat_store
         if not await run_in_threadpool(dat_store.has_dats):
             from services.dat_sync import dat_sync_service
-            logger.info("MAMEREDUMP_AUTO_SYNC enabled and no DATs loaded — starting background sync")
+            logger.info(
+                "MAMEREDUMP_AUTO_SYNC enabled and no DATs loaded — starting background sync"
+            )
 
             async def _auto_sync():
                 try:

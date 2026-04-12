@@ -104,7 +104,9 @@ async def test_import_dat_invalid_xml(isolated_dat_store):
 async def test_import_dat_clears_match_cache(isolated_dat_store):
     """Importing a new DAT must clear the stale _matches cache."""
     # Seed a stale "unmatched" cache entry
-    await isolated_dat_store.set_match("/some/file.iso", {"path": "/some/file.iso", "matched": False})
+    await isolated_dat_store.set_match(
+        "/some/file.iso", {"path": "/some/file.iso", "matched": False}
+    )
     assert isolated_dat_store.get_match("/some/file.iso") is not None
 
     upload = _make_upload_file(SAMPLE_DAT_XML)
@@ -269,7 +271,9 @@ async def test_match_batch_uses_cache(tmp_path, isolated_dat_store, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_match_batch_cache_cleared_after_new_import(tmp_path, isolated_dat_store, monkeypatch):
+async def test_match_batch_cache_cleared_after_new_import(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
     """Stale 'unmatched' cache entries are cleared when a new DAT is imported."""
     iso = tmp_path / "game.iso"
     iso.write_bytes(b"content")
@@ -476,7 +480,9 @@ async def test_match_file_symlink_loop_returns_4xx_not_500(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_match_batch_symlink_escaping_volume_denied(tmp_path, isolated_dat_store, monkeypatch):
+async def test_match_batch_symlink_escaping_volume_denied(
+    tmp_path, isolated_dat_store, monkeypatch
+):
     """Batch: symlink inside volume resolving outside is denied per-path with an error."""
     from config import settings as app_settings
 
@@ -504,7 +510,9 @@ async def test_match_batch_symlink_escaping_volume_denied(tmp_path, isolated_dat
 
 
 @pytest.mark.asyncio
-async def test_match_batch_symlink_loop_returns_denied_not_500(tmp_path, isolated_dat_store, monkeypatch):
+async def test_match_batch_symlink_loop_returns_denied_not_500(
+    tmp_path, isolated_dat_store, monkeypatch
+):
     """Batch: a symlink loop path is denied per-path, not an unhandled 500."""
     from config import settings as app_settings
 

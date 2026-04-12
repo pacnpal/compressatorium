@@ -65,8 +65,12 @@ def scan_env(tmp_path, monkeypatch):
     monkeypatch.setattr(info_routes.chdman_service, "info", fake_info)
     monkeypatch.setattr(info_routes.chd_metadata_store, "set_metadata", fake_set_metadata)
     monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
-    monkeypatch.setattr(info_routes.chd_metadata_store, "is_disc_id_checked", fake_is_disc_id_checked)
-    monkeypatch.setattr(info_routes.chd_metadata_store, "mark_disc_id_checked", fake_mark_disc_id_checked)
+    monkeypatch.setattr(
+        info_routes.chd_metadata_store, "is_disc_id_checked", fake_is_disc_id_checked
+    )
+    monkeypatch.setattr(
+        info_routes.chd_metadata_store, "mark_disc_id_checked", fake_mark_disc_id_checked
+    )
     monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_embedded)
 
     return {
@@ -80,7 +84,8 @@ def scan_env(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scan_metadata_force_ignores_cache(scan_env, monkeypatch):
-    async def fake_false(_): return False
+    async def fake_false(_):
+        return False
     monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
 
     await info_routes.scan_metadata_task(force=True)
@@ -90,7 +95,8 @@ async def test_scan_metadata_force_ignores_cache(scan_env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scan_metadata_respects_cache(scan_env, monkeypatch):
-    async def fake_false(_): return False
+    async def fake_false(_):
+        return False
     monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
 
     await info_routes.scan_metadata_task(force=False)
@@ -101,7 +107,8 @@ async def test_scan_metadata_respects_cache(scan_env, monkeypatch):
 @pytest.mark.asyncio
 async def test_scan_metadata_retroactive_tagging_runs_for_all(scan_env, monkeypatch):
     """Phase 2 runs for CHDs not yet marked as disc-id-checked."""
-    async def fake_false(_): return False
+    async def fake_false(_):
+        return False
     monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
 
     # is_disc_id_checked returns False (not yet checked) → Phase 2 runs
@@ -115,7 +122,8 @@ async def test_scan_metadata_retroactive_tagging_runs_for_all(scan_env, monkeypa
 @pytest.mark.asyncio
 async def test_scan_metadata_skips_disc_id_already_checked(scan_env, monkeypatch):
     """Phase 2 skips CHDs that are already marked as disc-id-checked (mtime unchanged)."""
-    async def fake_false(_): return False
+    async def fake_false(_):
+        return False
     monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
 
     # Pre-mark the CHD as already checked
@@ -356,7 +364,9 @@ async def test_set_metadata_preserves_game_id_and_title(metadata_store, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_update_disc_id_info_persist_false_does_not_flush(metadata_store, tmp_path, monkeypatch):
+async def test_update_disc_id_info_persist_false_does_not_flush(
+    metadata_store, tmp_path, monkeypatch,
+):
     """update_disc_id_info(persist=False) stores in memory without triggering a disk flush."""
     chd = tmp_path / "game.chd"
     chd.write_text("fake")
@@ -381,13 +391,15 @@ async def test_update_disc_id_info_persist_false_does_not_flush(metadata_store, 
 
 @pytest.mark.asyncio
 async def test_scan_phase2_caches_game_id_when_disc_id_found(scan_env, monkeypatch):
-    """Phase 2 calls update_disc_id_info(persist=False) when ensure_disc_id_embedded returns a game_id.
+    """Phase 2 calls update_disc_id_info(persist=False) when ensure_disc_id_embedded returns a
+    game_id.
 
     Regression test: Phase 2 previously embedded the GAME/NAME tags into the CHD file
     but never populated the metadata cache, so subsequent /api/info requests returned
     no game_id even though the tag was physically in the file.
     """
-    async def fake_false(_): return False
+    async def fake_false(_):
+        return False
     monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", fake_false)
 
     # Stub ensure_disc_id_embedded to return a found game_id

@@ -139,6 +139,39 @@ disable = [
     "unnecessary-pass",
     "R1716",  # chained-comparison — fires on readable patterns
     "chained-comparison",
+
+    # --- Module size ------------------------------------------------
+    # too-many-lines default threshold (1000) fires on deliberately
+    # cohesive units (job_manager, info routes, disc_id).  Splitting
+    # purely to satisfy the rule would fragment tightly-coupled logic
+    # across modules for no functional benefit.
+    "C0302",
+    "too-many-lines",
+
+    # --- Codacy-sandbox false positives ------------------------------
+    # Codacy runs pylint without the project venv or `app/` on
+    # sys.path, so it cannot resolve first-party modules
+    # (`utils.path_utils`, `services.dat_sync`) or third-party deps
+    # (`sqlalchemy`, `fastapi.concurrency`).  `AsyncMock` from
+    # `unittest.mock` (py3.8+) also trips the older stub set Codacy
+    # ships.  Local pylint with the venv resolves all of these.
+    "E0611",
+    "no-name-in-module",
+    "E0401",
+    "import-error",
+
+    # `asyncio.subprocess.Process` is read by pylint as `subprocess`
+    # attribute lookup — a known stub-resolution quirk against the
+    # `asyncio.subprocess` submodule.  Version-gated `typing` attrs
+    # also trip here.
+    "E1101",
+    "no-member",
+
+    # Codacy's embedded pylint parser occasionally fails on modern
+    # Python syntax (PEP 570 positional-only `/`, PEP 695 generics);
+    # ruff/mypy in CI are the authoritative syntax gate.
+    "E0001",
+    "syntax-error",
 ]
 
 [tool.pylint.format]

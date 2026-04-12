@@ -590,7 +590,9 @@ class JobManager:
             return {
                 "success": False,
                 "message": "Recovery attempted too recently, please wait",
-                "cooldown_remaining": int(self.STUCK_RECOVERY_COOLDOWN_SECONDS - (now - self._last_stuck_recovery_at))
+                "cooldown_remaining": int(
+                    self.STUCK_RECOVERY_COOLDOWN_SECONDS - (now - self._last_stuck_recovery_at)
+                )
             }
 
         self._last_stuck_recovery_at = now
@@ -894,7 +896,8 @@ class JobManager:
                 self._stuck_detected_at = now
                 logger.warning(
                     "Stuck state detected: jobs queued but none processing. "
-                    f"Will attempt automatic recovery in {self.STUCK_RECOVERY_COOLDOWN_SECONDS} seconds if state persists."
+                    f"Will attempt automatic recovery in {self.STUCK_RECOVERY_COOLDOWN_SECONDS}"
+                    " seconds if state persists."
                 )
             else:
                 stuck_duration = now - self._stuck_detected_at
@@ -979,7 +982,8 @@ class JobManager:
                 logger.debug(
                     "Heartbeat jobs=%d queued=%d processing=%d completed=%d failed=%d cancelled=%d "
                     "queue_size=%d semaphore=%s cancelled_set=%d subscribers=%d temp_dirs=%d "
-                    "locks=%d tickets=%d active_chdman=%d rss_raw=%d rss_mb=%.1f open_fds=%s loadavg=%s",
+                    "locks=%d tickets=%d active_chdman=%d rss_raw=%d rss_mb=%.1f"
+                    " open_fds=%s loadavg=%s",
                     len(jobs),
                     status_counts[JobStatus.QUEUED],
                     status_counts[JobStatus.PROCESSING],

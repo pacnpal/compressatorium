@@ -716,7 +716,9 @@ def _migrate_verification_store(engine: Engine, path: Path) -> None:
             session.commit()
         except Exception:
             session.rollback()
-            logger.exception("db.migrate: verification_store import failed; JSON preserved at %s", path)
+            logger.exception(
+                "db.migrate: verification_store import failed; JSON preserved at %s", path
+            )
             raise
 
     _mark_migrated(path)
@@ -857,8 +859,16 @@ def init_and_migrate(
 
     migrators: Iterable[tuple[str, Any, Path | None]] = (
         ("dat_store", _migrate_dat_store, Path(dat_store_json) if dat_store_json else None),
-        ("verification_store", _migrate_verification_store, Path(verification_json) if verification_json else None),
-        ("chd_metadata", _migrate_chd_metadata_store, Path(chd_metadata_json) if chd_metadata_json else None),
+        (
+            "verification_store",
+            _migrate_verification_store,
+            Path(verification_json) if verification_json else None,
+        ),
+        (
+            "chd_metadata",
+            _migrate_chd_metadata_store,
+            Path(chd_metadata_json) if chd_metadata_json else None,
+        ),
         ("dat_sync_state", _migrate_dat_sync_state, Path(dat_sync_json) if dat_sync_json else None),
     )
 

@@ -157,14 +157,19 @@ class LockManager:
                         try:
                             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
                         except Exception:
-                            logger.debug("Failed to release lock during staleness check", exc_info=True)
+                            logger.debug(
+                                "Failed to release lock during staleness check", exc_info=True
+                            )
 
             # If we successfully acquired the lock, the file is stale - remove it
             if acquired:
                 try:
                     os.remove(lock_file_path)
                     if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug("Removed stale lock file during check: %s", os.path.basename(lock_file_path))
+                        logger.debug(
+                            "Removed stale lock file during check: %s",
+                            os.path.basename(lock_file_path),
+                        )
                 except OSError as e:
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
@@ -181,7 +186,8 @@ class LockManager:
         """Acquire a lock for the output file path.
 
         Returns:
-            True if lock was acquired, False if already locked or CHD exists and overwrite is not allowed
+            True if lock was acquired, False if already locked or CHD exists and overwrite is
+            not allowed
 
         """
         normalized_path = os.path.normpath(output_path)
@@ -217,11 +223,16 @@ class LockManager:
                 # Now that we have the lock, check if CHD already exists (atomic with lock)
                 if os.path.exists(normalized_path):
                     if not allow_existing or not os.path.isfile(normalized_path):
-                        # File exists and overwrite not allowed (or not a file): release lock and clean up
+                        # File exists and overwrite not allowed (or not a file): release lock and
+                        # clean up
                         try:
                             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
                         except Exception:
-                            logger.debug("Failed to release lock for existing file: %s", normalized_path, exc_info=True)
+                            logger.debug(
+                                "Failed to release lock for existing file: %s",
+                                normalized_path,
+                                exc_info=True,
+                            )
                         lock_handle.close()
                         lock_handle = None
                         # Clean up lock file since we're not using it
@@ -229,7 +240,11 @@ class LockManager:
                             if os.path.exists(lock_file_path):
                                 os.remove(lock_file_path)
                         except Exception:
-                            logger.debug("Failed to clean up lock file: %s", lock_file_path, exc_info=True)
+                            logger.debug(
+                                "Failed to clean up lock file: %s",
+                                lock_file_path,
+                                exc_info=True,
+                            )
                         return False
 
                 # Successfully acquired the lock and file doesn't exist
@@ -243,7 +258,11 @@ class LockManager:
                     try:
                         lock_handle.close()
                     except Exception:
-                        logger.debug("Failed to close lock handle for: %s", normalized_path, exc_info=True)
+                        logger.debug(
+                            "Failed to close lock handle for: %s",
+                            normalized_path,
+                            exc_info=True,
+                        )
                 logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
                 return False
 

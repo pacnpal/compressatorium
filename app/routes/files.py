@@ -14,7 +14,11 @@ from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, Z3DS_OUTPUT_FORM
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.verification_store import verification_store
-from utils.path_utils import ensure_path_within_volumes, get_volume_name_for_path, is_within_configured_volumes
+from utils.path_utils import (
+    ensure_path_within_volumes,
+    get_volume_name_for_path,
+    is_within_configured_volumes,
+)
 
 router = APIRouter()
 logger = logging.getLogger("chd.files")
@@ -336,9 +340,11 @@ async def search_files(
                                     has_chd = file_exists or is_converting
                                     chd_ready = file_exists
                                 if is_dolphin_convertible:
-                                    has_rvz, dolphin_ready, dolphin_path = _detect_dolphin_output_path(
-                                        item_path,
-                                        ext,
+                                    has_rvz, dolphin_ready, dolphin_path = (
+                                        _detect_dolphin_output_path(
+                                            item_path,
+                                            ext,
+                                        )
                                     )
                                 if is_z3ds_convertible:
                                     has_z3ds, z3ds_ready, z3ds_path = _detect_z3ds_output_path(
@@ -401,7 +407,9 @@ async def search_files(
                                             "dolphin_ready": False,
                                             "dolphin_path": None,
                                             "chd_ready": file_exists,
-                                            "convertible": entry.get("extension") in CONVERTIBLE_EXTENSIONS,
+                                            "convertible": (
+                                                entry.get("extension") in CONVERTIBLE_EXTENSIONS
+                                            ),
                                             "dolphin_convertible": False,
                                             "z3ds_ready": False,
                                             "in_archive": True,

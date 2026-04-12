@@ -72,7 +72,17 @@ disable =
     C0326,
     bad-whitespace,
     R1716,
-    chained-comparison
+    chained-comparison,
+    C0302,
+    too-many-lines,
+    E0611,
+    no-name-in-module,
+    E0401,
+    import-error,
+    E1101,
+    no-member,
+    E0001,
+    syntax-error
 
 [FORMAT]
 max-line-length = 100
