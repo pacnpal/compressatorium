@@ -218,11 +218,17 @@ class CHDMetadataStore:
         unique_norms = list(set(norm_map.values()))
 
         def _fetch() -> dict[str, str | None]:
+            # Chunk to stay under SQLite's bind-parameter limit (default 999).
+            chunk_size = 900
+            by_norm: dict[str, str | None] = {}
             with self._session() as session:
-                rows = session.scalars(
-                    select(_db.CHDMetadata).where(_db.CHDMetadata.chd_path.in_(unique_norms))
-                ).all()
-                return {r.chd_path: r.media_type for r in rows}
+                for i in range(0, len(unique_norms), chunk_size):
+                    batch = unique_norms[i:i + chunk_size]
+                    rows = session.scalars(
+                        select(_db.CHDMetadata).where(_db.CHDMetadata.chd_path.in_(batch))
+                    ).all()
+                    by_norm.update({r.chd_path: r.media_type for r in rows})
+            return by_norm
 
         by_norm = await run_in_threadpool(_fetch)
         return {

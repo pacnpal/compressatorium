@@ -382,16 +382,33 @@ class DATStore:
     def _set_matches_batch_sync(self, matches: dict[str, dict]) -> None:
         if not matches:
             return
-        # Resolve the set of valid dat_ids once to avoid per-row lookups.
+        normalized_matches = {
+            self._normalize(raw_path): match
+            for raw_path, match in matches.items()
+        }
+
+        # Resolve valid dat_ids once and prefetch existing match rows for the
+        # whole batch to avoid an N+1 session.get() loop.
         with self._session() as session:
             valid_dat_ids = set(session.scalars(select(_db.DAT.id)).all())
-            for raw_path, match in matches.items():
-                normalized = self._normalize(raw_path)
+            # Prefetch existing rows in chunks to stay under SQLite's
+            # 999 bind-parameter limit.
+            chunk_size = 900
+            norm_keys = list(normalized_matches.keys())
+            existing_matches: dict[str, _db.DATMatch] = {}
+            for i in range(0, len(norm_keys), chunk_size):
+                chunk = norm_keys[i:i + chunk_size]
+                for row in session.scalars(
+                    select(_db.DATMatch).where(_db.DATMatch.path.in_(chunk))
+                ).all():
+                    existing_matches[row.path] = row
+
+            for normalized, match in normalized_matches.items():
                 dat_id = match.get("dat_id")
                 if dat_id is not None and dat_id not in valid_dat_ids:
                     dat_id = None
                 payload = dict(match)
-                existing = session.get(_db.DATMatch, normalized)
+                existing = existing_matches.get(normalized)
                 if existing is not None:
                     existing.matched = bool(match.get("matched", False))
                     existing.dat_id = dat_id
