@@ -51,6 +51,10 @@ pylint:
     - unnecessary-pass
     - bad-whitespace
     - chained-comparison
+    - too-many-nested-blocks
+    - consider-using-get
+    - cell-var-from-loop
+    - logging-fstring-interpolation
     - too-many-lines
     - locally-disabled   # meta-warning that fires on every inline
                          # `# pylint: disable=...` pragma; silencing
