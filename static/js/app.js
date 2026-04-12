@@ -896,6 +896,9 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             if (m.matched) {
                                 return html`<span class="status dat-match" title="${m.dat_name}: ${m.game_name}">DAT ✓</span>`;
                             }
+                            if (m.error) {
+                                return html`<span class="status dat-error" title="DAT match failed — will retry">DAT !</span>`;
+                            }
                             return null;
                         })()}
                         ${isVerifying && html`
@@ -3377,7 +3380,13 @@ function App() {
         const paths = displayedEntries
             .filter(e => matchableExts.has(e.extension?.toLowerCase()))
             .map(e => e.path)
-            .filter(p => !datMatches.has(p));
+            .filter(p => {
+                const m = datMatches.get(p);
+                if (!m) return true;
+                // Re-submit if the last request errored out more than 30 s ago.
+                const RETRY_MS = 30_000;
+                return m.error && Date.now() - m.ts >= RETRY_MS;
+            });
         if (paths.length === 0) return;
 
         // Mark all submitted paths as pending so the UI shows "DAT …"
@@ -3405,13 +3414,13 @@ function App() {
             })
             .catch(() => {
                 // Replace the pending sentinel with an error sentinel so the
-                // user isn't stuck with a perma-spinner. Using { error: true }
-                // instead of deleting the entry prevents the effect from
-                // re-firing on datMatches change and hammering the backend.
+                // user sees "DAT !" instead of a perma-spinner. Storing the
+                // timestamp (ts) lets the effect re-submit after a 30 s delay.
+                const now = Date.now();
                 setDatMatches(prev => {
                     const next = new Map(prev);
                     for (const p of paths) {
-                        if (next.get(p)?.pending) next.set(p, { error: true });
+                        if (next.get(p)?.pending) next.set(p, { error: true, ts: now });
                     }
                     return next;
                 });

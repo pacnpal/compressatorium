@@ -478,6 +478,14 @@ header h1 span {
     opacity: 0.7;
 }
 
+.file-item .status.dat-error {
+    /* Failed hash/network request. Shown until automatic retry fires. */
+    background: transparent;
+    border: 1px dashed var(--error);
+    color: var(--error);
+    opacity: 0.8;
+}
+
 .file-item .status.iso-handling {
     background: var(--warning);
     color: var(--bg-primary);

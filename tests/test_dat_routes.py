@@ -636,7 +636,6 @@ async def test_sync_mameredump_passes_tag(monkeypatch):
         request=dat_routes.SyncRequest(tag="0.285"),
     )
     # Give the background task a chance to start
-    import asyncio
     await asyncio.sleep(0)
     mock_svc.sync.assert_called_once_with(tag="0.285")
 
