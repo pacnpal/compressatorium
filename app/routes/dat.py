@@ -25,6 +25,14 @@ logger = logging.getLogger("chd.dat")
 # Guards concurrent bulk match jobs. Only one DAT-match background job runs
 # at a time; concurrent requests return 409 (matches the /dat/sync pattern).
 #
+# Scope of this guard: **single-process** only.  The container entrypoint
+# pins uvicorn to ``--workers 1`` (see entrypoint.sh), so module-level
+# state is the authoritative source of truth across all requests hitting
+# this app.  If the deployment ever moves to multi-worker / multi-pod,
+# replace this with a distributed lock (Redis, SQLite advisory lock, or
+# a dedicated matches-scheduler process) — every worker would otherwise
+# get its own independent lock and the 409 guard would no longer hold.
+#
 # Lazy-initialised: on Python 3.10+ ``asyncio.Lock()`` no longer binds a loop
 # at construction (the deprecated ``loop=`` kwarg is gone), but its internal
 # waiter state still ties to whichever loop first touches it.  pytest-asyncio
