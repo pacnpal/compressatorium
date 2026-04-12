@@ -9,12 +9,12 @@ Five behaviours under test, all load-bearing for a safe upgrade:
   revision and reaches head; Alembic may create ``alembic_version``,
   but the existing schema and rows must survive unchanged.
 * **I3** — Already-stamped DB: ``apply_migrations`` is a no-op.
-* **I4** — Called before engine init: ``apply_migrations`` fails fast
-  with the expected guard rather than running against an uninitialized
-  engine/session setup.
-* **I5** — ORM drift guard: ``alembic.autogenerate.compare_metadata``
+* **I4** — ORM drift guard: ``alembic.autogenerate.compare_metadata``
   against a just-upgraded DB must yield no diffs.  Catches future
   schema changes that land in ``Base.metadata`` without a migration.
+* **I5** — Called before engine init: ``apply_migrations`` fails fast
+  with the expected guard rather than running against an uninitialized
+  engine/session setup.
 """
 
 from __future__ import annotations

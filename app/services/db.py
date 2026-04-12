@@ -193,9 +193,10 @@ def make_engine(db_path: str) -> Engine:
 def ensure_schema(target: Engine) -> None:
     """Emit CREATE TABLE for every model on *target* (idempotent).
 
-    Used by per-store constructors that build a private engine, and by
-    tests that want a ready-to-use schema without invoking Alembic.
-    Production startup should prefer :func:`apply_migrations` instead.
+    Used by helpers that need a ready-to-use schema without invoking
+    Alembic, including module-level engine initialization in tests and
+    other non-migration code paths.  Production startup should prefer
+    :func:`apply_migrations` instead.
     """
     Base.metadata.create_all(target)
 
