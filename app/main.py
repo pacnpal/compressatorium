@@ -109,7 +109,10 @@ async def startup_event():
         if not t.cancelled():
             exc = t.exception()
             if exc is not None:
-                logger.exception("process_queue task exited unexpectedly", exc_info=exc)
+                logger.error(
+                    "process_queue task exited unexpectedly",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
 
     process_queue_task.add_done_callback(_log_process_queue_error)
 
