@@ -159,7 +159,9 @@ async def match_batch(request: MatchBatchRequest):
     )
 
     # Check cached matches using normalized paths
-    cached = await run_in_threadpool(dat_store.get_matches_batch, list(normalized_to_originals.keys()))
+    cached = await run_in_threadpool(
+        dat_store.get_matches_batch, list(normalized_to_originals.keys()),
+    )
     results: dict[str, dict] = {}
     to_compute: list[str] = []  # normalized paths
 

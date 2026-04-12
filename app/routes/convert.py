@@ -481,7 +481,7 @@ async def create_job(request: JobCreateRequest):
     # with the batch-create path, and surfaces backpressure even when
     # tests or callers stub out ``job_manager.create_job``.
     max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
-    if max_depth > 0 and job_manager.get_queue_depth() >= max_depth:
+    if 0 < max_depth <= job_manager.get_queue_depth():
         raise HTTPException(
             status_code=429,
             detail=f"Conversion queue full ({max_depth} jobs). Retry later.",

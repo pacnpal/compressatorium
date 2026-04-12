@@ -131,10 +131,18 @@ async def startup_event():
 
     _db.init_and_migrate(
         db_path,
-        dat_store_json=_resolve_legacy_json_store("CHD_DAT_STORE", "dat_store.json"),
-        verification_json=_resolve_legacy_json_store("CHD_VERIFICATION_STORE", "verified_chds.json"),
-        chd_metadata_json=_resolve_legacy_json_store("CHD_METADATA_STORE", "chd_metadata.json"),
-        dat_sync_json=_resolve_legacy_json_store("CHD_DAT_SYNC_STORE", "dat_sync.json"),
+        dat_store_json=_resolve_legacy_json_store(
+            "CHD_DAT_STORE", "dat_store.json",
+        ),
+        verification_json=_resolve_legacy_json_store(
+            "CHD_VERIFICATION_STORE", "verified_chds.json",
+        ),
+        chd_metadata_json=_resolve_legacy_json_store(
+            "CHD_METADATA_STORE", "chd_metadata.json",
+        ),
+        dat_sync_json=_resolve_legacy_json_store(
+            "CHD_DAT_SYNC_STORE", "dat_sync.json",
+        ),
     )
     explicit_volumes = [v.strip() for v in str(settings.chd_volumes).split(",") if v.strip()]
     discovered_volumes = [] if explicit_volumes else settings.scan_data_mounts_on_startup()
