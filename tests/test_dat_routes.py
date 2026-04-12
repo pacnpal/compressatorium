@@ -1,5 +1,6 @@
 """Tests for MAME Redump DAT file management routes."""
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -675,26 +676,23 @@ async def test_match_skips_oversized_file(tmp_path, isolated_dat_store, monkeypa
 async def test_match_respects_concurrency_cap(tmp_path, isolated_dat_store, monkeypatch):
     """With MAX_MATCH_CONCURRENCY=1, simultaneous match_file calls
     execute compute_file_sha1 serially (never two at once)."""
-    import asyncio as _asyncio
-
-    from app.services import workload_limiter as _wl
-
     upload = _make_upload_file(SAMPLE_DAT_XML)
     await dat_routes.import_dat(file=upload)
 
     # Rebuild the workload_limiter with match_limit=1 for this test.
     # (Default is already 1, but we set it explicitly so the test is
     # self-documenting and robust to future default changes.)
-    original_limiter = dat_routes.workload_limiter
-    new_limiter = _wl.WorkloadLimiter(
+    # Use __class__ to reuse the exact class already loaded by dat_routes,
+    # avoiding any duplicate module-singleton risk from a separate import.
+    WorkloadLimiter = dat_routes.workload_limiter.__class__
+    new_limiter = WorkloadLimiter(
         verify_limit=1, metadata_scan_limit=1, match_limit=1,
     )
     monkeypatch.setattr(dat_routes, "workload_limiter", new_limiter)
-    _ = original_limiter  # silence lint; restoration handled by monkeypatch
 
     active = 0
     peak = 0
-    barrier = _asyncio.Event()
+    barrier = asyncio.Event()
 
     async def _fake_hash(path):
         nonlocal active, peak
@@ -703,8 +701,8 @@ async def test_match_respects_concurrency_cap(tmp_path, isolated_dat_store, monk
         try:
             # Wait until all callers are in-flight before returning, so
             # if the limiter is NOT serialising we'd observe peak > 1.
-            await _asyncio.wait_for(barrier.wait(), timeout=0.2)
-        except _asyncio.TimeoutError:
+            await asyncio.wait_for(barrier.wait(), timeout=0.2)
+        except asyncio.TimeoutError:
             # Expected: under serial execution, only one caller ever
             # enters this function at a time, so the barrier is never
             # set by anyone else.
@@ -717,15 +715,15 @@ async def test_match_respects_concurrency_cap(tmp_path, isolated_dat_store, monk
 
     paths = []
     for i in range(5):
-        p = tmp_path / f"f{i}.iso"
-        p.write_bytes(b"x")
-        paths.append(p)
+        iso_path = tmp_path / f"f{i}.iso"
+        iso_path.write_bytes(b"x")
+        paths.append(iso_path)
 
     requests = [
-        dat_routes.match_file(dat_routes.MatchRequest(path=str(p)))
-        for p in paths
+        dat_routes.match_file(dat_routes.MatchRequest(path=str(path)))
+        for path in paths
     ]
-    await _asyncio.gather(*requests)
+    await asyncio.gather(*requests)
 
     # Under match_limit=1 the hasher runs strictly one at a time.
     assert peak == 1, f"concurrency cap breached: peak={peak}"
