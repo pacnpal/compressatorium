@@ -360,8 +360,8 @@ class DATSyncService:
         new_dat_ids: list[str] = []
         for i, file_info in enumerate(all_files):
             if self._is_cancelled():
-                # Roll back any DATs imported in this run before aborting.
-                await dat_store.delete_dats_bulk(new_dat_ids)
+                # Discard any DATs staged in this run before aborting.
+                await dat_store.discard_pending()
                 return self._cancelled_result(tag)
 
             name = file_info["name"]
@@ -406,31 +406,26 @@ class DATSyncService:
                         pass
 
         if not errors:
-            # Full success: remove old DATs in a single bulk delete, which
-            # also persists the store exactly once (new-only set on disk).
-            # We intentionally skip an earlier persist() call so we never
-            # write a mixed (old+new) state to disk, keeping the store
-            # crash-safe. When there are no old IDs, or when old IDs were
-            # already removed before the bulk delete runs, explicitly persist
-            # so the newly imported DATs are flushed to disk.
+            # Full success: commit all staged DATs atomically, then remove the
+            # old set. New DATs are visible before old ones are removed, but
+            # there is never a window where neither exists.
             old_ids = [d["id"] for d in existing_dats]
-            deleted = await dat_store.delete_dats_bulk(old_ids)
-            if not old_ids or deleted == 0:
-                await dat_store.persist()
-            if deleted:
-                logger.info(
-                    "dat_sync: cleared %d existing DATs after full successful sync",
-                    deleted,
-                )
+            await dat_store.persist()
+            if old_ids:
+                deleted = await dat_store.delete_dats_bulk(old_ids)
+                if deleted:
+                    logger.info(
+                        "dat_sync: cleared %d existing DATs after full successful sync",
+                        deleted,
+                    )
         else:
-            # Partial failure: roll back newly imported DATs so the store
-            # stays in a clean, known-good state (previous working set intact).
-            # Use a bulk delete so the rollback is a single disk write.
-            rolled_back = await dat_store.delete_dats_bulk(new_dat_ids)
-            if rolled_back:
+            # Partial failure: discard all staged (uncommitted) new DATs so the
+            # store stays in a clean, known-good state (previous working set intact).
+            await dat_store.discard_pending()
+            if new_dat_ids:
                 logger.warning(
-                    "dat_sync: rolled back %d new DATs due to %d error(s)",
-                    rolled_back,
+                    "dat_sync: discarded %d staged new DATs due to %d error(s)",
+                    len(new_dat_ids),
                     len(errors),
                 )
             if existing_dats:

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from app.services import db as _db
+from services import db as _db
 from app.services.dat_sync import DATSyncService
 
 
@@ -222,6 +222,9 @@ async def test_sync_downloads_and_imports(sync_service, tmp_path):
     assert result["tag"] == "0.285"
     assert sync_service._state["last_sync_tag"] == "0.285"
     mock_dat_store.import_dat_no_persist.assert_called_once()
+    mock_dat_store.persist.assert_called_once()
+    # No existing DATs → delete_dats_bulk not called.
+    mock_dat_store.delete_dats_bulk.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -232,6 +235,7 @@ async def test_sync_handles_download_error(sync_service, tmp_path):
     mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
     mock_dat_store.import_dat_no_persist = AsyncMock()
     mock_dat_store.persist = AsyncMock()
+    mock_dat_store.discard_pending = AsyncMock()
 
     with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
@@ -253,8 +257,9 @@ async def test_sync_handles_download_error(sync_service, tmp_path):
     assert len(result["errors"]) == 2
     assert result["error"] is not None
     mock_dat_store.import_dat_no_persist.assert_not_called()
-    # All downloads failed so no rollback was needed.
-    mock_dat_store.delete_dats_bulk.assert_called_once_with([])
+    # All downloads failed — staged DATs are discarded (no DB writes).
+    mock_dat_store.discard_pending.assert_called_once()
+    mock_dat_store.delete_dats_bulk.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -271,6 +276,7 @@ async def test_sync_defers_deletion_until_all_imports_succeed(sync_service, tmp_
         "id": "new-dat", "name": "New DAT", "file_count": 1, "hashes_added": 1,
     })
     mock_dat_store.persist = AsyncMock()
+    mock_dat_store.discard_pending = AsyncMock()
 
     with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
@@ -282,7 +288,8 @@ async def test_sync_defers_deletion_until_all_imports_succeed(sync_service, tmp_
         result = await sync_service.sync(tag="0.285")
 
     assert result["status"] == "complete"
-    # Old DAT deleted only after all new ones were imported without errors.
+    # New DATs committed first, then old DAT deleted.
+    mock_dat_store.persist.assert_called_once()
     mock_dat_store.delete_dats_bulk.assert_called_once_with(["old-dat"])
     assert sync_service._state.get("last_sync_tag") == "0.285"
 
@@ -302,6 +309,7 @@ async def test_sync_preserves_existing_dats_on_partial_failure(sync_service, tmp
         OSError("Import failed for second file"),
     ])
     mock_dat_store.persist = AsyncMock()
+    mock_dat_store.discard_pending = AsyncMock()
 
     with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
@@ -318,8 +326,9 @@ async def test_sync_preserves_existing_dats_on_partial_failure(sync_service, tmp
     assert result["status"] == "complete_with_errors"
     assert len(result["errors"]) == 1
     assert result["error"] is not None
-    # Partial failure: newly imported "new-dat" must be rolled back, old DAT preserved.
-    mock_dat_store.delete_dats_bulk.assert_called_once_with(["new-dat"])
+    # Partial failure: staged new DATs discarded, old DAT preserved.
+    mock_dat_store.discard_pending.assert_called_once()
+    mock_dat_store.delete_dats_bulk.assert_not_called()
     # last_sync_tag must NOT be saved so next sync can retry the missing file.
     assert "last_sync_tag" not in sync_service._state
 
@@ -333,6 +342,7 @@ async def test_sync_preserves_existing_dats_when_all_downloads_fail(sync_service
     mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
     mock_dat_store.import_dat_no_persist = AsyncMock()
     mock_dat_store.persist = AsyncMock()
+    mock_dat_store.discard_pending = AsyncMock()
 
     with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
@@ -346,8 +356,9 @@ async def test_sync_preserves_existing_dats_when_all_downloads_fail(sync_service
     assert result["status"] == "complete_with_errors"
     assert len(result["errors"]) == 1
     assert result["error"] is not None
-    # No successful imports → rollback called with empty list (no-op).
-    mock_dat_store.delete_dats_bulk.assert_called_once_with([])
+    # No successful imports → staged DATs discarded (no-op), old DAT preserved.
+    mock_dat_store.discard_pending.assert_called_once()
+    mock_dat_store.delete_dats_bulk.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -362,6 +373,7 @@ async def test_sync_skips_oversized_files(sync_service, tmp_path):
     mock_dat_store.import_dat_no_persist = AsyncMock(return_value={"id": "small-dat"})
     mock_dat_store.delete_dats_bulk = AsyncMock(return_value=1)
     mock_dat_store.persist = AsyncMock()
+    mock_dat_store.discard_pending = AsyncMock()
 
     with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
@@ -384,9 +396,10 @@ async def test_sync_skips_oversized_files(sync_service, tmp_path):
     assert result["error"] is not None
     # _download_dat called only for the non-oversized file.
     mock_download.assert_called_once()
-    # small.dat was imported (files_imported=1), but rolled back due to partial failure.
+    # small.dat was imported (files_imported=1), but staged DATs discarded on partial failure.
     assert result["files_imported"] == 1
-    mock_dat_store.delete_dats_bulk.assert_called_once_with(["small-dat"])
+    mock_dat_store.discard_pending.assert_called_once()
+    mock_dat_store.delete_dats_bulk.assert_not_called()
 
 
 @pytest.mark.asyncio

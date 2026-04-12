@@ -551,7 +551,7 @@ The `/config` volume is **required** and must be mounted for the application to 
 
 #### First-run migration from JSON
 
-On first startup after upgrading from a JSON-backed install, the app automatically imports `dat_store.json`, `verified_chds.json`, `chd_metadata.json`, and `dat_sync.json` into the new SQLite database. The originals are renamed to `<name>.migrated.bak` — **never deleted** — so you can always roll back. Migration is transactional, idempotent, and validates row counts; a failed or corrupt file is quarantined (`.corrupt` suffix) without blocking the other stores. See [the migration plan](./docs) for invariants.
+On first startup after upgrading from a JSON-backed install, the app automatically imports `dat_store.json`, `verified_chds.json`, `chd_metadata.json`, and `dat_sync.json` into the new SQLite database. The originals are renamed to `<name>.migrated.bak` — **never deleted** — so you can always roll back. Migration is transactional, idempotent, and validates row counts; a failed or corrupt file is quarantined (`.corrupt` suffix) without blocking the other stores. These migration guarantees are described above in this section.
 
 ### Ephemeral Runtime Data
 

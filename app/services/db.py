@@ -289,15 +289,22 @@ def _load_json(path: Path) -> Any | None:
 
 
 def _mark_migrated(path: Path) -> None:
-    """Rename ``path`` → ``path.migrated.bak``. Idempotent."""
+    """Rename ``path`` → ``path.migrated.bak``.
+
+    If a backup already exists (e.g., from a previous migration run), the
+    source JSON is left untouched and a warning is logged so that the
+    operator can manually resolve the conflict — the source is **never**
+    deleted automatically.
+    """
     target = Path(str(path) + MIGRATED_SUFFIX)
     if target.exists():
-        # A prior run already produced a backup; drop the duplicate source.
+        # A prior run already produced a backup; leave the source JSON intact
+        # so no data is lost, and require manual resolution.
         logger.warning(
-            "db.migrate: backup already exists at %s; removing duplicate JSON source %s",
+            "db.migrate: backup already exists at %s; preserving JSON source %s "
+            "unchanged — manual resolution required",
             target, path,
         )
-        path.unlink()
         return
     path.rename(target)
 

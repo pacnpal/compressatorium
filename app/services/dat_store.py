@@ -63,6 +63,8 @@ class DATStore:
         else:
             self._own_engine = None
             self._session_factory = None  # resolved lazily from db.SessionLocal
+        # Staging area for import_dat_no_persist() — committed atomically by persist().
+        self._pending_imports: list[tuple[dict, list[dict[str, Any]]]] = []
 
     # ------------------------------------------------------------------
     # Session plumbing
@@ -162,18 +164,86 @@ class DATStore:
         return result
 
     async def import_dat_no_persist(self, source: str) -> dict:
-        """Same as :meth:`import_dat` — SQLite doesn't need a separate flush step."""
-        _dat_info, result = await run_in_threadpool(self._import_dat_sync, source)
+        """Stage a DAT in memory; call :meth:`persist` to atomically commit all staged DATs."""
+        def _stage() -> tuple[dict, dict]:
+            header, entries = parse_dat(source)
+            dat_id = str(uuid.uuid4())[:8]
+            now = _utcnow_iso()
+            dat_info = {
+                "id": dat_id,
+                "name": header.get("name", "Unknown DAT"),
+                "description": header.get("description", ""),
+                "version": header.get("version", ""),
+                "imported_at": now,
+                "file_count": len(entries),
+            }
+            added = 0
+            hash_rows: list[dict[str, Any]] = []
+            for entry in entries:
+                if entry.get("sha1"):
+                    hash_rows.append({
+                        "hash": entry["sha1"],
+                        "hash_type": "sha1",
+                        "dat_id": dat_id,
+                        "game_name": entry["game_name"],
+                        "rom_name": entry["rom_name"],
+                        "size": entry["size"],
+                    })
+                    added += 1
+                if entry.get("md5"):
+                    hash_rows.append({
+                        "hash": entry["md5"],
+                        "hash_type": "md5",
+                        "dat_id": dat_id,
+                        "game_name": entry["game_name"],
+                        "rom_name": entry["rom_name"],
+                        "size": entry["size"],
+                    })
+                    added += 1
+            result = {
+                "id": dat_id,
+                "name": dat_info["name"],
+                "version": dat_info["version"],
+                "file_count": len(entries),
+                "hashes_added": added,
+                "message": f"Imported {len(entries)} entries from {dat_info['name']}",
+            }
+            self._pending_imports.append((dat_info, hash_rows))
+            return dat_info, result
+
+        _dat_info, result = await run_in_threadpool(_stage)
         return result
 
-    async def persist(self) -> None:
-        """No-op kept for interface compatibility.
+    def _persist_sync(self) -> None:
+        """Commit all staged DATs in a single transaction and clear the staging area."""
+        if not self._pending_imports:
+            return
+        with self._session() as session:
+            for dat_info, hash_rows in self._pending_imports:
+                dat_row = _db.DAT(
+                    id=dat_info["id"],
+                    name=dat_info["name"],
+                    description=dat_info["description"],
+                    version=dat_info["version"],
+                    imported_at=dat_info["imported_at"],
+                    file_count=dat_info["file_count"],
+                )
+                session.add(dat_row)
+                session.flush()
+                if hash_rows:
+                    session.bulk_insert_mappings(_db.DATHash, hash_rows)
+            # Importing new DATs invalidates the match cache.
+            session.execute(delete(_db.DATMatch))
+            session.commit()
+        self._pending_imports = []
 
-        The old JSON implementation batched writes; the DB commits per
-        ``import_dat_no_persist`` call.  Callers written against the
-        old API still work.
-        """
-        return None
+    async def persist(self) -> None:
+        """Commit all DATs staged by :meth:`import_dat_no_persist` in a single transaction."""
+        await run_in_threadpool(self._persist_sync)
+
+    async def discard_pending(self) -> None:
+        """Discard all staged DATs without writing them to the database."""
+        self._pending_imports = []
 
     # ------------------------------------------------------------------
     # Delete

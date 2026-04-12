@@ -27,7 +27,7 @@ def test_verification_store_defaults_to_no_session_when_db_uninitialized():
     """A bare VerificationStore() with no args and no db.init_engine()
     must not touch the filesystem at construction time.  Accessing it
     *later* should raise a clear error rather than corrupt state."""
-    from app.services import db as _db
+    from services import db as _db
 
     original = _db.SessionLocal
     _db.SessionLocal = None

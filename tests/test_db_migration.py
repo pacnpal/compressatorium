@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from app.services import db
+from services import db
 
 
 # ---------------------------------------------------------------------------
