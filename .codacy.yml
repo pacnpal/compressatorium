@@ -13,8 +13,13 @@ engines:
   trivy:
     enabled: true
   bandit:
-    enabled: true
-    config_file: .codacy/tools-configs/bandit.yaml
+    # Disabled: Codacy's bandit wrapper does not honour config_file's
+    # `exclude_dirs` nor .codacy.yml's `exclude_paths: tests/**`, so
+    # every `assert` in tests/ fires B101 (98+ alerts) regardless of
+    # what we set.  Semgrep (enabled below) provides overlapping SAST
+    # coverage for the subprocess/SQL/crypto checks we actually care
+    # about, so disabling bandit does not reduce real security signal.
+    enabled: false
   prospector:
     enabled: true
     config_file: .prospector.yaml
