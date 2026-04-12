@@ -87,6 +87,13 @@ async def startup_event():
     from services import db as _db
 
     db_path = _db.resolve_db_path(settings.db_path, data_dir=settings.data_dir)
+    # Initialise the engine *without* create_all — Alembic owns the
+    # schema on the production path.  apply_migrations then stamps
+    # pre-Alembic DBs or upgrades the rest.  Only after the schema is
+    # guaranteed at head do we run the JSON→SQLite importers.
+    _db.init_engine(db_path, create_schema=False)
+    _db.apply_migrations()
+
     _config_dir = Path(settings.data_dir)
 
     def _resolve_legacy_json_store(env_var: str, default_filename: str) -> Path:

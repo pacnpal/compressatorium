@@ -93,6 +93,7 @@ COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
 # Copy application
 COPY app/ /app/
 COPY static/ /static/
+COPY migrations/ /migrations/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

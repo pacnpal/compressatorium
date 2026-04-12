@@ -190,11 +190,29 @@ def make_engine(db_path: str) -> Engine:
     return eng
 
 
-def init_engine(db_path: str) -> Engine:
+def ensure_schema(target: Engine) -> None:
+    """Emit CREATE TABLE for every model on *target* (idempotent).
+
+    Used by helpers that need a ready-to-use schema without invoking
+    Alembic, including module-level engine initialization in tests and
+    other non-migration code paths.  Production startup should prefer
+    :func:`apply_migrations` instead.
+    """
+    Base.metadata.create_all(target)
+
+
+def init_engine(db_path: str, *, create_schema: bool = True) -> Engine:
     """Initialize the module-level engine + ``SessionLocal``.
 
     Idempotent: calling twice with the same path returns the existing
     engine.  Calling with a different path re-creates both.
+
+    ``create_schema`` controls whether ``create_all`` runs.  Production
+    startup passes ``False`` and then calls :func:`apply_migrations`,
+    which drives schema from Alembic (and stamps baseline for
+    pre-Alembic installs).  Tests and the per-store
+    ``store_path=...`` constructors default to ``True`` so they get a
+    usable schema without needing an Alembic config.
     """
     global engine, SessionLocal  # noqa: PLW0603 — intentional module-level state
     if engine is not None:
@@ -207,8 +225,156 @@ def init_engine(db_path: str) -> Engine:
 
     engine = make_engine(db_path)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
-    Base.metadata.create_all(engine)
+    if create_schema:
+        ensure_schema(engine)
     return engine
+
+
+# ---------------------------------------------------------------------------
+# Alembic integration
+# ---------------------------------------------------------------------------
+
+
+# Baseline table set used to detect "pre-Alembic" SQLite DBs that were
+# populated by ``create_all`` before Alembic was introduced.  Updated
+# only when the baseline revision grows new tables.
+_BASELINE_TABLES: frozenset[str] = frozenset({
+    "dats", "dat_hashes", "dat_matches",
+    "dat_sync_state", "chd_metadata", "verifications",
+})
+
+
+def _alembic_config(target: Engine):
+    """Build an ``alembic.config.Config`` pointed at *target*.
+
+    The sqlalchemy URL is injected here so it matches the already-open
+    engine exactly — there is no separate DB resolution path.
+
+    Alembic assets may live in different places depending on how the app
+    is packaged (development repo vs. Docker image).  We therefore support
+    explicit environment overrides and a small set of runtime-relative
+    fallback locations instead of assuming a single directory layout.
+
+    Search order:
+    1. ``ALEMBIC_INI_PATH`` + ``ALEMBIC_SCRIPT_LOCATION`` env vars (explicit
+       override, useful in containers or custom deployments).
+    2. ``<repo_root>/migrations/`` — resolved relative to this file (dev
+       environment where ``app/services/db.py`` sits three levels down from
+       the repo root).
+    3. ``<cwd>/migrations/`` — works when the app is started from the repo
+       root or a directory that contains a ``migrations/`` sub-directory.
+    4. ``<db.py parent>/migrations/`` — last-resort sibling lookup.
+    """
+    from alembic.config import Config
+
+    def _candidate_locations() -> list[tuple[Path, Path]]:
+        here = Path(__file__).resolve()
+        repo_root = here.parent.parent.parent
+        cwd = Path.cwd()
+
+        candidates: list[tuple[Path, Path]] = []
+
+        # Explicit env-var override comes first so operators can redirect
+        # migrations to a custom location (e.g. in containers) while still
+        # going through the same existence-check as the built-in candidates.
+        env_ini = os.getenv("ALEMBIC_INI_PATH")
+        env_script = os.getenv("ALEMBIC_SCRIPT_LOCATION")
+        if env_ini and env_script:
+            candidates.append((Path(env_ini), Path(env_script)))
+
+        candidates.extend([
+            (repo_root / "migrations" / "alembic.ini", repo_root / "migrations"),
+            (cwd / "migrations" / "alembic.ini", cwd / "migrations"),
+            (here.parent / "migrations" / "alembic.ini", here.parent / "migrations"),
+        ])
+        return candidates
+
+    for ini_path, script_location in _candidate_locations():
+        if ini_path.is_file() and script_location.is_dir():
+            cfg = Config(str(ini_path))
+            cfg.set_main_option("script_location", str(script_location))
+            cfg.set_main_option("sqlalchemy.url", str(target.url))
+            return cfg
+
+    searched = ", ".join(
+        f"(ini={ini_path}, scripts={script_location})"
+        for ini_path, script_location in _candidate_locations()
+    )
+    raise RuntimeError(
+        "Alembic configuration not found. Set ALEMBIC_INI_PATH and "
+        "ALEMBIC_SCRIPT_LOCATION to the runtime locations of alembic.ini "
+        f"and the migrations directory. Searched: {searched}",
+    )
+
+
+def apply_migrations(target: Engine | None = None) -> None:
+    """Bring the schema to head via Alembic.
+
+    Three paths, in order of detection:
+
+    1. **Already-stamped DB** (``alembic_version`` row present).  Run
+       ``alembic upgrade head``; no-op when already at head.
+    2. **Pre-Alembic DB** (no ``alembic_version`` row but the
+       baseline tables exist).  This is the case for anyone who
+       installed the SQLite-migration release before Alembic existed.
+       We first ``alembic stamp 0001`` to record the baseline revision,
+       then run ``alembic upgrade head`` so any post-baseline migrations
+       are applied.  Alembic will create the ``alembic_version`` table
+       if it doesn't already exist.
+    3. **Fresh DB** (no ``alembic_version`` row, no baseline tables).
+       Run ``alembic upgrade head`` to build the schema from scratch.
+
+    A fresh DB is normally produced by :func:`init_engine` with
+    ``create_schema=False``.  If the caller already ran
+    ``ensure_schema`` / ``create_all`` before calling this, path 2
+    applies and we stamp — which is what we want.
+    """
+    from alembic import command
+    from alembic.migration import MigrationContext
+    from sqlalchemy import inspect
+
+    eng = target if target is not None else engine
+    if eng is None:
+        raise RuntimeError(
+            "apply_migrations called before init_engine — no engine available.",
+        )
+
+    cfg = _alembic_config(eng)
+
+    with eng.connect() as conn:
+        # Direct MigrationContext read — not an Alembic command, so no
+        # cfg.attributes injection needed here.
+        ctx = MigrationContext.configure(conn)
+        current_rev = ctx.get_current_revision()
+
+    if current_rev is not None:
+        logger.info("db.alembic: current revision %s; running upgrade head", current_rev)
+        with eng.connect() as conn:
+            cfg.attributes["connection"] = conn
+            command.upgrade(cfg, "head")
+        return
+
+    inspector = inspect(eng)
+    existing_tables = set(inspector.get_table_names())
+    if _BASELINE_TABLES.issubset(existing_tables):
+        logger.info(
+            "db.alembic: baseline schema present without alembic_version; "
+            "stamping as revision 0001 (pre-Alembic install)",
+        )
+        # Stamp the explicit baseline revision first, then upgrade to head.
+        # Stamping "head" directly would skip any post-baseline migrations that
+        # have since been added; stamping "0001" + upgrading is always correct.
+        # Both operations share the same connection so they see a consistent DB state.
+        with eng.connect() as conn:
+            cfg.attributes["connection"] = conn
+            command.stamp(cfg, "0001")
+            command.upgrade(cfg, "head")
+        return
+
+    logger.info("db.alembic: fresh database; running upgrade head")
+    with eng.connect() as conn:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "head")
 
 
 def get_session() -> Session:
