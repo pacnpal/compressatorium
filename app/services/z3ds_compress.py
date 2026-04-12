@@ -40,7 +40,7 @@ class Z3DSCompressService:
         output_path: str,
     ) -> list[str]:
         """Build command for z3ds_compressor.
-        
+
         The tool takes input and output paths as arguments.
         Format: z3ds_compressor <input> <output>
         """
@@ -104,23 +104,23 @@ class Z3DSCompressService:
 
     def get_output_path(self, input_path: str, output_dir: str | None = None) -> str:
         """Calculate output path for a 3DS file.
-        
+
         Args:
             input_path: Path to input .cci or .cia file
             output_dir: Optional output directory. If None, uses same directory as input.
-            
+
         Returns:
             Path for output .zcci or .zcia file
         """
         input_file = Path(input_path)
         ext = input_file.suffix.lower()
-        
+
         if ext not in Z3DS_OUTPUT_FORMATS:
             raise ValueError(f"Unsupported file extension: {ext}")
-        
+
         output_ext = Z3DS_OUTPUT_FORMATS[ext]
         output_name = input_file.stem + output_ext
-        
+
         if output_dir:
             return str(Path(output_dir) / output_name)
         return str(input_file.parent / output_name)
@@ -216,7 +216,7 @@ class Z3DSCompressService:
                         chunk = await asyncio.wait_for(process.stdout.read(256), timeout=2.0)
                     except asyncio.TimeoutError:
                         chunk = None
-                    
+
                     if chunk == b"":
                         break
 
@@ -329,25 +329,25 @@ class Z3DSCompressService:
 
     def info(self, file_path: str) -> dict:
         """Get basic information about a 3DS ROM file.
-        
+
         Since z3ds_compressor doesn't provide metadata extraction, this method
         returns basic file system information: size, format, compression status.
-        
+
         Note: This is a synchronous method. Callers should wrap with run_in_threadpool
         if calling from async context.
-        
+
         Args:
             file_path: Path to .cci, .cia, .3ds, .zcci, .zcia, or .z3ds file
-            
+
         Returns:
             dict with file info (file, size, format, compressed, etc.)
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-            
+
         file_size = os.path.getsize(file_path)
         ext = Path(file_path).suffix.lower()
-        
+
         # Determine format and compression status
         is_compressed = ext in {".zcci", ".zcia", ".z3ds"}
         base_format = None
@@ -357,11 +357,11 @@ class Z3DSCompressService:
             base_format = "CIA (Installable Archive)"
         elif ext in {".3ds", ".z3ds"}:
             base_format = "3DS (Cart Image)"
-        
+
         # Format size for display
         size_mb = file_size / (1024 * 1024)
         size_display = f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
-        
+
         return {
             "file": file_path,
             "size": file_size,
@@ -375,10 +375,10 @@ class Z3DSCompressService:
     @staticmethod
     def is_convertible(filename: str) -> bool:
         """Check if a file is convertible by z3ds_compress.
-        
+
         Args:
             filename: Name of the file to check
-            
+
         Returns:
             True if the file has a .cci or .cia extension
         """
@@ -394,23 +394,23 @@ class Z3DSCompressService:
         treat_as_stem: bool = False,
     ) -> str:
         """Get the output path for z3ds_compress mode.
-        
+
         Args:
             mode: Conversion mode (should be "z3ds_compress")
             input_path: Path to input file or stem
             output_dir: Optional output directory
             treat_as_stem: If True, treat input_path as stem without extension
-            
+
         Returns:
             Path for output file
-            
+
         Note:
             When treat_as_stem=True (archive members), the method defaults to .zcci
             output since we cannot determine the original extension from the stem alone.
             However, z3ds_compress mode blocks archive inputs, so this case should not occur.
         """
         input_p = Path(input_path)
-        
+
         if treat_as_stem:
             # input_path is just a stem (no extension)
             # Default to .zcci since we can't determine .cci vs .cia from stem alone
@@ -421,16 +421,16 @@ class Z3DSCompressService:
             # Normal case: extract stem and map extension
             stem = input_p.stem
             ext = input_p.suffix.lower()
-            
+
             # Map input extension to output extension
             if ext in Z3DS_OUTPUT_FORMATS:
                 output_ext = Z3DS_OUTPUT_FORMATS[ext]
             else:
                 # Default to .zcci if extension unknown
                 output_ext = ".zcci"
-            
+
         filename = f"{stem}{output_ext}"
-        
+
         if output_dir:
             return str(Path(output_dir) / filename)
         return str(input_p.parent / filename)
@@ -441,7 +441,7 @@ class Z3DSCompressService:
 
         Performs deep verification by streaming the compressed Z3DS/ZCCI/ZCIA file
         through `zstd -t` to validate the ZStandard stream integrity.
-        
+
         Returns:
             dict: {"valid": bool, "message": str}
         """
@@ -456,23 +456,23 @@ class Z3DSCompressService:
 
     async def verify_stream(self, file_path: str) -> AsyncGenerator[dict, None]:
         """Stream verification progress for a compressed 3DS file.
-        
+
         Performs deep integrity verification by piping the file through `zstd -t`
         to validate the ZStandard compression stream. This ensures the compressed
         data is not corrupted and can be successfully decompressed.
         """
         if not os.path.exists(file_path):
             yield {
-                "type": "error", 
-                "valid": False, 
+                "type": "error",
+                "valid": False,
                 "message": "File not found"
             }
             return
 
         if os.path.getsize(file_path) == 0:
             yield {
-                "type": "error", 
-                "valid": False, 
+                "type": "error",
+                "valid": False,
                 "message": "File is empty"
             }
             return
@@ -480,8 +480,8 @@ class Z3DSCompressService:
         ext = Path(file_path).suffix.lower()
         if ext not in {".zcci", ".zcia", ".z3ds"}:
              yield {
-                "type": "error", 
-                "valid": False, 
+                "type": "error",
+                "valid": False,
                 "message": f"Invalid extension: {ext}"
             }
              return
@@ -577,8 +577,8 @@ class Z3DSCompressService:
         except Exception as e:
             logger.exception("Error during 3DS verification: %s", e)
             yield {
-                "type": "error", 
-                "valid": False, 
+                "type": "error",
+                "valid": False,
                 "message": f"Verification error: {str(e)}"
             }
 

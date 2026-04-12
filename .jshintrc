@@ -1,0 +1,8 @@
+{
+  "_comment": "The app's frontend uses modern ES2020+ (const, arrow functions, async/await, template literals). JSHint defaults to ES5 and flags every const/let as a syntax error. Vendor files under static/vendor/ are third-party bundles we do not lint.",
+  "esversion": 11,
+  "browser": true,
+  "devel": true,
+  "module": true,
+  "asi": true
+}
