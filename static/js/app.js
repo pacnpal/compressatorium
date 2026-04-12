@@ -3353,10 +3353,11 @@ function App() {
     // Fetch DAT match status for visible files.
     //
     // Extensions covered:
-    //   .chd .rvz .wia .gcz .wbfs — container formats (cheap: CHD hashes
-    //                                live in the header; others are
-    //                                small or already cached on the
-    //                                server via the header fast-path).
+    //   .chd                      — CHD containers (hashes can be read
+    //                                from CHD metadata/header data).
+    //   .rvz .wia .gcz .wbfs      — supported container formats for DAT
+    //                                matching; backend cost may still
+    //                                involve full-file hashing.
     //   .iso .bin                 — raw disc images (requires full SHA1;
     //                                backend gates concurrency via
     //                                MAX_MATCH_CONCURRENCY).
@@ -3403,12 +3404,14 @@ function App() {
                 }
             })
             .catch(() => {
-                // Clear pending state on failure so the user isn't stuck
-                // with a perma-spinner.
+                // Replace the pending sentinel with an error sentinel so the
+                // user isn't stuck with a perma-spinner. Using { error: true }
+                // instead of deleting the entry prevents the effect from
+                // re-firing on datMatches change and hammering the backend.
                 setDatMatches(prev => {
                     const next = new Map(prev);
                     for (const p of paths) {
-                        if (next.get(p)?.pending) next.delete(p);
+                        if (next.get(p)?.pending) next.set(p, { error: true });
                     }
                     return next;
                 });

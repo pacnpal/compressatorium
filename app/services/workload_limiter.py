@@ -26,7 +26,12 @@ class WorkloadToken:
 
 
 class WorkloadLimiter:
-    """Simple lane-based concurrency limiter with best-effort non-blocking acquire."""
+    """Simple lane-based concurrency limiter.
+
+    ``acquire()`` blocks until a slot is available in the requested lane.
+    ``try_acquire()`` is the best-effort, non-blocking variant: it returns
+    ``None`` immediately if no slot is free within the configured timeout.
+    """
 
     def __init__(
         self,
