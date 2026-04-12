@@ -3445,13 +3445,18 @@ function App() {
                 }, RETRY_MS);
             });
 
+    }, [displayedEntries, datsImported, datMatches]);
+
+    // Cancel any pending DAT-match retry timer on unmount only.
+    // This must be a separate effect with empty deps so the cleanup doesn't
+    // fire on dependency-driven reruns — that would cancel the just-scheduled
+    // retry timer before it ever has a chance to fire.
+    useEffect(() => {
         return () => {
-            // Cancel any pending retry timer when the effect re-runs or the
-            // component unmounts so stale setDatMatches calls don't fire.
             clearTimeout(datMatchRetryTimerRef.current);
             datMatchRetryTimerRef.current = null;
         };
-    }, [displayedEntries, datsImported, datMatches]);
+    }, []);
 
     // Load app version on mount
     useEffect(() => {
