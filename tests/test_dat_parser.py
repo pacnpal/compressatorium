@@ -1,6 +1,6 @@
 """Tests for the Logiqx / MAME softlist DAT parser."""
 
-from app.services.dat_parser import parse_dat
+from services.dat_parser import parse_dat
 
 
 LOGIQX_DATAFILE = """\

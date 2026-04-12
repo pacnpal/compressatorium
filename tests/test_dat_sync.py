@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 from services import db as _db
-from app.services.dat_sync import DATSyncService
+from services.dat_sync import DATSyncService
 
 
 # ---------------------------------------------------------------------------

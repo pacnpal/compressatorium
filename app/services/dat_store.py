@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -139,7 +140,23 @@ class DATStore:
                     added += 1
 
             if hash_rows:
-                session.bulk_insert_mappings(_db.DATHash, hash_rows)
+                # Use INSERT OR REPLACE (ON CONFLICT DO UPDATE) so that
+                # importing an updated DAT whose hashes overlap with an
+                # existing DAT set never raises a UNIQUE constraint error.
+                chunk_size = 900
+                for i in range(0, len(hash_rows), chunk_size):
+                    chunk = hash_rows[i:i + chunk_size]
+                    stmt = sqlite_insert(_db.DATHash).values(chunk)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["hash", "hash_type"],
+                        set_={
+                            "dat_id": stmt.excluded.dat_id,
+                            "game_name": stmt.excluded.game_name,
+                            "rom_name": stmt.excluded.rom_name,
+                            "size": stmt.excluded.size,
+                        },
+                    )
+                    session.execute(stmt)
 
             # Importing a new DAT invalidates the match cache (a
             # previously-"unmatched" file may now match, or a previously
@@ -231,7 +248,23 @@ class DATStore:
                 session.add(dat_row)
                 session.flush()
                 if hash_rows:
-                    session.bulk_insert_mappings(_db.DATHash, hash_rows)
+                    # Use INSERT OR REPLACE so that staging a new DAT set
+                    # while old DATs are still present never raises a UNIQUE
+                    # constraint error on overlapping (hash, hash_type) pairs.
+                    chunk_size = 900
+                    for i in range(0, len(hash_rows), chunk_size):
+                        chunk = hash_rows[i:i + chunk_size]
+                        stmt = sqlite_insert(_db.DATHash).values(chunk)
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=["hash", "hash_type"],
+                            set_={
+                                "dat_id": stmt.excluded.dat_id,
+                                "game_name": stmt.excluded.game_name,
+                                "rom_name": stmt.excluded.rom_name,
+                                "size": stmt.excluded.size,
+                            },
+                        )
+                        session.execute(stmt)
             # Importing new DATs invalidates the match cache.
             session.execute(delete(_db.DATMatch))
             session.commit()

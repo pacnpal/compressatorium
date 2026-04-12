@@ -96,20 +96,37 @@ async def startup_event():
         if not legacy_override:
             return default_path
         resolved_path = Path(legacy_override)
-        if resolved_path.exists():
-            logger.info(
-                "db.migrate: using legacy JSON store override for migration %s=%s",
+        if not resolved_path.exists():
+            logger.warning(
+                "db.migrate: legacy JSON store override %s=%s does not exist; "
+                "falling back to default store %s",
                 env_var,
                 resolved_path,
+                default_path,
             )
-            if resolved_path != default_path and default_path.exists():
-                logger.warning(
-                    "db.migrate: legacy JSON store override %s=%s will be used for migration; "
-                    "default store %s also exists and will not be imported in this run",
-                    env_var,
-                    resolved_path,
-                    default_path,
-                )
+            return default_path
+        if not resolved_path.is_file() or not os.access(resolved_path, os.R_OK):
+            logger.warning(
+                "db.migrate: legacy JSON store override %s=%s is not a readable file; "
+                "falling back to default store %s",
+                env_var,
+                resolved_path,
+                default_path,
+            )
+            return default_path
+        logger.info(
+            "db.migrate: using legacy JSON store override for migration %s=%s",
+            env_var,
+            resolved_path,
+        )
+        if resolved_path != default_path and default_path.exists():
+            logger.warning(
+                "db.migrate: legacy JSON store override %s=%s will be used for migration; "
+                "default store %s also exists and will not be imported in this run",
+                env_var,
+                resolved_path,
+                default_path,
+            )
         return resolved_path
 
     _db.init_and_migrate(
