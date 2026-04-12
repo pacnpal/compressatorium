@@ -26,12 +26,24 @@ class WorkloadToken:
 
 
 class WorkloadLimiter:
-    """Simple lane-based concurrency limiter with best-effort non-blocking acquire."""
+    """Simple lane-based concurrency limiter.
 
-    def __init__(self, *, verify_limit: int, metadata_scan_limit: int):
+    ``acquire()`` blocks until a slot is available in the requested lane.
+    ``try_acquire()`` is the best-effort, non-blocking variant: it returns
+    ``None`` immediately if no slot is free within the configured timeout.
+    """
+
+    def __init__(
+        self,
+        *,
+        verify_limit: int,
+        metadata_scan_limit: int,
+        match_limit: int = 1,
+    ):
         self._limits = {
             "verify": max(1, int(verify_limit)),
             "metadata_scan": max(1, int(metadata_scan_limit)),
+            "match": max(1, int(match_limit)),
         }
         self._semaphores = {
             lane: asyncio.Semaphore(limit)
@@ -76,4 +88,5 @@ class WorkloadLimiter:
 workload_limiter = WorkloadLimiter(
     verify_limit=settings.max_verify_concurrency,
     metadata_scan_limit=settings.max_metadata_scan_concurrency,
+    match_limit=settings.max_match_concurrency,
 )

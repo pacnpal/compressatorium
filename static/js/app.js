@@ -887,9 +887,23 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                         ${isVerified(entry) && html`
                             <span class="status verified" title="Integrity verified">✓ Verified</span>
                         `}
-                        ${datMatches.get(entry.path)?.matched && html`
-                            <span class="status dat-match" title="${datMatches.get(entry.path).dat_name}: ${datMatches.get(entry.path).game_name}">DAT ✓</span>
-                        `}
+                        ${(() => {
+                            const m = datMatches.get(entry.path);
+                            if (!m) return null;
+                            if (m.pending) {
+                                return html`<span class="status dat-pending" title="Hashing for DAT match...">DAT …</span>`;
+                            }
+                            if (m.matched) {
+                                return html`<span class="status dat-match" title="${m.dat_name}: ${m.game_name}">DAT ✓</span>`;
+                            }
+                            if (m.request_error === true) {
+                                return html`<span class="status dat-error" title="DAT match failed — retrying in ~30 s">DAT !</span>`;
+                            }
+                            if (typeof m.error === 'string' && m.error) {
+                                return html`<span class="status dat-error" title="${`DAT match failed — ${m.error}`}">DAT !</span>`;
+                            }
+                            return null;
+                        })()}
                         ${isVerifying && html`
                             <span class="status convertible" title="Verifying integrity">
                                 ${(() => {
@@ -2819,6 +2833,7 @@ function App() {
     const queuedJobUpdatesRef = useRef(new Map()); // jobId -> latest SSE payload
     const jobUpdateFlushTimeoutRef = useRef(null);
     const completionRefreshTimeoutRef = useRef(null);
+    const datMatchRetryTimerRef = useRef(null);
     const preSearchViewRef = useRef(null); // List/archive view snapshot before Search All
     const deferJobUiUpdatesRef = useRef(false); // Pause job-driven rerenders during active select interactions
 
@@ -3342,15 +3357,53 @@ function App() {
             .catch(err => console.warn('Failed to fetch CHD metadata:', err)); // Silently fail - badges are optional
     }, [displayedEntries, forceRescanRunning, jobs, creatingJobs]);
 
-    // Fetch DAT match status for visible files
+    // Fetch DAT match status for visible files.
+    //
+    // Extensions covered:
+    //   .chd                      — CHD containers (hashes can be read
+    //                                from CHD metadata/header data).
+    //   .rvz .wia .gcz .wbfs      — supported container formats for DAT
+    //                                matching; backend cost may still
+    //                                involve full-file hashing.
+    //   .iso .bin                 — raw disc images (requires full SHA1;
+    //                                backend gates concurrency via
+    //                                MAX_MATCH_CONCURRENCY).
+    //   .3ds .cci .cia            — 3DS formats.
+    //
+    // Intentionally excluded: .cue, .gdi. Those are text manifests;
+    // hashing them matches nothing in a Redump DAT (the DAT matches the
+    // track data, not the manifest), so showing "DAT ✗" next to them
+    // would be misleading.
     useEffect(() => {
         if (!datsImported) return;
-        const matchableExts = new Set(['.chd', '.rvz', '.wia', '.gcz']);
+        const matchableExts = new Set([
+            '.chd', '.rvz', '.wia', '.gcz', '.wbfs',
+            '.iso', '.bin',
+            '.3ds', '.cci', '.cia',
+        ]);
+        // Must be defined before the filter so the .catch() setTimeout can use it.
+        const RETRY_MS = 30_000;
         const paths = displayedEntries
             .filter(e => matchableExts.has(e.extension?.toLowerCase()))
             .map(e => e.path)
+            // Exclude paths that already have any datMatches entry (pending,
+            // matched, backend error, or retryable error waiting for its timer).
+            // The only way back into this list after a request_error is for the
+            // catch-handler's setTimeout to clear the sentinel.
             .filter(p => !datMatches.has(p));
         if (paths.length === 0) return;
+
+        // Mark all submitted paths as pending so the UI shows "DAT …"
+        // while the (potentially slow) backend hashing runs. Without
+        // this the badge cell is just empty and the user can't tell
+        // whether matching is in-flight or the file is genuinely
+        // unknown.
+        setDatMatches(prev => {
+            const next = new Map(prev);
+            for (const p of paths) next.set(p, { pending: true });
+            return next;
+        });
+
         api.matchBatch(paths)
             .then(data => {
                 if (data.results) {
@@ -3363,8 +3416,47 @@ function App() {
                     });
                 }
             })
-            .catch(() => {});
+            .catch(() => {
+                // Store error sentinels to block re-submission while the retry
+                // timer is pending.  Using a dedicated `request_error` field
+                // avoids colliding with the backend's string `error` field.
+                // After RETRY_MS the timer clears the sentinels, triggering a
+                // setDatMatches that causes the effect to re-run and re-submit
+                // the now-absent paths.
+                setDatMatches(prev => {
+                    const next = new Map(prev);
+                    for (const p of paths) {
+                        if (next.get(p)?.pending) next.set(p, { request_error: true });
+                    }
+                    return next;
+                });
+                // Clear any previously-scheduled retry before setting a new one
+                // so that repeated failures don't accumulate dangling timers.
+                clearTimeout(datMatchRetryTimerRef.current);
+                datMatchRetryTimerRef.current = setTimeout(() => {
+                    datMatchRetryTimerRef.current = null;
+                    setDatMatches(prev => {
+                        const next = new Map(prev);
+                        for (const p of paths) {
+                            if (next.get(p)?.request_error === true) next.delete(p);
+                        }
+                        return next;
+                    });
+                }, RETRY_MS);
+            });
+
     }, [displayedEntries, datsImported, datMatches]);
+
+    // Cancel any pending DAT-match retry timer on unmount only.
+    // This must be a separate effect with empty deps so the cleanup doesn't
+    // fire on dependency-driven reruns — that would cancel the just-scheduled
+    // retry timer before it ever has a chance to fire.
+    useEffect(() => {
+        return () => {
+            clearTimeout(datMatchRetryTimerRef.current);
+            datMatchRetryTimerRef.current = null;
+        };
+    }, []);
 
     // Load app version on mount
     useEffect(() => {
