@@ -20,7 +20,6 @@ class ConversionMode(str, Enum):
     DOLPHIN_WIA = "dolphin_wia"
     DOLPHIN_GCZ = "dolphin_gcz"
     DOLPHIN_ISO = "dolphin_iso"
-    NKIT2_RVZ = "nkit2_rvz"
     Z3DS_COMPRESS = "z3ds_compress"
     METADATA_SCAN = "metadata_scan"
 

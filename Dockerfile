@@ -90,22 +90,6 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # Install z3ds_compressor from builder stage
 COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
 
-# Install NKit2 for Redump-compatible RVZ output (optional, non-fatal)
-# Self-contained .NET build — no runtime dependency needed.
-# Place Linux binaries in vendor/nkit2/linux-{amd64,arm64}/ before building.
-# Use a BuildKit bind mount so the vendor tree is never written into an image layer.
-RUN --mount=type=bind,source=vendor/nkit2,target=/tmp/nkit2 \
-    mkdir -p /opt/nkit && \
-    if [ -d "/tmp/nkit2/linux-${TARGETARCH}" ]; then \
-      cp -a /tmp/nkit2/linux-${TARGETARCH}/. /opt/nkit/; \
-    fi && \
-    if [ -f /opt/nkit/nkit ]; then \
-      chmod +x /opt/nkit/nkit && \
-      echo "NKit2 installed successfully"; \
-    else \
-      echo "WARNING: NKit2 binary not found for ${TARGETARCH}; NKit2 RVZ mode will be unavailable"; \
-    fi
-
 # Copy application
 COPY app/ /app/
 COPY static/ /static/

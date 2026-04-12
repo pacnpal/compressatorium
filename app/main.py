@@ -97,7 +97,43 @@ async def startup_event():
         discovered_volumes,
         settings.volumes,
     )
-    asyncio.create_task(job_manager.process_queue())
+    # Initialise the set used to hold strong references to background tasks so
+    # they are not garbage-collected before they finish.
+    app.state.background_tasks = set()
+
+    process_queue_task = asyncio.create_task(job_manager.process_queue())
+    app.state.background_tasks.add(process_queue_task)
+    process_queue_task.add_done_callback(app.state.background_tasks.discard)
+
+    def _log_process_queue_error(t: asyncio.Task) -> None:
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "process_queue task exited unexpectedly",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+    process_queue_task.add_done_callback(_log_process_queue_error)
+
+    # Auto-sync MAMERedump DATs on startup if configured and no DATs loaded.
+    if settings.mameredump_auto_sync:
+        from services.dat_store import dat_store
+        if not dat_store.has_dats():
+            from services.dat_sync import dat_sync_service
+            logger.info("MAMEREDUMP_AUTO_SYNC enabled and no DATs loaded — starting background sync")
+
+            async def _auto_sync():
+                try:
+                    await dat_sync_service.sync()
+                except Exception:
+                    logger.exception("Auto-sync failed")
+
+            # Store a strong reference so the Task is not garbage-collected
+            # before it completes; done callback removes it.
+            _auto_sync_task = asyncio.create_task(_auto_sync())
+            app.state.background_tasks.add(_auto_sync_task)
+            _auto_sync_task.add_done_callback(app.state.background_tasks.discard)
 
 
 @app.get("/health")

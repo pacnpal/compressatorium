@@ -777,6 +777,40 @@ export const api = {
         if (!res.ok) throw new Error('Failed to match files');
         return res.json();
     },
+
+    // MAMERedump sync
+    async syncMAMERedump(tag = null) {
+        const body = tag ? JSON.stringify({ tag }) : '{}';
+        const res = await fetch(`${API_BASE}/dat/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+        });
+        if (!res.ok) {
+            const { detail } = await res.json().catch(() => ({}));
+            const message = typeof detail === 'string' ? detail : 'Failed to start sync';
+            const err = new Error(message);
+            err.status = res.status;
+            throw err;
+        }
+        return res.json();
+    },
+
+    async getSyncStatus() {
+        const res = await fetch(`${API_BASE}/dat/sync/status`);
+        if (!res.ok) throw new Error('Failed to get sync status');
+        return res.json();
+    },
+
+    async cancelSync() {
+        const res = await fetch(`${API_BASE}/dat/sync/cancel`, { method: 'POST' });
+        if (!res.ok) {
+            const { detail } = await res.json().catch(() => ({}));
+            const message = typeof detail === 'string' ? detail : 'Failed to cancel sync';
+            throw new Error(message);
+        }
+        return res.json();
+    },
 };
 
 // Format file size

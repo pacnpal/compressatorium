@@ -110,11 +110,13 @@ class DATStore:
                 if tmp_path.exists():
                     tmp_path.unlink()
 
-    async def import_dat(self, source: str) -> dict:
-        """Parse and import a DAT file.
+    async def _import_dat_core(self, source: str) -> tuple[dict, dict]:
+        """Parse a DAT file and insert it into the in-memory store.
 
-        ``source`` may be either a filesystem path to the DAT file (preferred,
-        enables true streaming) or a raw XML string.  Returns import summary.
+        Shared implementation used by :meth:`import_dat` and
+        :meth:`import_dat_no_persist`.  Returns ``(dat_info, result_dict)``
+        where ``result_dict`` is the dict returned to callers.  Does **not**
+        call :meth:`_persist`; the caller decides whether to flush.
         """
         header, entries = await run_in_threadpool(parse_dat, source)
 
@@ -149,9 +151,7 @@ class DATStore:
             self._matches.clear()
             self._version += 1
 
-        await run_in_threadpool(self._persist)
-
-        return {
+        result = {
             "id": dat_id,
             "name": dat_info["name"],
             "version": dat_info["version"],
@@ -159,6 +159,36 @@ class DATStore:
             "hashes_added": added,
             "message": f"Imported {len(entries)} entries from {dat_info['name']}",
         }
+        return dat_info, result
+
+    async def import_dat(self, source: str) -> dict:
+        """Parse and import a DAT file.
+
+        ``source`` may be either a filesystem path to the DAT file (preferred,
+        enables true streaming) or a raw XML string.  Returns import summary.
+        """
+        _dat_info, result = await self._import_dat_core(source)
+        await run_in_threadpool(self._persist)
+        return result
+
+    async def import_dat_no_persist(self, source: str) -> dict:
+        """Parse and import a DAT file without flushing to disk.
+
+        Identical to :meth:`import_dat` but skips the final ``_persist()``
+        call.  Use this inside a bulk-import loop and call :meth:`persist`
+        once afterward to achieve O(1) disk writes regardless of the number
+        of DATs imported.
+        """
+        _dat_info, result = await self._import_dat_core(source)
+        return result
+
+    async def persist(self) -> None:
+        """Explicitly flush the current in-memory state to disk.
+
+        Use after a bulk-import loop (calling :meth:`import_dat_no_persist`
+        for each file) to persist all imported DATs in a single write.
+        """
+        await run_in_threadpool(self._persist)
 
     async def delete_dat(self, dat_id: str) -> bool:
         """Delete a DAT and all its hash entries."""
@@ -184,6 +214,40 @@ class DATStore:
 
         await run_in_threadpool(self._persist)
         return True
+
+    async def delete_dats_bulk(self, dat_ids: list[str]) -> int:
+        """Delete multiple DATs and their hash entries in a single disk write.
+
+        Returns the number of DATs actually removed.  Persists only when at
+        least one ID is found and removed; returns 0 immediately for an empty
+        list or when none of the provided IDs exist in the store.
+        """
+        if not dat_ids:
+            return 0
+        dat_id_set = set(dat_ids)
+        removed = 0
+        with self._lock:
+            for dat_id in dat_id_set:
+                if dat_id in self._dats:
+                    del self._dats[dat_id]
+                    removed += 1
+            if removed:
+                self._hashes_sha1 = {
+                    k: v for k, v in self._hashes_sha1.items()
+                    if v.get("dat_id") not in dat_id_set
+                }
+                self._hashes_md5 = {
+                    k: v for k, v in self._hashes_md5.items()
+                    if v.get("dat_id") not in dat_id_set
+                }
+                self._matches = {
+                    k: v for k, v in self._matches.items()
+                    if v.get("dat_id") not in dat_id_set
+                }
+                self._version += 1
+        if removed:
+            await run_in_threadpool(self._persist)
+        return removed
 
     def list_dats(self) -> list[dict]:
         with self._lock:

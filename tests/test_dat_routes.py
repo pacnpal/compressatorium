@@ -530,3 +530,111 @@ async def test_match_batch_symlink_loop_returns_denied_not_500(tmp_path, isolate
     path_result = result["results"][str(loop)]
     assert path_result["matched"] is False
     assert "access denied" in path_result.get("error", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# /dat/sync  /dat/sync/status  /dat/sync/cancel
+# ---------------------------------------------------------------------------
+
+def _make_mock_request():
+    """Return a minimal mock HTTP Request with app.state.background_tasks."""
+    mock_req = MagicMock()
+    mock_req.app.state.background_tasks = set()
+    return mock_req
+
+
+@pytest.mark.asyncio
+async def test_sync_mameredump_starts_sync(monkeypatch):
+    """POST /dat/sync starts a background sync and returns status=started."""
+    mock_svc = MagicMock()
+    mock_svc.is_syncing = False
+    mock_svc.sync = AsyncMock(return_value={"status": "complete"})
+    monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
+
+    result = await dat_routes.sync_mameredump(http_request=_make_mock_request(), request=None)
+    assert result["status"] == "started"
+
+
+@pytest.mark.asyncio
+async def test_sync_mameredump_409_on_race_condition(monkeypatch):
+    """POST /dat/sync returns 409 when the background task detects a concurrent sync."""
+    mock_svc = MagicMock()
+    mock_svc.is_syncing = False  # passes early check
+    mock_svc.sync = AsyncMock(side_effect=RuntimeError("Sync already in progress"))
+    monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await dat_routes.sync_mameredump(http_request=_make_mock_request(), request=None)
+    assert exc_info.value.status_code == 409
+
+@pytest.mark.asyncio
+async def test_sync_mameredump_409_when_already_syncing(monkeypatch):
+    """POST /dat/sync returns 409 when a sync is already in progress."""
+    mock_svc = MagicMock()
+    mock_svc.is_syncing = True
+    monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await dat_routes.sync_mameredump(http_request=_make_mock_request(), request=None)
+    assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_sync_status_returns_shape(monkeypatch):
+    """GET /dat/sync/status returns a dict with expected fields."""
+    mock_svc = MagicMock()
+    mock_svc.get_status = MagicMock(return_value={
+        "syncing": False,
+        "progress": {"status": "complete", "files_imported": 3},
+        "last_sync_tag": "0.285",
+        "last_sync_at": "2026-04-01T00:00:00Z",
+        "last_sync_files": 3,
+        "error": "",
+    })
+    monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
+
+    result = await dat_routes.sync_status()
+    assert result["syncing"] is False
+    assert result["last_sync_tag"] == "0.285"
+    assert result["progress"]["files_imported"] == 3
+
+
+@pytest.mark.asyncio
+async def test_sync_cancel_success(monkeypatch):
+    """POST /dat/sync/cancel returns status=cancelling when sync is running."""
+    mock_svc = MagicMock()
+    mock_svc.cancel = MagicMock(return_value=True)
+    monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
+
+    result = await dat_routes.sync_cancel()
+    assert result["status"] == "cancelling"
+
+
+@pytest.mark.asyncio
+async def test_sync_cancel_409_when_not_syncing(monkeypatch):
+    """POST /dat/sync/cancel returns 409 when no sync is in progress."""
+    mock_svc = MagicMock()
+    mock_svc.cancel = MagicMock(return_value=False)
+    monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await dat_routes.sync_cancel()
+    assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_sync_mameredump_passes_tag(monkeypatch):
+    """POST /dat/sync forwards the tag from the request body."""
+    mock_svc = MagicMock()
+    mock_svc.is_syncing = False
+    mock_svc.sync = AsyncMock(return_value={"status": "complete"})
+    monkeypatch.setattr(dat_routes, "_get_sync_service", lambda: mock_svc)
+
+    await dat_routes.sync_mameredump(
+        http_request=_make_mock_request(),
+        request=dat_routes.SyncRequest(tag="0.285"),
+    )
+    # Give the background task a chance to start
+    import asyncio
+    await asyncio.sleep(0)
+    mock_svc.sync.assert_called_once_with(tag="0.285")

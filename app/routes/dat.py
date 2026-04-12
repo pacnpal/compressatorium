@@ -1,10 +1,11 @@
 """API routes for MAME Redump DAT file management and hash matching."""
 
+import asyncio
 import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
@@ -22,6 +23,10 @@ class MatchRequest(BaseModel):
 
 class MatchBatchRequest(BaseModel):
     paths: list[str]
+
+
+class SyncRequest(BaseModel):
+    tag: str | None = None
 
 
 @router.post("/dat/import")
@@ -195,6 +200,88 @@ async def prune_missing():
     """Remove match cache entries for files that no longer exist."""
     removed = await dat_store.prune_missing()
     return {"removed": removed}
+
+
+# ---------------------------------------------------------------------------
+# MAMERedump sync endpoints
+# ---------------------------------------------------------------------------
+
+def _get_sync_service():
+    from services.dat_sync import dat_sync_service
+    return dat_sync_service
+
+
+@router.post("/dat/sync")
+async def sync_mameredump(http_request: Request, request: SyncRequest | None = None):
+    """Trigger a sync of all DAT files from the MAMERedump GitHub repo.
+
+    The sync runs in the background. Poll ``/dat/sync/status`` for progress.
+    """
+    svc = _get_sync_service()
+    if svc.is_syncing:
+        raise HTTPException(status_code=409, detail="Sync already in progress")
+
+    tag = request.tag if request else None
+
+    async def _run_sync():
+        await svc.sync(tag=tag)
+
+    task = asyncio.create_task(_run_sync())
+
+    # Keep a strong reference so the Task isn't garbage-collected before it
+    # finishes; the done callback removes it from the shared app-level set.
+    bg_tasks: set[asyncio.Task] = http_request.app.state.background_tasks
+    bg_tasks.add(task)
+    task.add_done_callback(bg_tasks.discard)
+
+    def _log_bg_error(t: asyncio.Task) -> None:
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "dat_sync background task failed",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+    task.add_done_callback(_log_bg_error)
+
+    # Yield to the event loop so the background task has an opportunity to enter
+    # svc.sync() and claim the syncing lock before we respond.  svc.sync()
+    # acquires _syncing under a threading.Lock (no awaits before that point),
+    # so in practice a single yield is sufficient — but asyncio scheduling order
+    # is not a documented guarantee, so this is a best-effort check rather than
+    # a hard guarantee.  After asyncio.sleep(0), if the task is already done it
+    # raised immediately (e.g. a near-simultaneous request already held the
+    # lock) and we can return the correct status code.
+    await asyncio.sleep(0)
+
+    if task.done():
+        try:
+            task.result()
+        except RuntimeError as exc:
+            if "Sync already in progress" in str(exc):
+                raise HTTPException(status_code=409, detail="Sync already in progress")
+            logger.exception("dat_sync background task failed at startup")
+            raise HTTPException(status_code=500, detail="Failed to start sync")
+        except Exception:
+            logger.exception("dat_sync background task failed at startup")
+            raise HTTPException(status_code=500, detail="Failed to start sync")
+
+    return {"status": "started", "message": "Sync started"}
+
+
+@router.get("/dat/sync/status")
+async def sync_status():
+    """Return the current sync status."""
+    return _get_sync_service().get_status()
+
+
+@router.post("/dat/sync/cancel")
+async def sync_cancel():
+    """Cancel an in-progress sync."""
+    if _get_sync_service().cancel():
+        return {"status": "cancelling"}
+    raise HTTPException(status_code=409, detail="No sync in progress")
 
 
 async def _match_single_file(file_path: str) -> dict:
