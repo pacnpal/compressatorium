@@ -1,0 +1,46 @@
+# Project-level tool configuration.  This file is intentionally minimal —
+# runtime dependency management lives in requirements*.txt; this is only
+# here so linters and code-scanning tools apply the correct conventions.
+
+[tool.pylint.main]
+# The app uses PEP 585 generic syntax (``list[str]``, ``dict[str, Any]``,
+# ``tuple[int, int]``).  Without an explicit py-version, pylint assumes
+# the interpreter it runs under — which in CI is often older — and
+# flags these as "unsubscriptable-object".  3.10 matches the container
+# runtime (Debian trixie's python3).
+py-version = "3.10"
+
+# Both the service layer and the route layer import from the ``app/``
+# subpackage as if it were on PYTHONPATH (matching how uvicorn is
+# launched in the container: ``uvicorn main:app`` from inside /app).
+# Tell pylint so it can resolve the intra-project imports instead of
+# flagging them as import-error.
+init-hook = "import sys; sys.path.insert(0, 'app')"
+
+[tool.pylint."messages control"]
+# Suppress stylistic-only warnings that don't affect behaviour and
+# generate high-volume noise in code-scanning:
+#
+#   * ``too-many-locals`` — legacy threshold (15) vs the complex state
+#     of startup / sync functions.  Breaking them up for the metric
+#     alone would obscure the control flow.
+#   * ``line-too-long`` at 100 is already enforced on all new code;
+#     we keep the warning on but override column limit below.
+#   * ``import-outside-toplevel`` — intentional in several places
+#     (``main.py`` deferred imports to break circular deps at module
+#     load, lazy imports inside functions to avoid startup cost).
+#   * ``protected-access`` — tests legitimately poke at private seams
+#     (``_all_records_sync``, ``_state``, ``_load_state``, etc.).
+#     Enforcing this in test code just pushes us toward over-exposing
+#     internals as public API.
+disable = [
+    "too-many-locals",
+    "import-outside-toplevel",
+    "protected-access",
+    "missing-function-docstring",
+    "missing-method-docstring",
+    "missing-module-docstring",
+]
+
+[tool.pylint.format]
+max-line-length = 100

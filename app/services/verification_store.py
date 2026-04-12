@@ -153,6 +153,7 @@ class VerificationStore:
         return await run_in_threadpool(self._all_records_sync)
 
     def _all_records_sync(self) -> list[dict[str, str | None]]:
+        """Synchronous fetch of every verification record (internal seam for tests)."""
         with self._session() as session:
             rows = session.scalars(select(_db.Verification)).all()
             return [
