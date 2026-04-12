@@ -2844,6 +2844,10 @@ function App() {
     // paths that were submitted so we can poll the cache-only lookup endpoint
     // as per-file results land. Cleared when the job completes or fails.
     const activeMatchJobRef = useRef(null);
+    // Mirror of datMatches accessible to the polling effect without
+    // forcing it to re-run on every setDatMatches call. Kept in sync
+    // by a tiny dedicated effect below.
+    const datMatchesRef = useRef(new Map());
     const preSearchViewRef = useRef(null); // List/archive view snapshot before Search All
     const deferJobUiUpdatesRef = useRef(false); // Pause job-driven rerenders during active select interactions
 
@@ -3501,8 +3505,14 @@ function App() {
         // a prior tick doesn't change just because the job advanced to
         // the next file.  This turns the every-SSE-tick cost from O(all
         // submitted paths) into O(paths still in flight).
+        //
+        // Read from datMatchesRef rather than the datMatches state so
+        // this effect can depend only on `jobs` — otherwise every
+        // setDatMatches call re-runs the effect, defeating the
+        // lastState / pendingPaths optimizations entirely.
+        const currentMatches = datMatchesRef.current;
         const pendingPaths = paths.filter(p => {
-            const entry = datMatches.get(p);
+            const entry = currentMatches.get(p);
             return !entry || entry.pending === true || entry.request_error === true;
         });
 
@@ -3587,7 +3597,14 @@ function App() {
             activeMatchJobRef.current = null;
         }
         return () => { cancelled = true; };
-    }, [jobs, datMatches]);
+    }, [jobs]);
+
+    // Mirror datMatches into a ref so the polling effect above can read
+    // the current map without having to take datMatches as a dep (which
+    // would cause it to re-run on every setDatMatches update).
+    useEffect(() => {
+        datMatchesRef.current = datMatches;
+    }, [datMatches]);
 
     // Cancel any pending DAT-match retry timer on unmount only.
     // This must be a separate effect with empty deps so the cleanup doesn't

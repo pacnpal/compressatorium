@@ -328,13 +328,22 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
         return {"status": "idle", "results": results}
 
     async with _get_match_job_lock():
+        # Authoritative guard: if the module-level id is set, a background
+        # _run_match_job is still executing (it only clears the id from
+        # its own finally block AFTER the hashing loop has fully unwound
+        # and finish_external_job has landed).  Do NOT fall back to
+        # inspecting the job_manager's visible status here — the job can
+        # be reaped from job_manager.jobs via "Clear Done" or a history
+        # prune while the underlying task is still alive, which would
+        # spuriously let a second job start and race the first on the
+        # "match" workload lane.  The presence of _active_match_job_id
+        # is the single source of truth for "a hash loop is still
+        # executing"; anything else is advisory.
         if _active_match_job_id is not None:
-            existing = job_manager.get_job_for_lookup(_active_match_job_id)
-            if existing is not None and existing.status.value in ("queued", "processing"):
-                raise HTTPException(
-                    status_code=409,
-                    detail="DAT match job already in progress",
-                )
+            raise HTTPException(
+                status_code=409,
+                detail="DAT match job already in progress",
+            )
 
         scan_job = job_manager.create_external_job(
             filename="DAT Match",
