@@ -3515,16 +3515,72 @@ function App() {
         if (lookupPaths.length > 0) {
             api.getMatchCache(lookupPaths)
                 .then(data => {
-                    if (cancelled || !data.results) return;
+                    if (cancelled) return;
+                    const results = data.results || {};
                     setDatMatches(prev => {
                         const next = new Map(prev);
-                        Object.entries(data.results).forEach(([path, result]) => {
+                        Object.entries(results).forEach(([path, result]) => {
                             next.set(path, result);
                         });
+                        // Terminal reconciliation: the backend deliberately
+                        // does NOT cache non-cacheable outcomes (size-cap
+                        // skips, missing files, transient hash errors), so
+                        // on the terminal tick any path still showing
+                        // {pending:true} will never resolve via the cache
+                        // lookup. Materialise a synthetic "not matched"
+                        // entry for those so the badge renders as "DAT ✗"
+                        // instead of spinning on "DAT …" indefinitely.
+                        if (isTerminal) {
+                            for (const p of paths) {
+                                const entry = next.get(p);
+                                if (!entry || entry.pending === true) {
+                                    next.set(p, {
+                                        path: p,
+                                        matched: false,
+                                        reason: 'not processed',
+                                    });
+                                }
+                            }
+                        }
                         return next;
                     });
                 })
-                .catch(() => { /* silent — next tick will retry */ });
+                .catch(() => {
+                    // Even on network failure for the final poll we must
+                    // not leave paths stuck pending forever. Synthesize
+                    // fallbacks locally so the UI exits its pending state.
+                    if (!isTerminal || cancelled) return;
+                    setDatMatches(prev => {
+                        const next = new Map(prev);
+                        for (const p of paths) {
+                            const entry = next.get(p);
+                            if (!entry || entry.pending === true) {
+                                next.set(p, {
+                                    path: p,
+                                    matched: false,
+                                    reason: 'not processed',
+                                });
+                            }
+                        }
+                        return next;
+                    });
+                });
+        } else if (isTerminal) {
+            // Terminal but no outstanding lookupPaths (e.g. everything
+            // already resolved locally). Still need to flush any pending
+            // sentinels that never got a cache hit.
+            setDatMatches(prev => {
+                let changed = false;
+                const next = new Map(prev);
+                for (const p of paths) {
+                    const entry = next.get(p);
+                    if (!entry || entry.pending === true) {
+                        next.set(p, { path: p, matched: false, reason: 'not processed' });
+                        changed = true;
+                    }
+                }
+                return changed ? next : prev;
+            });
         }
 
         if (isTerminal) {
