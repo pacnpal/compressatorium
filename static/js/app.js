@@ -3478,8 +3478,14 @@ function App() {
         if (!active) return;
         const { jobId, paths } = active;
         const matchJob = jobs.find(j => j.id === jobId);
-        const isTerminal = !matchJob
-            || ['completed', 'failed', 'cancelled'].includes(matchJob.status);
+        // Only treat the job as terminal when we can actually *see* it in
+        // the jobs list AND it reports a terminal status. The job can be
+        // briefly absent between startMatchJob resolving and the first SSE
+        // tick / jobs poll arriving; treating that absence as terminal
+        // would prematurely stop polling the cache and strand any paths
+        // still carrying their {pending: true} sentinel.
+        const isTerminal = !!matchJob
+            && ['completed', 'failed', 'cancelled'].includes(matchJob.status);
 
         let cancelled = false;
         api.getMatchCache(paths)

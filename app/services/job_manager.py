@@ -30,6 +30,16 @@ from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
 logger = logging.getLogger("chd.job_manager")
 
+# Modes for externally-managed jobs that bypass the conversion queue —
+# they are driven by callers via create/update/finish_external_job and
+# must NOT count against max_queue_depth backpressure, stuck-detection,
+# or the cancel-all / queued-count surfaces that only apply to the
+# chdman/dolphin/z3ds conversion pipeline.
+_EXTERNAL_JOB_MODES = frozenset({
+    ConversionMode.METADATA_SCAN,
+    ConversionMode.DAT_MATCH,
+})
+
 
 class QueueBackpressureError(RuntimeError):
     """Raised when queue backpressure limits would be exceeded."""
@@ -95,7 +105,7 @@ class JobManager:
             1
             for job in self.jobs.values()
             if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
-            and job.mode != ConversionMode.METADATA_SCAN
+            and job.mode not in _EXTERNAL_JOB_MODES
         )
         if current_depth + needed > max_depth:
             raise QueueBackpressureError(
@@ -414,7 +424,7 @@ class JobManager:
             1
             for job in self.jobs.values()
             if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
-            and job.mode != ConversionMode.METADATA_SCAN
+            and job.mode not in _EXTERNAL_JOB_MODES
         )
 
     def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
@@ -503,7 +513,7 @@ class JobManager:
                 continue
             if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
                 continue
-            if job.mode == ConversionMode.METADATA_SCAN:
+            if job.mode in _EXTERNAL_JOB_MODES:
                 continue
             for candidate in self._candidate_paths(job):
                 cand_path = self._normalize_path(candidate)
@@ -524,11 +534,11 @@ class JobManager:
         """
         queued_job_ids = [
             job.id for job in self.jobs.values()
-            if job.status == JobStatus.QUEUED and job.mode != ConversionMode.METADATA_SCAN
+            if job.status == JobStatus.QUEUED and job.mode not in _EXTERNAL_JOB_MODES
         ]
         processing_job_ids = [
             job.id for job in self.jobs.values()
-            if job.status == JobStatus.PROCESSING and job.mode != ConversionMode.METADATA_SCAN
+            if job.status == JobStatus.PROCESSING and job.mode not in _EXTERNAL_JOB_MODES
         ]
         return queued_job_ids, processing_job_ids
 
@@ -542,11 +552,11 @@ class JobManager:
             True if conversion jobs are queued but none are processing, False otherwise
         """
         has_queued = any(
-            job.status == JobStatus.QUEUED and job.mode != ConversionMode.METADATA_SCAN
+            job.status == JobStatus.QUEUED and job.mode not in _EXTERNAL_JOB_MODES
             for job in self.jobs.values()
         )
         has_processing = any(
-            job.status == JobStatus.PROCESSING and job.mode != ConversionMode.METADATA_SCAN
+            job.status == JobStatus.PROCESSING and job.mode not in _EXTERNAL_JOB_MODES
             for job in self.jobs.values()
         )
         return has_queued and not has_processing
@@ -655,7 +665,7 @@ class JobManager:
 
         # Externally-managed jobs (e.g. metadata scans) are not cancellable
         # through the normal dispatcher mechanism.
-        if job.mode == ConversionMode.METADATA_SCAN:
+        if job.mode in _EXTERNAL_JOB_MODES:
             return False
 
         if job.status == JobStatus.QUEUED:
@@ -705,11 +715,11 @@ class JobManager:
         """
         queued_ids = [
             job.id for job in self.jobs.values()
-            if job.status == JobStatus.QUEUED and job.mode != ConversionMode.METADATA_SCAN
+            if job.status == JobStatus.QUEUED and job.mode not in _EXTERNAL_JOB_MODES
         ]
         processing_ids = [
             job.id for job in self.jobs.values()
-            if job.status == JobStatus.PROCESSING and job.mode != ConversionMode.METADATA_SCAN
+            if job.status == JobStatus.PROCESSING and job.mode not in _EXTERNAL_JOB_MODES
         ]
         requested_ids: list[str] = []
 

@@ -328,7 +328,6 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
         _run_match_job,
         job_id=scan_job.id,
         paths_to_compute=to_compute,
-        normalized_to_originals=normalized_to_originals,
     )
 
     return {
@@ -338,11 +337,40 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
     }
 
 
+async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
+    """Compute a match result for one path inside the background job loop.
+
+    Returns ``(result, cacheable)``.  ``cacheable`` is ``False`` for
+    transient failures (missing file, stat error, hasher exception) and
+    configuration-dependent skips (size-cap hit); those must not be
+    persisted to ``dat_matches`` because they would stick around after
+    the underlying condition changes (file appears, cap is raised,
+    transient OSError clears).
+    """
+    try:
+        exists = await run_in_threadpool(os.path.isfile, normalized_path)
+    except OSError as exc:
+        logger.warning("Failed to stat %s: %s", normalized_path, exc)
+        return {"path": normalized_path, "matched": False, "error": str(exc)}, False
+
+    if not exists:
+        return {"path": normalized_path, "matched": False}, False
+
+    try:
+        result = await _match_single_file(normalized_path)
+    except Exception as exc:  # pragma: no cover — isolated per-path
+        logger.warning("DAT match failed for %s: %s", normalized_path, exc)
+        return {"path": normalized_path, "matched": False, "error": str(exc)}, False
+
+    if result.get("reason") == "file too large":
+        return result, False
+    return result, True
+
+
 async def _run_match_job(
     *,
     job_id: str,
     paths_to_compute: list[str],
-    normalized_to_originals: dict[str, list[str]],
 ) -> None:
     """Background task: hash paths serially, cache results, tick progress."""
     global _active_match_job_id
@@ -363,30 +391,12 @@ async def _run_match_job(
                 message=f"[{idx}/{total}] {display_name}",
             )
 
-            try:
-                exists = await run_in_threadpool(os.path.isfile, normalized_path)
-            except OSError as exc:
-                logger.warning("Failed to stat %s: %s", normalized_path, exc)
-                exists = False
-
-            if not exists:
-                # Don't cache missing-file results: the file may appear later
-                # and a stale negative entry would not be cleared by
-                # prune_missing.
-                result = {"path": normalized_path, "matched": False}
-            else:
+            result, cacheable = await _hash_one_for_job(normalized_path)
+            if cacheable:
                 try:
-                    result = await _match_single_file(normalized_path)
-                except Exception as exc:  # pragma: no cover — isolated per-path
-                    logger.warning("DAT match failed for %s: %s", normalized_path, exc)
-                    result = {"path": normalized_path, "matched": False, "error": str(exc)}
-
-                # Don't cache size-cap skips: they are configuration-dependent.
-                if result.get("reason") != "file too large":
-                    try:
-                        await dat_store.set_matches_batch({normalized_path: result})
-                    except Exception as exc:  # pragma: no cover — best-effort cache write
-                        logger.warning("Failed to cache match for %s: %s", normalized_path, exc)
+                    await dat_store.set_matches_batch({normalized_path: result})
+                except Exception as exc:  # pragma: no cover — best-effort cache write
+                    logger.warning("Failed to cache match for %s: %s", normalized_path, exc)
 
             hashed += 1
             if result.get("matched"):
