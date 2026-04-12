@@ -421,11 +421,16 @@ class DATStore:
             return {}
         normalized_map = {p: self._normalize(p) for p in file_paths}
         unique_norms = list(set(normalized_map.values()))
+        # Chunk to stay under SQLite's bind-parameter limit (default 999).
+        chunk_size = 900
+        by_norm: dict[str, dict] = {}
         with self._session() as session:
-            rows = session.scalars(
-                select(_db.DATMatch).where(_db.DATMatch.path.in_(unique_norms))
-            ).all()
-        by_norm = {r.path: dict(r.payload) for r in rows}
+            for i in range(0, len(unique_norms), chunk_size):
+                chunk = unique_norms[i:i + chunk_size]
+                rows = session.scalars(
+                    select(_db.DATMatch).where(_db.DATMatch.path.in_(chunk))
+                ).all()
+                by_norm.update({r.path: dict(r.payload) for r in rows})
         return {orig: by_norm.get(norm) for orig, norm in normalized_map.items()}
 
     # ------------------------------------------------------------------
@@ -466,7 +471,11 @@ class DATStore:
             missing = [p for p in paths if not os.path.exists(p)]
             if not missing:
                 return 0
-            session.execute(delete(_db.DATMatch).where(_db.DATMatch.path.in_(missing)))
+            # Chunk to stay under SQLite's bind-parameter limit (default 999).
+            chunk_size = 900
+            for i in range(0, len(missing), chunk_size):
+                chunk = missing[i:i + chunk_size]
+                session.execute(delete(_db.DATMatch).where(_db.DATMatch.path.in_(chunk)))
             session.commit()
             return len(missing)
 

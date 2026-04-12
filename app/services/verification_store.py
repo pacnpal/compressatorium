@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -65,17 +66,20 @@ class VerificationStore:
     def _mark_sync(self, chd_path: str, source_path: str | None) -> None:
         normalized = self._normalize(chd_path)
         normalized_source = self._normalize(source_path) if source_path else None
+        stmt = sqlite_insert(_db.Verification).values(
+            chd_path=normalized,
+            source_path=normalized_source,
+            verified_at=_utcnow_iso(),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["chd_path"],
+            set_={
+                "source_path": stmt.excluded.source_path,
+                "verified_at": stmt.excluded.verified_at,
+            },
+        )
         with self._session() as session:
-            existing = session.get(_db.Verification, normalized)
-            if existing is not None:
-                existing.source_path = normalized_source
-                existing.verified_at = _utcnow_iso()
-            else:
-                session.add(_db.Verification(
-                    chd_path=normalized,
-                    source_path=normalized_source,
-                    verified_at=_utcnow_iso(),
-                ))
+            session.execute(stmt)
             session.commit()
 
     async def mark_verified(self, chd_path: str, *, source_path: str | None = None) -> None:
@@ -163,9 +167,13 @@ class VerificationStore:
             missing = [p for p in paths if not os.path.exists(p)]
             if not missing:
                 return 0
-            session.execute(
-                delete(_db.Verification).where(_db.Verification.chd_path.in_(missing))
-            )
+            # Chunk to stay under SQLite's bind-parameter limit (default 999).
+            chunk_size = 900
+            for i in range(0, len(missing), chunk_size):
+                batch = missing[i:i + chunk_size]
+                session.execute(
+                    delete(_db.Verification).where(_db.Verification.chd_path.in_(batch))
+                )
             session.commit()
             return len(missing)
 

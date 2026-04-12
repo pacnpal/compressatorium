@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -245,27 +246,36 @@ class CHDMetadataStore:
         now = _utcnow_iso()
 
         with self._session() as session:
-            existing = session.get(_db.CHDMetadata, normalized)
-            if existing is not None:
-                # Preserve disc-ID bookkeeping fields (set by Phase 2)
-                # across a Phase 1 metadata refresh.
-                existing.metadata_json = info
-                existing.media_type = media_type
-                existing.mtime = mtime
-                existing.cached_at = now
-                row = existing
-            else:
-                row = _db.CHDMetadata(
-                    chd_path=normalized,
-                    metadata_json=info,
-                    media_type=media_type,
-                    mtime=mtime,
-                    cached_at=now,
-                    disc_id_checked=False,
-                )
-                session.add(row)
+            stmt = sqlite_insert(_db.CHDMetadata).values(
+                chd_path=normalized,
+                metadata_json=info,
+                media_type=media_type,
+                mtime=mtime,
+                cached_at=now,
+                disc_id_checked=False,
+            )
+            # ON CONFLICT: update only the Phase-1 fields; intentionally
+            # preserve disc_id_checked, disc_id_checked_mtime, game_id, title
+            # set by Phase 2 so they survive a Phase-1 metadata refresh.
+            # Note: use SQL column names in set_ and excluded (attribute name
+            # "metadata_json" maps to SQL column "metadata").
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["chd_path"],
+                set_={
+                    "metadata": stmt.excluded.metadata,
+                    "media_type": stmt.excluded.media_type,
+                    "mtime": stmt.excluded.mtime,
+                    "cached_at": stmt.excluded.cached_at,
+                },
+            )
+            session.execute(stmt)
             session.commit()
-
+            row = session.get(_db.CHDMetadata, normalized)
+            if row is None:
+                raise RuntimeError(
+                    f"CHD metadata row missing after upsert for {normalized!r}; "
+                    "this should never happen"
+                )
             return {
                 "chd_path": row.chd_path,
                 "metadata": row.metadata_json,
@@ -412,9 +422,13 @@ class CHDMetadataStore:
             missing = [p for p in paths if not os.path.exists(p)]
             if not missing:
                 return 0
-            session.execute(
-                delete(_db.CHDMetadata).where(_db.CHDMetadata.chd_path.in_(missing))
-            )
+            # Chunk to stay under SQLite's bind-parameter limit (default 999).
+            chunk_size = 900
+            for i in range(0, len(missing), chunk_size):
+                batch = missing[i:i + chunk_size]
+                session.execute(
+                    delete(_db.CHDMetadata).where(_db.CHDMetadata.chd_path.in_(batch))
+                )
             session.commit()
             return len(missing)
 

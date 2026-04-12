@@ -141,7 +141,7 @@ def metadata_store(metadata_store_path):
 
 def test_db_path_resolution_falls_back_when_default_config_unwritable(monkeypatch, tmp_path):
     """Data-dir fallback semantics (moved out of the old JSON store)."""
-    from app.services.db import resolve_db_path
+    from services.db import resolve_db_path
 
     original_mkdir = Path.mkdir
 

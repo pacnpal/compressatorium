@@ -231,26 +231,48 @@ def get_session() -> Session:
 # ---------------------------------------------------------------------------
 
 
+def _is_dir_writable(directory: Path) -> bool:
+    """Return True if *directory* is writable by creating and deleting a probe file."""
+    try:
+        with tempfile.NamedTemporaryFile(dir=str(directory)):
+            pass
+        return True
+    except OSError:
+        return False
+
+
 def resolve_db_path(explicit_path: str | None, data_dir: str) -> str:
     """Resolve the SQLite file path, mirroring legacy fallback logic.
 
-    - If ``explicit_path`` is set and its parent directory is writable,
-      use it verbatim.  If the parent doesn't exist or can't be created,
-      raise ``OSError`` (explicit path = user intent, don't silently
-      fall back).
+    - If ``explicit_path`` is set, use it verbatim.  The parent
+      directory is created if needed; if it cannot be created *or* is
+      not writable, raise ``OSError`` (explicit path = user intent, no
+      silent fallback).
     - Otherwise, use ``<data_dir>/compressatorium.db``.  If the data
-      directory is not writable, fall back to
+      directory cannot be created or is not writable (e.g. read-only
+      ``/config``), fall back to
       ``<TMPDIR>/compressatorium/compressatorium.db`` (same pattern the
       JSON stores use today).
     """
     if explicit_path:
         target = Path(explicit_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise OSError(
+                f"Cannot create parent directory for explicit DB path {target}: {exc}"
+            ) from exc
+        if not _is_dir_writable(target.parent):
+            raise OSError(
+                f"Explicit DB path parent directory is not writable: {target.parent}"
+            )
         return str(target)
 
     target = Path(data_dir) / "compressatorium.db"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
+        if not _is_dir_writable(target.parent):
+            raise OSError("data_dir not writable")
     except OSError:
         fallback_root = Path(os.environ.get("TMPDIR", tempfile.gettempdir())) / "compressatorium"
         fallback_root.mkdir(parents=True, exist_ok=True)
@@ -306,7 +328,22 @@ def _mark_migrated(path: Path) -> None:
             target, path,
         )
         return
-    path.rename(target)
+    if not path.exists():
+        logger.warning(
+            "db.migrate: migration source %s no longer exists; nothing to rename",
+            path,
+        )
+        return
+    try:
+        path.rename(target)
+    except OSError:
+        logger.exception(
+            "db.migrate: imported data from %s into SQLite but could not rename "
+            "the legacy JSON to %s; the source file was left in place — fix "
+            "filesystem permissions and restart to retry the rename",
+            path,
+            target,
+        )
 
 
 def _is_migration_source(path: Path) -> bool:
