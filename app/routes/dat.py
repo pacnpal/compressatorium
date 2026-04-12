@@ -188,7 +188,11 @@ async def match_batch(request: MatchBatchRequest):
             # a stale negative entry would not be cleared by prune_missing.
         else:
             result = await _match_single_file(normalized_path)
-            new_matches[normalized_path] = result
+            # Don't cache size-cap skips: the result is configuration-dependent.
+            # If MATCH_MAX_FILE_SIZE is later raised or disabled the file must
+            # be re-hashed rather than being served a stale "too large" entry.
+            if result.get("reason") != "file too large":
+                new_matches[normalized_path] = result
         for original_path in normalized_to_originals[normalized_path]:
             results[original_path] = result
 

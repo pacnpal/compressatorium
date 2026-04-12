@@ -897,7 +897,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                                 return html`<span class="status dat-match" title="${m.dat_name}: ${m.game_name}">DAT ✓</span>`;
                             }
                             if (m.request_error === true) {
-                                return html`<span class="status dat-error" title="DAT match failed — will retry">DAT !</span>`;
+                                return html`<span class="status dat-error" title="DAT match failed — retrying in ~30 s">DAT !</span>`;
                             }
                             if (typeof m.error === 'string' && m.error) {
                                 return html`<span class="status dat-error" title="${`DAT match failed — ${m.error}`}">DAT !</span>`;
@@ -3380,18 +3380,16 @@ function App() {
             '.iso', '.bin',
             '.3ds', '.cci', '.cia',
         ]);
+        // Must be defined before the filter so the .catch() setTimeout can use it.
+        const RETRY_MS = 30_000;
         const paths = displayedEntries
             .filter(e => matchableExts.has(e.extension?.toLowerCase()))
             .map(e => e.path)
-            .filter(p => {
-                const m = datMatches.get(p);
-                if (!m) return true;
-                // Re-submit if the last network request failed more than 30 s ago.
-                // Only request_error (set by the catch handler) is retryable;
-                // backend-provided string errors (m.error) are not.
-                const RETRY_MS = 30_000;
-                return m.request_error === true && Date.now() - m.ts >= RETRY_MS;
-            });
+            // Exclude paths that already have any datMatches entry (pending,
+            // matched, backend error, or retryable error waiting for its timer).
+            // The only way back into this list after a request_error is for the
+            // catch-handler's setTimeout to clear the sentinel.
+            .filter(p => !datMatches.has(p));
         if (paths.length === 0) return;
 
         // Mark all submitted paths as pending so the UI shows "DAT …"
@@ -3418,19 +3416,28 @@ function App() {
                 }
             })
             .catch(() => {
-                // Replace the pending sentinel with a retryable error sentinel so
-                // the user sees "DAT !" instead of a perma-spinner.  Using a
-                // dedicated `request_error` field (not `error`) avoids colliding
-                // with the string `error` field that backend responses can carry.
-                // Storing the timestamp (ts) lets the effect re-submit after 30 s.
-                const now = Date.now();
+                // Store error sentinels to block re-submission while the retry
+                // timer is pending.  Using a dedicated `request_error` field
+                // avoids colliding with the backend's string `error` field.
+                // After RETRY_MS the timer clears the sentinels, triggering a
+                // setDatMatches that causes the effect to re-run and re-submit
+                // the now-absent paths.
                 setDatMatches(prev => {
                     const next = new Map(prev);
                     for (const p of paths) {
-                        if (next.get(p)?.pending) next.set(p, { request_error: true, ts: now });
+                        if (next.get(p)?.pending) next.set(p, { request_error: true });
                     }
                     return next;
                 });
+                setTimeout(() => {
+                    setDatMatches(prev => {
+                        const next = new Map(prev);
+                        for (const p of paths) {
+                            if (next.get(p)?.request_error === true) next.delete(p);
+                        }
+                        return next;
+                    });
+                }, RETRY_MS);
             });
     }, [displayedEntries, datsImported, datMatches]);
 
