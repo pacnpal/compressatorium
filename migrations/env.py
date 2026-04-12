@@ -23,7 +23,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "app"))
 sys.path.insert(0, str(_REPO_ROOT))
 
-from services import db as _db  # noqa: E402  (sys.path manipulation above)
+from services import db as _db  # noqa: E402  pylint: disable=wrong-import-position
 
 
 config = context.config

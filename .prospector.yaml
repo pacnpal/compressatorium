@@ -75,6 +75,9 @@ dodgy:
 pyflakes:
   disable:
     - F401   # unused import — pylint W0611 handles this; suppresses double-count
+    - F999   # invalid syntax — false positive on PEP 570 `/` positional-only
+             # marker in `app/config.py`.  Prospector's bundled pyflakes uses
+             # an older parser than ruff/mypy in CI.
 
 ignore-paths:
   - .venv

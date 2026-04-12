@@ -273,7 +273,8 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
             archive_path = file_path.split("::", 1)[0]
             if archive_path in disallowed_archives:
                 item.setdefault("errors", []).append(
-                    "Delete-on-verify is not supported for multiple selections from the same archive",
+                    "Delete-on-verify is not supported for multiple selections"
+                    " from the same archive",
                 )
 
         items.append(item)
@@ -356,7 +357,10 @@ async def create_job(request: JobCreateRequest):
         if mode.startswith("extract") or mode == "copy" or is_dolphin or is_z3ds:
             raise HTTPException(
                 status_code=400,
-                detail="Archive inputs are not supported for extract/copy/dolphin/z3ds_compress modes",
+                detail=(
+                    "Archive inputs are not supported for"
+                    " extract/copy/dolphin/z3ds_compress modes"
+                ),
             )
         archive_path, internal_path = request.file_path.split("::", 1)
         archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive

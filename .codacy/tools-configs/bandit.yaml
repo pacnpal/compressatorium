@@ -1,0 +1,26 @@
+# Codacy-specific bandit config.  Mirrors /.bandit at repo root —
+# kept in sync so contributor-local runs (`bandit -c .bandit`) match
+# what Codacy enforces.
+
+exclude_dirs:
+  - tests
+  - app/.venv
+  - .venv
+  - node_modules
+  - static/vendor
+
+# Rationale for skipped checks:
+#
+# * B101 (assert_used) — pytest uses `assert` as its failure
+#   mechanism.  Enforcing B101 on tests would require rewriting every
+#   test to use pytest.raises / unittest.TestCase.assertEqual.
+# * B404 (subprocess_import) — the app deliberately orchestrates
+#   chdman / dolphin-tool / z3ds_compressor via subprocess.run.
+#   Enabling this rule flags every import of the subprocess module.
+# * B603 (subprocess_without_shell_true) — every call uses arg-list
+#   invocation (shell=False) by design; the rule is actually
+#   warning that shell=True is *unset*, which is the safe state.
+skips:
+  - B101
+  - B404
+  - B603

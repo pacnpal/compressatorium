@@ -268,12 +268,14 @@ async def sync_mameredump(http_request: Request, request: SyncRequest | None = N
             task.result()
         except RuntimeError as exc:
             if "Sync already in progress" in str(exc):
-                raise HTTPException(status_code=409, detail="Sync already in progress")
+                raise HTTPException(
+                    status_code=409, detail="Sync already in progress"
+                ) from exc
             logger.exception("dat_sync background task failed at startup")
-            raise HTTPException(status_code=500, detail="Failed to start sync")
-        except Exception:
+            raise HTTPException(status_code=500, detail="Failed to start sync") from exc
+        except Exception as exc:
             logger.exception("dat_sync background task failed at startup")
-            raise HTTPException(status_code=500, detail="Failed to start sync")
+            raise HTTPException(status_code=500, detail="Failed to start sync") from exc
 
     return {"status": "started", "message": "Sync started"}
 

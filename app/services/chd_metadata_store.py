@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import delete, select

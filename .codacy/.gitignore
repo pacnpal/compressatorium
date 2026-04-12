@@ -1,0 +1,11 @@
+# Codacy CLI generates default tools-configs/ locally; most are noise
+# we don't want to commit.  However, bandit.yaml is referenced from
+# /.codacy.yml (config_file:) and the Codacy SaaS scanner reads it
+# from the checked-in repo — without it, B101 (assert_used) floods
+# the dashboard with hundreds of alerts from tests/.  Ignore the dir,
+# then un-ignore the one file we need to track.
+tools-configs/*
+!tools-configs/bandit.yaml
+cli-config.yaml
+codacy.yaml
+logs/
