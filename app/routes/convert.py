@@ -917,13 +917,13 @@ async def recover_stuck_jobs():
     restart or requeue individual jobs that were previously stuck.
     """
     result = await job_manager.recover_from_stuck_state()
-    
+
     if not result.get("success"):
         raise HTTPException(
             status_code=429,
             detail=result.get("message", "Recovery failed")
         )
-    
+
     return result
 
 

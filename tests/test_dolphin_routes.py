@@ -13,11 +13,11 @@ def dolphin_test_env(tmp_path, monkeypatch):
     # Create a fake .iso file
     iso_path = tmp_path / "game.iso"
     iso_path.write_text("fake disc content")
-    
+
     # Configure volumes to allow access
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
-    
+
     return {
         "iso_path": str(iso_path),
         "tmp_path": tmp_path,
@@ -28,7 +28,7 @@ def dolphin_test_env(tmp_path, monkeypatch):
 def mock_dolphin_service(monkeypatch):
     """Mock the dolphin_tool_service for testing."""
     mock_service = Mock()
-    
+
     # Mock header method - all values should be strings
     async def fake_header(path):
         return {
@@ -43,21 +43,21 @@ def mock_dolphin_service(monkeypatch):
             "file_size": "1459978240",
             "raw_data": "Game ID: GALE01\nGame Name: Super Smash Bros. Melee",
         }
-    
+
     # Mock verify method
     async def fake_verify(path):
         return {"valid": True, "message": "Disc image verified successfully"}
-    
+
     # Mock verify_stream method
     async def fake_verify_stream(path):
         yield {"type": "progress", "progress": 50, "message": "Verifying..."}
         await asyncio.sleep(0.01)
         yield {"type": "complete", "valid": True, "message": "Verification complete"}
-    
+
     mock_service.header = fake_header
     mock_service.verify = fake_verify
     mock_service.verify_stream = fake_verify_stream
-    
+
     monkeypatch.setattr(info_routes, "dolphin_tool_service", mock_service)
     return mock_service
 
@@ -75,7 +75,7 @@ def mock_verification_store(monkeypatch):
 async def test_dolphin_info_happy_path(dolphin_test_env, mock_dolphin_service):
     """Test successful retrieval of Dolphin disc info."""
     result = await info_routes.get_dolphin_info(path=dolphin_test_env["iso_path"])
-    
+
     assert result.file == dolphin_test_env["iso_path"]
     assert result.game_id == "GALE01"
     assert result.game_name == "Super Smash Bros. Melee"
@@ -89,12 +89,12 @@ async def test_dolphin_info_happy_path(dolphin_test_env, mock_dolphin_service):
 async def test_dolphin_info_file_not_found(dolphin_test_env, mock_dolphin_service):
     """Test dolphin-info with non-existent file."""
     from fastapi import HTTPException
-    
+
     nonexistent_path = str(dolphin_test_env["tmp_path"] / "nonexistent.iso")
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.get_dolphin_info(path=nonexistent_path)
-    
+
     assert exc_info.value.status_code == 404
     assert "File not found" in exc_info.value.detail
 
@@ -103,12 +103,12 @@ async def test_dolphin_info_file_not_found(dolphin_test_env, mock_dolphin_servic
 async def test_dolphin_info_outside_volume(dolphin_test_env, mock_dolphin_service):
     """Test dolphin-info with path outside configured volumes."""
     from fastapi import HTTPException
-    
+
     outside_path = "/tmp/outside/game.iso"
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.get_dolphin_info(path=outside_path)
-    
+
     assert exc_info.value.status_code == 403
     assert "Access denied" in exc_info.value.detail
 
@@ -117,14 +117,14 @@ async def test_dolphin_info_outside_volume(dolphin_test_env, mock_dolphin_servic
 async def test_dolphin_info_unsupported_extension(dolphin_test_env, mock_dolphin_service):
     """Test dolphin-info with unsupported file extension."""
     from fastapi import HTTPException
-    
+
     # Create a file with unsupported extension
     txt_path = dolphin_test_env["tmp_path"] / "game.txt"
     txt_path.write_text("not a disc")
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.get_dolphin_info(path=str(txt_path))
-    
+
     assert exc_info.value.status_code == 400
     assert "Not a supported disc image format" in exc_info.value.detail
 
@@ -135,10 +135,10 @@ async def test_dolphin_verify_happy_path(
 ):
     """Test successful Dolphin disc verification."""
     result = await info_routes.verify_dolphin(path=dolphin_test_env["iso_path"])
-    
+
     assert result["valid"] is True
     assert "successfully" in result["message"]
-    
+
     # Verify that mark_verified was called
     mock_verification_store.mark_verified.assert_called_once_with(
         dolphin_test_env["iso_path"]
@@ -170,12 +170,12 @@ async def test_dolphin_verify_file_not_found(
 ):
     """Test dolphin-verify with non-existent file."""
     from fastapi import HTTPException
-    
+
     nonexistent_path = str(dolphin_test_env["tmp_path"] / "nonexistent.iso")
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.verify_dolphin(path=nonexistent_path)
-    
+
     assert exc_info.value.status_code == 404
     assert "File not found" in exc_info.value.detail
 
@@ -186,12 +186,12 @@ async def test_dolphin_verify_outside_volume(
 ):
     """Test dolphin-verify with path outside configured volumes."""
     from fastapi import HTTPException
-    
+
     outside_path = "/tmp/outside/game.iso"
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.verify_dolphin(path=outside_path)
-    
+
     assert exc_info.value.status_code == 403
     assert "Access denied" in exc_info.value.detail
 
@@ -202,14 +202,14 @@ async def test_dolphin_verify_unsupported_extension(
 ):
     """Test dolphin-verify with unsupported file extension."""
     from fastapi import HTTPException
-    
+
     # Create a file with unsupported extension
     txt_path = dolphin_test_env["tmp_path"] / "game.txt"
     txt_path.write_text("not a disc")
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.verify_dolphin(path=str(txt_path))
-    
+
     assert exc_info.value.status_code == 400
     assert "Not a supported disc image format" in exc_info.value.detail
 
@@ -223,19 +223,19 @@ async def test_dolphin_verify_stream_happy_path(
     response = await info_routes.verify_dolphin_events(
         path=dolphin_test_env["iso_path"]
     )
-    
+
     # Collect events
     events = []
     async for event in response.body_iterator:
         events.append(event)
-    
+
     # Should have at least progress and complete events
     assert len(events) >= 2
-    
+
     # Check that we got progress and complete events
     progress_found = False
     complete_found = False
-    
+
     for event in events:
         # Events are dict-like objects with 'event' and 'data' keys
         if isinstance(event, dict):
@@ -243,7 +243,7 @@ async def test_dolphin_verify_stream_happy_path(
                 progress_found = True
             if event.get("event") == "verify_complete":
                 complete_found = True
-    
+
     assert progress_found, "Expected to find verify_progress event"
     assert complete_found, "Expected to find verify_complete event"
 
@@ -283,12 +283,12 @@ async def test_dolphin_verify_stream_file_not_found(
 ):
     """Test streaming verify with non-existent file."""
     from fastapi import HTTPException
-    
+
     nonexistent_path = str(dolphin_test_env["tmp_path"] / "nonexistent.iso")
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.verify_dolphin_events(path=nonexistent_path)
-    
+
     assert exc_info.value.status_code == 404
     assert "File not found" in exc_info.value.detail
 
@@ -297,23 +297,23 @@ async def test_dolphin_verify_stream_file_not_found(
 async def test_dolphin_info_service_error(dolphin_test_env, monkeypatch):
     """Test dolphin-info when service raises an error."""
     from fastapi import HTTPException
-    
+
     # Mock service to raise an error
     mock_service = Mock()
-    
+
     async def fake_header_error(path):
         raise RuntimeError("Failed to read disc header")
-    
+
     mock_service.header = fake_header_error
     monkeypatch.setattr(info_routes, "dolphin_tool_service", mock_service)
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(dolphin_test_env["tmp_path"]))
     monkeypatch.setattr(
         info_routes.settings, "data_mount_root", str(dolphin_test_env["tmp_path"])
     )
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.get_dolphin_info(path=dolphin_test_env["iso_path"])
-    
+
     assert exc_info.value.status_code == 500
     assert "Failed to read disc info" in exc_info.value.detail
 
@@ -324,22 +324,22 @@ async def test_dolphin_verify_service_error(
 ):
     """Test dolphin-verify when service raises an error."""
     from fastapi import HTTPException
-    
+
     # Mock service to raise an error
     mock_service = Mock()
-    
+
     async def fake_verify_error(path):
         raise RuntimeError("Verification failed")
-    
+
     mock_service.verify = fake_verify_error
     monkeypatch.setattr(info_routes, "dolphin_tool_service", mock_service)
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(dolphin_test_env["tmp_path"]))
     monkeypatch.setattr(
         info_routes.settings, "data_mount_root", str(dolphin_test_env["tmp_path"])
     )
-    
+
     with pytest.raises(HTTPException) as exc_info:
         await info_routes.verify_dolphin(path=dolphin_test_env["iso_path"])
-    
+
     assert exc_info.value.status_code == 500
     assert "Failed to verify disc image" in exc_info.value.detail
