@@ -446,9 +446,8 @@ class DATStore:
             existing_matches: dict[str, _db.DATMatch] = {}
             for i in range(0, len(norm_keys), chunk_size):
                 chunk = norm_keys[i:i + chunk_size]
-                for row in session.scalars(
-                    select(_db.DATMatch).where(_db.DATMatch.path.in_(chunk))
-                ).all():
+                stmt = select(_db.DATMatch).where(_db.DATMatch.path.in_(chunk))
+                for row in session.scalars(stmt).all():
                     existing_matches[row.path] = row
 
             for normalized, match in normalized_matches.items():

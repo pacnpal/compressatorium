@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 from pathlib import Path
 
@@ -160,7 +159,7 @@ def test_db_path_resolution_falls_back_when_default_config_unwritable(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_concurrent_metadata_writes(metadata_store, metadata_store_path, tmp_path):
+async def test_concurrent_metadata_writes(metadata_store, tmp_path):
     """Test that concurrent writes don't lose data (last-write-wins).
     Simulates the race condition where multiple set_metadata calls
     happen concurrently.
@@ -185,7 +184,7 @@ async def test_concurrent_metadata_writes(metadata_store, metadata_store_path, t
 
 
 @pytest.mark.asyncio
-async def test_metadata_persist_version_gate(metadata_store, metadata_store_path, tmp_path):
+async def test_metadata_persist_version_gate(metadata_store, tmp_path):
     """Test that version-gated replace prevents stale overwrites.
     """
     path_a = str(tmp_path / "a.chd")
