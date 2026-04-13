@@ -93,7 +93,7 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
 
 
 def _parse_rom_element(elem: ET.Element, game_name: str) -> dict | None:
-    """Extract hash info from a <rom> element."""
+    """Extract hash info from a <rom> or <disk> element."""
     rom_name = elem.get("name", "").strip()
     sha1 = (elem.get("sha1") or "").strip().lower()
     md5 = (elem.get("md5") or "").strip().lower()

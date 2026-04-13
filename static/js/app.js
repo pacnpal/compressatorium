@@ -3,7 +3,7 @@ import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
-const SHOW_METADATA_JOBS_STORAGE_KEY = 'compressatorium_show_metadata_jobs';
+const SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY = 'compressatorium_show_external_scan_jobs';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '19';
 const DEFAULT_PAGE_SIZE = '50';
 const DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST = true;
@@ -908,7 +908,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             if (typeof m.error === 'string' && m.error) {
                                 return html`<span class="status dat-error" title="${`DAT match failed — ${m.error}`}">DAT !</span>`;
                             }
-                            return null;
+                            return html`<span class="status dat-no-match" title="No DAT match found">DAT ✗</span>`;
                         })()}
                         ${isVerifying && html`
                             <span class="status convertible" title="Verifying integrity">
@@ -2820,9 +2820,9 @@ function App() {
     const [cancellingAllJobs, setCancellingAllJobs] = useState(false);
     const [showClearDoneModal, setShowClearDoneModal] = useState(false);
     const [clearingCompletedJobs, setClearingCompletedJobs] = useState(false);
-    const [showMetadataJobs, setShowMetadataJobs] = useState(() => {
+    const [showExternalScanJobs, setShowExternalScanJobs] = useState(() => {
         try {
-            return localStorage.getItem(SHOW_METADATA_JOBS_STORAGE_KEY) === 'true';
+            return localStorage.getItem(SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY) === 'true';
         } catch (err) {
             return false;
         }
@@ -2904,11 +2904,11 @@ function App() {
 
     useEffect(() => {
         try {
-            localStorage.setItem(SHOW_METADATA_JOBS_STORAGE_KEY, showMetadataJobs ? 'true' : 'false');
+            localStorage.setItem(SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY, showExternalScanJobs ? 'true' : 'false');
         } catch (err) {
             // Ignore persistence failures (private mode, disabled storage).
         }
-    }, [showMetadataJobs]);
+    }, [showExternalScanJobs]);
 
     // Refresh file list for current directory or archive (transparent merge to avoid flicker)
     const refreshFileList = useCallback((showSpinner = false) => {
@@ -3152,27 +3152,27 @@ function App() {
     const queueJobs = useMemo(() => {
         const activeServerJobs = jobs.filter(
             (job) => !['completed', 'failed', 'cancelled'].includes(job.status)
-                  && (showMetadataJobs || !isExternalScanMode(job.mode)),
+                  && (showExternalScanJobs || !isExternalScanMode(job.mode)),
         );
         return creatingJobs.length > 0
             ? [...creatingJobs, ...activeServerJobs]
             : activeServerJobs;
-    }, [creatingJobs, jobs, showMetadataJobs]);
+    }, [creatingJobs, jobs, showExternalScanJobs]);
 
     const completedJobs = useMemo(
         () => jobs.filter(
             (job) => job.status === 'completed'
-                  && (showMetadataJobs || !isExternalScanMode(job.mode)),
+                  && (showExternalScanJobs || !isExternalScanMode(job.mode)),
         ),
-        [jobs, showMetadataJobs],
+        [jobs, showExternalScanJobs],
     );
 
     const issueJobs = useMemo(
         () => jobs.filter(
             (job) => ['failed', 'cancelled'].includes(job.status)
-                  && (showMetadataJobs || !isExternalScanMode(job.mode)),
+                  && (showExternalScanJobs || !isExternalScanMode(job.mode)),
         ),
-        [jobs, showMetadataJobs],
+        [jobs, showExternalScanJobs],
     );
 
     const displayedJobs = useMemo(() => {
@@ -5222,7 +5222,7 @@ function App() {
     const hasActiveJobs = activeJobsCount > 0;
     const hasCompletedJobs = jobs.some(j =>
         ['completed', 'failed', 'cancelled'].includes(j.status)
-        && (showMetadataJobs || !isExternalScanMode(j.mode))
+        && (showExternalScanJobs || !isExternalScanMode(j.mode))
     );
     const selectableEntriesOnPage = paginatedEntries.filter(e => canSelectEntry(e));
     const allSelectedOnPage = selectableEntriesOnPage.length > 0
@@ -5827,16 +5827,16 @@ function App() {
                             >
                                 ↻
                             </button>
-                            <label class="metadata-jobs-toggle" title="Include metadata scan jobs in the jobs list">
+                            <label class="metadata-jobs-toggle" title="Include metadata and DAT scan jobs in the jobs list">
                                 <input
                                     type="checkbox"
-                                    id="show-metadata-jobs"
-                                    checked=${showMetadataJobs}
+                                    id="show-external-scan-jobs"
+                                    checked=${showExternalScanJobs}
                                     onChange=${() => {
-                                        setShowMetadataJobs(prev => !prev);
+                                        setShowExternalScanJobs(prev => !prev);
                                         setJobCurrentPage(1);
                                     }}
-                                    aria-label="Show metadata scan jobs"
+                                    aria-label="Show external scan jobs"
                                 />
                                 <span>Show scans</span>
                             </label>
