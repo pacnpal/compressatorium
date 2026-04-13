@@ -3,7 +3,7 @@ import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
-const SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY = 'compressatorium_show_external_scan_jobs';
+const SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY = 'compressatorium_show_metadata_jobs';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '19';
 const DEFAULT_PAGE_SIZE = '50';
 const DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST = true;
