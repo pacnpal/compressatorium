@@ -281,13 +281,20 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
 
     Mirrors the metadata-scan UX: registers an external job in the Jobs
     panel, hashes uncached files serially under the ``match`` workload
-    lane, writes results to the ``dat_matches`` cache incrementally as
-    each file completes, and emits progress via
-    :func:`job_manager.update_external_job`.  The frontend polls
-    ``/dat/matches/lookup`` as progress ticks arrive so badges flip
-    from "DAT …" to a concrete result progressively rather than
+    lane, persists cacheable results to the ``dat_matches`` cache
+    incrementally as each file completes, and emits progress via
+    :func:`job_manager.update_external_job`. The frontend polls
+    ``/dat/matches/lookup`` as progress ticks arrive so badges can flip
+    progressively from "DAT …" to a concrete cached result rather than
     all-at-once at the end.
 
+    Note:
+      ``/dat/matches/lookup`` is a read-only view of persisted
+      ``dat_matches`` entries. Not every processed path is guaranteed to
+      become available there: non-cacheable outcomes (for example missing
+      files, ``reason == "file too large"``, or transient hash/stat
+      errors) may be reported through job progress but are intentionally
+      not persisted in the cache.
     Returns:
       * ``{"status": "idle", "results": <cached>}`` when every
         requested path is already cached (fast path, no job created).
