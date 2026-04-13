@@ -3532,6 +3532,10 @@ function App() {
         if (lookupPaths.length > 0) {
             api.getMatchCache(lookupPaths)
                 .then(data => {
+                    // If a subsequent jobs update triggered cleanup before
+                    // this promise resolved, let the new effect run handle
+                    // the terminal reconciliation rather than no-oping here
+                    // and leaving paths stuck on "DAT …" indefinitely.
                     if (cancelled) return;
                     const results = data.results || {};
                     setDatMatches(prev => {
@@ -3561,11 +3565,18 @@ function App() {
                         }
                         return next;
                     });
+                    // Clear the tracking ref only after reconciliation
+                    // completes so a concurrent jobs update cannot clear it
+                    // before the final cache lookup has landed.
+                    if (isTerminal) {
+                        activeMatchJobRef.current = null;
+                    }
                 })
                 .catch(() => {
                     // Even on network failure for the final poll we must
                     // not leave paths stuck pending forever. Synthesize
                     // fallbacks locally so the UI exits its pending state.
+                    // If cancelled, the new effect run will retry.
                     if (!isTerminal || cancelled) return;
                     setDatMatches(prev => {
                         const next = new Map(prev);
@@ -3581,6 +3592,7 @@ function App() {
                         }
                         return next;
                     });
+                    activeMatchJobRef.current = null;
                 });
         } else if (isTerminal) {
             // Terminal but no outstanding lookupPaths (e.g. everything
@@ -3598,9 +3610,7 @@ function App() {
                 }
                 return changed ? next : prev;
             });
-        }
-
-        if (isTerminal) {
+            // Synchronous path — safe to clear immediately.
             activeMatchJobRef.current = null;
         }
         return () => { cancelled = true; };
