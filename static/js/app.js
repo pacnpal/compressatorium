@@ -5837,7 +5837,7 @@ function App() {
                             >
                                 ↻
                             </button>
-                            <label class="metadata-jobs-toggle" title="Include metadata and DAT scan jobs in the jobs list">
+                            <label class="external-scan-jobs-toggle" title="Include metadata and DAT scan jobs in the jobs list">
                                 <input
                                     type="checkbox"
                                     id="show-external-scan-jobs"
