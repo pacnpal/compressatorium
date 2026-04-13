@@ -332,9 +332,12 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
     to_compute: list[str] = []
     for normalized_path, original_paths in normalized_to_originals.items():
         if normalized_path in denied_normalized:
-            entry = {"path": normalized_path, "matched": False, "error": "access denied"}
             for original_path in original_paths:
-                results[original_path] = entry
+                results[original_path] = {
+                    "path": original_path,
+                    "matched": False,
+                    "error": "access denied",
+                }
             continue
         cached_entry = cached.get(normalized_path)
         if cached_entry is not None:
