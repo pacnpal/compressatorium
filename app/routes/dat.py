@@ -422,6 +422,7 @@ async def _run_match_job(
 
     start = time.monotonic()
     total = len(paths_to_compute)
+    processed = 0
     hashed = 0
     matched = 0
     job_success = False
@@ -449,8 +450,9 @@ async def _run_match_job(
                     await dat_store.set_matches_batch({normalized_path: result})
                 except Exception as exc:  # pragma: no cover — best-effort cache write
                     logger.warning("Failed to cache match for %s: %s", normalized_path, exc)
+                hashed += 1
 
-            hashed += 1
+            processed += 1
             if result.get("matched"):
                 matched += 1
 
@@ -462,7 +464,8 @@ async def _run_match_job(
         elapsed = time.monotonic() - start
         if job_success:
             final_msg = (
-                f"{hashed}/{total} hashed, {matched} matched \u2014 {elapsed:.1f}s"
+                f"{processed}/{total} processed, {hashed} hashed, {matched} matched"
+                f" \u2014 {elapsed:.1f}s"
             )
         else:
             final_msg = f"DAT match failed: {job_error or 'unknown error'}"
