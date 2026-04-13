@@ -391,12 +391,14 @@ async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
     transient OSError clears).
     """
     try:
-        exists = await run_in_threadpool(os.path.isfile, normalized_path)
+        await run_in_threadpool(os.stat, normalized_path)
+    except FileNotFoundError:
+        return {"path": normalized_path, "matched": False}, False
     except OSError as exc:
         logger.warning("Failed to stat %s: %s", normalized_path, exc)
         return {"path": normalized_path, "matched": False, "error": str(exc)}, False
 
-    if not exists:
+    if not await run_in_threadpool(os.path.isfile, normalized_path):
         return {"path": normalized_path, "matched": False}, False
 
     try:
