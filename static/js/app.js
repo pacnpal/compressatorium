@@ -909,9 +909,6 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                                 return html`<span class="status dat-error" title="${`DAT match failed — ${m.error}`}">DAT !</span>`;
                             }
                             const reason = typeof m.reason === 'string' ? m.reason.trim() : '';
-                            if (reason === 'file too large') {
-                                return html`<span class="status dat-skipped" title="DAT match skipped — file too large">DAT –</span>`;
-                            }
                             if (reason === 'not processed') {
                                 return html`<span class="status dat-skipped" title="DAT match not processed">DAT –</span>`;
                             }

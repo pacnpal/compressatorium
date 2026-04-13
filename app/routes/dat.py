@@ -265,14 +265,18 @@ async def match_cache_lookup(request: MatchCacheLookupRequest):
     results: dict[str, dict] = {}
     for normalized_path, original_paths in normalized_to_originals.items():
         if normalized_path in denied_normalized:
-            entry = {"path": normalized_path, "matched": False, "error": "access denied"}
-        else:
-            cached_entry = cached.get(normalized_path)
-            if cached_entry is None:
-                continue
-            entry = cached_entry
+            for original_path in original_paths:
+                results[original_path] = {
+                    "path": original_path,
+                    "matched": False,
+                    "error": "access denied",
+                }
+            continue
+        cached_entry = cached.get(normalized_path)
+        if cached_entry is None:
+            continue
         for original_path in original_paths:
-            results[original_path] = entry
+            results[original_path] = cached_entry
     return {"results": results}
 
 
@@ -294,8 +298,8 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
       ``dat_matches`` entries. Not every processed path is guaranteed to
       become available there: non-cacheable outcomes (for example missing
       files, ``reason == "file too large"``, or transient hash/stat
-      errors) may be reported through job progress but are intentionally
-      not persisted in the cache.
+      errors) are intentionally not persisted in the cache, so those
+      paths may never appear in ``/dat/matches/lookup``.
     Returns:
       * ``{"status": "idle", "results": <cached>}`` when every
         requested path is already cached (fast path, no job created).
@@ -440,6 +444,7 @@ async def _run_match_job(
 
             result, cacheable = await _hash_one_for_job(normalized_path)
             if cacheable:
+                hashed += 1
                 # Per-file writes are intentional: persist each completed
                 # result immediately with the single-row API so the cache
                 # remains durable if the job is cancelled or the process
@@ -447,7 +452,6 @@ async def _run_match_job(
                 # work of the batch upsert path for a one-item write.
                 try:
                     await dat_store.set_match(normalized_path, result)
-                    hashed += 1
                 except Exception as exc:  # pragma: no cover — best-effort cache write
                     logger.warning("Failed to cache match for %s: %s", normalized_path, exc)
 
