@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import stat
 import tempfile
 import time
 
@@ -391,14 +392,14 @@ async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
     transient OSError clears).
     """
     try:
-        await run_in_threadpool(os.stat, normalized_path)
+        st = await run_in_threadpool(os.stat, normalized_path)
     except FileNotFoundError:
         return {"path": normalized_path, "matched": False}, False
     except OSError as exc:
         logger.warning("Failed to stat %s: %s", normalized_path, exc)
         return {"path": normalized_path, "matched": False, "error": str(exc)}, False
 
-    if not await run_in_threadpool(os.path.isfile, normalized_path):
+    if not stat.S_ISREG(st.st_mode):
         return {"path": normalized_path, "matched": False}, False
 
     try:
@@ -446,9 +447,9 @@ async def _run_match_job(
                 # work of the batch upsert path for a one-item write.
                 try:
                     await dat_store.set_match(normalized_path, result)
+                    hashed += 1
                 except Exception as exc:  # pragma: no cover — best-effort cache write
                     logger.warning("Failed to cache match for %s: %s", normalized_path, exc)
-                hashed += 1
 
             processed += 1
             if result.get("matched"):
