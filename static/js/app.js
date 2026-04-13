@@ -910,13 +910,13 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             }
                             const reason = typeof m.reason === 'string' ? m.reason.trim() : '';
                             if (reason === 'file too large') {
-                                return html`<span class="status dat-skipped" title="DAT scan skipped — file too large">DAT –</span>`;
+                                return html`<span class="status dat-skipped" title="DAT match skipped — file too large">DAT –</span>`;
                             }
                             if (reason === 'not processed') {
-                                return html`<span class="status dat-skipped" title="DAT scan not processed">DAT –</span>`;
+                                return html`<span class="status dat-skipped" title="DAT match not processed">DAT –</span>`;
                             }
                             if (reason) {
-                                return html`<span class="status dat-skipped" title="${`DAT scan skipped — ${reason}`}">DAT –</span>`;
+                                return html`<span class="status dat-skipped" title="${`DAT match skipped — ${reason}`}">DAT –</span>`;
                             }
                             return html`<span class="status dat-no-match" title="No DAT match found">DAT ✗</span>`;
                         })()}
