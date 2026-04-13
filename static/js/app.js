@@ -918,7 +918,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             if (reason) {
                                 return html`<span class="status dat-skipped" title="${`DAT match skipped — ${reason}`}">DAT –</span>`;
                             }
-                            return html`<span class="status dat-no-match" title="No DAT match found">DAT ✗</span>`;
+                            return html`<span class="status dat-no-match" title="DAT match not found">DAT ✗</span>`;
                         })()}
                         ${isVerifying && html`
                             <span class="status convertible" title="Verifying integrity">
