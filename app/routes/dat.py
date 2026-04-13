@@ -228,7 +228,9 @@ async def match_batch(request: MatchBatchRequest):
             # Don't cache size-cap skips: the result is configuration-dependent.
             # If MATCH_MAX_FILE_SIZE is later raised or disabled the file must
             # be re-hashed rather than being served a stale "too large" entry.
-            if result.get("reason") != "file too large":
+            # Don't cache hash errors either: a transient OSError must not be
+            # persisted as a permanent negative entry.
+            if not result.get("reason") and not result.get("error"):
                 new_matches[normalized_path] = result
         for original_path in normalized_to_originals[normalized_path]:
             results[original_path] = result
@@ -412,7 +414,7 @@ async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
         logger.warning("DAT match failed for %s: %s", normalized_path, exc)
         return {"path": normalized_path, "matched": False, "error": str(exc)}, False
 
-    if result.get("reason") == "file too large":
+    if result.get("reason") == "file too large" or result.get("error"):
         return result, False
     return result, True
 
@@ -620,7 +622,7 @@ async def _match_single_file(file_path: str) -> dict:
             file_sha1 = await compute_file_sha1(file_path)
     except OSError as exc:
         logger.warning("Failed to hash %s: %s", file_path, exc)
-        return base_result
+        return {**base_result, "error": str(exc)}
 
     record = await run_in_threadpool(dat_store.lookup_sha1, file_sha1)
     if record:
