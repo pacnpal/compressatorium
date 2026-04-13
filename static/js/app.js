@@ -3547,8 +3547,8 @@ function App() {
                         // skips, missing files, transient hash errors), so
                         // on the terminal tick any path still showing
                         // {pending:true} will never resolve via the cache
-                        // lookup. Materialise a synthetic "not matched"
-                        // entry for those so the badge renders as "DAT ✗"
+                        // lookup. Materialise a synthetic skipped entry
+                        // for those so the badge renders as "DAT –"
                         // instead of spinning on "DAT …" indefinitely.
                         if (isTerminal) {
                             for (const p of paths) {
