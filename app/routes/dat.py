@@ -439,15 +439,13 @@ async def _run_match_job(
 
             result, cacheable = await _hash_one_for_job(normalized_path)
             if cacheable:
-                # Per-file writes are intentional: each one is a single-row
-                # upsert against the SQLite-backed ``dat_matches`` table
-                # (post-v3.6.0 the store is no longer the JSON file that
-                # would rewrite on every change), and it makes the cache
-                # durable against the job being cancelled or the process
-                # crashing mid-run.  Batching to end-of-job would sacrifice
-                # progressive frontend rendering for no meaningful I/O win.
+                # Per-file writes are intentional: persist each completed
+                # result immediately with the single-row API so the cache
+                # remains durable if the job is cancelled or the process
+                # crashes mid-run, without paying the extra preload/prefetch
+                # work of the batch upsert path for a one-item write.
                 try:
-                    await dat_store.set_matches_batch({normalized_path: result})
+                    await dat_store.set_match(normalized_path, result)
                 except Exception as exc:  # pragma: no cover — best-effort cache write
                     logger.warning("Failed to cache match for %s: %s", normalized_path, exc)
                 hashed += 1
