@@ -78,6 +78,9 @@ pep8:
 mccabe:
   disable:
     - MC0001  # complexity — noisy on startup / subprocess orchestration
+    - MC0000  # syntax error — fourth scanner surface for the same PEP 570
+              # `/` false positive in `app/config.py` already silenced in
+              # pylint (E0001), pyflakes (F999), and pep8 (E901).
 
 dodgy:
   run: true
