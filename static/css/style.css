@@ -1221,8 +1221,8 @@ header h1 span {
     color: var(--success);
 }
 
-/* Metadata-jobs visibility toggle in the Jobs panel header */
-.metadata-jobs-toggle {
+/* External-scan-jobs visibility toggle in the Jobs panel header */
+.external-scan-jobs-toggle {
     display: flex;
     align-items: center;
     gap: 4px;
@@ -1238,16 +1238,16 @@ header h1 span {
     white-space: nowrap;
 }
 
-.metadata-jobs-toggle:hover {
+.external-scan-jobs-toggle:hover {
     background: var(--bg-primary);
 }
 
-.metadata-jobs-toggle input[type="checkbox"] {
+.external-scan-jobs-toggle input[type="checkbox"] {
     accent-color: var(--accent, #7c6af7);
     cursor: pointer;
 }
 
-.metadata-jobs-toggle span {
+.external-scan-jobs-toggle span {
     white-space: nowrap;
 }
 
