@@ -624,7 +624,7 @@ async def _match_single_file(file_path: str) -> dict:
         async with await workload_limiter.acquire("match"):
             file_sha1 = await compute_file_sha1(file_path)
     except OSError as exc:
-        logger.warning("Failed to hash %s: %s", file_path, exc, exc_info=True)
+        logger.warning("Failed to hash %s", file_path, exc_info=True)
         return {**base_result, "error": "Unable to process file"}
 
     record = await run_in_threadpool(dat_store.lookup_sha1, file_sha1)
