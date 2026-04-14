@@ -920,3 +920,30 @@ async def test_match_file_hit_respects_size_cap_off(tmp_path, isolated_dat_store
     result = await dat_routes.match_file(request)
 
     assert result["matched"] is True
+
+
+@pytest.mark.asyncio
+async def test_match_file_oserror_returns_redacted_error(tmp_path, isolated_dat_store, monkeypatch):
+    """OSError during hashing returns a constant error string, not the raw exception message."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    iso = tmp_path / "unreadable.iso"
+    iso.write_bytes(b"data")
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+
+    internal_msg = "Permission denied: '/secret/path'"
+
+    async def _raise_oserror(*_a, **_kw):
+        raise OSError(internal_msg)
+
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", _raise_oserror)
+
+    request = dat_routes.MatchRequest(path=str(iso))
+    result = await dat_routes.match_file(request)
+
+    assert result["matched"] is False
+    assert result["error"] == "Unable to process file"
+    assert internal_msg not in str(result)
+
