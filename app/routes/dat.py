@@ -3,20 +3,57 @@
 import asyncio
 import logging
 import os
+import stat
 import tempfile
+import time
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from config import settings
+from models import ConversionMode
 from services.dat_store import dat_store
 from services.file_hasher import compute_file_sha1
+from services.job_manager import job_manager
 from services.workload_limiter import workload_limiter
 from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
 logger = logging.getLogger("chd.dat")
+
+
+# Guards concurrent bulk match jobs. Only one DAT-match background job runs
+# at a time; concurrent requests return 409 (matches the /dat/sync pattern).
+#
+# Scope of this guard: **single-process** only.  The container entrypoint
+# pins uvicorn to ``--workers 1`` (see entrypoint.sh), so module-level
+# state is the authoritative source of truth across all requests hitting
+# this app.  If the deployment ever moves to multi-worker / multi-pod,
+# replace this with a distributed lock (Redis, SQLite advisory lock, or
+# a dedicated matches-scheduler process) — every worker would otherwise
+# get its own independent lock and the 409 guard would no longer hold.
+#
+# Lazy-initialised: on Python 3.10+ ``asyncio.Lock()`` no longer binds a loop
+# at construction (the deprecated ``loop=`` kwarg is gone), but its internal
+# waiter state still ties to whichever loop first touches it.  pytest-asyncio
+# creates a fresh event loop per test, so a module-level Lock constructed at
+# import time can end up wedged to a stale loop across test runs.  Binding
+# on first ``async with`` keeps the Lock local to the *current* loop and
+# sidesteps any cold-import-order surprises.
+_match_job_lock: asyncio.Lock | None = None
+_active_match_job_id: str | None = None
+
+
+def _get_match_job_lock() -> asyncio.Lock:
+    """Return the module-level match-job lock, creating it on first use.
+
+    Must be called from a running event loop so the Lock binds to it.
+    """
+    global _match_job_lock  # noqa: PLW0603 — intentional module-level state
+    if _match_job_lock is None:
+        _match_job_lock = asyncio.Lock()
+    return _match_job_lock
 
 
 class MatchRequest(BaseModel):
@@ -191,7 +228,9 @@ async def match_batch(request: MatchBatchRequest):
             # Don't cache size-cap skips: the result is configuration-dependent.
             # If MATCH_MAX_FILE_SIZE is later raised or disabled the file must
             # be re-hashed rather than being served a stale "too large" entry.
-            if result.get("reason") != "file too large":
+            # Don't cache hash errors either: a transient OSError must not be
+            # persisted as a permanent negative entry.
+            if not result.get("reason") and not result.get("error"):
                 new_matches[normalized_path] = result
         for original_path in normalized_to_originals[normalized_path]:
             results[original_path] = result
@@ -201,6 +240,256 @@ async def match_batch(request: MatchBatchRequest):
         await dat_store.set_matches_batch(new_matches)
 
     return {"results": results}
+
+
+class MatchCacheLookupRequest(BaseModel):
+    paths: list[str]
+
+
+@router.post("/dat/matches/lookup")
+async def match_cache_lookup(request: MatchCacheLookupRequest):
+    """Read-only cache lookup for DAT matches.
+
+    Returns whatever is already cached in ``dat_matches`` for the given
+    paths. Does **not** hash uncached files. Used by the frontend to
+    progressively populate match badges while a background
+    ``/dat/match-batch/job`` is running.
+    """
+    if not request.paths:
+        return {"results": {}}
+
+    normalized_to_originals, denied_normalized = await run_in_threadpool(
+        _resolve_and_group_paths, request.paths,
+    )
+    cached = await run_in_threadpool(
+        dat_store.get_matches_batch, list(normalized_to_originals.keys()),
+    )
+    results: dict[str, dict] = {}
+    for normalized_path, original_paths in normalized_to_originals.items():
+        if normalized_path in denied_normalized:
+            for original_path in original_paths:
+                results[original_path] = {
+                    "path": original_path,
+                    "matched": False,
+                    "error": "access denied",
+                }
+            continue
+        cached_entry = cached.get(normalized_path)
+        if cached_entry is None:
+            continue
+        for original_path in original_paths:
+            results[original_path] = cached_entry
+    return {"results": results}
+
+
+@router.post("/dat/match-batch/job")
+async def match_batch_job(request: MatchBatchRequest, background_tasks: BackgroundTasks):
+    """Start a background DAT-match job for a batch of files.
+
+    Mirrors the metadata-scan UX: registers an external job in the Jobs
+    panel, hashes uncached files serially under the ``match`` workload
+    lane, persists cacheable results to the ``dat_matches`` cache
+    incrementally as each file completes, and emits progress via
+    :func:`job_manager.update_external_job`. The frontend polls
+    ``/dat/matches/lookup`` as progress ticks arrive so badges can flip
+    progressively from "DAT …" to a concrete cached result rather than
+    all-at-once at the end.
+
+    Note:
+      ``/dat/matches/lookup`` is a read-only view of persisted
+      ``dat_matches`` entries. Not every processed path is guaranteed to
+      become available there: non-cacheable outcomes (for example missing
+      files, ``reason == "file too large"``, or transient hash/stat
+      errors) are intentionally not persisted in the cache, so those
+      paths may never appear in ``/dat/matches/lookup``.
+    Returns:
+      * ``{"status": "idle", "results": <cached>}`` when every
+        requested path is already cached (fast path, no job created).
+      * ``{"status": "started", "job_id": "..."}`` when at least one
+        path needs hashing.
+      * HTTP 409 when another match job is already active.
+    """
+    global _active_match_job_id
+
+    if not request.paths:
+        return {"status": "idle", "results": {}}
+
+    if not await run_in_threadpool(dat_store.has_dats):
+        return {
+            "status": "idle",
+            "results": {p: {"path": p, "matched": False} for p in request.paths},
+        }
+
+    normalized_to_originals, denied_normalized = await run_in_threadpool(
+        _resolve_and_group_paths, request.paths,
+    )
+
+    cached = await run_in_threadpool(
+        dat_store.get_matches_batch, list(normalized_to_originals.keys()),
+    )
+
+    results: dict[str, dict] = {}
+    to_compute: list[str] = []
+    for normalized_path, original_paths in normalized_to_originals.items():
+        if normalized_path in denied_normalized:
+            for original_path in original_paths:
+                results[original_path] = {
+                    "path": original_path,
+                    "matched": False,
+                    "error": "access denied",
+                }
+            continue
+        cached_entry = cached.get(normalized_path)
+        if cached_entry is not None:
+            for original_path in original_paths:
+                results[original_path] = cached_entry
+            continue
+        # Existence check happens inside the job loop so a missing file
+        # doesn't fail the whole request — it just gets a matched=false
+        # entry without being cached (same behaviour as sync /match-batch).
+        to_compute.append(normalized_path)
+
+    if not to_compute:
+        return {"status": "idle", "results": results}
+
+    async with _get_match_job_lock():
+        # Authoritative guard: if the module-level id is set, a background
+        # _run_match_job is still executing (it only clears the id from
+        # its own finally block AFTER the hashing loop has fully unwound
+        # and finish_external_job has landed).  Do NOT fall back to
+        # inspecting the job_manager's visible status here — the job can
+        # be reaped from job_manager.jobs via "Clear Done" or a history
+        # prune while the underlying task is still alive, which would
+        # spuriously let a second job start and race the first on the
+        # "match" workload lane.  The presence of _active_match_job_id
+        # is the single source of truth for "a hash loop is still
+        # executing"; anything else is advisory.
+        if _active_match_job_id is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="DAT match job already in progress",
+            )
+
+        scan_job = job_manager.create_external_job(
+            filename="DAT Match",
+            mode=ConversionMode.DAT_MATCH,
+            message=f"Hashing {len(to_compute)} file(s)\u2026",
+        )
+        _active_match_job_id = scan_job.id
+
+    background_tasks.add_task(
+        _run_match_job,
+        job_id=scan_job.id,
+        paths_to_compute=to_compute,
+    )
+
+    return {
+        "status": "started",
+        "job_id": scan_job.id,
+        "results": results,
+    }
+
+
+async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
+    """Compute a match result for one path inside the background job loop.
+
+    Returns ``(result, cacheable)``.  ``cacheable`` is ``False`` for
+    transient failures (missing file, stat error, hasher exception) and
+    configuration-dependent skips (size-cap hit); those must not be
+    persisted to ``dat_matches`` because they would stick around after
+    the underlying condition changes (file appears, cap is raised,
+    transient OSError clears).
+    """
+    try:
+        st = await run_in_threadpool(os.stat, normalized_path)
+    except FileNotFoundError:
+        return {"path": normalized_path, "matched": False}, False
+    except OSError as exc:
+        logger.warning("Failed to stat %s: %s", normalized_path, exc)
+        return {"path": normalized_path, "matched": False, "error": str(exc)}, False
+
+    if not stat.S_ISREG(st.st_mode):
+        return {"path": normalized_path, "matched": False}, False
+
+    try:
+        result = await _match_single_file(normalized_path)
+    except Exception as exc:  # pragma: no cover — isolated per-path
+        logger.warning("DAT match failed for %s: %s", normalized_path, exc)
+        return {"path": normalized_path, "matched": False, "error": str(exc)}, False
+
+    if result.get("reason") == "file too large" or result.get("error"):
+        return result, False
+    return result, True
+
+
+async def _run_match_job(
+    *,
+    job_id: str,
+    paths_to_compute: list[str],
+) -> None:
+    """Background task: hash paths serially, cache results, tick progress."""
+    global _active_match_job_id
+
+    start = time.monotonic()
+    total = len(paths_to_compute)
+    processed = 0
+    hashed = 0
+    matched = 0
+    job_success = False
+    job_error: str | None = None
+
+    try:
+        for idx, normalized_path in enumerate(paths_to_compute, start=1):
+            display_name = os.path.basename(normalized_path) or normalized_path
+            await job_manager.update_external_job(
+                job_id,
+                progress=int(100 * (idx - 1) / total) if total else 0,
+                message=f"[{idx}/{total}] {display_name}",
+            )
+
+            result, cacheable = await _hash_one_for_job(normalized_path)
+            if cacheable:
+                hashed += 1
+                # Per-file writes are intentional: persist each completed
+                # result immediately with the single-row API so the cache
+                # remains durable if the job is cancelled or the process
+                # crashes mid-run, without paying the extra preload/prefetch
+                # work of the batch upsert path for a one-item write.
+                try:
+                    await dat_store.set_match(normalized_path, result)
+                except Exception as exc:  # pragma: no cover — best-effort cache write
+                    logger.warning("Failed to cache match for %s: %s", normalized_path, exc)
+
+            processed += 1
+            if result.get("matched"):
+                matched += 1
+
+        job_success = True
+    except Exception as exc:
+        logger.exception("DAT match job %s failed", job_id)
+        job_error = str(exc)
+    finally:
+        elapsed = time.monotonic() - start
+        if job_success:
+            final_msg = (
+                f"{processed}/{total} processed, {hashed} hashed, {matched} matched"
+                f" \u2014 {elapsed:.1f}s"
+            )
+        else:
+            final_msg = f"DAT match failed: {job_error or 'unknown error'}"
+        await job_manager.update_external_job(
+            job_id,
+            progress=100 if job_success else None,
+            message=final_msg,
+        )
+        await job_manager.finish_external_job(
+            job_id,
+            success=job_success,
+            error_message=job_error,
+        )
+        async with _get_match_job_lock():
+            if _active_match_job_id == job_id:
+                _active_match_job_id = None
 
 
 @router.post("/dat/prune")
@@ -336,7 +625,7 @@ async def _match_single_file(file_path: str) -> dict:
             file_sha1 = await compute_file_sha1(file_path)
     except OSError as exc:
         logger.warning("Failed to hash %s: %s", file_path, exc)
-        return base_result
+        return {**base_result, "error": str(exc)}
 
     record = await run_in_threadpool(dat_store.lookup_sha1, file_sha1)
     if record:

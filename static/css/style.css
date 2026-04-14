@@ -486,6 +486,22 @@ header h1 span {
     opacity: 0.8;
 }
 
+.file-item .status.dat-no-match {
+    /* Hashed but not found in any loaded DAT. */
+    background: transparent;
+    border: 1px solid var(--text-secondary);
+    color: var(--text-secondary);
+    opacity: 0.7;
+}
+
+.file-item .status.dat-skipped {
+    /* Scan skipped — file too large, not processed, or similar. */
+    background: transparent;
+    border: 1px dashed var(--text-secondary);
+    color: var(--text-secondary);
+    opacity: 0.5;
+}
+
 .file-item .status.iso-handling {
     background: var(--warning);
     color: var(--bg-primary);
@@ -1205,8 +1221,8 @@ header h1 span {
     color: var(--success);
 }
 
-/* Metadata-jobs visibility toggle in the Jobs panel header */
-.metadata-jobs-toggle {
+/* External-scan-jobs visibility toggle in the Jobs panel header */
+.external-scan-jobs-toggle {
     display: flex;
     align-items: center;
     gap: 4px;
@@ -1222,16 +1238,16 @@ header h1 span {
     white-space: nowrap;
 }
 
-.metadata-jobs-toggle:hover {
+.external-scan-jobs-toggle:hover {
     background: var(--bg-primary);
 }
 
-.metadata-jobs-toggle input[type="checkbox"] {
+.external-scan-jobs-toggle input[type="checkbox"] {
     accent-color: var(--accent, #7c6af7);
     cursor: pointer;
 }
 
-.metadata-jobs-toggle span {
+.external-scan-jobs-toggle span {
     white-space: nowrap;
 }
 

@@ -3,7 +3,7 @@ import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
 
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
-const SHOW_METADATA_JOBS_STORAGE_KEY = 'compressatorium_show_metadata_jobs';
+const SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY = 'compressatorium_show_metadata_jobs';
 const DEFAULT_DOLPHIN_COMPRESSION_LEVEL = '19';
 const DEFAULT_PAGE_SIZE = '50';
 const DEFAULT_SEARCH_AUTO_RETURN_TO_FILE_LIST = true;
@@ -16,6 +16,12 @@ const PAGE_SIZE_OPTIONS = [
     { value: 'all', label: 'All' }
 ];
 const isMacMetadataName = (name) => name === '.DS_Store' || name.startsWith('._') || name === '__MACOSX';
+// Externally-managed job modes (metadata scan, DAT match) are driven by
+// job_manager.{create,update,finish}_external_job and show up in the Jobs
+// panel alongside conversion jobs, but must be filtered out of the
+// conversion-queue counts and behaviour (cancellable, etc.).
+const EXTERNAL_SCAN_MODES = new Set(['metadata_scan', 'dat_match']);
+const isExternalScanMode = (mode) => EXTERNAL_SCAN_MODES.has(mode);
 const Z3DS_SOURCE_EXTENSIONS = ['.3ds', '.cci', '.cia'];
 const Z3DS_VERIFY_EXTENSIONS = ['.z3ds', '.zcci', '.zcia'];
 const Z3DS_INFO_EXTENSIONS = [...Z3DS_SOURCE_EXTENSIONS, ...Z3DS_VERIFY_EXTENSIONS];
@@ -902,7 +908,14 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                             if (typeof m.error === 'string' && m.error) {
                                 return html`<span class="status dat-error" title="${`DAT match failed — ${m.error}`}">DAT !</span>`;
                             }
-                            return null;
+                            const reason = typeof m.reason === 'string' ? m.reason.trim() : '';
+                            if (reason === 'not processed') {
+                                return html`<span class="status dat-skipped" title="DAT match not processed">DAT –</span>`;
+                            }
+                            if (reason) {
+                                return html`<span class="status dat-skipped" title="${`DAT match skipped — ${reason}`}">DAT –</span>`;
+                            }
+                            return html`<span class="status dat-no-match" title="DAT match not found">DAT ✗</span>`;
                         })()}
                         ${isVerifying && html`
                             <span class="status convertible" title="Verifying integrity">
@@ -1065,7 +1078,7 @@ function JobList({
 
                     ${job.status === 'completed' && html`
                         <div class="job-success" style="color: var(--success); font-size: 0.8rem; padding-left: 24px;">
-                            ${job.mode === 'metadata_scan'
+                            ${isExternalScanMode(job.mode)
                                 ? (job.message || 'Scan complete')
                                 : `Job complete${job.output_size ? ` - ${formatSize(job.output_size)}` : ''}`}
                         </div>
@@ -1076,7 +1089,7 @@ function JobList({
                     `}
 
                     <div class="job-actions">
-                        ${['queued', 'processing'].includes(job.status) && job.mode !== 'metadata_scan' && html`
+                        ${['queued', 'processing'].includes(job.status) && !isExternalScanMode(job.mode) && html`
                             <button class="btn btn-sm btn-secondary" onClick=${() => onCancel(job.id)} title="Cancel this job">
                                 Cancel
                             </button>
@@ -2814,9 +2827,9 @@ function App() {
     const [cancellingAllJobs, setCancellingAllJobs] = useState(false);
     const [showClearDoneModal, setShowClearDoneModal] = useState(false);
     const [clearingCompletedJobs, setClearingCompletedJobs] = useState(false);
-    const [showMetadataJobs, setShowMetadataJobs] = useState(() => {
+    const [showExternalScanJobs, setShowExternalScanJobs] = useState(() => {
         try {
-            return localStorage.getItem(SHOW_METADATA_JOBS_STORAGE_KEY) === 'true';
+            return localStorage.getItem(SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY) === 'true';
         } catch (err) {
             return false;
         }
@@ -2834,6 +2847,14 @@ function App() {
     const jobUpdateFlushTimeoutRef = useRef(null);
     const completionRefreshTimeoutRef = useRef(null);
     const datMatchRetryTimerRef = useRef(null);
+    // Tracks the active DAT-match background job: its id and the list of
+    // paths that were submitted so we can poll the cache-only lookup endpoint
+    // as per-file results land. Cleared when the job completes or fails.
+    const activeMatchJobRef = useRef(null);
+    // Mirror of datMatches accessible to the polling effect without
+    // forcing it to re-run on every setDatMatches call. Kept in sync
+    // by a tiny dedicated effect below.
+    const datMatchesRef = useRef(new Map());
     const preSearchViewRef = useRef(null); // List/archive view snapshot before Search All
     const deferJobUiUpdatesRef = useRef(false); // Pause job-driven rerenders during active select interactions
 
@@ -2890,11 +2911,11 @@ function App() {
 
     useEffect(() => {
         try {
-            localStorage.setItem(SHOW_METADATA_JOBS_STORAGE_KEY, showMetadataJobs ? 'true' : 'false');
+            localStorage.setItem(SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY, showExternalScanJobs ? 'true' : 'false');
         } catch (err) {
             // Ignore persistence failures (private mode, disabled storage).
         }
-    }, [showMetadataJobs]);
+    }, [showExternalScanJobs]);
 
     // Refresh file list for current directory or archive (transparent merge to avoid flicker)
     const refreshFileList = useCallback((showSpinner = false) => {
@@ -3138,27 +3159,27 @@ function App() {
     const queueJobs = useMemo(() => {
         const activeServerJobs = jobs.filter(
             (job) => !['completed', 'failed', 'cancelled'].includes(job.status)
-                  && (showMetadataJobs || job.mode !== 'metadata_scan'),
+                  && (showExternalScanJobs || !isExternalScanMode(job.mode)),
         );
         return creatingJobs.length > 0
             ? [...creatingJobs, ...activeServerJobs]
             : activeServerJobs;
-    }, [creatingJobs, jobs, showMetadataJobs]);
+    }, [creatingJobs, jobs, showExternalScanJobs]);
 
     const completedJobs = useMemo(
         () => jobs.filter(
             (job) => job.status === 'completed'
-                  && (showMetadataJobs || job.mode !== 'metadata_scan'),
+                  && (showExternalScanJobs || !isExternalScanMode(job.mode)),
         ),
-        [jobs, showMetadataJobs],
+        [jobs, showExternalScanJobs],
     );
 
     const issueJobs = useMemo(
         () => jobs.filter(
             (job) => ['failed', 'cancelled'].includes(job.status)
-                  && (showMetadataJobs || job.mode !== 'metadata_scan'),
+                  && (showExternalScanJobs || !isExternalScanMode(job.mode)),
         ),
-        [jobs, showMetadataJobs],
+        [jobs, showExternalScanJobs],
     );
 
     const displayedJobs = useMemo(() => {
@@ -3404,8 +3425,10 @@ function App() {
             return next;
         });
 
-        api.matchBatch(paths)
+        api.startMatchJob(paths)
             .then(data => {
+                // Merge any cached results returned synchronously (paths that
+                // were already in dat_matches).
                 if (data.results) {
                     setDatMatches(prev => {
                         const next = new Map(prev);
@@ -3414,6 +3437,13 @@ function App() {
                         });
                         return next;
                     });
+                }
+                // If the backend spawned a background job, remember it so
+                // the jobs-update effect can poll the cache-only lookup as
+                // progress lands. Paths still carrying their {pending:true}
+                // sentinel flip to concrete results as the job advances.
+                if (data.status === 'started' && data.job_id) {
+                    activeMatchJobRef.current = { jobId: data.job_id, paths };
                 }
             })
             .catch(() => {
@@ -3446,6 +3476,152 @@ function App() {
             });
 
     }, [displayedEntries, datsImported, datMatches]);
+
+    // While a DAT-match background job is active, poll the read-only
+    // cache-lookup endpoint whenever the jobs list updates (i.e. the SSE
+    // stream delivered a progress event for any job). Paths that the job
+    // has finished hashing will appear in the cache and flip their badges
+    // from "DAT …" to the concrete result — progressive rather than
+    // all-at-once at the end. On terminal job state, do one final lookup
+    // and clear the tracking ref so the effect stops polling.
+    useEffect(() => {
+        const active = activeMatchJobRef.current;
+        if (!active) return;
+        const { jobId, paths } = active;
+        const matchJob = jobs.find(j => j.id === jobId);
+        // Only treat the job as terminal when we can actually *see* it in
+        // the jobs list AND it reports a terminal status. The job can be
+        // briefly absent between startMatchJob resolving and the first SSE
+        // tick / jobs poll arriving; treating that absence as terminal
+        // would prematurely stop polling the cache and strand any paths
+        // still carrying their {pending: true} sentinel.
+        const isTerminal = !!matchJob
+            && ['completed', 'failed', 'cancelled'].includes(matchJob.status);
+
+        // Skip the poll when the job's observable state hasn't advanced
+        // since our last tick — every single SSE progress message from
+        // *any* job causes this effect to re-run, so without this guard
+        // we'd re-hit the backend dozens of times per second for
+        // unrelated jobs.  Track (status, progress) as the change signal.
+        const stateSig = matchJob ? `${matchJob.status}:${matchJob.progress}` : 'missing';
+        if (!isTerminal && active.lastState === stateSig) return;
+        active.lastState = stateSig;
+
+        // Only the paths that haven't resolved yet need to be looked up.
+        // A path whose badge is already {pending:false, matched:...} from
+        // a prior tick doesn't change just because the job advanced to
+        // the next file.  This turns the every-SSE-tick cost from O(all
+        // submitted paths) into O(paths still in flight).
+        //
+        // Read from datMatchesRef rather than the datMatches state so
+        // this effect can depend only on `jobs` — otherwise every
+        // setDatMatches call re-runs the effect, defeating the
+        // lastState / pendingPaths optimizations entirely.
+        const currentMatches = datMatchesRef.current;
+        const pendingPaths = paths.filter(p => {
+            const entry = currentMatches.get(p);
+            return !entry || entry.pending === true || entry.request_error === true;
+        });
+
+        let cancelled = false;
+        // On terminal tick, always run one final poll even if no paths
+        // look pending locally — the last in-flight result may land in
+        // the cache between our second-to-last poll and the terminal
+        // jobs-list update.
+        const lookupPaths = isTerminal ? paths : pendingPaths;
+        if (lookupPaths.length > 0) {
+            api.getMatchCache(lookupPaths)
+                .then(data => {
+                    // If a subsequent jobs update triggered cleanup before
+                    // this promise resolved, let the new effect run handle
+                    // the terminal reconciliation rather than no-oping here
+                    // and leaving paths stuck on "DAT …" indefinitely.
+                    if (cancelled) return;
+                    const results = data.results || {};
+                    setDatMatches(prev => {
+                        const next = new Map(prev);
+                        Object.entries(results).forEach(([path, result]) => {
+                            next.set(path, result);
+                        });
+                        // Terminal reconciliation: the backend deliberately
+                        // does NOT cache non-cacheable outcomes (size-cap
+                        // skips, missing files, transient hash errors), so
+                        // on the terminal tick any path still showing
+                        // {pending:true} will never resolve via the cache
+                        // lookup. Materialise a synthetic skipped entry
+                        // for those so the badge renders as "DAT –"
+                        // instead of spinning on "DAT …" indefinitely.
+                        if (isTerminal) {
+                            for (const p of paths) {
+                                const entry = next.get(p);
+                                if (!entry || entry.pending === true) {
+                                    next.set(p, {
+                                        path: p,
+                                        matched: false,
+                                        reason: 'not processed',
+                                    });
+                                }
+                            }
+                        }
+                        return next;
+                    });
+                    // Clear the tracking ref only after reconciliation
+                    // completes so a concurrent jobs update cannot clear it
+                    // before the final cache lookup has landed.
+                    if (isTerminal) {
+                        activeMatchJobRef.current = null;
+                    }
+                })
+                .catch(() => {
+                    // Even on network failure for the final poll we must
+                    // not leave paths stuck pending forever. Synthesize
+                    // fallbacks locally so the UI exits its pending state.
+                    // If cancelled, the new effect run will retry.
+                    if (!isTerminal || cancelled) return;
+                    setDatMatches(prev => {
+                        const next = new Map(prev);
+                        for (const p of paths) {
+                            const entry = next.get(p);
+                            if (!entry || entry.pending === true) {
+                                next.set(p, {
+                                    path: p,
+                                    matched: false,
+                                    reason: 'not processed',
+                                });
+                            }
+                        }
+                        return next;
+                    });
+                    activeMatchJobRef.current = null;
+                });
+        } else if (isTerminal) {
+            // Terminal but no outstanding lookupPaths (e.g. everything
+            // already resolved locally). Still need to flush any pending
+            // sentinels that never got a cache hit.
+            setDatMatches(prev => {
+                let changed = false;
+                const next = new Map(prev);
+                for (const p of paths) {
+                    const entry = next.get(p);
+                    if (!entry || entry.pending === true) {
+                        next.set(p, { path: p, matched: false, reason: 'not processed' });
+                        changed = true;
+                    }
+                }
+                return changed ? next : prev;
+            });
+            // Synchronous path — safe to clear immediately.
+            activeMatchJobRef.current = null;
+        }
+        return () => { cancelled = true; };
+    }, [jobs]);
+
+    // Mirror datMatches into a ref so the polling effect above can read
+    // the current map without having to take datMatches as a dep (which
+    // would cause it to re-run on every setDatMatches update).
+    useEffect(() => {
+        datMatchesRef.current = datMatches;
+    }, [datMatches]);
 
     // Cancel any pending DAT-match retry timer on unmount only.
     // This must be a separate effect with empty deps so the cleanup doesn't
@@ -4953,7 +5129,7 @@ function App() {
     };
 
     const handleRequestCancelAll = () => {
-        const activeCount = jobs.filter(j => ['queued', 'processing'].includes(j.status) && j.mode !== 'metadata_scan').length;
+        const activeCount = jobs.filter(j => ['queued', 'processing'].includes(j.status) && !isExternalScanMode(j.mode)).length;
         if (activeCount === 0) {
             notify('No active jobs to cancel', 'info');
             return;
@@ -4967,7 +5143,7 @@ function App() {
         try {
             const result = await api.cancelAllJobs();
             setJobs(prev => prev.map((job) => {
-                if (job.mode === 'metadata_scan') return job;
+                if (isExternalScanMode(job.mode)) return job;
                 if (job.status === 'queued') {
                     return { ...job, status: 'cancelled' };
                 }
@@ -5057,13 +5233,13 @@ function App() {
     };
 
 
-    const queuedJobsCount = jobs.filter(j => j.status === 'queued' && j.mode !== 'metadata_scan').length;
-    const processingJobsCount = jobs.filter(j => j.status === 'processing' && j.mode !== 'metadata_scan').length;
+    const queuedJobsCount = jobs.filter(j => j.status === 'queued' && !isExternalScanMode(j.mode)).length;
+    const processingJobsCount = jobs.filter(j => j.status === 'processing' && !isExternalScanMode(j.mode)).length;
     const activeJobsCount = queuedJobsCount + processingJobsCount;
     const hasActiveJobs = activeJobsCount > 0;
     const hasCompletedJobs = jobs.some(j =>
         ['completed', 'failed', 'cancelled'].includes(j.status)
-        && (showMetadataJobs || j.mode !== 'metadata_scan')
+        && (showExternalScanJobs || !isExternalScanMode(j.mode))
     );
     const selectableEntriesOnPage = paginatedEntries.filter(e => canSelectEntry(e));
     const allSelectedOnPage = selectableEntriesOnPage.length > 0
@@ -5668,16 +5844,16 @@ function App() {
                             >
                                 ↻
                             </button>
-                            <label class="metadata-jobs-toggle" title="Include metadata scan jobs in the jobs list">
+                            <label class="external-scan-jobs-toggle" title="Include metadata and DAT scan jobs in the jobs list">
                                 <input
                                     type="checkbox"
-                                    id="show-metadata-jobs"
-                                    checked=${showMetadataJobs}
+                                    id="show-external-scan-jobs"
+                                    checked=${showExternalScanJobs}
                                     onChange=${() => {
-                                        setShowMetadataJobs(prev => !prev);
+                                        setShowExternalScanJobs(prev => !prev);
                                         setJobCurrentPage(1);
                                     }}
-                                    aria-label="Show metadata scan jobs"
+                                    aria-label="Show external scan jobs"
                                 />
                                 <span>Show scans</span>
                             </label>
