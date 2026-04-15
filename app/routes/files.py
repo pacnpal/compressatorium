@@ -138,7 +138,7 @@ async def list_files(
     except ValueError:
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes",
-        )
+        ) from None
 
     resolved_str = str(resolved)
     if not os.path.isdir(resolved_str):
@@ -257,9 +257,9 @@ async def list_files(
                     # Skip items that cannot be accessed (permissions, missing, etc.)
                     continue
         except PermissionError:
-            raise HTTPException(status_code=403, detail="Permission denied")
+            raise HTTPException(status_code=403, detail="Permission denied") from None
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="Directory not found")
+            raise HTTPException(status_code=404, detail="Directory not found") from None
         return entries
 
     entries = await run_in_threadpool(
@@ -281,7 +281,7 @@ async def search_files(
     except ValueError:
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes",
-        )
+        ) from None
 
     resolved_str = str(resolved)
     if not os.path.isdir(resolved_str):
@@ -449,7 +449,7 @@ async def list_archive(
     except ValueError:
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes",
-        )
+        ) from None
 
     resolved_str = str(resolved)
     if not os.path.isfile(resolved_str):
@@ -540,7 +540,7 @@ async def rename_file(
             "message": f"Successfully renamed to {new_name}",
         }
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to rename: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to rename: {e!s}") from None
 
 
 @router.delete("/files/delete")
@@ -576,7 +576,7 @@ async def delete_file(
 
         return {"success": True, "path": path, "message": "Successfully deleted"}
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {e!s}") from None
 
 
 @router.post("/files/delete-batch")

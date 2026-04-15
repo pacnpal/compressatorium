@@ -350,9 +350,9 @@ class ChdmanService:
                 )
             else:
                 stdout, stderr = await process.communicate()
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
             await self._terminate_process(process)
-            raise RuntimeError(f"chdman info timed out after {timeout}s")
+            raise RuntimeError(f"chdman info timed out after {timeout}s") from exc
 
         if process.returncode != 0:
             raise RuntimeError(

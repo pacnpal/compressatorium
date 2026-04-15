@@ -101,7 +101,7 @@ async def import_dat(file: UploadFile = File(...)):
             # iterparse directly from disk without a second in-memory copy.
             result = await dat_store.import_dat(tmp_path)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from None
     finally:
         if tmp_path:
             try:

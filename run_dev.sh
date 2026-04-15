@@ -17,9 +17,12 @@ export MAX_CONCURRENT_JOBS=1
 export CHD_CHDMAN_NICE=0
 export CHD_CHDMAN_IOPRIO_CLASS=0
 export CHD_CHDMAN_IOPRIO_LEVEL=0
-export STATIC_DIR="$(pwd)/static"
-export CHD_DATA_DIR="$(pwd)/.local-config"
-export CHD_TEMP_DIR="$(pwd)/.local-config/temp"
+STATIC_DIR="$(pwd)/static"
+export STATIC_DIR
+CHD_DATA_DIR="$(pwd)/.local-config"
+export CHD_DATA_DIR
+CHD_TEMP_DIR="$(pwd)/.local-config/temp"
+export CHD_TEMP_DIR
 
 # Ensure directories exist
 mkdir -p "$CHD_DATA_DIR"
@@ -39,7 +42,8 @@ echo "Installing dependencies..."
 pip install -r requirements.txt
 
 # Add app directory to PYTHONPATH
-export PYTHONPATH="$PYTHONPATH:$(pwd)/app"
+PYTHONPATH="$PYTHONPATH:$(pwd)/app"
+export PYTHONPATH
 
 # Run the application
 PORT="${PORT:-8080}"

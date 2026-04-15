@@ -478,7 +478,7 @@ async def create_job(request: JobCreateRequest):
             raise HTTPException(
                 status_code=400,
                 detail=f"Delete-on-verify blocked: {exc}",
-            )
+            ) from None
 
     # Proactive queue-depth check: reject with 429 before spending work
     # on job construction if the queue is already at capacity.  Parity
@@ -711,7 +711,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Delete-on-verify blocked for {file_path}: {exc}",
-                )
+                ) from None
 
         candidates.append(
             {

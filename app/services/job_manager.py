@@ -1623,10 +1623,10 @@ class JobManager:
                                 )
                             try:
                                 st = os.stat(path, follow_symlinks=False)
-                            except FileNotFoundError:
+                            except FileNotFoundError as exc:
                                 raise RuntimeError(
                                     "Delete path no longer exists; refusing to delete"
-                                )
+                                ) from exc
                             if not os.path.isfile(path):
                                 raise RuntimeError(
                                     "Delete path is not a file; refusing to delete"

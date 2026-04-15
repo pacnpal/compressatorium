@@ -537,7 +537,7 @@ async def verify_z3ds(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to verify 3DS ROM: {e!s}",
-        )
+        ) from None
     finally:
         verify_token.release()
 
@@ -735,7 +735,7 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to read CHD info: {e!s}",
-        )
+        ) from None
 
 
 @router.post("/chd-metadata")
@@ -839,7 +839,7 @@ async def verify_chd(
             await verification_store.mark_verified(path)
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to verify CHD: {e!s}")
+        raise HTTPException(status_code=500, detail=f"Failed to verify CHD: {e!s}") from None
     finally:
         verify_token.release()
 
@@ -1338,7 +1338,7 @@ async def get_dolphin_info(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to read disc info: {e!s}",
-        )
+        ) from None
 
 
 @router.get("/dolphin-verify")
@@ -1372,7 +1372,7 @@ async def verify_dolphin(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to verify disc image: {e!s}",
-        )
+        ) from None
     finally:
         verify_token.release()
 
@@ -1514,4 +1514,4 @@ async def get_z3ds_info(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to read 3DS ROM info: {e!s}",
-        )
+        ) from None

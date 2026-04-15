@@ -191,8 +191,8 @@ def build_delete_snapshot(source_path: str) -> Dict[str, object]:
     for path in plan.get("delete_paths", []):
         try:
             st = os.stat(path, follow_symlinks=False)
-        except FileNotFoundError:
-            raise ValueError("Missing companion files; refusing to delete")
+        except FileNotFoundError as exc:
+            raise ValueError("Missing companion files; refusing to delete") from exc
         if os.path.islink(path):
             raise ValueError(f"Delete path is a symlink: {path}")
         if not os.path.isfile(path):
