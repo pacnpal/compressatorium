@@ -112,6 +112,8 @@ jobs:
             type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
             # latest for non-prerelease
             type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+            # beta for prerelease only
+            type=raw,value=beta,enable=${{ github.event.release.prerelease }}
             # Git short SHA
             type=sha,prefix=sha-,format=short
           labels: |
