@@ -61,9 +61,31 @@ Both registries provide identical images with multi-architecture support (`linux
 
 | Tag | Description |
 |-----|-------------|
-| `latest` | Latest stable release from the main branch |
-| `vX.Y.Z` | Specific version (e.g., `v3.0.0`) |
+| `latest` | Latest stable release |
+| `beta` | Latest pre-release build (see warning below) |
+| `X.Y.Z` | Specific stable version (e.g., `3.7.0`) |
+| `X.Y.Z-beta-N` | Specific pre-release build (e.g., `3.7.0-beta-3`) |
 | `sha-xxxxxxx` | Specific commit build |
+
+### Opting in to beta updates
+
+To track pre-release builds, pull the `:beta` tag instead of `:latest`:
+
+```bash
+docker pull pacnpal/compressatorium:beta
+```
+
+Or pin to a specific pre-release (recommended if you want to control when you upgrade):
+
+```bash
+docker pull pacnpal/compressatorium:3.7.0-beta-3
+```
+
+> **⚠️ Warning — beta builds can cause data loss.** Pre-releases may contain unfinished migrations, experimental conversion logic, or breaking changes to the job database. Running a beta against a database populated by a stable release can corrupt or irreversibly migrate it, and downgrading back to `:latest` afterwards is **not supported**. Before pulling `:beta`:
+>
+> - Back up your SQLite database (`compressatorium.db` in your data volume) and any in-flight output files.
+> - Prefer a separate data volume for beta testing rather than pointing a beta container at your production volume.
+> - Do not use beta builds for batches you cannot afford to redo.
 
 ---
 
