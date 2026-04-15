@@ -1,5 +1,26 @@
 # Release Notes
 
+## v3.7.1 - Color-coded stdout logs
+
+### ✨ New Features
+
+- **ANSI-colored log levels on stdout** — Log lines now highlight `%(levelname)s` with an SGR color so severity is easy to skim in `docker logs` output: `DEBUG` dim, `INFO` green, `WARNING` yellow, `ERROR` red, `CRITICAL` bold red. Message bodies are left uncolored so copy-paste stays clean.
+- **`LOG_COLOR` env var** — Controls the stream-handler color policy. Values:
+  - `always` (**default**) — colored stdout out of the box, so Docker users see colors without any configuration. `docker logs` does not allocate a TTY, so this was the right default rather than `auto`.
+  - `auto` — color iff stdout is a TTY and the `NO_COLOR` env var (https://no-color.org) is unset.
+  - `never` — disable entirely.
+  Invalid values log a warning and fall back to `auto`.
+- **File logs are never colored** — `LOG_PATH` output always uses the plain formatter regardless of `LOG_COLOR`, keeping `grep` / log-aggregator pipelines intact.
+
+### 📁 Files Changed
+
+- `app/main.py` — added `ColorFormatter`, `_resolve_color()`, wired into `configure_logging()`.
+- `app/config.py` — added `log_color: str` setting.
+- `README.md` — `LOG_COLOR` row in the env-var table.
+- `tests/test_logging_config.py` — +14 tests: default value, resolver TTY/`NO_COLOR` logic, formatter round-trip, end-to-end colored stream, and a guarantee that the file handler never emits ANSI escapes even with `LOG_COLOR=always`.
+
+---
+
 ## v3.7.0 - Unified SQLite Store, Alembic Migrations, and Wider DAT Matching
 
 ### ✨ New Features
