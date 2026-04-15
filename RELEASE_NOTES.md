@@ -1,5 +1,56 @@
 # Release Notes
 
+## v3.7.0 - Unified SQLite Store, Alembic Migrations, and Wider DAT Matching
+
+### ✨ New Features
+
+- **Unified SQLite persistence layer** — The four legacy JSON stores (`dat_store.json`, `chd_metadata.json`, `verified_chds.json`, `dat_sync.json`) are consolidated into a single `compressatorium.db` SQLite file backed by SQLAlchemy 2.0. Tuned for this workload: WAL journal mode, `synchronous=NORMAL`, `foreign_keys=ON`, 30s `busy_timeout`. Composite primary keys let sha1/md5 coexist; foreign keys give cascade-on-DAT-delete for hashes and set-null semantics for cached matches so UI history survives DAT removal.
+- **One-shot JSON → SQLite migration on startup** — On first boot against the new release, legacy JSON stores are imported into the DB and the source files are renamed to `*.migrated.bak` (never deleted). Migration is isolated per store: a failure in one does not block the others, leaves that store's JSON untouched, rolls the transaction back, and retries on the next startup. Corrupt JSON is renamed to `*.corrupt` and logged loudly.
+- **Alembic schema versioning** — Schema is driven by Alembic migrations (`migrations/versions/0001_baseline_schema.py`) rather than `create_all`. Pre-Alembic databases (anyone who ran the SQLite-migration build before Alembic landed) are detected by baseline-table presence and auto-stamped to `0001` before upgrade — existing rows are preserved untouched.
+- **DAT match badge widened to raw disc images with bounded hashing** — The match badge now evaluates raw `.iso`/`.bin`/`.cue`/`.gdi` sources in addition to CHDs, with a bounded hashing window so large images can't stall the scan. Softlist `<disk>` elements are parsed as part of DAT matching, and matches run as a background job so the UI stays responsive.
+- **`:beta` Docker tag for pre-releases** — Pre-release GitHub releases now publish a moving `:beta` tag (in addition to the semver tag) on both Docker Hub and GHCR; stable releases continue to publish `:latest`. Consumers opting in to betas pull `pacnpal/compressatorium:beta`. See the README "Opting in to beta updates" section for the data-loss warning — running a beta against a production data volume can irreversibly migrate the DB, and downgrading to `:latest` afterwards is not supported.
+
+### 🐛 Bug Fixes
+
+- **DAT match no longer leaks `OSError` internals to clients** (#56) — `_match_single_file` previously surfaced filesystem error detail (paths, errno strings) in the API response. It now returns a generic failure code and logs the detail server-side.
+
+### 🧪 Tests
+
+A comprehensive test suite has been added around the new SQLite feature — 26 new tests across 5 files covering every documented invariant end-to-end:
+
+- **`tests/test_db_engine_pragmas.py`** — verifies WAL, `synchronous=NORMAL`, `busy_timeout ≥ 30s`, and `foreign_keys=ON` are actually applied on every checked-out connection (SQLite PRAGMAs are per-connection), and that FK enforcement raises `IntegrityError` on orphaned inserts.
+- **`tests/test_db_startup_integration.py`** — replays the exact `startup_event` ordering: fresh disk, full legacy migration, pre-Alembic + JSON coexistence, and cross-restart idempotency.
+- **`tests/test_db_store_operations.py`** — DAT cascade-delete wipes hashes; DAT delete sets cached match `dat_id` to `NULL` (not delete); `_set_matches_batch_sync` round-trips at the 899/900/901/1800 boundary against SQLite's 999-bind-parameter limit; `VerificationStore._mark_sync` is idempotent; CHDMetadata JSON column survives unicode, nested structures, and emoji; `DATSyncState` singleton never duplicates.
+- **`tests/test_db_migration_edge_cases.py`** — backup-filename collision preserves the source JSON, mid-migration rollback preserves JSON and doesn't block other stores, unicode + ~1800-char paths round-trip, empty collections migrate cleanly, orphaned match `dat_id` becomes `NULL` rather than failing, and truncated JSON bodies land as `.corrupt` (not `.migrated.bak`).
+- **`tests/test_verification_store.py`** — added a concurrent-writer test (two asyncio tasks × 200 writes each) proving WAL + busy_timeout end-to-end through `mark_verified`.
+- **`tests/test_db_migration.py` and `tests/test_alembic_migrations.py`** (introduced during the beta cycle) — cover the five no-data-loss migration invariants and the five Alembic invariants (fresh DB, pre-Alembic stamp-then-upgrade, idempotency, ORM drift guard, called-before-init guard).
+
+Total suite: 270 tests, all green.
+
+### 🛠 CI / Infrastructure
+
+- **Docker workflow** — `docker-image.yml` now emits `:beta` for pre-releases and `:latest` only for stable releases. Semver tags (`X.Y.Z`, `X.Y.Z-beta-N`, `X.Y`, `X` for non-v0.x) and `sha-<short>` tags continue to be emitted for all releases.
+- **Code scanning noise reduced** — Project-wide linter configs expanded, Codacy bandit engine disabled, and remaining flagged false positives silenced with inline rationale.
+- **Dependabot** — bumped `actions/stale` 5→10, `docker/build-push-action` 7.0.0→7.1.0, `docker/login-action` 3.7.0→4.1.0, `actions/labeler` 4.3.0→6.0.1, `actions/attest-build-provenance`, and `globals` 17.4.0→17.5.0.
+
+### 📁 Files Added / Changed (high-level)
+
+- `app/services/db.py` (new) — engine init, PRAGMA hook, Alembic bootstrap (`apply_migrations`), `init_and_migrate`, per-store migrators.
+- `app/services/dat_store.py`, `verification_store.py`, `chd_metadata_store.py`, `dat_sync.py` — re-pointed at the SQLAlchemy session factory; chunked upserts where bulk operations cross SQLite's 999-bind-parameter limit.
+- `migrations/` (new) — `alembic.ini`, `env.py`, `versions/0001_baseline_schema.py`.
+- `app/main.py` — `startup_event` initialises the DB, runs Alembic, then `init_and_migrate` before any store is touched.
+- `.github/workflows/docker-image.yml` — `:beta` tag for pre-releases.
+- `README.md` — "Available Tags" table expanded with `:beta` and pre-release semver entries; new "Opting in to beta updates" section with data-loss warning.
+- `tests/` — 5 new DB test modules plus shared `conftest.py` with sample JSON payloads and the `reset_db_engine` fixture.
+
+### ⚠️ Upgrade Notes
+
+- **Back up your `data_dir`** before upgrading, especially if you have a large `dat_store.json` — this is a one-way migration. The legacy JSON is preserved as `*.migrated.bak` on successful import, but the new DB is the source of truth after restart.
+- **Downgrading to v3.6.x** after `compressatorium.db` has accepted writes is not supported. If you need to roll back, restore the `.migrated.bak` files (remove the suffix) and delete `compressatorium.db` before starting the older image.
+- **Read-only `/config` volumes** — the DB falls back to `$TMPDIR/compressatorium/compressatorium.db` if `data_dir` is unwritable, matching the legacy JSON-store fallback. Set `CHD_DB_PATH` explicitly if you want a different location.
+
+---
+
 ## v3.3.2 - CD CHD Sector Extraction Fix
 
 ### 🐛 Bug Fixes

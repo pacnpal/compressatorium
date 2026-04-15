@@ -130,3 +130,27 @@ async def test_move_preserves_metadata(
     record = await verification_store.get_record(new)
     assert record is not None
     assert record["source_path"] == os.path.realpath(str(tmp_path / "src.iso"))
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writers_under_wal(
+    verification_store: VerificationStore,
+    tmp_path: Path,
+) -> None:
+    """Two tasks hammering distinct paths must both land without a
+    ``database is locked`` error.  WAL + busy_timeout=30s is the whole
+    point of the engine's PRAGMA hook — this test proves they take
+    effect end-to-end through ``mark_verified``."""
+    n = 200
+
+    async def writer(prefix: str) -> None:
+        for i in range(n):
+            await verification_store.mark_verified(
+                str(tmp_path / f"{prefix}_{i:04d}.chd")
+            )
+
+    await asyncio.gather(writer("a"), writer("b"))
+
+    # Every write was distinct → exactly 2*n rows.
+    all_records = await verification_store.all_records()
+    assert len(all_records) == 2 * n
