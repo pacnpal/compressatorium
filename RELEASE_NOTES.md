@@ -37,7 +37,7 @@
 - **ANSI-colored log levels on stdout** — Log lines now highlight `%(levelname)s` with an SGR color so severity is easy to skim in `docker logs` output: `DEBUG` dim, `INFO` green, `WARNING` yellow, `ERROR` red, `CRITICAL` bold red. Message bodies are left uncolored so copy-paste stays clean.
 - **`LOG_COLOR` env var** — Controls the stream-handler color policy. Values:
   - `always` (**default**) — colored stdout out of the box, so Docker users see colors without any configuration. `docker logs` does not allocate a TTY, so this was the right default rather than `auto`.
-  - `auto` — color iff stdout is a TTY and the `NO_COLOR` env var (https://no-color.org) is unset.
+  - `auto` — color iff stdout is a TTY and the `NO_COLOR` env var (<https://no-color.org>) is unset.
   - `never` — disable entirely.
   Invalid values log a warning and fall back to `auto`.
 - **File logs are never colored** — `LOG_PATH` output always uses the plain formatter regardless of `LOG_COLOR`, keeping `grep` / log-aggregator pipelines intact.

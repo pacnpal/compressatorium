@@ -6,12 +6,12 @@ I have fixed critical blocking I/O issues and ensured thread safety in core serv
 
 ### 1. VerificationStore (Async & Thread Safe)
 - **Problem**: Previously performed sync file I/O on the main loop, and earlier async versions had locking race conditions.
-- **Solution**: 
-    - Converted to `async/await` using `run_in_threadpool` for disk persistence.
-    - Implemented a dual-lock strategy: `_lock` for in-memory data integrity and `_write_lock` to serialize file writes.
-    - Added **versioning** (`_version` counter) to prevent race conditions where an older snapshot overwrites a newer one.
-    - Persistence employs a **latched state** pattern: `_persist` acquires `_write_lock`, then captures the snapshot. It replaces the file **only** if the captured version matches the current global version at the moment of commit. If the version has advanced, the write is discarded (as a newer persistence task is guaranteed to be queued). This prevents both stale writes and busy loops.
-    - Updated `mark_verified`, `clear`, `move`, and `prune_missing` to use this safe pattern (increment version, trigger persist) and now perform **async path normalization** (`os.path.realpath` in threadpool) to prevent blocking on slow filesystems.
+- **Solution**:
+  - Converted to `async/await` using `run_in_threadpool` for disk persistence.
+  - Implemented a dual-lock strategy: `_lock` for in-memory data integrity and `_write_lock` to serialize file writes.
+  - Added **versioning** (`_version` counter) to prevent race conditions where an older snapshot overwrites a newer one.
+  - Persistence employs a **latched state** pattern: `_persist` acquires `_write_lock`, then captures the snapshot. It replaces the file **only** if the captured version matches the current global version at the moment of commit. If the version has advanced, the write is discarded (as a newer persistence task is guaranteed to be queued). This prevents both stale writes and busy loops.
+  - Updated `mark_verified`, `clear`, `move`, and `prune_missing` to use this safe pattern (increment version, trigger persist) and now perform **async path normalization** (`os.path.realpath` in threadpool) to prevent blocking on slow filesystems.
 
 ### 2. JobManager (Async Cleanup)
 - **Problem**: Blocking `shutil.rmtree` could freeze the server during large directory deletions.

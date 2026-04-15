@@ -1,22 +1,28 @@
 ---
 engines:
   csslint:
-    # CSSLint's parser predates CSS custom properties (var(--...)),
-    # grid `fr` units, and other modern syntax — every `:root` and
-    # `grid-template-columns` declaration in style.css trips a fatal
-    # `CSSLint_errors` parse failure (21 alerts, plus several stylistic
-    # nits).  Stylelint (modern, configured in .stylelintrc.json)
-    # covers the same space properly.
-    enabled: false
+    # IMPORTANT: Codacy does NOT honour `enabled: false` in this file
+    # (per docs — tool on/off is UI-only via the Code patterns page).
+    # We therefore route every CSS file to exclude_paths so the engine
+    # has nothing to analyse.  Rationale for neutralising csslint:
+    # its parser predates CSS custom properties (var(--...)), grid
+    # `fr` units, and other modern syntax; every `:root` and
+    # `grid-template-columns` trips a CSSLint_errors parse failure.
+    # Stylelint (.stylelintrc.json) covers the same space properly.
+    exclude_paths:
+      - "**/*.css"
   remarklint:
-    # Disabled: the `list-item-bullet-indent` rule fires on every
-    # bullet in RELEASE_NOTES.md / walkthrough.md (23 alerts).  We
-    # keep markdown style enforcement out of the Codacy dashboard;
-    # docs are rendered by GitHub which is forgiving about bullet
-    # indentation.
-    enabled: false
+    # Same story as csslint — `enabled: false` is ignored by Codacy.
+    # `list-item-bullet-indent` and `no-literal-urls` fire on nearly
+    # every bullet/URL across docs; we don't want markdown style
+    # enforcement in the dashboard (GitHub renders docs fine).
+    exclude_paths:
+      - "**/*.md"
   eslint:
-    enabled: false  # Project uses ESLint 9 flat config; Codacy CLI bundles ESLint 8
+    # `enabled: false` is ignored by Codacy — set the tool to "off"
+    # on the Code patterns UI page if you want to hide its results.
+    # Project uses ESLint 9 flat config; Codacy CLI bundles ESLint 8.
+    enabled: false
   pmd:
     enabled: true
     config_file: config/pmd/ruleset.xml
@@ -28,7 +34,9 @@ engines:
   trivy:
     enabled: true
   bandit:
-    # Disabled: Codacy's bandit wrapper does not honour config_file's
+    # `enabled: false` is ignored by Codacy — the flag below is advisory.
+    # Set bandit to "off" on the Code patterns UI page to actually suppress.
+    # Context: Codacy's bandit wrapper does not honour config_file's
     # `exclude_dirs` nor .codacy.yml's `exclude_paths: tests/**`, so
     # every `assert` in tests/ fires B101 (98+ alerts) regardless of
     # what we set.  Semgrep (enabled below) provides overlapping SAST
