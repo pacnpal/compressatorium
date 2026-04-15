@@ -94,9 +94,9 @@ import pytest
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def test_log_color_default_is_auto(monkeypatch):
+def test_log_color_default_is_always(monkeypatch):
     monkeypatch.delenv("LOG_COLOR", raising=False)
-    assert Settings().log_color == "auto"
+    assert Settings().log_color == "always"
 
 
 @pytest.mark.parametrize("mode", ["auto", "always", "never", "AUTO"])
