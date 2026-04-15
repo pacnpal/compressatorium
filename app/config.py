@@ -86,7 +86,10 @@ class Settings(BaseSettings):
     concurrency_lock_dir: str | None = Field(
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
-        description="Directory for job lock files (default: ephemeral /tmp subdirectory, auto-cleaned on restart)",
+        description=(
+            "Directory for job lock files "
+            "(default: ephemeral /tmp subdirectory, auto-cleaned on restart)"
+        ),
     )
     max_job_history: int = Field(default=500, alias="MAX_JOB_HISTORY")
 

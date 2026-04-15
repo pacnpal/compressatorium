@@ -4,6 +4,7 @@ set -e
 # Load local environment variables
 if [ -f .env.local ]; then
     set -o allexport
+    # shellcheck source=/dev/null
     source .env.local
     set +o allexport
 fi
@@ -30,6 +31,7 @@ if [ ! -d ".venv" ]; then
     echo "Creating virtual environment..."
     python3 -m venv .venv
 fi
+# shellcheck source=/dev/null
 source .venv/bin/activate
 
 # Install dependencies
