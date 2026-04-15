@@ -1,5 +1,7 @@
 # Compressatorium
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/a23089650ea04e1cbeaeab3f4c0dc4fb)](https://app.codacy.com/gh/pacnpal/compressatorium?utm_source=github.com&utm_medium=referral&utm_content=pacnpal/compressatorium&utm_campaign=Badge_Grade)
+
 > **Fork Notice:** This project is a fork of MarcTV's original Docker CHD Converter project with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
 
 Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), and **z3ds_compressor** (Nintendo 3DS).
