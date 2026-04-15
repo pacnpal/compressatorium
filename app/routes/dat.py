@@ -66,6 +66,7 @@ class MatchBatchRequest(BaseModel):
 
 class SyncRequest(BaseModel):
     tag: str | None = None
+    force: bool = False
 
 
 @router.post("/dat/import")
@@ -519,9 +520,10 @@ async def sync_mameredump(http_request: Request, request: SyncRequest | None = N
         raise HTTPException(status_code=409, detail="Sync already in progress")
 
     tag = request.tag if request else None
+    force = bool(request.force) if request else False
 
     async def _run_sync():
-        await svc.sync(tag=tag)
+        await svc.sync(tag=tag, force=force)
 
     task = asyncio.create_task(_run_sync())
 

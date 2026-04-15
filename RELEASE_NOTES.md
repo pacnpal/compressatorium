@@ -1,5 +1,35 @@
 # Release Notes
 
+## v3.7.2 - Self-healing DAT re-sync after the softlist &lt;disk&gt; parser fix
+
+### 🐛 Bug Fixes
+
+- **DATs with only `<disk>` hash entries no longer stay stuck at 0 entries after an upgrade.** The v3.7.0 parser (PR #49) added `<disk>` support so MAME-Redump softlist DATs for disc-based systems (Amiga CD / CD32 / CDTV, Bandai Pippin, Konami FireBeat / System 573, Sega Naomi / Chihiro / Lindbergh, Atari Jaguar CD, IBM PC, etc.) import correctly. However, anyone who ran the DAT sync *before* that parser change ended up with DAT rows whose `file_count=0` because the old parser silently ignored `<disk>` elements, and the `DATSyncService` treated the (cached, correct) tag as "already synced" — trapping users in the stale state.
+
+  The sync service now self-heals: if `last_sync_tag` matches but any existing DAT has `file_count=0`, the fast-path is skipped and the DAT set is rebuilt in place. The old DATs are only deleted after the new set is fully imported, so there's never a window with zero DATs.
+
+### ✨ New Features
+
+- **`POST /api/dat/sync` accepts `"force": true`** — bypasses the `already_synced` fast-path unconditionally, useful when operators want to rebuild the DAT set for any reason (repo-side fixes, local DB corruption, etc.). Default remains `false`.
+
+### 🧪 Tests
+
+- `test_sync_auto_forces_when_any_dat_has_zero_entries` — regression test for the self-heal path.
+- `test_sync_force_bypasses_already_synced_guard` — covers the explicit `force=True` opt-in.
+- `test_sync_already_synced_requires_nonzero_file_counts` — the fast-path still fires when every DAT is healthy.
+
+### 📁 Files Changed
+
+- `app/routes/dat.py` — `SyncRequest` gains `force: bool = False`; route forwards it to the service.
+- `app/services/dat_sync.py` — `sync()` / `_do_sync()` take `force`; the fast-path skips when any DAT has `file_count=0`.
+- `tests/test_dat_sync.py`, `tests/test_dat_routes.py` — new regressions + existing assertions updated for the new kwarg.
+
+### ⚠️ Upgrade Notes
+
+- **No action required.** On next sync click the service notices the stale state and rebuilds automatically. If you prefer to trigger it explicitly, POST `/api/dat/sync` with `{"force": true}`.
+
+---
+
 ## v3.7.1 - Color-coded stdout logs
 
 ### ✨ New Features

@@ -277,10 +277,14 @@ class DATSyncService:
     # Core sync logic
     # ------------------------------------------------------------------
 
-    async def sync(self, tag: str | None = None) -> dict:
+    async def sync(self, tag: str | None = None, *, force: bool = False) -> dict:
         """Run a full DAT sync from the MAMERedump GitHub repo.
 
         Returns a summary dict. Raises RuntimeError if already syncing.
+
+        ``force`` bypasses the ``already_synced`` fast-path so callers can
+        rebuild the DAT set in place (e.g. after a parser upgrade that
+        widens what counts as a hash entry).
         """
         self._ensure_init()
         with self._lock:
@@ -296,7 +300,7 @@ class DATSyncService:
             }
 
         try:
-            return await self._do_sync(tag)
+            return await self._do_sync(tag, force=force)
         except Exception as exc:
             self._update_progress(status="error", error=str(exc))
             raise
@@ -312,7 +316,7 @@ class DATSyncService:
             from app.services.dat_store import dat_store
         return dat_store
 
-    async def _do_sync(self, tag: str | None) -> dict:
+    async def _do_sync(self, tag: str | None, *, force: bool = False) -> dict:
         dat_store = self._get_dat_store()
 
         # Resolve tag.
@@ -321,10 +325,15 @@ class DATSyncService:
             tag = await run_in_threadpool(self._fetch_latest_tag)
             logger.info("dat_sync: resolved latest tag: %s", tag)
 
-        # Check if already synced to this tag, but only fast-path if DATs are present.
+        # Check if already synced to this tag.  Three short-circuit reasons to
+        # *not* fast-path: (1) the DAT store is empty (state says synced but
+        # rows are gone), (2) any DAT has file_count=0 (imported before a
+        # parser upgrade widened what counts as a hash entry — re-import to
+        # self-heal), or (3) the caller asked to force.
         existing_dats = await run_in_threadpool(dat_store.list_dats)
         if self._state.get("last_sync_tag") == tag:
-            if existing_dats:
+            stale_count = sum(1 for d in existing_dats if d.get("file_count", 0) == 0)
+            if existing_dats and not force and stale_count == 0:
                 with self._lock:
                     self._progress["status"] = "already_synced"
                 return {
@@ -332,11 +341,21 @@ class DATSyncService:
                     "tag": tag,
                     "message": f"Already synced to {tag}",
                 }
-            logger.warning(
-                "dat_sync: state reports tag %s already synced,"
-                " but DAT store is empty; forcing re-sync",
-                tag,
-            )
+            if force and existing_dats:
+                logger.info("dat_sync: force=True — re-syncing tag %s", tag)
+            elif stale_count:
+                logger.warning(
+                    "dat_sync: state reports tag %s already synced, but %d "
+                    "DAT(s) have file_count=0 — likely a pre-parser-upgrade "
+                    "import; forcing re-sync",
+                    tag, stale_count,
+                )
+            else:
+                logger.warning(
+                    "dat_sync: state reports tag %s already synced,"
+                    " but DAT store is empty; forcing re-sync",
+                    tag,
+                )
 
         # List all DAT files before touching existing data.
         self._update_progress(status="listing files")

@@ -145,11 +145,92 @@ async def test_sync_already_synced(sync_service):
     """Sync returns early when already synced to the requested tag and DATs are present."""
     sync_service._state = {"last_sync_tag": "0.285"}
     mock_dat_store = MagicMock()
-    mock_dat_store.list_dats = MagicMock(return_value=[{"id": "abc", "name": "Test DAT"}])
+    mock_dat_store.list_dats = MagicMock(return_value=[
+        {"id": "abc", "name": "Test DAT", "file_count": 42}
+    ])
     mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
     with patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
         result = await sync_service.sync(tag="0.285")
     assert result["status"] == "already_synced"
+
+
+@pytest.mark.asyncio
+async def test_sync_already_synced_requires_nonzero_file_counts(sync_service):
+    """Tag matches + DATs present + every DAT has file_count>0 = fast-path."""
+    sync_service._state = {"last_sync_tag": "0.285"}
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[
+        {"id": "a", "name": "DAT A", "file_count": 100},
+        {"id": "b", "name": "DAT B", "file_count": 50},
+    ])
+    mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
+    with patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync(tag="0.285")
+    assert result["status"] == "already_synced"
+
+
+@pytest.mark.asyncio
+async def test_sync_auto_forces_when_any_dat_has_zero_entries(sync_service, tmp_path, caplog):
+    """One file_count=0 DAT must trip the auto-force path (pre-parser-upgrade state)."""
+    sync_service._state = {"last_sync_tag": "0.285"}
+    dat_file = tmp_path / "sample.dat"
+    dat_file.write_text("<datafile></datafile>")
+
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[
+        {"id": "a", "name": "OK DAT", "file_count": 100},
+        {"id": "b", "name": "Stale DAT", "file_count": 0},
+    ])
+    mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
+    mock_dat_store.import_dat_no_persist = AsyncMock(
+        return_value={"id": "new1", "name": "Fresh", "file_count": 1, "hashes_added": 1}
+    )
+    mock_dat_store.persist = AsyncMock()
+
+    with caplog.at_level("WARNING", logger="chd.dat_sync"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync(tag="0.285")
+
+    assert result["status"] == "complete"
+    assert any(
+        "have file_count=0" in r.message
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_force_bypasses_already_synced_guard(sync_service, tmp_path):
+    """force=True re-syncs even when tag matches and all DATs are healthy."""
+    sync_service._state = {"last_sync_tag": "0.285"}
+    dat_file = tmp_path / "sample.dat"
+    dat_file.write_text("<datafile></datafile>")
+
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[
+        {"id": "a", "name": "DAT A", "file_count": 100},
+    ])
+    mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
+    mock_dat_store.import_dat_no_persist = AsyncMock(
+        return_value={"id": "new1", "name": "Fresh", "file_count": 1, "hashes_added": 1}
+    )
+    mock_dat_store.persist = AsyncMock()
+
+    with patch.object(sync_service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store):
+        result = await sync_service.sync(tag="0.285", force=True)
+
+    assert result["status"] == "complete"
+    assert result["files_imported"] == 1
+    mock_dat_store.import_dat_no_persist.assert_called_once()
 
 
 @pytest.mark.asyncio

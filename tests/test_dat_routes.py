@@ -645,7 +645,7 @@ async def test_sync_mameredump_passes_tag(monkeypatch):
     )
     # Give the background task a chance to start
     await asyncio.sleep(0)
-    mock_svc.sync.assert_called_once_with(tag="0.285")
+    mock_svc.sync.assert_called_once_with(tag="0.285", force=False)
 
 
 # ---------------------------------------------------------------------------
