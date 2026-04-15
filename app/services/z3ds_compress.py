@@ -497,12 +497,12 @@ class Z3DSCompressService:
 
         ext = Path(file_path).suffix.lower()
         if ext not in {".zcci", ".zcia", ".z3ds"}:
-             yield {
+            yield {
                 "type": "error",
                 "valid": False,
                 "message": f"Invalid extension: {ext}"
             }
-             return
+            return
 
         # Perform deep verification using zstd -t.
         # Container metadata length is variable, so compute the payload offset
@@ -599,6 +599,7 @@ class Z3DSCompressService:
                 "valid": False,
                 "message": f"Verification error: {str(e)}"
             }
+
 
 # Global service instance
 z3ds_compress_service = Z3DSCompressService()

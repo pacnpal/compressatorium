@@ -203,7 +203,7 @@ def _find_file(f, root_lba: int, root_size: int, path_parts: list[str]) -> Optio
         hit = next((e for e in entries if e[0] == part.upper()), None)
         if hit is None:
             return None
-        name, lba, size, is_dir = hit
+        _name, lba, size, is_dir = hit
         if i == len(path_parts) - 1:
             # Final component — read and return the file
             try:
@@ -908,7 +908,7 @@ def _extract_gdi(path: str) -> Optional[dict]:
     try:
         gdi_dir = Path(path).parent
         with open(path, encoding="latin-1") as f:
-            lines = [l.strip() for l in f if l.strip()]
+            lines = [line.strip() for line in f if line.strip()]
 
         for line in lines[1:]:  # skip track count on first line
             parts = line.split()

@@ -214,7 +214,7 @@ class LockManager:
                     # Lock is held by another process
                     lock_handle.close()
                     return False
-                except OSError as e:
+                except OSError:
                     # Other error (permission denied, etc.)
                     lock_handle.close()
                     logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
@@ -252,7 +252,7 @@ class LockManager:
                 self._lock_handles[normalized_path] = lock_handle
                 return True
 
-            except Exception as e:
+            except Exception:
                 # Ensure file handle is closed on any error
                 if lock_handle is not None:
                     try:

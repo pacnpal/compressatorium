@@ -7,7 +7,7 @@ import logging
 import os
 import re
 
-import defusedxml.ElementTree as ET
+import defusedxml.ElementTree as ET  # noqa: N817
 from defusedxml.common import DefusedXmlException
 
 logger = logging.getLogger("chd.dat_parser")
@@ -43,7 +43,7 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
                 io.BytesIO(source.encode("utf-8")), events=("end",),
             )
 
-        for event, elem in context:
+        for _event, elem in context:
             tag = _strip_ns(elem.tag)
 
             if tag == "header":

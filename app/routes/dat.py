@@ -623,7 +623,7 @@ async def _match_single_file(file_path: str) -> dict:
     try:
         async with await workload_limiter.acquire("match"):
             file_sha1 = await compute_file_sha1(file_path)
-    except OSError as exc:
+    except OSError:
         logger.warning("Failed to hash %s", file_path, exc_info=True)
         return {**base_result, "error": "Unable to process file"}
 

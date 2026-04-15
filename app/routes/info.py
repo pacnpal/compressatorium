@@ -435,16 +435,16 @@ async def verify_z3ds_batch_events(
                                 elapsed = int(time.monotonic() - start)
                                 yield {
                                     "event": "verify_batch_file_progress",
-                                        "data": json.dumps(
-                                            {
-                                                "index": idx,
-                                                "path": path,
-                                                "filename": filename,
-                                                "progress": None,
-                                                "message": f"Verifying... ({elapsed}s)",
-                                            }
-                                        ),
-                                    }
+                                    "data": json.dumps(
+                                        {
+                                            "index": idx,
+                                            "path": path,
+                                            "filename": filename,
+                                            "progress": None,
+                                            "message": f"Verifying... ({elapsed}s)",
+                                        }
+                                    ),
+                                }
                     finally:
                         verify_task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
