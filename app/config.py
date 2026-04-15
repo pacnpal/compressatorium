@@ -148,6 +148,15 @@ class Settings(BaseSettings):
         alias="LOG_PATH",
         validation_alias=AliasChoices("LOG_PATH", "CHD_DEBUG_LOG_PATH"),
     )
+    log_color: str = Field(
+        default="auto",
+        alias="LOG_COLOR",
+        description=(
+            "ANSI-color the stdout log stream: 'auto' (TTY + no NO_COLOR env), "
+            "'always', or 'never'. File logs are never colored. Set 'always' "
+            "for `docker logs` since Docker does not allocate a TTY by default."
+        ),
+    )
     debug_heartbeat_interval: int = Field(default=30, alias="CHD_DEBUG_HEARTBEAT")
     debug_progress_interval: int = Field(
         default=30,

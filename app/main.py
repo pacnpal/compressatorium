@@ -18,6 +18,53 @@ def get_version() -> str:
     return os.environ.get("APP_VERSION", "dev")
 
 
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+# ANSI SGR codes per level; reset after levelname only so message bodies
+# stay uncolored (copy-paste from `docker logs` remains clean).
+_LEVEL_COLORS = {
+    "DEBUG": "\x1b[2m",       # dim
+    "INFO": "\x1b[32m",       # green
+    "WARNING": "\x1b[33m",    # yellow
+    "ERROR": "\x1b[31m",      # red
+    "CRITICAL": "\x1b[1;31m", # bold red
+}
+_RESET = "\x1b[0m"
+
+
+class ColorFormatter(logging.Formatter):
+    """Formatter that wraps only ``%(levelname)s`` in ANSI color codes."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        color = _LEVEL_COLORS.get(record.levelname)
+        if not color:
+            return super().format(record)
+        original = record.levelname
+        record.levelname = f"{color}{original}{_RESET}"
+        try:
+            return super().format(record)
+        finally:
+            record.levelname = original
+
+
+def _resolve_color(mode: str, stream) -> bool:
+    """Decide whether to emit ANSI colors on *stream*.
+
+    ``mode`` is the ``log_color`` setting: ``auto`` / ``always`` / ``never``.
+    ``auto`` enables color iff *stream* is a TTY and the ``NO_COLOR`` env
+    var (https://no-color.org) is unset.
+    """
+    normalized = (mode or "").strip().lower()
+    if normalized == "always":
+        return True
+    if normalized == "never":
+        return False
+    # "auto" and any unrecognised value: fall back to TTY detection.
+    if os.environ.get("NO_COLOR"):
+        return False
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
 def configure_logging() -> None:
     # getLevelName() returns an int for known level names (DEBUG, INFO, WARNING,
     # ERROR, CRITICAL — plus legacy aliases WARN=WARNING and FATAL=CRITICAL)
@@ -30,6 +77,9 @@ def configure_logging() -> None:
     if invalid_level:
         level = logging.INFO
 
+    color_mode = settings.log_color.strip().lower()
+    invalid_color = color_mode not in {"auto", "always", "never"}
+
     logger = logging.getLogger("chd")
     # Always update the level so re-calls (e.g. test isolation or reloads)
     # respect the current LOGLEVEL setting, even when handlers already exist.
@@ -38,10 +88,13 @@ def configure_logging() -> None:
         return
 
     logger.propagate = False
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    plain_formatter = logging.Formatter(_LOG_FORMAT)
 
     stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
+    if _resolve_color(color_mode, stream_handler.stream):
+        stream_handler.setFormatter(ColorFormatter(_LOG_FORMAT))
+    else:
+        stream_handler.setFormatter(plain_formatter)
     logger.addHandler(stream_handler)
 
     if settings.log_path:
@@ -49,7 +102,8 @@ def configure_logging() -> None:
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
         file_handler = logging.FileHandler(settings.log_path)
-        file_handler.setFormatter(formatter)
+        # File logs are never colored — keeps grep / log aggregators sane.
+        file_handler.setFormatter(plain_formatter)
         logger.addHandler(file_handler)
 
     if invalid_level:
@@ -57,6 +111,12 @@ def configure_logging() -> None:
             "Unknown LOGLEVEL %r — defaulting to INFO. "
             "Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL",
             settings.log_level,
+        )
+    if invalid_color:
+        logger.warning(
+            "Unknown LOG_COLOR %r — defaulting to auto. "
+            "Valid values: auto, always, never",
+            settings.log_color,
         )
 
 
