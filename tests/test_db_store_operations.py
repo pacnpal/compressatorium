@@ -249,6 +249,31 @@ def test_has_stale_dats_detects_zero_count(ready_db):
 
 
 # ---------------------------------------------------------------------------
+# list_match_paths — snapshot source for post-sync rematch hook
+# ---------------------------------------------------------------------------
+
+
+def test_list_match_paths_returns_empty_on_fresh_store(ready_db):
+    from app.services.dat_store import DATStore
+
+    assert DATStore().list_match_paths() == []
+
+
+def test_list_match_paths_returns_all_paths(ready_db):
+    from app.services.dat_store import DATStore
+
+    with _db.get_session() as s:
+        s.add(_db.DATMatch(path="/data/a.chd", matched=True))
+        s.add(_db.DATMatch(path="/data/b.chd", matched=False))
+        s.add(_db.DATMatch(path="/data/c.chd", matched=True))
+        s.commit()
+
+    assert sorted(DATStore().list_match_paths()) == [
+        "/data/a.chd", "/data/b.chd", "/data/c.chd",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # DATSyncState singleton invariant
 # ---------------------------------------------------------------------------
 

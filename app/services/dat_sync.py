@@ -69,10 +69,7 @@ class DATSyncService:
             # Re-check inside the lock in case another thread just finished.
             if self._initialized:
                 return
-            try:
-                from config import settings
-            except ImportError:
-                from app.config import settings
+            from config import settings
             repo = settings.mameredump_repo
             token = os.environ.get("MAMEREDUMP_GITHUB_TOKEN") or None
             if self._explicit_state_path:
@@ -310,10 +307,7 @@ class DATSyncService:
 
     @staticmethod
     def _get_dat_store():
-        try:
-            from services.dat_store import dat_store
-        except ImportError:
-            from app.services.dat_store import dat_store
+        from services.dat_store import dat_store
         return dat_store
 
     async def _do_sync(self, tag: str | None, *, force: bool = False) -> dict:
@@ -434,6 +428,23 @@ class DATSyncService:
             # Full success: commit all staged DATs atomically, then remove the
             # old set. New DATs are visible before old ones are removed, but
             # there is never a window where neither exists.
+            # Snapshot match-cache paths BEFORE persist() wipes DATMatch,
+            # so we can kick a background rematch once the new DATs are live.
+            # Treat snapshot failure as best-effort: if the SELECT raises
+            # here we must NOT abort, because DATs have been staged via
+            # import_dat_no_persist and the next step (persist) is what
+            # commits them. Aborting would leak the staged set into
+            # _pending_imports and corrupt the next sync.
+            try:
+                previous_match_paths = await run_in_threadpool(
+                    dat_store.list_match_paths,
+                )
+            except Exception:
+                logger.exception(
+                    "dat_sync: failed to snapshot match paths; committing"
+                    " DATs without scheduling a post-sync rematch",
+                )
+                previous_match_paths = []
             old_ids = [d["id"] for d in existing_dats]
             await dat_store.persist()
             if old_ids:
@@ -443,6 +454,42 @@ class DATSyncService:
                         "dat_sync: cleared %d existing DATs after full successful sync",
                         deleted,
                     )
+            if previous_match_paths:
+                # Lazy import: routes.dat transitively imports this module
+                # via _get_sync_service, so deferring the import to
+                # call-time keeps the module-load graph acyclic.  A true
+                # ImportError here indicates a broken deployment (routes
+                # package missing, syntax error in a transitive dep) and
+                # MUST propagate — letting it fall into the best-effort
+                # catch below would hide it behind a silent "complete"
+                # sync result.
+                from routes.dat import schedule_match_job
+                # Rematch scheduling itself is best-effort: the DAT
+                # import has already been committed. Runtime failures
+                # (job_manager queue full, loop already shutting down,
+                # etc.) must not mark the sync as errored — the DAT data
+                # is fine; the user can retry matching manually.
+                try:
+                    rematch_job_id = await schedule_match_job(previous_match_paths)
+                except Exception:
+                    logger.exception(
+                        "dat_sync: failed to schedule post-sync rematch for %d file(s); "
+                        "DAT import succeeded, user can trigger a manual match later",
+                        len(previous_match_paths),
+                    )
+                else:
+                    # previous_match_paths is non-empty at this point, so a
+                    # None return from schedule_match_job unambiguously
+                    # means "another match job is already active".
+                    if rematch_job_id:
+                        logger.info(
+                            "dat_sync: scheduled rematch job %s for %d previously-scanned file(s)",
+                            rematch_job_id, len(previous_match_paths),
+                        )
+                    else:
+                        logger.info(
+                            "dat_sync: skipped rematch — another match job is already active",
+                        )
         else:
             # Partial failure: discard all staged (uncommitted) new DATs so the
             # store stays in a clean, known-good state (previous working set intact).

@@ -1,5 +1,49 @@
 # Release Notes
 
+## v3.7.5 - Post-sync auto-rematch + hardened match-job error handling
+
+### ✨ New Features
+
+- **DAT re-syncs now auto-rematch previously-scanned files.** When a DAT re-sync wipes the match cache (via `_persist_sync` in `app/services/dat_store.py`), the sync now snapshots the pre-wipe path list and enqueues a background `/dat/match-batch/job` against those paths. Before this, `GET /dat/stats` would read `matched=0, scanned=0` immediately after a sync until the user manually browsed every affected directory to re-trigger the frontend's match-batch effect. On a typical install with 1500+ scanned files across a dozen volumes, that was easy to miss. Now the stats counter refreshes on its own within a few minutes of sync completion.
+- **`schedule_match_job()` helper.** Extracted from the `/dat/match-batch/job` HTTP handler so non-HTTP callers (like the new post-sync hook) can reuse the same concurrency-guarded scheduling path. Works with or without a FastAPI `BackgroundTasks` — `asyncio.create_task` with a module-level strong-reference set (`_background_match_tasks`) is used for non-HTTP callers so the task can't be garbage-collected mid-run.
+
+### 🐛 Bug Fixes & Hardening
+
+- **Failure counting in `_run_match_job`.** Previously a dropped volume produced a misleading `"complete, 0 matched"` signal — every per-file OSError was WARN-logged and the job finished green. Two new counters (`errors` + `skips`) now track real failures vs. policy skips. When `errors == total` the job flips to `failed` with a `"check volume accessibility"` error message so operators see a red signal instead of a DAT-coverage-gap illusion.
+- **Mid-loop exception preserves counter context.** When the outer `except Exception` in `_run_match_job` fires (e.g., `job_manager.update_external_job` starts throwing), the error message now includes `processed N/M, K error(s)` so operators know how far the job got before failure.
+- **Programmer-error tracebacks surface.** Two broad `except Exception` blocks in `_hash_one_for_job` and `_run_match_job`'s cache-write path now use `logger.exception` (ERROR level with full traceback) rather than `logger.warning`. A `KeyError`/`AttributeError` from a refactor bug is visible in logs instead of buried as a one-line warning.
+- **Background match-task exceptions surface too.** If `_run_match_job` raises past its own `try/finally` (rare, but possible if `finish_external_job` throws), the exception is now routed through the project logger instead of only appearing as asyncio's "Task exception was never retrieved" warning on GC.
+- **`list_match_paths` failure no longer leaks staged DATs.** If the snapshot SELECT raised (DB locked, disk error), the sync would abort before `persist()` committed, leaving DATs staged in `_pending_imports` — the next sync would double-stage and corrupt the store. Snapshot failure is now best-effort: empty list + `logger.exception`, and `persist()` still runs so the DAT import is durable.
+- **Rematch `ImportError` no longer silently swallowed.** The rematch scheduling's `try/except Exception` would hide a missing-module deployment bug as a silent "complete" sync. `from routes.dat import schedule_match_job` is now outside the try/except — a real ImportError propagates and fails the sync loudly so operators notice.
+- **`schedule_match_job` scheduling failure rolls back `_active_match_job_id`.** If `asyncio.create_task` or `background_tasks.add_task` raises after the lock was claimed, future match jobs would return HTTP 409 forever. The rollback clears the id and finalizes the phantom external job before re-raising.
+- **Canonical internal imports.** Removed three `try: from services.x / except ImportError: from app.services.x` fallback pairs in `app/services/dat_sync.py`. Under the project's `PYTHONPATH=app` convention the fallback path was unreachable, and the `except ImportError` would silently absorb a real circular-import bug if one ever arose. Production-only feature-gate imports in `archive.py` / `disc_id.py` are untouched.
+
+### 🧪 Tests
+
+- `test_do_sync_schedules_rematch_after_success` / `..._when_no_previous_matches` / `..._on_partial_failure` / `..._logs_when_skipped_due_to_active_job` — post-sync rematch hook.
+- `test_do_sync_list_match_paths_failure_is_best_effort` — snapshot SELECT failure is handled.
+- `test_do_sync_rematch_schedule_exception_does_not_poison_sync` — rematch failure doesn't mark sync as errored.
+- `test_run_match_job_reports_errors_in_final_message` / `..._marks_failure_when_all_files_error` / `..._skip_count_does_not_trip_failure` / `..._cache_write_failure_counts_as_error` / `..._outer_exception_includes_counter_context` — failure-counter coverage.
+- `test_hash_one_for_job_logs_match_error_with_traceback` — programmer-error tracebacks land at ERROR level.
+- `test_schedule_match_job_returns_none_on_empty_paths` / `..._returns_none_when_active` / `..._rolls_back_active_id_on_scheduling_failure` / `..._uses_create_task_without_background_tasks` — helper behavior.
+- `test_list_match_paths_returns_empty_on_fresh_store` / `..._returns_all_paths` — snapshot query.
+
+308 tests pass (+14 new since v3.7.3).
+
+### 📁 Files Changed
+
+- `app/routes/dat.py` — `schedule_match_job` helper + `_log_background_match_task_error` callback; `_run_match_job` refactored for error/skip counting, `logger.exception` for broad catches, counter context in outer-except message.
+- `app/services/dat_store.py` — `has_stale_dats()` and `list_match_paths()` helpers.
+- `app/services/dat_sync.py` — `_do_sync()` now snapshots match paths (best-effort) and schedules rematch after successful commit; three `except ImportError` fallbacks removed.
+- `app/main.py` — startup lifespan now auto-triggers self-heal sync when any DAT has `file_count=0` (shipped in v3.7.3).
+
+### ⚠️ Upgrade Notes
+
+- **No action required.** After restart, if your DAT store has stale rows they self-heal (v3.7.3 behavior), and if that sync runs it now auto-rematches your scanned files. If a match job is already active when the post-sync hook fires, the rematch is skipped with a log line and you can re-trigger manually via `POST /dat/sync {"force": true}`.
+- **Jobs panel:** after a sync you'll see a `"DAT Match"` external job tick through your previously-scanned files. If a volume is offline while it runs, the job now finishes with `failed` + `"all N file(s) failed — check volume accessibility"` instead of a misleading `"0 matched"` success.
+
+---
+
 ## v3.7.3 - DAT self-heal fires automatically on startup
 
 ### 🐛 Bug Fixes

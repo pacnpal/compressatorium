@@ -44,6 +44,31 @@ logger = logging.getLogger("chd.dat")
 _match_job_lock: asyncio.Lock | None = None
 _active_match_job_id: str | None = None
 
+# Strong refs for tasks scheduled via asyncio.create_task from non-HTTP
+# callers (e.g. the post-sync rematch hook in services.dat_sync).
+# asyncio will GC un-referenced Tasks mid-run; the done-callback removes
+# the entry when the task finishes.
+_background_match_tasks: set[asyncio.Task] = set()
+
+
+def _log_background_match_task_error(task: asyncio.Task) -> None:
+    """Surface exceptions from background match tasks via the project logger.
+
+    Without this, any exception that escapes ``_run_match_job``'s own
+    try/finally (e.g. ``finish_external_job`` raising from the finally)
+    would only appear as asyncio's "Task exception was never retrieved"
+    warning on GC, which is easy to miss in production log streams.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Background match task %s raised",
+            task.get_name(),
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
 
 def _get_match_job_lock() -> asyncio.Lock:
     """Return the module-level match-job lock, creating it on first use.
@@ -353,42 +378,96 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
     if not to_compute:
         return {"status": "idle", "results": results}
 
-    async with _get_match_job_lock():
-        # Authoritative guard: if the module-level id is set, a background
-        # _run_match_job is still executing (it only clears the id from
-        # its own finally block AFTER the hashing loop has fully unwound
-        # and finish_external_job has landed).  Do NOT fall back to
-        # inspecting the job_manager's visible status here — the job can
-        # be reaped from job_manager.jobs via "Clear Done" or a history
-        # prune while the underlying task is still alive, which would
-        # spuriously let a second job start and race the first on the
-        # "match" workload lane.  The presence of _active_match_job_id
-        # is the single source of truth for "a hash loop is still
-        # executing"; anything else is advisory.
-        if _active_match_job_id is not None:
-            raise HTTPException(
-                status_code=409,
-                detail="DAT match job already in progress",
-            )
-
-        scan_job = job_manager.create_external_job(
-            filename="DAT Match",
-            mode=ConversionMode.DAT_MATCH,
-            message=f"Hashing {len(to_compute)} file(s)\u2026",
+    job_id = await schedule_match_job(to_compute, background_tasks=background_tasks)
+    if job_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="DAT match job already in progress",
         )
-        _active_match_job_id = scan_job.id
-
-    background_tasks.add_task(
-        _run_match_job,
-        job_id=scan_job.id,
-        paths_to_compute=to_compute,
-    )
 
     return {
         "status": "started",
-        "job_id": scan_job.id,
+        "job_id": job_id,
         "results": results,
     }
+
+
+async def schedule_match_job(
+    paths: list[str],
+    *,
+    background_tasks: BackgroundTasks | None = None,
+) -> str | None:
+    """Start a background DAT-match job for *paths*.
+
+    Returns the newly-created job id, or ``None`` if another match job is
+    already active or *paths* is empty. When ``background_tasks`` is
+    supplied (HTTP context) the task is registered with FastAPI so it
+    runs after response-send; otherwise it is scheduled via
+    ``asyncio.create_task`` — used by non-HTTP callers such as the
+    post-sync rematch hook in :mod:`services.dat_sync`.
+
+    The ``_active_match_job_id`` + ``_match_job_lock`` guard is the
+    authoritative "a hash loop is still executing" signal.  Do NOT
+    fall back to inspecting ``job_manager`` status: jobs can be reaped
+    via Clear-Done or a history prune while the underlying task is
+    still alive, which would let a second job race the first on the
+    "match" workload lane.
+    """
+    global _active_match_job_id
+    if not paths:
+        return None
+    async with _get_match_job_lock():
+        if _active_match_job_id is not None:
+            return None
+        scan_job = job_manager.create_external_job(
+            filename="DAT Match",
+            mode=ConversionMode.DAT_MATCH,
+            message=f"Hashing {len(paths)} file(s)\u2026",
+        )
+        _active_match_job_id = scan_job.id
+    # If scheduling the actual task fails after we've claimed the slot,
+    # roll back _active_match_job_id and mark the phantom external job
+    # as failed — otherwise the lock stays held forever and every future
+    # match request returns 409 until process restart.
+    # except BaseException (not Exception): event-loop shutdown surfaces
+    # as CancelledError / KeyboardInterrupt, and those must still roll
+    # the id back — leaving the process-level match lock held after a
+    # Ctrl-C would deadlock the next run.
+    try:
+        if background_tasks is not None:
+            background_tasks.add_task(
+                _run_match_job, job_id=scan_job.id, paths_to_compute=paths,
+            )
+        else:
+            task = asyncio.create_task(
+                _run_match_job(job_id=scan_job.id, paths_to_compute=paths),
+            )
+            _background_match_tasks.add(task)
+            task.add_done_callback(_background_match_tasks.discard)
+            # If _run_match_job raises past its own try/finally (rare —
+            # only if finish_external_job itself throws from the finally
+            # block) the exception is stored on the Task and logged by
+            # asyncio as "Task exception was never retrieved" on GC.
+            # Surface it through the project logger instead so operators
+            # see it in the normal log stream.
+            task.add_done_callback(_log_background_match_task_error)
+    except BaseException:
+        async with _get_match_job_lock():
+            if _active_match_job_id == scan_job.id:
+                _active_match_job_id = None
+        try:
+            await job_manager.finish_external_job(
+                scan_job.id,
+                success=False,
+                error_message="Failed to schedule DAT match job",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to finalize phantom match job %s after scheduling error",
+                scan_job.id,
+            )
+        raise
+    return scan_job.id
 
 
 async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
@@ -415,7 +494,10 @@ async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
     try:
         result = await _match_single_file(normalized_path)
     except Exception as exc:  # pragma: no cover — isolated per-path
-        logger.warning("DAT match failed for %s: %s", normalized_path, exc)
+        # logger.exception rather than logger.warning: a KeyError /
+        # AttributeError from a refactor bug should surface with a full
+        # traceback at ERROR level, not be buried as a one-line warning.
+        logger.exception("DAT match failed for %s", normalized_path)
         return {"path": normalized_path, "matched": False, "error": str(exc)}, False
 
     if result.get("reason") == "file too large" or result.get("error"):
@@ -436,6 +518,20 @@ async def _run_match_job(
     processed = 0
     hashed = 0
     matched = 0
+    # Per-file outcomes that are NOT "matched vs unmatched":
+    #   errors — real failures the caller should know about: anything
+    #            _hash_one_for_job labels with result["error"] (stat
+    #            OSError other than FileNotFoundError, hasher exception,
+    #            _match_single_file exception) OR a cache-write exception.
+    #            If every file errors we fail the whole job so the user
+    #            sees the volume-offline-style problem rather than a
+    #            misleading "complete, 0 matched" that looks like a DAT
+    #            coverage gap.
+    #   skips  — policy/classification non-errors: size cap hit,
+    #            non-regular file, FileNotFoundError (result has no
+    #            "error" key in these cases). Informational only.
+    errors = 0
+    skips = 0
     job_success = False
     job_error: str | None = None
 
@@ -458,24 +554,56 @@ async def _run_match_job(
                 # work of the batch upsert path for a one-item write.
                 try:
                     await dat_store.set_match(normalized_path, result)
-                except Exception as exc:  # pragma: no cover — best-effort cache write
-                    logger.warning("Failed to cache match for %s: %s", normalized_path, exc)
+                except Exception:  # pragma: no cover — best-effort cache write
+                    logger.exception("Failed to cache match for %s", normalized_path)
+                    errors += 1
+            else:
+                # Non-cacheable outcomes split into errors (something went
+                # wrong — see _hash_one_for_job) vs skips (policy: file
+                # too large, not a regular file). `result.get("error")`
+                # is the discriminator that _hash_one_for_job sets.
+                if result.get("error"):
+                    errors += 1
+                else:
+                    skips += 1
 
             processed += 1
             if result.get("matched"):
                 matched += 1
 
-        job_success = True
+        # If every single file errored, something structural is wrong
+        # (volume unmounted, DB down, etc.).  Flip the job to failure so
+        # the user sees a red signal rather than a misleading "complete,
+        # 0 matched" that looks like a DAT-coverage gap.
+        if total > 0 and errors == total:
+            job_success = False
+            job_error = (
+                f"all {errors} file(s) failed — check volume accessibility"
+            )
+        else:
+            job_success = True
     except Exception as exc:
         logger.exception("DAT match job %s failed", job_id)
-        job_error = str(exc)
+        # Include counters so the final-status line tells the operator
+        # how far the job got before the mid-loop failure.  Without
+        # this, the user only sees the raw exception string and loses
+        # the "processed 12/69 before failure" context.
+        parts = [f"processed {processed}/{total}"]
+        if errors:
+            parts.append(f"{errors} error(s)")
+        if skips:
+            parts.append(f"{skips} skipped")
+        context = ", ".join(parts)
+        job_error = f"{exc} ({context} before failure)"
     finally:
         elapsed = time.monotonic() - start
         if job_success:
-            final_msg = (
-                f"{processed}/{total} processed, {hashed} hashed, {matched} matched"
-                f" \u2014 {elapsed:.1f}s"
-            )
+            parts = [f"{processed}/{total} processed, {hashed} hashed, {matched} matched"]
+            if errors:
+                parts.append(f"{errors} error(s)")
+            if skips:
+                parts.append(f"{skips} skipped")
+            final_msg = ", ".join(parts) + f" \u2014 {elapsed:.1f}s"
         else:
             final_msg = f"DAT match failed: {job_error or 'unknown error'}"
         await job_manager.update_external_job(

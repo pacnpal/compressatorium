@@ -947,3 +947,339 @@ async def test_match_file_oserror_returns_redacted_error(tmp_path, isolated_dat_
     assert result["error"] == "Unable to process file"
     assert internal_msg not in str(result)
 
+
+
+# ---------------------------------------------------------------------------
+# _run_match_job failure counting + error-level logging for broad excepts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_match_job_reports_errors_in_final_message(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """Mix of (matched, unmatched, error) outcomes — final message surfaces the error count."""
+    from services.job_manager import job_manager
+
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", "manual-test-job")
+
+    scan_job = job_manager.create_external_job(
+        filename="DAT Match",
+        mode=dat_routes.ConversionMode.DAT_MATCH,
+        message="test",
+    )
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
+
+    hash_outcomes = [
+        ({"path": "/a", "matched": True, "game_name": "A"}, True),
+        ({"path": "/b", "matched": False}, True),
+        ({"path": "/c", "matched": False, "error": "boom"}, False),
+    ]
+
+    async def fake_hash_one(path):
+        return hash_outcomes.pop(0)
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
+
+    await dat_routes._run_match_job(
+        job_id=scan_job.id, paths_to_compute=["/a", "/b", "/c"],
+    )
+
+    final = job_manager.jobs[scan_job.id]
+    assert final.status.value == "completed"
+    assert "1 error(s)" in final.message
+    assert "3/3 processed" in final.message
+
+
+@pytest.mark.asyncio
+async def test_run_match_job_marks_failure_when_all_files_error(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """When every file errors, the job is marked failed so the user sees a red signal."""
+    from services.job_manager import job_manager
+
+    scan_job = job_manager.create_external_job(
+        filename="DAT Match",
+        mode=dat_routes.ConversionMode.DAT_MATCH,
+        message="test",
+    )
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
+
+    async def always_error(path):
+        return {"path": path, "matched": False, "error": "mount offline"}, False
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", always_error)
+
+    await dat_routes._run_match_job(
+        job_id=scan_job.id, paths_to_compute=["/a", "/b", "/c"],
+    )
+
+    final = job_manager.jobs[scan_job.id]
+    assert final.status.value == "failed"
+    assert "all 3 file(s) failed" in final.message
+    assert "check volume accessibility" in final.message
+
+
+@pytest.mark.asyncio
+async def test_run_match_job_outer_exception_includes_counter_context(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """When the outer except fires mid-loop, the final error message must
+    include the processed/errors/skips counts so operators know how far
+    the job got before the fault — not just the raw exception string.
+    """
+    from services.job_manager import job_manager
+
+    scan_job = job_manager.create_external_job(
+        filename="DAT Match",
+        mode=dat_routes.ConversionMode.DAT_MATCH,
+        message="test",
+    )
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
+
+    # First two iterations: one success, one error.  Third iteration:
+    # update_external_job raises, tripping the outer except.
+    hash_calls = 0
+
+    async def fake_hash_one(path):
+        nonlocal hash_calls
+        hash_calls += 1
+        if hash_calls == 1:
+            return {"path": path, "matched": True}, True
+        return {"path": path, "matched": False, "error": "transient"}, False
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
+
+    update_calls = 0
+    original_update = dat_routes.job_manager.update_external_job
+
+    async def flaky_update(job_id, **kwargs):
+        nonlocal update_calls
+        update_calls += 1
+        # Fail exactly on the 3rd call (the 3rd loop iteration's progress
+        # tick) so the outer except trips mid-loop. Calls 4 and 5 (the
+        # finally's progress update + any internal fan-out) go through.
+        if update_calls == 3:
+            raise RuntimeError("update API down")
+        return await original_update(job_id, **kwargs)
+
+    monkeypatch.setattr(dat_routes.job_manager, "update_external_job", flaky_update)
+
+    await dat_routes._run_match_job(
+        job_id=scan_job.id, paths_to_compute=["/a", "/b", "/c", "/d"],
+    )
+
+    final = job_manager.jobs[scan_job.id]
+    assert final.status.value == "failed"
+    # Counter context must be in the error message for operator visibility.
+    assert "processed 2/4" in final.message
+    assert "1 error(s)" in final.message
+    assert "update API down" in final.message
+
+
+@pytest.mark.asyncio
+async def test_run_match_job_skip_count_does_not_trip_failure(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """Size-cap / non-regular skips are NOT errors — they don't flip job_success."""
+    from services.job_manager import job_manager
+
+    scan_job = job_manager.create_external_job(
+        filename="DAT Match",
+        mode=dat_routes.ConversionMode.DAT_MATCH,
+        message="test",
+    )
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
+
+    hash_outcomes = [
+        ({"path": "/a", "matched": True}, True),
+        # Size-cap skip: cacheable=False but no "error" key — pure policy outcome.
+        ({"path": "/b", "matched": False, "reason": "file too large"}, False),
+        ({"path": "/c", "matched": False}, False),  # non-regular file shape
+    ]
+
+    async def fake_hash_one(path):
+        return hash_outcomes.pop(0)
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
+
+    await dat_routes._run_match_job(
+        job_id=scan_job.id, paths_to_compute=["/a", "/b", "/c"],
+    )
+
+    final = job_manager.jobs[scan_job.id]
+    assert final.status.value == "completed"
+    assert "2 skipped" in final.message
+    assert "error" not in final.message.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_match_job_cache_write_failure_counts_as_error(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A raising dat_store.set_match is captured as an error, not silently swallowed."""
+    from services.job_manager import job_manager
+
+    scan_job = job_manager.create_external_job(
+        filename="DAT Match",
+        mode=dat_routes.ConversionMode.DAT_MATCH,
+        message="test",
+    )
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
+
+    async def fake_hash_one(path):
+        return {"path": path, "matched": True}, True
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
+
+    async def failing_set_match(*_a, **_kw):
+        raise RuntimeError("DB is down")
+
+    monkeypatch.setattr(dat_routes.dat_store, "set_match", failing_set_match)
+
+    await dat_routes._run_match_job(
+        job_id=scan_job.id, paths_to_compute=["/a", "/b"],
+    )
+
+    final = job_manager.jobs[scan_job.id]
+    # Every cache write failed; every result was "cacheable" so errors == total → fail.
+    assert final.status.value == "failed"
+    assert "all 2 file(s) failed" in final.message
+
+
+@pytest.mark.asyncio
+async def test_hash_one_for_job_logs_match_error_with_traceback(
+    tmp_path, isolated_dat_store, monkeypatch, caplog,
+):
+    """A KeyError from _match_single_file emerges as ERROR-level with exc_info."""
+    iso = tmp_path / "a.iso"
+    iso.write_bytes(b"x")
+
+    async def raise_keyerror(_path):
+        raise KeyError("missing_column")
+
+    monkeypatch.setattr(dat_routes, "_match_single_file", raise_keyerror)
+
+    with caplog.at_level("ERROR", logger="chd.dat"):
+        result, cacheable = await dat_routes._hash_one_for_job(str(iso))
+
+    assert result["matched"] is False
+    assert result["error"] == "'missing_column'"
+    assert cacheable is False
+    error_records = [r for r in caplog.records if r.levelname == "ERROR" and r.exc_info]
+    assert error_records, "expected ERROR-level log with traceback, got: " + str(caplog.records)
+    assert "DAT match failed" in error_records[0].message
+
+
+# ---------------------------------------------------------------------------
+# schedule_match_job — reusable entry-point for HTTP + post-sync rematch hook
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_schedule_match_job_returns_none_on_empty_paths(monkeypatch):
+    """Empty path list short-circuits before touching the job manager."""
+    from services.job_manager import job_manager
+
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+
+    before = set(job_manager.jobs.keys())
+    result = await dat_routes.schedule_match_job([])
+    after = set(job_manager.jobs.keys())
+
+    assert result is None
+    assert before == after  # No new job created.
+
+
+@pytest.mark.asyncio
+async def test_schedule_match_job_returns_none_when_active(monkeypatch):
+    """Concurrency guard: a non-None _active_match_job_id blocks a new job."""
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", "already-running")
+
+    result = await dat_routes.schedule_match_job(["/tmp/x.chd"])
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_match_job_rolls_back_active_id_on_scheduling_failure(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """If asyncio.create_task raises after _active_match_job_id was set,
+    the helper must roll the id back so subsequent match jobs aren't
+    permanently locked out."""
+    from services.job_manager import job_manager
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    iso = tmp_path / "a.iso"
+    iso.write_bytes(b"x")
+    path = str(iso)
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+
+    def _explode(_coro):
+        # Close the coroutine so Python doesn't warn about it being
+        # unawaited — we are deliberately short-circuiting before run.
+        _coro.close()
+        raise RuntimeError("no running loop")
+
+    monkeypatch.setattr(dat_routes.asyncio, "create_task", _explode)
+
+    with pytest.raises(RuntimeError, match="no running loop"):
+        await dat_routes.schedule_match_job([path])
+
+    # Lock rolled back → future calls are not 409'd.
+    assert dat_routes._active_match_job_id is None
+
+    # The phantom external job was finished with success=False. The job
+    # still exists in job_manager (for history) but is not in-progress.
+    finished_jobs = [
+        j for j in job_manager.jobs.values()
+        if j.filename == "DAT Match" and j.status.value != "processing"
+    ]
+    assert finished_jobs, "phantom match job should be finalized after scheduling failure"
+
+
+@pytest.mark.asyncio
+async def test_schedule_match_job_uses_create_task_without_background_tasks(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """With no BackgroundTasks the helper schedules the job via asyncio.create_task
+    — verified by capturing the task and awaiting it to completion.
+    """
+    from services.job_manager import job_manager
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    iso = tmp_path / "a.iso"
+    iso.write_bytes(b"x")
+    path = str(iso)
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value="a" * 40))
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+
+    # Capture the coroutine the helper hands to asyncio.create_task so we can
+    # await it deterministically (avoids flaky sleep-loops while the loop
+    # drains the background task's many thread-pool hops).
+    created: list[asyncio.Task] = []
+    real_create_task = asyncio.create_task
+
+    def _capture(coro):
+        task = real_create_task(coro)
+        created.append(task)
+        return task
+
+    monkeypatch.setattr(dat_routes.asyncio, "create_task", _capture)
+
+    job_id = await dat_routes.schedule_match_job([path])
+
+    assert isinstance(job_id, str) and job_id
+    assert job_id in job_manager.jobs
+    assert len(created) == 1  # helper took the asyncio.create_task branch
+    await asyncio.wait_for(created[0], timeout=5)
+    assert dat_routes._active_match_job_id is None

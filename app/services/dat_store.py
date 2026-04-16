@@ -541,6 +541,18 @@ class DATStore:
                 select(_db.DAT.id).where(_db.DAT.file_count == 0).limit(1)
             ).first() is not None
 
+    def list_match_paths(self) -> list[str]:
+        """Return every path currently cached in DATMatch.
+
+        Used by dat_sync._do_sync to snapshot scanned paths before the
+        post-sync persist() wipes the cache, so a background rematch job
+        can re-hash those files against the freshly-imported DAT set.
+
+        Order is undefined; callers that need stable ordering must sort.
+        """
+        with self._session() as session:
+            return list(session.scalars(select(_db.DATMatch.path)).all())
+
     def _prune_missing_sync(self) -> int:
         with self._session() as session:
             paths = session.scalars(select(_db.DATMatch.path)).all()
