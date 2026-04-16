@@ -1,5 +1,35 @@
 # Release Notes
 
+## v3.7.6 - ACL enforcement on post-sync rematch + UI signals
+
+### 🐛 Bug Fixes
+
+- **Post-sync rematch now re-validates every path against `CONFIGURED_VOLUMES`.** v3.7.5's rematch hook snapshotted paths from `DATMatch` and handed them to `schedule_match_job` unchanged. Those paths were ACL-approved at write time, but a later tightening of `CONFIGURED_VOLUMES` (a mount unmounted, a library removed) or a symlink retargeted since the original scan would slip through undetected. `schedule_match_job` now runs every incoming path through `os.path.realpath` + `is_within_configured_volumes` and drops denied entries with a `WARNING` log (`"schedule_match_job: dropped N path(s) outside configured volumes"`). The check is idempotent — the HTTP `/dat/match-batch/job` handler pre-filters, so duplicate filtering is a no-op for the HTTP path.
+- **`_background_match_tasks` set-membership invariant is now self-checking.** `schedule_match_job` logs a warning if the strong-ref set is non-empty when a new task is about to be scheduled — the concurrency guard should make this impossible, so a warning here surfaces a guard-bypass regression that would otherwise be silent.
+
+### ✨ UX Improvements
+
+- **Sync result / status payload carries `rematch_status` + `rematch_job_id`.** `GET /dat/sync/status` now reports whether the post-sync rematch was `scheduled` (with a `rematch_job_id` the UI can poll), `deferred` (another match job held the concurrency lock — user can retry after it completes), `failed` (scheduling raised; DAT import still succeeded), or `None` (sync had errors; no rematch attempted). Previously the UI had to infer rematch progress from log-tailing.
+
+### 🧪 Tests (+5, total 313)
+
+- `test_schedule_match_job_returns_none_when_all_paths_denied` — empty allow-list short-circuits before job creation.
+- `test_schedule_match_job_filters_denied_paths_but_schedules_remainder` — mixed allow/deny list drops the deny with a warning log, schedules the rest.
+- `test_do_sync_surfaces_rematch_scheduled_status` / `..._deferred_status` / `..._failed_status` — each rematch outcome propagates into the progress payload and result dict.
+- Existing `test_schedule_match_job_uses_create_task_without_background_tasks` now additionally asserts `_background_match_tasks` set membership before the task completes and cleanup afterward.
+
+### 📁 Files Changed
+
+- `app/routes/dat.py` — new `_filter_paths_within_volumes` helper; `schedule_match_job` runs it before claiming the concurrency slot; `_background_match_tasks` size-guard warning; inline comment explaining why scheduling lives outside the lock.
+- `app/services/dat_sync.py` — `_do_sync()` captures `rematch_status` + `rematch_job_id` and surfaces them through `_update_progress` and the return dict.
+
+### ⚠️ Upgrade Notes
+
+- **No action required.** The ACL re-check is idempotent on already-admitted paths, so existing workflows are unaffected.
+- **Frontend integration:** existing UI consumers of `/dat/sync/status` see two new optional keys inside `progress` (`rematch_status`, `rematch_job_id`). Old clients that ignore unknown keys keep working unchanged.
+
+---
+
 ## v3.7.5 - Post-sync auto-rematch + hardened match-job error handling
 
 ### ✨ New Features

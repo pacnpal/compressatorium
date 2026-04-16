@@ -1195,10 +1195,72 @@ async def test_schedule_match_job_returns_none_on_empty_paths(monkeypatch):
 async def test_schedule_match_job_returns_none_when_active(monkeypatch):
     """Concurrency guard: a non-None _active_match_job_id blocks a new job."""
     monkeypatch.setattr(dat_routes, "_active_match_job_id", "already-running")
+    # Bypass the volume ACL so the return None can only be attributed to
+    # the concurrency guard, not to a "no admitted paths" short-circuit.
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
 
     result = await dat_routes.schedule_match_job(["/tmp/x.chd"])
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_match_job_returns_none_when_all_paths_denied(monkeypatch, caplog):
+    """Every path fails the volume ACL → no job created, warning logged."""
+    from services.job_manager import job_manager
+
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: False)
+
+    before = set(job_manager.jobs.keys())
+    with caplog.at_level("WARNING", logger="chd.dat"):
+        result = await dat_routes.schedule_match_job(["/x", "/y", "/z"])
+    after = set(job_manager.jobs.keys())
+
+    assert result is None
+    assert before == after  # No job created when allow-list is empty.
+    assert any("dropped 3 path(s) outside configured volumes" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_schedule_match_job_filters_denied_paths_but_schedules_remainder(
+    tmp_path, isolated_dat_store, monkeypatch, caplog,
+):
+    """Mix of allowed and denied paths: denied are dropped, job runs on the rest."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    allowed_file = tmp_path / "allowed.iso"
+    allowed_file.write_bytes(b"x")
+    allowed_path = str(allowed_file)
+
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", None)
+
+    def _acl(path: str) -> bool:
+        return "allowed" in path
+
+    monkeypatch.setattr(dat_routes, "is_within_configured_volumes", _acl)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value="a" * 40))
+
+    captured: list[asyncio.Task] = []
+    real_create_task = asyncio.create_task
+    monkeypatch.setattr(
+        dat_routes.asyncio, "create_task",
+        lambda coro: captured.append(real_create_task(coro)) or captured[-1],
+    )
+
+    with caplog.at_level("WARNING", logger="chd.dat"):
+        job_id = await dat_routes.schedule_match_job(
+            [allowed_path, "/tmp/denied-a", "/tmp/denied-b"],
+        )
+
+    assert isinstance(job_id, str)
+    assert any("dropped 2 path(s) outside configured volumes" in r.message for r in caplog.records)
+    # Drain the scheduled task so it doesn't pollute later tests.
+    if captured:
+        await asyncio.wait_for(captured[0], timeout=5)
+    # Give the done-callback one extra loop tick to discard from the set.
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -1276,10 +1338,22 @@ async def test_schedule_match_job_uses_create_task_without_background_tasks(
 
     monkeypatch.setattr(dat_routes.asyncio, "create_task", _capture)
 
+    # Baseline: the strong-ref set is empty before scheduling.
+    assert len(dat_routes._background_match_tasks) == 0
+
     job_id = await dat_routes.schedule_match_job([path])
 
     assert isinstance(job_id, str) and job_id
     assert job_id in job_manager.jobs
     assert len(created) == 1  # helper took the asyncio.create_task branch
+    # While the task is live, the strong-ref set holds it exactly once —
+    # this is what prevents GC mid-run and is the whole point of the set.
+    assert created[0] in dat_routes._background_match_tasks
+    assert len(dat_routes._background_match_tasks) == 1
     await asyncio.wait_for(created[0], timeout=5)
+    # The done-callback runs on the next loop tick; yield once to drain it.
+    await asyncio.sleep(0)
     assert dat_routes._active_match_job_id is None
+    # The done-callback should have removed the task from the set.
+    assert created[0] not in dat_routes._background_match_tasks
+    assert len(dat_routes._background_match_tasks) == 0

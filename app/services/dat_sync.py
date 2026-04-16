@@ -424,6 +424,12 @@ class DATSyncService:
                     except OSError:
                         pass
 
+        # Post-sync rematch status — populated on the success branch.
+        # Stays None on the partial-failure branch so the progress/result
+        # payload clearly signals "no rematch attempted".
+        rematch_status: str | None = None
+        rematch_job_id: str | None = None
+
         if not errors:
             # Full success: commit all staged DATs atomically, then remove the
             # old set. New DATs are visible before old ones are removed, but
@@ -477,6 +483,7 @@ class DATSyncService:
                         "DAT import succeeded, user can trigger a manual match later",
                         len(previous_match_paths),
                     )
+                    rematch_status = "failed"
                 else:
                     # previous_match_paths is non-empty at this point, so a
                     # None return from schedule_match_job unambiguously
@@ -486,10 +493,12 @@ class DATSyncService:
                             "dat_sync: scheduled rematch job %s for %d previously-scanned file(s)",
                             rematch_job_id, len(previous_match_paths),
                         )
+                        rematch_status = "scheduled"
                     else:
                         logger.info(
                             "dat_sync: skipped rematch — another match job is already active",
                         )
+                        rematch_status = "deferred"
         else:
             # Partial failure: discard all staged (uncommitted) new DATs so the
             # store stays in a clean, known-good state (previous working set intact).
@@ -534,6 +543,8 @@ class DATSyncService:
             files_imported=imported,
             errors=errors,
             error=error_summary,
+            rematch_status=rematch_status,
+            rematch_job_id=rematch_job_id,
         )
         logger.info("dat_sync: %s — %d imported, %d errors", final_status, imported, len(errors))
 
@@ -545,6 +556,8 @@ class DATSyncService:
             "errors": errors,
             "error": error_summary,
             "message": f"Synced {imported}/{len(all_files)} DATs from MAME Redump {tag}",
+            "rematch_status": rematch_status,
+            "rematch_job_id": rematch_job_id,
         }
 
     # ------------------------------------------------------------------

@@ -656,6 +656,103 @@ async def test_do_sync_logs_when_rematch_is_skipped_due_to_active_job(sync_servi
 
 
 @pytest.mark.asyncio
+async def test_do_sync_surfaces_rematch_scheduled_status(sync_service, tmp_path):
+    """When the rematch is scheduled, progress + result payload carry the job id."""
+    dat_file = tmp_path / "sample.dat"
+    dat_file.write_text("<datafile></datafile>")
+
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[])
+    mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
+    mock_dat_store.import_dat_no_persist = AsyncMock(return_value={
+        "id": "new1", "name": "Fresh", "file_count": 1, "hashes_added": 1,
+    })
+    mock_dat_store.persist = AsyncMock()
+    mock_dat_store.list_match_paths = MagicMock(return_value=["/data/a.chd"])
+
+    mock_schedule = AsyncMock(return_value="rematch-job-777")
+
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store), \
+         patch("routes.dat.schedule_match_job", mock_schedule):
+        result = await sync_service.sync(tag="0.285")
+
+    assert result["rematch_status"] == "scheduled"
+    assert result["rematch_job_id"] == "rematch-job-777"
+    # Progress dict is what /dat/sync/status exposes to the UI.
+    assert sync_service._progress["rematch_status"] == "scheduled"
+    assert sync_service._progress["rematch_job_id"] == "rematch-job-777"
+
+
+@pytest.mark.asyncio
+async def test_do_sync_surfaces_rematch_deferred_status(sync_service, tmp_path):
+    """Another match job active → rematch deferred; UI sees the signal."""
+    dat_file = tmp_path / "sample.dat"
+    dat_file.write_text("<datafile></datafile>")
+
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[])
+    mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
+    mock_dat_store.import_dat_no_persist = AsyncMock(return_value={
+        "id": "new1", "name": "Fresh", "file_count": 1, "hashes_added": 1,
+    })
+    mock_dat_store.persist = AsyncMock()
+    mock_dat_store.list_match_paths = MagicMock(return_value=["/data/a.chd"])
+
+    mock_schedule = AsyncMock(return_value=None)
+
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store), \
+         patch("routes.dat.schedule_match_job", mock_schedule):
+        result = await sync_service.sync(tag="0.285")
+
+    assert result["rematch_status"] == "deferred"
+    assert result["rematch_job_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_do_sync_surfaces_rematch_failed_status(sync_service, tmp_path):
+    """schedule_match_job raising → rematch_status=failed, sync still complete."""
+    dat_file = tmp_path / "sample.dat"
+    dat_file.write_text("<datafile></datafile>")
+
+    mock_dat_store = MagicMock()
+    mock_dat_store.list_dats = MagicMock(return_value=[])
+    mock_dat_store.delete_dats_bulk = AsyncMock(return_value=0)
+    mock_dat_store.import_dat_no_persist = AsyncMock(return_value={
+        "id": "new1", "name": "Fresh", "file_count": 1, "hashes_added": 1,
+    })
+    mock_dat_store.persist = AsyncMock()
+    mock_dat_store.list_match_paths = MagicMock(return_value=["/data/a.chd"])
+
+    mock_schedule = AsyncMock(side_effect=RuntimeError("scheduler exploded"))
+
+    with patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
+         patch.object(sync_service, "_list_dat_files", side_effect=[
+             [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
+             [],
+         ]), \
+         patch.object(sync_service, "_download_dat", return_value=str(dat_file)), \
+         patch.object(sync_service, "_get_dat_store", return_value=mock_dat_store), \
+         patch("routes.dat.schedule_match_job", mock_schedule):
+        result = await sync_service.sync(tag="0.285")
+
+    assert result["status"] == "complete"
+    assert result["rematch_status"] == "failed"
+    assert result["rematch_job_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_do_sync_list_match_paths_failure_is_best_effort(sync_service, tmp_path, caplog):
     """If the snapshot SELECT raises, the sync must still commit — aborting
     here would leak the staged DATs from import_dat_no_persist into the next

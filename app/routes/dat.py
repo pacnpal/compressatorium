@@ -392,6 +392,28 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
     }
 
 
+def _filter_paths_within_volumes(paths: list[str]) -> tuple[list[str], int]:
+    """Re-resolve via ``realpath`` and keep only paths within configured volumes.
+
+    The HTTP ``/dat/match-batch/job`` handler pre-filters paths through
+    ``_resolve_and_group_paths``; non-HTTP callers (post-sync rematch hook)
+    feed stored paths from ``DATMatch`` that were ACL-approved at write
+    time, but a later ``CONFIGURED_VOLUMES`` tightening or a retargeted
+    symlink can drift the admit set. Re-filter here so ``schedule_match_job``
+    is the single authoritative ACL gate — idempotent when called on
+    already-filtered paths.
+    """
+    allowed: list[str] = []
+    denied = 0
+    for p in paths:
+        real = os.path.realpath(p)
+        if is_within_configured_volumes(real):
+            allowed.append(real)
+        else:
+            denied += 1
+    return allowed, denied
+
+
 async def schedule_match_job(
     paths: list[str],
     *,
@@ -400,11 +422,12 @@ async def schedule_match_job(
     """Start a background DAT-match job for *paths*.
 
     Returns the newly-created job id, or ``None`` if another match job is
-    already active or *paths* is empty. When ``background_tasks`` is
-    supplied (HTTP context) the task is registered with FastAPI so it
-    runs after response-send; otherwise it is scheduled via
-    ``asyncio.create_task`` — used by non-HTTP callers such as the
-    post-sync rematch hook in :mod:`services.dat_sync`.
+    already active, *paths* is empty, or every path lies outside the
+    configured volumes. When ``background_tasks`` is supplied (HTTP
+    context) the task is registered with FastAPI so it runs after
+    response-send; otherwise it is scheduled via ``asyncio.create_task``
+    — used by non-HTTP callers such as the post-sync rematch hook in
+    :mod:`services.dat_sync`.
 
     The ``_active_match_job_id`` + ``_match_job_lock`` guard is the
     authoritative "a hash loop is still executing" signal.  Do NOT
@@ -416,15 +439,33 @@ async def schedule_match_job(
     global _active_match_job_id
     if not paths:
         return None
+    # ACL gate (see _filter_paths_within_volumes). Runs in a threadpool
+    # because realpath + pathlib.resolve touch the filesystem.
+    allowed, denied = await run_in_threadpool(
+        _filter_paths_within_volumes, list(paths),
+    )
+    if denied:
+        logger.warning(
+            "schedule_match_job: dropped %d path(s) outside configured volumes",
+            denied,
+        )
+    if not allowed:
+        return None
     async with _get_match_job_lock():
         if _active_match_job_id is not None:
             return None
         scan_job = job_manager.create_external_job(
             filename="DAT Match",
             mode=ConversionMode.DAT_MATCH,
-            message=f"Hashing {len(paths)} file(s)\u2026",
+            message=f"Hashing {len(allowed)} file(s)\u2026",
         )
         _active_match_job_id = scan_job.id
+    # Lock released before scheduling the task on purpose: the
+    # authoritative "job in progress" signal is _active_match_job_id
+    # (set inside the lock above), not the lock itself. A second caller
+    # arriving in this window re-enters the lock, sees the id set, and
+    # returns None — no race.
+    #
     # If scheduling the actual task fails after we've claimed the slot,
     # roll back _active_match_job_id and mark the phantom external job
     # as failed — otherwise the lock stays held forever and every future
@@ -436,11 +477,21 @@ async def schedule_match_job(
     try:
         if background_tasks is not None:
             background_tasks.add_task(
-                _run_match_job, job_id=scan_job.id, paths_to_compute=paths,
+                _run_match_job, job_id=scan_job.id, paths_to_compute=allowed,
             )
         else:
+            # Invariant: _background_match_tasks holds at most one task
+            # at a time because _active_match_job_id gates re-entry. If
+            # this ever prints a warning, the concurrency guard above
+            # has been bypassed — investigate before shipping.
+            if _background_match_tasks:
+                logger.warning(
+                    "schedule_match_job: _background_match_tasks was non-empty"
+                    " at schedule time (size=%d) — concurrency guard may be compromised",
+                    len(_background_match_tasks),
+                )
             task = asyncio.create_task(
-                _run_match_job(job_id=scan_job.id, paths_to_compute=paths),
+                _run_match_job(job_id=scan_job.id, paths_to_compute=allowed),
             )
             _background_match_tasks.add(task)
             task.add_done_callback(_background_match_tasks.discard)
