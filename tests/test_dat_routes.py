@@ -1148,6 +1148,83 @@ async def test_run_match_job_cache_write_failure_counts_as_error(
 
 
 @pytest.mark.asyncio
+async def test_run_match_job_cancellation_ends_in_cancelled_status(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """Mid-loop cancellation flips the job to CANCELLED (not FAILED) and
+    preserves the partial cache for files already hashed before cancel."""
+    from services.job_manager import job_manager
+
+    scan_job = job_manager.create_external_job(
+        filename="DAT Match",
+        mode=dat_routes.ConversionMode.DAT_MATCH,
+        message="test",
+    )
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
+
+    # After the 2nd hash completes, request cancel.  The 3rd iteration's
+    # cancel-check at the top of the loop then fires ExternalJobCancelled.
+    hash_calls = 0
+
+    async def fake_hash_one(path):
+        nonlocal hash_calls
+        hash_calls += 1
+        if hash_calls == 2:
+            await job_manager.cancel_job(scan_job.id)
+        return {"path": path, "matched": True, "game_name": "X"}, True
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
+
+    await dat_routes._run_match_job(
+        job_id=scan_job.id, paths_to_compute=["/a", "/b", "/c", "/d"],
+    )
+
+    final = job_manager.jobs[scan_job.id]
+    assert final.status.value == "cancelled"
+    assert "Cancelled" in final.message
+    assert "2/4 processed" in final.message
+    # Match-job lock must be released so a subsequent job isn't blocked.
+    assert dat_routes._active_match_job_id is None
+
+
+@pytest.mark.asyncio
+async def test_run_match_job_cancellation_keeps_partial_cache(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """Per-file cache writes already made before cancel must remain in the
+    dat_store — the cache is intentionally durable across cancellation."""
+    from services.job_manager import job_manager
+
+    scan_job = job_manager.create_external_job(
+        filename="DAT Match",
+        mode=dat_routes.ConversionMode.DAT_MATCH,
+        message="test",
+    )
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
+
+    hash_calls = 0
+
+    async def fake_hash_one(path):
+        nonlocal hash_calls
+        hash_calls += 1
+        if hash_calls == 2:
+            await job_manager.cancel_job(scan_job.id)
+        return {"path": path, "matched": True, "game_name": "X"}, True
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
+
+    await dat_routes._run_match_job(
+        job_id=scan_job.id, paths_to_compute=["/a", "/b", "/c"],
+    )
+
+    # Both /a and /b finished hashing before cancel → both cached.
+    assert isolated_dat_store.get_match("/a") is not None
+    assert isolated_dat_store.get_match("/b") is not None
+    # /c never made it past the cancel check.
+    assert isolated_dat_store.get_match("/c") is None
+
+
+@pytest.mark.asyncio
 async def test_hash_one_for_job_logs_match_error_with_traceback(
     tmp_path, isolated_dat_store, monkeypatch, caplog,
 ):

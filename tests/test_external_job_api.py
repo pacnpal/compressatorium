@@ -160,37 +160,145 @@ async def test_finish_external_job_noop_for_unknown_id():
 
 
 # ---------------------------------------------------------------------------
-# METADATA_SCAN non-cancellability
+# External-job cancellation (metadata scan, DAT match)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_cancel_job_returns_false_for_metadata_scan():
+async def test_cancel_job_signals_metadata_scan():
+    """cancel_job() on a PROCESSING external job must set the cancel event
+    and flip the message to 'Cancelling…'. The job is still PROCESSING at
+    this point — the owning task is responsible for flipping to CANCELLED
+    via finish_external_job_cancelled()."""
     mgr = _make_manager()
     job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
     job_id = job.id
 
     result = await mgr.cancel_job(job_id)
 
-    assert result is False
-    # Job must still be registered (not touched)
-    assert job_id in mgr.jobs
+    assert result is True
+    assert mgr.is_cancelled(job_id)
+    cancel_event = mgr.get_cancel_event(job_id)
+    assert cancel_event is not None
+    assert cancel_event.is_set()
+    # Owning task hasn't finalized yet — status is still PROCESSING
     assert mgr.jobs[job_id].status == JobStatus.PROCESSING
+    assert mgr.jobs[job_id].message == "Cancelling..."
 
 
 @pytest.mark.asyncio
-async def test_cancel_all_skips_metadata_scan_jobs():
+async def test_cancel_job_signals_dat_match():
+    mgr = _make_manager()
+    job = mgr.create_external_job("DAT Match", ConversionMode.DAT_MATCH)
+    job_id = job.id
+
+    result = await mgr.cancel_job(job_id)
+
+    assert result is True
+    assert mgr.is_cancelled(job_id)
+    assert mgr.get_cancel_event(job_id).is_set()
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_emits_status_event_for_external_job():
+    mgr = _make_manager()
+    job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    job_id = job.id
+    queue = mgr.subscribe(job_id)
+
+    await mgr.cancel_job(job_id)
+    # Let the asyncio.create_task inside cancel_job run
+    import asyncio as _asyncio
+    await _asyncio.sleep(0)
+
+    assert not queue.empty()
+    payload = queue.get_nowait()
+    assert payload["type"] == "status"
+    assert payload["message"] == "Cancelling..."
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_includes_external_jobs():
     mgr = _make_manager()
     scan_job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
-    scan_id = scan_job.id
+    match_job = mgr.create_external_job("DAT Match", ConversionMode.DAT_MATCH)
 
     result = await mgr.cancel_all_jobs()
 
-    # cancel_all should report 0 requested for metadata scans
-    requested = result.get("requested", 0)
-    assert requested == 0
-    # The scan job must not have been cancelled
-    assert scan_id in mgr.jobs
-    assert mgr.jobs[scan_id].status == JobStatus.PROCESSING
+    assert result["requested"] == 2
+    assert scan_job.id in result["job_ids"]
+    assert match_job.id in result["job_ids"]
+    assert mgr.is_cancelled(scan_job.id)
+    assert mgr.is_cancelled(match_job.id)
+
+
+# ---------------------------------------------------------------------------
+# finish_external_job_cancelled
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_finish_external_job_cancelled_sets_status_and_message():
+    mgr = _make_manager()
+    job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    job_id = job.id
+
+    await mgr.finish_external_job_cancelled(job_id, message="Cancelled \u2014 5 done")
+
+    assert mgr.jobs[job_id].status == JobStatus.CANCELLED
+    assert mgr.jobs[job_id].message == "Cancelled \u2014 5 done"
+    assert mgr.jobs[job_id].completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_finish_external_job_cancelled_emits_cancelled_event():
+    mgr = _make_manager()
+    job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    job_id = job.id
+    queue = mgr.subscribe(job_id)
+
+    await mgr.finish_external_job_cancelled(job_id, message="stopped")
+
+    payload = queue.get_nowait()
+    assert payload["type"] == "cancelled"
+    assert payload["status"] == JobStatus.CANCELLED.value
+    assert payload["message"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_finish_external_job_cancelled_clears_cancel_state():
+    """After a cancelled finalize, the _cancelled set and _cancel_events
+    dict must not retain the job id — otherwise a future job with the
+    same id (unlikely but possible after uuid collisions) would start
+    pre-cancelled."""
+    mgr = _make_manager()
+    job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    job_id = job.id
+    await mgr.cancel_job(job_id)
+    assert mgr.is_cancelled(job_id)
+
+    await mgr.finish_external_job_cancelled(job_id, message="stopped")
+
+    assert not mgr.is_cancelled(job_id)
+    assert mgr.get_cancel_event(job_id) is None
+
+
+@pytest.mark.asyncio
+async def test_finish_external_job_cancelled_noop_for_unknown_id():
+    mgr = _make_manager()
+    await mgr.finish_external_job_cancelled("unknown", message="x")
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_returns_false_for_terminal_external_job():
+    """Already-terminal external jobs cannot be re-cancelled."""
+    mgr = _make_manager()
+    job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    job_id = job.id
+    await mgr.finish_external_job(job_id, success=True)
+
+    result = await mgr.cancel_job(job_id)
+
+    assert result is False
+    assert mgr.jobs[job_id].status == JobStatus.COMPLETED
 
 
 # ---------------------------------------------------------------------------

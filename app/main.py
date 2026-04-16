@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from config import settings
 from fastapi import FastAPI
@@ -120,22 +121,9 @@ def configure_logging() -> None:
         )
 
 
-app = FastAPI(
-    title="Compressatorium",
-    description="Web UI for converting game disc images using chdman and dolphin-tool",
-    version=get_version(),
-)
-
-# Include routers
-app.include_router(files.router, prefix="/api", tags=["files"])
-app.include_router(convert.router, prefix="/api", tags=["convert"])
-app.include_router(info.router, prefix="/api", tags=["info"])
-app.include_router(dat.router, prefix="/api", tags=["dat"])
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Start background job processor."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start background job processor and run startup migrations."""
     import asyncio
 
     configure_logging()
@@ -279,6 +267,22 @@ async def startup_event():
         _spawn_sync_task(
             "DAT store contains stale rows (file_count=0) — self-healing",
         )
+
+    yield
+
+
+app = FastAPI(
+    title="Compressatorium",
+    description="Web UI for converting game disc images using chdman and dolphin-tool",
+    version=get_version(),
+    lifespan=lifespan,
+)
+
+# Include routers
+app.include_router(files.router, prefix="/api", tags=["files"])
+app.include_router(convert.router, prefix="/api", tags=["convert"])
+app.include_router(info.router, prefix="/api", tags=["info"])
+app.include_router(dat.router, prefix="/api", tags=["dat"])
 
 
 @app.get("/health")

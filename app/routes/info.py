@@ -27,7 +27,7 @@ from services.dolphin_tool import (
     dolphin_tool_service,
 )
 from services.workload_limiter import WorkloadToken, workload_limiter
-from services.job_manager import job_manager
+from services.job_manager import ExternalJobCancelled, job_manager
 from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
 from services.verification_store import verification_store
 from sse_starlette.sse import EventSourceResponse
@@ -103,7 +103,8 @@ async def scan_metadata_task(
                         paths.append(os.path.join(root, file))
         return paths
 
-    scan_success = False
+    # Tri-state: True = success, False = failure, None = cancelled.
+    scan_success: bool | None = False
     scan_error: str | None = None
     try:
         # Run blocking filesystem traversal in thread pool
@@ -144,6 +145,8 @@ async def scan_metadata_task(
         # Progress band: 5 % → 60 %.
         phase1_total = len(chd_paths)
         for idx, path in enumerate(chd_paths, start=1):
+            if job_manager.is_cancelled(scan_job_id):
+                raise ExternalJobCancelled()
             logger.info(
                 "Phase 1 [%d/%d]: Extracting metadata from %s",
                 idx,
@@ -208,6 +211,8 @@ async def scan_metadata_task(
             message=f"Phase 2: Checking disc ID tags for {phase2_total} CHD file(s)\u2026",
         )
         for idx2, path in enumerate(all_paths, start=1):
+            if job_manager.is_cancelled(scan_job_id):
+                raise ExternalJobCancelled()
             try:
                 if await chd_metadata_store.is_disc_id_checked(path):
                     already_checked += 1
@@ -269,6 +274,10 @@ async def scan_metadata_task(
         logger.info("Metadata store flushed.")
         scan_success = True
 
+    except ExternalJobCancelled:
+        # Clean cancellation path: partial metadata already written to the
+        # store is kept (by design — see chd_metadata_store callers above).
+        scan_success = None
     except Exception as e:
         logger.error("Metadata scan failed: %s", e)
         scan_error = str(e)
@@ -283,22 +292,32 @@ async def scan_metadata_task(
             embed_count,
             elapsed,
         )
-        if scan_success:
+        if scan_success is None:
             final_msg = (
-                f"{count} refreshed, {embed_count} disc ID(s) found \u2014 {elapsed:.1f}s"
+                f"Cancelled \u2014 {count} refreshed, {embed_count} disc ID(s) found "
+                f"({elapsed:.1f}s)"
+            )
+            await job_manager.finish_external_job_cancelled(
+                scan_job_id,
+                message=final_msg,
             )
         else:
-            final_msg = f"Scan failed: {scan_error or 'unknown error'}"
-        await job_manager.update_external_job(
-            scan_job_id,
-            progress=100 if scan_success else scan_job.progress,
-            message=final_msg,
-        )
-        await job_manager.finish_external_job(
-            scan_job_id,
-            success=scan_success,
-            error_message=scan_error,
-        )
+            if scan_success:
+                final_msg = (
+                    f"{count} refreshed, {embed_count} disc ID(s) found \u2014 {elapsed:.1f}s"
+                )
+            else:
+                final_msg = f"Scan failed: {scan_error or 'unknown error'}"
+            await job_manager.update_external_job(
+                scan_job_id,
+                progress=100 if scan_success else scan_job.progress,
+                message=final_msg,
+            )
+            await job_manager.finish_external_job(
+                scan_job_id,
+                success=scan_success,
+                error_message=scan_error,
+            )
 
 
 @router.get("/version")

@@ -1,5 +1,60 @@
 # Release Notes
 
+## v3.7.7 - Cancellable metadata scan and DAT match jobs
+
+### ✨ New Features
+
+- **Metadata scan and DAT match jobs are now cancellable from the UI.** Both job types are "external jobs" (they bypass the conversion queue and drive their own execution), and until this release were deliberately excluded from cancellation — once started, a full-volume metadata scan or DAT match had to run to completion, even if the user realised they kicked it off on the wrong volume or wanted to free the workload lane for something else. The existing per-row **Cancel** button and the **Cancel All** button now both accept these jobs. No new endpoints — the existing `DELETE /api/jobs/{id}` and `POST /api/jobs/cancel-all` routes were widened.
+- **Partial results are preserved on cancel.** Any match entries already written to `dat_matches`, or metadata/disc-id tags already extracted and committed to `chd_metadata`, stay durable. This matches the pre-existing "durable mid-run" comment in `_run_match_job` — cancelling mid-loop gives you a partial cache, not a rollback.
+- **Cancel-All now cancels every kind of job.** `cancel_all_jobs()` no longer filters out external modes, and the matching three frontend guards (`handleRequestCancelAll` activeCount, `handleCancelAllJobs` per-job state map, `queuedJobsCount` / `processingJobsCount`) were removed so the button's visibility, the summary counts, and the optimistic "Cancelling..." state update all apply uniformly.
+
+### 🐛 Bug Fixes & Hardening
+
+- **`_run_match_job` releases the match-job lock *before* its finalize awaits.** Previously the `async with _get_match_job_lock(): _active_match_job_id = None` cleanup was the last statement in the `finally` block, after both `finish_external_job` and `finish_external_job_cancelled`. If either finalize call raised (e.g. a subscriber queue throwing), `_active_match_job_id` stayed pinned to the dead job id and every subsequent match request returned HTTP 409 until process restart. The reset now runs at the top of the `finally`, so the lock is released even if finalize blows up.
+- **Startup migrated from deprecated `@app.on_event("startup")` to FastAPI lifespan context manager.** Silences the `DeprecationWarning: on_event is deprecated, use lifespan event handlers instead` the test suite was emitting, and puts us on the supported path for future FastAPI upgrades. No behaviour change — same startup body, same ordering (`configure_logging` → DB init → Alembic → JSON→SQLite import → background tasks → auto-sync).
+- **"Cancelling..." string unified across backend and frontend.** The new external-job cancel path briefly used a Unicode ellipsis (`"Cancelling…"`) while the pre-existing conversion-job path and the frontend's optimistic update used ASCII (`"Cancelling..."`). Because SSE delivery races the local optimistic write, the displayed string would flip between the two forms. Backend now emits ASCII everywhere.
+
+### 🔧 Internal
+
+- **New cancellation primitives on `JobManager`.**
+    - `ExternalJobCancelled` — purpose-built exception raised inside external-job loops when `cancel_job()` has been requested. Only caught by the dedicated `except` branch in each loop; will never mask a real `Exception`.
+    - `is_cancelled(job_id) -> bool` — cheap polling check used at the top of each loop iteration in `_run_match_job` and both phases of `scan_metadata_task`.
+    - `get_cancel_event(job_id) -> asyncio.Event | None` — awaitable form for future use.
+    - `finish_external_job_cancelled(job_id, *, message)` — terminal finalize that sets `JobStatus.CANCELLED`, clears cancel state, emits the `cancelled` SSE event, and archives the job. Symmetric with `finish_external_job(success=...)`.
+- **Tri-state `job_success`** in both loops (`True` = success, `False` = failure, `None` = cancelled). Cancelled path takes `finish_external_job_cancelled`; non-cancelled path keeps the pre-existing `finish_external_job(success=...)` call so DAT match's "all files errored → mark failed" signal is unchanged.
+- **Cancel events auto-register on external-job creation.** `create_external_job` now populates `_cancel_events[job_id]` when a running loop is available (falls back silently under sync test setups).
+
+### 🧪 Tests (+16, total 324)
+
+- `test_cancel_job_signals_metadata_scan` / `..._signals_dat_match` / `..._emits_status_event_for_external_job` — cancel_job on a PROCESSING external job sets the event, flips the message, returns True, and emits a `status` SSE event.
+- `test_cancel_all_includes_external_jobs` — Cancel-All requests both a metadata scan and a DAT match.
+- `test_cancel_job_returns_false_for_terminal_external_job` — terminal external jobs are not re-cancellable.
+- `test_finish_external_job_cancelled_sets_status_and_message` / `..._emits_cancelled_event` / `..._clears_cancel_state` / `..._noop_for_unknown_id` — terminal-finalize semantics.
+- `test_run_match_job_cancellation_ends_in_cancelled_status` — mid-loop cancel flips the job to CANCELLED and clears `_active_match_job_id`.
+- `test_run_match_job_cancellation_keeps_partial_cache` — per-file matches written before cancel stay in `dat_store`.
+- `test_scan_metadata_cancellation_flips_to_cancelled` — Phase 1 cancel path.
+- `test_scan_metadata_cancellation_during_phase2` — Phase 2 (disc-id) cancel path covered independently.
+- Two pre-existing tests (`test_cancel_job_returns_false_for_metadata_scan`, `test_cancel_all_skips_metadata_scan_jobs`) were rewritten to reflect the new behaviour.
+
+324 tests pass, 0 warnings (was 323 + 2 FastAPI deprecation warnings before this release).
+
+### 📁 Files Changed
+
+- `app/services/job_manager.py` — `ExternalJobCancelled`, `is_cancelled` / `get_cancel_event`, `finish_external_job_cancelled`, cancel-event registration in `create_external_job`, `cancel_job` external-job branch, `cancel_all_jobs` no longer filters external modes.
+- `app/routes/dat.py` — `_run_match_job` gains a per-iteration cancel check, tri-state `job_success`, dedicated `except ExternalJobCancelled` branch, and early match-lock release in the `finally`.
+- `app/routes/info.py` — `scan_metadata_task` gains cancel checks at the top of both Phase 1 and Phase 2 loops, and a cancelled branch in the `finally` that calls `finish_external_job_cancelled`.
+- `app/main.py` — `@app.on_event("startup")` → `@asynccontextmanager async def lifespan(app)` passed to `FastAPI(lifespan=...)`. Startup body unchanged.
+- `static/js/app.js` — Cancel button on `JobList` row is no longer suppressed for external scan modes; Cancel-All count filter, per-job state map, and `queuedJobsCount` / `processingJobsCount` no longer exclude them.
+
+### ⚠️ Upgrade Notes
+
+- **No action required.** The `DELETE /api/jobs/{id}` endpoint keeps its existing contract (returns 200 on success, 404 on unknown id); external jobs just no longer fall through to a silent `False` return.
+- **Cancelling a metadata scan mid-run leaves partial metadata cached.** If you cancel and re-trigger, the re-triggered scan skips already-refreshed entries via the normal `is_stale` check — no duplicate work, no lost data.
+- **Cancelling a DAT match mid-run leaves per-file matches cached.** Re-matching the same paths skips the ones already in `dat_matches`; size-cap and missing-file skips are re-evaluated.
+- **"Cancel All" now cancels scans too.** If you were relying on Cancel-All stopping only conversion jobs while a metadata scan kept running, use the per-row Cancel button on the conversion jobs instead.
+
+---
+
 ## v3.7.6 - ACL enforcement on post-sync rematch + UI signals
 
 ### 🐛 Bug Fixes

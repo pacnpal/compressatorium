@@ -1089,7 +1089,7 @@ function JobList({
                     `}
 
                     <div class="job-actions">
-                        ${['queued', 'processing'].includes(job.status) && !isExternalScanMode(job.mode) && html`
+                        ${['queued', 'processing'].includes(job.status) && html`
                             <button class="btn btn-sm btn-secondary" onClick=${() => onCancel(job.id)} title="Cancel this job">
                                 Cancel
                             </button>
@@ -5129,7 +5129,7 @@ function App() {
     };
 
     const handleRequestCancelAll = () => {
-        const activeCount = jobs.filter(j => ['queued', 'processing'].includes(j.status) && !isExternalScanMode(j.mode)).length;
+        const activeCount = jobs.filter(j => ['queued', 'processing'].includes(j.status)).length;
         if (activeCount === 0) {
             notify('No active jobs to cancel', 'info');
             return;
@@ -5143,7 +5143,6 @@ function App() {
         try {
             const result = await api.cancelAllJobs();
             setJobs(prev => prev.map((job) => {
-                if (isExternalScanMode(job.mode)) return job;
                 if (job.status === 'queued') {
                     return { ...job, status: 'cancelled' };
                 }
@@ -5233,8 +5232,8 @@ function App() {
     };
 
 
-    const queuedJobsCount = jobs.filter(j => j.status === 'queued' && !isExternalScanMode(j.mode)).length;
-    const processingJobsCount = jobs.filter(j => j.status === 'processing' && !isExternalScanMode(j.mode)).length;
+    const queuedJobsCount = jobs.filter(j => j.status === 'queued').length;
+    const processingJobsCount = jobs.filter(j => j.status === 'processing').length;
     const activeJobsCount = queuedJobsCount + processingJobsCount;
     const hasActiveJobs = activeJobsCount > 0;
     const hasCompletedJobs = jobs.some(j =>

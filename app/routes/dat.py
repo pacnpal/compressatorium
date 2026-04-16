@@ -15,7 +15,7 @@ from config import settings
 from models import ConversionMode
 from services.dat_store import dat_store
 from services.file_hasher import compute_file_sha1
-from services.job_manager import job_manager
+from services.job_manager import ExternalJobCancelled, job_manager
 from services.workload_limiter import workload_limiter
 from utils.path_utils import is_within_configured_volumes
 
@@ -583,11 +583,14 @@ async def _run_match_job(
     #            "error" key in these cases). Informational only.
     errors = 0
     skips = 0
-    job_success = False
+    # Tri-state: True = success, False = failure, None = cancelled.
+    job_success: bool | None = False
     job_error: str | None = None
 
     try:
         for idx, normalized_path in enumerate(paths_to_compute, start=1):
+            if job_manager.is_cancelled(job_id):
+                raise ExternalJobCancelled()
             display_name = os.path.basename(normalized_path) or normalized_path
             await job_manager.update_external_job(
                 job_id,
@@ -633,6 +636,12 @@ async def _run_match_job(
             )
         else:
             job_success = True
+    except ExternalJobCancelled:
+        # Cancellation is a clean exit path, not a failure. The loop has
+        # already persisted each completed per-file result (see the
+        # "durable if the job is cancelled" comment in the success branch),
+        # so partial cache entries stay by design.
+        job_success = None
     except Exception as exc:
         logger.exception("DAT match job %s failed", job_id)
         # Include counters so the final-status line tells the operator
@@ -647,29 +656,46 @@ async def _run_match_job(
         context = ", ".join(parts)
         job_error = f"{exc} ({context} before failure)"
     finally:
+        # Release the match-job lock BEFORE the finalize calls: if
+        # finish_external_job / finish_external_job_cancelled itself raises
+        # (e.g. from _notify_subscribers), _active_match_job_id would stay
+        # pinned to this dead job id and every subsequent match request
+        # would 409 until process restart.
+        async with _get_match_job_lock():
+            if _active_match_job_id == job_id:
+                _active_match_job_id = None
         elapsed = time.monotonic() - start
-        if job_success:
+        if job_success is None:
             parts = [f"{processed}/{total} processed, {hashed} hashed, {matched} matched"]
             if errors:
                 parts.append(f"{errors} error(s)")
             if skips:
                 parts.append(f"{skips} skipped")
-            final_msg = ", ".join(parts) + f" \u2014 {elapsed:.1f}s"
+            final_msg = "Cancelled \u2014 " + ", ".join(parts) + f" ({elapsed:.1f}s)"
+            await job_manager.finish_external_job_cancelled(
+                job_id,
+                message=final_msg,
+            )
         else:
-            final_msg = f"DAT match failed: {job_error or 'unknown error'}"
-        await job_manager.update_external_job(
-            job_id,
-            progress=100 if job_success else None,
-            message=final_msg,
-        )
-        await job_manager.finish_external_job(
-            job_id,
-            success=job_success,
-            error_message=job_error,
-        )
-        async with _get_match_job_lock():
-            if _active_match_job_id == job_id:
-                _active_match_job_id = None
+            if job_success:
+                parts = [f"{processed}/{total} processed, {hashed} hashed, {matched} matched"]
+                if errors:
+                    parts.append(f"{errors} error(s)")
+                if skips:
+                    parts.append(f"{skips} skipped")
+                final_msg = ", ".join(parts) + f" \u2014 {elapsed:.1f}s"
+            else:
+                final_msg = f"DAT match failed: {job_error or 'unknown error'}"
+            await job_manager.update_external_job(
+                job_id,
+                progress=100 if job_success else None,
+                message=final_msg,
+            )
+            await job_manager.finish_external_job(
+                job_id,
+                success=job_success,
+                error_message=job_error,
+            )
 
 
 @router.post("/dat/prune")

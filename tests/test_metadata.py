@@ -135,6 +135,131 @@ async def test_scan_metadata_skips_disc_id_already_checked(scan_env, monkeypatch
     assert scan_env["marked_paths"] == []  # not re-marked
 
 
+@pytest.mark.asyncio
+async def test_scan_metadata_cancellation_flips_to_cancelled(tmp_path, monkeypatch):
+    """Mid-loop cancel during Phase 1 finishes the scan with CANCELLED status
+    and preserves any metadata already extracted before cancel fired."""
+    from services.job_manager import job_manager
+
+    # Three CHD files so we have room to cancel mid-loop.
+    chd_paths = []
+    for name in ("a.chd", "b.chd", "c.chd"):
+        p = tmp_path / name
+        p.write_text("x")
+        chd_paths.append(str(p))
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    # Force Phase 1 to run for every path.
+    async def always_stale(_):
+        return True
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", always_stale)
+
+    processed_paths: list[str] = []
+    scan_job_ids: list[str] = []
+
+    # Capture the scan_job_id as soon as create_external_job is called so we
+    # can cancel it from inside fake_info.
+    original_create = info_routes.job_manager.create_external_job
+
+    def capture_create(*args, **kwargs):
+        job = original_create(*args, **kwargs)
+        scan_job_ids.append(job.id)
+        return job
+    monkeypatch.setattr(info_routes.job_manager, "create_external_job", capture_create)
+
+    async def fake_info(path):
+        processed_paths.append(path)
+        # After the first file's metadata is extracted, request cancel.
+        # The next iteration's top-of-loop check trips ExternalJobCancelled.
+        if len(processed_paths) == 1 and scan_job_ids:
+            await job_manager.cancel_job(scan_job_ids[0])
+        return {"raw_data": "Tag: CD-ROM"}
+
+    async def fake_set_metadata(path, info, persist=False):
+        return {"media_type": "cd"}
+
+    async def fake_flush_async():
+        return None
+
+    monkeypatch.setattr(info_routes.chdman_service, "info", fake_info)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "set_metadata", fake_set_metadata)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    assert scan_job_ids, "scan_metadata_task should have created an external job"
+    scan_job_id = scan_job_ids[0]
+    final = job_manager.jobs[scan_job_id]
+    assert final.status.value == "cancelled"
+    assert "Cancelled" in final.message
+    # Exactly one file finished before cancel; the next two never ran.
+    assert len(processed_paths) == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_metadata_cancellation_during_phase2(tmp_path, monkeypatch):
+    """Phase 2 (disc-id loop) has its own cancel check — verify it works
+    when Phase 1 was a no-op (everything cache-fresh)."""
+    from services.job_manager import job_manager
+
+    for name in ("a.chd", "b.chd", "c.chd"):
+        (tmp_path / name).write_text("x")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    # Phase 1 is skipped entirely — nothing is stale.
+    async def never_stale(_):
+        return False
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+
+    # Phase 2 runs for all paths (none are marked disc-id-checked).
+    async def not_checked(_):
+        return False
+    monkeypatch.setattr(
+        info_routes.chd_metadata_store, "is_disc_id_checked", not_checked,
+    )
+
+    async def mark_checked(_):
+        return None
+    monkeypatch.setattr(
+        info_routes.chd_metadata_store, "mark_disc_id_checked", mark_checked,
+    )
+
+    async def fake_flush_async():
+        return None
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+
+    ensure_calls: list[str] = []
+    scan_job_ids: list[str] = []
+    original_create = info_routes.job_manager.create_external_job
+
+    def capture_create(*args, **kwargs):
+        job = original_create(*args, **kwargs)
+        scan_job_ids.append(job.id)
+        return job
+    monkeypatch.setattr(info_routes.job_manager, "create_external_job", capture_create)
+
+    async def fake_ensure_embedded(path, chdman_path):
+        ensure_calls.append(path)
+        # Cancel after the first disc-id scan; next iteration's top-of-loop
+        # check raises ExternalJobCancelled.
+        if len(ensure_calls) == 1 and scan_job_ids:
+            await job_manager.cancel_job(scan_job_ids[0])
+        return None
+    monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_embedded)
+
+    await info_routes.scan_metadata_task(force=False)
+
+    scan_job_id = scan_job_ids[0]
+    final = job_manager.jobs[scan_job_id]
+    assert final.status.value == "cancelled"
+    assert "Cancelled" in final.message
+    assert len(ensure_calls) == 1
+
+
 @pytest.fixture
 def metadata_store_path(tmp_path):
     # SQLite file per test. Name kept as "chd_metadata.db" for clarity.

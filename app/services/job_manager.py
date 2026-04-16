@@ -56,6 +56,10 @@ class QueueBackpressureError(RuntimeError):
         super().__init__(self.detail)
 
 
+class ExternalJobCancelled(Exception):
+    """Raised inside an external-job loop when cancel_job() has been requested."""
+
+
 class JobManager:
     """Manages conversion job queue and execution."""
 
@@ -320,6 +324,15 @@ class JobManager:
             started_at=datetime.now(timezone.utc),
         )
         self.jobs[job_id] = job
+        # Register a cancel event so external-job loops can check for
+        # cancellation (symmetric with dispatcher jobs at _process_job).
+        # Event must be created on a running loop; fall back silently in
+        # sync test contexts where no loop is active yet.
+        try:
+            asyncio.get_running_loop()
+            self._cancel_events[job_id] = asyncio.Event()
+        except RuntimeError:
+            pass
         # Enforce max_job_history for external jobs too (best-effort; only runs
         # when there is a running event loop, i.e. production, not sync tests).
         try:
@@ -327,6 +340,14 @@ class JobManager:
         except RuntimeError:
             pass
         return job
+
+    def get_cancel_event(self, job_id: str) -> Optional[asyncio.Event]:
+        """Return the cancel event for *job_id*, if one is registered."""
+        return self._cancel_events.get(job_id)
+
+    def is_cancelled(self, job_id: str) -> bool:
+        """True once cancel_job() has been requested for *job_id*."""
+        return job_id in self._cancelled
 
     async def update_external_job(
         self,
@@ -394,6 +415,39 @@ class JobManager:
         # - /api/jobs continues to list it until the user clears it
         # - the normal "Clear Done" flow can remove it alongside conversion jobs
         # Enforce max_job_history on completion (exclude_id preserves this job).
+        await self._prune_jobs(exclude_id=job_id)
+
+    async def finish_external_job_cancelled(
+        self,
+        job_id: str,
+        *,
+        message: Optional[str] = None,
+    ) -> None:
+        """Finalize an externally-managed job that was cancelled mid-run.
+
+        Parallels :meth:`finish_external_job` but sets status to CANCELLED
+        and emits a ``cancelled`` SSE event so the UI transitions cleanly.
+        """
+        job = self.jobs.get(job_id)
+        if job is None:
+            return
+        job.status = JobStatus.CANCELLED
+        job.completed_at = datetime.now(timezone.utc)
+        if message is not None:
+            job.message = message
+        self._cancel_events.pop(job_id, None)
+        self._cancelled.discard(job_id)
+        await self._notify_subscribers(
+            job_id,
+            {
+                "type": "cancelled",
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": job.progress,
+                "message": job.message,
+            },
+        )
+        self._archive_job_for_lookup(job)
         await self._prune_jobs(exclude_id=job_id)
 
     def get_job_for_lookup(self, job_id: str) -> Optional[ConversionJob]:
@@ -663,10 +717,35 @@ class JobManager:
         if not job:
             return False
 
-        # Externally-managed jobs (e.g. metadata scans) are not cancellable
-        # through the normal dispatcher mechanism.
+        # Externally-managed jobs (metadata scan, DAT match) are always
+        # created in PROCESSING state — they never sit in the dispatcher
+        # queue. Signal via the cancel event; the owning task checks
+        # job_manager.is_cancelled() inside its loop and finalizes via
+        # finish_external_job_cancelled().
         if job.mode in _EXTERNAL_JOB_MODES:
-            return False
+            if job.status != JobStatus.PROCESSING:
+                return False
+            self._cancelled.add(job_id)
+            cancel_event = self._cancel_events.get(job_id)
+            if cancel_event:
+                cancel_event.set()
+            # ASCII ellipsis (matches the conversion-job branch below and
+            # the frontend's optimistic "Cancelling..." string — avoids a
+            # render flicker when the SSE status event lands).
+            job.message = "Cancelling..."
+            asyncio.create_task(
+                self._notify_subscribers(
+                    job_id,
+                    {
+                        "type": "status",
+                        "job_id": job_id,
+                        "status": job.status.value,
+                        "progress": job.progress,
+                        "message": job.message,
+                    },
+                )
+            )
+            return True
 
         if job.status == JobStatus.QUEUED:
             self._cancelled.add(job_id)
@@ -715,11 +794,11 @@ class JobManager:
         """
         queued_ids = [
             job.id for job in self.jobs.values()
-            if job.status == JobStatus.QUEUED and job.mode not in _EXTERNAL_JOB_MODES
+            if job.status == JobStatus.QUEUED
         ]
         processing_ids = [
             job.id for job in self.jobs.values()
-            if job.status == JobStatus.PROCESSING and job.mode not in _EXTERNAL_JOB_MODES
+            if job.status == JobStatus.PROCESSING
         ]
         requested_ids: list[str] = []
 
