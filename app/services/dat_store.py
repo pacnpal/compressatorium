@@ -529,6 +529,18 @@ class DATStore:
         with self._session() as session:
             return session.query(_db.DAT).limit(1).first() is not None
 
+    def has_stale_dats(self) -> bool:
+        """Return True if any DAT row has file_count=0.
+
+        Flags pre-parser-upgrade imports that wrote rows with zero entries
+        (see PR #49 / self-heal in dat_sync._do_sync). Cheap enough for
+        startup — single-row existence check.
+        """
+        with self._session() as session:
+            return session.execute(
+                select(_db.DAT.id).where(_db.DAT.file_count == 0).limit(1)
+            ).first() is not None
+
     def _prune_missing_sync(self) -> int:
         with self._session() as session:
             paths = session.scalars(select(_db.DATMatch.path)).all()

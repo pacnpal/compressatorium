@@ -1,5 +1,29 @@
 # Release Notes
 
+## v3.7.3 - DAT self-heal fires automatically on startup
+
+### 🐛 Bug Fixes
+
+- **Stale DATs now repair themselves on server restart.** v3.7.2 taught `DATSyncService` to skip its `already_synced` fast-path whenever any DAT had `file_count=0`, but the self-heal only ran when `sync()` was explicitly called — via the UI sync button or `POST /api/dat/sync`. Users who had never clicked sync stayed stuck with 67 empty DATs (the classic pre-#49 state: every CD/softlist `<disk>` DAT showing 0 entries while Nintendo GameCube + Wii — the two `<rom>`-based ones — were healthy). Startup auto-sync previously gated on `MAMEREDUMP_AUTO_SYNC=true` AND an empty DAT store, so it never fired for someone who already had 69 DATs sitting in broken state.
+
+  Startup now has a second trigger: whenever any DAT has `file_count=0`, a background sync kicks off unconditionally (no env-var gate, no empty-store gate). The service's existing self-heal logic then rebuilds the DAT set in place using the current parser. Fresh-install behaviour (`MAMEREDUMP_AUTO_SYNC=true` + empty store) is unchanged.
+
+### 🧪 Tests
+
+- `test_has_stale_dats_empty_store_returns_false` / `_all_healthy_returns_false` / `_detects_zero_count` — unit tests for the new `DATStore.has_stale_dats()` existence check.
+
+### 📁 Files Changed
+
+- `app/services/dat_store.py` — new `has_stale_dats()` method (single-row SQL existence check, cheap enough for startup).
+- `app/main.py` — startup auto-sync split into two independent triggers; shared task-spawn helper extracted.
+- `tests/test_db_store_operations.py` — three new tests for `has_stale_dats()`.
+
+### ⚠️ Upgrade Notes
+
+- **No action required.** Restart the server once and stale DATs heal within ~60 s (given network access to the MAMERedump repo). If GitHub is unreachable the sync errors into the log and state is preserved — identical to the existing manual-sync behaviour.
+
+---
+
 ## v3.7.2 - Self-healing DAT re-sync after the softlist &lt;disk&gt; parser fix
 
 ### 🐛 Bug Fixes

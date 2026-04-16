@@ -196,6 +196,59 @@ def test_chd_metadata_upsert_preserves_arbitrary_json(ready_db):
 
 
 # ---------------------------------------------------------------------------
+# has_stale_dats — startup self-heal trigger (see main.py auto-sync branch)
+# ---------------------------------------------------------------------------
+
+
+def test_has_stale_dats_empty_store_returns_false(ready_db):
+    from app.services.dat_store import DATStore
+
+    store = DATStore()
+    assert store.has_stale_dats() is False
+
+
+def test_has_stale_dats_all_healthy_returns_false(ready_db):
+    from app.services.dat_store import DATStore
+
+    with _db.get_session() as s:
+        s.add(_db.DAT(
+            id="healthy1", name="Healthy One", description="", version="",
+            imported_at="", file_count=42,
+        ))
+        s.add(_db.DAT(
+            id="healthy2", name="Healthy Two", description="", version="",
+            imported_at="", file_count=1,
+        ))
+        s.commit()
+
+    assert DATStore().has_stale_dats() is False
+
+
+def test_has_stale_dats_detects_zero_count(ready_db):
+    from app.services.dat_store import DATStore
+
+    with _db.get_session() as s:
+        s.add(_db.DAT(
+            id="healthy", name="GameCube", description="", version="",
+            imported_at="", file_count=2018,
+        ))
+        s.add(_db.DAT(
+            id="stale", name="PlayStation", description="", version="",
+            imported_at="", file_count=0,
+        ))
+        s.commit()
+
+    store = DATStore()
+    assert store.has_stale_dats() is True
+
+    # Removing the stale row clears the flag.
+    with _db.get_session() as s:
+        s.execute(delete(_db.DAT).where(_db.DAT.id == "stale"))
+        s.commit()
+    assert store.has_stale_dats() is False
+
+
+# ---------------------------------------------------------------------------
 # DATSyncState singleton invariant
 # ---------------------------------------------------------------------------
 

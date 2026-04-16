@@ -247,27 +247,38 @@ async def startup_event():
 
     process_queue_task.add_done_callback(_log_process_queue_error)
 
-    # Auto-sync MAMERedump DATs on startup if configured and no DATs loaded.
-    if settings.mameredump_auto_sync:
-        from fastapi.concurrency import run_in_threadpool
-        from services.dat_store import dat_store
-        if not await run_in_threadpool(dat_store.has_dats):
-            from services.dat_sync import dat_sync_service
-            logger.info(
-                "MAMEREDUMP_AUTO_SYNC enabled and no DATs loaded — starting background sync"
-            )
+    # Auto-sync MAMERedump DATs on startup.  Two independent triggers:
+    #   1. MAMEREDUMP_AUTO_SYNC=true AND the store is empty  → fresh-install sync.
+    #   2. Any DAT has file_count=0 (regardless of MAMEREDUMP_AUTO_SYNC) →
+    #      self-heal.  Stale rows are broken state from a pre-parser-upgrade
+    #      import (see PR #49); the sync service's _do_sync() detects the
+    #      zero-count rows and auto-forces a full re-import.
+    from fastapi.concurrency import run_in_threadpool
+    from services.dat_store import dat_store
+    from services.dat_sync import dat_sync_service
 
-            async def _auto_sync():
-                try:
-                    await dat_sync_service.sync()
-                except Exception:
-                    logger.exception("Auto-sync failed")
+    def _spawn_sync_task(reason: str) -> None:
+        logger.info("%s — starting background sync", reason)
 
-            # Store a strong reference so the Task is not garbage-collected
-            # before it completes; done callback removes it.
-            _auto_sync_task = asyncio.create_task(_auto_sync())
-            app.state.background_tasks.add(_auto_sync_task)
-            _auto_sync_task.add_done_callback(app.state.background_tasks.discard)
+        async def _run_sync():
+            try:
+                await dat_sync_service.sync()
+            except Exception:
+                logger.exception("Background DAT sync failed (%s)", reason)
+
+        # Strong reference: without this the Task could be GC'd before it
+        # finishes.  The done callback removes it once complete.
+        task = asyncio.create_task(_run_sync())
+        app.state.background_tasks.add(task)
+        task.add_done_callback(app.state.background_tasks.discard)
+
+    has_any_dats = await run_in_threadpool(dat_store.has_dats)
+    if settings.mameredump_auto_sync and not has_any_dats:
+        _spawn_sync_task("MAMEREDUMP_AUTO_SYNC enabled and no DATs loaded")
+    elif has_any_dats and await run_in_threadpool(dat_store.has_stale_dats):
+        _spawn_sync_task(
+            "DAT store contains stale rows (file_count=0) — self-healing",
+        )
 
 
 @app.get("/health")
