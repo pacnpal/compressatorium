@@ -40,7 +40,7 @@ if [ "$(id -u)" = "0" ]; then
             if mountpoint -q "$optional_path" 2>/dev/null; then
                 mount_opts="$(findmnt -n -o OPTIONS --target "$optional_path" 2>/dev/null || true)"
                 if [ -z "$mount_opts" ]; then
-                    echo "Warning: unable to determine mount options for $optional_path; skipping ownership update." >&2
+                    echo "Warning: unable to determine mount options for $optional_path (path may not be mounted); skipping ownership update to be safe." >&2
                     skip_optional_path=1
                 elif echo "$mount_opts" | grep -qw bind; then
                     skip_optional_path=1
