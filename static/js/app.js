@@ -1742,7 +1742,7 @@ function DeleteModal({ entry, verifiedCHDs, verifyProgress, onDelete, onVerify, 
                 total: chdPaths.length,
                 verified,
                 failed,
-                errors: []
+                errors
             });
         }
         setArchiveVerify({ running: false, total: chdPaths.length, verified, failed, errors });
@@ -3451,7 +3451,7 @@ function App() {
                 // progress lands. Paths still carrying their {pending:true}
                 // sentinel flip to concrete results as the job advances.
                 if (data.status === 'started' && data.job_id) {
-                    activeMatchJobRef.current = { jobId: data.job_id, paths: [...paths] };
+                    activeMatchJobRef.current = { jobId: data.job_id, paths };
                 }
             })
             .catch(() => {
