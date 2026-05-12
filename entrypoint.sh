@@ -42,7 +42,7 @@ if [ "$(id -u)" = "0" ]; then
                 if [ -z "$mount_opts" ]; then
                     echo "Warning: unable to determine mount options for $optional_path (findmnt failed); skipping ownership update to be safe." >&2
                     skip_optional_path=1
-                elif echo "$mount_opts" | grep -qw bind; then
+                elif echo "$mount_opts" | grep -Eqw 'bind|rbind'; then
                     skip_optional_path=1
                 fi
             fi

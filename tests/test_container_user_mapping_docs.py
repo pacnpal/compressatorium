@@ -16,7 +16,9 @@ def test_dockerfile_uses_gosu_and_no_static_user_directive():
         r'apt-get install -y --no-install-recommends[\s\S]*?\bgosu\b',
         dockerfile,
     )
-    assert re.search(r'HEALTHCHECK[\s\S]*CMD\s+gosu\s+converter\s+python3\s+-c', dockerfile)
+    assert re.search(r'HEALTHCHECK[\s\S]*CHD_MODE:-webui', dockerfile)
+    assert re.search(r'HEALTHCHECK[\s\S]*CMD[\s\S]*gosu\s+converter\s+python3\s+-c', dockerfile)
+    assert re.search(r'HEALTHCHECK[\s\S]*\|\|\s+exit\s+0', dockerfile) is None
     assert re.search(r'groupadd\s+-r\s+-g\s+999\s+converter', dockerfile)
     assert re.search(r'useradd\s+-r\s+-u\s+999\s+-g\s+converter', dockerfile)
     assert "ENTRYPOINT [\"/entrypoint.sh\"]" in dockerfile
@@ -43,7 +45,7 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert re.search(r'skip_optional_path=0', entrypoint)
     assert re.search(r'findmnt\s+-n\s+-o\s+OPTIONS\s+--target\s+"\$optional_path"', entrypoint)
     assert re.search(r'Warning: unable to determine mount options for', entrypoint)
-    assert re.search(r'echo\s+"\$mount_opts"\s+\|\s+grep\s+-qw\s+bind', entrypoint)
+    assert re.search(r'echo\s+"\$mount_opts"\s+\|\s+grep\s+-Eqw\s+\'bind\|rbind\'', entrypoint)
     assert re.search(r'\[\s*"\$skip_optional_path"\s+-eq\s+0\s*\]', entrypoint)
     assert re.search(r'chown\s+-R\s+converter:"\$\(\s*id -g converter\s*\)"\s+"\$\{paths_to_chown\[@\]\}"', entrypoint)
     assert re.search(r'exec\s+gosu\s+converter\s+"\$0"\s+"\$@"', entrypoint)
