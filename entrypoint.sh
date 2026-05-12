@@ -25,7 +25,7 @@ if [ "$(id -u)" = "0" ]; then
     fi
 
     if [ "$ownership_changed" = "1" ]; then
-        chown -R converter:converter /app /static /opt/venv
+        chown -R converter:"$(id -g converter)" /app /static /opt/venv
     fi
     exec gosu converter "$0" "$@"
 fi

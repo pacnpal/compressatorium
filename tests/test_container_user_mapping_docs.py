@@ -28,4 +28,5 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert "usermod -u \"$PUID\" converter" in entrypoint
     assert "ownership_changed=0" in entrypoint
     assert "if [ \"$ownership_changed\" = \"1\" ]; then" in entrypoint
+    assert "chown -R converter:\"$(id -g converter)\" /app /static /opt/venv" in entrypoint
     assert "exec gosu converter \"$0\" \"$@\"" in entrypoint

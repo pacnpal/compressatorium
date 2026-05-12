@@ -124,7 +124,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 0
 
-# Run as non-root user
+# Create runtime user/group and prepare ownership for entrypoint privilege drop
 RUN groupadd -r converter && useradd -r -g converter -s /sbin/nologin converter \
     && chown -R converter:converter /app /static /opt/venv \
     && mkdir -p /data/games /config \
