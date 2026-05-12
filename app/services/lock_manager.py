@@ -256,6 +256,9 @@ class LockManager:
             except Exception:
                 # Ensure file handle is closed on any error
                 if lock_handle is not None:
+                    if self._lock_handles.get(normalized_path) is lock_handle:
+                        self._lock_handles.pop(normalized_path, None)
+                        self._locks.discard(normalized_path)
                     try:
                         lock_handle.close()
                     except Exception:
