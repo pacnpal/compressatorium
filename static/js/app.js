@@ -553,7 +553,7 @@ function Breadcrumb({ path, volume, onNavigate }) {
 
     let currentPath = volume.path;
     for (const part of parts) {
-        currentPath = currentPath + '/' + part;
+        currentPath = `${currentPath}/${part}`;
         crumbs.push({ name: part, path: currentPath });
     }
 
@@ -618,17 +618,17 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
             onNavigate(entry.path);
         } else if (entry.type === 'archive') {
             // For archives, browse contents
-            onBrowseArchive && onBrowseArchive(entry.path);
+            onBrowseArchive?.(entry.path);
         } else if (entry.extension === '.chd' && !isArchiveItem(entry)) {
             // For CHD files, show info (but checkbox still works for selection)
             onShowInfo(entry.path);
         } else if (isArchiveItem(entry) && entry.chd_ready && entry.chd_path) {
             // For archive members with a converted CHD, show info for the output file
-            onShowInfo && onShowInfo(entry.chd_path);
+            onShowInfo?.(entry.chd_path);
         } else if (isDolphinInfo && !isArchiveItem(entry)) {
-            onShowInfo && onShowInfo(entry.path);
+            onShowInfo?.(entry.path);
         } else if (is3dsInfo && !isArchiveItem(entry)) {
-            onShowInfo && onShowInfo(entry.path);
+            onShowInfo?.(entry.path);
         } else {
             // For all other files, toggle selection (pass event for shift-click support)
             onToggleSelect(entry, e);
@@ -705,7 +705,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
 
     const isVerified = (entry) => {
         const chdPath = getChdPath(entry);
-        return !!(chdPath && verifiedCHDs && verifiedCHDs.has(chdPath));
+        return !!(chdPath && verifiedCHDs?.has(chdPath));
     };
 
     const getSortIndicator = (column) => {
@@ -786,7 +786,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
             <ul class="file-list">
                 ${visibleEntries.map(entry => {
                 const chdPath = getChdPath(entry);
-                const isVerifying = chdPath && verifyProgress && verifyProgress.has(chdPath);
+                const isVerifying = chdPath && verifyProgress?.has(chdPath);
                 const entryExt = entry.extension?.toLowerCase();
 
                 // Mode compatibility checks for inline compress button
@@ -1439,9 +1439,9 @@ function DeletePlanModal({ plan, onConfirm, onClose, verificationLabel, title })
 
     const items = Array.isArray(plan.items) ? plan.items : [];
     const hasIssues = items.some(item =>
-        (item.errors && item.errors.length) ||
-        (item.unsafe_paths && item.unsafe_paths.length) ||
-        (item.missing_paths && item.missing_paths.length)
+        item.errors?.length ||
+        item.unsafe_paths?.length ||
+        item.missing_paths?.length
     );
 
     const getBaseName = (path) => (path || '').split('/').pop() || path;
@@ -1590,7 +1590,7 @@ function DeleteModal({ entry, verifiedCHDs, verifyProgress, onDelete, onVerify, 
     const isArchive = entry ? entry.type === 'archive' : false;
     const fileTerm = getModeTerm(isoHandling, 'file');
     const resolveSourceProduct = (sourceEntry) => {
-        if (!sourceEntry || !sourceEntry.path) return null;
+        if (!sourceEntry?.path) return null;
 
         const getChdPath = () => (
             sourceEntry.has_chd ? sourceEntry.path.replace(/\.[^.]+$/, '.chd') : null
@@ -1737,11 +1737,13 @@ function DeleteModal({ entry, verifiedCHDs, verifyProgress, onDelete, onVerify, 
                 failed += 1;
                 errors.push({ path, message: err.message || 'Verification failed' });
             }
-            setArchiveVerify((prev) => ({
-                ...prev,
+            setArchiveVerify({
+                running: true,
+                total: chdPaths.length,
                 verified,
-                failed
-            }));
+                failed,
+                errors: []
+            });
         }
         setArchiveVerify({ running: false, total: chdPaths.length, verified, failed, errors });
         setStep(3);
@@ -1932,7 +1934,7 @@ function DeleteModal({ entry, verifiedCHDs, verifyProgress, onDelete, onVerify, 
                             `}
                         `}
                         ${!isArchive && html`
-                            ${verificationResult && verificationResult.valid && html`
+                            ${verificationResult?.valid && html`
                                 <div style="background: var(--bg-tertiary); padding: 12px; border-radius: 4px; margin-bottom: 15px; border: 1px solid var(--success);">
                                     <p style="color: var(--success);">
                                         ✓ ${productTerm} verified successfully! Safe to delete source file.
@@ -1966,7 +1968,7 @@ function DeleteModal({ entry, verifiedCHDs, verifyProgress, onDelete, onVerify, 
     `;
 }
 
-function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, onRefresh, isoHandling }) {
+function BulkDeleteModal({ entries, verifiedCHDs, onVerify, onClose, onRefresh, isoHandling }) {
     const [step, setStep] = useState(1); // 1 = review, 2 = verifying, 3 = confirm
     const [deleting, setDeleting] = useState(false);
     const [error, setError] = useState(null);
@@ -1992,7 +1994,7 @@ function BulkDeleteModal({ entries, verifiedCHDs, onDelete, onVerify, onClose, o
     const verifyTerm = getModeTerm(isoHandling, 'verification');
     const productTerm = getModeTerm(isoHandling, 'product');
     const resolveSourceProduct = (entry) => {
-        if (!entry || !entry.path) return null;
+        if (!entry?.path) return null;
 
         const getChdPath = () => (
             entry.has_chd ? entry.path.replace(/\.[^.]+$/, '.chd') : null
@@ -2772,14 +2774,14 @@ function App() {
     const [selectedFiles, setSelectedFiles] = useState(new Map());
     const [jobs, setJobs] = useState([]);
     const [creatingJobs, setCreatingJobs] = useState([]);
-    const [_hiddenJobIds, _setHiddenJobIds] = useState(new Set());
+    const [, _setHiddenJobIds] = useState(new Set());
     const [loading, setLoading] = useState(false);
     const [conversionMode, setConversionMode] = useState('createcd');
     const [isoHandling, setIsoHandling] = useState(() => {
         try {
             const stored = localStorage.getItem(ISO_TOOL_STORAGE_KEY);
             return stored === 'chdman' || stored === 'dolphin' || stored === 'z3ds' ? stored : null;
-        } catch (err) {
+        } catch {
             return null;
         }
     });
@@ -2830,7 +2832,7 @@ function App() {
     const [showExternalScanJobs, setShowExternalScanJobs] = useState(() => {
         try {
             return localStorage.getItem(SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY) === 'true';
-        } catch (err) {
+        } catch {
             return false;
         }
     });
@@ -2904,7 +2906,7 @@ function App() {
     useEffect(() => {
         try {
             localStorage.setItem(ISO_TOOL_STORAGE_KEY, isoHandling);
-        } catch (err) {
+        } catch {
             // Ignore persistence failures (private mode, disabled storage).
         }
     }, [isoHandling]);
@@ -2912,7 +2914,7 @@ function App() {
     useEffect(() => {
         try {
             localStorage.setItem(SHOW_EXTERNAL_SCAN_JOBS_STORAGE_KEY, showExternalScanJobs ? 'true' : 'false');
-        } catch (err) {
+        } catch {
             // Ignore persistence failures (private mode, disabled storage).
         }
     }, [showExternalScanJobs]);
@@ -2929,7 +2931,7 @@ function App() {
             if (showSpinner) setLoading(true);
             api.listArchive(archivePath)
                 .then(archiveData => {
-                    if (!archiveData || !archiveData.files) return;
+                    if (!archiveData?.files) return;
                     setEntriesError(null);
 
                     const newArchiveEntries = archiveData.files.map(file => ({
@@ -3069,7 +3071,7 @@ function App() {
                     setVerifiedCHDs(new Set(data.verified));
                 }
             })
-            .catch(() => { });
+            .catch(() => {});
     }, []);
 
     // Filtered and sorted entries based on file type filter and sort settings
@@ -3101,7 +3103,7 @@ function App() {
             if (b.type === 'archive' && a.type !== 'archive' && a.type !== 'directory') return 1;
 
             // Within same category, sort by selected column
-            let cmp = 0;
+            let cmp;
             switch (sortBy) {
                 case 'name':
                     cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -3340,7 +3342,9 @@ function App() {
                 if (cachedPaths.length > 0) {
                     setChdMetadata(prev => {
                         const next = new Map(prev);
-                        cachedPaths.forEach(([path, meta]) => next.set(path, meta));
+                        cachedPaths.forEach(([path, meta]) => {
+                            next.set(path, meta);
+                        });
                         return next;
                     });
                 }
@@ -3348,26 +3352,30 @@ function App() {
                 // Trigger info fetch for uncached files (this populates the backend cache)
                 // Limit concurrent fetches to avoid overwhelming the server
                 const fetchLimit = 3;
+                const setMetadataForPath = (path, mediaType) => {
+                    setChdMetadata(prev => {
+                        const next = new Map(prev);
+                        next.set(path, { media_type: mediaType, cached: true });
+                        return next;
+                    });
+                };
+                const fetchUncachedPath = async (path) => {
+                    try {
+                        const info = await api.getCHDInfo(path);
+                        setMetadataForPath(path, info.media_type);
+                    } catch {
+                        // Mark as fetched but with no badge
+                        setMetadataForPath(path, null);
+                    }
+                };
                 const fetchUncached = async () => {
                     for (let i = 0; i < uncachedPaths.length; i += fetchLimit) {
                         const batch = uncachedPaths.slice(i, i + fetchLimit);
-                        await Promise.all(batch.map(async (path) => {
-                            try {
-                                const info = await api.getCHDInfo(path);
-                                setChdMetadata(prev => {
-                                    const next = new Map(prev);
-                                    next.set(path, { media_type: info.media_type, cached: true });
-                                    return next;
-                                });
-                            } catch (e) {
-                                // Mark as fetched but with no badge
-                                setChdMetadata(prev => {
-                                    const next = new Map(prev);
-                                    next.set(path, { media_type: null, cached: true });
-                                    return next;
-                                });
-                            }
-                        }));
+                        const batchPromises = [];
+                        for (const uncachedPath of batch) {
+                            batchPromises.push(fetchUncachedPath(uncachedPath));
+                        }
+                        await Promise.all(batchPromises);
                     }
                 };
 
@@ -3403,7 +3411,7 @@ function App() {
             '.3ds', '.cci', '.cia',
         ]);
         // Must be defined before the filter so the .catch() setTimeout can use it.
-        const RETRY_MS = 30_000;
+        const RETRY_MS = 30000;
         const paths = displayedEntries
             .filter(e => matchableExts.has(e.extension?.toLowerCase()))
             .map(e => e.path)
@@ -3443,7 +3451,7 @@ function App() {
                 // progress lands. Paths still carrying their {pending:true}
                 // sentinel flip to concrete results as the job advances.
                 if (data.status === 'started' && data.job_id) {
-                    activeMatchJobRef.current = { jobId: data.job_id, paths };
+                    activeMatchJobRef.current = { jobId: data.job_id, paths: [...paths] };
                 }
             })
             .catch(() => {
@@ -4021,7 +4029,7 @@ function App() {
         try {
             const archiveData = await api.listArchive(archivePath);
 
-            if (!archiveData || !archiveData.files || archiveData.files.length === 0) {
+            if (!archiveData?.files?.length) {
                 notify(`ℹ No convertible files found in ${archiveName}`, 'info');
                 setEntries([]);
                 setCurrentArchivePath(null);
@@ -4145,9 +4153,13 @@ function App() {
             const next = new Map(prev);
             const allOnPageSelected = selectable.every(e => next.has(e.path));
             if (allOnPageSelected) {
-                selectable.forEach(e => next.delete(e.path));
+                selectable.forEach((e) => {
+                    next.delete(e.path);
+                });
             } else {
-                selectable.forEach(e => next.set(e.path, e));
+                selectable.forEach((e) => {
+                    next.set(e.path, e);
+                });
             }
             return next;
         });
@@ -4366,7 +4378,7 @@ function App() {
                     setVerifiedCHDs(new Set(data.verified));
                 }
             })
-            .catch(() => { });
+            .catch(() => {});
 
         if (result.verified > 0) {
             notify(`✓ Verified ${result.verified} file${result.verified > 1 ? 's' : ''}${result.failed > 0 ? `, ${result.failed} failed` : ''}`,
@@ -4406,11 +4418,11 @@ function App() {
         // Build a safe stem for archive members to avoid collisions
         let stem;
         if (isArchiveItem) {
-            if (entry && entry.output_stem) {
+            if (entry?.output_stem) {
                 stem = entry.output_stem;
             } else {
                 const parentParts = rawName.split('/').slice(0, -1).filter(Boolean);
-                const safePrefix = parentParts.length ? parentParts.join('_') + '_' : '';
+                const safePrefix = parentParts.length ? `${parentParts.join('_')}_` : '';
                 stem = safePrefix + filename.replace(/\.[^.]+$/, '');
             }
         } else {
@@ -5183,7 +5195,9 @@ function App() {
         const idsToHide = completedJobs.map(j => j.id);
         _setHiddenJobIds(prev => {
             const next = new Set(prev);
-            idsToHide.forEach(id => next.add(id));
+            idsToHide.forEach((id) => {
+                next.add(id);
+            });
             return next;
         });
         setJobs(prev => prev.filter(j => !['completed', 'failed', 'cancelled'].includes(j.status)));
@@ -5194,7 +5208,9 @@ function App() {
             // Successfully deleted - clean up hidden set
             _setHiddenJobIds(prev => {
                 const next = new Set(prev);
-                idsToHide.forEach(id => next.delete(id));
+                idsToHide.forEach((id) => {
+                    next.delete(id);
+                });
                 return next;
             });
         } catch (err) {
@@ -5203,7 +5219,9 @@ function App() {
             console.error('Failed to delete completed jobs:', err);
             _setHiddenJobIds(prev => {
                 const next = new Set(prev);
-                idsToHide.forEach(id => next.delete(id));
+                idsToHide.forEach((id) => {
+                    next.delete(id);
+                });
                 return next;
             });
             notify('Failed to clear completed jobs', 'error');
@@ -6046,7 +6064,6 @@ function App() {
                 <${BulkDeleteModal}
                     entries=${bulkDeleteEntries}
                     verifiedCHDs=${verifiedCHDs}
-                    onDelete=${handleDelete}
                     onVerify=${handleAddVerifiedCHD}
                     onClose=${() => setBulkDeleteEntries(null)}
                     onRefresh=${handleBulkDeleteRefresh}
