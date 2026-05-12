@@ -7,6 +7,5 @@ py7zr>=0.20.1
 rarfile>=4.2
 defusedxml>=0.7.1
 python-multipart>=0.0.27
-SQLAlchemy>=2.0,<3.0
+SQLAlchemy>=2.0.49,<3.0
 alembic>=1.13
-
