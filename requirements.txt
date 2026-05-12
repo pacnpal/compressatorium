@@ -6,7 +6,7 @@ pydantic-settings>=2.1.0
 py7zr>=0.20.1
 rarfile>=4.2
 defusedxml>=0.7.1
-python-multipart>=0.0.7
+python-multipart>=0.0.27
 SQLAlchemy>=2.0,<3.0
 alembic>=1.13
 
