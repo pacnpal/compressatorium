@@ -13,9 +13,14 @@ if [ "$(id -u)" = "0" ]; then
     fi
 
     if [ "$(id -g converter)" != "$PGID" ]; then
-        if ! groupmod -g "$PGID" converter 2>/dev/null; then
-            echo "GID $PGID already exists; assigning converter to the existing group."
-            usermod -g "$PGID" converter
+        if ! groupmod_error="$(groupmod -g "$PGID" converter 2>&1)"; then
+            if getent group "$PGID" >/dev/null; then
+                echo "GID $PGID already exists; assigning converter to the existing group."
+                usermod -g "$PGID" converter
+            else
+                echo "Failed to remap converter to PGID $PGID: $groupmod_error" >&2
+                exit 1
+            fi
         fi
         ownership_changed=1
     fi
