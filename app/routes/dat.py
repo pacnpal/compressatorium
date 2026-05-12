@@ -335,8 +335,6 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
         path needs hashing.
       * HTTP 409 when another match job is already active.
     """
-    global _active_match_job_id
-
     if not request.paths:
         return {"status": "idle", "results": {}}
 
