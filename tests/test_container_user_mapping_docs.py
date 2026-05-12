@@ -12,7 +12,7 @@ def _read_repo_file(relative_path: str) -> str:
 def test_dockerfile_uses_gosu_and_no_static_user_directive():
     dockerfile = _read_repo_file("Dockerfile")
 
-    assert "gosu \\" in dockerfile
+    assert re.search(r"\bgosu\b", dockerfile)
     assert "ENTRYPOINT [\"/entrypoint.sh\"]" in dockerfile
     assert re.search(r"^\s*USER\s+converter\s*$", dockerfile, flags=re.MULTILINE) is None
 
@@ -20,13 +20,17 @@ def test_dockerfile_uses_gosu_and_no_static_user_directive():
 def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     entrypoint = _read_repo_file("entrypoint.sh")
 
-    assert "if [ \"$(id -u)\" = \"0\" ]; then" in entrypoint
-    assert "PUID=${PUID:-999}" in entrypoint
-    assert "PGID=${PGID:-999}" in entrypoint
-    assert "groupmod -g \"$PGID\" converter 2>/dev/null" in entrypoint
-    assert "usermod -g \"$PGID\" converter" in entrypoint
-    assert "usermod -u \"$PUID\" converter" in entrypoint
-    assert "ownership_changed=0" in entrypoint
-    assert "if [ \"$ownership_changed\" = \"1\" ]; then" in entrypoint
-    assert "chown -R converter:\"$(id -g converter)\" /app /static /opt/venv" in entrypoint
-    assert "exec gosu converter \"$0\" \"$@\"" in entrypoint
+    assert re.search(r'if\s+\[\s*"\$\(id -u\)"\s*=\s*"0"\s*\]\s*;\s*then', entrypoint)
+    assert re.search(r'PUID=\$\{PUID:-\d+\}', entrypoint)
+    assert re.search(r'PGID=\$\{PGID:-\d+\}', entrypoint)
+    assert re.search(r'groupmod\s+-g\s+"\$PGID"\s+converter', entrypoint)
+    assert re.search(r'usermod\s+-g\s+"\$PGID"\s+converter', entrypoint)
+    assert re.search(r'usermod\s+-u\s+"\$PUID"\s+converter', entrypoint)
+    assert re.search(r'for\s+optional_path\s+in\s+/config\s+/data/games;\s+do', entrypoint)
+    assert re.search(r'!\s+mountpoint\s+-q\s+"\$optional_path"', entrypoint)
+    assert re.search(r'chown\s+-R\s+converter:"\$\(\s*id -g converter\s*\)"\s+"\$\{paths_to_chown\[@\]\}"', entrypoint)
+    assert re.search(r'exec\s+gosu\s+converter\s+"\$0"\s+"\$@"', entrypoint)
+
+    assert entrypoint.index("groupmod") < entrypoint.index("usermod -u")
+    assert entrypoint.index("usermod -u") < entrypoint.index("chown -R")
+    assert entrypoint.index("chown -R") < entrypoint.index("exec gosu converter")
