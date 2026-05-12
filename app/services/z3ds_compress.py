@@ -134,7 +134,7 @@ class Z3DSCompressService:
             return str(Path(output_dir) / output_name)
         return str(input_file.parent / output_name)
 
-    async def convert(
+    async def convert(  # pylint: disable=too-many-positional-arguments
         self,
         input_path: str,
         output_path: str,
