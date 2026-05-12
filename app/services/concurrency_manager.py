@@ -70,6 +70,11 @@ class ConcurrencyManager:
                     # Binary mode avoids an "unspecified-encoding" lint warning; this
                     # handle is used only for fcntl.flock() — no text is read or written.
                     handle = open(path, "ab")  # pylint: disable=consider-using-with
+                except OSError:
+                    continue
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self._lock_handles[key] = (idx, handle)
                     return True
                 except BlockingIOError:
                     handle.close()
