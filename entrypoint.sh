@@ -36,15 +36,12 @@ if [ "$(id -u)" = "0" ]; then
     if [ "$ownership_changed" = "1" ]; then
         paths_to_chown=(/app /static /opt/venv)
         for optional_path in /config /data/games; do
-            if [ ! -e "$optional_path" ]; then
-                continue
+            if [ -e "$optional_path" ] && {
+                ! mountpoint -q "$optional_path" 2>/dev/null ||
+                    ! findmnt -n -o OPTIONS --target "$optional_path" | grep -qw bind;
+            }; then
+                paths_to_chown+=("$optional_path")
             fi
-            if mountpoint -q "$optional_path" 2>/dev/null; then
-                if findmnt -n -o OPTIONS --target "$optional_path" | grep -qw bind; then
-                    continue
-                fi
-            fi
-            paths_to_chown+=("$optional_path")
         done
         chown -R converter:"$(id -g converter)" "${paths_to_chown[@]}"
     fi
