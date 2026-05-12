@@ -27,6 +27,7 @@ pylint:
     - unsubscriptable-object
     - too-many-ancestors
     - too-many-arguments
+    - too-many-positional-arguments
     - too-many-boolean-expressions
     - too-many-branches
     - too-many-instance-attributes
@@ -63,6 +64,8 @@ pylint:
     - import-error
     - no-member
     - syntax-error
+    - django-not-configured   # Codacy ships pylint-django which fires I1010
+                              # on non-Django projects; suppress the false positive.
   options:
     max-line-length: 100
 

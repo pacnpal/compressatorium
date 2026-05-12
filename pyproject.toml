@@ -56,8 +56,10 @@ disable = [
     "R0914",
     "R0915",
     "R0916",
+    "R0917",
     "too-many-ancestors",
     "too-many-arguments",
+    "too-many-positional-arguments",
     "too-many-boolean-expressions",
     "too-many-branches",
     "too-many-instance-attributes",
@@ -204,6 +206,13 @@ disable = [
     # ruff/mypy in CI are the authoritative syntax gate.
     "E0001",
     "syntax-error",
+
+    # --- Codacy pylint-django false positive --------------------------
+    # Codacy's scanner ships pylint-django which fires I1010
+    # (django-not-configured) on every non-Django project.  This
+    # project does not use Django; suppress the false positive globally.
+    "I1010",
+    "django-not-configured",
 ]
 
 [tool.pylint.format]
