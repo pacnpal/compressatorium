@@ -59,7 +59,7 @@ class LockManager:
                 lock_path = os.path.join(self._lock_dir, name)
                 try:
                     # Try to acquire the lock to see if it's stale
-                    with open(lock_path, "a") as lock_handle:
+                    with open(lock_path, "a", encoding="utf-8") as lock_handle:
                         acquired = False
                         try:
                             fcntl.flock(
@@ -141,7 +141,7 @@ class LockManager:
             return False
 
         try:
-            with open(lock_file_path, "a") as lock_handle:
+            with open(lock_file_path, "a", encoding="utf-8") as lock_handle:
                 acquired = False
                 try:
                     fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -204,53 +204,54 @@ class LockManager:
                 os.makedirs(lock_dir, exist_ok=True)
             lock_handle = None
             try:
-                # Open lock file in append mode to avoid truncating existing content
-                lock_handle = open(lock_file_path, "a")
+                with contextlib.ExitStack() as stack:
+                    # Open lock file in append mode to avoid truncating existing content
+                    lock_handle = stack.enter_context(
+                        open(lock_file_path, "a", encoding="utf-8")
+                    )
 
-                # Try to acquire an exclusive lock (non-blocking)
-                try:
-                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    # Lock is held by another process
-                    lock_handle.close()
-                    return False
-                except OSError:
-                    # Other error (permission denied, etc.)
-                    lock_handle.close()
-                    logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
-                    return False
-
-                # Now that we have the lock, check if CHD already exists (atomic with lock)
-                if os.path.exists(normalized_path):
-                    if not allow_existing or not os.path.isfile(normalized_path):
-                        # File exists and overwrite not allowed (or not a file): release lock and
-                        # clean up
-                        try:
-                            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                        except Exception:
-                            logger.debug(
-                                "Failed to release lock for existing file: %s",
-                                normalized_path,
-                                exc_info=True,
-                            )
-                        lock_handle.close()
-                        lock_handle = None
-                        # Clean up lock file since we're not using it
-                        try:
-                            if os.path.exists(lock_file_path):
-                                os.remove(lock_file_path)
-                        except Exception:
-                            logger.debug(
-                                "Failed to clean up lock file: %s",
-                                lock_file_path,
-                                exc_info=True,
-                            )
+                    # Try to acquire an exclusive lock (non-blocking)
+                    try:
+                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        # Lock is held by another process
+                        return False
+                    except OSError:
+                        # Other error (permission denied, etc.)
+                        logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
                         return False
 
-                # Successfully acquired the lock and file doesn't exist
-                self._locks.add(normalized_path)
-                self._lock_handles[normalized_path] = lock_handle
-                return True
+                    # Now that we have the lock, check if CHD already exists (atomic with lock)
+                    if os.path.exists(normalized_path):
+                        if not allow_existing or not os.path.isfile(normalized_path):
+                            # File exists and overwrite not allowed (or not a file): release lock and
+                            # clean up
+                            try:
+                                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                            except Exception:
+                                logger.debug(
+                                    "Failed to release lock for existing file: %s",
+                                    normalized_path,
+                                    exc_info=True,
+                                )
+                            # Clean up lock file since we're not using it
+                            try:
+                                if os.path.exists(lock_file_path):
+                                    os.remove(lock_file_path)
+                            except Exception:
+                                logger.debug(
+                                    "Failed to clean up lock file: %s",
+                                    lock_file_path,
+                                    exc_info=True,
+                                )
+                            return False
+
+                    # Successfully acquired the lock and file doesn't exist
+                    self._locks.add(normalized_path)
+                    self._lock_handles[normalized_path] = lock_handle
+                    # Transfer ownership to _lock_handles so ExitStack does not close it here.
+                    stack.pop_all()
+                    return True
 
             except Exception:
                 # Ensure file handle is closed on any error
