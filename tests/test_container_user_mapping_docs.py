@@ -22,6 +22,9 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert "if [ \"$(id -u)\" = \"0\" ]; then" in entrypoint
     assert "PUID=${PUID:-999}" in entrypoint
     assert "PGID=${PGID:-999}" in entrypoint
-    assert "groupmod -g \"$PGID\" converter 2>/dev/null || usermod -g \"$PGID\" converter" in entrypoint
+    assert "groupmod -g \"$PGID\" converter 2>/dev/null" in entrypoint
+    assert "usermod -g \"$PGID\" converter" in entrypoint
     assert "usermod -u \"$PUID\" converter" in entrypoint
+    assert "ownership_changed=0" in entrypoint
+    assert "if [ \"$ownership_changed\" = \"1\" ]; then" in entrypoint
     assert "exec gosu converter \"$0\" \"$@\"" in entrypoint

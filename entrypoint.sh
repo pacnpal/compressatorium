@@ -5,6 +5,7 @@ set -e
 if [ "$(id -u)" = "0" ]; then
     PUID=${PUID:-999}
     PGID=${PGID:-999}
+    ownership_changed=0
 
     if ! [[ "$PUID" =~ ^[0-9]+$ && "$PGID" =~ ^[0-9]+$ ]]; then
         echo "Invalid PUID/PGID. Both must be numeric." >&2
@@ -12,13 +13,20 @@ if [ "$(id -u)" = "0" ]; then
     fi
 
     if [ "$(id -g converter)" != "$PGID" ]; then
-        groupmod -g "$PGID" converter 2>/dev/null || usermod -g "$PGID" converter
+        if ! groupmod -g "$PGID" converter 2>/dev/null; then
+            echo "groupmod could not set converter to GID $PGID; reusing existing group via usermod."
+            usermod -g "$PGID" converter
+        fi
+        ownership_changed=1
     fi
     if [ "$(id -u converter)" != "$PUID" ]; then
         usermod -u "$PUID" converter
+        ownership_changed=1
     fi
 
-    chown -R converter:converter /app /static /opt/venv
+    if [ "$ownership_changed" = "1" ]; then
+        chown -R converter:converter /app /static /opt/venv
+    fi
     exec gosu converter "$0" "$@"
 fi
 
