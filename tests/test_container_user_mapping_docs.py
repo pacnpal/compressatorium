@@ -40,7 +40,7 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert re.search(r'usermod\s+-u\s+"\$PUID"\s+converter', entrypoint)
     assert re.search(r'for\s+optional_path\s+in\s+/config\s+/data/games;\s+do', entrypoint)
     assert re.search(r'skip_optional_path=0', entrypoint)
-    assert re.search(r'findmnt[\s\S]*-o\s+OPTIONS[\s\S]*--target\s+"\$optional_path"', entrypoint)
+    assert re.search(r'findmnt\s+-n\s+-o\s+OPTIONS\s+--target\s+"\$optional_path"', entrypoint)
     assert re.search(r'Warning: unable to determine mount options for', entrypoint)
     assert re.search(r'echo\s+"\$mount_opts"\s+\|\s+grep\s+-qw\s+bind', entrypoint)
     assert re.search(r'\[\s*"\$skip_optional_path"\s+-eq\s+0\s*\]', entrypoint)
