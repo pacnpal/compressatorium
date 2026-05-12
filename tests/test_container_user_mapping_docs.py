@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +14,7 @@ def test_dockerfile_uses_gosu_and_no_static_user_directive():
 
     assert "gosu \\" in dockerfile
     assert "ENTRYPOINT [\"/entrypoint.sh\"]" in dockerfile
-    assert "\nUSER converter\n" not in dockerfile
+    assert re.search(r"^\s*USER\s+converter\s*$", dockerfile, flags=re.MULTILINE) is None
 
 
 def test_entrypoint_remaps_uid_gid_before_dropping_privileges():

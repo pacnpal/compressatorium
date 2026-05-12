@@ -14,7 +14,7 @@ if [ "$(id -u)" = "0" ]; then
 
     if [ "$(id -g converter)" != "$PGID" ]; then
         if ! groupmod -g "$PGID" converter 2>/dev/null; then
-            echo "groupmod could not set converter to GID $PGID; reusing existing group via usermod."
+            echo "GID $PGID already exists; assigning converter to the existing group."
             usermod -g "$PGID" converter
         fi
         ownership_changed=1
