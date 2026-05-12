@@ -1,7 +1,7 @@
-; Project-wide pylint configuration.  Kept in sync with
-; .codacy/tools-configs/pylint.rc — the Codacy-specific copy is what
-; the cloud scanner reads; this root-level file is for
-; contributor terminals and pre-commit hooks.  Both must match.
+; Project-wide pylint configuration.
+; Codacy reads this file directly (config_file: .pylintrc in .codacy.yml).
+; pyproject.toml [tool.pylint] and .prospector.yaml mirror every disable
+; declared here so all lint entry-points stay in sync.
 
 [MAIN]
 py-version = 3.10
@@ -96,7 +96,9 @@ disable =
     E0001,
     syntax-error,
     I1010,
-    django-not-configured
+    django-not-configured,
+    E0012,
+    bad-option-value
 
 [FORMAT]
 max-line-length = 100

@@ -66,6 +66,9 @@ pylint:
     - syntax-error
     - django-not-configured   # Codacy ships pylint-django which fires I1010
                               # on non-Django projects; suppress the false positive.
+    - bad-option-value        # Codacy's older pylint emits E0012 when it encounters
+                              # inline `# pylint: disable=<name>` for symbols it doesn't
+                              # know (e.g. `consider-using-with` added in pylint 2.8).
   options:
     max-line-length: 100
 
