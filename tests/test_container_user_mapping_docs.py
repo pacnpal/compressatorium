@@ -28,6 +28,9 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert re.search(r'if\s+\[\s*"\$\(id -u\)"\s*=\s*"0"\s*\]\s*;\s*then', entrypoint)
     assert re.search(r'PUID=\$\{PUID:-\d+\}', entrypoint)
     assert re.search(r'PGID=\$\{PGID:-\d+\}', entrypoint)
+    assert re.search(r'\[\s*"\$PUID"\s*-eq\s*0\s*\]', entrypoint)
+    assert re.search(r'\[\s*"\$PGID"\s*-eq\s*0\s*\]', entrypoint)
+    assert re.search(r'Both must be numeric and greater than 0', entrypoint)
     assert re.search(r'groupmod\s+-g\s+"\$PGID"\s+converter', entrypoint)
     assert re.search(r'getent\s+group\s+"\$PGID"\s+>/dev/null', entrypoint)
     assert re.search(r'Failed to remap converter to PGID', entrypoint)
@@ -36,7 +39,7 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert re.search(r'usermod\s+-g\s+"\$PGID"\s+converter', entrypoint)
     assert re.search(r'usermod\s+-u\s+"\$PUID"\s+converter', entrypoint)
     assert re.search(r'for\s+optional_path\s+in\s+/config\s+/data/games;\s+do', entrypoint)
-    assert re.search(r'!\s+mountpoint\s+-q\s+"\$optional_path"', entrypoint)
+    assert re.search(r'findmnt\s+-n\s+-o\s+OPTIONS\s+--target\s+"\$optional_path"\s+\|\s+grep\s+-qw\s+bind', entrypoint)
     assert re.search(r'chown\s+-R\s+converter:"\$\(\s*id -g converter\s*\)"\s+"\$\{paths_to_chown\[@\]\}"', entrypoint)
     assert re.search(r'exec\s+gosu\s+converter\s+"\$0"\s+"\$@"', entrypoint)
 

@@ -7,8 +7,8 @@ if [ "$(id -u)" = "0" ]; then
     PGID=${PGID:-999}
     ownership_changed=0
 
-    if ! [[ "$PUID" =~ ^[0-9]+$ && "$PGID" =~ ^[0-9]+$ ]]; then
-        echo "Invalid PUID/PGID. Both must be numeric." >&2
+    if ! [[ "$PUID" =~ ^[0-9]+$ && "$PGID" =~ ^[0-9]+$ ]] || [ "$PUID" -eq 0 ] || [ "$PGID" -eq 0 ]; then
+        echo "Invalid PUID/PGID. Both must be numeric and greater than 0." >&2
         exit 1
     fi
 
@@ -36,9 +36,15 @@ if [ "$(id -u)" = "0" ]; then
     if [ "$ownership_changed" = "1" ]; then
         paths_to_chown=(/app /static /opt/venv)
         for optional_path in /config /data/games; do
-            if [ -e "$optional_path" ] && ! mountpoint -q "$optional_path" 2>/dev/null; then
-                paths_to_chown+=("$optional_path")
+            if [ ! -e "$optional_path" ]; then
+                continue
             fi
+            if mountpoint -q "$optional_path" 2>/dev/null; then
+                if findmnt -n -o OPTIONS --target "$optional_path" | grep -qw bind; then
+                    continue
+                fi
+            fi
+            paths_to_chown+=("$optional_path")
         done
         chown -R converter:"$(id -g converter)" "${paths_to_chown[@]}"
     fi
