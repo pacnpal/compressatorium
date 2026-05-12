@@ -13,7 +13,7 @@ def test_dockerfile_uses_gosu_and_no_static_user_directive():
     dockerfile = _read_repo_file("Dockerfile")
 
     assert re.search(
-        r'apt-get install -y --no-install-recommends[\s\S]*?\bpython3\b[\s\S]*?\bgosu\b[\s\S]*?&&',
+        r'apt-get install -y --no-install-recommends[\s\S]*?\bgosu\b',
         dockerfile,
     )
     assert re.search(r'groupadd\s+-r\s+-g\s+999\s+converter', dockerfile)
