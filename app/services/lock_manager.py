@@ -249,7 +249,8 @@ class LockManager:
                     # Successfully acquired the lock and file doesn't exist
                     self._locks.add(normalized_path)
                     self._lock_handles[normalized_path] = lock_handle
-                    # Transfer ownership to _lock_handles so ExitStack does not close it here.
+                    # Transfer ownership to _lock_handles by detaching ExitStack cleanup.
+                    # This keeps lock_handle open for the conversion lifecycle.
                     stack.pop_all()
                     return True
 
