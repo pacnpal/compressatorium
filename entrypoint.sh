@@ -38,7 +38,11 @@ if [ "$(id -u)" = "0" ]; then
         for optional_path in /config /data/games; do
             is_bind_mount=0
             if mountpoint -q "$optional_path" 2>/dev/null; then
-                if findmnt -n -o OPTIONS --target "$optional_path" | grep -qw bind; then
+                mount_opts="$(findmnt -n -o OPTIONS --target "$optional_path" 2>/dev/null || true)"
+                if [ -z "$mount_opts" ]; then
+                    echo "Warning: unable to determine mount options for $optional_path; skipping ownership update." >&2
+                    is_bind_mount=1
+                elif echo "$mount_opts" | grep -qw bind; then
                     is_bind_mount=1
                 fi
             fi
