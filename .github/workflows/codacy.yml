@@ -139,7 +139,7 @@ jobs:
       matrix: ${{ fromJSON(needs.codacy-security-scan.outputs.sarif-matrix) }}
     steps:
       - name: Download split SARIF artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@87c55149d96e628cc2ef7e6fc2aab372015aec85 # v4.1.3
         with:
           name: codacy-sarif-runs
           path: codacy-sarif-runs
