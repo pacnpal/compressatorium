@@ -16,6 +16,7 @@ docker-compose up -d
 - Port: 8080
 - Volume: `./games` → `/data/games`
 - Temp: `/config/temp` (inside `./config`)
+- UID/GID remap: optional via `PUID`/`PGID` (defaults `999:999`)
 - Mode: Web UI
 - Concurrent jobs: 1
 
@@ -127,6 +128,8 @@ Volume behavior:
 | `COMPRESSATORIUM_VOLUMES` | (unset) | Explicit comma-separated volume paths (skips startup scan) |
 | `CHD_MOUNT_ROOT` | `/data` | Legacy alias for `COMPRESSATORIUM_MOUNT_ROOT` |
 | `CHD_VOLUMES` | (unset) | Legacy alias for `COMPRESSATORIUM_VOLUMES` |
+| `PUID` | `999` | Optional runtime UID remap for `converter` (commonly set on Unraid) |
+| `PGID` | `999` | Optional runtime GID remap for `converter`; reuses an existing group when that GID is already present |
 | `CHD_DATA_DIR` | `/config` | Persistent data directory |
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |

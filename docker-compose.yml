@@ -13,6 +13,9 @@ services:
       - COMPRESSATORIUM_MOUNT_ROOT=/data
       # Optional: override temp location (default: /config/temp)
       # - CHD_TEMP_DIR=/temp
+      # Optional: remap container runtime UID/GID (Unraid-friendly)
+      # - PUID=99
+      # - PGID=100
       # Conversion mode: createcd (CD-ROM) or createdvd (DVD-ROM)
       - CHDMAN_MODE=createcd
       # Maximum parallel conversion jobs (Web UI only)

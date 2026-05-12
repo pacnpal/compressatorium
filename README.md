@@ -124,6 +124,8 @@ The easiest way to use CHD Converter is through the web interface:
 ```bash
 docker run -d \
   -p 8080:8080 \
+  -e PUID=99 \
+  -e PGID=100 \
   -v /path/to/config:/config \
   -v /path/to/games:/data/games \
   pacnpal/compressatorium
@@ -133,6 +135,7 @@ Then open **http://localhost:8080** in your browser.
 
 > **Required:** The `/config` volume must be mounted for persistent data storage.  
 > **Volume discovery:** If `COMPRESSATORIUM_VOLUMES` is unset, the app scans `/data/*` at startup and auto-registers mounted game volumes (restart after mount changes).  
+> **Ownership (optional):** Set `PUID`/`PGID` to match your host user/group (for example Unraid `99:100`). If unset, defaults remain `999:999`.  
 > **Default temp location:** `/config/temp`. To use a different location, set `CHD_TEMP_DIR` and mount it.
 
 ### Multiple Volumes
@@ -516,6 +519,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_VOLUMES` | (unset) | Explicit comma-separated volume paths. When set, startup scan is skipped |
 | `CHD_MOUNT_ROOT` | `/data` | Legacy alias for `COMPRESSATORIUM_MOUNT_ROOT` |
 | `CHD_VOLUMES` | (unset) | Legacy alias for `COMPRESSATORIUM_VOLUMES` |
+| `PUID` | `999` | Optional runtime UID remap for `converter` before app startup (useful on Unraid/home servers) |
+| `PGID` | `999` | Optional runtime GID remap for `converter`; if that GID already exists, `converter` is reassigned to the existing group |
 | `CHD_DATA_DIR` | `/config` | Directory for persistent application data |
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
@@ -664,6 +669,8 @@ services:
       - "8080:8080"
     environment:
       - COMPRESSATORIUM_MOUNT_ROOT=/data
+      - PUID=99
+      - PGID=100
       - MAX_CONCURRENT_JOBS=1
       - CHD_CHDMAN_NICE=10
       - CHD_CHDMAN_IOPRIO_CLASS=2

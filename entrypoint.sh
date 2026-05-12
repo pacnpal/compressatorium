@@ -1,6 +1,27 @@
 #!/bin/bash
 set -e
 
+# Remap converter UID/GID to PUID/PGID then drop privileges
+if [ "$(id -u)" = "0" ]; then
+    PUID=${PUID:-999}
+    PGID=${PGID:-999}
+
+    if ! [[ "$PUID" =~ ^[0-9]+$ && "$PGID" =~ ^[0-9]+$ ]]; then
+        echo "Invalid PUID/PGID. Both must be numeric." >&2
+        exit 1
+    fi
+
+    if [ "$(id -g converter)" != "$PGID" ]; then
+        groupmod -g "$PGID" converter 2>/dev/null || usermod -g "$PGID" converter
+    fi
+    if [ "$(id -u converter)" != "$PUID" ]; then
+        usermod -u "$PUID" converter
+    fi
+
+    chown -R converter:converter /app /static /opt/venv
+    exec gosu converter "$0" "$@"
+fi
+
 # Check if /config is mounted
 if ! mountpoint -q /config 2>/dev/null; then
     echo ""

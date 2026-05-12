@@ -49,6 +49,7 @@ RUN apt-get update -o Acquire::Retries=3 && \
       unzip \
       zstd \
       bash \
+      gosu \
       ca-certificates && \
     # Install dolphin-emu only where available/practical (non-fatal)
     if [ "$TARGETARCH" = "amd64" ]; then \
@@ -128,7 +129,5 @@ RUN groupadd -r converter && useradd -r -g converter -s /sbin/nologin converter 
     && chown -R converter:converter /app /static /opt/venv \
     && mkdir -p /data/games /config \
     && chown converter:converter /data/games /config
-
-USER converter
 
 ENTRYPOINT ["/entrypoint.sh"]

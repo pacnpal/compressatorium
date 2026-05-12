@@ -40,7 +40,7 @@ This document contains the results of a comprehensive deployment readiness audit
 - **Base Image:** Using `debian:trixie-slim` (minimal base)
 - **Package Cleanup:** Properly cleans apt cache (`apt-get clean && rm -rf /var/lib/apt/lists/*`)
 - **Virtual Environment:** Uses Python venv for isolation
-- **Non-root User:** ⚠️ NOT IMPLEMENTED (see recommendations)
+- **Runtime Privilege Drop:** ✅ IMPLEMENTED (`entrypoint.sh` starts as root, optionally remaps `PUID`/`PGID`, then drops to `converter` with `gosu`)
 
 ### Health Check
 - **Status:** ✅ IMPLEMENTED
@@ -56,6 +56,8 @@ This document contains the results of a comprehensive deployment readiness audit
 | `COMPRESSATORIUM_VOLUMES` | (unset) | ✅ | Explicit comma-separated volume paths (skips startup scan) |
 | `CHD_MOUNT_ROOT` | `/data` | ✅ | Legacy alias for `COMPRESSATORIUM_MOUNT_ROOT` |
 | `CHD_VOLUMES` | (unset) | ✅ | Legacy alias for `COMPRESSATORIUM_VOLUMES` |
+| `PUID` | `999` | ✅ | Optional runtime UID remap for `converter` (common on Unraid/home servers) |
+| `PGID` | `999` | ✅ | Optional runtime GID remap for `converter`; uses existing group when that GID already exists |
 | `CHD_DATA_DIR` | `/config` | ✅ | Persistent data directory |
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | ✅ | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | ✅ | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
@@ -158,13 +160,9 @@ Volume precedence:
 
 ### High Priority
 
-1. **Add Non-Root User** (Security)
-   ```dockerfile
-   # Add before WORKDIR
-   RUN groupadd -r chd && useradd -r -g chd chd
-   RUN chown -R chd:chd /app
-   USER chd
-   ```
+1. **Set `PUID`/`PGID` in your runtime** (Ownership)
+   - Recommended for Unraid and shared-host setups so generated files are owned by the correct host user/group.
+   - Defaults remain `999:999` when unset.
 
 2. **Add .dockerignore File** (Build Optimization)
    ```
@@ -332,7 +330,7 @@ The application is well-architected with good security practices:
 - ✅ Multi-platform support
 
 **Recommended before production deployment:**
-1. Add non-root user to Dockerfile
+1. Set `PUID`/`PGID` in your runtime to match host ownership expectations
 2. Create .dockerignore file
 3. Add resource limits to docker-compose.yml
 4. Consider security headers for web UI
