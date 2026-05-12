@@ -25,6 +25,10 @@ if [ "$(id -u)" = "0" ]; then
         ownership_changed=1
     fi
     if [ "$(id -u converter)" != "$PUID" ]; then
+        if getent passwd "$PUID" >/dev/null; then
+            echo "Cannot remap converter to PUID $PUID: UID already exists." >&2
+            exit 1
+        fi
         usermod -u "$PUID" converter
         ownership_changed=1
     fi

@@ -12,7 +12,10 @@ def _read_repo_file(relative_path: str) -> str:
 def test_dockerfile_uses_gosu_and_no_static_user_directive():
     dockerfile = _read_repo_file("Dockerfile")
 
-    assert re.search(r"\bgosu\b", dockerfile)
+    assert re.search(
+        r'apt-get install -y --no-install-recommends[\s\S]*?\bpython3\b[\s\S]*?\bgosu\b[\s\S]*?&&',
+        dockerfile,
+    )
     assert re.search(r'groupadd\s+-r\s+-g\s+999\s+converter', dockerfile)
     assert re.search(r'useradd\s+-r\s+-u\s+999\s+-g\s+converter', dockerfile)
     assert "ENTRYPOINT [\"/entrypoint.sh\"]" in dockerfile
@@ -28,6 +31,8 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert re.search(r'groupmod\s+-g\s+"\$PGID"\s+converter', entrypoint)
     assert re.search(r'getent\s+group\s+"\$PGID"\s+>/dev/null', entrypoint)
     assert re.search(r'Failed to remap converter to PGID', entrypoint)
+    assert re.search(r'getent\s+passwd\s+"\$PUID"\s+>/dev/null', entrypoint)
+    assert re.search(r'Cannot remap converter to PUID', entrypoint)
     assert re.search(r'usermod\s+-g\s+"\$PGID"\s+converter', entrypoint)
     assert re.search(r'usermod\s+-u\s+"\$PUID"\s+converter', entrypoint)
     assert re.search(r'for\s+optional_path\s+in\s+/config\s+/data/games;\s+do', entrypoint)
