@@ -96,9 +96,7 @@ disable =
     E0001,
     syntax-error,
     I1010,
-    django-not-configured,
-    E0012,
-    bad-option-value
+    django-not-configured
 
 [FORMAT]
 max-line-length = 100

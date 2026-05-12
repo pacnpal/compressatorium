@@ -213,15 +213,6 @@ disable = [
     # project does not use Django; suppress the false positive globally.
     "I1010",
     "django-not-configured",
-
-    # --- Bad option value (inline pylint disables on older pylint) ----------
-    # Codacy ships an older bundled pylint that doesn't know some newer
-    # symbolic names (e.g. `consider-using-with`).  When it encounters an
-    # inline `# pylint: disable=<unknown-name>` pragma it emits E0012
-    # (bad-option-value).  Disable the meta-warning globally so it doesn't
-    # produce new alerts from valid pragmas targeting newer pylint features.
-    "E0012",
-    "bad-option-value",
 ]
 
 [tool.pylint.format]
