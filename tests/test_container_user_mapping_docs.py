@@ -1,5 +1,5 @@
-from pathlib import Path
 import re
+from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +16,7 @@ def test_dockerfile_uses_gosu_and_no_static_user_directive():
         r'apt-get install -y --no-install-recommends[\s\S]*?\bgosu\b',
         dockerfile,
     )
+    assert re.search(r'HEALTHCHECK[\s\S]*CMD\s+gosu\s+converter\s+python3\s+-c', dockerfile)
     assert re.search(r'groupadd\s+-r\s+-g\s+999\s+converter', dockerfile)
     assert re.search(r'useradd\s+-r\s+-u\s+999\s+-g\s+converter', dockerfile)
     assert "ENTRYPOINT [\"/entrypoint.sh\"]" in dockerfile

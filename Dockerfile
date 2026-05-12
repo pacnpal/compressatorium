@@ -122,7 +122,7 @@ EXPOSE 8080
 
 # Health check (only applies in webui mode)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 0
+    CMD gosu converter python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 0
 
 # Create runtime user/group (pinned to 999:999) and prepare ownership for entrypoint privilege drop
 RUN groupadd -r -g 999 converter && useradd -r -u 999 -g converter -s /sbin/nologin converter \

@@ -124,8 +124,8 @@ The easiest way to use CHD Converter is through the web interface:
 ```bash
 docker run -d \
   -p 8080:8080 \
-  -e PUID=99 \
-  -e PGID=100 \
+  -e PUID=<host_uid_optional> \
+  -e PGID=<host_gid_optional> \
   -v /path/to/config:/config \
   -v /path/to/games:/data/games \
   pacnpal/compressatorium
