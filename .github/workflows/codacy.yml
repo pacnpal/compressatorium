@@ -29,6 +29,8 @@ concurrency:
 
 jobs:
   codacy-security-scan:
+    outputs:
+      sarif-matrix: ${{ steps.split-sarif.outputs.matrix }}
     permissions:
       contents: read # for actions/checkout to fetch code
       security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
@@ -69,9 +71,81 @@ jobs:
             echo "::warning::Codacy CLI produced empty or invalid SARIF — substituted empty result set"
           fi
 
-      # Upload the SARIF file generated in the previous step
-      - name: Upload SARIF results file
-        uses: github/codeql-action/upload-sarif@v4
+      - name: Split SARIF runs
+        id: split-sarif
+        if: always()
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          source = Path("results.sarif")
+          if source.exists():
+            payload = json.loads(source.read_text(encoding="utf-8"))
+          else:
+            payload = {
+              "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+              "version": "2.1.0",
+              "runs": [{"tool": {"driver": {"name": "CodacyCLI", "rules": []}}, "results": []}],
+            }
+
+          runs = payload.get("runs") or [{"tool": {"driver": {"name": "CodacyCLI", "rules": []}}, "results": []}]
+          output_dir = Path("codacy-sarif-runs")
+          output_dir.mkdir(exist_ok=True)
+
+          matrix = {"include": []}
+          for index, run in enumerate(runs, start=1):
+            driver_name = (
+              run.get("tool", {})
+              .get("driver", {})
+              .get("name", "codacy")
+            )
+            slug = re.sub(r"[^a-z0-9]+", "-", driver_name.lower()).strip("-") or "codacy"
+            filename = f"run-{index}.sarif"
+            category = f"/codacy/{slug}-{index}"
+            sarif = {
+              "$schema": payload.get("$schema", "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json"),
+              "version": payload.get("version", "2.1.0"),
+              "runs": [run],
+            }
+            (output_dir / filename).write_text(json.dumps(sarif), encoding="utf-8")
+            matrix["include"].append({"file": filename, "category": category})
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+            print(f"matrix={json.dumps(matrix)}", file=fh)
+          PY
+
+      - name: Upload split SARIF artifacts
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          sarif_file: results.sarif
+          name: codacy-sarif-runs
+          path: codacy-sarif-runs/*.sarif
+          if-no-files-found: error
+
+  upload-sarif-results:
+    name: Upload SARIF results (${{ matrix.category }})
+    needs: codacy-security-scan
+    if: always() && needs.codacy-security-scan.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.codacy-security-scan.outputs.sarif-matrix) }}
+    steps:
+      - name: Download split SARIF artifacts
+        uses: actions/download-artifact@87c55149d96e628cc2ef7e6fc2aab372015aec85 # v4.1.3 - pinned for CVE fix
+        with:
+          name: codacy-sarif-runs
+          path: codacy-sarif-runs
+
+      - name: Upload SARIF results file
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: codacy-sarif-runs/${{ matrix.file }}
+          category: ${{ matrix.category }}
