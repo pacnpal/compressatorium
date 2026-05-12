@@ -276,7 +276,7 @@ export const api = {
                     reject(new Error(message));
                 });
 
-                eventSource.onerror = (err) => {
+                eventSource.onerror = () => {
                     cleanup();
                     reject(new Error('Verification connection error'));
                 };
@@ -328,7 +328,7 @@ export const api = {
                     reject(new Error(message));
                 });
 
-                eventSource.onerror = (err) => {
+                eventSource.onerror = () => {
                     cleanup();
                     reject(new Error('Verification connection error'));
                 };
@@ -852,7 +852,7 @@ export function formatSize(bytes) {
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.max(0, Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1));
-    return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes.at(i);
+    return `${Number.parseFloat((bytes / (k ** i)).toFixed(2))} ${sizes.at(i)}`;
 }
 
 // Get file icon
@@ -870,5 +870,5 @@ export const DOLPHIN_EXTENSIONS = ['.rvz', '.wia', '.gcz', '.wbfs'];
 
 export function isDolphinFile(path) {
     const ext = path.split('.').pop();
-    return DOLPHIN_EXTENSIONS.includes('.' + ext.toLowerCase());
+    return DOLPHIN_EXTENSIONS.includes(`.${ext.toLowerCase()}`);
 }
