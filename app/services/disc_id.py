@@ -566,7 +566,7 @@ class _CHDReader:
     def open(self) -> bool:
         """Open and validate the CHD v5 header.  Returns False on failure."""
         try:
-            self._f = open(self._path, "rb")  # pylint: disable=R1732
+            self._f = open(self._path, "rb")
             hdr = self._f.read(self._HEADER_SIZE)
             if len(hdr) < self._HEADER_SIZE or hdr[:8] != self._MAGIC:
                 logger.debug(

@@ -69,7 +69,7 @@ class ConcurrencyManager:
                 try:
                     # Binary mode avoids an "unspecified-encoding" lint warning; this
                     # handle is used only for fcntl.flock() — no text is read or written.
-                    handle = open(path, "ab")  # pylint: disable=R1732
+                    handle = open(path, "ab")
                 except OSError:
                     continue
                 try:
@@ -195,7 +195,7 @@ class ConcurrencyManager:
                 try:
                     # Binary mode avoids an "unspecified-encoding" lint warning; this
                     # handle is used only for fcntl.flock() — no text is read or written.
-                    handle = open(path, "ab")  # pylint: disable=R1732
+                    handle = open(path, "ab")
                 except OSError:
                     continue
                 try:

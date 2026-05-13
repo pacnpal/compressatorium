@@ -66,6 +66,9 @@ pylint:
     - syntax-error
     - django-not-configured   # Codacy ships pylint-django which fires I1010
                               # on non-Django projects; suppress the false positive.
+    - consider-using-with     # Long-lived handles (flock-only, instance attrs)
+                              # can't use context managers; suppress globally so
+                              # Codacy's old pylint doesn't fire on unknown IDs.
   options:
     max-line-length: 100
 

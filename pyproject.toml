@@ -213,6 +213,14 @@ disable = [
     # project does not use Django; suppress the false positive globally.
     "I1010",
     "django-not-configured",
+
+    # --- Consider-using-with (R1732) ----------------------------------
+    # Several long-lived file handles (flock-only slot handles, long-lived
+    # instance attributes) intentionally cannot use context managers.
+    # The rule is suppressed globally to avoid Codacy false positives
+    # from inline pragma IDs that older bundled pylint versions don't know.
+    "R1732",
+    "consider-using-with",
 ]
 
 [tool.pylint.format]

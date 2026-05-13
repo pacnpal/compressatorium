@@ -59,7 +59,7 @@ class LockManager:
                 lock_path = os.path.join(self._lock_dir, name)
                 try:
                     # Try to acquire the lock to see if it's stale
-                    # Binary mode: this handle is used only for fcntl.flock(); no text is read/written.
+                    # Binary mode: flock-only handle, no text is read or written.
                     with open(lock_path, "ab") as lock_handle:
                         acquired = False
                         try:
@@ -207,7 +207,7 @@ class LockManager:
             try:
                 with contextlib.ExitStack() as stack:
                     # Open lock file in append mode (binary) to avoid truncating existing content.
-                    # Binary mode: this handle is used only for fcntl.flock(); no text is read/written.
+                    # Binary mode: flock-only handle, no text is read or written.
                     lock_handle = stack.enter_context(
                         open(lock_file_path, "ab")
                     )
