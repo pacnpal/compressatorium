@@ -1,7 +1,10 @@
-; Project-wide pylint configuration.  Kept in sync with
-; .codacy/tools-configs/pylint.rc — the Codacy-specific copy is what
-; the cloud scanner reads; this root-level file is for
-; contributor terminals and pre-commit hooks.  Both must match.
+; Project-wide pylint configuration.
+; Codacy reads this file directly (config_file: .pylintrc in .codacy.yml).
+; pyproject.toml [tool.pylint] and .prospector.yaml mirror the Codacy-relevant
+; disables declared here so all lint entry-points stay in sync.
+; Note: plugin-specific IDs (e.g. I1010/django-not-configured from pylint-django)
+; are kept here and in .prospector.yaml (Codacy ships the plugin) but intentionally
+; omitted from pyproject.toml to avoid W0012 noise on local installs without the plugin.
 
 [MAIN]
 py-version = 3.10
@@ -31,8 +34,10 @@ disable =
     R0914,
     R0915,
     R0916,
+    R0917,
     too-many-ancestors,
     too-many-arguments,
+    too-many-positional-arguments,
     too-many-boolean-expressions,
     too-many-branches,
     too-many-instance-attributes,
@@ -92,7 +97,11 @@ disable =
     E1101,
     no-member,
     E0001,
-    syntax-error
+    syntax-error,
+    I1010,
+    django-not-configured,
+    R1732,
+    consider-using-with
 
 [FORMAT]
 max-line-length = 100

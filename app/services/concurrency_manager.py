@@ -25,7 +25,7 @@ class ConcurrencyManager:
         self._cleanup_stale_locks()
         if not os.path.exists(self._ticket_counter_path):
             try:
-                with open(self._ticket_counter_path, "w") as fh:
+                with open(self._ticket_counter_path, "w", encoding="utf-8") as fh:
                     fh.write("0")
             except OSError:
                 pass
@@ -67,7 +67,9 @@ class ConcurrencyManager:
                 return False
             for idx, path in enumerate(self._slot_paths):
                 try:
-                    handle = open(path, "a")
+                    # Binary mode avoids an "unspecified-encoding" lint warning; this
+                    # handle is used only for fcntl.flock() — no text is read or written.
+                    handle = open(path, "ab")
                 except OSError:
                     continue
                 try:
@@ -138,7 +140,7 @@ class ConcurrencyManager:
 
     def _next_ticket(self) -> int:
         try:
-            with open(self._ticket_counter_path, "r+") as fh:
+            with open(self._ticket_counter_path, "r+", encoding="utf-8") as fh:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
                 raw = fh.read().strip()
                 current = int(raw) if raw else 0
@@ -161,7 +163,7 @@ class ConcurrencyManager:
                 "pid": os.getpid(),
                 "created_at": time.time(),
             }
-            with open(tmp_path, "w") as fh:
+            with open(tmp_path, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(payload))
                 fh.flush()
                 os.fsync(fh.fileno())
@@ -191,7 +193,9 @@ class ConcurrencyManager:
             slots_busy = False
             for path in self._slot_paths:
                 try:
-                    handle = open(path, "a")
+                    # Binary mode avoids an "unspecified-encoding" lint warning; this
+                    # handle is used only for fcntl.flock() — no text is read or written.
+                    handle = open(path, "ab")
                 except OSError:
                     continue
                 try:
@@ -298,7 +302,7 @@ class ConcurrencyManager:
 
     def _load_ticket_payload(self, ticket_path: str) -> tuple[dict | None, bool]:
         try:
-            with open(ticket_path) as fh:
+            with open(ticket_path, encoding="utf-8") as fh:
                 content = fh.read().strip()
         except OSError:
             return None, False
@@ -318,28 +322,13 @@ class ConcurrencyManager:
     @staticmethod
     def _ticket_locked(ticket_path: str) -> bool:
         try:
-            handle = open(ticket_path, "a+")
+            with open(ticket_path, "ab") as handle:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except (BlockingIOError, OSError):
+                    return True
         except OSError:
             return True
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, OSError):
-            try:
-                handle.close()
-            except OSError:
-                # Best-effort cleanup: failure to close here does not affect lock state.
-                pass
-            return True
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            # Best-effort unlock: ignore errors while releasing this transient probe lock.
-            pass
-        try:
-            handle.close()
-        except OSError:
-            # Best-effort close: ignore errors closing this transient probe handle.
-            pass
         return False
 
     def stats(self) -> dict:

@@ -56,8 +56,10 @@ disable = [
     "R0914",
     "R0915",
     "R0916",
+    "R0917",
     "too-many-ancestors",
     "too-many-arguments",
+    "too-many-positional-arguments",
     "too-many-boolean-expressions",
     "too-many-branches",
     "too-many-instance-attributes",
@@ -204,6 +206,20 @@ disable = [
     # ruff/mypy in CI are the authoritative syntax gate.
     "E0001",
     "syntax-error",
+
+    # Note: I1010 / django-not-configured (a pylint-django message) is intentionally
+    # NOT listed here.  Codacy's pylint engine reads .pylintrc directly and has
+    # pylint-django pre-installed; that file carries the suppress.  Including it here
+    # would cause W0012 (unknown-option-value) for local users who don't have the
+    # plugin installed.
+
+    # --- Consider-using-with (R1732) ----------------------------------
+    # Several long-lived file handles (flock-only slot handles, long-lived
+    # instance attributes) intentionally cannot use context managers.
+    # The rule is suppressed globally to avoid Codacy false positives
+    # from inline pragma IDs that older bundled pylint versions don't know.
+    "R1732",
+    "consider-using-with",
 ]
 
 [tool.pylint.format]

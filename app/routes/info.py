@@ -680,6 +680,7 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     try:
         # Check cache first
         cached_info = None
+        cached_media_type = None
         if not await chd_metadata_store.is_stale(path):
             cached_info, cached_media_type = await chd_metadata_store.get_full_info(path)
 
