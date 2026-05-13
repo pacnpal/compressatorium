@@ -1,12 +1,14 @@
 FROM debian:trixie-slim AS builder
 
 # Install build dependencies
+#
+# DL3008 (pin apt versions) is intentionally ignored: build-stage uses
+# generic packages (git, build-essential, libzstd-dev) where the latest
+# patched versions are preferable to a frozen pin.  Reproducibility comes
+# from the snapshot-pinned mame-tools deb in the runtime stage below, not
+# from these build deps.
 ENV DEBIAN_FRONTEND=noninteractive
 # hadolint ignore=DL3008
-# DL3008 (pin apt versions): build-stage uses generic packages (git,
-# build-essential, libzstd-dev) where the latest patched versions are
-# preferable to a frozen pin.  Reproducibility comes from the snapshot-
-# pinned mame-tools deb in the runtime stage, not from these build deps.
 RUN apt-get update -o Acquire::Retries=3 && \
     apt-get install -y --no-install-recommends \
     git \
@@ -41,12 +43,13 @@ ARG MAME_TOOLS_SHA256_ARM64="6388bff0f6242dfd3a09c63c6e25ab94e0a64fe7cf2b3b0170f
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install system dependencies, pinned mame-tools, create wrapper script, and prepare venv
+#
+# DL3008 (pin apt versions) is intentionally ignored: mame-tools is pinned via
+# the snapshot.debian.org .deb downloaded inside the RUN below; the remaining
+# packages (python3, util-linux, gosu, etc.) are stable trixie security-tracked
+# dependencies where pinning would block routine CVE patches.
 ENV DEBIAN_FRONTEND=noninteractive
 # hadolint ignore=DL3008
-# DL3008 (pin apt versions): mame-tools is pinned via the snapshot.debian.org
-# .deb downloaded below; the remaining packages (python3, util-linux, gosu,
-# etc.) are stable trixie security-tracked dependencies where pinning would
-# block routine CVE patches.
 RUN apt-get update -o Acquire::Retries=3 && \
     apt-get install -y --no-install-recommends \
       python3 \
