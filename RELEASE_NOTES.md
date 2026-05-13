@@ -1,5 +1,28 @@
 # Release Notes
 
+## v3.7.8 - Optional PUID/PGID ownership remap for Unraid/home servers
+
+### ✨ New Features
+
+- **Added optional `PUID`/`PGID` support for container file ownership mapping.** On startup, the entrypoint now accepts `PUID`/`PGID` (default `999:999`) and remaps the internal `converter` account before launching the app. This aligns output ownership with host conventions used by Unraid and other home-server setups.
+- **Safe GID fallback for common Unraid defaults.** When `PGID` points to a GID that already exists in the base image (for example `100`), the startup remap falls back from `groupmod` to `usermod -g` so `converter` is reassigned to the existing group instead of failing.
+- **Privilege drop now handled by `gosu` in entrypoint.** The image installs `gosu`, keeps startup as root only long enough to perform optional remapping, then immediately re-execs as `converter`.
+
+### 🔧 Internal
+
+- `Dockerfile` now installs `gosu` and no longer sets `USER converter` at build time.
+- `entrypoint.sh` now:
+  - validates `PUID`/`PGID` are numeric,
+  - remaps converter UID/GID when needed,
+  - preserves old behavior when env vars are unset (`999:999`),
+  - drops privileges with `exec gosu converter "$0" "$@"`.
+
+### 📚 Documentation
+
+- Updated `README.md`, `DOCKER-COMPOSE.md`, `DEPLOYMENT.md`, and compose examples to document `PUID`/`PGID` as an optional runtime ownership setting.
+
+---
+
 ## v3.7.7 - Cancellable metadata scan and DAT match jobs
 
 ### ✨ New Features
