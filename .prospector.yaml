@@ -60,6 +60,11 @@ pylint:
     - locally-disabled   # meta-warning that fires on every inline
                          # `# pylint: disable=...` pragma; silencing
                          # the meta rule lets us keep targeted pragmas.
+    - bad-option-value   # Codacy's pylint occasionally lags pylint upstream
+                         # (no pylint-django plugin loaded, missing newer
+                         # message names like possibly-used-before-assignment);
+                         # silencing E0012 lets the inline pragmas land
+                         # cleanly without breaking the analysis.
     - no-name-in-module
     - import-error
     - no-member

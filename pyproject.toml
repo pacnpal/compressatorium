@@ -181,6 +181,8 @@ disable = [
     # without also generating a second alert about the pragma itself.
     "I0011",
     "locally-disabled",
+    "E0012",
+    "bad-option-value",
 
     # --- Codacy-sandbox false positives ------------------------------
     # Codacy runs pylint without the project venv or `app/` on

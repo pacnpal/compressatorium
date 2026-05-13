@@ -90,6 +90,8 @@ disable =
     too-many-lines,
     I0011,
     locally-disabled,
+    E0012,
+    bad-option-value,
     E0611,
     no-name-in-module,
     E0401,
