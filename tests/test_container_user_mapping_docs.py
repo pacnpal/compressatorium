@@ -17,9 +17,9 @@ def test_dockerfile_uses_gosu_and_no_static_user_directive():
         dockerfile,
     )
     assert re.search(r'HEALTHCHECK[\s\S]*CHD_MODE:-webui', dockerfile)
-    assert re.search(r'HEALTHCHECK[\s\S]*\$\(\s*id -u\s*\)\s*"\s*=\s*"0"', dockerfile)
+    assert re.search(r'HEALTHCHECK[\s\S]*\$\(\s*id -u\)"\s*=\s*"0"', dockerfile)
     assert re.search(r'HEALTHCHECK[\s\S]*CMD[\s\S]*gosu\s+converter\s+python3\s+-c', dockerfile)
-    assert re.search(r'HEALTHCHECK[\s\S]*else[\s\\]+python3\s+-c', dockerfile)
+    assert re.search(r'HEALTHCHECK[\s\S]*else[\s\\]*python3\s+-c', dockerfile)
     assert re.search(r'HEALTHCHECK[\s\S]*\|\|\s+exit\s+0', dockerfile) is None
     assert re.search(r'groupadd\s+-r\s+-g\s+999\s+converter', dockerfile)
     assert re.search(r'useradd\s+-r\s+-u\s+999\s+-g\s+converter', dockerfile)
@@ -52,7 +52,7 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert re.search(r'chown\s+-R\s+converter:"\$\(\s*id -g converter\s*\)"\s+"\$\{paths_to_chown\[@\]\}"', entrypoint)
     assert re.search(r'exec\s+gosu\s+converter\s+"\$0"\s+"\$@"', entrypoint)
     assert re.search(
-        r'elif\s+\[\s+-n\s+"\$\{PUID:-\}"\s+\]\s+\|\|\s+\[\s+-n\s+"\$\{PGID:-\}"\s+\]\s*;\s*then',
+        r'elif\s+\[\s+-n\s+"\$\{PUID:-\}"\s+\]\s+\|\|\s+\[\s+-n\s+"\$\{PGID:-\}"\s+\]\s*;\s+then',
         entrypoint,
     )
     assert re.search(r'PUID/PGID remap requires container startup as root', entrypoint)
