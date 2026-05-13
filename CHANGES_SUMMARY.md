@@ -145,7 +145,7 @@ cat DOCKER-COMPOSE.md
 
 ## 🔄 Next Steps (Optional)
 
-1. Implement non-root user in Dockerfile
+1. Set `PUID`/`PGID` in runtime configs where host ownership mapping is required
 2. Add security headers middleware
 3. Create production-specific compose file with TLS
 4. Add monitoring/metrics endpoint

@@ -15,6 +15,9 @@ services:
       - COMPRESSATORIUM_MOUNT_ROOT=/data
       # Optional: override temp location (default: /config/temp)
       # - CHD_TEMP_DIR=/temp
+      # Optional: remap container runtime UID/GID (Unraid-friendly)
+      # - PUID=99
+      # - PGID=100
       - CHDMAN_MODE=createcd
       - MAX_CONCURRENT_JOBS=1
       - CHD_CHDMAN_NICE=10
@@ -31,12 +34,6 @@ services:
       - ./games/ps1:/data/ps1
       - ./games/ps2:/data/ps2
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
-      interval: 30s
-      timeout: 10s
-      start_period: 10s
-      retries: 3
     # Resource limits (adjust based on your system)
     deploy:
       resources:

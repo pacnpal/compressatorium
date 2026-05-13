@@ -1,6 +1,64 @@
 #!/bin/bash
 set -e
 
+# Remap converter UID/GID to PUID/PGID then drop privileges
+if [ "$(id -u)" = "0" ]; then
+    PUID=${PUID:-999}
+    PGID=${PGID:-999}
+    ownership_changed=0
+
+    if ! [[ "$PUID" =~ ^[0-9]+$ && "$PGID" =~ ^[0-9]+$ ]] || [ "$PUID" -eq 0 ] || [ "$PGID" -eq 0 ]; then
+        echo "Invalid PUID/PGID. Both must be numeric and greater than 0." >&2
+        exit 1
+    fi
+
+    if [ "$(id -g converter)" != "$PGID" ]; then
+        if ! groupmod_error="$(groupmod -g "$PGID" converter 2>&1)"; then
+            if getent group "$PGID" >/dev/null; then
+                echo "GID $PGID already exists; assigning converter to the existing group."
+                usermod -g "$PGID" converter
+            else
+                echo "Failed to remap converter to PGID $PGID: $groupmod_error" >&2
+                exit 1
+            fi
+        fi
+        ownership_changed=1
+    fi
+    if [ "$(id -u converter)" != "$PUID" ]; then
+        if getent passwd "$PUID" >/dev/null; then
+            echo "Cannot remap converter to PUID $PUID: UID already exists." >&2
+            exit 1
+        fi
+        usermod -u "$PUID" converter
+        ownership_changed=1
+    fi
+
+    if [ "$ownership_changed" = "1" ]; then
+        paths_to_chown=(/app /static /opt/venv)
+        for optional_path in /config /data/games; do
+            skip_optional_path=0
+            if mountpoint -q "$optional_path" 2>/dev/null; then
+                mount_opts="$(findmnt -n -o OPTIONS --target "$optional_path" 2>/dev/null || true)"
+                if [ -z "$mount_opts" ]; then
+                    echo "Warning: unable to determine mount options for $optional_path (findmnt failed); skipping ownership update to be safe." >&2
+                    skip_optional_path=1
+                elif echo "$mount_opts" | grep -Eqw 'bind|rbind'; then
+                    skip_optional_path=1
+                fi
+            fi
+
+            if [ -e "$optional_path" ] && [ "$skip_optional_path" -eq 0 ]; then
+                paths_to_chown+=("$optional_path")
+            fi
+        done
+        chown -R converter:"$(id -g converter)" "${paths_to_chown[@]}"
+    fi
+    unset PUID PGID
+    exec gosu converter "$0" "$@"
+elif [ -n "${PUID:-}" ] || [ -n "${PGID:-}" ]; then
+    echo "Warning: PUID/PGID remap requires container startup as root; current UID is $(id -u). Ignoring PUID/PGID." >&2
+fi
+
 # Check if /config is mounted
 if ! mountpoint -q /config 2>/dev/null; then
     echo ""
