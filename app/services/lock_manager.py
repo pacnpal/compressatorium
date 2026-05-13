@@ -1,3 +1,9 @@
+# Codacy's pylintpython3 ships `pylint-django` and emits E5110 / I1010
+# `django-not-configured` on every Python module despite this not being a
+# Django project. `.pylintrc` already disables the named check; the inline
+# pragma is a belt-and-braces signal for the wrapper, which does not always
+# honour the project-level config.
+# pylint: disable=django-not-configured
 import contextlib
 import fcntl
 import hashlib

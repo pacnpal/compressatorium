@@ -330,6 +330,7 @@ The application is well-architected with good security practices:
 - ✅ Multi-platform support
 
 **Recommended before production deployment:**
+
 1. Set `PUID`/`PGID` in your runtime to match host ownership expectations
 2. Create .dockerignore file
 3. Add resource limits to docker-compose.yml

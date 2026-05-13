@@ -234,3 +234,20 @@ min-similarity-lines = 10
 ignore-imports = true
 ignore-docstrings = true
 ignore-comments = true
+
+# --- Ruff configuration ------------------------------------------------------
+# Codacy's ruff wrapper currently tries to parse plain-text dependency manifests
+# as Python and emits "SyntaxError" alerts on every line of `requirements*.txt`.
+# `.codacy.yml` already lists the same exclude, but Codacy occasionally ignores
+# the wrapper-level path filter; declaring the exclude directly in pyproject.toml
+# ensures both local ruff invocations and the Codacy CLI skip these files.
+[tool.ruff]
+target-version = "py310"
+extend-exclude = [
+    "requirements.txt",
+    "requirements-dev.txt",
+    "node_modules",
+    "static/vendor",
+    ".venv",
+    "app/.venv",
+]

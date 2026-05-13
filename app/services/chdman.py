@@ -98,6 +98,7 @@ class ChdmanService:
         input_path: str,
         output_path: str,
         mode: str = "createcd",
+        *,
         compression: str | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:

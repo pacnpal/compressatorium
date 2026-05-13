@@ -553,6 +553,7 @@ class ArchiveService:
         parent: PurePosixPath,
         temp_dir: str,
         initial_total_size: int = 0,
+        *,
         primary_member: Optional[str] = None,
     ):
         total_size = max(0, int(initial_total_size))
@@ -583,6 +584,7 @@ class ArchiveService:
         parent: PurePosixPath,
         temp_dir: str,
         initial_total_size: int = 0,
+        *,
         primary_member: Optional[str] = None,
     ):
         with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
@@ -622,6 +624,7 @@ class ArchiveService:
         parent: PurePosixPath,
         temp_dir: str,
         initial_total_size: int = 0,
+        *,
         primary_member: Optional[str] = None,
     ):
         total_size = max(0, int(initial_total_size))

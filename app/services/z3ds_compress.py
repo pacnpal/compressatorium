@@ -134,13 +134,14 @@ class Z3DSCompressService:
             return str(Path(output_dir) / output_name)
         return str(input_file.parent / output_name)
 
-    async def convert(  # pylint: disable=too-many-positional-arguments
+    async def convert(
         self,
         input_path: str,
         output_path: str,
         # `mode` and `compression` are unused here but required for interface
         # consistency with chdman/dolphin services.
         mode: str = "z3ds_compress",
+        *,
         compression: str | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:

@@ -686,7 +686,11 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
 
         if cached_info:
             info = cached_info
-            media_type = cached_media_type
+            # cached_media_type is initialised to None on line 683 and only
+            # rebound by the tuple-unpack on line 685; pylint's flow analyser
+            # occasionally misses the unconditional default, so silence the
+            # spurious possibly-used-before-assignment warning explicitly.
+            media_type = cached_media_type  # pylint: disable=possibly-used-before-assignment
         else:
             # Run chdman info and cache the result (non-blocking persist)
             info = await chdman_service.info(path)
