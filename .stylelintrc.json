@@ -1,7 +1,6 @@
 {
-  "_comment": "Project CSS conventions. The codebase uses 4-space indentation (match app/utils convention), does not enforce alphabetical property order (readability: group by purpose), and uses CSS custom properties (var(--...)) plus `gap` which stylelint's default dictionary predates.",
+  "_comment": "Project CSS conventions. The codebase uses 4-space indentation (match app/utils convention), does not enforce alphabetical property order (readability: group by purpose), and uses CSS custom properties (var(--...)) plus `gap` which stylelint's default dictionary predates. The legacy `indentation` rule was removed in stylelint 15+ (moved to @stylistic/stylelint-plugin), so it is omitted from the rules block to keep Codacy from emitting `Unknown rule indentation`.",
   "rules": {
-    "indentation": 4,
     "declaration-block-no-duplicate-properties": true,
     "block-no-empty": true,
     "color-no-invalid-hex": true,
