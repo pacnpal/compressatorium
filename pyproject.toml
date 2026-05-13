@@ -207,12 +207,11 @@ disable = [
     "E0001",
     "syntax-error",
 
-    # --- Codacy pylint-django false positive --------------------------
-    # Codacy's scanner ships pylint-django which fires I1010
-    # (django-not-configured) on every non-Django project.  This
-    # project does not use Django; suppress the false positive globally.
-    "I1010",
-    "django-not-configured",
+    # Note: I1010 / django-not-configured (a pylint-django message) is intentionally
+    # NOT listed here.  Codacy's pylint engine reads .pylintrc directly and has
+    # pylint-django pre-installed; that file carries the suppress.  Including it here
+    # would cause W0012 (unknown-option-value) for local users who don't have the
+    # plugin installed.
 
     # --- Consider-using-with (R1732) ----------------------------------
     # Several long-lived file handles (flock-only slot handles, long-lived

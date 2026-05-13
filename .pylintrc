@@ -1,7 +1,10 @@
 ; Project-wide pylint configuration.
 ; Codacy reads this file directly (config_file: .pylintrc in .codacy.yml).
-; pyproject.toml [tool.pylint] and .prospector.yaml mirror every disable
-; declared here so all lint entry-points stay in sync.
+; pyproject.toml [tool.pylint] and .prospector.yaml mirror the Codacy-relevant
+; disables declared here so all lint entry-points stay in sync.
+; Note: plugin-specific IDs (e.g. I1010/django-not-configured from pylint-django)
+; are kept here and in .prospector.yaml (Codacy ships the plugin) but intentionally
+; omitted from pyproject.toml to avoid W0012 noise on local installs without the plugin.
 
 [MAIN]
 py-version = 3.10
