@@ -1110,7 +1110,7 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
         if (infoMode === 'dolphin' || infoMode === 'z3ds' || infoMode === 'chd') {
             return infoMode;
         }
-        if (Boolean(useDolphin) || (path ? isDolphinFile(path) : false)) {
+        if (useDolphin || (path ? isDolphinFile(path) : false)) {
             return 'dolphin';
         }
         if (path ? is3dsFile(path) : false) {
@@ -4127,7 +4127,7 @@ function App() {
 
             setSelectedFiles(prev => {
                 const next = new Map(prev);
-                range.forEach(e => next.set(e.path, e));
+                range.forEach(e => { next.set(e.path, e); });
                 return next;
             });
         } else {

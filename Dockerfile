@@ -2,6 +2,11 @@ FROM debian:trixie-slim AS builder
 
 # Install build dependencies
 ENV DEBIAN_FRONTEND=noninteractive
+# hadolint ignore=DL3008
+# DL3008 (pin apt versions): build-stage uses generic packages (git,
+# build-essential, libzstd-dev) where the latest patched versions are
+# preferable to a frozen pin.  Reproducibility comes from the snapshot-
+# pinned mame-tools deb in the runtime stage, not from these build deps.
 RUN apt-get update -o Acquire::Retries=3 && \
     apt-get install -y --no-install-recommends \
     git \
@@ -37,6 +42,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install system dependencies, pinned mame-tools, create wrapper script, and prepare venv
 ENV DEBIAN_FRONTEND=noninteractive
+# hadolint ignore=DL3008
+# DL3008 (pin apt versions): mame-tools is pinned via the snapshot.debian.org
+# .deb downloaded below; the remaining packages (python3, util-linux, gosu,
+# etc.) are stable trixie security-tracked dependencies where pinning would
+# block routine CVE patches.
 RUN apt-get update -o Acquire::Retries=3 && \
     apt-get install -y --no-install-recommends \
       python3 \
@@ -137,4 +147,11 @@ RUN groupadd -r -g 999 converter && useradd -r -u 999 -g converter -s /sbin/nolo
     && mkdir -p /data/games /config \
     && chown converter:converter /data/games /config
 
+# nosemgrep: dockerfile.security.missing-user-entrypoint.missing-user-entrypoint
+# The container deliberately starts as root so entrypoint.sh can honour the
+# PUID/PGID env vars (`usermod`/`groupmod`/`chown` require root) before
+# `exec gosu converter "$0" "$@"` drops privileges to the unprivileged
+# converter user (uid 999) for the actual application.  Adding `USER` here
+# would prevent the runtime UID/GID remap that lets the container write
+# host-correct ownership on bind-mounted volumes.
 ENTRYPOINT ["/entrypoint.sh"]

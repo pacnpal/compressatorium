@@ -23,6 +23,13 @@ engines:
     # on the Code patterns UI page if you want to hide its results.
     # Project uses ESLint 9 flat config; Codacy CLI bundles ESLint 8.
     enabled: false
+  ruff:
+    # Codacy's ruff wrapper attempts to parse plain-text dependency
+    # manifests as Python, which trips "SyntaxError" alerts for every
+    # line in requirements*.txt.  Route requirements files away from
+    # ruff; Trivy still scans them for vulnerable dependencies.
+    exclude_paths:
+      - "requirements*.txt"
   pmd:
     enabled: true
     config_file: config/pmd/ruleset.xml
@@ -77,3 +84,6 @@ exclude_paths:
   - "*.log"
   - "server_*.log"
   - "recent_log.txt"
+  # Generated lockfile — not source code.  Codacy's jackson JSON parser
+  # chokes on comments / odd encoding inside large npm lockfiles.
+  - "package-lock.json"
