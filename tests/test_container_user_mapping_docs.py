@@ -51,6 +51,7 @@ def test_entrypoint_remaps_uid_gid_before_dropping_privileges():
     assert re.search(r'echo\s+"\$mount_opts"\s+\|\s+grep\s+-Eqw\s+\'bind\|rbind\'', entrypoint)
     assert re.search(r'\[\s*"\$skip_optional_path"\s+-eq\s+0\s*\]', entrypoint)
     assert re.search(r'chown\s+-R\s+converter:"\$\(\s*id -g converter\s*\)"\s+"\$\{paths_to_chown\[@\]\}"', entrypoint)
+    assert re.search(r'unset\s+PUID\s+PGID', entrypoint)
     assert re.search(r'exec\s+gosu\s+converter\s+"\$0"\s+"\$@"', entrypoint)
     assert re.search(
         r'elif\s+\[\s+-n\s+"\$\{PUID:-\}"\s+\]\s+\|\|\s+\[\s+-n\s+"\$\{PGID:-\}"\s+\]\s*;\s+then',

@@ -53,6 +53,7 @@ if [ "$(id -u)" = "0" ]; then
         done
         chown -R converter:"$(id -g converter)" "${paths_to_chown[@]}"
     fi
+    unset PUID PGID
     exec gosu converter "$0" "$@"
 elif [ -n "${PUID:-}" ] || [ -n "${PGID:-}" ]; then
     echo "Warning: PUID/PGID remap requires container startup as root; current UID is $(id -u). Ignoring PUID/PGID." >&2
