@@ -10,10 +10,9 @@ upsert idempotency, chunked-upsert boundaries against SQLite's
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 
 from services import db as _db
 
