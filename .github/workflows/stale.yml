@@ -9,6 +9,11 @@ on:
   schedule:
   - cron: '34 2 * * *'
 
+# Default to read-only; the stale job re-declares the issue/PR write
+# scopes it needs.
+permissions:
+  contents: read
+
 jobs:
   stale:
 

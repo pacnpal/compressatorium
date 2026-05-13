@@ -8,6 +8,11 @@ on:
   schedule:
     - cron: "21 19 * * 0"
 
+# Default to read-only for any step that does not need more.  The
+# analyze job re-declares the broader scopes it actually needs.
+permissions:
+  contents: read
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})

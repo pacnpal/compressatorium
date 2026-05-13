@@ -1,5 +1,12 @@
 """Tests for LOGLEVEL/LOG_PATH settings and legacy CHD_DEBUG/CHD_DEBUG_LOG_PATH compat."""
 
+import io
+import logging
+import re
+from pathlib import Path
+
+import pytest
+
 from app.config import Settings
 
 
@@ -83,13 +90,6 @@ def test_log_path_takes_precedence_over_legacy(monkeypatch):
 # LOG_COLOR / ColorFormatter
 # ---------------------------------------------------------------------------
 
-
-import io
-import logging
-import re
-from pathlib import Path
-
-import pytest
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
