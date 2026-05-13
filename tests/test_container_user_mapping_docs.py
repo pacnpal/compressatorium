@@ -17,9 +17,10 @@ def test_dockerfile_uses_gosu_and_no_static_user_directive():
         dockerfile,
     )
     assert re.search(r'HEALTHCHECK[\s\S]*CHD_MODE:-webui', dockerfile)
-    assert re.search(r'HEALTHCHECK[\s\S]*\$\(\s*id -u\s*\)\s*"\s*=\s*"0"', dockerfile)
+    assert 'if [ "$(id -u)" = "0" ]; then' in dockerfile
     assert re.search(r'HEALTHCHECK[\s\S]*CMD[\s\S]*gosu\s+converter\s+python3\s+-c', dockerfile)
-    assert re.search(r'HEALTHCHECK[\s\S]*else\s*\\?\s*python3\s+-c', dockerfile)
+    assert "else \\" in dockerfile
+    assert "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\"" in dockerfile
     assert re.search(r'HEALTHCHECK[\s\S]*\|\|\s+exit\s+0', dockerfile) is None
     assert re.search(r'groupadd\s+-r\s+-g\s+999\s+converter', dockerfile)
     assert re.search(r'useradd\s+-r\s+-u\s+999\s+-g\s+converter', dockerfile)
