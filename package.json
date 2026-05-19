@@ -1,6 +1,6 @@
 {
   "name": "compressatorium",
-  "version": "3.7.8",
+  "version": "3.7.9",
   "type": "module",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
