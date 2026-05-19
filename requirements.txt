@@ -1,6 +1,6 @@
 fastapi>=0.109.0
 uvicorn[standard]>=0.46.0
-aiofiles>=23.2.0
+aiofiles>=25.1.0
 sse-starlette>=2.0.0
 pydantic-settings>=2.1.0
 py7zr>=0.20.1
