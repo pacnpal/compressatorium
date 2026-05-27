@@ -982,4 +982,3 @@ DEPLOYMENT.md / DOCKER-COMPOSE.md    new env var, if any
 - **Binary path is config, not hardcoded.** Always read
   `settings.<tool>_path` in `__init__` so deployments can relocate/override
   via env.
-```
