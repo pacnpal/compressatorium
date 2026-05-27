@@ -23,6 +23,7 @@ from services.disc_id import embed_in_chd as disc_id_embed
 from services.disc_id import extract_from_source as disc_id_from_source
 from services.dolphin_tool import dolphin_tool_service
 from services.lock_manager import lock_manager
+from services.tools import registry
 from services.verification_store import verification_store
 from services.z3ds_compress import z3ds_compress_service
 from utils.delete_plan import build_delete_plan
@@ -137,10 +138,9 @@ class JobManager:
 
         # Determine output path - use explicit path if provided, otherwise calculate
         if output_path is None:
-            if mode == ConversionMode.Z3DS_COMPRESS:
-                output_path = z3ds_compress_service.get_output_path(file_path, output_dir)
-            else:
-                output_path = chdman_service.get_chd_path(file_path, output_dir)
+            output_path = registry.for_mode(mode.value).output_path(
+                mode.value, file_path, output_dir,
+            )
 
         job = ConversionJob(
             id=job_id,
