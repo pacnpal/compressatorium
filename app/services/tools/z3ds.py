@@ -26,7 +26,7 @@ _Z3DS_OUTPUTS = frozenset(Z3DS_OUTPUT_FORMATS.values())
 class Z3dsTool(BaseTool):
     id = "z3ds"
     display_name = "3DS"
-    modes = [
+    modes = (
         ModeSpec(
             mode="z3ds_compress",
             tool_id="z3ds",
@@ -37,7 +37,7 @@ class Z3dsTool(BaseTool):
             input_extensions=frozenset(Z3DS_CONVERTIBLE_EXTENSIONS),
             supports_delete_on_verify=True,
         ),
-    ]
+    )
     output_extensions = _Z3DS_OUTPUTS
     verify_extensions = _Z3DS_OUTPUTS
 
@@ -81,6 +81,10 @@ class Z3dsTool(BaseTool):
         return await run_in_threadpool(self._service.info, path)
 
     def info_model(self, raw: dict, path: str) -> Z3DSInfo:
+        # Direct indexing is intentional: Z3DSInfo's fields are required and
+        # z3ds_compress_service.info() always populates them (mirrors the
+        # /z3ds-info route). Unlike CHDInfo/DolphinDiscInfo (all-optional),
+        # a bare .get() here would inject None for required fields.
         return Z3DSInfo(
             file=raw["file"],
             size=raw["size"],
