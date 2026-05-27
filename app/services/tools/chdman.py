@@ -80,7 +80,9 @@ class ChdmanTool(BaseTool):
     id = "chdman"
     display_name = "CHDMAN"
     modes = _build_modes()
-    output_extensions = frozenset({".chd"})
+    # All extensions chdman produces: .chd from create/copy, plus the extract
+    # targets (.cue/.iso/.raw/.avi). verify only applies to finished CHDs.
+    output_extensions = frozenset({".chd", ".cue", ".iso", ".raw", ".avi"})
     verify_extensions = frozenset({".chd"})
 
     def __init__(self, binary_path: str) -> None:

@@ -177,3 +177,17 @@ def test_duplicate_mode_registration_raises():
     fresh.register(registry.get("chdman"))
     with pytest.raises(ValueError, match="duplicate mode createcd"):
         fresh.register(_StubTool())
+
+
+def test_duplicate_tool_id_registration_raises():
+    fresh = ToolRegistry()
+    fresh.register(registry.get("chdman"))
+    with pytest.raises(ValueError, match="duplicate tool id chdman"):
+        fresh.register(registry.get("chdman"))
+
+
+@pytest.mark.parametrize("tool_id", ["chdman", "dolphin", "z3ds"])
+def test_output_extensions_cover_mode_output_exts(tool_id):
+    tool = registry.get(tool_id)
+    declared = {m.output_ext for m in tool.modes if m.output_ext is not None}
+    assert declared <= tool.output_extensions

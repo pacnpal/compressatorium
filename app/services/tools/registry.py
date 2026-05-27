@@ -23,6 +23,8 @@ class ToolRegistry:
     def register(self, tool: ToolPlugin) -> None:
         # Validate before mutating so a duplicate can't leave the registry in
         # a partially-registered state (future phases iterate registry.all()).
+        if tool.id in self._tools:
+            raise ValueError(f"duplicate tool id {tool.id}")
         for m in tool.modes:
             if m.mode in self._by_mode:
                 raise ValueError(f"duplicate mode {m.mode}")
