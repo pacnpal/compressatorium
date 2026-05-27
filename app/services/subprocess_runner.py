@@ -98,189 +98,213 @@ class SubprocessRunner:
                     pass
 
         # cmd is built from validated settings paths (no shell interpretation);
-        # create_subprocess_exec passes args directly without shell expansion.
-        process = await asyncio.create_subprocess_exec(
+        # create_subprocess_exec passes the arg list directly (shell=False), so
+        # there is no shell expansion / injection surface. Same call shape that
+        # already lives unsuppressed in chdman/dolphin/z3ds; flagged here only
+        # because the line is new in this extracted module.
+        process = await asyncio.create_subprocess_exec(  # nosemgrep
             cmd[0], *cmd[1:],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             preexec_fn=_preexec if os.name == "posix" else None,
         )
         self.track_pid(process.pid)
-        if self._logger.isEnabledFor(logging.DEBUG):
-            self._logger.debug(
-                "Starting %s pid=%s cmd=%s", self._owner, process.pid, " ".join(cmd),
-            )
-
-        stall_timeout = compute_progress_stall_timeout(
-            input_path=input_path,
-            base_timeout=getattr(settings, "progress_timeout", 0),
-            timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
-            timeout_cap=getattr(settings, "progress_timeout_cap", 0),
-        )
-        last_progress_value = 0
-        last_output_size: int | None = None
-        last_activity_at = time.monotonic()
-        start = last_activity_at
-        last_heartbeat_at = start
-
-        cancelled_by_request = False
+        # Everything below runs under try/finally so that if the caller stops
+        # iterating (generator aclose / task cancellation) or an unexpected
+        # error fires, the subprocess, the cancel-watcher task and the PID entry
+        # are always cleaned up rather than leaked.
         cancel_task = None
-        if cancel_event:
-
-            async def _cancel_watcher():
-                nonlocal cancelled_by_request
-                await cancel_event.wait()
-                if process.returncode is not None:
-                    return
-                cancelled_by_request = True
-                if self._logger.isEnabledFor(logging.DEBUG):
-                    self._logger.debug(
-                        "Cancelling %s pid=%s", self._owner, process.pid,
-                    )
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    process.kill()
-
-            cancel_task = asyncio.create_task(_cancel_watcher())
-
-        buffer = ""
-        output_lines: list[str] = []
-        stall_error: str | None = None
-
-        def _record_line(line: str) -> None:
-            if not output_lines or output_lines[-1] != line:
-                output_lines.append(line)
-                if len(output_lines) > 30:
-                    output_lines.pop(0)
-
-        def _update_output_activity(now: float):
-            nonlocal last_output_size, last_activity_at
-            if not output_path:
-                return
-            try:
-                if not os.path.exists(output_path):
-                    return
-                size = os.path.getsize(output_path)
-            except OSError:
-                return
-            if last_output_size is None:
-                last_output_size = size
-                last_activity_at = now
-                return
-            if size > last_output_size:
-                last_output_size = size
-                last_activity_at = now
-
-        async def _check_stall(now: float) -> bool:
-            nonlocal stall_error
-            if stall_timeout <= 0:
-                return False
-            _update_output_activity(now)
-            if now - last_activity_at < stall_timeout:
-                return False
-            stall_error = (
-                "Conversion stalled: no progress increase or output growth for "
-                f"{stall_timeout}s (progress={last_progress_value}%,"
-                f" output_size={last_output_size})"
-            )
-            if process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    process.kill()
-            return True
-
-        while True:
-            try:
-                chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)
-            except asyncio.TimeoutError:
-                if cancel_event and cancel_event.is_set():
-                    break
-                now = time.monotonic()
-                if await _check_stall(now):
-                    break
-                if heartbeat and now - last_heartbeat_at >= 2:
-                    elapsed = int(now - start)
-                    yield {
-                        "progress": last_progress_value,
-                        "message": f"Converting... ({elapsed}s)",
-                    }
-                    last_heartbeat_at = now
-                continue
-            if not chunk:
-                break
-
-            buffer += chunk.decode("utf-8", errors="replace")
-
-            while "\r" in buffer or "\n" in buffer:
-                sep = "\r" if "\r" in buffer else "\n"
-                parts = buffer.split(sep)
-                for part in parts[:-1]:
-                    line = part.strip()
-                    if not line:
-                        continue
-                    _record_line(line)
-                    now = time.monotonic()
-                    progress = parse_progress(line)
-                    if progress is not None and progress > last_progress_value:
-                        last_progress_value = progress
-                        last_activity_at = now
-                    yield {
-                        "progress": (
-                            progress if progress is not None else last_progress_value
-                        ),
-                        "message": line,
-                    }
-                buffer = parts[-1]
-            if await _check_stall(time.monotonic()):
-                break
-
-        if buffer.strip():
-            line = buffer.strip()
-            _record_line(line)
-            now = time.monotonic()
-            progress = parse_progress(line)
-            if progress is not None and progress > last_progress_value:
-                last_progress_value = progress
-                last_activity_at = now
-            yield {
-                "progress": progress if progress is not None else last_progress_value,
-                "message": line,
-            }
-            await _check_stall(time.monotonic())
-
-        await process.wait()
-        if self._logger.isEnabledFor(logging.DEBUG):
-            self._logger.debug(
-                "%s pid=%s exit=%s", self._owner, process.pid, process.returncode,
-            )
-        self.untrack_pid(process.pid)
-
-        if cancel_task:
-            cancel_task.cancel()
-            try:
-                await cancel_task
-            except asyncio.CancelledError:
-                pass
-
-        if stall_error:
-            raise RuntimeError(stall_error)
-
-        if cancelled_by_request:
-            raise ConversionCancelled("Conversion cancelled")
-
-        if process.returncode != 0:
-            tail = "\n".join(output_lines[-6:])
-            if tail:
-                raise RuntimeError(
-                    f"{fail_label} failed with return code {process.returncode}."
-                    f"\nLast output:\n{tail}",
+        try:
+            if self._logger.isEnabledFor(logging.DEBUG):
+                self._logger.debug(
+                    "Starting %s pid=%s cmd=%s",
+                    self._owner, process.pid, " ".join(cmd),
                 )
-            raise RuntimeError(
-                f"{fail_label} failed with return code {process.returncode}",
-            )
 
-        yield {"progress": 100, "message": complete_message}
+            stall_timeout = compute_progress_stall_timeout(
+                input_path=input_path,
+                base_timeout=getattr(settings, "progress_timeout", 0),
+                timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
+                timeout_cap=getattr(settings, "progress_timeout_cap", 0),
+            )
+            last_progress_value = 0
+            last_output_size: int | None = None
+            last_activity_at = time.monotonic()
+            start = last_activity_at
+            last_heartbeat_at = start
+
+            cancelled_by_request = False
+            if cancel_event:
+
+                async def _cancel_watcher():
+                    nonlocal cancelled_by_request
+                    await cancel_event.wait()
+                    if process.returncode is not None:
+                        return
+                    cancelled_by_request = True
+                    if self._logger.isEnabledFor(logging.DEBUG):
+                        self._logger.debug(
+                            "Cancelling %s pid=%s", self._owner, process.pid,
+                        )
+                    process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        process.kill()
+
+                cancel_task = asyncio.create_task(_cancel_watcher())
+
+            buffer = ""
+            output_lines: list[str] = []
+            stall_error: str | None = None
+
+            def _record_line(line: str) -> None:
+                if not output_lines or output_lines[-1] != line:
+                    output_lines.append(line)
+                    if len(output_lines) > 30:
+                        output_lines.pop(0)
+
+            def _update_output_activity(now: float):
+                nonlocal last_output_size, last_activity_at
+                if not output_path:
+                    return
+                try:
+                    if not os.path.exists(output_path):
+                        return
+                    size = os.path.getsize(output_path)
+                except OSError:
+                    return
+                if last_output_size is None:
+                    last_output_size = size
+                    last_activity_at = now
+                    return
+                if size > last_output_size:
+                    last_output_size = size
+                    last_activity_at = now
+
+            async def _check_stall(now: float) -> bool:
+                nonlocal stall_error
+                if stall_timeout <= 0:
+                    return False
+                _update_output_activity(now)
+                if now - last_activity_at < stall_timeout:
+                    return False
+                stall_error = (
+                    "Conversion stalled: no progress increase or output growth "
+                    f"for {stall_timeout}s (progress={last_progress_value}%,"
+                    f" output_size={last_output_size})"
+                )
+                if process.returncode is None:
+                    process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        process.kill()
+                return True
+
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        process.stdout.read(100), timeout=2,
+                    )
+                except asyncio.TimeoutError:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    now = time.monotonic()
+                    if await _check_stall(now):
+                        break
+                    if heartbeat and now - last_heartbeat_at >= 2:
+                        elapsed = int(now - start)
+                        yield {
+                            "progress": last_progress_value,
+                            "message": f"Converting... ({elapsed}s)",
+                        }
+                        last_heartbeat_at = now
+                    continue
+                if not chunk:
+                    break
+
+                buffer += chunk.decode("utf-8", errors="replace")
+
+                while "\r" in buffer or "\n" in buffer:
+                    sep = "\r" if "\r" in buffer else "\n"
+                    parts = buffer.split(sep)
+                    for part in parts[:-1]:
+                        line = part.strip()
+                        if not line:
+                            continue
+                        _record_line(line)
+                        now = time.monotonic()
+                        progress = parse_progress(line)
+                        if progress is not None and progress > last_progress_value:
+                            last_progress_value = progress
+                            last_activity_at = now
+                        yield {
+                            "progress": (
+                                progress
+                                if progress is not None
+                                else last_progress_value
+                            ),
+                            "message": line,
+                        }
+                    buffer = parts[-1]
+                if await _check_stall(time.monotonic()):
+                    break
+
+            if buffer.strip():
+                line = buffer.strip()
+                _record_line(line)
+                now = time.monotonic()
+                progress = parse_progress(line)
+                if progress is not None and progress > last_progress_value:
+                    last_progress_value = progress
+                    last_activity_at = now
+                yield {
+                    "progress": (
+                        progress if progress is not None else last_progress_value
+                    ),
+                    "message": line,
+                }
+                await _check_stall(time.monotonic())
+
+            await process.wait()
+            if self._logger.isEnabledFor(logging.DEBUG):
+                self._logger.debug(
+                    "%s pid=%s exit=%s", self._owner, process.pid, process.returncode,
+                )
+
+            if stall_error:
+                raise RuntimeError(stall_error)
+
+            if cancelled_by_request:
+                raise ConversionCancelled("Conversion cancelled")
+
+            if process.returncode != 0:
+                tail = "\n".join(output_lines[-6:])
+                if tail:
+                    raise RuntimeError(
+                        f"{fail_label} failed with return code {process.returncode}."
+                        f"\nLast output:\n{tail}",
+                    )
+                raise RuntimeError(
+                    f"{fail_label} failed with return code {process.returncode}",
+                )
+
+            yield {"progress": 100, "message": complete_message}
+        finally:
+            self.untrack_pid(process.pid)
+            if cancel_task:
+                cancel_task.cancel()
+                try:
+                    await cancel_task
+                except asyncio.CancelledError:
+                    pass
+            if process.returncode is None:
+                try:
+                    process.terminate()
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+                except ProcessLookupError:
+                    pass
