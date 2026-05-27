@@ -124,6 +124,20 @@ async def test_delete_on_verify_error_messages_include_dolphin_and_3ds():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode", [ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH],
+)
+async def test_delete_plan_rejects_external_modes_without_crashing(mode):
+    """External (non-conversion) modes are unregistered; delete-plan must still
+    return a clean 400 rather than surfacing a registry KeyError as a 500."""
+    request = DeletePlanRequest(file_paths=["/tmp/any.chd"], mode=mode)
+    with pytest.raises(HTTPException) as exc_info:
+        await convert_routes.delete_plan(request)
+    assert exc_info.value.status_code == 400
+    assert "create/copy/Dolphin/3DS" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_create_job_returns_429_when_queue_is_full(tmp_path: Path, monkeypatch):
     """Single-job submissions should apply queue backpressure with HTTP 429."""
     source_path = tmp_path / "disc.iso"

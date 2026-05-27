@@ -20,13 +20,11 @@ from models import (
 )
 from services.archive import archive_service
 from services.chdman import chdman_service
-from services.dolphin_tool import (
-    DOLPHIN_CONVERTIBLE_EXTENSIONS,
-    dolphin_tool_service,
-)
-from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
+from services.dolphin_tool import dolphin_tool_service
+from services.z3ds_compress import z3ds_compress_service
 from services.job_manager import QueueBackpressureError, job_manager
 from services.lock_manager import lock_manager
+from services.tools import ModeKind, registry
 from sse_starlette.sse import EventSourceResponse
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import is_within_configured_volumes
@@ -85,12 +83,10 @@ def normalize_compression(value: str | None) -> str | None:
 
 
 def supports_delete_on_verify(mode: str) -> bool:
-    return (
-        mode.startswith("create")
-        or mode == "copy"
-        or mode.startswith("dolphin_")
-        or mode == ConversionMode.Z3DS_COMPRESS.value
-    )
+    try:
+        return registry.spec(mode).supports_delete_on_verify
+    except KeyError:
+        return False
 
 
 def _is_dolphin_mode(mode: str) -> bool:
@@ -300,9 +296,10 @@ async def create_job(request: JobCreateRequest):
     compression = normalize_compression(request.compression)
     mode = request.mode.value
     output_dir = normalize_output_dir(request.output_dir)
-    is_dolphin = _is_dolphin_mode(mode)
-    is_z3ds = mode == ConversionMode.Z3DS_COMPRESS.value
-    if compression and mode.startswith("extract"):
+    spec = registry.spec(mode)
+    is_dolphin = spec.tool_id == "dolphin"
+    is_z3ds = spec.tool_id == "z3ds"
+    if compression and spec.tool_id == "chdman" and spec.kind == ModeKind.EXTRACT:
         raise HTTPException(
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
@@ -327,7 +324,7 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail="Dolphin compression supports only one codec at a time",
         )
-    if request.delete_on_verify and not supports_delete_on_verify(mode):
+    if request.delete_on_verify and not spec.supports_delete_on_verify:
         raise HTTPException(
             status_code=400,
             detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
@@ -354,7 +351,7 @@ async def create_job(request: JobCreateRequest):
     display_filename = None
 
     if "::" in request.file_path:
-        if mode.startswith("extract") or mode == "copy" or is_dolphin or is_z3ds:
+        if not spec.allows_archive_input:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -398,20 +395,20 @@ async def create_job(request: JobCreateRequest):
         raise HTTPException(status_code=404, detail="File not found")
 
     if (
-        mode.startswith("extract") or mode == "copy"
+        spec.tool_id == "chdman" and spec.kind in (ModeKind.EXTRACT, ModeKind.COPY)
     ) and not file_path.lower().endswith(".chd"):
         raise HTTPException(
             status_code=400, detail="Extract/copy modes require .chd input files",
         )
 
-    if mode.startswith("create") and file_path.lower().endswith(".chd"):
+    if spec.kind == ModeKind.CREATE and file_path.lower().endswith(".chd"):
         raise HTTPException(
             status_code=400, detail="Create modes require non-CHD input files",
         )
 
     if is_dolphin:
         ext = Path(file_path).suffix.lower()
-        if ext not in DOLPHIN_CONVERTIBLE_EXTENSIONS:
+        if ext not in spec.input_extensions:
             raise HTTPException(
                 status_code=400,
                 detail="Dolphin modes require GameCube/Wii disc images "
@@ -420,7 +417,7 @@ async def create_job(request: JobCreateRequest):
 
     if is_z3ds:
         ext = Path(file_path).suffix.lower()
-        if ext not in Z3DS_CONVERTIBLE_EXTENSIONS:
+        if ext not in spec.input_extensions:
             raise HTTPException(
                 status_code=400,
                 detail="z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia, .3ds)",
@@ -518,10 +515,11 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         )
     compression = normalize_compression(request.compression)
     mode = request.mode.value
-    is_dolphin = _is_dolphin_mode(mode)
-    is_z3ds = mode == ConversionMode.Z3DS_COMPRESS.value
+    spec = registry.spec(mode)
+    is_dolphin = spec.tool_id == "dolphin"
+    is_z3ds = spec.tool_id == "z3ds"
     output_dir = normalize_output_dir(request.output_dir)
-    if compression and mode.startswith("extract"):
+    if compression and spec.tool_id == "chdman" and spec.kind == ModeKind.EXTRACT:
         raise HTTPException(
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
@@ -546,7 +544,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             status_code=400,
             detail="Dolphin compression supports only one codec at a time",
         )
-    if request.delete_on_verify and not supports_delete_on_verify(mode):
+    if request.delete_on_verify and not spec.supports_delete_on_verify:
         raise HTTPException(
             status_code=400,
             detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
@@ -603,7 +601,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
 
         # Handle archive files
         if "::" in file_path:
-            if mode.startswith("extract") or mode == "copy" or is_dolphin or is_z3ds:
+            if not spec.allows_archive_input:
                 skipped.append(file_path)
                 continue
             archive_path, internal_path = file_path.split("::", 1)
@@ -644,24 +642,24 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             continue
 
         if (
-            mode.startswith("extract") or mode == "copy"
+            spec.tool_id == "chdman" and spec.kind in (ModeKind.EXTRACT, ModeKind.COPY)
         ) and not file_path.lower().endswith(".chd"):
             skipped.append(file_path)
             continue
 
-        if mode.startswith("create") and file_path.lower().endswith(".chd"):
+        if spec.kind == ModeKind.CREATE and file_path.lower().endswith(".chd"):
             skipped.append(file_path)
             continue
 
         if is_dolphin:
             ext = Path(file_path).suffix.lower()
-            if ext not in DOLPHIN_CONVERTIBLE_EXTENSIONS:
+            if ext not in spec.input_extensions:
                 skipped.append(file_path)
                 continue
 
         if is_z3ds:
             ext = Path(file_path).suffix.lower()
-            if ext not in Z3DS_CONVERTIBLE_EXTENSIONS:
+            if ext not in spec.input_extensions:
                 skipped.append(file_path)
                 continue
 
