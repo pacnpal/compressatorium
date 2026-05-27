@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import pytest
 
+from app.models import ConversionMode
 from app.services.chdman import chdman_service
 from app.services.dolphin_tool import dolphin_tool_service
+from app.services.job_manager import JobManager
 from app.services.tools import registry
 from app.services.z3ds_compress import z3ds_compress_service
 
@@ -93,3 +95,39 @@ def test_archive_stem_keeps_full_name_as_stem():
         "createcd", "disc.cue", None, treat_as_stem=True,
     )
     assert routed == "disc.cue.chd"
+
+
+# Guards on the _queue_job_locked output_path fallback for direct service
+# callers (the HTTP routes always pass an explicit output_path). These
+# preserve rejections the legacy per-tool fallback enforced.
+
+
+@pytest.mark.asyncio
+async def test_z3ds_fallback_rejects_unsupported_extension():
+    manager = JobManager()
+    with pytest.raises(ValueError, match="Unsupported file extension"):
+        await manager.create_job("/data/not-a-rom.txt", ConversionMode.Z3DS_COMPRESS)
+
+
+@pytest.mark.asyncio
+async def test_z3ds_fallback_accepts_supported_extension():
+    manager = JobManager()
+    job = await manager.create_job("/data/rom.cci", ConversionMode.Z3DS_COMPRESS)
+    assert job.output_path == "/data/rom.zcci"
+
+
+@pytest.mark.asyncio
+async def test_dolphin_fallback_rejects_output_colliding_with_source():
+    # dolphin_iso on a .iso source resolves to the same path; refuse it
+    # rather than let dolphin-tool overwrite the source.
+    manager = JobManager()
+    with pytest.raises(ValueError, match="Output path matches input"):
+        await manager.create_job("/data/game.iso", ConversionMode.DOLPHIN_ISO)
+
+
+@pytest.mark.asyncio
+async def test_dolphin_fallback_allows_distinct_output():
+    # dolphin_rvz on a .iso source yields a distinct .rvz path; allowed.
+    manager = JobManager()
+    job = await manager.create_job("/data/game.iso", ConversionMode.DOLPHIN_RVZ)
+    assert job.output_path == "/data/game.rvz"
