@@ -1,17 +1,21 @@
 from __future__ import annotations
 import asyncio
 import logging
-import os
 import re
 import shutil
-import threading
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from config import settings
-from fastapi.concurrency import run_in_threadpool
-from services.timeout_policy import compute_progress_stall_timeout
+from services.subprocess_runner import ConversionCancelled, SubprocessRunner
+
+# Re-exported for backwards compatibility: ``ConversionCancelled`` historically
+# lived here and is imported as ``from services.chdman import ConversionCancelled``
+# by job_manager, dolphin_tool and z3ds_compress.  Keeping the import above (not
+# redefining the class) preserves its identity so those ``except`` clauses still
+# catch it.
+__all__ = ["ConversionCancelled", "ChdmanService", "chdman_service"]
 
 CHDMAN_CONVERTIBLE_EXTENSIONS = {".gdi", ".iso", ".cue", ".bin"}
 CONVERTIBLE_EXTENSIONS = CHDMAN_CONVERTIBLE_EXTENSIONS
@@ -19,17 +23,12 @@ CONVERTIBLE_EXTENSIONS = CHDMAN_CONVERTIBLE_EXTENSIONS
 logger = logging.getLogger("chd.chdman")
 
 
-class ConversionCancelled(Exception):
-    """Raised when a conversion is cancelled before completion."""
-
-
 class ChdmanService:
     """Wrapper for chdman binary."""
 
     def __init__(self):
         self.chdman_path = settings.chdman_path
-        self._active_pids: set[int] = set()
-        self._pid_lock = threading.Lock()
+        self._runner = SubprocessRunner(owner="chdman")
 
     def _build_command(
         self,
@@ -81,17 +80,8 @@ class ChdmanService:
 
         return cmd
 
-    def _track_pid(self, pid: int):
-        with self._pid_lock:
-            self._active_pids.add(pid)
-
-    def _untrack_pid(self, pid: int):
-        with self._pid_lock:
-            self._active_pids.discard(pid)
-
     def active_pids(self) -> list[int]:
-        with self._pid_lock:
-            return list(self._active_pids)
+        return self._runner.active_pids()
 
     async def convert(
         self,
@@ -102,236 +92,19 @@ class ChdmanService:
         compression: str | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
-        """Run chdman conversion and yield progress updates.
-
-        Args:
-            input_path: Path to input file (GDI, ISO, CUE)
-            output_path: Path for output CHD file
-            mode: "createcd" or "createdvd"
-
-        Yields:
-            dict: {"progress": int, "message": str}
-
-        """
-        # Ensure output directory exists
-        output_dir = os.path.dirname(output_path)
-        if output_dir:  # Empty string means output is in current directory, no need to create
-            await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
-
+        """Run chdman conversion and yield ``{"progress", "message"}`` updates."""
         cmd = self._build_command(
             mode, input_path, output_path, compression=compression,
         )
-
-        def _preexec():
-            if settings.chdman_nice is not None:
-                try:
-                    os.nice(settings.chdman_nice)
-                except OSError:
-                    pass
-
-        # cmd is built from validated settings paths (no shell interpretation);
-        # create_subprocess_exec passes args directly without shell expansion.
-        process = await asyncio.create_subprocess_exec(
-            cmd[0], *cmd[1:],
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            preexec_fn=_preexec if os.name == "posix" else None,
-        )
-        self._track_pid(process.pid)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Starting chdman pid=%s cmd=%s", process.pid, " ".join(cmd))
-
-        stall_timeout = compute_progress_stall_timeout(
+        async for update in self._runner.run(
+            cmd,
             input_path=input_path,
-            base_timeout=getattr(settings, "progress_timeout", 0),
-            timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
-            timeout_cap=getattr(settings, "progress_timeout_cap", 0),
-        )
-        last_progress_value = 0
-        last_output_size: int | None = None
-        last_activity_at = time.monotonic()
-
-        cancelled_by_request = False
-        cancel_task = None
-        if cancel_event:
-
-            async def _cancel_watcher():
-                nonlocal cancelled_by_request
-                await cancel_event.wait()
-                if process.returncode is not None:
-                    return
-                cancelled_by_request = True
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug("Cancelling chdman pid=%s", process.pid)
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug("Killing chdman pid=%s after timeout", process.pid)
-                    process.kill()
-
-            cancel_task = asyncio.create_task(_cancel_watcher())
-
-        buffer = ""
-        output_lines: list[str] = []
-        last_output_at = time.monotonic()
-        last_idle_log = last_output_at
-        stall_error: str | None = None
-
-        def _update_output_activity(now: float):
-            nonlocal last_output_size, last_activity_at
-            if not output_path:
-                return
-            try:
-                if not os.path.exists(output_path):
-                    return
-                size = os.path.getsize(output_path)
-            except OSError:
-                return
-            if last_output_size is None:
-                last_output_size = size
-                last_activity_at = now
-                return
-            if size > last_output_size:
-                last_output_size = size
-                last_activity_at = now
-
-        async def _check_stall(now: float) -> bool:
-            nonlocal stall_error
-            if stall_timeout <= 0:
-                return False
-            _update_output_activity(now)
-            if now - last_activity_at < stall_timeout:
-                return False
-            stall_error = (
-                "Conversion stalled: no progress increase or output growth for "
-                f"{stall_timeout}s (progress={last_progress_value}%,"
-                f" output_size={last_output_size})"
-            )
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "chdman pid=%s stalled for %.1fs (progress=%s output_size=%s)",
-                    process.pid,
-                    now - last_activity_at,
-                    last_progress_value,
-                    last_output_size,
-                )
-            if process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    process.kill()
-            return True
-
-        while True:
-            try:
-                chunk = await asyncio.wait_for(process.stdout.read(100), timeout=2)
-            except asyncio.TimeoutError:
-                if cancel_event and cancel_event.is_set():
-                    break
-                now = time.monotonic()
-                idle_for = now - last_output_at
-                if (
-                    logger.isEnabledFor(logging.DEBUG)
-                    and idle_for >= 30
-                    and now - last_idle_log >= 30
-                ):
-                    logger.debug("chdman pid=%s idle for %.1fs", process.pid, idle_for)
-                    last_idle_log = now
-                if await _check_stall(now):
-                    break
-                continue
-            if not chunk:
-                break
-
-            buffer += chunk.decode("utf-8", errors="replace")
-            last_output_at = time.monotonic()
-
-            # Process complete lines and progress updates
-            while "\r" in buffer or "\n" in buffer:
-                # Handle carriage returns (progress updates)
-                if "\r" in buffer:
-                    parts = buffer.split("\r")
-                    for part in parts[:-1]:
-                        if part.strip():
-                            line = part.strip()
-                            if line:
-                                if not output_lines or output_lines[-1] != line:
-                                    output_lines.append(line)
-                                    if len(output_lines) > 30:
-                                        output_lines.pop(0)
-                            now = time.monotonic()
-                            progress = self._parse_progress(line)
-                            if progress > last_progress_value:
-                                last_progress_value = progress
-                                last_activity_at = now
-                            yield {"progress": progress, "message": line}
-                    buffer = parts[-1]
-                # Handle newlines
-                elif "\n" in buffer:
-                    parts = buffer.split("\n")
-                    for part in parts[:-1]:
-                        line = part.strip()
-                        if line:
-                            if not output_lines or output_lines[-1] != line:
-                                output_lines.append(line)
-                                if len(output_lines) > 30:
-                                    output_lines.pop(0)
-                            now = time.monotonic()
-                            progress = self._parse_progress(line)
-                            if progress > last_progress_value:
-                                last_progress_value = progress
-                                last_activity_at = now
-                            yield {"progress": progress, "message": line}
-                    buffer = parts[-1]
-            if await _check_stall(time.monotonic()):
-                break
-
-        # Process any remaining buffer
-        if buffer.strip():
-            line = buffer.strip()
-            if not output_lines or output_lines[-1] != line:
-                output_lines.append(line)
-                if len(output_lines) > 30:
-                    output_lines.pop(0)
-            now = time.monotonic()
-            progress = self._parse_progress(line)
-            if progress > last_progress_value:
-                last_progress_value = progress
-                last_activity_at = now
-            yield {"progress": progress, "message": line}
-            await _check_stall(time.monotonic())
-
-        await process.wait()
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("chdman pid=%s exit=%s", process.pid, process.returncode)
-        self._untrack_pid(process.pid)
-
-        if cancel_task:
-            cancel_task.cancel()
-            try:
-                await cancel_task
-            except asyncio.CancelledError:
-                pass
-
-        if stall_error:
-            raise RuntimeError(stall_error)
-
-        if cancelled_by_request:
-            raise ConversionCancelled("Conversion cancelled")
-
-        if process.returncode != 0:
-            tail = "\n".join(output_lines[-6:])
-            if tail:
-                raise RuntimeError(
-                    f"chdman failed with return code {process.returncode}."
-                    f"\nLast output:\n{tail}",
-                )
-            raise RuntimeError(f"chdman failed with return code {process.returncode}")
-
-        yield {"progress": 100, "message": "Conversion complete"}
+            output_path=output_path,
+            parse_progress=self._parse_progress,
+            cancel_event=cancel_event,
+            fail_label="chdman",
+        ):
+            yield update
 
     async def info(self, chd_path: str) -> dict:
         """Get information about a CHD file."""
@@ -387,7 +160,7 @@ class ChdmanService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        self._track_pid(process.pid)
+        self._runner.track_pid(process.pid)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("Starting chdman verify pid=%s path=%s", process.pid, chd_path)
 
@@ -472,7 +245,7 @@ class ChdmanService:
             logger.debug(
                 "chdman verify pid=%s exit=%s", process.pid, process.returncode,
             )
-        self._untrack_pid(process.pid)
+        self._runner.untrack_pid(process.pid)
 
         if timeout_error:
             yield {"type": "error", "valid": False, "message": timeout_error}
