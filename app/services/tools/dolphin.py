@@ -31,7 +31,7 @@ def _build_modes() -> list[ModeSpec]:
             label=label,
             group="dolphin",
             output_ext=ext,
-            input_extensions=DOLPHIN_CONVERTIBLE_EXTENSIONS,
+            input_extensions=frozenset(DOLPHIN_CONVERTIBLE_EXTENSIONS),
             supports_compression=supports_compression,
             supports_compression_level=supports_level,
             supports_delete_on_verify=True,
@@ -46,7 +46,7 @@ class DolphinTool(BaseTool):
     display_name = "Dolphin"
     modes = _build_modes()
     output_extensions = frozenset({".rvz", ".wia", ".gcz", ".iso"})
-    verify_extensions = DOLPHIN_CONVERTIBLE_EXTENSIONS
+    verify_extensions = frozenset(DOLPHIN_CONVERTIBLE_EXTENSIONS)
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

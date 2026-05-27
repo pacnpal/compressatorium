@@ -27,7 +27,8 @@ class ToolPlugin(Protocol):
     output_extensions: frozenset[str]   # produced (for "output exists" badges)
     verify_extensions: frozenset[str]   # accepted by verify()
 
-    def spec(self, mode: str) -> ModeSpec: ...
+    def spec(self, mode: str) -> ModeSpec:
+        """Return the ModeSpec for a mode this tool owns."""
 
     def output_path(
         self,
@@ -36,7 +37,8 @@ class ToolPlugin(Protocol):
         output_dir: str | None = None,
         *,
         treat_as_stem: bool = False,
-    ) -> str: ...
+    ) -> str:
+        """Resolve the output path for a conversion."""
 
     def convert(
         self,
@@ -46,18 +48,28 @@ class ToolPlugin(Protocol):
         *,
         compression: str | None = None,
         cancel_event: asyncio.Event | None = None,
-    ) -> AsyncGenerator[dict, None]: ...
+    ) -> AsyncGenerator[dict, None]:
+        """Run a conversion, yielding ``{"progress", "message"}`` updates."""
 
-    async def verify(self, path: str) -> dict: ...
-    def verify_stream(self, path: str) -> AsyncGenerator[dict, None]: ...
-    async def info(self, path: str) -> dict: ...
-    def info_model(self, raw: dict, path: str) -> BaseModel: ...
+    async def verify(self, path: str) -> dict:
+        """Verify an output file; returns ``{"valid", "message"}``."""
 
-    def active_pids(self) -> list[int]: ...
+    def verify_stream(self, path: str) -> AsyncGenerator[dict, None]:
+        """Verify with streaming progress updates."""
+
+    async def info(self, path: str) -> dict:
+        """Return raw tool info for a file."""
+
+    def info_model(self, raw: dict, path: str) -> BaseModel:
+        """Map raw info into the typed API model."""
+
+    def active_pids(self) -> list[int]:
+        """Return PIDs of in-flight subprocesses for this tool."""
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
-    ) -> None: ...
+    ) -> None:
+        """Optional post-processing hook after a successful conversion."""
 
 
 class BaseTool:

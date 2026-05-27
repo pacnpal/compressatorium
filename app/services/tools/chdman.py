@@ -41,7 +41,8 @@ def _build_modes() -> list[ModeSpec]:
             label=label,
             group="create",
             output_ext=".chd",
-            input_extensions=CHDMAN_CONVERTIBLE_EXTENSIONS,
+            input_extensions=frozenset(CHDMAN_CONVERTIBLE_EXTENSIONS),
+            supports_compression=True,
             supports_delete_on_verify=True,
             allows_archive_input=True,
         )
@@ -68,6 +69,7 @@ def _build_modes() -> list[ModeSpec]:
             group="copy",
             output_ext=".chd",
             input_extensions=_CHD,
+            supports_compression=True,
             supports_delete_on_verify=True,
         )
     )
@@ -91,7 +93,7 @@ class ChdmanTool(BaseTool):
     # CHDMAN_CONVERTIBLE_EXTENSIONS.
     @property
     def input_extensions(self) -> frozenset[str]:
-        return CHDMAN_CONVERTIBLE_EXTENSIONS
+        return frozenset(CHDMAN_CONVERTIBLE_EXTENSIONS)
 
     def output_path(
         self,

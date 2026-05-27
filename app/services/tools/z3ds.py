@@ -34,7 +34,7 @@ class Z3dsTool(BaseTool):
             label="Compress 3DS",
             group="z3ds",
             output_ext=None,  # mapped from the input extension
-            input_extensions=Z3DS_CONVERTIBLE_EXTENSIONS,
+            input_extensions=frozenset(Z3DS_CONVERTIBLE_EXTENSIONS),
             supports_delete_on_verify=True,
         ),
     ]

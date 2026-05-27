@@ -77,6 +77,33 @@ def test_kind_classification():
     assert spec("dolphin_iso").kind is ModeKind.EXTRACT
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        # chdman create/copy accept -c codec selection; extract does not.
+        ("createcd", True),
+        ("createdvd", True),
+        ("copy", True),
+        ("extractcd", False),
+        # dolphin rvz/wia take a compression codec (+ level); gcz/iso don't.
+        ("dolphin_rvz", True),
+        ("dolphin_wia", True),
+        ("dolphin_gcz", False),
+        ("dolphin_iso", False),
+        ("z3ds_compress", False),
+    ],
+)
+def test_supports_compression_matches_current_behavior(mode, expected):
+    assert registry.spec(mode).supports_compression is expected
+
+
+def test_compression_level_only_for_dolphin_rvz_wia():
+    for mode in ("dolphin_rvz", "dolphin_wia"):
+        assert registry.spec(mode).supports_compression_level is True
+    for mode in ("createcd", "copy", "dolphin_gcz", "dolphin_iso", "z3ds_compress"):
+        assert registry.spec(mode).supports_compression_level is False
+
+
 def test_convertible_extensions_match_service_constants():
     expected = (
         set(CHDMAN_CONVERTIBLE_EXTENSIONS)
