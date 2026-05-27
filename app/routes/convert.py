@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import re
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from config import settings
@@ -164,6 +166,251 @@ def get_unique_output_path_for_extractcd(base_path: str) -> str:
         counter += 1
 
 
+def _input_extension(path: str) -> str:
+    if "::" in path:
+        _, internal = path.split("::", 1)
+        return Path(internal).suffix.lower()
+    return Path(path).suffix.lower()
+
+
+def _priority(ext: str) -> int:
+    if ext in {".cue", ".gdi"}:
+        return 4
+    if ext == ".iso":
+        return 3
+    if ext == ".bin":
+        return 1
+    return 0
+
+
+@dataclass
+class JobPlan:
+    """Resolved per-file plan shared by single and batch job creation."""
+
+    file_path: str
+    output_path: str
+    base_output_path: str
+    allow_overwrite: bool
+    display_filename: str | None
+    delete_snapshot: dict | None
+    priority: int
+
+
+class SkipReason(Enum):
+    """Why ``plan_job`` could not turn a file into a job.
+
+    Single-job callers translate each reason into the matching
+    ``HTTPException``; batch callers append the file to ``skipped`` and
+    continue. The two behaviours are deliberately different (see
+    ``_SKIP_HTTP``).
+    """
+
+    ARCHIVE_INPUT_NOT_ALLOWED = "archive_input_not_allowed"
+    ARCHIVE_NOT_FOUND = "archive_not_found"
+    OUTPUT_EXISTS = "output_exists"
+    OUTPUT_LOCKED = "output_locked"
+    FILE_NOT_FOUND = "file_not_found"
+    EXTRACT_COPY_REQUIRES_CHD = "extract_copy_requires_chd"
+    CREATE_REQUIRES_NON_CHD = "create_requires_non_chd"
+    DOLPHIN_BAD_EXTENSION = "dolphin_bad_extension"
+    Z3DS_BAD_EXTENSION = "z3ds_bad_extension"
+    DOLPHIN_SAME_PATH = "dolphin_same_path"
+
+
+class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
+    """Raised by ``plan_job`` when a file cannot be planned into a job."""
+
+    def __init__(self, reason: SkipReason):
+        self.reason = reason
+        super().__init__(reason.value)
+
+
+class DeleteSnapshotError(Exception):
+    """Raised when building the delete-on-verify snapshot fails.
+
+    Unlike ``SkipFile`` this aborts both single and batch creation; each
+    caller formats its own (differing) ``detail`` string.
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
+# Single-job status/detail for each skip reason. Must match the exact strings
+# and codes the pre-Phase-4 ``create_job`` raised. Batch callers ignore this
+# table and simply skip.
+_SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
+    SkipReason.ARCHIVE_INPUT_NOT_ALLOWED: (
+        400,
+        "Archive inputs are not supported for"
+        " extract/copy/dolphin/z3ds_compress modes",
+    ),
+    SkipReason.ARCHIVE_NOT_FOUND: (404, "Archive not found"),
+    SkipReason.OUTPUT_EXISTS: (409, "Output file already exists"),
+    SkipReason.OUTPUT_LOCKED: (409, "Output file is currently being converted"),
+    SkipReason.FILE_NOT_FOUND: (404, "File not found"),
+    SkipReason.EXTRACT_COPY_REQUIRES_CHD: (
+        400,
+        "Extract/copy modes require .chd input files",
+    ),
+    SkipReason.CREATE_REQUIRES_NON_CHD: (
+        400,
+        "Create modes require non-CHD input files",
+    ),
+    SkipReason.DOLPHIN_BAD_EXTENSION: (
+        400,
+        "Dolphin modes require GameCube/Wii disc images "
+        "(.iso, .gcz, .wia, .rvz, .wbfs)",
+    ),
+    SkipReason.Z3DS_BAD_EXTENSION: (
+        400,
+        "z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia, .3ds)",
+    ),
+    SkipReason.DOLPHIN_SAME_PATH: (
+        400,
+        "Output path matches input; overwriting would delete the source file",
+    ),
+}
+
+
+async def plan_job(
+    file_path: str,
+    *,
+    spec,
+    mode: str,
+    output_dir: str | None,
+    duplicate_action: DuplicateAction,
+    delete_on_verify: bool,
+) -> JobPlan:
+    """Resolve one input file into a concrete ``JobPlan``.
+
+    Holds the per-file validation / output-path / duplicate-handling pipeline
+    shared by ``create_job`` and ``create_batch_jobs``. Validation failures are
+    signalled via ``SkipFile`` (the caller decides raise-vs-skip);
+    delete-snapshot failures raise ``DeleteSnapshotError``.
+
+    Request-level concerns (compression validation, volume containment, queue
+    backpressure, the cross-file archive multi-select guard, the batch dedup
+    pass) stay in the endpoints, not here.
+    """
+    is_dolphin = spec.tool_id == "dolphin"
+    is_z3ds = spec.tool_id == "z3ds"
+
+    archive_source_dir = None  # Directory where the archive is located (for output)
+    output_path = None
+    base_output_path = None
+    output_exists = False
+
+    display_filename = None
+
+    # Handle archive files
+    if "::" in file_path:
+        if not spec.allows_archive_input:
+            raise SkipFile(SkipReason.ARCHIVE_INPUT_NOT_ALLOWED)
+        archive_path, internal_path = file_path.split("::", 1)
+        archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
+        display_filename = os.path.basename(internal_path)
+
+        if not os.path.isfile(archive_path):
+            raise SkipFile(SkipReason.ARCHIVE_NOT_FOUND)
+
+        # Calculate output path before extraction to avoid unnecessary work
+        effective_output_dir = output_dir or archive_source_dir
+        output_stem = archive_service._output_stem_for_member(internal_path)
+        output_path = _get_output_path(
+            mode, output_stem, effective_output_dir, treat_as_stem=True,
+        )
+        base_output_path = output_path
+
+        output_exists, is_locked = check_output_conflicts(mode, output_path)
+        if output_exists or is_locked:
+            if duplicate_action == DuplicateAction.SKIP:
+                raise SkipFile(SkipReason.OUTPUT_EXISTS)
+            if duplicate_action == DuplicateAction.OVERWRITE:
+                if is_locked:
+                    raise SkipFile(SkipReason.OUTPUT_LOCKED)
+            elif duplicate_action == DuplicateAction.RENAME:
+                if mode == "extractcd":
+                    output_path = get_unique_output_path_for_extractcd(output_path)
+                else:
+                    output_path = get_unique_output_path(output_path)
+
+    if "::" not in file_path and not os.path.isfile(file_path):
+        raise SkipFile(SkipReason.FILE_NOT_FOUND)
+
+    if (
+        spec.tool_id == "chdman" and spec.kind in (ModeKind.EXTRACT, ModeKind.COPY)
+    ) and not file_path.lower().endswith(".chd"):
+        raise SkipFile(SkipReason.EXTRACT_COPY_REQUIRES_CHD)
+
+    if spec.kind == ModeKind.CREATE and file_path.lower().endswith(".chd"):
+        raise SkipFile(SkipReason.CREATE_REQUIRES_NON_CHD)
+
+    if is_dolphin:
+        ext = Path(file_path).suffix.lower()
+        if ext not in spec.input_extensions:
+            raise SkipFile(SkipReason.DOLPHIN_BAD_EXTENSION)
+
+    if is_z3ds:
+        ext = Path(file_path).suffix.lower()
+        if ext not in spec.input_extensions:
+            raise SkipFile(SkipReason.Z3DS_BAD_EXTENSION)
+
+    # Calculate output path and handle duplicates
+    # For archive files: use output_dir if specified, otherwise save next to archive
+    if output_path is None:
+        effective_output_dir = output_dir or archive_source_dir
+        output_path = _get_output_path(
+            mode, file_path, effective_output_dir,
+        )
+        base_output_path = output_path
+
+        output_exists, is_locked = check_output_conflicts(mode, output_path)
+        if output_exists or is_locked:
+            if duplicate_action == DuplicateAction.SKIP:
+                raise SkipFile(SkipReason.OUTPUT_EXISTS)
+            if duplicate_action == DuplicateAction.OVERWRITE:
+                if is_locked:
+                    raise SkipFile(SkipReason.OUTPUT_LOCKED)
+            elif duplicate_action == DuplicateAction.RENAME:
+                if mode == "extractcd":
+                    output_path = get_unique_output_path_for_extractcd(output_path)
+                else:
+                    output_path = get_unique_output_path(output_path)
+
+    if (
+        is_dolphin
+        and duplicate_action == DuplicateAction.OVERWRITE
+        and output_path
+        and _is_same_path(output_path, file_path)
+    ):
+        raise SkipFile(SkipReason.DOLPHIN_SAME_PATH)
+
+    allow_overwrite = (
+        duplicate_action == DuplicateAction.OVERWRITE and output_exists
+    )
+
+    delete_snapshot = None
+    if delete_on_verify:
+        try:
+            delete_snapshot = await run_in_threadpool(
+                build_delete_snapshot, file_path,
+            )
+        except ValueError as exc:
+            raise DeleteSnapshotError(str(exc)) from None
+
+    return JobPlan(
+        file_path=file_path,
+        output_path=output_path,
+        base_output_path=base_output_path or output_path,
+        allow_overwrite=allow_overwrite,
+        display_filename=display_filename,
+        delete_snapshot=delete_snapshot,
+        priority=_priority(_input_extension(file_path)),
+    )
+
+
 @router.post("/jobs/check-duplicates", response_model=list[DuplicateInfo])
 async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
@@ -283,7 +530,6 @@ async def create_job(request: JobCreateRequest):
     output_dir = normalize_output_dir(request.output_dir)
     spec = registry.spec(mode)
     is_dolphin = spec.tool_id == "dolphin"
-    is_z3ds = spec.tool_id == "z3ds"
     if compression and spec.tool_id == "chdman" and spec.kind == ModeKind.EXTRACT:
         raise HTTPException(
             status_code=400,
@@ -328,139 +574,23 @@ async def create_job(request: JobCreateRequest):
             detail="Access denied: output directory outside configured volumes",
         )
 
-    # Handle archive files
-    file_path = request.file_path
-    archive_source_dir = None  # Directory where the archive is located (for output)
-    output_path = None
-    output_exists = False
-    display_filename = None
-
-    if "::" in request.file_path:
-        if not spec.allows_archive_input:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Archive inputs are not supported for"
-                    " extract/copy/dolphin/z3ds_compress modes"
-                ),
-            )
-        archive_path, internal_path = request.file_path.split("::", 1)
-        archive_source_dir = os.path.dirname(archive_path)  # Save CHD next to archive
-        display_filename = os.path.basename(internal_path)
-
-        if not os.path.isfile(archive_path):
-            raise HTTPException(status_code=404, detail="Archive not found")
-
-        # Calculate output path before extraction to avoid unnecessary work
-        effective_output_dir = output_dir or archive_source_dir
-        output_stem = archive_service._output_stem_for_member(internal_path)
-        output_path = _get_output_path(
-            mode, output_stem, effective_output_dir, treat_as_stem=True,
+    try:
+        plan = await plan_job(
+            request.file_path,
+            spec=spec,
+            mode=mode,
+            output_dir=output_dir,
+            duplicate_action=request.duplicate_action,
+            delete_on_verify=request.delete_on_verify,
         )
-
-        output_exists, is_locked = check_output_conflicts(mode, output_path)
-        if output_exists or is_locked:
-            if request.duplicate_action == DuplicateAction.SKIP:
-                raise HTTPException(
-                    status_code=409, detail="Output file already exists",
-                )
-            if request.duplicate_action == DuplicateAction.OVERWRITE:
-                if is_locked:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Output file is currently being converted",
-                    )
-            elif request.duplicate_action == DuplicateAction.RENAME:
-                if mode == "extractcd":
-                    output_path = get_unique_output_path_for_extractcd(output_path)
-                else:
-                    output_path = get_unique_output_path(output_path)
-
-    if "::" not in request.file_path and not os.path.isfile(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-
-    if (
-        spec.tool_id == "chdman" and spec.kind in (ModeKind.EXTRACT, ModeKind.COPY)
-    ) and not file_path.lower().endswith(".chd"):
-        raise HTTPException(
-            status_code=400, detail="Extract/copy modes require .chd input files",
-        )
-
-    if spec.kind == ModeKind.CREATE and file_path.lower().endswith(".chd"):
-        raise HTTPException(
-            status_code=400, detail="Create modes require non-CHD input files",
-        )
-
-    if is_dolphin:
-        ext = Path(file_path).suffix.lower()
-        if ext not in spec.input_extensions:
-            raise HTTPException(
-                status_code=400,
-                detail="Dolphin modes require GameCube/Wii disc images "
-                       "(.iso, .gcz, .wia, .rvz, .wbfs)",
-            )
-
-    if is_z3ds:
-        ext = Path(file_path).suffix.lower()
-        if ext not in spec.input_extensions:
-            raise HTTPException(
-                status_code=400,
-                detail="z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia, .3ds)",
-            )
-
-    # Calculate output path and handle duplicates
-    # For archive files: use output_dir if specified, otherwise save next to archive
-    if output_path is None:
-        effective_output_dir = output_dir or archive_source_dir
-        output_path = _get_output_path(
-            mode, file_path, effective_output_dir,
-        )
-
-        output_exists, is_locked = check_output_conflicts(mode, output_path)
-        if output_exists or is_locked:
-            if request.duplicate_action == DuplicateAction.SKIP:
-                raise HTTPException(
-                    status_code=409, detail="Output file already exists",
-                )
-            if request.duplicate_action == DuplicateAction.OVERWRITE:
-                if is_locked:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Output file is currently being converted",
-                    )
-            elif request.duplicate_action == DuplicateAction.RENAME:
-                if mode == "extractcd":
-                    output_path = get_unique_output_path_for_extractcd(output_path)
-                else:
-                    output_path = get_unique_output_path(output_path)
-
-    if (
-        is_dolphin
-        and request.duplicate_action == DuplicateAction.OVERWRITE
-        and output_path
-        and _is_same_path(output_path, file_path)
-    ):
+    except SkipFile as skip:
+        status_code, detail = _SKIP_HTTP[skip.reason]
+        raise HTTPException(status_code=status_code, detail=detail) from None
+    except DeleteSnapshotError as exc:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Output path matches input; overwriting would delete the source file"
-            ),
-        )
-
-    allow_overwrite = (
-        request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
-    )
-    delete_snapshot = None
-    if request.delete_on_verify:
-        try:
-            delete_snapshot = await run_in_threadpool(
-                build_delete_snapshot, file_path,
-            )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Delete-on-verify blocked: {exc}",
-            ) from None
+            detail=f"Delete-on-verify blocked: {exc.message}",
+        ) from None
 
     # Proactive queue-depth check: reject with 429 before spending work
     # on job construction if the queue is already at capacity.  Parity
@@ -475,14 +605,14 @@ async def create_job(request: JobCreateRequest):
 
     try:
         job = await job_manager.create_job(
-            file_path,
+            plan.file_path,
             request.mode,
-            output_path=output_path,
-            allow_overwrite=allow_overwrite,
-            filename_override=display_filename,
+            output_path=plan.output_path,
+            allow_overwrite=plan.allow_overwrite,
+            filename_override=plan.display_filename,
             compression=compression,
             delete_on_verify=request.delete_on_verify,
-            delete_snapshot=delete_snapshot,
+            delete_snapshot=plan.delete_snapshot,
         )
     except QueueBackpressureError as exc:
         raise HTTPException(status_code=429, detail=exc.detail) from exc
@@ -502,7 +632,6 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     mode = request.mode.value
     spec = registry.spec(mode)
     is_dolphin = spec.tool_id == "dolphin"
-    is_z3ds = spec.tool_id == "z3ds"
     output_dir = normalize_output_dir(request.output_dir)
     if compression and spec.tool_id == "chdman" and spec.kind == ModeKind.EXTRACT:
         raise HTTPException(
@@ -559,182 +688,53 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             detail="Access denied: output directory outside configured volumes",
         )
 
-    def _input_extension(path: str) -> str:
-        if "::" in path:
-            _, internal = path.split("::", 1)
-            return Path(internal).suffix.lower()
-        return Path(path).suffix.lower()
-
-    def _priority(ext: str) -> int:
-        if ext in {".cue", ".gdi"}:
-            return 4
-        if ext == ".iso":
-            return 3
-        if ext == ".bin":
-            return 1
-        return 0
-
     skipped = []
-    candidates = []
+    candidates: list[JobPlan] = []
 
     for file_path in request.file_paths:
-        archive_source_dir = None  # Directory where the archive is located (for output)
-        output_path = None
-        base_output_path = None
-        output_exists = False
-        display_filename = None
-
-        # Handle archive files
-        if "::" in file_path:
-            if not spec.allows_archive_input:
-                skipped.append(file_path)
-                continue
-            archive_path, internal_path = file_path.split("::", 1)
-            archive_source_dir = os.path.dirname(
-                archive_path,
-            )  # Save CHD next to archive
-            display_filename = os.path.basename(internal_path)
-
-            if not os.path.isfile(archive_path):
-                skipped.append(file_path)
-                continue
-
-            # Calculate output path before extraction to avoid unnecessary work
-            effective_output_dir = output_dir or archive_source_dir
-            output_stem = archive_service._output_stem_for_member(internal_path)
-            output_path = _get_output_path(
-                mode, output_stem, effective_output_dir, treat_as_stem=True,
+        try:
+            plan = await plan_job(
+                file_path,
+                spec=spec,
+                mode=mode,
+                output_dir=output_dir,
+                duplicate_action=request.duplicate_action,
+                delete_on_verify=request.delete_on_verify,
             )
-            base_output_path = output_path
-            output_exists, is_locked = check_output_conflicts(mode, output_path)
-
-            if output_exists or is_locked:
-                if request.duplicate_action == DuplicateAction.SKIP:
-                    skipped.append(file_path)
-                    continue
-                if request.duplicate_action == DuplicateAction.OVERWRITE:
-                    if is_locked:
-                        skipped.append(file_path)
-                        continue
-                elif request.duplicate_action == DuplicateAction.RENAME:
-                    if mode == "extractcd":
-                        output_path = get_unique_output_path_for_extractcd(output_path)
-                    else:
-                        output_path = get_unique_output_path(output_path)
-
-        if "::" not in file_path and not os.path.isfile(file_path):
+        except SkipFile:
             skipped.append(file_path)
             continue
+        except DeleteSnapshotError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Delete-on-verify blocked for {file_path}: {exc.message}",
+            ) from None
+        candidates.append(plan)
 
-        if (
-            spec.tool_id == "chdman" and spec.kind in (ModeKind.EXTRACT, ModeKind.COPY)
-        ) and not file_path.lower().endswith(".chd"):
-            skipped.append(file_path)
-            continue
-
-        if spec.kind == ModeKind.CREATE and file_path.lower().endswith(".chd"):
-            skipped.append(file_path)
-            continue
-
-        if is_dolphin:
-            ext = Path(file_path).suffix.lower()
-            if ext not in spec.input_extensions:
-                skipped.append(file_path)
-                continue
-
-        if is_z3ds:
-            ext = Path(file_path).suffix.lower()
-            if ext not in spec.input_extensions:
-                skipped.append(file_path)
-                continue
-
-        # Calculate output path and handle duplicates
-        # For archive files: use output_dir if specified, otherwise save next to archive
-        if output_path is None:
-            effective_output_dir = output_dir or archive_source_dir
-            output_path = _get_output_path(
-                mode, file_path, effective_output_dir,
-            )
-            base_output_path = output_path
-            output_exists, is_locked = check_output_conflicts(mode, output_path)
-
-            if output_exists or is_locked:
-                if request.duplicate_action == DuplicateAction.SKIP:
-                    skipped.append(file_path)
-                    continue
-                if request.duplicate_action == DuplicateAction.OVERWRITE:
-                    if is_locked:
-                        skipped.append(file_path)
-                        continue
-                elif request.duplicate_action == DuplicateAction.RENAME:
-                    if mode == "extractcd":
-                        output_path = get_unique_output_path_for_extractcd(output_path)
-                    else:
-                        output_path = get_unique_output_path(output_path)
-
-        if (
-            is_dolphin
-            and request.duplicate_action == DuplicateAction.OVERWRITE
-            and output_path
-            and _is_same_path(output_path, file_path)
-        ):
-            skipped.append(file_path)
-            continue
-
-        allow_overwrite = (
-            request.duplicate_action == DuplicateAction.OVERWRITE and output_exists
-        )
-        delete_snapshot = None
-        if request.delete_on_verify:
-            try:
-                delete_snapshot = await run_in_threadpool(
-                    build_delete_snapshot, file_path,
-                )
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Delete-on-verify blocked for {file_path}: {exc}",
-                ) from None
-
-        candidates.append(
-            {
-                "file_path": file_path,
-                "output_path": output_path,
-                "base_output_path": base_output_path or output_path,
-                "allow_overwrite": allow_overwrite,
-                "display_filename": display_filename,
-                "priority": _priority(_input_extension(file_path)),
-                "delete_snapshot": delete_snapshot,
-            },
-        )
-
-    selected = {}
+    # Collapse multiple inputs that resolve to the same output (e.g. a .cue and
+    # its .bin) down to the highest-priority one. No single-job analog.
+    selected: dict[str, JobPlan] = {}
     order = []
-    for candidate in candidates:
-        key = candidate["base_output_path"]
+    for plan in candidates:
+        key = plan.base_output_path
         existing = selected.get(key)
         if not existing:
-            selected[key] = candidate
+            selected[key] = plan
             order.append(key)
             continue
-        if candidate["priority"] > existing["priority"]:
-            selected[key] = candidate
-
-    if order:
-        # Job creation will enforce backpressure atomically under lock.
-        # No need for a pre-check here as it would race with the locked check.
-        pass
+        if plan.priority > existing.priority:
+            selected[key] = plan
 
     job_specs = []
     for key in order:
-        candidate = selected[key]
+        plan = selected[key]
         job_specs.append(
             {
-                "file_path": candidate["file_path"],
-                "output_path": candidate["output_path"],
-                "allow_overwrite": candidate["allow_overwrite"],
-                "filename_override": candidate["display_filename"],
-                "delete_snapshot": candidate.get("delete_snapshot"),
+                "file_path": plan.file_path,
+                "output_path": plan.output_path,
+                "allow_overwrite": plan.allow_overwrite,
+                "filename_override": plan.display_filename,
+                "delete_snapshot": plan.delete_snapshot,
             },
         )
 
