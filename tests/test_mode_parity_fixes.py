@@ -513,8 +513,9 @@ async def test_z3ds_delete_on_verify_marks_output_verified(tmp_path: Path, monke
     clear_verified = AsyncMock()
     clear_metadata = AsyncMock()
 
-    monkeypatch.setattr(job_manager_module.z3ds_compress_service, "convert", fake_convert)
-    monkeypatch.setattr(job_manager_module.z3ds_compress_service, "verify", fake_verify)
+    _z3ds_service = job_manager_module.registry.for_mode("z3ds_compress")._service
+    monkeypatch.setattr(_z3ds_service, "convert", fake_convert)
+    monkeypatch.setattr(_z3ds_service, "verify", fake_verify)
     monkeypatch.setattr(job_manager_module.verification_store, "mark_verified", mark_verified)
     monkeypatch.setattr(job_manager_module.verification_store, "clear", clear_verified)
     monkeypatch.setattr(job_manager_module.chd_metadata_store, "clear", clear_metadata)
@@ -585,8 +586,9 @@ async def test_delete_on_verify_rejects_inode_device_fingerprint_mismatch(
     async def fake_verify(path: str):
         return {"valid": True, "message": "File verified successfully"}
 
-    monkeypatch.setattr(job_manager_module.z3ds_compress_service, "convert", fake_convert)
-    monkeypatch.setattr(job_manager_module.z3ds_compress_service, "verify", fake_verify)
+    _z3ds_service = job_manager_module.registry.for_mode("z3ds_compress")._service
+    monkeypatch.setattr(_z3ds_service, "convert", fake_convert)
+    monkeypatch.setattr(_z3ds_service, "verify", fake_verify)
     monkeypatch.setattr(job_manager_module.verification_store, "mark_verified", AsyncMock())
     monkeypatch.setattr(job_manager_module.verification_store, "clear", AsyncMock())
     monkeypatch.setattr(job_manager_module.chd_metadata_store, "clear", AsyncMock())
