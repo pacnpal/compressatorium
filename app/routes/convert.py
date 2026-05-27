@@ -707,6 +707,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         except DeleteSnapshotError as exc:
             raise HTTPException(
                 status_code=400,
+                # nosemgrep: python.django.security.injection.tainted-sql-string.tainted-sql-string
                 detail=f"Delete-on-verify blocked for {file_path}: {exc.message}",
             ) from None
         candidates.append(plan)
