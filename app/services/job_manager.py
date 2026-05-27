@@ -21,11 +21,10 @@ from services.chdman import ConversionCancelled, chdman_service
 from services.concurrency_manager import concurrency_manager
 from services.disc_id import embed_in_chd as disc_id_embed
 from services.disc_id import extract_from_source as disc_id_from_source
-from services.dolphin_tool import dolphin_tool_service
 from services.lock_manager import lock_manager
 from services.tools import registry
 from services.verification_store import verification_store
-from services.z3ds_compress import Z3DS_OUTPUT_FORMATS, z3ds_compress_service
+from services.z3ds_compress import Z3DS_OUTPUT_FORMATS
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
@@ -1461,13 +1460,7 @@ class JobManager:
                     if os.path.isfile(bin_path):
                         os.remove(bin_path)
 
-            _convert_service = (
-                dolphin_tool_service
-                if job.mode.value.startswith("dolphin_")
-                else z3ds_compress_service
-                if job.mode == ConversionMode.Z3DS_COMPRESS
-                else chdman_service
-            )
+            _convert_service = registry.for_mode(job.mode.value)
             async for update in _convert_service.convert(
                 input_path,
                 job.output_path,
@@ -1573,58 +1566,33 @@ class JobManager:
                         raise ConversionCancelled("Conversion cancelled")
 
                     verified = False
-                    if job.mode.value == "z3ds_compress":
-                        job.message = "Verifying output (zstd -t)..."
-                        await self._notify_subscribers(
-                            job_id,
-                            {
-                                "type": "progress",
-                                "job_id": job_id,
-                                "progress": job.progress,
-                                "message": job.message,
-                            },
+                    job.message = (
+                        "Verifying output (zstd -t)..."
+                        if job.mode.value == "z3ds_compress"
+                        else "Verifying output..."
+                    )
+                    await self._notify_subscribers(
+                        job_id,
+                        {
+                            "type": "progress",
+                            "job_id": job_id,
+                            "progress": job.progress,
+                            "message": job.message,
+                        },
+                    )
+
+                    verify_result = await registry.for_mode(job.mode.value).verify(
+                        job.output_path
+                    )
+                    if not verify_result.get("valid"):
+                        raise RuntimeError(
+                            f"Verification failed: {verify_result.get('message')}"
                         )
 
-                        verify_result = await z3ds_compress_service.verify(job.output_path)
-                        if not verify_result.get("valid"):
-                            raise RuntimeError(
-                                f"Verification failed: {verify_result.get('message')}"
-                            )
-
-                        verified = True
-                        await verification_store.mark_verified(
-                            job.output_path, source_path=job.file_path
-                        )
-
-                    else:
-                        job.message = "Verifying output..."
-                        await self._notify_subscribers(
-                            job_id,
-                            {
-                                "type": "progress",
-                                "job_id": job_id,
-                                "progress": job.progress,
-                                "message": job.message,
-                            },
-                        )
-
-                        _verify_service = (
-                            dolphin_tool_service
-                            if job.mode.value.startswith("dolphin_")
-                            else chdman_service
-                        )
-                        verify_result = await _verify_service.verify(
-                            job.output_path
-                        )
-                        if not verify_result.get("valid"):
-                            raise RuntimeError(
-                                f"Verification failed: {verify_result.get('message')}"
-                            )
-
-                        verified = True
-                        await verification_store.mark_verified(
-                            job.output_path, source_path=job.file_path
-                        )
+                    verified = True
+                    await verification_store.mark_verified(
+                        job.output_path, source_path=job.file_path
+                    )
 
                     if cancel_event.is_set():
                         job.message = "Verification complete. Delete skipped (cancelled)."
