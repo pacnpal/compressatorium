@@ -19,9 +19,6 @@ from models import (
     JobStatus,
 )
 from services.archive import archive_service
-from services.chdman import chdman_service
-from services.dolphin_tool import dolphin_tool_service
-from services.z3ds_compress import z3ds_compress_service
 from services.job_manager import QueueBackpressureError, job_manager
 from services.lock_manager import lock_manager
 from services.tools import ModeKind, registry
@@ -89,20 +86,8 @@ def supports_delete_on_verify(mode: str) -> bool:
         return False
 
 
-def _is_dolphin_mode(mode: str) -> bool:
-    return mode.startswith("dolphin_")
-
-
 def _get_output_path(mode, input_path, output_dir, *, treat_as_stem=False):
-    if _is_dolphin_mode(mode):
-        return dolphin_tool_service.get_output_path_for_mode(
-            mode, input_path, output_dir, treat_as_stem=treat_as_stem,
-        )
-    if mode == ConversionMode.Z3DS_COMPRESS.value:
-        return z3ds_compress_service.get_output_path_for_mode(
-            mode, input_path, output_dir, treat_as_stem=treat_as_stem,
-        )
-    return chdman_service.get_output_path_for_mode(
+    return registry.for_mode(mode).output_path(
         mode, input_path, output_dir, treat_as_stem=treat_as_stem,
     )
 

@@ -23,8 +23,9 @@ from services.disc_id import embed_in_chd as disc_id_embed
 from services.disc_id import extract_from_source as disc_id_from_source
 from services.dolphin_tool import dolphin_tool_service
 from services.lock_manager import lock_manager
+from services.tools import registry
 from services.verification_store import verification_store
-from services.z3ds_compress import z3ds_compress_service
+from services.z3ds_compress import Z3DS_OUTPUT_FORMATS, z3ds_compress_service
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
@@ -39,6 +40,13 @@ _EXTERNAL_JOB_MODES = frozenset({
     ConversionMode.METADATA_SCAN,
     ConversionMode.DAT_MATCH,
 })
+
+
+def _paths_collide(path_a: str, path_b: str) -> bool:
+    try:
+        return os.path.realpath(path_a) == os.path.realpath(path_b)
+    except OSError:
+        return False
 
 
 class QueueBackpressureError(RuntimeError):
@@ -137,10 +145,22 @@ class JobManager:
 
         # Determine output path - use explicit path if provided, otherwise calculate
         if output_path is None:
+            output_path = registry.for_mode(mode.value).output_path(
+                mode.value, file_path, output_dir,
+            )
+            # The HTTP routes validate inputs before passing an explicit
+            # output_path; direct service callers reach this fallback, so
+            # re-assert the guards the legacy per-tool fallback enforced.
             if mode == ConversionMode.Z3DS_COMPRESS:
-                output_path = z3ds_compress_service.get_output_path(file_path, output_dir)
-            else:
-                output_path = chdman_service.get_chd_path(file_path, output_dir)
+                ext = Path(file_path).suffix.lower()
+                if ext not in Z3DS_OUTPUT_FORMATS:
+                    raise ValueError(f"Unsupported file extension: {ext}")
+            elif mode.value.startswith("dolphin_") and _paths_collide(
+                output_path, file_path,
+            ):
+                raise ValueError(
+                    "Output path matches input; refusing to overwrite source"
+                )
 
         job = ConversionJob(
             id=job_id,
