@@ -21,13 +21,20 @@ class ToolRegistry:
         self._by_mode: dict[str, ToolPlugin] = {}
 
     def register(self, tool: ToolPlugin) -> None:
-        # Validate before mutating so a duplicate can't leave the registry in
-        # a partially-registered state (future phases iterate registry.all()).
+        # Validate fully before mutating so a bad tool can't leave the registry
+        # in a partially-registered state (future phases iterate registry.all()).
         if tool.id in self._tools:
             raise ValueError(f"duplicate tool id {tool.id}")
+        seen: set[str] = set()
         for m in tool.modes:
-            if m.mode in self._by_mode:
+            if m.tool_id != tool.id:
+                raise ValueError(
+                    f"mode {m.mode} declares tool_id {m.tool_id!r} "
+                    f"but belongs to tool {tool.id!r}"
+                )
+            if m.mode in self._by_mode or m.mode in seen:
                 raise ValueError(f"duplicate mode {m.mode}")
+            seen.add(m.mode)
         self._tools[tool.id] = tool
         for m in tool.modes:
             self._by_mode[m.mode] = tool

@@ -186,6 +186,36 @@ def test_duplicate_tool_id_registration_raises():
         fresh.register(registry.get("chdman"))
 
 
+def _spec(mode: str, tool_id: str = "stub") -> ModeSpec:
+    return ModeSpec(
+        mode=mode,
+        tool_id=tool_id,
+        kind=ModeKind.CREATE,
+        label="Stub",
+        group="create",
+        output_ext=".x",
+        input_extensions=frozenset({".y"}),
+    )
+
+
+def test_duplicate_mode_within_single_tool_raises():
+    class _StubTool:
+        id = "stub"
+        modes = (_spec("foo"), _spec("foo"))
+
+    with pytest.raises(ValueError, match="duplicate mode foo"):
+        ToolRegistry().register(_StubTool())
+
+
+def test_mode_spec_tool_id_must_match_owner():
+    class _StubTool:
+        id = "stub"
+        modes = (_spec("foo", tool_id="other"),)
+
+    with pytest.raises(ValueError, match="tool_id 'other'"):
+        ToolRegistry().register(_StubTool())
+
+
 @pytest.mark.parametrize("tool_id", ["chdman", "dolphin", "z3ds"])
 def test_output_extensions_cover_mode_output_exts(tool_id):
     tool = registry.get(tool_id)
