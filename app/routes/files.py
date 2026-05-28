@@ -145,10 +145,15 @@ async def list_files(
 
                         # Registry-driven convertibility + sibling-output
                         # detection; the legacy booleans below are derived
-                        # from these so they can't drift.
-                        convertible_by, outputs, by_tool = _detect_file_outputs(
-                            item_path, ext,
-                        )
+                        # from these so they can't drift. Archives are never
+                        # directly convertible (only their members are), so
+                        # skip detection for them.
+                        if is_archive:
+                            convertible_by, outputs, by_tool = [], [], {}
+                        else:
+                            convertible_by, outputs, by_tool = _detect_file_outputs(
+                                item_path, ext,
+                            )
                         is_convertible = "chdman" in convertible_by
                         is_dolphin_convertible = "dolphin" in convertible_by
                         is_z3ds_convertible = "z3ds" in convertible_by
@@ -275,9 +280,13 @@ async def search_files(
                             if recursive_scan and not os.path.islink(item_path):
                                 _scan(item_path)
                         elif os.path.isfile(item_path):
-                            convertible_by, outputs, by_tool = _detect_file_outputs(
-                                item_path, ext,
-                            )
+                            is_archive = ext in ARCHIVE_EXTENSIONS
+                            if is_archive:
+                                convertible_by, outputs, by_tool = [], [], {}
+                            else:
+                                convertible_by, outputs, by_tool = _detect_file_outputs(
+                                    item_path, ext,
+                                )
                             if convertible_by:
                                 is_chd_convertible = "chdman" in convertible_by
                                 is_dolphin_convertible = "dolphin" in convertible_by
@@ -325,7 +334,7 @@ async def search_files(
                                         "outputs": outputs,
                                     },
                                 )
-                            elif include_archive_scan and ext in ARCHIVE_EXTENSIONS:
+                            elif include_archive_scan and is_archive:
                                 # List archive contents
                                 archive_result = archive_service.list_archive_contents(
                                     item_path, include_meta=True,
