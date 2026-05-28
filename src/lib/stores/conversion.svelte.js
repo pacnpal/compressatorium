@@ -20,6 +20,16 @@ function defaultModeFor(toolId) {
   return registry.defaultMode(toolId) ?? 'createcd';
 }
 
+// Per-tool default compression seed. chdman accepts a comma-separated codec
+// list (zlib is the historical default); Dolphin RVZ/WIA codecs are a
+// disjoint set (`dolphin-tool -c [none|zstd|bzip|lzma|lzma2]`), so a chdman
+// codec like 'zlib' would be rejected by the dolphin binary if the user
+// submitted a Dolphin job without first opening the codec picker. Seed with
+// a tool-appropriate default so the first submission always works.
+function defaultCompressionFor(toolId) {
+  return toolId === 'dolphin' ? ['zstd'] : ['zlib'];
+}
+
 const INITIAL_TOOL = loadPrimaryTool();
 
 class ConversionStore {
@@ -28,7 +38,7 @@ class ConversionStore {
   // mode (createcd) when the persisted tool is dolphin/z3ds would submit
   // wrong duplicate checks and compression flags before setPrimaryTool runs.
   mode = $state(defaultModeFor(INITIAL_TOOL));
-  compressionSelection = $state(['zlib']);
+  compressionSelection = $state(defaultCompressionFor(INITIAL_TOOL));
   dolphinCompressionLevel = $state('19');
   outputDir = $state('');
   deleteOnVerify = $state(false);
@@ -99,7 +109,7 @@ class ConversionStore {
     // Same default-mode logic as the initial load — chdman keeps createcd
     // as its default, others use their first registered mode.
     this.mode = defaultModeFor(toolId);
-    this.compressionSelection = ['zlib'];
+    this.compressionSelection = defaultCompressionFor(toolId);
   }
 
   setMode(mode) {

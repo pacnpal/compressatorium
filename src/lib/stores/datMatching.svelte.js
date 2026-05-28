@@ -80,18 +80,31 @@ class DATMatchingStore {
   }
 
   async syncMAMERedump(tag = null) {
+    // /api/dat/sync only schedules a background task and returns
+    // immediately. Do NOT clear `syncing` in a finally — the sync is
+    // still running on the backend. The store stays in the syncing
+    // state until pollSyncStatus() observes the backend reporting
+    // syncing=false, or cancelSync() is called explicitly.
     this.syncing = true;
     try {
       return await api.syncMAMERedump(tag);
-    } finally {
+    } catch (e) {
+      // The start request itself failed — there is no background work
+      // to wait for, so clear the flag and re-raise.
       this.syncing = false;
+      throw e;
     }
   }
 
   async pollSyncStatus() {
     try {
       this.syncStatus = await api.getSyncStatus();
-      this.syncing = !!this.syncStatus?.syncing;
+      const stillSyncing = !!this.syncStatus?.syncing;
+      this.syncing = stillSyncing;
+      if (!stillSyncing) {
+        // Sync just finished — refresh hasDats so badges flip on.
+        await this.refreshHasDats();
+      }
       return this.syncStatus;
     } catch (_e) {
       this.syncStatus = null;

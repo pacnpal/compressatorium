@@ -15,7 +15,7 @@ Use it as an operational checklist, not as product documentation.
 
 ### 1. Local Dev (Web UI)
 
-The frontend is a **Svelte 5 + Vite SPA** under `src/` (see README §"Frontend Development"). The backend is FastAPI under `app/`. Build output lands in `static/` and is served by FastAPI via the existing `/static` mount.
+The frontend is a **Svelte 5 + Vite SPA** (single-page application) under `src/` (see README §"Frontend Development"). The backend is FastAPI under `app/`. Build output lands in `static/` and is served by FastAPI via the existing `/static` mount.
 
 - Production-style run (FastAPI serves the prebuilt SPA):
 
@@ -31,7 +31,7 @@ npm install && npm run build      # one-time / when src/ changes
 # Terminal 1 — backend
 ./run_dev.sh                       # uvicorn on :8080
 
-# Terminal 2 — Vite with HMR
+# Terminal 2 — Vite dev server with HMR (hot module replacement)
 npm run dev                        # http://localhost:5173 (proxies /api and /health to :8080)
 ```
 

@@ -737,11 +737,11 @@ npm run lint        # ESLint (JS + .svelte) — flat config in eslint.config.js
 
 ### Architecture at a glance
 
-- `src/App.svelte` — root shell: sidebar + topbar + routed view, error boundary, focus management on route change, skip-to-content link.
-- `src/lib/stores/*.svelte.js` — class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
-- `src/lib/api/` — REST client + auto-reconnecting EventSource (`sse.js`) + POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state; no separate REST round-trip needed.
-- `src/lib/tools/registry.js` — every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, API bindings). Adding a 4th tool: one new entry + the backend plugin.
-- `src/styles/tokens.css` — semantic design tokens keyed by `[data-theme]` (light / dark). No hex colors live outside this file.
+* `src/App.svelte` — root shell: sidebar + topbar + routed view, error boundary, focus management on route change, skip-to-content link.
+* `src/lib/stores/*.svelte.js` — class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
+* `src/lib/api/` — REST client + auto-reconnecting EventSource (`sse.js`) + POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state; no separate REST round-trip needed.
+* `src/lib/tools/registry.js` — every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, API bindings). Adding a 4th tool: one new entry + the backend plugin.
+* `src/styles/tokens.css` — semantic design tokens keyed by `[data-theme]` (light / dark). No hex colors live outside this file.
 
 ### Docker / CI
 
