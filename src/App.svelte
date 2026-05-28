@@ -9,6 +9,8 @@
   import WorkArea from '$lib/components/views/WorkArea.svelte';
   import DATView from '$lib/components/views/DATView.svelte';
   import HelpView from '$lib/components/views/HelpView.svelte';
+  import Notification from '$lib/components/ui/Notification.svelte';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
 
   let mediaQuery = null;
 
@@ -20,6 +22,7 @@
   onMount(() => {
     ui.applyTheme();
     ui.loadVersion();
+    jobs.connect();
     const stopRouter = startRouter();
 
     if (window.matchMedia) {
@@ -29,6 +32,7 @@
 
     return () => {
       stopRouter();
+      jobs.dispose();
       mediaQuery?.removeEventListener('change', onSystemChange);
     };
   });
@@ -50,6 +54,8 @@
       {/if}
     </main>
   </div>
+
+  <Notification />
 </div>
 
 <style>

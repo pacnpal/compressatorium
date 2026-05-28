@@ -30,7 +30,12 @@ export const DOLPHIN_EXTENSIONS = ['.rvz', '.wia', '.gcz', '.wbfs'];
 
 export function isDolphinFile(path) {
   if (!path) return false;
-  const ext = path.split('.').pop();
+  // Isolate the filename first: a directory name with a dot (e.g.
+  // `/games/dir.rvz/file`) would otherwise make split('.').pop() return
+  // `rvz/file` and wrongly classify the wrapping directory as the format.
+  const filename = path.split(/[/\\]/).pop() ?? '';
+  if (!filename.includes('.')) return false;
+  const ext = filename.split('.').pop();
   if (!ext) return false;
   return DOLPHIN_EXTENSIONS.includes(`.${ext.toLowerCase()}`);
 }

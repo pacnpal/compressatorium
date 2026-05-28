@@ -43,7 +43,10 @@ export async function sseFetchPost(url, body, { signal, onEvent, fallbackMessage
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += value;
+      // SSE servers (and Python/FastAPI in particular) commonly emit CRLF
+      // line endings. Boundary detection only works on \n\n, so collapse
+      // CRLF to LF before slicing — otherwise the stream buffers forever.
+      buffer = (buffer + value).replace(/\r\n/g, '\n');
       let boundary;
       while ((boundary = buffer.indexOf('\n\n')) !== -1) {
         const chunk = buffer.slice(0, boundary);

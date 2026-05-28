@@ -119,6 +119,10 @@
     filter: brightness(1.1);
   }
 
+  .loading {
+    cursor: progress;
+    opacity: 0.7;
+  }
   .icon {
     display: inline-flex;
     align-items: center;
