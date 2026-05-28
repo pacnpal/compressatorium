@@ -18,6 +18,12 @@
   import { Toaster, toast } from 'svelte-sonner';
   import { STORAGE_KEYS } from '$lib/util/localStorage.js';
   import BulkVerifyModal from '$lib/components/modals/BulkVerifyModal.svelte';
+  import BulkDeleteModal from '$lib/components/modals/BulkDeleteModal.svelte';
+  import DeleteModal from '$lib/components/modals/DeleteModal.svelte';
+  import RenameModal from '$lib/components/modals/RenameModal.svelte';
+  import CHDInfoModal from '$lib/components/modals/CHDInfoModal.svelte';
+  import CancelAllJobsModal from '$lib/components/modals/CancelAllJobsModal.svelte';
+  import ClearDoneModal from '$lib/components/modals/ClearDoneModal.svelte';
 
   let mainEl;
 
@@ -83,8 +89,14 @@
   position="bottom-right"
 />
 
-<!-- Modal portal — components self-render based on ui store targets. -->
+<!-- Modal portal — each component self-renders based on its ui store target. -->
 <BulkVerifyModal />
+<BulkDeleteModal />
+<DeleteModal />
+<RenameModal />
+<CHDInfoModal />
+<CancelAllJobsModal />
+<ClearDoneModal />
 
 <a class="skip-link" href="#main-content" onclick={handleSkip}>Skip to main content</a>
 

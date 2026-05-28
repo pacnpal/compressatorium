@@ -1,5 +1,20 @@
 # Release Notes
 
+## Unreleased — Confirmation + file modals (P7 part 1)
+
+### ✨ New
+
+- **Modal foundation.** `BaseModal.svelte` wraps bits-ui Dialog with shared chrome (header, title, close, description, footer); `ConfirmModal.svelte` provides the standard confirm/cancel pattern. All future modals slot into these via `{#snippet body()}` / `{#snippet footer()}`.
+- **DeleteModal + BulkDeleteModal.** The Delete action in `RowActionsMenu` now opens a destructive-styled confirm dialog; the "Delete" bulk-action in FileList's selection bar opens the bulk version (preview list capped at 20 rows + tail counter, calls `api.deleteBatch`). Both refresh the file listing on success.
+- **RenameModal.** RowActionsMenu Rename opens a file-name input pre-populated with the current name (Enter submits, Esc cancels, bits-ui Dialog handles focus-trap).
+- **CHDInfoModal.** RowActionsMenu Info opens a dialog that calls `tool.getInfo(path)` via `registry.toolForVerifyPath` — no `if (tool === 'chdman')` chains, works for `.chd` / `.rvz` / `.z3ds` identically. Renders the backend payload as a labelled key/value list with JSON pretty-print for nested objects.
+- **CancelAllJobsModal + ClearDoneModal.** Replace the inline `window.confirm()` calls in JobsPanel. The Cancel-all dialog reports the queued+processing count; the Clear dialog reports the completed+failed+cancelled count. Both bind their busy state to the store flags so the buttons disable mid-action.
+
+### 🔧 Internal
+
+- New `src/lib/components/modals/` (BaseModal, ConfirmModal, BulkVerifyModal, BulkDeleteModal, DeleteModal, RenameModal, CHDInfoModal, CancelAllJobsModal, ClearDoneModal). Each modal mounts via App.svelte and self-renders against a `ui` store target (`ui.deleteTarget`, `ui.bulkDeleteEntries`, `ui.renameTarget`, `ui.chdInfoTarget`, `ui.showCancelAll`, `ui.showClearDone`, `ui.bulkVerifyItems`).
+- `JobsPanel.handleCancelAll` / `handleClearCompleted` now just toggle `ui.show*` flags instead of running their own try/catch — the modal owns the confirmation + success/error toast.
+
 ## Unreleased — Verify flows (P6)
 
 ### ✨ New

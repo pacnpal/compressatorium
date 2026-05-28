@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { ui } from '$lib/stores/ui.svelte.js';
   import { toast } from 'svelte-sonner';
   import JobRow from './JobRow.svelte';
   import Pager from '$lib/components/ui/Pager.svelte';
@@ -31,24 +32,14 @@
     jobs.checkStuck().catch(() => {});
   });
 
-  async function handleCancelAll() {
-    if (!confirm('Cancel all active jobs?')) return;
-    try {
-      const r = await jobs.cancelAll();
-      toast.success(`Cancelled ${r?.cancelled_count ?? 'all'} job(s)`);
-    } catch (e) {
-      toast.error(e?.message ?? 'Failed to cancel all jobs');
-    }
+  function handleCancelAll() {
+    // Delegate to the modal — it owns the confirmation dance + the
+    // toast on success. JobsPanel just opens the dialog.
+    ui.showCancelAll = true;
   }
 
-  async function handleClearCompleted() {
-    if (!confirm('Remove completed/failed/cancelled jobs from the list?')) return;
-    try {
-      const r = await jobs.clearCompleted();
-      toast.success(`Removed ${r?.removed_count ?? 'all'} job(s) from history`);
-    } catch (e) {
-      toast.error(e?.message ?? 'Failed to clear completed jobs');
-    }
+  function handleClearCompleted() {
+    ui.showClearDone = true;
   }
 
   async function handleRecover() {
