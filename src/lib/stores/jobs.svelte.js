@@ -295,6 +295,11 @@ class JobsStore {
     if (this._unsubscribe) return;
     this._unsubscribe = api.subscribeToJobs(({ type, data }) => {
       switch (type) {
+        // Hydration emission from the backend on (re)connection. Same
+        // shape as progress; _applyJob is idempotent so re-running on
+        // reconnect just refreshes the slot.
+        case 'snapshot':
+        // falls through
         case 'progress':
         case 'cancelled':
         case 'error':

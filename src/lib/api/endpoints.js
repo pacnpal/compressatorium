@@ -196,12 +196,17 @@ export const api = {
   /**
    * Subscribe to the global job event stream. Auto-reconnects on error.
    * Returns an unsubscribe function.
+   *
+   * Includes `snapshot` so the one-time hydration emission the backend
+   * sends on connect (and re-sends after each reconnect) flows through
+   * the same handler as live updates. See convert.py:event_generator.
+   *
    * @param {(evt: { type: string, data: any }) => void} onEvent
    */
   subscribeToJobs(onEvent) {
     const conn = sseConnectNamed(
       `${API_BASE}/jobs/events`,
-      ['progress', 'complete', 'error', 'status', 'cancelled'],
+      ['snapshot', 'progress', 'complete', 'error', 'status', 'cancelled'],
       onEvent,
     );
     return () => conn.close();

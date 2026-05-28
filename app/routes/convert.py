@@ -782,10 +782,36 @@ async def job_events():
     async def event_generator():
         # Create a queue to receive all job updates
         queues = {}
+        # One-time snapshot of every known job on (re)connection, so the
+        # client never has to do a separate /api/jobs round-trip to hydrate.
+        # This eliminates the race that existed when a client refreshed the
+        # snapshot before subscribing: a job that transitioned to a terminal
+        # status (complete / error / cancelled) in the gap would never emit
+        # its event over SSE (the subscribe-to-QUEUED/PROCESSING-only block
+        # below would skip it), leaving the client stuck on stale state.
+        #
+        # The snapshot event payload mirrors the live-update shape so the
+        # client can apply both through the same handler; legacy clients
+        # that don't subscribe to "snapshot" events drop them silently (SSE
+        # listener semantics), preserving backwards compatibility.
+        snapshot_sent = False
 
         try:
             while True:
                 try:
+                    if not snapshot_sent:
+                        for job in job_manager.get_all_jobs():
+                            yield {
+                                "event": "snapshot",
+                                "data": json.dumps(
+                                    {
+                                        "type": "snapshot",
+                                        "job": job.model_dump(mode="json"),
+                                    },
+                                ),
+                            }
+                        snapshot_sent = True
+
                     # Subscribe to any new jobs
                     for job in job_manager.get_all_jobs():
                         if job.id not in queues and job.status in (

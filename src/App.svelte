@@ -22,15 +22,11 @@
   onMount(() => {
     ui.applyTheme();
     ui.loadVersion();
-    // Connect SSE BEFORE fetching the snapshot. /api/jobs/events only
-    // subscribes to jobs that are QUEUED or PROCESSING at subscription
-    // time — if we waited for /api/jobs to return first, any job that
-    // transitioned to a terminal status in the gap would never emit its
-    // complete / error / cancelled event and the UI would stay stale.
-    // refresh() uses merge-add semantics (SSE wins, snapshot only fills
-    // gaps) so live SSE state is never overwritten by older snapshot data.
+    // SSE hydrates the full job list via a one-time `snapshot` event
+    // emitted by the backend at connection time (and re-emitted after
+    // each reconnect). No separate /api/jobs round-trip needed; the
+    // refresh() method remains available for explicit manual recovery.
     jobs.connect();
-    jobs.refresh();
     const stopRouter = startRouter();
 
     if (window.matchMedia) {
