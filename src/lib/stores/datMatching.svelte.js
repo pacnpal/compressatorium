@@ -11,6 +11,10 @@ class DATMatchingStore {
   importingDat = $state(false);
   syncing = $state(false);
   syncStatus = $state(null);
+  dats = $state([]);
+  datsLoading = $state(false);
+  datsError = $state(null);
+  stats = $state(null);
 
   matchFor(path) {
     return this.matches.get(path) ?? null;
@@ -19,6 +23,7 @@ class DATMatchingStore {
   async refreshHasDats() {
     try {
       const stats = await api.getDATStats();
+      this.stats = stats;
       // /api/dat/stats returns total_dats (legacy UI checked this exact field);
       // `total` / `imported_count` are not part of the response.
       this.hasDats = (stats?.total_dats ?? 0) > 0;
@@ -26,6 +31,20 @@ class DATMatchingStore {
     } catch (_e) {
       this.hasDats = false;
       return false;
+    }
+  }
+
+  async loadDATs() {
+    this.datsLoading = true;
+    this.datsError = null;
+    try {
+      const data = await api.listDATs();
+      this.dats = Array.isArray(data?.dats) ? data.dats : (Array.isArray(data) ? data : []);
+      await this.refreshHasDats();
+    } catch (e) {
+      this.datsError = e?.message ?? 'Failed to load DATs';
+    } finally {
+      this.datsLoading = false;
     }
   }
 
@@ -62,21 +81,21 @@ class DATMatchingStore {
     return api.startMatchJob(paths);
   }
 
+  async deleteDAT(datId) {
+    const result = await api.deleteDAT(datId);
+    await this.loadDATs();
+    return result;
+  }
+
   async importDAT(file) {
     this.importingDat = true;
     try {
       const result = await api.importDAT(file);
-      await this.refreshHasDats();
+      await this.loadDATs();
       return result;
     } finally {
       this.importingDat = false;
     }
-  }
-
-  async deleteDAT(datId) {
-    const result = await api.deleteDAT(datId);
-    await this.refreshHasDats();
-    return result;
   }
 
   async syncMAMERedump(tag = null) {

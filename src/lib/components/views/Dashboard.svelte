@@ -1,7 +1,9 @@
 <script>
-  import { ui } from '$lib/stores/ui.svelte.js';
-  import EmptyState from '$lib/components/ui/EmptyState.svelte';
-  import Button from '$lib/components/ui/Button.svelte';
+  import QueueSummaryCard from '$lib/components/dashboard/QueueSummaryCard.svelte';
+  import VolumeOverviewCard from '$lib/components/dashboard/VolumeOverviewCard.svelte';
+  import RecentConversionsCard from '$lib/components/dashboard/RecentConversionsCard.svelte';
+  import VerificationStatusCard from '$lib/components/dashboard/VerificationStatusCard.svelte';
+  import QuickToolsCard from '$lib/components/dashboard/QuickToolsCard.svelte';
 </script>
 
 <section class="view" aria-labelledby="dashboard-title">
@@ -10,19 +12,13 @@
     <p class="hint">At-a-glance view of jobs, volumes, and recent activity.</p>
   </header>
 
-  <article class="panel">
-    <EmptyState
-      title="Stat cards coming soon"
-      description="Live queue status, recent conversions, verification rates, and DAT match coverage will surface here. For now, head to the workspace to start converting."
-      glyph="◐"
-    >
-      {#snippet actions()}
-        <Button variant="primary" onclick={() => ui.navigate('workspace', ui.workspaceTool)}>
-          Open workspace
-        </Button>
-      {/snippet}
-    </EmptyState>
-  </article>
+  <div class="grid">
+    <QueueSummaryCard />
+    <VerificationStatusCard />
+    <VolumeOverviewCard />
+    <RecentConversionsCard />
+    <QuickToolsCard />
+  </div>
 </section>
 
 <style>
@@ -34,6 +30,7 @@
     max-width: var(--container-max);
     margin: 0 auto;
     width: 100%;
+    min-width: 0;
   }
   .header h1 {
     margin: 0;
@@ -45,11 +42,10 @@
     color: var(--text-2);
     margin-top: var(--space-1);
   }
-  .panel {
-    background: var(--surface-1);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-lg);
-    padding: var(--space-4);
-    box-shadow: var(--elev-1);
+  .grid {
+    display: grid;
+    gap: var(--space-4);
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    min-width: 0;
   }
 </style>

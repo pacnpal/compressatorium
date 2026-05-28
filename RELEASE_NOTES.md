@@ -1,5 +1,18 @@
 # Release Notes
 
+## Unreleased — DAT view + dashboard cards (P7/P8)
+
+### ✨ New
+
+- **DAT view shipped.** `src/lib/components/views/DATView.svelte` exposes Import DAT (file picker → `api.importDAT`), Sync MAMERedump (with a 2 s poll loop that auto-stops when `syncStatus.syncing` flips false), per-DAT delete, and a stats strip (total DATs / entries / cached matches). The view drives the existing `datMatching` store; the FileList badges that the store already powers light up once imports complete.
+- **Dashboard shipped.** Five cards composed via a generic `StatCard` wrapper: `QueueSummaryCard` (queued / active / done / failed counts + stuck-state badge), `VolumeOverviewCard` (top 4 volumes + file counts), `RecentConversionsCard` (last 5 terminal jobs across any tool), `VerificationStatusCard` (cached verified count + in-flight batch), `QuickToolsCard` (one tile per registered tool, deep-links to `#/workspace/<tool>` — adding a 4th tool surfaces a 4th tile automatically).
+
+### 🔧 Internal
+
+- `datMatching` store gains `dats`, `datsLoading`, `datsError`, `stats` $state fields + `loadDATs()`. The duplicate `importDAT` definition is removed; the kept version refreshes the DATs list (not just hasDats) after import.
+- `StatCard` exposes `title`, `subtitle`, `icon` / `body` / `footer` snippets, and a `--card-accent` CSS variable so each tile can take its own accent color without per-tile style overrides.
+- DAT sync polling lives in a `$effect` keyed off `syncing`: start interval when sync flips on, clear on sync-end (or component unmount).
+
 ## Unreleased — Confirmation + file modals (P7 part 1)
 
 ### ✨ New
