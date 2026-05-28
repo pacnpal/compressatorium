@@ -165,12 +165,29 @@ class JobsStore {
       if (!Array.isArray(data)) return;
       for (const job of data) {
         if (!job?.id) continue;
-        if (this._byId.has(job.id)) {
-          // SSE already delivered (newer) state — leave it alone.
+        const existing = this._byId.get(job.id);
+        if (!existing) {
+          // Unknown to us — definitely add. Most common case for
+          // historical jobs (completed before SSE opened).
+          this.jobs.push(job);
+          this._byId.set(job.id, job);
           continue;
         }
-        this.jobs.push(job);
-        this._byId.set(job.id, job);
+        const existingTerminal = TERMINAL_STATUSES.has(existing.status);
+        const incomingTerminal = TERMINAL_STATUSES.has(job.status);
+        if (existingTerminal && !incomingTerminal) {
+          // Terminal is final on the backend; an active snapshot for
+          // an already-terminal local job is stale. Keep ours.
+          continue;
+        }
+        if (!existingTerminal && incomingTerminal) {
+          // Heal: SSE must have missed the terminal event (network
+          // blip, tab backgrounded, etc.). The snapshot is the
+          // source of truth for terminal jobs.
+          this._applyJob(job);
+        }
+        // Both terminal or both active: leave SSE-derived state
+        // alone; live updates are at least as fresh as the snapshot.
       }
     } catch (e) {
       console.error('Job snapshot hydration failed:', e);

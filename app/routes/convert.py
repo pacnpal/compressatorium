@@ -787,8 +787,15 @@ async def job_events():
         # This eliminates the race that existed when a client refreshed the
         # snapshot before subscribing: a job that transitioned to a terminal
         # status (complete / error / cancelled) in the gap would never emit
-        # its event over SSE (the subscribe-to-QUEUED/PROCESSING-only block
-        # below would skip it), leaving the client stuck on stale state.
+        # its event over SSE, leaving the client stuck on stale state.
+        #
+        # Order matters: subscribe to active jobs BEFORE emitting the
+        # snapshot. If a queued/processing job reaches a terminal status
+        # during snapshot emission, the subscriber queue will hold the
+        # terminal event for delivery on the next loop iteration. If we
+        # emitted the snapshot first and a job completed in between, the
+        # subscription pass would skip it (status no longer matches the
+        # QUEUED/PROCESSING filter), and the terminal event would be lost.
         #
         # The snapshot event payload mirrors the live-update shape so the
         # client can apply both through the same handler; legacy clients
@@ -799,6 +806,15 @@ async def job_events():
         try:
             while True:
                 try:
+                    # Subscribe to any new jobs FIRST.
+                    for job in job_manager.get_all_jobs():
+                        if job.id not in queues and job.status in (
+                            JobStatus.QUEUED,
+                            JobStatus.PROCESSING,
+                        ):
+                            queues[job.id] = job_manager.subscribe(job.id)
+
+                    # Then emit the one-time snapshot of every known job.
                     if not snapshot_sent:
                         for job in job_manager.get_all_jobs():
                             yield {
@@ -811,14 +827,6 @@ async def job_events():
                                 ),
                             }
                         snapshot_sent = True
-
-                    # Subscribe to any new jobs
-                    for job in job_manager.get_all_jobs():
-                        if job.id not in queues and job.status in (
-                            JobStatus.QUEUED,
-                            JobStatus.PROCESSING,
-                        ):
-                            queues[job.id] = job_manager.subscribe(job.id)
 
                     # Check all queues for updates
                     for job_id, queue in list(queues.items()):

@@ -52,8 +52,32 @@ class FileBrowserStore {
     });
   }
 
+  /**
+   * Entries to render. When in search mode, flattens the
+   * /api/files/search response (files + archive members) into a single
+   * list and applies the client-side `searchQuery` filter (the backend
+   * search endpoint takes no query — the query is purely client-side,
+   * matching the legacy UI's behavior). Otherwise returns the current
+   * directory's `entries`.
+   */
+  get sourceEntries() {
+    if (!this.searchMode) return this.entries;
+    if (!this.searchResults) return [];
+    const flat = [
+      ...(this.searchResults.files ?? []),
+      ...(this.searchResults.archives ?? []),
+    ];
+    const q = (this.searchQuery ?? '').trim().toLowerCase();
+    if (!q) return flat;
+    return flat.filter((e) => {
+      const name = (e.name ?? '').toLowerCase();
+      const path = (e.path ?? '').toLowerCase();
+      return name.includes(q) || path.includes(q);
+    });
+  }
+
   get sortedEntries() {
-    const list = this.entries.slice();
+    const list = this.sourceEntries.slice();
     const order = this.sortOrder === 'asc' ? 1 : -1;
     list.sort((a, b) => {
       // Directories first
