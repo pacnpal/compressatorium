@@ -20,6 +20,11 @@
     if (!target?.path) return;
     busy = true;
     const deletedPath = target.path;
+    // Snapshot the display name before clearing ui.deleteTarget below
+    // — that assignment invalidates the $derived `target`, so reading
+    // `target.name` afterwards would throw and get caught as a delete
+    // failure even though the backend has already removed the file.
+    const deletedName = target.name ?? deletedPath;
     try {
       await api.deleteFile(deletedPath);
       // Drop the now-deleted path from the selection set so the
@@ -37,7 +42,7 @@
       // failure doesn't surface as "Failed to delete" after the delete
       // already happened server-side.
       ui.deleteTarget = null;
-      toast.success(`Deleted: ${target.name ?? deletedPath}`);
+      toast.success(`Deleted: ${deletedName}`);
       try {
         await fileBrowser.refresh({ force: true });
       } catch (_e) {
