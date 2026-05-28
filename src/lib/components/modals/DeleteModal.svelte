@@ -1,6 +1,7 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
+  import { verification } from '$lib/stores/verification.svelte.js';
   import { api } from '$lib/api/endpoints.js';
   import { toast } from 'svelte-sonner';
   import ConfirmModal from './ConfirmModal.svelte';
@@ -26,6 +27,12 @@
       // entry around that the next batch submit would forward to the
       // backend. Same idea as clearing after a bulk delete.
       fileBrowser.selectedFiles.delete(deletedPath);
+      // Invalidate the verification record too. The backend prunes
+      // it server-side; mirror that so a new file later created at
+      // the same path (e.g. a re-converted output) doesn't inherit a
+      // stale OK badge from the deleted predecessor during this
+      // session.
+      verification.statuses.delete(deletedPath);
       // Close + report success immediately so a downstream refresh
       // failure doesn't surface as "Failed to delete" after the delete
       // already happened server-side.

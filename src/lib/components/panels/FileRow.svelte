@@ -150,7 +150,7 @@
     {/if}
   </td>
   <td class="actions">
-    {#if isFile}
+    {#if !isDirectory}
       <RowActionsMenu {entry} />
     {/if}
   </td>

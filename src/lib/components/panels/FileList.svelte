@@ -45,11 +45,25 @@
 
   // Selection bulk actions: "Verify selected" surfaces only when at
   // least one selected file has a verify-extension match in the
-  // registry — sources (.iso, .cue) can't be verified, so we hide the
-  // button entirely rather than ship a noop.
+  // registry AND lives on the real filesystem. Archive-member paths
+  // (`archive.zip::disc.iso`) are rejected by the verify-batch
+  // endpoint (treat_archives=false + os.path.isfile on the literal
+  // string), so a selection of only archive members would surface the
+  // button and then report zero verifications.
   const selectedHasVerifiable = $derived.by(() => {
     const sel = Array.from(fileBrowser.selectedFiles.values());
-    return sel.some((e) => e?.path && registry.toolForVerifyPath(e.path));
+    return sel.some(
+      (e) => e?.path && !e.path.includes('::') && registry.toolForVerifyPath(e.path),
+    );
+  });
+
+  // Bulk Delete has the same archive-member problem: /files/delete-batch
+  // validates each path with treat_archives=false + os.path.exists, so
+  // forwarding `archive::member` paths always fails. Hide the button
+  // when the selection is purely archive members.
+  const selectedHasFilesystemPath = $derived.by(() => {
+    const sel = Array.from(fileBrowser.selectedFiles.values());
+    return sel.some((e) => e?.path && !e.path.includes('::'));
   });
 
   let searchInput = $state('');
@@ -70,11 +84,18 @@
   });
 
   function openBulkVerify() {
-    ui.bulkVerifyItems = Array.from(fileBrowser.selectedFiles.values());
+    // Forward only filesystem paths; the verify-batch endpoint
+    // rejects `archive::member` paths (treat_archives=false +
+    // os.path.isfile on the literal string).
+    ui.bulkVerifyItems = Array.from(fileBrowser.selectedFiles.values())
+      .filter((e) => e?.path && !e.path.includes('::'));
   }
 
   function openBulkDelete() {
-    ui.bulkDeleteEntries = Array.from(fileBrowser.selectedFiles.values());
+    // Same filter as Verify — /files/delete-batch fails on archive
+    // members for the same treat_archives=false reason.
+    ui.bulkDeleteEntries = Array.from(fileBrowser.selectedFiles.values())
+      .filter((e) => e?.path && !e.path.includes('::'));
   }
 
   function sortIcon(field) {
@@ -157,9 +178,11 @@
           <ShieldCheck size={12} aria-hidden="true" /> Verify
         </button>
       {/if}
-      <button type="button" class="bulk-action danger" onclick={openBulkDelete}>
-        <Trash2 size={12} aria-hidden="true" /> Delete
-      </button>
+      {#if selectedHasFilesystemPath}
+        <button type="button" class="bulk-action danger" onclick={openBulkDelete}>
+          <Trash2 size={12} aria-hidden="true" /> Delete
+        </button>
+      {/if}
       <button type="button" class="link" onclick={() => fileBrowser.clearSelection()}>
         Clear
       </button>

@@ -63,11 +63,12 @@
     />
   </div>
 
-  {#if stuck?.stuck}
+  {#if stuck?.is_stuck}
+    {@const stuckCount = (stuck.queued_count ?? 0) + (stuck.processing_count ?? 0)}
     <div class="stuck" role="alert">
       <TriangleAlert size={14} aria-hidden="true" />
       <div class="stuck-body">
-        <strong>{stuck.count} job{stuck.count === 1 ? '' : 's'} look stuck.</strong>
+        <strong>{stuckCount} job{stuckCount === 1 ? '' : 's'} look stuck.</strong>
         {stuck.message ?? 'No worker activity detected for this job.'}
       </div>
       <button

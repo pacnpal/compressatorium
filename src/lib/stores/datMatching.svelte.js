@@ -159,8 +159,15 @@ class DATMatchingStore {
       }
       return this.syncStatus;
     } catch (_e) {
+      // Transient poll failures (brief backend restart, network blip)
+      // should not tear down the polling loop while we believe a sync
+      // is active. The legacy self-scheduling poller stayed armed
+      // across single failures; mirror that by leaving `syncing` set
+      // so the next poll attempt still fires. Only the cold-start
+      // case where we never observed a sync (wasSyncing=false) flips
+      // the flag off here.
       this.syncStatus = null;
-      this.syncing = false;
+      if (!wasSyncing) this.syncing = false;
       return null;
     }
   }

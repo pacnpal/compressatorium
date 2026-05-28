@@ -16,7 +16,14 @@ const CHDMAN_SOURCE_EXTS = ['.gdi', '.iso', '.cue', '.bin'];
 const CHDMAN_VERIFY_EXTS = ['.chd'];
 
 const DOLPHIN_SOURCE_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
-const DOLPHIN_VERIFY_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
+// `.iso` is intentionally NOT in DOLPHIN_VERIFY_EXTS even though
+// dolphin-tool can verify GC/Wii ISOs: the same extension covers
+// CHDMAN CD/DVD sources, and `toolForVerifyPath()` returns the first
+// matching tool. Treating every `.iso` as Dolphin-verifiable would
+// route Info/Verify on a normal CD ISO into /api/dolphin-verify and
+// fail. Users who want to verify a GC/Wii ISO can do it indirectly by
+// compressing to .rvz first, then verifying the .rvz.
+const DOLPHIN_VERIFY_EXTS = ['.gcz', '.wia', '.rvz', '.wbfs'];
 
 const Z3DS_SOURCE_EXTS = ['.cci', '.cia', '.3ds'];
 const Z3DS_VERIFY_EXTS = ['.zcci', '.zcia', '.z3ds'];

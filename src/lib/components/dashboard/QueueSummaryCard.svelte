@@ -28,8 +28,9 @@
         <span class="lbl">Failed</span>
       </div>
     </div>
-    {#if jobs.stuckState?.stuck}
-      <Badge tone="warning">{jobs.stuckState.count} stuck</Badge>
+    {#if jobs.stuckState?.is_stuck}
+      {@const n = (jobs.stuckState.queued_count ?? 0) + (jobs.stuckState.processing_count ?? 0)}
+      <Badge tone="warning">{n} stuck</Badge>
     {/if}
   {/snippet}
   {#snippet footer()}

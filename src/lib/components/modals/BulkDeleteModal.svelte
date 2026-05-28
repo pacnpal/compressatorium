@@ -1,6 +1,7 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
+  import { verification } from '$lib/stores/verification.svelte.js';
   import { api } from '$lib/api/endpoints.js';
   import { toast } from 'svelte-sonner';
   import BaseModal from './BaseModal.svelte';
@@ -30,6 +31,16 @@
         ? result.success
         : paths.length - (result?.failed ?? 0);
       const failed = result?.failed ?? 0;
+      // Invalidate verification records for paths the backend reported
+      // as successfully removed. If `results` is missing (older shape),
+      // fall back to invalidating every requested path. The backend
+      // also prunes server-side; this mirror prevents a new file later
+      // created at the same path during this session from inheriting a
+      // stale OK badge.
+      const removed = Array.isArray(result?.results)
+        ? result.results.filter((r) => r?.success).map((r) => r.path)
+        : paths;
+      for (const p of removed) verification.statuses.delete(p);
       // Close + drop selection + report immediately so a downstream
       // refresh failure doesn't surface as "Failed to delete" after
       // the backend already removed the files.
