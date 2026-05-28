@@ -3,6 +3,12 @@
   import { registry } from '$lib/tools/registry.js';
   import SidebarItem from './SidebarItem.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
+  import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
+  import Boxes from '@lucide/svelte/icons/boxes';
+  import Database from '@lucide/svelte/icons/database';
+  import HelpCircle from '@lucide/svelte/icons/circle-help';
+  import ChevronLeft from '@lucide/svelte/icons/chevron-left';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
   const collapsed = $derived(ui.sidebarCollapsed);
   const view = $derived(ui.activeView);
@@ -17,14 +23,7 @@
 
 <aside class="sidebar" class:collapsed aria-label="Primary navigation">
   <div class="brand">
-    <img
-      class="brand-logo"
-      src="/static/images/logo.png"
-      alt=""
-      aria-hidden="true"
-      width="32"
-      height="32"
-    />
+    <img class="brand-logo" src="/static/images/logo.png" alt="" aria-hidden="true" width="32" height="32" />
     {#if !collapsed}<span class="brand-text">Compressatorium</span>{/if}
     <span class="brand-spacer"></span>
     <IconButton
@@ -34,43 +33,23 @@
       active={collapsed}
       onclick={() => ui.toggleSidebar()}
     >
-      {collapsed ? '›' : '‹'}
+      {#if collapsed}<ChevronRight size={14} />{:else}<ChevronLeft size={14} />{/if}
     </IconButton>
   </div>
 
   <nav class="section">
     {#if !collapsed}<h2 class="section-title">Navigate</h2>{/if}
-    <SidebarItem
-      label="Workspace"
-      {collapsed}
-      active={view === 'workspace'}
-      onclick={() => go('workspace', tool)}
-    >
-      {#snippet icon()}<span aria-hidden="true">▦</span>{/snippet}
+    <SidebarItem label="Workspace" {collapsed} active={view === 'workspace'} onclick={() => go('workspace', tool)}>
+      {#snippet icon()}<Boxes size={16} />{/snippet}
     </SidebarItem>
-    <SidebarItem
-      label="Dashboard"
-      {collapsed}
-      active={view === 'dashboard'}
-      onclick={() => go('dashboard')}
-    >
-      {#snippet icon()}<span aria-hidden="true">◉</span>{/snippet}
+    <SidebarItem label="Dashboard" {collapsed} active={view === 'dashboard'} onclick={() => go('dashboard')}>
+      {#snippet icon()}<LayoutDashboard size={16} />{/snippet}
     </SidebarItem>
-    <SidebarItem
-      label="DAT Library"
-      {collapsed}
-      active={view === 'dat'}
-      onclick={() => go('dat')}
-    >
-      {#snippet icon()}<span aria-hidden="true">≣</span>{/snippet}
+    <SidebarItem label="DAT Library" {collapsed} active={view === 'dat'} onclick={() => go('dat')}>
+      {#snippet icon()}<Database size={16} />{/snippet}
     </SidebarItem>
-    <SidebarItem
-      label="Help"
-      {collapsed}
-      active={view === 'help'}
-      onclick={() => go('help')}
-    >
-      {#snippet icon()}<span aria-hidden="true">?</span>{/snippet}
+    <SidebarItem label="Help" {collapsed} active={view === 'help'} onclick={() => go('help')}>
+      {#snippet icon()}<HelpCircle size={16} />{/snippet}
     </SidebarItem>
   </nav>
 
@@ -133,21 +112,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .brand-spacer {
-    flex: 1;
-  }
-  .collapsed .brand {
-    justify-content: center;
-    padding: var(--space-1);
-  }
-  .collapsed .brand-spacer {
-    display: none;
-  }
-  .section {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
+  .brand-spacer { flex: 1; }
+  .collapsed .brand { justify-content: center; padding: var(--space-1); }
+  .collapsed .brand-spacer { display: none; }
+  .section { display: flex; flex-direction: column; gap: 2px; }
   .section-title {
     margin: var(--space-2) var(--space-3) var(--space-1);
     font-size: var(--text-xs);
@@ -162,7 +130,5 @@
     letter-spacing: 0.02em;
     line-height: 1;
   }
-  .spacer {
-    flex: 1;
-  }
+  .spacer { flex: 1; }
 </style>

@@ -17,5 +17,9 @@
     "svelte": "^5.0.0",
     "svelte-eslint-parser": "^1.0.0",
     "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "@lucide/svelte": "^1.17.0",
+    "bits-ui": "^2.18.1"
   }
 }

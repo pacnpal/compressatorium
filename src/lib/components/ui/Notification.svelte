@@ -1,6 +1,7 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
   import IconButton from './IconButton.svelte';
+  import X from '@lucide/svelte/icons/x';
 
   const note = $derived(ui.notification);
 </script>
@@ -9,7 +10,7 @@
   <output class="toast tone-{note.kind}" aria-live="polite">
     <span class="msg">{note.message}</span>
     <IconButton label="Dismiss" size="sm" onclick={() => ui.dismissNotification()}>
-      ×
+      <X size={14} />
     </IconButton>
   </output>
 {/if}
@@ -33,24 +34,9 @@
     box-shadow: var(--elev-2);
     font-size: var(--text-sm);
   }
-  .tone-success {
-    border-color: var(--success);
-    background: var(--success-muted);
-  }
-  .tone-warning {
-    border-color: var(--warning);
-    background: var(--warning-muted);
-  }
-  .tone-error {
-    border-color: var(--error);
-    background: var(--error-muted);
-  }
-  .tone-info {
-    border-color: var(--info);
-    background: var(--info-muted);
-  }
-  .msg {
-    flex: 1;
-    color: inherit;
-  }
+  .tone-success { border-color: var(--success); background: var(--success-muted); }
+  .tone-warning { border-color: var(--warning); background: var(--warning-muted); }
+  .tone-error { border-color: var(--error); background: var(--error-muted); }
+  .tone-info { border-color: var(--info); background: var(--info-muted); }
+  .msg { flex: 1; color: inherit; }
 </style>
