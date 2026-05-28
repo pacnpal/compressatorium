@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
-from models import DolphinDiscInfo
+from models import DolphinDiscInfo, OutputStatus
 from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
+    DOLPHIN_OUTPUT_FORMATS,
     dolphin_tool_service,
 )
+from services.lock_manager import lock_manager
 
 from .base import BaseTool
 from .spec import ModeKind, ModeSpec
@@ -20,6 +23,12 @@ _MODES = {
     "dolphin_gcz": ("Dolphin GCZ", ".gcz", ModeKind.COMPRESS, False, False),
     "dolphin_iso": ("Dolphin ISO", ".iso", ModeKind.EXTRACT, False, False),
 }
+
+# Ordered, de-duplicated output extensions; iteration order decides which
+# sibling wins when several candidates exist.
+_DOLPHIN_OUTPUT_EXTENSIONS = tuple(
+    dict.fromkeys(ext for _, ext in DOLPHIN_OUTPUT_FORMATS.values()),
+)
 
 
 def _build_modes() -> list[ModeSpec]:
@@ -51,6 +60,39 @@ class DolphinTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = dolphin_tool_service
+
+    def detect_output(self, input_path: str) -> OutputStatus | None:
+        source = Path(input_path)
+        source_ext = source.suffix.lower()
+        if source_ext not in self.input_extensions:
+            return None
+
+        candidate_paths: list[str] = []
+        if source_ext in _DOLPHIN_OUTPUT_EXTENSIONS and source_ext != ".iso":
+            candidate_paths.append(str(source))
+        for output_ext in _DOLPHIN_OUTPUT_EXTENSIONS:
+            if output_ext == source_ext:
+                continue
+            candidate_paths.append(str(source.with_suffix(output_ext)))
+
+        converting_path: str | None = None
+        for candidate_path in candidate_paths:
+            file_exists, is_converting = lock_manager.check_file_status(candidate_path)
+            if file_exists:
+                return OutputStatus(
+                    tool_id=self.id,
+                    exists=True,
+                    ready=not is_converting,
+                    path=candidate_path,
+                )
+            if is_converting and converting_path is None:
+                converting_path = candidate_path
+
+        if converting_path:
+            return OutputStatus(
+                tool_id=self.id, exists=False, ready=False, path=converting_path,
+            )
+        return None
 
     def output_path(
         self,

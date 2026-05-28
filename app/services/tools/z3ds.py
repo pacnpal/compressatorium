@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
 
-from models import Z3DSInfo
+from models import OutputStatus, Z3DSInfo
+from services.lock_manager import lock_manager
 from services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
     Z3DS_OUTPUT_FORMATS,
@@ -44,6 +46,22 @@ class Z3dsTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = z3ds_compress_service
+
+    def detect_output(self, input_path: str) -> OutputStatus | None:
+        source = Path(input_path)
+        expected_ext = Z3DS_OUTPUT_FORMATS.get(source.suffix.lower())
+        if not expected_ext:
+            return None
+        candidate = str(source.with_suffix(expected_ext))
+        file_exists, is_converting = lock_manager.check_file_status(candidate)
+        if not (file_exists or is_converting):
+            return None
+        return OutputStatus(
+            tool_id=self.id,
+            exists=file_exists,
+            ready=file_exists and not is_converting,
+            path=candidate,
+        )
 
     def output_path(
         self,

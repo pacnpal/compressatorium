@@ -39,6 +39,14 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class OutputStatus(BaseModel):
+    """A sibling output a tool could produce for a given input file."""
+    tool_id: str
+    exists: bool          # finished output file present on disk
+    ready: bool           # present and not mid-conversion
+    path: str | None = None
+
+
 class FileEntry(BaseModel):
     name: str
     path: str
@@ -60,6 +68,8 @@ class FileEntry(BaseModel):
     archive_has_chd: int | None = None
     archive_truncated: bool | None = None
     media_type: str | None = None  # "dvd", "cd", or None - for CHD files
+    convertible_by: list[str] = []   # tool ids whose input_extensions accept this file
+    outputs: list[OutputStatus] = []  # detected sibling outputs, one per producing tool
 
 
 class DirectoryListing(BaseModel):

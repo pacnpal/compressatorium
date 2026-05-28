@@ -14,6 +14,8 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from models import OutputStatus
+
 from .spec import ModeSpec
 
 
@@ -39,6 +41,13 @@ class ToolPlugin(Protocol):
         treat_as_stem: bool = False,
     ) -> str:
         """Resolve the output path for a conversion."""
+
+    def detect_output(self, input_path: str) -> OutputStatus | None:
+        """Detect an existing sibling output this tool could produce.
+
+        Returns ``None`` when the tool cannot produce an output for this
+        input or no output is present (neither finished nor mid-conversion).
+        """
 
     def convert(
         self,
@@ -95,6 +104,9 @@ class BaseTool:
             if m.mode == mode:
                 return m
         raise KeyError(mode)
+
+    def detect_output(self, input_path: str) -> OutputStatus | None:
+        return None
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,

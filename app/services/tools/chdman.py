@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
-from models import CHDInfo
+from models import CHDInfo, OutputStatus
 from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
+from services.lock_manager import lock_manager
 
 from .base import BaseTool
 from .spec import ModeKind, ModeSpec
@@ -96,6 +98,20 @@ class ChdmanTool(BaseTool):
     @property
     def input_extensions(self) -> frozenset[str]:
         return frozenset(CHDMAN_CONVERTIBLE_EXTENSIONS)
+
+    def detect_output(self, input_path: str) -> OutputStatus | None:
+        if Path(input_path).suffix.lower() not in self.input_extensions:
+            return None
+        candidate = str(Path(input_path).with_suffix(".chd"))
+        file_exists, is_locked = lock_manager.check_file_status(candidate)
+        if not (file_exists or is_locked):
+            return None
+        return OutputStatus(
+            tool_id=self.id,
+            exists=file_exists,
+            ready=file_exists and not is_locked,
+            path=candidate,
+        )
 
     def output_path(
         self,
