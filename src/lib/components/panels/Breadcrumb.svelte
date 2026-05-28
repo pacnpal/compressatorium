@@ -5,15 +5,27 @@
   import Archive from '@lucide/svelte/icons/archive';
 
   const volume = $derived(fileBrowser.selectedVolume);
-  const segments = $derived(fileBrowser.breadcrumbSegments);
+  const currentPath = $derived(fileBrowser.currentPath);
   const archivePath = $derived(fileBrowser.currentArchivePath);
 
-  // Trim segments that duplicate the volume root, so we don't render
-  // /games/games/My Folder when the volume mount is /games.
+  // Build crumbs from the path relative to the volume root, not by
+  // filtering the absolute path's segments. Nested mounts like
+  // `/data/games` would otherwise render `volume → data → games → …`
+  // and clicking `/data` would navigate outside the configured volume
+  // (the file API rejects it). Walking the relative tail under the
+  // root keeps every crumb inside the volume.
   const trimmed = $derived.by(() => {
-    if (!volume) return segments;
-    const root = volume.path.replace(/\/$/, '');
-    return segments.filter((s) => s.path !== root);
+    if (!volume?.path || !currentPath) return [];
+    const root = volume.path.replace(/\/+$/, '');
+    if (!currentPath.startsWith(root)) return [];
+    const tail = currentPath.slice(root.length).replace(/^\/+/, '');
+    if (!tail) return [];
+    const parts = tail.split('/').filter(Boolean);
+    let acc = root;
+    return parts.map((name) => {
+      acc += `/${name}`;
+      return { name, path: acc };
+    });
   });
 
   function archiveName(p) {

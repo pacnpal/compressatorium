@@ -13,9 +13,17 @@
   import Loader from '@lucide/svelte/icons/loader-circle';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
-  const selectedFiles = $derived(Array.from(fileBrowser.selectedFiles.values()));
-  const selectedPaths = $derived(selectedFiles.map((f) => f.path));
-  const selectedCount = $derived(selectedPaths.length);
+  // The full selection (drives the selection-count display) and the
+  // subset that the active conversion mode would actually accept. The
+  // two sets diverge when the user has e.g. verified `.chd` files
+  // selected — those rows are valid Verify / Delete targets, but
+  // CHDMAN createcd would reject them as conversion inputs. We only
+  // submit `convertibleSelection`.
+  const selectedCount = $derived(fileBrowser.selectedFiles.size);
+  const convertibleFiles = $derived(fileBrowser.convertibleSelection);
+  const selectedPaths = $derived(convertibleFiles.map((f) => f.path));
+  const convertibleCount = $derived(selectedPaths.length);
+  const incompatibleCount = $derived(selectedCount - convertibleCount);
   const tool = $derived(conversion.currentTool);
   const supportsDeleteOnVerify = $derived(conversion.supportsDeleteOnVerify);
   const converting = $derived(conversion.converting);
@@ -31,7 +39,7 @@
   const blockedByDeleteOnVerify = $derived(unverifiedSources.length > 0);
 
   const submitDisabled = $derived(
-    selectedCount === 0 || converting || blockedByDeleteOnVerify,
+    convertibleCount === 0 || converting || blockedByDeleteOnVerify,
   );
 
   // Duplicate preflight: open the modal when the backend reports any
@@ -128,12 +136,25 @@
       </div>
     {/if}
 
+    {#if incompatibleCount > 0}
+      <div class="warning info" role="status">
+        <TriangleAlert size={14} aria-hidden="true" />
+        <div>
+          {incompatibleCount} selected file{incompatibleCount === 1 ? '' : 's'} {incompatibleCount === 1 ? 'is' : 'are'} not valid for this mode and will be skipped.
+        </div>
+      </div>
+    {/if}
+
     <div class="actions">
       <span class="status" aria-live="polite">
         {#if selectedCount === 0}
           Select files to enable conversion.
+        {:else if convertibleCount === 0}
+          No selected files match this mode.
+        {:else if incompatibleCount > 0}
+          {convertibleCount} of {selectedCount} file{selectedCount === 1 ? '' : 's'} ready.
         {:else}
-          {selectedCount} file{selectedCount === 1 ? '' : 's'} ready.
+          {convertibleCount} file{convertibleCount === 1 ? '' : 's'} ready.
         {/if}
       </span>
       <Button variant="primary" disabled={submitDisabled} onclick={handleSubmit}>
@@ -213,6 +234,7 @@
     align-items: flex-start;
   }
   .warning strong { font-weight: var(--weight-semibold); }
+  .warning.info { background: var(--info-muted); color: var(--info); }
 
   .actions {
     display: flex;

@@ -49,6 +49,19 @@
         const newIsChd = newPath.toLowerCase().endsWith('.chd');
         if (oldIsChd && newIsChd) verification.statuses.add(newPath);
       }
+      // Re-key the selection if the renamed file was selected.
+      // Otherwise the selection-count + ConvertPanel would keep
+      // pointing at the now-nonexistent old path and the next batch
+      // submission would skip/fail the stale input.
+      if (newPath && fileBrowser.selectedFiles.has(oldPath)) {
+        const existing = fileBrowser.selectedFiles.get(oldPath);
+        fileBrowser.selectedFiles.delete(oldPath);
+        fileBrowser.selectedFiles.set(newPath, {
+          ...(existing ?? {}),
+          path: newPath,
+          name: trimmed,
+        });
+      }
       ui.renameTarget = null;
       toast.success(`Renamed to ${trimmed}`);
       // Refresh is a best-effort follow-up. A refresh failure here

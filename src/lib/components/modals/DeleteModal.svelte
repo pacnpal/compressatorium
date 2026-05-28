@@ -18,13 +18,19 @@
   async function handleConfirm() {
     if (!target?.path) return;
     busy = true;
+    const deletedPath = target.path;
     try {
-      await api.deleteFile(target.path);
+      await api.deleteFile(deletedPath);
+      // Drop the now-deleted path from the selection set so the
+      // selection bar / conversion panel doesn't keep an invisible
+      // entry around that the next batch submit would forward to the
+      // backend. Same idea as clearing after a bulk delete.
+      fileBrowser.selectedFiles.delete(deletedPath);
       // Close + report success immediately so a downstream refresh
       // failure doesn't surface as "Failed to delete" after the delete
       // already happened server-side.
       ui.deleteTarget = null;
-      toast.success(`Deleted: ${target.name ?? target.path}`);
+      toast.success(`Deleted: ${target.name ?? deletedPath}`);
       try {
         await fileBrowser.refresh({ force: true });
       } catch (_e) {

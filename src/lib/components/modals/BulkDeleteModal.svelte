@@ -22,17 +22,23 @@
     busy = true;
     try {
       const result = await api.deleteBatch(paths);
-      const deleted = result?.deleted ?? paths.length;
+      // Backend (app/routes/files.py:delete_files_batch) returns
+      // { total, success, failed, results }. `deleted` doesn't exist,
+      // so falling back to paths.length on a partial-success would
+      // wrongly toast the request count as successes.
+      const success = typeof result?.success === 'number'
+        ? result.success
+        : paths.length - (result?.failed ?? 0);
       const failed = result?.failed ?? 0;
-      // Close + report success immediately so a downstream refresh
-      // failure doesn't surface as "Failed to delete" after the
-      // backend already removed the files.
+      // Close + drop selection + report immediately so a downstream
+      // refresh failure doesn't surface as "Failed to delete" after
+      // the backend already removed the files.
       ui.bulkDeleteEntries = null;
       fileBrowser.clearSelection();
       if (failed > 0) {
-        toast.warning(`Deleted ${deleted}; ${failed} failed`);
+        toast.warning(`Deleted ${success}; ${failed} failed`);
       } else {
-        toast.success(`Deleted ${deleted} file${deleted === 1 ? '' : 's'}`);
+        toast.success(`Deleted ${success} file${success === 1 ? '' : 's'}`);
       }
       try {
         await fileBrowser.refresh({ force: true });

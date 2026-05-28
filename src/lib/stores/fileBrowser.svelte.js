@@ -324,14 +324,33 @@ class FileBrowserStore {
 
   // ─── Selection ────────────────────────────────────────────────────────
   /**
-   * Predicate that decides whether an entry can be added to the
-   * selection. Filters directories, archive containers, and any file
-   * the current conversion mode wouldn't accept (e.g. selecting `.rvz`
-   * while in CHDMAN `createcd` would queue jobs the worker rejects).
+   * Predicate for whether a row is checkable at all — directories and
+   * archive containers are out (the backend rejects archive paths as
+   * conversion inputs; directories aren't files). Conversion-mode
+   * eligibility is NOT enforced here because the same selection set
+   * also drives bulk Verify and bulk Delete; gating it at toggle time
+   * would hide checkboxes on rows the user might want to verify or
+   * delete (e.g. a verified `.chd` while in CHDMAN createcd). The
+   * convert path filters its inputs separately via
+   * `conversion.allowsInput()`.
    */
   _isSelectable(entry) {
-    if (!entry || entry.type === 'directory' || entry.type === 'archive') return false;
-    return conversion.allowsInput(entry.path);
+    if (!entry) return false;
+    return entry.type !== 'directory' && entry.type !== 'archive';
+  }
+
+  /**
+   * The subset of the current selection that the active conversion
+   * mode would accept as input. ConvertPanel filters through this
+   * before calling `conversion.submit()` so the worker never sees
+   * paths it would reject.
+   */
+  get convertibleSelection() {
+    const out = [];
+    for (const entry of this.selectedFiles.values()) {
+      if (conversion.allowsInput(entry?.path)) out.push(entry);
+    }
+    return out;
   }
 
   toggleSelect(entry, { shift = false } = {}) {
@@ -375,19 +394,6 @@ class FileBrowserStore {
   clearSelection() {
     this.selectedFiles.clear();
     this.lastSelectedIndex = -1;
-  }
-
-  /**
-   * Drop any selected entries the active conversion mode no longer
-   * accepts. Called from App.svelte after `conversion.mode` changes
-   * so a previous CHDMAN selection doesn't tag along into Dolphin /
-   * 3DS mode and queue jobs the worker would reject. Pure no-op when
-   * everything is still valid.
-   */
-  pruneIncompatibleSelections() {
-    for (const [path, entry] of this.selectedFiles) {
-      if (!this._isSelectable(entry)) this.selectedFiles.delete(path);
-    }
   }
 
   // ─── Sorting / paging / filter ────────────────────────────────────────

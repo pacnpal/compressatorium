@@ -101,6 +101,12 @@ class DATMatchingStore {
     this.importingDat = true;
     try {
       const result = await api.importDAT(file);
+      // The backend's _import_dat_sync wipes the DATMatch cache because
+      // newly-imported hashes may flip match results for files the
+      // user already has. Mirror that on the client so stale badges
+      // don't survive until the next visit — hydrate() only adds rows,
+      // it never removes absent ones.
+      this.matches.clear();
       await this.loadDATs();
       return result;
     } finally {

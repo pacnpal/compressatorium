@@ -45,15 +45,20 @@
     conversion.setPrimaryTool(ui.workspaceTool);
   });
 
-  // When the active mode changes (tool switch, mode-picker change),
-  // drop any currently-selected files the new mode wouldn't accept —
-  // otherwise a leftover .iso selection follows a switch into Dolphin
-  // mode and queues jobs the worker rejects. Subscribing to
-  // conversion.mode keeps fileBrowser unaware of mode lifecycle while
-  // still pruning at the right moment.
+  // Refresh the file listing when terminal job events arrive — newly
+  // written outputs need to appear, delete-on-verify removals need to
+  // disappear, sibling badges (verified / output-ready) need to flip.
+  // Watching the sum of terminal counts gives one tick per new finish
+  // without imposing per-event coupling between the stores. The
+  // refresh path already self-throttles via auto-refresh and gates on
+  // jobs.hasActive, so this is safe to call freely.
+  let _lastTerminal = $state(0);
   $effect(() => {
-    conversion.mode;
-    fileBrowser.pruneIncompatibleSelections();
+    const total = jobs.completedCount + jobs.failedCount + jobs.cancelledCount;
+    if (total > _lastTerminal) {
+      _lastTerminal = total;
+      fileBrowser.refresh().catch(() => {});
+    }
   });
 
   function handleSkip(e) {
