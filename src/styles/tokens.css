@@ -1,3 +1,8 @@
+/* Design tokens. mode-watcher applies `.dark` to <html> when the resolved
+ * mode is dark; we put the light theme on `:root` (default) and override
+ * for dark via `:root.dark`. The mode-watcher FOUC-prevention inline
+ * script in index.html sets this class synchronously before first paint. */
+
 :root {
   /* Spacing scale (4px base) */
   --space-0: 0;
@@ -56,9 +61,8 @@
   --z-modal-backdrop: 50;
   --z-modal: 51;
   --z-notification: 60;
-}
 
-:root[data-theme='light'] {
+  /* ─── Light theme (default) ─────────────────────────────────────── */
   --surface-1: #ffffff;
   --surface-2: #f6f7f9;
   --surface-3: #eceef2;
@@ -103,7 +107,8 @@
   --focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.4);
 }
 
-:root[data-theme='dark'] {
+/* ─── Dark theme (mode-watcher applies .dark) ───────────────────────── */
+:root.dark {
   --surface-1: #0b1220;
   --surface-2: #131c2e;
   --surface-3: #1f2a40;

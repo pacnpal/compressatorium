@@ -1,5 +1,28 @@
 # Release Notes
 
+## Unreleased — File browser + library adoptions (Lucide, Bits UI, svelte-sonner, mode-watcher)
+
+### ✨ New
+
+- **P4 file browser shipped.** `VolumeList` / `Breadcrumb` / `FileList` / `FileRow` / `ConvertPanel` / `JobsPanel` components under `src/lib/components/panels/`, all driven by the existing `fileBrowser` store. Sort, filter (extension list derived from `registry.allFilterableExts()`), paginate, shift-click range select, click-to-navigate folders, click-to-enter archives — works end-to-end. ConvertPanel + JobsPanel are placeholders for P5.
+- **Lucide Svelte icons** replace every Unicode glyph placeholder. ThemeToggle finally has unambiguous Sun / Moon / Monitor icons; FileRow uses Disc / Disc3 / Gamepad2 / Archive / Folder; etc.
+- **Bits UI** added as a dependency (no components in use yet — reserved for P5 DropdownMenu/ContextMenu row actions and P7 modal Dialog).
+- **svelte-sonner** replaces the hand-rolled `Notification.svelte`. Call `toast.success/error/info/warning(...)` from any store; the `<Toaster />` lives in `App.svelte`. Brings rich color, swipe-to-dismiss, keyboard support, multi-toast queueing for free.
+- **mode-watcher** replaces the hand-rolled theme state in `ui.svelte.js`. Cross-tab sync, system-preference tracking, `color-scheme` style management, and the dark/light class on `<html>` all delegated. The inline FOUC-prevention script in `index.html` uses the same storage key (`theme-preference`) for parity with the legacy frontend.
+
+### 🔧 Internal
+
+- `src/styles/tokens.css` selectors migrated from `[data-theme="light"|"dark"]` to `:root` (light defaults) + `:root.dark` (mode-watcher's class convention).
+- `ui.svelte.js` deletes ~70 lines: `theme` / `systemIsDark` / `resolvedTheme` / `setTheme` / `cycleTheme` / `applyTheme` / `notification` / `notify` / `dismissNotification`. `reportConnection` rewritten to use `toast.warning` (sticky) + `toast.dismiss(id)` + `toast.success` for the SSE reconnect flow.
+- `Notification.svelte` deleted.
+- `registry.allSourceExts()`, `registry.allVerifyExts()`, `registry.allFilterableExts()` added so the file-list filter dropdown is now extensible by registry edit alone.
+- `ConvertPanel.svelte` + `JobsPanel.svelte` extracted from `WorkArea.svelte` so P5 can fill them in without touching the layout.
+
+### 📚 Documentation
+
+- `README.md` — Frontend Development section lists the adopted runtime libraries.
+- `AGENTS.md` — explicit "don't reinvent these" list with import patterns for the four libraries.
+
 ## Unreleased — Svelte 5 frontend rebuild
 
 ### ✨ New

@@ -2,11 +2,11 @@
 // delete-on-verify, duplicate-check / delete-plan results. Drives the
 // ConversionConfig panel and the submission path into JobsStore.
 
+import { toast } from 'svelte-sonner';
 import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
 import { STORAGE_KEYS, readString, writeString } from '$lib/util/localStorage.js';
 import { jobs } from './jobs.svelte.js';
-import { ui } from './ui.svelte.js';
 
 function loadPrimaryTool() {
   const raw = readString(STORAGE_KEYS.PRIMARY_TOOL, 'chdman') ?? 'chdman';
@@ -146,7 +146,7 @@ class ConversionStore {
       );
       return this.duplicateCheck;
     } catch (e) {
-      ui.notify(e?.message ?? 'Failed to check duplicates', 'error');
+      toast.error(e?.message ?? 'Failed to check duplicates');
       this.duplicateCheck = null;
       throw e;
     }
@@ -162,7 +162,7 @@ class ConversionStore {
       this.deletePlan = await api.getDeletePlan(filePaths, this.mode);
       return this.deletePlan;
     } catch (e) {
-      ui.notify(e?.message ?? 'Failed to build delete plan', 'error');
+      toast.error(e?.message ?? 'Failed to build delete plan');
       this.deletePlan = null;
       throw e;
     }
@@ -187,10 +187,10 @@ class ConversionStore {
         // for extract/raw modes).
         deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
       });
-      ui.notify(`Queued ${filePaths.length} job(s)`, 'success');
+      toast.success(`Queued ${filePaths.length} job(s)`);
       return result;
     } catch (e) {
-      ui.notify(e?.message ?? 'Failed to create jobs', 'error');
+      toast.error(e?.message ?? 'Failed to create jobs');
       throw e;
     } finally {
       this.converting = false;

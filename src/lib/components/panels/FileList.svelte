@@ -1,6 +1,7 @@
 <script>
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { registry } from '$lib/tools/registry.js';
   import FileRow from './FileRow.svelte';
   import Breadcrumb from './Breadcrumb.svelte';
   import Pager from '$lib/components/ui/Pager.svelte';
@@ -31,6 +32,11 @@
   const archiveMode = $derived(!!fileBrowser.currentArchivePath);
   const autoRefresh = $derived(fileBrowser.autoRefresh);
   const jobsActive = $derived(jobs.hasActive);
+
+  // Extension filter options come from the registry — every tool's
+  // source + verify extensions, deduped, in declaration order. Adding
+  // a new tool surfaces its inputs/outputs in this dropdown automatically.
+  const filterableExts = $derived(registry.allFilterableExts());
 
   let searchInput = $state('');
 
@@ -85,17 +91,9 @@
           onchange={(e) => fileBrowser.setFilter(e.currentTarget.value || null)}
         >
           <option value="">All files</option>
-          <option value=".chd">.chd</option>
-          <option value=".iso">.iso</option>
-          <option value=".cue">.cue</option>
-          <option value=".bin">.bin</option>
-          <option value=".gdi">.gdi</option>
-          <option value=".rvz">.rvz</option>
-          <option value=".wia">.wia</option>
-          <option value=".gcz">.gcz</option>
-          <option value=".3ds">.3ds</option>
-          <option value=".cia">.cia</option>
-          <option value=".cci">.cci</option>
+          {#each filterableExts as ext (ext)}
+            <option value={ext}>{ext}</option>
+          {/each}
         </select>
       </label>
       <IconButton

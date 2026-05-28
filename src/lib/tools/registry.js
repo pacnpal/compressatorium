@@ -271,4 +271,52 @@ export const registry = {
   defaultMode: (toolId) => byId.get(toolId)?.defaultMode
     ?? byId.get(toolId)?.modes[0]?.mode
     ?? null,
+
+  /**
+   * Distinct source extensions across all registered tools, in
+   * declaration order. Used by FileList's filter dropdown so adding a
+   * new tool surfaces its inputs automatically — no hardcoded list.
+   */
+  allSourceExts: () => {
+    const seen = new Set();
+    const out = [];
+    for (const tool of TOOLS) {
+      for (const ext of tool.sourceExts) {
+        if (!seen.has(ext)) { seen.add(ext); out.push(ext); }
+      }
+    }
+    return out;
+  },
+
+  /** Distinct verify (output-class) extensions across all tools. */
+  allVerifyExts: () => {
+    const seen = new Set();
+    const out = [];
+    for (const tool of TOOLS) {
+      for (const ext of tool.verifyExts) {
+        if (!seen.has(ext)) { seen.add(ext); out.push(ext); }
+      }
+    }
+    return out;
+  },
+
+  /**
+   * Union of source + verify extensions — every extension the user
+   * might want to filter by in a directory listing. Adding a tool
+   * automatically surfaces its inputs and outputs in the filter
+   * dropdown; no UI edits required.
+   */
+  allFilterableExts: () => {
+    const seen = new Set();
+    const out = [];
+    for (const tool of TOOLS) {
+      for (const ext of tool.sourceExts) {
+        if (!seen.has(ext)) { seen.add(ext); out.push(ext); }
+      }
+      for (const ext of tool.verifyExts) {
+        if (!seen.has(ext)) { seen.add(ext); out.push(ext); }
+      }
+    }
+    return out;
+  },
 };

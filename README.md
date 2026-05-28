@@ -737,11 +737,18 @@ npm run lint        # ESLint (JS + .svelte) — flat config in eslint.config.js
 
 ### Architecture at a glance
 
-* `src/App.svelte` — root shell: sidebar + topbar + routed view, error boundary, focus management on route change, skip-to-content link.
+* `src/App.svelte` — root shell: sidebar + topbar + routed view, error boundary, focus management on route change, skip-to-content link, mounts `<ModeWatcher />` (theme) and `<Toaster />` (notifications).
 * `src/lib/stores/*.svelte.js` — class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
 * `src/lib/api/` — REST client + auto-reconnecting EventSource (`sse.js`) + POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state; no separate REST round-trip needed.
-* `src/lib/tools/registry.js` — every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, API bindings). Adding a 4th tool: one new entry + the backend plugin.
-* `src/styles/tokens.css` — semantic design tokens keyed by `[data-theme]` (light / dark). No hex colors live outside this file.
+* `src/lib/tools/registry.js` — every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, API bindings). Adding a 4th tool: one new entry + the backend plugin. Helpers like `registry.allFilterableExts()` keep UI surfaces (file-list filter dropdown, etc.) automatically extended.
+* `src/styles/tokens.css` — semantic design tokens keyed by `:root` (light defaults) and `:root.dark` (dark overrides). No hex colors live outside this file.
+
+### Runtime dependencies
+
+* [`@lucide/svelte`](https://lucide.dev) — official Lucide icon library for Svelte 5 runes, tree-shakeable per icon.
+* [`bits-ui`](https://bits-ui.com) — headless accessibility primitives (Dialog, DropdownMenu, ContextMenu, Tooltip, etc.). Used incrementally as panels need them; per-component import keeps bundle costs minimal.
+* [`svelte-sonner`](https://svelte-sonner.vercel.app) — toast notifications. Call `toast.success(...)` / `toast.error(...)` / `toast.promise(...)` from anywhere; the `<Toaster />` in `App.svelte` is the surface.
+* [`mode-watcher`](https://mode-watcher.sveco.dev) — light/dark/system mode management with localStorage persistence, system-preference tracking, and cross-tab sync. Applies `.dark` class to `<html>`; a matching inline script in `index.html` prevents FOUC on first paint.
 
 ### Docker / CI
 

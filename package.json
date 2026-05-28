@@ -20,6 +20,8 @@
   },
   "dependencies": {
     "@lucide/svelte": "^1.17.0",
-    "bits-ui": "^2.18.1"
+    "bits-ui": "^2.18.1",
+    "mode-watcher": "^1.1.0",
+    "svelte-sonner": "^1.1.1"
   }
 }

@@ -17,6 +17,13 @@ Use it as an operational checklist, not as product documentation.
 
 The frontend is a Svelte 5 + Vite single-page application (SPA) under `src/` (see README §"Frontend Development"). The backend is FastAPI under `app/`. Build output lands in `static/` and is served by FastAPI via the existing `/static` mount.
 
+**Adopted runtime libraries** (don't reinvent these):
+
+- Icons: `@lucide/svelte` — `import Sun from '@lucide/svelte/icons/sun'`, use as `<Sun size={16} />`.
+- Toasts: `svelte-sonner` — `import { toast } from 'svelte-sonner'`, then `toast.success(msg)` / `toast.error(msg)` / `toast.promise(p, {...})` from any store or component.
+- Theme (light/dark/system): `mode-watcher` — `import { setMode, userPrefersMode, mode } from 'mode-watcher'`. Do NOT roll your own theme state in `ui.svelte.js`.
+- Headless accessibility primitives: `bits-ui` — pull Dialog, DropdownMenu, ContextMenu, Tooltip from `bits-ui` rather than building modal/menu/tooltip components from scratch.
+
 - Production-style run (FastAPI serves the prebuilt SPA):
 
 ```bash

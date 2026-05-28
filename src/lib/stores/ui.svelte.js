@@ -1,31 +1,28 @@
-// Global UI state: active view, sidebar/drawer, theme, modal targets,
-// app version, and a tiny notification surface. Owns all DOM-level theme
-// side effects via an effect set up in App.svelte's onMount.
+// Global UI state: active view, sidebar/drawer, modal targets, app version.
+//
+// Theme management lives in mode-watcher (./App.svelte mounts the
+// <ModeWatcher /> component); ThemeToggle reads userPrefersMode / mode
+// directly from mode-watcher rather than going through this store.
+//
+// Toast notifications live in svelte-sonner; callers `import { toast } from
+// 'svelte-sonner'` directly. The one piece this store still owns is the
+// SSE connection-state toast (reportConnection) because it needs
+// debouncing + sticky-toast-with-id tracking that's awkward to inline.
 
-import { STORAGE_KEYS, readBool, readString, writeBool, writeString } from '$lib/util/localStorage.js';
+import { toast } from 'svelte-sonner';
+import { STORAGE_KEYS, readBool, writeBool, readString, writeString } from '$lib/util/localStorage.js';
 import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
 
 const VIEWS = Object.freeze(['dashboard', 'workspace', 'dat', 'help']);
-const THEMES = Object.freeze(['light', 'dark', 'system']);
 // Tool ids come from the registry — single source of truth, no
 // hardcoded set to keep in sync when a 4th tool is added.
 const VALID_TOOLS = registry.ids();
 const DEFAULT_VIEW = 'workspace';
 
-function loadTheme() {
-  const raw = readString(STORAGE_KEYS.THEME, 'system');
-  return THEMES.includes(raw) ? raw : 'system';
-}
-
 function loadPrimaryTool() {
   const raw = readString(STORAGE_KEYS.PRIMARY_TOOL, 'chdman');
   return VALID_TOOLS.has(raw) ? raw : 'chdman';
-}
-
-function systemPrefersDark() {
-  if (typeof window === 'undefined' || !window.matchMedia) return false;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
 class UIStore {
@@ -36,10 +33,6 @@ class UIStore {
   // Layout
   sidebarCollapsed = $state(readBool(STORAGE_KEYS.SIDEBAR_COLLAPSED, false));
   mobileDrawerOpen = $state(false);
-
-  // Theme
-  theme = $state(loadTheme());
-  systemIsDark = $state(systemPrefersDark());
 
   // Metadata from /api/version
   appVersion = $state(null);
@@ -57,42 +50,13 @@ class UIStore {
   showClearDone = $state(false);
   showHelp = $state(false);
 
-  // Transient notifications
-  notification = $state(null);
-
-  // Connection status (used by SSE → notification wiring)
-  connectionStatus = $state('connecting');  // 'connecting' | 'open' | 'reconnecting'
-
   // Focus signal — bumped on view change so App.svelte can move focus to
   // the main landmark without screen readers losing context.
   focusBump = $state(0);
 
-  _notifyTimer = null;
+  // SSE connection-state tracking. Internal — only reportConnection() touches.
+  _connectionToastId = null;
   _disconnectTimer = null;
-  _disconnectAnnounced = false;
-
-  get resolvedTheme() {
-    return this.theme === 'system' ? (this.systemIsDark ? 'dark' : 'light') : this.theme;
-  }
-
-  setTheme(t) {
-    if (!THEMES.includes(t)) return;
-    this.theme = t;
-    writeString(STORAGE_KEYS.THEME, t);
-    this.applyTheme();
-  }
-
-  cycleTheme() {
-    const order = ['light', 'dark', 'system'];
-    const next = order[(order.indexOf(this.theme) + 1) % order.length];
-    this.setTheme(next);
-  }
-
-  applyTheme() {
-    if (typeof document !== 'undefined') {
-      document.documentElement.dataset.theme = this.resolvedTheme;
-    }
-  }
 
   toggleSidebar() {
     this.sidebarCollapsed = !this.sidebarCollapsed;
@@ -153,50 +117,31 @@ class UIStore {
     }
   }
 
-  notify(message, kind = 'info', ttl = 4000) {
-    this.notification = { message, kind, id: Date.now() };
-    if (this._notifyTimer) clearTimeout(this._notifyTimer);
-    if (ttl > 0) {
-      this._notifyTimer = setTimeout(() => {
-        this.notification = null;
-        this._notifyTimer = null;
-      }, ttl);
-    }
-  }
-
-  dismissNotification() {
-    if (this._notifyTimer) {
-      clearTimeout(this._notifyTimer);
-      this._notifyTimer = null;
-    }
-    this.notification = null;
-  }
-
   /**
    * Called by the jobs SSE wrapper on connection state changes.
-   * Surfaces brief reconnection notices and clears stale errors on
-   * recovery. Brief drops (< 1.5s) are not announced to avoid
-   * spamming the toast on momentary network blips.
+   * Brief drops (<1.5s) are NOT announced so we don't spam the toast on
+   * momentary blips. On longer drops we open a sticky warning toast,
+   * remember its id, and dismiss + surface a brief success toast on
+   * recovery.
    */
   reportConnection(state) {
-    this.connectionStatus = state;
     if (state === 'open') {
       if (this._disconnectTimer) {
         clearTimeout(this._disconnectTimer);
         this._disconnectTimer = null;
       }
-      if (this._disconnectAnnounced) {
-        this._disconnectAnnounced = false;
-        this.notify('Reconnected to backend', 'success', 2500);
+      if (this._connectionToastId != null) {
+        toast.dismiss(this._connectionToastId);
+        this._connectionToastId = null;
+        toast.success('Reconnected to backend', { duration: 2500 });
       }
     } else if (state === 'reconnecting') {
-      // Debounce so flaps don't spam.
-      if (this._disconnectAnnounced || this._disconnectTimer) return;
+      if (this._connectionToastId != null || this._disconnectTimer) return;
       this._disconnectTimer = setTimeout(() => {
         this._disconnectTimer = null;
-        this._disconnectAnnounced = true;
-        // ttl 0 = sticky until we receive an 'open' state.
-        this.notify('Lost connection — retrying…', 'warning', 0);
+        this._connectionToastId = toast.warning('Lost connection — retrying…', {
+          duration: Number.POSITIVE_INFINITY,
+        });
       }, 1500);
     }
   }
