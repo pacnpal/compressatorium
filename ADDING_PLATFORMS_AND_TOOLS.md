@@ -28,10 +28,10 @@ A conversion request flows through these layers. Adding a tool/platform means
 touching the same layers in the same order:
 
 ```
-            ┌─────────────────────────── Web UI (static/js) ──────────────────────────┐
-            │  app.js: tool selector, MODE_GROUPS, filters, info modal, verify routing │
-            │  api.js: HTTP/SSE client methods                                          │
-            └───────────────────────────────────┬───────────────────────────────────────┘
+            ┌─────────────────── Web UI (Svelte 5 + Vite, under src/) ───────────────┐
+            │  src/lib/tools/registry.js: one TOOLS entry per tool — drives all UI   │
+            │  src/lib/api/endpoints.js:  HTTP / SSE / batch-verify client methods   │
+            └───────────────────────────────────┬───────────────────────────────────┘
                                                  │  POST /api/jobs   (mode=...)
             ┌────────────────────────────────────▼──────────────────────────────────────┐
             │  Routes (app/routes)                                                        │
@@ -162,14 +162,13 @@ detail for the non-obvious rows is in §8–§14.
 | 16 | `app/services/dat_*.py` / `app/routes/dat.py` | Touch only if the platform participates in DAT (MAMERedump) hash-matching. | Rare |
 | 17 | `migrations/versions/*.py` | New Alembic migration **only** if you add DB-persisted columns/tables (use `scripts/new_migration.sh`). The verification/metadata stores are keyed by path and need no migration for a new tool. | If schema changes |
 
-### 3.3 Frontend (no build step — edit JS directly)
+### 3.3 Frontend (Svelte 5 + Vite — one new entry in the registry)
 
 | # | File | What you do | When |
 |---|------|-------------|------|
-| 18 | `static/js/api.js` | `get<Tool>Info`, `verify<Tool>`, `verifyBatch<Tool>` client methods. | New tool |
-| 19 | `static/js/app.js` | Primary-tool option (label/hint/filters), `MODE_GROUPS` entry, `getModeTerm`, product-path helper + extension consts, `FileList` selectability + badges, `CHDInfoModal` routing, verify-batch routing, isoHandling kind ordering. | New mode and/or tool |
-| 20 | `static/css/style.css` | Add styles only if you introduce new badge/status classes. | If new UI classes |
-| 21 | `static/index.html` | Usually untouched (single mount point). | Rarely |
+| 18 | `src/lib/api/endpoints.js` | `get<Tool>Info`, `verify<Tool>`, `verifyBatch<Tool>` client methods alongside the existing ones. | New tool |
+| 19 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array (id, label, hint, verifyPrefix, sourceExts, verifyExts, modeGroups, groups, defaultMode, glyph, accent, modes, getInfo/verify/verifyBatch/productPath). Everything else — sidebar, workspace, badges, modals, verify dispatch, SSE URL building — looks up this registry. | New mode and/or tool |
+| 20 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. | If new visual identity |
 
 ### 3.4 Tests
 
@@ -259,24 +258,27 @@ the prefix-based helpers cover you:
 
 If your mode breaks a prefix assumption, add an explicit branch.
 
-### 4.4 Surface it in the UI — `static/js/app.js`
+### 4.4 Surface it in the UI — `src/lib/tools/registry.js`
 
-Add an option to the relevant `MODE_GROUPS` entry (`app.js:155`):
+Append one `ModeEntry` to the chdman descriptor's `modes` array (the
+group's human label is already declared via `groups.create: 'Create'`):
 
 ```js
-{
-    id: 'create',
-    label: 'Create CHD',
-    options: [
-        { value: 'createcd', label: 'Create CD CHD (Dreamcast, PS1, Sega CD)' },
-        { value: 'createcd_audio', label: 'Create CD CHD (Audio-CD platform)' }, // NEW
-        ...
-    ]
-},
+// src/lib/tools/registry.js — inside the chdman TOOLS entry
+modes: [
+  // …existing entries…
+  { mode: 'createcd_audio', kind: 'create', label: 'Create CD CHD (Audio)',
+    group: 'create',
+    outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
+    supportsCompression: true, supportsCompressionLevel: false,
+    supportsDeleteOnVerify: true, allowsArchiveInput: true },
+],
 ```
 
-Because it reuses the `chdman` tool and `.chd` output, the file badges,
-filters, info modal, and verify path all already work. Done.
+Because it reuses the chdman tool and `.chd` output, file badges, the
+conversion config panel, the info modal, and the verify path all already
+work. The new mode appears wherever `registry.modesByGroup('chdman')`
+or `registry.specFor('createcd_audio')` is consulted. Done.
 
 ### 4.5 Test
 
@@ -601,50 +603,91 @@ Mirror the z3ds endpoints (`info.py:338-663`, `:1506`). Add:
 No new router registration is needed — `info.router` is already mounted under
 `/api` in `app/main.py:285`.
 
-### 5.9 Frontend — `static/js/api.js`
+### 5.9 Frontend — `src/lib/api/endpoints.js`
 
 Add client methods next to the z3ds ones:
 
-- `getNszipInfo(path)` — like `getZ3DSInfo` (`api.js:233`).
-- `verifyNszip(path, {onProgress})` — SSE, like `verify3DS` (`api.js:344`).
-- `verifyBatchNszip(paths, {...})` — like `verifyBatchZ3DS` (`api.js:645`).
+- `getNszipInfo(path)` — like `getZ3DSInfo`.
+- `verifyNszip(path, {onProgress})` — single-file SSE, like `verify3DS`.
+  Routes through `verifyEventSource` from `sse.js`.
+- `verifyBatchNszip(paths, {onProgress, onFileComplete, signal})` — like
+  `verifyBatchZ3DS`. Routes through `runBatchVerify` + `sseFetchPost`
+  (POST-body SSE) under the hood.
 
-`createJob` / `createBatchJobs` (`api.js:63`, `:82`) are generic over `mode`,
-so no change there — the UI just passes `mode: 'nszip_compress'`.
+`createJob` / `createBatchJobs` are generic over `mode`, so no change there
+— the registry's submit path just passes `mode: 'nszip_compress'`. The
+verify URL is **derived automatically** from `verifyPrefix: 'nszip'` in
+the registry descriptor; no edits to any URL map.
 
-### 5.10 Frontend — `static/js/app.js`
+### 5.10 Frontend — `src/lib/tools/registry.js`
 
-The UI has a **primary-tool selector** (`'chdman' | 'dolphin' | 'z3ds'`) plus
-a per-tool default mode. To add `nszip`:
+The frontend is a **Svelte 5 + Vite SPA** under `src/` and is driven by a
+single declarative tool registry (`src/lib/tools/registry.js`). The registry
+is the only place that knows tool identity — there are no `if (tool === ...)`
+branches anywhere downstream. Sidebar, workspace, file badges, conversion
+config, info modal, verify dispatch, and SSE URL building all look up the
+registry. Adding `nszip` to the frontend is **one new entry** appended to
+the `TOOLS` array:
 
-1. **Tool label** — `getPrimaryToolLabel` (`app.js:97`): add
-   `if (toolSelection === 'nszip') return 'Switch';`.
-2. **Tool hint** — `getPrimaryToolHint` (`app.js:139`): add a description line.
-3. **Filters** — `getFilterOptions` (`app.js:104`): add an `nszip` branch with
-   `{ value: '.nsp,.xci', label: 'Switch dumps' }`.
-4. **Mode group** — `MODE_GROUPS` (`app.js:155`): add
-   `{ id: 'nszip', label: 'Nintendo Switch', options: [{ value: 'nszip_compress', label: 'Compress to NSZ/XCZ' }] }`.
-5. **Mode terminology** — `getModeTerm` (`app.js:73`): add an `nszip` branch
-   for product/verification labels.
-6. **Output-path helper** — add a `getNszProductPath(path)` like
-   `get3dsProductPath` (`app.js:48`) and the source/verify extension consts
-   like `Z3DS_SOURCE_EXTENSIONS` (`app.js:25`).
-7. **Selectability + badges** in `FileList` (`app.js:793`): add an
-   `isNszipMode` flag and an entry-selectable clause, plus "convertible" /
-   "output exists" badges paralleling the z3ds ones (`app.js:851-858`).
-8. **Info-modal routing** — `CHDInfoModal` (`app.js:1104`): extend the `mode`
-   memo (`app.js:1109`) and the `fetchInfo` switch (`app.js:1129`) to route
-   `nszip` files to `api.getNszipInfo`.
-9. **Verify-batch routing** (`app.js:2076`, `:2145`, `:2446`, `:2516`): add an
-   `nszip` kind to the verify item partitioning and call `verifyBatchNszip`.
-10. **isoHandling / preferred-kind ordering** (`app.js:1605`, `:2009`): add
-    `nszip` to the kind-preference arrays if a single file could be claimed by
-    multiple tools (rare — usually extensions are tool-exclusive).
+```js
+// src/lib/tools/registry.js
+{
+  id: 'nszip',
+  label: 'Switch',
+  hint: 'Compress Nintendo Switch dumps (NSP / XCI).',
+  // URL segment for /api/{prefix}-verify and /api/{prefix}-verify-batch
+  verifyPrefix: 'nszip',
+  sourceExts: ['.nsp', '.xci'],
+  verifyExts: ['.nsz', '.xcz'],
+  modeGroups: ['nszip'],
+  // Human labels for any group ids the tool introduces — replaces
+  // the old hardcoded switch in registry.groupLabel.
+  groups: { nszip: 'Nintendo Switch' },
+  defaultMode: 'nszip_compress',
+  glyph: 'NSW',                       // 2–3 char affordance for sidebar / dashboard
+  accent: 'var(--badge-dat-match)',   // optional CSS color or token
+  modes: [
+    { mode: 'nszip_compress', kind: 'compress', label: 'Compress to NSZ/XCZ',
+      group: 'nszip',
+      outputExt: null,                // mapped from input extension
+      inputExtensions: ['.nsp', '.xci'],
+      supportsCompression: false,
+      supportsCompressionLevel: false,
+      supportsDeleteOnVerify: true,
+      allowsArchiveInput: false },
+  ],
+  getInfo:     (path) => api.getNszipInfo(path),
+  verify:      (path, opts) => api.verifyNszip(path, opts),
+  verifyBatch: (paths, opts) => api.verifyBatchNszip(paths, opts),
+  productPath: (path) => path.replace(/\.nsp$/i, '.nsz').replace(/\.xci$/i, '.xcz'),
+},
+```
 
-> The frontend is plain ES modules + Preact via CDN (`static/index.html:` loads
-> `app.js` as a module; there is **no build step**). Edit the `.js` directly.
-> If you touch Svelte anywhere, use the Svelte MCP server — but this project is
-> Preact/`htm`, not Svelte.
+That's the entire frontend change. Specifically you do **NOT** need to:
+
+- Edit a `VERIFY_URL` map — `registry.verifyUrl(toolId, kind)` derives both
+  single and batch URLs from `verifyPrefix` (`''` for chdman, `'<segment>'`
+  for everyone else).
+- Edit a `VALID_TOOLS` set — `ui.svelte.js` reads `registry.ids()`.
+- Edit a `groupLabel()` switch — group labels live on `tool.groups`.
+- Edit the Sidebar component — it iterates `registry.all()` and reads
+  `t.glyph` / `t.accent` (with sensible fallbacks).
+- Edit the Workspace, file list, conversion config, or any modal — they all
+  call `registry.specFor(mode)`, `registry.forTool(id)`,
+  `registry.modesByGroup(id)`, `registry.toolForVerifyPath(path)`, etc.
+
+The four `api.*` calls you reference (`getNszipInfo`, `verifyNszip`,
+`verifyBatchNszip`, and any others) need to exist in `src/lib/api/endpoints.js`
+— add them alongside the existing `getCHDInfo` / `verifyCHD` /
+`verifyBatchCHDs` patterns. Headers (`X-CHD-Action-Confirm`), error
+normalization, and SSE helpers (`sse.js`, `sseFetch.js`) all stay the same.
+
+> **Build step.** The SPA compiles with Vite. Run `npm run dev` for HMR
+> against the FastAPI sidecar, or `npm run build` to emit
+> `static/index.html` + `static/assets/*` (used by FastAPI in
+> production and by the Docker `frontend-builder` stage). When editing
+> any `.svelte` file, run it through the Svelte MCP `svelte-autofixer`
+> per the project contract.
 
 ### 5.11 Tests
 
@@ -711,10 +754,13 @@ ROUTES
     *_VERIFY_EXTENSIONS, verify-lane acquire, mark_verified
 
 FRONTEND
-[ ] api.js: get<Tool>Info, verify<Tool>, verifyBatch<Tool>
-[ ] app.js: tool label, hint, filters, MODE_GROUPS, getModeTerm,
-    product-path helper, FileList selectability + badges,
-    CHDInfoModal routing, verify-batch routing
+[ ] src/lib/api/endpoints.js: get<Tool>Info, verify<Tool>, verifyBatch<Tool>
+[ ] src/lib/tools/registry.js: one new entry in the TOOLS array
+    (id, label, hint, verifyPrefix, sourceExts, verifyExts, modeGroups,
+    groups, defaultMode, glyph, accent, modes[], getInfo/verify/
+    verifyBatch/productPath). Sidebar, workspace, badges, modals, and
+    verify dispatch all pick it up via registry lookups — no other
+    .svelte edits.
 
 TESTS + DOCS
 [ ] tests/test_<tool>_routes.py, tests/test_<tool>_service.py, mode-parity
@@ -936,9 +982,10 @@ app/services/job_manager.py     import; _queue_job_locked + _process_job + verif
 app/routes/convert.py           _get_output_path; validation (single+batch); del-on-verify
 app/routes/files.py             import set; flags in scan_directory + search_files
 app/routes/info.py              /nszip-info, /nszip-verify(+events+batch); VERIFY exts; lane
-static/js/api.js                getNszipInfo, verifyNszip, verifyBatchNszip
-static/js/app.js                tool label/hint/filters; MODE_GROUPS; getModeTerm;
-                                product-path helper; FileList badges; info modal; verify routing
+src/lib/api/endpoints.js        getNszipInfo, verifyNszip, verifyBatchNszip
+src/lib/tools/registry.js       one new entry in TOOLS (id, label, hint, verifyPrefix,
+                                sourceExts, verifyExts, modeGroups, groups, defaultMode,
+                                glyph, accent, modes[], getInfo/verify/verifyBatch/productPath)
 static/css/style.css            (only if new badge classes)
 tests/test_nszip_routes.py      info+verify endpoint tests
 tests/test_nszip_service.py     convert/verify/cancel/bad-ext tests

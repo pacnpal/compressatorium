@@ -345,17 +345,32 @@ class FileEntry(BaseModel):
 and instead loop `for tool in registry.all()` calling a tool-provided
 `detect_output(item_path)`.
 
-### 3.7 Frontend descriptor (`static/js/tools.js`)
+### 3.7 Frontend descriptor (`src/lib/tools/registry.js`)
+
+> **Status: implemented and extended.** The original §3.7 sketched a minimal
+> descriptor on `static/js/tools.js`. The legacy Preact frontend was retired
+> in favor of a Svelte 5 + Vite SPA (see README §"Frontend Development"), and
+> the registry now owns every tool fact: verify URLs derive from
+> `verifyPrefix`, per-tool `groups` map carries group labels (no hardcoded
+> switch), `defaultMode` replaces the old chdman special-case, and optional
+> `glyph` / `accent` give the sidebar / dashboard a visual escape hatch.
+> See `src/lib/tools/registry.js` for the source of truth.
 
 ```js
+// src/lib/tools/registry.js (abridged — see file for full schema)
 export const TOOLS = [
-  { id: 'chdman', label: 'CHDMAN', hint: '…', verifyPrefix: 'chd',
+  { id: 'chdman', label: 'CHDMAN', hint: '…',
+    verifyPrefix: '',                                    // URL segment — '' → /api/verify
     sourceExts: ['.gdi','.iso','.cue','.bin'], verifyExts: ['.chd'],
-    filters: [...], modeGroups: ['create','extract','copy'],
+    modeGroups: ['create','extract','copy'],
+    groups: { create: 'Create', extract: 'Extract', copy: 'Copy' },
+    defaultMode: 'createcd',
+    glyph: 'CD', accent: 'var(--badge-cd)',
+    modes: [/* ModeSpec rows mirroring app/services/tools/spec.py */],
     getInfo: api.getCHDInfo, verify: api.verifyCHD, verifyBatch: api.verifyBatchCHDs,
     productPath: (p) => p.replace(/\.[^.]+$/, '.chd') },
-  { id: 'dolphin', ... },
-  { id: 'z3ds', ... },
+  { id: 'dolphin', verifyPrefix: 'dolphin', /* … */ },
+  { id: 'z3ds',    verifyPrefix: 'z3ds',    /* … */ },
 ];
 ```
 

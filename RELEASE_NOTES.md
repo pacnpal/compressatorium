@@ -1,5 +1,27 @@
 # Release Notes
 
+## Unreleased — Svelte 5 frontend rebuild
+
+### ✨ New
+
+- **Frontend rebuilt on Svelte 5 + Vite.** The 6,096-line Preact-via-htm monolith (`static/js/app.js`) is replaced by a Svelte 5 SPA under `src/`. Per-domain class-singleton stores with `$state` class fields (jobs, fileBrowser, conversion, verification, datMatching, chdMetadata, ui), one declarative `TOOLS` array in `src/lib/tools/registry.js` that drives every tool-specific decision, design tokens (`src/styles/tokens.css`) with `light` / `dark` / `system` themes, sidebar + dashboard layout with deep-linkable hash routes, mobile drawer + `inert` focus trap, skip-to-content link and `<main>` focus management on route change, error boundary around routed views.
+- **Backend SSE snapshot-on-connect.** `/api/jobs/events` now emits a one-time `snapshot` event per known job at connection time (and re-emits on every reconnect). Eliminates the hydration race that existed when clients had to do a separate `/api/jobs` fetch before subscribing. Additive change — legacy clients that don't listen for `snapshot` silently ignore it.
+- **Docker `frontend-builder` stage.** New `node:lts-slim` stage runs `npm ci && npm run build`; the runtime image stays Python-only. The existing multi-arch buildx pipeline (`linux/amd64` + `linux/arm64`) works unchanged because `node:lts-slim` ships both arches and the SPA has no native deps.
+
+### 🔧 Internal
+
+- Legacy frontend removed: `static/js/app.js` (6,096 lines), `static/js/api.js` (874 lines), `static/css/style.css` (2,424 lines), `static/vendor/*.mjs` (Preact + htm bundles). Git history preserves them.
+- New `npm run dev` / `npm run build` / `npm run preview` / `npm run lint` scripts. Vite dev server proxies `/api` and `/health` to the FastAPI sidecar.
+- ESLint flat config extended with `eslint-plugin-svelte` + `svelte-eslint-parser` for `.svelte` and `.svelte.js` files.
+- Per the project contract: every `.svelte` file is verified via the Svelte MCP `svelte-autofixer`.
+
+### 📚 Documentation
+
+- `README.md` — new "Frontend Development" section documenting Svelte as the default.
+- `ADDING_PLATFORMS_AND_TOOLS.md` — the "frontend" steps for adding a tool collapse to "one entry in `TOOLS`"; the per-file list at §3.3 is updated; §5.10 rewritten end-to-end with the new registry pattern.
+- `DESIGN_tool_plugin_architecture.md` — §3.7 marked implemented; descriptor updated to match what shipped (per-tool `groups`, `defaultMode`, `glyph`, `accent`; `verifyPrefix` is the URL segment).
+- `AGENTS.md` — §1 covers both prod-style and HMR dev loops.
+
 ## v3.7.8 - Optional PUID/PGID ownership remap for Unraid/home servers
 
 ### ✨ New Features
