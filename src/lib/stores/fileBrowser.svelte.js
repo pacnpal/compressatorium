@@ -63,10 +63,20 @@ class FileBrowserStore {
   get sourceEntries() {
     if (!this.searchMode) return this.entries;
     if (!this.searchResults) return [];
-    const flat = [
-      ...(this.searchResults.files ?? []),
-      ...(this.searchResults.archives ?? []),
-    ];
+    // Normalize search response rows. The /api/files/search payload's
+    // `files` and `archives` arrays don't carry the directory-listing
+    // `type` discriminator, so extension filters and the archive-
+    // exclusion in toggleSelectAll wouldn't recognize them. Stamp the
+    // expected `type` field per source array.
+    const files = (this.searchResults.files ?? []).map((f) => ({
+      ...f,
+      type: f.type ?? 'file',
+    }));
+    const archives = (this.searchResults.archives ?? []).map((a) => ({
+      ...a,
+      type: a.type ?? 'archive',
+    }));
+    const flat = [...files, ...archives];
     const q = (this.searchQuery ?? '').trim().toLowerCase();
     if (!q) return flat;
     return flat.filter((e) => {
@@ -126,7 +136,11 @@ class FileBrowserStore {
   }
 
   get allVisibleSelected() {
-    const visible = this.visibleEntries.filter((e) => e.type !== 'directory');
+    // Match the toggleSelectAll predicate: directories and archive
+    // containers are never selectable.
+    const visible = this.visibleEntries.filter(
+      (e) => e.type !== 'directory' && e.type !== 'archive',
+    );
     if (visible.length === 0) return false;
     return visible.every((e) => this.selectedFiles.has(e.path));
   }
@@ -150,6 +164,7 @@ class FileBrowserStore {
 
   async selectVolume(volume) {
     if (!volume) return;
+    this.exitSearch();
     this.selectedVolume = volume;
     this.currentPath = volume.path;
     this.currentArchivePath = null;
@@ -162,6 +177,10 @@ class FileBrowserStore {
   // ─── Navigation ───────────────────────────────────────────────────────
   async navigate(path) {
     if (!path) return;
+    // Refresh() short-circuits when searchMode is true, so we'd be
+    // stuck on the old search results under the new currentPath if we
+    // didn't drop search state first.
+    this.exitSearch();
     this.currentPath = path;
     this.currentArchivePath = null;
     this.clearSelection();
@@ -169,30 +188,40 @@ class FileBrowserStore {
     await this.refresh({ force: true });
   }
 
+  /**
+   * Internal helper: fetch the archive listing into `entries`. Does
+   * NOT clear selection, reset paging, or flip currentArchivePath.
+   * Used by both browseArchive() (entering anew) and refresh() (when
+   * already inside an archive) so refresh doesn't trash the user's
+   * archive-member selections.
+   */
+  async _loadArchiveEntries(archivePath) {
+    const data = await api.listArchive(archivePath);
+    return (data.files ?? []).map((f) => {
+      // Archive members in subdirectories (e.g. "games/disc.cue") expose
+      // the full subpath via `internal_path`. Falling back to `name` (the
+      // basename) would build `archive::disc.cue` and the backend would
+      // fail to locate the member during conversion.
+      const member = f.internal_path ?? f.name;
+      return {
+        ...f,
+        type: 'file',
+        path: `${archivePath}::${member}`,
+      };
+    });
+  }
+
+  /**
+   * Enter an archive view. Used when the user clicks an archive row;
+   * clears any parent-directory selection, resets paging, and only
+   * commits the archive view after the listing loads successfully.
+   */
   async browseArchive(archivePath) {
     if (!archivePath) return;
-    // Load FIRST. If the listing fails (corrupt / unreadable archive),
-    // we don't want to flip currentArchivePath and strand the store in
-    // archive mode with the previous directory's rows still visible
-    // and the refresh path retrying the failed archive forever.
     try {
-      const data = await api.listArchive(archivePath);
-      const next = (data.files ?? []).map((f) => {
-        // Archive members in subdirectories (e.g. "games/disc.cue") expose
-        // the full subpath via `internal_path`. Falling back to `name` (the
-        // basename) would build `archive::disc.cue` and the backend would
-        // fail to locate the member during conversion.
-        const member = f.internal_path ?? f.name;
-        return {
-          ...f,
-          type: 'file',
-          path: `${archivePath}::${member}`,
-        };
-      });
-      // Success — commit the archive view atomically: clear stale
-      // parent-dir selections (otherwise they invisibly tag along with
-      // archive-member submissions), reset paging, swap entries, then
-      // flip into archive mode.
+      const next = await this._loadArchiveEntries(archivePath);
+      // Success — commit atomically: clear stale parent-dir selections,
+      // reset paging, swap entries, then flip into archive mode.
       this.clearSelection();
       this.page = 1;
       this.entries = next;
@@ -205,7 +234,12 @@ class FileBrowserStore {
   }
 
   leaveArchive() {
+    // Drop archive-member selections (now-invisible archive::member
+    // entries) so they can't tag along with parent-folder selections
+    // on the next submission.
+    this.clearSelection();
     this.currentArchivePath = null;
+    this.page = 1;
     return this.refresh({ force: true });
   }
 
@@ -222,9 +256,19 @@ class FileBrowserStore {
     // currentPath would replace the archive members with the parent
     // directory listing while keeping currentArchivePath set, so
     // selections/conversions would suddenly operate on the wrong rows.
-    // Re-fetch the archive contents instead.
+    // Re-fetch the archive contents via the internal loader (which does
+    // NOT clear selection, so the user's archive-member picks survive
+    // manual/auto refresh).
     if (this.currentArchivePath) {
-      await this.browseArchive(this.currentArchivePath);
+      this.loading = true;
+      this.entriesError = null;
+      try {
+        this.entries = await this._loadArchiveEntries(this.currentArchivePath);
+      } catch (e) {
+        this.entriesError = e?.message ?? 'Failed to read archive';
+      } finally {
+        this.loading = false;
+      }
       return;
     }
     if (!this.currentPath) {
@@ -247,21 +291,24 @@ class FileBrowserStore {
   async search(query) {
     // /api/files/search has no query parameter — it returns every
     // convertible file under the current path. The `query` is used
-    // client-side to filter the returned set (see filteredSearchResults).
+    // client-side to filter the returned set (see sourceEntries).
     if (!query) {
-      this.searchMode = false;
-      this.searchResults = null;
-      this.searchQuery = '';
+      this.exitSearch();
       return;
     }
     if (!this.currentPath) return;
-    this.searchMode = true;
-    this.searchQuery = query;
     try {
-      this.searchResults = await api.searchFiles(this.currentPath, true, true);
+      const data = await api.searchFiles(this.currentPath, true, true);
+      // Flip into search mode only on success. If the request fails,
+      // leaving searchMode false keeps the user looking at the current
+      // directory's entries instead of an empty search view.
+      this.searchResults = data;
+      this.searchQuery = query;
+      this.searchMode = true;
+      this.page = 1;
     } catch (e) {
       this.entriesError = e?.message ?? 'Search failed';
-      this.searchResults = null;
+      // Stay out of search mode so the directory listing remains visible.
     }
   }
 
@@ -292,7 +339,14 @@ class FileBrowserStore {
   }
 
   toggleSelectAll() {
-    const visible = this.visibleEntries.filter((e) => e.type !== 'directory');
+    // Archive containers can't be submitted as conversion inputs — the
+    // backend expects either a regular file path or `archive::member`
+    // form. Selecting an archive row at the directory level and
+    // queueing CHDMAN createcd would just fail. Filter them out so
+    // Select All stays scoped to actually-convertible rows.
+    const visible = this.visibleEntries.filter(
+      (e) => e.type !== 'directory' && e.type !== 'archive',
+    );
     if (this.allVisibleSelected) {
       for (const e of visible) this.selectedFiles.delete(e.path);
     } else {

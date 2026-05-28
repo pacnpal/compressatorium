@@ -104,6 +104,11 @@ class ConversionStore {
   setPrimaryTool(toolId) {
     const tool = registry.forTool(toolId);
     if (!tool) return;
+    // No-op guard so the App.svelte $effect that bridges
+    // ui.workspaceTool → this store can fire whenever Svelte considers
+    // the dependency dirty without resetting the user's customized
+    // mode / compression selection on every reactive trigger.
+    if (this.primaryTool === toolId) return;
     this.primaryTool = toolId;
     writeString(STORAGE_KEYS.PRIMARY_TOOL, toolId);
     // Same default-mode logic as the initial load — chdman keeps createcd

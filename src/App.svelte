@@ -13,6 +13,7 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { conversion } from '$lib/stores/conversion.svelte.js';
 
   let mediaQuery = null;
   /** @type {HTMLElement | undefined} */
@@ -37,6 +38,17 @@
         // ignore — focus may fail on disconnected nodes mid-route swap
       }
     });
+  });
+
+  // Bridge: when the route or sidebar changes `ui.workspaceTool`
+  // (deep link, sidebar Tool item click, etc.), keep the conversion
+  // store's primaryTool / mode / compression seed in sync. Without
+  // this, the workspace title would change but conversion.submit()
+  // would still queue jobs under the previously-active tool's mode.
+  // setPrimaryTool is no-op when the id is unchanged, so this effect
+  // is safe to re-fire whenever Svelte considers the dependency dirty.
+  $effect(() => {
+    conversion.setPrimaryTool(ui.workspaceTool);
   });
 
   function handleSkip(e) {
