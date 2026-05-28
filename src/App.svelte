@@ -15,6 +15,7 @@
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { verification } from '$lib/stores/verification.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
+  import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { ModeWatcher, mode } from 'mode-watcher';
   import { Toaster, toast } from 'svelte-sonner';
   import { STORAGE_KEYS } from '$lib/util/localStorage.js';
@@ -42,6 +43,17 @@
 
   $effect(() => {
     conversion.setPrimaryTool(ui.workspaceTool);
+  });
+
+  // When the active mode changes (tool switch, mode-picker change),
+  // drop any currently-selected files the new mode wouldn't accept —
+  // otherwise a leftover .iso selection follows a switch into Dolphin
+  // mode and queues jobs the worker rejects. Subscribing to
+  // conversion.mode keeps fileBrowser unaware of mode lifecycle while
+  // still pruning at the right moment.
+  $effect(() => {
+    conversion.mode;
+    fileBrowser.pruneIncompatibleSelections();
   });
 
   function handleSkip(e) {

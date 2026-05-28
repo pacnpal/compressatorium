@@ -4,6 +4,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { api } from '$lib/api/endpoints.js';
 import { jobs } from './jobs.svelte.js';
+import { conversion } from './conversion.svelte.js';
 
 const DEFAULT_PAGE_SIZE = 50;
 const SORT_FIELDS = new Set(['name', 'size', 'extension', 'type']);
@@ -141,11 +142,10 @@ class FileBrowserStore {
   }
 
   get allVisibleSelected() {
-    // Match the toggleSelectAll predicate: directories and archive
-    // containers are never selectable.
-    const visible = this.visibleEntries.filter(
-      (e) => e.type !== 'directory' && e.type !== 'archive',
-    );
+    // Match the toggleSelectAll predicate: directories, archive
+    // containers, and rows not accepted by the active conversion mode
+    // are never selectable.
+    const visible = this.visibleEntries.filter((e) => this._isSelectable(e));
     if (visible.length === 0) return false;
     return visible.every((e) => this.selectedFiles.has(e.path));
   }
@@ -323,16 +323,24 @@ class FileBrowserStore {
   }
 
   // ─── Selection ────────────────────────────────────────────────────────
+  /**
+   * Predicate that decides whether an entry can be added to the
+   * selection. Filters directories, archive containers, and any file
+   * the current conversion mode wouldn't accept (e.g. selecting `.rvz`
+   * while in CHDMAN `createcd` would queue jobs the worker rejects).
+   */
+  _isSelectable(entry) {
+    if (!entry || entry.type === 'directory' || entry.type === 'archive') return false;
+    return conversion.allowsInput(entry.path);
+  }
+
   toggleSelect(entry, { shift = false } = {}) {
-    if (!entry || entry.type === 'directory' || entry.type === 'archive') return;
-    // Range-selectable rows are non-directory AND non-archive. Including
-    // archive containers in the shift-range would silently insert the
-    // archive's own path into selectedFiles, and the backend rejects
-    // archive containers as conversion inputs (it expects archive::member
-    // or a regular file path). Same guard as toggleSelectAll.
-    const visible = this.visibleEntries.filter(
-      (e) => e.type !== 'directory' && e.type !== 'archive',
-    );
+    if (!this._isSelectable(entry)) return;
+    // Range-selectable rows are non-directory, non-archive AND match
+    // the active mode's input extensions. Same predicate as
+    // toggleSelectAll so shift-click never picks up rows the worker
+    // would reject.
+    const visible = this.visibleEntries.filter((e) => this._isSelectable(e));
     const idx = visible.findIndex((e) => e.path === entry.path);
 
     if (shift && this.lastSelectedIndex >= 0 && idx >= 0) {
@@ -353,12 +361,10 @@ class FileBrowserStore {
   toggleSelectAll() {
     // Archive containers can't be submitted as conversion inputs — the
     // backend expects either a regular file path or `archive::member`
-    // form. Selecting an archive row at the directory level and
-    // queueing CHDMAN createcd would just fail. Filter them out so
-    // Select All stays scoped to actually-convertible rows.
-    const visible = this.visibleEntries.filter(
-      (e) => e.type !== 'directory' && e.type !== 'archive',
-    );
+    // form. Same gate for mode-incompatible inputs (e.g. .rvz under
+    // CHDMAN createcd). Filter to rows the active conversion mode
+    // actually accepts.
+    const visible = this.visibleEntries.filter((e) => this._isSelectable(e));
     if (this.allVisibleSelected) {
       for (const e of visible) this.selectedFiles.delete(e.path);
     } else {
@@ -369,6 +375,19 @@ class FileBrowserStore {
   clearSelection() {
     this.selectedFiles.clear();
     this.lastSelectedIndex = -1;
+  }
+
+  /**
+   * Drop any selected entries the active conversion mode no longer
+   * accepts. Called from App.svelte after `conversion.mode` changes
+   * so a previous CHDMAN selection doesn't tag along into Dolphin /
+   * 3DS mode and queue jobs the worker would reject. Pure no-op when
+   * everything is still valid.
+   */
+  pruneIncompatibleSelections() {
+    for (const [path, entry] of this.selectedFiles) {
+      if (!this._isSelectable(entry)) this.selectedFiles.delete(path);
+    }
   }
 
   // ─── Sorting / paging / filter ────────────────────────────────────────

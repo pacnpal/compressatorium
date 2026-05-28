@@ -107,8 +107,8 @@
     {#if job?.message}
       <div class="message">{job.message}</div>
     {/if}
-  {:else if status === 'failed' && job?.error}
-    <div class="error-message">{job.error}</div>
+  {:else if status === 'failed' && job?.error_message}
+    <div class="error-message">{job.error_message}</div>
   {:else if status === 'completed' && job?.output_path}
     <div class="message muted" title={job.output_path}>→ {job.output_path}</div>
   {/if}

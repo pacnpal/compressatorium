@@ -86,6 +86,13 @@ class DATMatchingStore {
 
   async deleteDAT(datId) {
     const result = await api.deleteDAT(datId);
+    // The backend cascades DATMatch rows for the deleted DAT, so any
+    // cached match entry that survives in the client map is now
+    // stale — files that were only matched by this DAT would keep
+    // showing the badge until next reload because hydrate() only adds
+    // returned rows, never removes absent ones. Drop the whole cache
+    // so the next FileList hydration re-establishes truth.
+    this.matches.clear();
     await this.loadDATs();
     return result;
   }

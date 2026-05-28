@@ -74,6 +74,27 @@ class ConversionStore {
   }
 
   /**
+   * True when the given path is a valid input for the currently
+   * selected mode. Used by fileBrowser to gate selection so users
+   * can't queue jobs the worker would just reject — e.g. selecting a
+   * `.rvz` while in CHDMAN `createcd` mode.
+   *
+   * Paths inside archives (`archive.zip::dir/disc.cue`) are matched
+   * against their internal extension. When no mode is active or the
+   * spec has no `inputExtensions` declared (the registry guarantees
+   * one, but defensively), we accept anything to avoid silently
+   * blocking selection.
+   */
+  allowsInput(path) {
+    if (!path) return false;
+    const exts = this.currentSpec?.inputExtensions;
+    if (!Array.isArray(exts) || exts.length === 0) return true;
+    const member = path.includes('::') ? path.split('::').pop() : path;
+    const lower = (member ?? '').toLowerCase();
+    return exts.some((ext) => lower.endsWith(ext));
+  }
+
+  /**
    * The wire-format compression value sent to the backend.
    *
    * - chdman create/copy modes: comma-separated codec list (e.g. "zlib,lzma").
@@ -209,7 +230,21 @@ class ConversionStore {
         // for extract/raw modes).
         deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
       });
-      toast.success(`Queued ${filePaths.length} job(s)`);
+      // Report what the backend actually created. createBatch can
+      // legitimately return fewer jobs than requested when the user
+      // chose duplicateAction: 'skip', or when create_batch_jobs
+      // rejects inputs during per-file validation, or [] when
+      // everything was filtered out. Telling the user "Queued N" when
+      // N rows were skipped is misleading.
+      const created = Array.isArray(result) ? result.length : 0;
+      const requested = filePaths.length;
+      if (created === 0) {
+        toast.warning(`No jobs queued (all ${requested} skipped)`);
+      } else if (created < requested) {
+        toast.success(`Queued ${created} of ${requested} job(s); ${requested - created} skipped`);
+      } else {
+        toast.success(`Queued ${created} job(s)`);
+      }
       return result;
     } catch (e) {
       toast.error(e?.message ?? 'Failed to create jobs');
