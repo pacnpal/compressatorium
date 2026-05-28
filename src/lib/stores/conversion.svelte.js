@@ -14,6 +14,11 @@ function loadPrimaryTool() {
 }
 
 function defaultModeFor(toolId) {
+  // Preserve the legacy/backend default of `createcd` for chdman — the
+  // registry happens to list createraw first, but cue/bin/ISO workflows
+  // overwhelmingly want createcd. Other tools fall back to whichever
+  // mode the registry declares first.
+  if (toolId === 'chdman') return 'createcd';
   const tool = registry.forTool(toolId);
   return tool?.modes[0]?.mode ?? 'createcd';
 }
@@ -94,9 +99,9 @@ class ConversionStore {
     if (!tool) return;
     this.primaryTool = toolId;
     writeString(STORAGE_KEYS.PRIMARY_TOOL, toolId);
-    // Reset mode to the first declared mode of the new tool.
-    const firstMode = tool.modes[0];
-    if (firstMode) this.mode = firstMode.mode;
+    // Same default-mode logic as the initial load — chdman keeps createcd
+    // as its default, others use their first registered mode.
+    this.mode = defaultModeFor(toolId);
     this.compressionSelection = ['zlib'];
   }
 

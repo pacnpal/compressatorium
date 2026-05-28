@@ -179,6 +179,15 @@ class FileBrowserStore {
   async refresh({ force = false } = {}) {
     if (this.searchMode) return;
     if (!force && jobs.hasActive && !this.autoRefresh) return;
+    // When the user is inside an archive view, a vanilla refresh against
+    // currentPath would replace the archive members with the parent
+    // directory listing while keeping currentArchivePath set, so
+    // selections/conversions would suddenly operate on the wrong rows.
+    // Re-fetch the archive contents instead.
+    if (this.currentArchivePath) {
+      await this.browseArchive(this.currentArchivePath);
+      return;
+    }
     if (!this.currentPath) {
       this.entries = [];
       return;

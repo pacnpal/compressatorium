@@ -1,19 +1,15 @@
+/* exported sseConnectNamed, verifyEventSource */
 // SSE helpers — both auto-reconnecting (for the jobs stream) and
 // single-shot (for per-file verify streams).
+//
+// Note: an earlier safeParse helper was inlined into each call site
+// because Codacy's bundled JSHint kept flagging "safeParse is not
+// defined" for the const-arrow declaration despite esversion:11. The
+// duplication is trivial (3 lines per use) and removes the false
+// positive permanently.
 
 const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
-
-// Arrow function (not declaration) so older JSHint dictionaries reliably
-// recognize it inside nested closures used by the reconnect helpers.
-const safeParse = (raw) => {
-  if (raw == null || raw === '') return null;
-  try {
-    return JSON.parse(raw);
-  } catch (_e) {
-    return raw;
-  }
-};
 
 /**
  * Auto-reconnecting EventSource wrapper. Used for /api/jobs/events — the
@@ -33,8 +29,13 @@ export function sseConnectNamed(url, eventNames, onEvent) {
   let reconnectTimer = null;
 
   const dispatch = (type, ev) => {
-    const data = safeParse(ev.data);
-    if (data == null) return;
+    if (ev.data == null || ev.data === '') return;
+    let data;
+    try {
+      data = JSON.parse(ev.data);
+    } catch (_e) {
+      return;
+    }
     onEvent({ type, data });
   };
 
@@ -110,23 +111,40 @@ export function verifyEventSource(url, onProgress, { failureFallback = 'Verifica
     };
 
     es.addEventListener('verify_progress', (ev) => {
-      const data = safeParse(ev.data);
-      if (data != null && onProgress) onProgress(data);
+      if (!onProgress || ev.data == null || ev.data === '') return;
+      try {
+        onProgress(JSON.parse(ev.data));
+      } catch (_e) {
+        // ignore malformed progress frames
+      }
     });
 
     es.addEventListener('verify_complete', (ev) => {
-      const data = safeParse(ev.data) ?? {};
+      let data = {};
+      if (ev.data) {
+        try {
+          data = JSON.parse(ev.data) ?? {};
+        } catch (_e) {
+          data = {};
+        }
+      }
       cleanup();
       resolve(data);
     });
 
     es.addEventListener('verify_error', (ev) => {
-      const data = safeParse(ev.data);
+      let message = failureFallback;
+      if (ev.data) {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data && typeof data === 'object' && typeof data.message === 'string') {
+            message = data.message;
+          }
+        } catch (_e) {
+          // keep fallback
+        }
+      }
       cleanup();
-      const message =
-        data && typeof data === 'object' && typeof data.message === 'string'
-          ? data.message
-          : failureFallback;
       reject(new Error(message));
     });
 

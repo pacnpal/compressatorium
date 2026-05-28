@@ -107,12 +107,23 @@ class JobsStore {
     if (!job?.id) return;
     const existing = this._byId.get(job.id);
     if (existing) {
-      Object.assign(existing, job);
+      // Replace the slot via index assignment rather than Object.assign on
+      // the existing reference. Svelte 5's deep-proxy tracks $state arrays
+      // at index granularity, and consumers iterating `jobs` (via {#each})
+      // re-render on slot replacement — but Object.assign on an outside
+      // reference may not propagate when the reference is also stored in
+      // _byId, leading to stale progress/status until an unrelated change.
+      const idx = this.jobs.findIndex((j) => j.id === job.id);
+      if (idx !== -1) {
+        this.jobs[idx] = job;
+      } else {
+        this.jobs.push(job);
+      }
+      this._byId.set(job.id, job);
     } else {
       this.jobs.push(job);
       this._byId.set(job.id, job);
     }
-    // Drop optimistic placeholder for this file_path if real job arrived.
     if (job.file_path) {
       this.creatingJobs = this.creatingJobs.filter(
         (p) => p.file_path !== job.file_path || p.mode !== job.mode,
@@ -194,7 +205,11 @@ class JobsStore {
   async cancel(jobId) {
     const result = await api.cancelJob(jobId);
     const existing = this._byId.get(jobId);
-    if (existing) Object.assign(existing, { status: 'cancelled' });
+    if (existing) {
+      // Replace the array slot (Svelte 5 deep proxy tracks slot mutations)
+      // rather than mutating the object via the stale _byId reference.
+      this._applyJob({ ...existing, status: 'cancelled' });
+    }
     return result;
   }
 

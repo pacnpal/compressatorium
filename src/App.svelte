@@ -22,7 +22,11 @@
   onMount(() => {
     ui.applyTheme();
     ui.loadVersion();
-    jobs.connect();
+    // The SSE stream at /api/jobs/events only emits future updates, so
+    // jobs already in the queue/history on page load would otherwise be
+    // invisible until their next event (and completed/failed jobs never
+    // appear at all). Hydrate the snapshot first, then subscribe.
+    jobs.refresh().finally(() => jobs.connect());
     const stopRouter = startRouter();
 
     if (window.matchMedia) {
