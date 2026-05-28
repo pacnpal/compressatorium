@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 
 from config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -26,6 +27,8 @@ from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
+from services.tools import registry
+from services.tools.base import ToolPlugin
 from services.workload_limiter import WorkloadToken, workload_limiter
 from services.job_manager import ExternalJobCancelled, job_manager
 from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
@@ -347,322 +350,6 @@ def _is_z3ds_info_file(path: str) -> bool:
     return ext in Z3DS_INFO_EXTENSIONS
 
 
-def _is_z3ds_verify_file(path: str) -> bool:
-    ext = os.path.splitext(path)[1].lower()
-    return ext in Z3DS_VERIFY_EXTENSIONS
-
-
-@router.post("/z3ds-verify-batch/events")
-async def verify_z3ds_batch_events(
-    request: BulkVerifyRequest,
-) -> EventSourceResponse:
-    """Stream verification progress for multiple 3DS files."""
-    if not request.paths:
-        raise HTTPException(status_code=400, detail="No paths provided")
-
-    # Validate all paths upfront
-    valid_paths = []
-    for path in request.paths:
-        if not await run_in_threadpool(
-            is_within_configured_volumes, path, treat_archives=False
-        ):
-            continue
-        if not await run_in_threadpool(os.path.isfile, path):
-            continue
-        if not _is_z3ds_verify_file(path):
-            continue
-        valid_paths.append(path)
-
-    verify_token = await _acquire_verify_lane_or_429()
-
-    async def event_generator():
-        try:
-            total = len(valid_paths)
-            verified_count = 0
-            failed_count = 0
-
-            # Send initial status
-            yield {
-                "event": "verify_batch_start",
-                "data": json.dumps({"total": total, "paths": valid_paths}),
-            }
-
-            for idx, path in enumerate(valid_paths):
-                filename = os.path.basename(path)
-                start = time.monotonic()
-
-                # Send file start event
-                yield {
-                    "event": "verify_batch_progress",
-                    "data": json.dumps(
-                        {
-                            "index": idx,
-                            "total": total,
-                            "path": path,
-                            "filename": filename,
-                            "status": "verifying",
-                            "verified": verified_count,
-                            "failed": failed_count,
-                        }
-                    ),
-                }
-
-                try:
-                    queue: asyncio.Queue = asyncio.Queue()
-                    done = asyncio.Event()
-                    final_result = {"valid": False, "message": "Unknown error"}
-
-                    async def run_verify():
-                        nonlocal final_result
-                        try:
-                            async for update in z3ds_compress_service.verify_stream(path):
-                                if update.get("type") in ("complete", "error"):
-                                    final_result = update
-                                await queue.put(update)
-                        except Exception as exc:
-                            final_result = {
-                                "type": "error",
-                                "valid": False,
-                                "message": str(exc),
-                            }
-                            await queue.put(final_result)
-                        finally:
-                            done.set()
-
-                    verify_task = asyncio.create_task(run_verify())
-                    try:
-                        while not done.is_set() or not queue.empty():
-                            try:
-                                update = await asyncio.wait_for(queue.get(), timeout=2)
-                                if update.get("type") == "progress":
-                                    yield {
-                                        "event": "verify_batch_file_progress",
-                                        "data": json.dumps(
-                                            {
-                                                "index": idx,
-                                                "path": path,
-                                                "filename": filename,
-                                                "progress": update.get("progress"),
-                                                "message": update.get("message"),
-                                            }
-                                        ),
-                                    }
-                                elif update.get("type") in ("complete", "error"):
-                                    final_result = update
-                                    break
-                            except asyncio.TimeoutError:
-                                elapsed = int(time.monotonic() - start)
-                                yield {
-                                    "event": "verify_batch_file_progress",
-                                    "data": json.dumps(
-                                        {
-                                            "index": idx,
-                                            "path": path,
-                                            "filename": filename,
-                                            "progress": None,
-                                            "message": f"Verifying... ({elapsed}s)",
-                                        }
-                                    ),
-                                }
-                    finally:
-                        verify_task.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await verify_task
-
-                    if final_result.get("valid"):
-                        await verification_store.mark_verified(path)
-                        verified_count += 1
-                        status = "verified"
-                    else:
-                        failed_count += 1
-                        status = "failed"
-
-                    yield {
-                        "event": "verify_batch_file_complete",
-                        "data": json.dumps(
-                            {
-                                "index": idx,
-                                "path": path,
-                                "filename": filename,
-                                "status": status,
-                                "valid": final_result.get("valid", False),
-                                "message": final_result.get("message"),
-                                "verified": verified_count,
-                                "failed": failed_count,
-                            }
-                        ),
-                    }
-
-                except Exception as exc:
-                    failed_count += 1
-                    yield {
-                        "event": "verify_batch_file_complete",
-                        "data": json.dumps(
-                            {
-                                "index": idx,
-                                "path": path,
-                                "filename": filename,
-                                "status": "failed",
-                                "valid": False,
-                                "message": str(exc),
-                                "verified": verified_count,
-                                "failed": failed_count,
-                            }
-                        ),
-                    }
-
-            # Send final completion event
-            yield {
-                "event": "verify_batch_complete",
-                "data": json.dumps(
-                    {"total": total, "verified": verified_count, "failed": failed_count}
-                ),
-            }
-        finally:
-            verify_token.release()
-
-    return EventSourceResponse(event_generator())
-
-
-@router.get("/z3ds-verify")
-async def verify_z3ds(
-    path: str = Query(
-        ..., description="Path to compressed 3DS ROM file to verify",
-    ),
-) -> dict:
-    """Verify the integrity of a compressed 3DS ROM file."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_z3ds_verify_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail="Not a supported compressed 3DS format (.z3ds, .zcci, .zcia)",
-        )
-
-    verify_token = await _acquire_verify_lane_or_429()
-    try:
-        result = await z3ds_compress_service.verify(path)
-        if result.get("valid"):
-            await verification_store.mark_verified(path)
-        return result
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to verify 3DS ROM: {e!s}",
-        ) from None
-    finally:
-        verify_token.release()
-
-
-@router.get("/z3ds-verify/events")
-async def verify_z3ds_events(
-    path: str = Query(
-        ..., description="Path to compressed 3DS ROM file to verify",
-    ),
-) -> EventSourceResponse:
-    """Stream 3DS ROM verification progress updates."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_z3ds_verify_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail="Not a supported compressed 3DS format (.z3ds, .zcci, .zcia)",
-        )
-
-    async def event_generator():
-        verify_token = await workload_limiter.try_acquire("verify")
-        if verify_token is None:
-            yield {
-                "event": "verify_error",
-                "data": json.dumps(
-                    {
-                        "type": "error",
-                        "valid": False,
-                        "message": _verification_backpressure_detail(),
-                    },
-                ),
-            }
-            return
-
-        queue: asyncio.Queue = asyncio.Queue()
-        done = asyncio.Event()
-        start = time.monotonic()
-
-        async def run_verify():
-            try:
-                async for update in z3ds_compress_service.verify_stream(path):
-                    await queue.put(update)
-            except Exception as exc:
-                await queue.put(
-                    {"type": "error", "valid": False, "message": str(exc)},
-                )
-            finally:
-                done.set()
-
-        verify_task = asyncio.create_task(run_verify())
-        try:
-            while True:
-                try:
-                    update = await asyncio.wait_for(
-                        queue.get(), timeout=2,
-                    )
-                except asyncio.TimeoutError:
-                    elapsed = int(time.monotonic() - start)
-                    yield {
-                        "event": "verify_progress",
-                        "data": json.dumps(
-                            {
-                                "progress": None,
-                                "message": f"Verifying... ({elapsed}s)",
-                            },
-                        ),
-                    }
-                    if done.is_set() and queue.empty():
-                        break
-                    continue
-
-                if update.get("type") == "progress":
-                    yield {
-                        "event": "verify_progress",
-                        "data": json.dumps(update),
-                    }
-                elif update.get("type") == "complete":
-                    if update.get("valid"):
-                        await verification_store.mark_verified(path)
-                    yield {
-                        "event": "verify_complete",
-                        "data": json.dumps(update),
-                    }
-                    break
-                elif update.get("type") == "error":
-                    yield {
-                        "event": "verify_error",
-                        "data": json.dumps(update),
-                    }
-                    break
-        finally:
-            verify_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await verify_task
-            verify_token.release()
-
-    return EventSourceResponse(event_generator())
-
-
 @router.get("/info", response_model=CHDInfo)
 async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     """Get information about a CHD file (cached with mtime-based invalidation)."""
@@ -840,49 +527,198 @@ async def get_scan_status():
     return {"scanning": _is_scanning}
 
 
-@router.get("/verify")
-async def verify_chd(
-    path: str = Query(..., description="Path to CHD file to verify"),
-) -> dict:
-    """Verify the integrity of a CHD file."""
-    if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
-        raise HTTPException(
-            status_code=403, detail="Access denied: path outside configured volumes",
-        )
+@router.get("/verified")
+async def list_verified() -> dict:
+    """List verified output paths."""
+    await verification_store.prune_missing()
+    verified = []
+    for record in await verification_store.all_records():
+        chd_path = record.get("chd_path")
+        if chd_path and await run_in_threadpool(
+            is_within_configured_volumes, chd_path, treat_archives=False
+        ):
+            verified.append(chd_path)
+    return {"verified": verified}
 
+
+# ============ Dolphin disc image endpoints ============
+
+
+def _is_dolphin_file(path: str) -> bool:
+    from pathlib import Path as _P
+    return _P(path).suffix.lower() in DOLPHIN_INFO_EXTENSIONS
+
+
+@router.get("/dolphin-info", response_model=DolphinDiscInfo)
+async def get_dolphin_info(
+    path: str = Query(..., description="Path to disc image"),
+):
+    """Get header information about a GameCube/Wii disc image."""
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: path outside configured volumes",
+        )
     if not await run_in_threadpool(os.path.isfile, path):
         raise HTTPException(status_code=404, detail="File not found")
+    if not _is_dolphin_file(path):
+        raise HTTPException(
+            status_code=400, detail="Not a supported disc image format",
+        )
 
-    if not path.lower().endswith(".chd"):
-        raise HTTPException(status_code=400, detail="Not a CHD file")
-
-    verify_token = await _acquire_verify_lane_or_429()
     try:
-        result = await chdman_service.verify(path)
-        if result.get("valid"):
-            await verification_store.mark_verified(path)
-        return result
+        info = await dolphin_tool_service.header(path)
+        return DolphinDiscInfo(
+            file=path,
+            game_id=info.get("game_id"),
+            # dolphin-tool outputs "Internal Name:" in its plain-text format;
+            # "game_name" / "name" cover any future JSON-mode keys.
+            game_name=info.get("game_name") or info.get("internal_name") or info.get("name"),
+            title_id=info.get("title_id"),
+            disc_number=info.get("disc_number") or info.get("disc"),
+            revision=info.get("revision"),
+            region=info.get("region"),
+            country=info.get("country"),
+            format=info.get("format"),
+            # dolphin-tool outputs "Compression Method:" in plain-text mode;
+            # "compression" covers any future JSON-mode key.
+            compression=info.get("compression") or info.get("compression_method"),
+            compression_level=info.get("compression_level"),
+            block_size=info.get("block_size"),
+            file_size=info.get("file_size"),
+            raw_data=info.get("raw_data", ""),
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to verify CHD: {e!s}") from None
-    finally:
-        verify_token.release()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read disc info: {e!s}",
+        ) from None
 
 
-@router.get("/verify/events")
-async def verify_chd_events(
-    path: str = Query(..., description="Path to CHD file to verify"),
-) -> EventSourceResponse:
-    """Stream CHD verification progress updates."""
-    if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
+@router.get("/z3ds-info", response_model=Z3DSInfo)
+async def get_z3ds_info(
+    path: str = Query(..., description="Path to 3DS ROM file"),
+):
+    """Get basic information about a Nintendo 3DS ROM file."""
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: path outside configured volumes",
+        )
+    if not await run_in_threadpool(os.path.isfile, path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_z3ds_info_file(path):
+        raise HTTPException(
+            status_code=400,
+            detail="Not a supported 3DS ROM format (.3ds, .cci, .cia, .z3ds, .zcci, .zcia)",
+        )
+
+    try:
+        info = await run_in_threadpool(z3ds_compress_service.info, path)
+        return Z3DSInfo(
+            file=info["file"],
+            size=info["size"],
+            size_display=info["size_display"],
+            format=info.get("format"),
+            extension=info["extension"],
+            compressed=info["compressed"],
+            compression_type=info.get("compression_type"),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read 3DS ROM info: {e!s}",
+        ) from None
+
+
+# ============ Generic verify routes (registry-driven) ============
+#
+# The three tools expose identical verify machinery (sync verify, an SSE
+# progress stream, and a batch SSE stream). The only per-tool differences are
+# the URL prefix, the underlying service object, and a couple of error strings.
+# ``register_verify_routes`` generates the trio for any registered tool, and
+# the two ``_sse_*`` adapters hold the queue/heartbeat loop that used to be
+# copy-pasted once per endpoint.
+
+
+@dataclass(frozen=True)
+class _VerifyRouteConfig:
+    """Per-tool data the verify-route factory needs (no behavior branching)."""
+
+    url_prefix: str          # "" -> /verify, "dolphin-" -> /dolphin-verify, ...
+    service_attr: str        # module global the tests monkeypatch
+    sync_name: str           # FastAPI route name == legacy function name
+    events_name: str
+    batch_name: str
+    bad_ext_detail: str      # 400 detail when the extension is unsupported
+    verify_error_prefix: str  # 500 detail prefix raised by the sync endpoint
+
+
+_VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
+    "chdman": _VerifyRouteConfig(
+        url_prefix="",
+        service_attr="chdman_service",
+        sync_name="verify_chd",
+        events_name="verify_chd_events",
+        batch_name="verify_batch_events",
+        bad_ext_detail="Not a CHD file",
+        verify_error_prefix="Failed to verify CHD",
+    ),
+    "dolphin": _VerifyRouteConfig(
+        url_prefix="dolphin-",
+        service_attr="dolphin_tool_service",
+        sync_name="verify_dolphin",
+        events_name="verify_dolphin_events",
+        batch_name="verify_dolphin_batch_events",
+        bad_ext_detail="Not a supported disc image format",
+        verify_error_prefix="Failed to verify disc image",
+    ),
+    "z3ds": _VerifyRouteConfig(
+        url_prefix="z3ds-",
+        service_attr="z3ds_compress_service",
+        sync_name="verify_z3ds",
+        events_name="verify_z3ds_events",
+        batch_name="verify_z3ds_batch_events",
+        bad_ext_detail="Not a supported compressed 3DS format (.z3ds, .zcci, .zcia)",
+        verify_error_prefix="Failed to verify 3DS ROM",
+    ),
+}
+
+
+def _verify_service(cfg: _VerifyRouteConfig):
+    """Resolve the verify service via the module global.
+
+    The route tests rebind ``info_routes.<service>`` to a mock, so the factory
+    must read the service through this module's namespace at call time rather
+    than capture the tool's own ``_service`` reference.
+    """
+    return globals()[cfg.service_attr]
+
+
+async def _guard_verify_path(
+    path: str, tool: ToolPlugin, cfg: _VerifyRouteConfig,
+) -> None:
+    """403 (outside volumes) -> 404 (missing) -> 400 (unsupported extension)."""
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes",
         )
-
     if not await run_in_threadpool(os.path.isfile, path):
         raise HTTPException(status_code=404, detail="File not found")
+    if os.path.splitext(path)[1].lower() not in tool.verify_extensions:
+        raise HTTPException(status_code=400, detail=cfg.bad_ext_detail)
 
-    if not path.lower().endswith(".chd"):
-        raise HTTPException(status_code=400, detail="Not a CHD file")
+
+def _sse_from_verify_stream(
+    tool: ToolPlugin, cfg: _VerifyRouteConfig, path: str,
+) -> EventSourceResponse:
+    """Single-file verify SSE stream (verify_progress / verify_complete / verify_error)."""
 
     async def event_generator():
         verify_token = await workload_limiter.try_acquire("verify")
@@ -905,7 +741,7 @@ async def verify_chd_events(
 
         async def run_verify():
             try:
-                async for update in chdman_service.verify_stream(path):
+                async for update in _verify_service(cfg).verify_stream(path):
                     await queue.put(update)
             except Exception as exc:
                 await queue.put({"type": "error", "valid": False, "message": str(exc)})
@@ -948,38 +784,13 @@ async def verify_chd_events(
     return EventSourceResponse(event_generator())
 
 
-@router.get("/verified")
-async def list_verified() -> dict:
-    """List verified output paths."""
-    await verification_store.prune_missing()
-    verified = []
-    for record in await verification_store.all_records():
-        chd_path = record.get("chd_path")
-        if chd_path and await run_in_threadpool(
-            is_within_configured_volumes, chd_path, treat_archives=False
-        ):
-            verified.append(chd_path)
-    return {"verified": verified}
-
-
-@router.post("/verify-batch/events")
-async def verify_batch_events(request: BulkVerifyRequest) -> EventSourceResponse:
-    """Stream verification progress for multiple CHD files."""
-    if not request.paths:
-        raise HTTPException(status_code=400, detail="No paths provided")
-
-    # Validate all paths upfront
-    valid_paths = []
-    for path in request.paths:
-        if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
-            continue
-        if not await run_in_threadpool(os.path.isfile, path):
-            continue
-        if not path.lower().endswith(".chd"):
-            continue
-        valid_paths.append(path)
-
-    verify_token = await _acquire_verify_lane_or_429()
+def _sse_batch_from_verify_stream(
+    tool: ToolPlugin,
+    cfg: _VerifyRouteConfig,
+    valid_paths: list[str],
+    verify_token: WorkloadToken,
+) -> EventSourceResponse:
+    """Batch verify SSE stream over an already-validated list of paths."""
 
     async def event_generator():
         total = len(valid_paths)
@@ -1018,10 +829,10 @@ async def verify_batch_events(request: BulkVerifyRequest) -> EventSourceResponse
                 done = asyncio.Event()
                 final_result = {"valid": False, "message": "Unknown error"}
 
-                async def run_verify():
+                async def run_verify(path=path):
                     nonlocal final_result
                     try:
-                        async for update in chdman_service.verify_stream(path):
+                        async for update in _verify_service(cfg).verify_stream(path):
                             await queue.put(update)
                             if update.get("type") in ("complete", "error"):
                                 final_result = update
@@ -1134,408 +945,66 @@ async def verify_batch_events(request: BulkVerifyRequest) -> EventSourceResponse
     return EventSourceResponse(wrapped_event_generator())
 
 
-# ============ Dolphin disc image endpoints ============
+def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> dict:
+    """Register the verify trio for ``tool`` and return the route functions.
 
+    Paths stay byte-identical via the ``tool_id -> url_prefix`` alias map, and
+    each route is named after its legacy handler so OpenAPI operation ids and
+    the module-level attribute names the tests rely on are preserved.
+    """
+    cfg = _VERIFY_CONFIG[tool.id]
+    prefix = cfg.url_prefix
 
-def _is_dolphin_file(path: str) -> bool:
-    from pathlib import Path as _P
-    return _P(path).suffix.lower() in DOLPHIN_INFO_EXTENSIONS
-
-
-@router.post("/dolphin-verify-batch/events")
-async def verify_dolphin_batch_events(
-    request: BulkVerifyRequest,
-) -> EventSourceResponse:
-    """Stream verification progress for multiple disc images."""
-    if not request.paths:
-        raise HTTPException(status_code=400, detail="No paths provided")
-
-    # Validate all paths upfront
-    valid_paths = []
-    for path in request.paths:
-        if not await run_in_threadpool(
-            is_within_configured_volumes, path, treat_archives=False
-        ):
-            continue
-        if not await run_in_threadpool(os.path.isfile, path):
-            continue
-        if not _is_dolphin_file(path):
-            continue
-        valid_paths.append(path)
-
-    verify_token = await _acquire_verify_lane_or_429()
-
-    async def event_generator():
-        total = len(valid_paths)
-        verified_count = 0
-        failed_count = 0
-
-        # Send initial status
-        yield {
-            "event": "verify_batch_start",
-            "data": json.dumps({"total": total, "paths": valid_paths}),
-        }
-
-        for idx, path in enumerate(valid_paths):
-            filename = os.path.basename(path)
-            start = time.monotonic()
-
-            # Send file start event
-            yield {
-                "event": "verify_batch_progress",
-                "data": json.dumps(
-                    {
-                        "index": idx,
-                        "total": total,
-                        "path": path,
-                        "filename": filename,
-                        "status": "verifying",
-                        "verified": verified_count,
-                        "failed": failed_count,
-                    }
-                ),
-            }
-
-            try:
-                queue: asyncio.Queue = asyncio.Queue()
-                done = asyncio.Event()
-                final_result = {"valid": False, "message": "Unknown error"}
-
-                async def run_verify():
-                    nonlocal final_result
-                    try:
-                        async for update in dolphin_tool_service.verify_stream(path):
-                            await queue.put(update)
-                            if update.get("type") in ("complete", "error"):
-                                final_result = update
-                    except Exception as exc:
-                        final_result = {
-                            "type": "error",
-                            "valid": False,
-                            "message": str(exc),
-                        }
-                        await queue.put(final_result)
-                    finally:
-                        done.set()
-
-                verify_task = asyncio.create_task(run_verify())
-                try:
-                    while not done.is_set() or not queue.empty():
-                        try:
-                            update = await asyncio.wait_for(queue.get(), timeout=2)
-                            if update.get("type") == "progress":
-                                yield {
-                                    "event": "verify_batch_file_progress",
-                                    "data": json.dumps(
-                                        {
-                                            "index": idx,
-                                            "path": path,
-                                            "filename": filename,
-                                            "progress": update.get("progress"),
-                                            "message": update.get("message"),
-                                        }
-                                    ),
-                                }
-                            elif update.get("type") in ("complete", "error"):
-                                break
-                        except asyncio.TimeoutError:
-                            elapsed = int(time.monotonic() - start)
-                            yield {
-                                "event": "verify_batch_file_progress",
-                                "data": json.dumps(
-                                    {
-                                        "index": idx,
-                                        "path": path,
-                                        "filename": filename,
-                                        "progress": None,
-                                        "message": f"Verifying... ({elapsed}s)",
-                                    }
-                                ),
-                            }
-                finally:
-                    verify_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await verify_task
-
-                if final_result.get("valid"):
-                    await verification_store.mark_verified(path)
-                    verified_count += 1
-                    status = "verified"
-                else:
-                    failed_count += 1
-                    status = "failed"
-
-                yield {
-                    "event": "verify_batch_file_complete",
-                    "data": json.dumps(
-                        {
-                            "index": idx,
-                            "path": path,
-                            "filename": filename,
-                            "status": status,
-                            "valid": final_result.get("valid", False),
-                            "message": final_result.get("message"),
-                            "verified": verified_count,
-                            "failed": failed_count,
-                        }
-                    ),
-                }
-
-            except Exception as exc:
-                failed_count += 1
-                yield {
-                    "event": "verify_batch_file_complete",
-                    "data": json.dumps(
-                        {
-                            "index": idx,
-                            "path": path,
-                            "filename": filename,
-                            "status": "failed",
-                            "valid": False,
-                            "message": str(exc),
-                            "verified": verified_count,
-                            "failed": failed_count,
-                        }
-                    ),
-                }
-
-        # Send final completion event
-        yield {
-            "event": "verify_batch_complete",
-            "data": json.dumps(
-                {"total": total, "verified": verified_count, "failed": failed_count}
-            ),
-        }
-
-    async def wrapped_event_generator():
+    @router_.get(f"/{prefix}verify", name=cfg.sync_name)
+    async def _verify(path: str = Query(..., description="Path to file to verify")) -> dict:
+        await _guard_verify_path(path, tool, cfg)
+        verify_token = await _acquire_verify_lane_or_429()
         try:
-            async for event in event_generator():
-                yield event
+            result = await _verify_service(cfg).verify(path)
+            if result.get("valid"):
+                await verification_store.mark_verified(path)
+            return result
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"{cfg.verify_error_prefix}: {e!s}",
+            ) from None
         finally:
             verify_token.release()
 
-    return EventSourceResponse(wrapped_event_generator())
+    @router_.get(f"/{prefix}verify/events", name=cfg.events_name)
+    async def _verify_events(
+        path: str = Query(..., description="Path to file to verify"),
+    ) -> EventSourceResponse:
+        await _guard_verify_path(path, tool, cfg)
+        return _sse_from_verify_stream(tool, cfg, path)
+
+    @router_.post(f"/{prefix}verify-batch/events", name=cfg.batch_name)
+    async def _verify_batch(request: BulkVerifyRequest) -> EventSourceResponse:
+        if not request.paths:
+            raise HTTPException(status_code=400, detail="No paths provided")
+
+        valid_paths = []
+        for path in request.paths:
+            if not await run_in_threadpool(
+                is_within_configured_volumes, path, treat_archives=False,
+            ):
+                continue
+            if not await run_in_threadpool(os.path.isfile, path):
+                continue
+            if os.path.splitext(path)[1].lower() not in tool.verify_extensions:
+                continue
+            valid_paths.append(path)
+
+        verify_token = await _acquire_verify_lane_or_429()
+        return _sse_batch_from_verify_stream(tool, cfg, valid_paths, verify_token)
+
+    return {
+        cfg.sync_name: _verify,
+        cfg.events_name: _verify_events,
+        cfg.batch_name: _verify_batch,
+    }
 
 
-@router.get("/dolphin-info", response_model=DolphinDiscInfo)
-async def get_dolphin_info(
-    path: str = Query(..., description="Path to disc image"),
-):
-    """Get header information about a GameCube/Wii disc image."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_dolphin_file(path):
-        raise HTTPException(
-            status_code=400, detail="Not a supported disc image format",
-        )
-
-    try:
-        info = await dolphin_tool_service.header(path)
-        return DolphinDiscInfo(
-            file=path,
-            game_id=info.get("game_id"),
-            # dolphin-tool outputs "Internal Name:" in its plain-text format;
-            # "game_name" / "name" cover any future JSON-mode keys.
-            game_name=info.get("game_name") or info.get("internal_name") or info.get("name"),
-            title_id=info.get("title_id"),
-            disc_number=info.get("disc_number") or info.get("disc"),
-            revision=info.get("revision"),
-            region=info.get("region"),
-            country=info.get("country"),
-            format=info.get("format"),
-            # dolphin-tool outputs "Compression Method:" in plain-text mode;
-            # "compression" covers any future JSON-mode key.
-            compression=info.get("compression") or info.get("compression_method"),
-            compression_level=info.get("compression_level"),
-            block_size=info.get("block_size"),
-            file_size=info.get("file_size"),
-            raw_data=info.get("raw_data", ""),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read disc info: {e!s}",
-        ) from None
-
-
-@router.get("/dolphin-verify")
-async def verify_dolphin(
-    path: str = Query(
-        ..., description="Path to disc image to verify",
-    ),
-) -> dict:
-    """Verify the integrity of a GameCube/Wii disc image."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_dolphin_file(path):
-        raise HTTPException(
-            status_code=400, detail="Not a supported disc image format",
-        )
-
-    verify_token = await _acquire_verify_lane_or_429()
-    try:
-        result = await dolphin_tool_service.verify(path)
-        if result.get("valid"):
-            await verification_store.mark_verified(path)
-        return result
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to verify disc image: {e!s}",
-        ) from None
-    finally:
-        verify_token.release()
-
-
-@router.get("/dolphin-verify/events")
-async def verify_dolphin_events(
-    path: str = Query(
-        ..., description="Path to disc image to verify",
-    ),
-) -> EventSourceResponse:
-    """Stream disc image verification progress updates."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_dolphin_file(path):
-        raise HTTPException(
-            status_code=400, detail="Not a supported disc image format",
-        )
-
-    async def event_generator():
-        verify_token = await workload_limiter.try_acquire("verify")
-        if verify_token is None:
-            yield {
-                "event": "verify_error",
-                "data": json.dumps(
-                    {
-                        "type": "error",
-                        "valid": False,
-                        "message": _verification_backpressure_detail(),
-                    },
-                ),
-            }
-            return
-
-        queue: asyncio.Queue = asyncio.Queue()
-        done = asyncio.Event()
-        start = time.monotonic()
-
-        async def run_verify():
-            try:
-                async for update in dolphin_tool_service.verify_stream(
-                    path,
-                ):
-                    await queue.put(update)
-            except Exception as exc:
-                await queue.put(
-                    {"type": "error", "valid": False, "message": str(exc)},
-                )
-            finally:
-                done.set()
-
-        verify_task = asyncio.create_task(run_verify())
-        try:
-            while True:
-                try:
-                    update = await asyncio.wait_for(
-                        queue.get(), timeout=2,
-                    )
-                except asyncio.TimeoutError:
-                    elapsed = int(time.monotonic() - start)
-                    yield {
-                        "event": "verify_progress",
-                        "data": json.dumps(
-                            {
-                                "progress": None,
-                                "message": f"Verifying... ({elapsed}s)",
-                            },
-                        ),
-                    }
-                    if done.is_set() and queue.empty():
-                        break
-                    continue
-
-                if update.get("type") == "progress":
-                    yield {
-                        "event": "verify_progress",
-                        "data": json.dumps(update),
-                    }
-                elif update.get("type") == "complete":
-                    if update.get("valid"):
-                        await verification_store.mark_verified(path)
-                    yield {
-                        "event": "verify_complete",
-                        "data": json.dumps(update),
-                    }
-                    break
-                elif update.get("type") == "error":
-                    yield {
-                        "event": "verify_error",
-                        "data": json.dumps(update),
-                    }
-                    break
-        finally:
-            verify_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await verify_task
-            verify_token.release()
-
-    return EventSourceResponse(event_generator())
-
-@router.get("/z3ds-info", response_model=Z3DSInfo)
-async def get_z3ds_info(
-    path: str = Query(..., description="Path to 3DS ROM file"),
-):
-    """Get basic information about a Nintendo 3DS ROM file."""
-    if not await run_in_threadpool(
-        is_within_configured_volumes, path, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: path outside configured volumes",
-        )
-    if not await run_in_threadpool(os.path.isfile, path):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not _is_z3ds_info_file(path):
-        raise HTTPException(
-            status_code=400,
-            detail="Not a supported 3DS ROM format (.3ds, .cci, .cia, .z3ds, .zcci, .zcia)",
-        )
-
-    try:
-        info = await run_in_threadpool(z3ds_compress_service.info, path)
-        return Z3DSInfo(
-            file=info["file"],
-            size=info["size"],
-            size_display=info["size_display"],
-            format=info.get("format"),
-            extension=info["extension"],
-            compressed=info["compressed"],
-            compression_type=info.get("compression_type"),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to read 3DS ROM info: {e!s}",
-        ) from None
+for _tool in registry.all():
+    if _tool.id in _VERIFY_CONFIG:
+        globals().update(register_verify_routes(router, _tool))
