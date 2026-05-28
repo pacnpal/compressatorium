@@ -64,19 +64,24 @@ class FileBrowserStore {
     if (!this.searchMode) return this.entries;
     if (!this.searchResults) return [];
     // Normalize search response rows. The /api/files/search payload's
-    // `files` and `archives` arrays don't carry the directory-listing
-    // `type` discriminator, so extension filters and the archive-
-    // exclusion in toggleSelectAll wouldn't recognize them. Stamp the
-    // expected `type` field per source array.
+    // `files` array is plain files from the directory tree, and the
+    // `archives` array is files *inside* archives (the backend builds
+    // each row at app/routes/files.py:357-379 with paths like
+    // `archive.zip::dir/disc.cue` and `in_archive: true`). Both are
+    // selectable file rows from the user's perspective, so stamp
+    // `type: 'file'` on both arrays — marking the archive-member rows
+    // as `type: 'archive'` would wrongly exclude them from Select All
+    // (toggleSelectAll filters out archive containers) and break the
+    // extension filter in filteredEntries (which only keeps files).
     const files = (this.searchResults.files ?? []).map((f) => ({
       ...f,
       type: f.type ?? 'file',
     }));
-    const archives = (this.searchResults.archives ?? []).map((a) => ({
+    const archived = (this.searchResults.archives ?? []).map((a) => ({
       ...a,
-      type: a.type ?? 'archive',
+      type: a.type ?? 'file',
     }));
-    const flat = [...files, ...archives];
+    const flat = [...files, ...archived];
     const q = (this.searchQuery ?? '').trim().toLowerCase();
     if (!q) return flat;
     return flat.filter((e) => {

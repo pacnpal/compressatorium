@@ -63,6 +63,21 @@ export function sseConnectNamed(url, eventNames, onEvent, statusHandlers = {}) {
 
     es.onerror = () => {
       if (closed) return;
+      // The backend emits failed jobs as a server-sent `event: error`
+      // (e.g. job_manager._notify_subscribers on conversion failure),
+      // which fires this onerror handler too because `error` is also
+      // the spec'd transport-error event name — they share one
+      // dispatch slot. Without disambiguation, every failed job would
+      // tear down the connection and trigger the reconnect/backoff
+      // cycle, briefly missing live updates for other active jobs
+      // and surfacing a false "Lost connection" toast.
+      //
+      // Distinguish via `readyState`: server-sent named events fire
+      // while readyState === OPEN (1); real transport errors put the
+      // connection into CONNECTING (0) or CLOSED (2). Bail out for
+      // OPEN — the matching addEventListener('error', …) on the line
+      // above has already routed the payload to the app handler.
+      if (es && es.readyState === EventSource.OPEN) return;
       try {
         es?.close();
       } catch (_e) {

@@ -255,9 +255,21 @@ class JobsStore {
     const result = await api.cancelJob(jobId);
     const existing = this._byId.get(jobId);
     if (existing) {
-      // Replace the array slot (Svelte 5 deep proxy tracks slot mutations)
-      // rather than mutating the object via the stale _byId reference.
-      this._applyJob({ ...existing, status: 'cancelled' });
+      // Optimistically flip QUEUED jobs to cancelled — the backend
+      // dequeues them immediately and there is no worker to wait for.
+      //
+      // For PROCESSING jobs, the backend only sets the cancel event
+      // and leaves status=processing with message="Cancelling..." until
+      // the worker exits and emits the terminal `cancelled` SSE event.
+      // Forcing status=cancelled here can race the in-flight SSE update
+      // and leave counts/history wrong if the SSE arrives reordered or
+      // the stream is briefly reconnecting. Update the message field
+      // only and trust the terminal SSE to flip status.
+      if (existing.status === 'queued') {
+        this._applyJob({ ...existing, status: 'cancelled' });
+      } else if (existing.status === 'processing') {
+        this._applyJob({ ...existing, message: 'Cancelling…' });
+      }
     }
     return result;
   }

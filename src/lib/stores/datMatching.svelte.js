@@ -89,8 +89,15 @@ class DATMatchingStore {
     try {
       return await api.syncMAMERedump(tag);
     } catch (e) {
-      // The start request itself failed — there is no background work
-      // to wait for, so clear the flag and re-raise.
+      // 409 means a MAMERedump sync is already running on the
+      // backend. The legacy UI treated that as "good — keep polling
+      // and observe progress"; clearing `syncing` here would freeze
+      // any consumer poll/progress UI even though the backend is
+      // actively working. Stay in the syncing state.
+      if (e?.status === 409) return null;
+      // Any other error means the start request itself failed —
+      // there is no background work to wait for, so clear the flag
+      // and re-raise.
       this.syncing = false;
       throw e;
     }
