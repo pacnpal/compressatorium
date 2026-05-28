@@ -19,7 +19,9 @@ class DATMatchingStore {
   async refreshHasDats() {
     try {
       const stats = await api.getDATStats();
-      this.hasDats = (stats?.total ?? 0) > 0 || (stats?.imported_count ?? 0) > 0;
+      // /api/dat/stats returns total_dats (legacy UI checked this exact field);
+      // `total` / `imported_count` are not part of the response.
+      this.hasDats = (stats?.total_dats ?? 0) > 0;
       return this.hasDats;
     } catch (_e) {
       this.hasDats = false;

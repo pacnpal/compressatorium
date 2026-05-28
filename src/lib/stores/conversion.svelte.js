@@ -8,15 +8,24 @@ import { STORAGE_KEYS, readString, writeString } from '$lib/util/localStorage.js
 import { jobs } from './jobs.svelte.js';
 import { ui } from './ui.svelte.js';
 
-const DEFAULT_MODE = 'createcd';
-
 function loadPrimaryTool() {
-  return readString(STORAGE_KEYS.PRIMARY_TOOL, 'chdman') ?? 'chdman';
+  const raw = readString(STORAGE_KEYS.PRIMARY_TOOL, 'chdman') ?? 'chdman';
+  return registry.forTool(raw) ? raw : 'chdman';
 }
 
+function defaultModeFor(toolId) {
+  const tool = registry.forTool(toolId);
+  return tool?.modes[0]?.mode ?? 'createcd';
+}
+
+const INITIAL_TOOL = loadPrimaryTool();
+
 class ConversionStore {
-  primaryTool = $state(loadPrimaryTool());
-  mode = $state(DEFAULT_MODE);
+  primaryTool = $state(INITIAL_TOOL);
+  // Mode must initialize from the persisted tool — defaulting to a chdman
+  // mode (createcd) when the persisted tool is dolphin/z3ds would submit
+  // wrong duplicate checks and compression flags before setPrimaryTool runs.
+  mode = $state(defaultModeFor(INITIAL_TOOL));
   compressionSelection = $state(['zlib']);
   dolphinCompressionLevel = $state('19');
   outputDir = $state('');

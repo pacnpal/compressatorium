@@ -146,11 +146,18 @@ class FileBrowserStore {
     this.currentArchivePath = archivePath;
     try {
       const data = await api.listArchive(archivePath);
-      this.entries = (data.files ?? []).map((f) => ({
-        ...f,
-        type: 'file',
-        path: `${archivePath}::${f.name}`,
-      }));
+      this.entries = (data.files ?? []).map((f) => {
+        // Archive members in subdirectories (e.g. "games/disc.cue") expose
+        // the full subpath via `internal_path`. Falling back to `name` (the
+        // basename) would build `archive::disc.cue` and the backend would
+        // fail to locate the member during conversion.
+        const member = f.internal_path ?? f.name;
+        return {
+          ...f,
+          type: 'file',
+          path: `${archivePath}::${member}`,
+        };
+      });
     } catch (e) {
       this.entriesError = e?.message ?? 'Failed to read archive';
     }
