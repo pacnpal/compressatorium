@@ -1,5 +1,19 @@
 # Release Notes
 
+## Unreleased — Verify flows (P6)
+
+### ✨ New
+
+- **Single + batch verify shipped.** `RowActionsMenu` already routed Verify to `verification.verifyOne(toolId, path)` via `registry.toolForVerifyPath`; P6 adds the batch flow. The new `BulkVerifyModal` (bits-ui Dialog) opens from a "Verify selected" button in the FileList selection bar. It groups the selection by tool (`.chd` → chdman, `.rvz/.wia/.gcz/.wbfs` → dolphin, `.z3ds/.zcci/.zcia` → z3ds), runs each group as a back-to-back batch, shows live per-file progress + an overall counter, and supports mid-run cancel via `verification.cancelBatch()` (AbortController).
+- **Verified set rehydrates on reload.** `App.svelte` calls `verification.loadVerified()` on mount so `OK` badges and the delete-on-verify gate survive a page refresh.
+- **Selection bulk-action bar.** FileList's selection bar gains `Verify` (hidden when none of the selected files have a verify-extension match — registry-driven) and `Delete` actions; the Delete action sets `ui.bulkDeleteEntries` for the P7 modal to consume.
+
+### 🔧 Internal
+
+- New `src/lib/components/modals/` directory; mounted via App.svelte so any panel can launch a modal by writing to a `ui` target (`ui.bulkVerifyItems`, `ui.bulkDeleteEntries`, etc.). bits-ui Dialog handles focus-trap / Escape / overlay-click for free.
+- The bulk-verify dialog tracks its own `running` / `groupIndex` / `runResults` state and uses `verification.batchRun` for the in-flight per-file progress payload (`done`, `currentPath`, `currentFilename`, `currentPercent`, `message`).
+- Auto-cancel on dismiss: closing the dialog while a batch is running aborts the in-flight `fetch` via `verification.cancelBatch()` rather than letting it complete silently.
+
 ## Unreleased — Conversion config + job queue (P5)
 
 ### ✨ New

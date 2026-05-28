@@ -13,9 +13,11 @@
   import Button from '$lib/components/ui/Button.svelte';
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
+  import { verification } from '$lib/stores/verification.svelte.js';
   import { ModeWatcher, mode } from 'mode-watcher';
   import { Toaster, toast } from 'svelte-sonner';
   import { STORAGE_KEYS } from '$lib/util/localStorage.js';
+  import BulkVerifyModal from '$lib/components/modals/BulkVerifyModal.svelte';
 
   let mainEl;
 
@@ -47,6 +49,10 @@
 
   onMount(() => {
     ui.loadVersion();
+    // Rehydrate the verified set so OK badges survive reloads. Fire and
+    // forget — failure leaves the set empty, which is the same as a
+    // fresh session.
+    verification.loadVerified();
     jobs.connect();
     const stopRouter = startRouter();
     return () => {
@@ -76,6 +82,9 @@
   closeButton
   position="bottom-right"
 />
+
+<!-- Modal portal — components self-render based on ui store targets. -->
+<BulkVerifyModal />
 
 <a class="skip-link" href="#main-content" onclick={handleSkip}>Skip to main content</a>
 

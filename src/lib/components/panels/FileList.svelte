@@ -1,6 +1,7 @@
 <script>
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { ui } from '$lib/stores/ui.svelte.js';
   import { registry } from '$lib/tools/registry.js';
   import FileRow from './FileRow.svelte';
   import Breadcrumb from './Breadcrumb.svelte';
@@ -17,6 +18,8 @@
   import Loader from '@lucide/svelte/icons/loader-circle';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import ShieldCheck from '@lucide/svelte/icons/shield-check';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
 
   const entries = $derived(fileBrowser.visibleEntries);
   const pageCount = $derived(fileBrowser.pageCount);
@@ -38,7 +41,24 @@
   // a new tool surfaces its inputs/outputs in this dropdown automatically.
   const filterableExts = $derived(registry.allFilterableExts());
 
+  // Selection bulk actions: "Verify selected" surfaces only when at
+  // least one selected file has a verify-extension match in the
+  // registry — sources (.iso, .cue) can't be verified, so we hide the
+  // button entirely rather than ship a noop.
+  const selectedHasVerifiable = $derived.by(() => {
+    const sel = Array.from(fileBrowser.selectedFiles.values());
+    return sel.some((e) => e?.path && registry.toolForVerifyPath(e.path));
+  });
+
   let searchInput = $state('');
+
+  function openBulkVerify() {
+    ui.bulkVerifyItems = Array.from(fileBrowser.selectedFiles.values());
+  }
+
+  function openBulkDelete() {
+    ui.bulkDeleteEntries = Array.from(fileBrowser.selectedFiles.values());
+  }
 
   function sortIcon(field) {
     if (sortBy !== field) return ChevronsUpDown;
@@ -109,7 +129,15 @@
 
   {#if selectedCount > 0}
     <div class="selection-bar" role="status">
-      {selectedCount} selected
+      <span class="count-label">{selectedCount} selected</span>
+      {#if selectedHasVerifiable}
+        <button type="button" class="bulk-action" onclick={openBulkVerify}>
+          <ShieldCheck size={12} aria-hidden="true" /> Verify
+        </button>
+      {/if}
+      <button type="button" class="bulk-action danger" onclick={openBulkDelete}>
+        <Trash2 size={12} aria-hidden="true" /> Delete
+      </button>
       <button type="button" class="link" onclick={() => fileBrowser.clearSelection()}>
         Clear
       </button>
@@ -249,14 +277,31 @@
   .selection-bar {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-2);
     padding: var(--space-2) var(--space-3);
     background: var(--accent-muted);
     border-radius: var(--radius-md);
     color: var(--accent);
     font-size: var(--text-sm);
     font-weight: var(--weight-medium);
+    flex-wrap: wrap;
   }
+  .count-label { margin-right: var(--space-2); }
+  .bulk-action {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    background: var(--surface-1);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+  .bulk-action:hover { background: var(--accent); color: var(--accent-contrast); }
+  .bulk-action.danger { border-color: var(--error); color: var(--error); }
+  .bulk-action.danger:hover { background: var(--error); color: var(--text-inverse); }
   .link {
     background: none;
     border: none;
@@ -265,6 +310,7 @@
     text-decoration: underline;
     font: inherit;
     padding: 0;
+    margin-left: auto;
   }
 
   .error-state {
