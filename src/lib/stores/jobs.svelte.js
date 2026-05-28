@@ -137,11 +137,42 @@ class JobsStore {
     for (const job of jobs) this._byId.set(job.id, job);
   }
 
+  /**
+   * Hydrate / re-sync from the REST snapshot.
+   *
+   * Designed to be called AFTER connect() so that any terminal events
+   * (`complete` / `error` / `cancelled`) delivered during snapshot fetch
+   * are preserved. The `/api/jobs/events` backend stream only subscribes
+   * to jobs that are QUEUED or PROCESSING at the time the loop sees
+   * them — a job that goes from PROCESSING to COMPLETED *before* the
+   * SSE subscribes would never emit its terminal event. Opening SSE
+   * first reduces that race window to the snapshot's generation time
+   * on the server.
+   *
+   * Reconciliation rule: SSE wins. Snapshot only fills in jobs we
+   * don't already know about (the SSE never re-emits state for
+   * completed/failed/cancelled jobs, so historical entries reach us
+   * through the snapshot). Errors are absorbed so a transient
+   * /api/jobs failure doesn't surface as an unhandled rejection on
+   * page load — the SSE is already connected and the user can recover
+   * by retrying any action.
+   */
   async refresh() {
     this.loading = true;
     try {
       const data = await api.getJobs();
-      this._replaceAll(Array.isArray(data) ? data : []);
+      if (!Array.isArray(data)) return;
+      for (const job of data) {
+        if (!job?.id) continue;
+        if (this._byId.has(job.id)) {
+          // SSE already delivered (newer) state — leave it alone.
+          continue;
+        }
+        this.jobs.push(job);
+        this._byId.set(job.id, job);
+      }
+    } catch (e) {
+      console.error('Job snapshot hydration failed:', e);
     } finally {
       this.loading = false;
     }

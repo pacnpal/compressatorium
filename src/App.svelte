@@ -22,11 +22,15 @@
   onMount(() => {
     ui.applyTheme();
     ui.loadVersion();
-    // The SSE stream at /api/jobs/events only emits future updates, so
-    // jobs already in the queue/history on page load would otherwise be
-    // invisible until their next event (and completed/failed jobs never
-    // appear at all). Hydrate the snapshot first, then subscribe.
-    jobs.refresh().finally(() => jobs.connect());
+    // Connect SSE BEFORE fetching the snapshot. /api/jobs/events only
+    // subscribes to jobs that are QUEUED or PROCESSING at subscription
+    // time — if we waited for /api/jobs to return first, any job that
+    // transitioned to a terminal status in the gap would never emit its
+    // complete / error / cancelled event and the UI would stay stale.
+    // refresh() uses merge-add semantics (SSE wins, snapshot only fills
+    // gaps) so live SSE state is never overwritten by older snapshot data.
+    jobs.connect();
+    jobs.refresh();
     const stopRouter = startRouter();
 
     if (window.matchMedia) {
