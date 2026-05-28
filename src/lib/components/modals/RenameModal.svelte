@@ -1,6 +1,7 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
+  import { verification } from '$lib/stores/verification.svelte.js';
   import { api } from '$lib/api/endpoints.js';
   import { toast } from 'svelte-sonner';
   import BaseModal from './BaseModal.svelte';
@@ -34,10 +35,30 @@
     }
     busy = true;
     try {
-      await api.renameFile(target.path, trimmed);
-      toast.success(`Renamed to ${trimmed}`);
-      await fileBrowser.refresh({ force: true });
+      // Backend returns { success, old_path, new_path, message } and
+      // also moves the verification record server-side for .chd → .chd
+      // renames (app/routes/files.py rename_file). Mirror that move in
+      // our local verification.statuses so the OK badge survives the
+      // rename without waiting for a verified-set reload.
+      const result = await api.renameFile(target.path, trimmed);
+      const oldPath = result?.old_path ?? target.path;
+      const newPath = result?.new_path;
+      if (newPath && verification.statuses.has(oldPath)) {
+        verification.statuses.delete(oldPath);
+        const oldIsChd = oldPath.toLowerCase().endsWith('.chd');
+        const newIsChd = newPath.toLowerCase().endsWith('.chd');
+        if (oldIsChd && newIsChd) verification.statuses.add(newPath);
+      }
       ui.renameTarget = null;
+      toast.success(`Renamed to ${trimmed}`);
+      // Refresh is a best-effort follow-up. A refresh failure here
+      // must not surface as "Failed to rename" — the rename already
+      // succeeded server-side.
+      try {
+        await fileBrowser.refresh({ force: true });
+      } catch (_e) {
+        toast.warning('Rename succeeded; refreshing the listing failed');
+      }
     } catch (e) {
       toast.error(e?.message ?? 'Failed to rename');
     } finally {

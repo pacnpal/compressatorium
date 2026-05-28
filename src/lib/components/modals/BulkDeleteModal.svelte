@@ -24,14 +24,21 @@
       const result = await api.deleteBatch(paths);
       const deleted = result?.deleted ?? paths.length;
       const failed = result?.failed ?? 0;
+      // Close + report success immediately so a downstream refresh
+      // failure doesn't surface as "Failed to delete" after the
+      // backend already removed the files.
+      ui.bulkDeleteEntries = null;
+      fileBrowser.clearSelection();
       if (failed > 0) {
         toast.warning(`Deleted ${deleted}; ${failed} failed`);
       } else {
         toast.success(`Deleted ${deleted} file${deleted === 1 ? '' : 's'}`);
       }
-      fileBrowser.clearSelection();
-      await fileBrowser.refresh({ force: true });
-      ui.bulkDeleteEntries = null;
+      try {
+        await fileBrowser.refresh({ force: true });
+      } catch (_e) {
+        toast.warning('Deleted; refreshing the listing failed');
+      }
     } catch (e) {
       toast.error(e?.message ?? 'Failed to delete files');
     } finally {

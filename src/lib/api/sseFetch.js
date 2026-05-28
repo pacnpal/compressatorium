@@ -47,8 +47,12 @@ export async function sseFetchPost(url, body, { signal, onEvent, fallbackMessage
       // line endings. Boundary detection only works on \n\n, so collapse
       // CRLF to LF before slicing — otherwise the stream buffers forever.
       buffer = (buffer + value).replace(/\r\n/g, '\n');
-      let boundary;
-      while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+      // Slice off each complete `\n\n`-terminated event from the head of
+      // the buffer. Lifted the assignment out of the loop test so
+      // Biome / jshint don't flag an assignment-in-expression.
+      for (;;) {
+        const boundary = buffer.indexOf('\n\n');
+        if (boundary === -1) break;
         const chunk = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary + 2);
         const parsed = parseChunk(chunk);

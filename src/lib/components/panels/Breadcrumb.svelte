@@ -46,7 +46,7 @@
     {/each}
     {#if archivePath}
       <ChevronRight size={12} class="sep" aria-hidden="true" />
-      <span class="crumb current">
+      <span class="crumb current" aria-current="page">
         <Archive size={14} />
         {archiveName(archivePath)}
       </span>

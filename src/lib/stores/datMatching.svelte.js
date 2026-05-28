@@ -38,8 +38,11 @@ class DATMatchingStore {
     this.datsLoading = true;
     this.datsError = null;
     try {
+      // /api/dat/list returns a bare array of DAT records
+      // (app/services/dat_store.py:list_dats), not an envelope. Each
+      // record: { id, name, description, version, imported_at, file_count }.
       const data = await api.listDATs();
-      this.dats = Array.isArray(data?.dats) ? data.dats : (Array.isArray(data) ? data : []);
+      this.dats = Array.isArray(data) ? data : (Array.isArray(data?.dats) ? data.dats : []);
       await this.refreshHasDats();
     } catch (e) {
       this.datsError = e?.message ?? 'Failed to load DATs';

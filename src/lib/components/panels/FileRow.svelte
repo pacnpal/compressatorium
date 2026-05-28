@@ -93,7 +93,6 @@
   class:selected
   class:dir={isDirectory}
   class:archive={isArchive}
-  ondblclick={handleRowClick}
 >
   <td class="sel">
     {#if isFile}

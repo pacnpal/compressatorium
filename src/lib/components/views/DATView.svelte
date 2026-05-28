@@ -93,9 +93,19 @@
     }
   }
 
-  const syncPercent = $derived(
-    typeof syncStatus?.progress === 'number' ? syncStatus.progress : null,
-  );
+  // Sync status fields come from `_progress` on the backend (see
+  // app/services/dat_sync.py): `{ status, files_total, files_imported,
+  // current_file, file_index, error }`. Percent is files_imported /
+  // files_total — there is no top-level numeric progress field.
+  const syncProgress = $derived(syncStatus?.progress ?? null);
+  const syncPercent = $derived.by(() => {
+    const total = syncProgress?.files_total ?? 0;
+    const done = syncProgress?.files_imported ?? 0;
+    if (total <= 0) return null;
+    return Math.round((done / total) * 100);
+  });
+  const syncPhase = $derived(syncProgress?.status ?? 'starting');
+  const syncCurrentFile = $derived(syncProgress?.current_file ?? '');
 </script>
 
 <section class="view" aria-labelledby="dat-title">
@@ -136,18 +146,29 @@
     </div>
   </header>
 
+  <!-- Stats response shape (app/services/dat_store.py:get_stats):
+       total_dats, total_sha1_hashes, total_md5_hashes,
+       total_matches, total_unmatched. -->
   <article class="panel stats">
     <div class="stat">
       <span class="stat-label">DATs</span>
       <span class="stat-value">{stats?.total_dats ?? 0}</span>
     </div>
     <div class="stat">
-      <span class="stat-label">Entries</span>
-      <span class="stat-value">{stats?.total_entries ?? 0}</span>
+      <span class="stat-label">SHA1 hashes</span>
+      <span class="stat-value">{stats?.total_sha1_hashes ?? 0}</span>
     </div>
     <div class="stat">
-      <span class="stat-label">Cached matches</span>
-      <span class="stat-value">{stats?.cached_matches ?? 0}</span>
+      <span class="stat-label">MD5 hashes</span>
+      <span class="stat-value">{stats?.total_md5_hashes ?? 0}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Matched</span>
+      <span class="stat-value">{stats?.total_matches ?? 0}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Unmatched</span>
+      <span class="stat-value">{stats?.total_unmatched ?? 0}</span>
     </div>
   </article>
 
@@ -155,11 +176,18 @@
     <article class="panel sync-status" role="status" aria-live="polite">
       <div class="sync-header">
         <strong>Syncing MAMERedump…</strong>
-        <Badge tone="info">{syncStatus?.phase ?? 'starting'}</Badge>
+        <Badge tone="info">{syncPhase}</Badge>
+        {#if syncProgress?.files_total}
+          <span class="sync-counter">
+            {syncProgress.files_imported ?? 0} / {syncProgress.files_total}
+          </span>
+        {/if}
       </div>
       <ProgressBar value={syncPercent} size="sm" />
-      {#if syncStatus?.message}
-        <div class="sync-msg">{syncStatus.message}</div>
+      {#if syncCurrentFile}
+        <div class="sync-msg">Importing {syncCurrentFile}</div>
+      {:else if syncProgress?.error}
+        <div class="sync-msg">{syncProgress.error}</div>
       {/if}
     </article>
   {/if}
@@ -189,9 +217,9 @@
             <div class="dat-meta">
               <div class="dat-name">{dat.name ?? '(unnamed)'}</div>
               <div class="dat-sub">
-                {#if dat.system}<span>{dat.system}</span>{/if}
-                {#if dat.entries != null}<span>{dat.entries} entries</span>{/if}
                 {#if dat.version}<span>v{dat.version}</span>{/if}
+                {#if dat.file_count != null}<span>{dat.file_count} entries</span>{/if}
+                {#if dat.description}<span class="dat-desc" title={dat.description}>{dat.description}</span>{/if}
               </div>
             </div>
             <IconButton label="Delete DAT" size="sm" onclick={() => handleDeleteDat(dat)}>
@@ -221,14 +249,16 @@
   .stat-value { color: var(--text-1); font-size: var(--text-xl); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
 
   .sync-status { display: flex; flex-direction: column; gap: var(--space-2); }
-  .sync-header { display: flex; align-items: center; gap: var(--space-2); }
-  .sync-msg { color: var(--text-3); font-size: var(--text-xs); }
+  .sync-header { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+  .sync-counter { color: var(--text-3); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+  .sync-msg { color: var(--text-3); font-size: var(--text-xs); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .dat-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-1); }
   .dat-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-2); }
   .dat-meta { flex: 1; min-width: 0; }
   .dat-name { color: var(--text-1); font-size: var(--text-sm); font-weight: var(--weight-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dat-sub { color: var(--text-3); font-size: var(--text-xs); display: flex; gap: var(--space-2); flex-wrap: wrap; }
+  .dat-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 
   .loading { display: flex; align-items: center; gap: var(--space-2); color: var(--text-2); font-size: var(--text-sm); }
   .error { color: var(--error); background: var(--error-muted); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); font-size: var(--text-sm); }

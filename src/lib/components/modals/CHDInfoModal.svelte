@@ -18,19 +18,27 @@
   // Reset + fetch when the dialog opens with a new target. tool.getInfo
   // is the registry-provided binding (chdman: getCHDInfo, dolphin:
   // getDolphinInfo, z3ds: getZ3DSInfo) — no per-tool branches here.
+  // Stale-request guard: an older getInfo() can still resolve after the
+  // modal closes (or the target changes). The `active` closure captures
+  // the current effect run; the cleanup function flips it false so a
+  // late resolution can't overwrite info/error/loading for a different
+  // file or after dismiss.
   $effect(() => {
     if (!open) {
       info = null;
       error = null;
+      loading = false;
       return;
     }
     if (!tool?.getInfo || !target?.path) return;
+    let active = true;
     loading = true;
     error = null;
     tool.getInfo(target.path)
-      .then((result) => { info = result; })
-      .catch((e) => { error = e?.message ?? 'Failed to load info'; })
-      .finally(() => { loading = false; });
+      .then((result) => { if (active) info = result; })
+      .catch((e) => { if (active) error = e?.message ?? 'Failed to load info'; })
+      .finally(() => { if (active) loading = false; });
+    return () => { active = false; };
   });
 
   function close() { ui.chdInfoTarget = null; }

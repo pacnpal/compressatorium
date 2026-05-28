@@ -2,6 +2,8 @@
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
+  import { chdMetadata } from '$lib/stores/chdMetadata.svelte.js';
+  import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { registry } from '$lib/tools/registry.js';
   import FileRow from './FileRow.svelte';
   import Breadcrumb from './Breadcrumb.svelte';
@@ -52,6 +54,21 @@
 
   let searchInput = $state('');
 
+  // Hydrate badge stores for the paths actually on screen. /api/files
+  // doesn't pre-populate DAT matches or CHD media_type — the legacy UI
+  // ran these hydration calls after every listing change. We mirror
+  // that here so badges show up without per-row fetches. Effect runs
+  // again whenever the visible page changes (navigation, pagination,
+  // search, filter).
+  $effect(() => {
+    const paths = entries.map((e) => e?.path).filter(Boolean);
+    if (paths.length === 0) return;
+    chdMetadata.hydrate(paths).catch(() => {});
+    if (datMatching.hasDats) {
+      datMatching.hydrate(paths).catch(() => {});
+    }
+  });
+
   function openBulkVerify() {
     ui.bulkVerifyItems = Array.from(fileBrowser.selectedFiles.values());
   }
@@ -63,6 +80,11 @@
   function sortIcon(field) {
     if (sortBy !== field) return ChevronsUpDown;
     return sortOrder === 'asc' ? ChevronUp : ChevronDown;
+  }
+
+  function sortAria(field) {
+    if (sortBy !== field) return 'none';
+    return sortOrder === 'asc' ? 'ascending' : 'descending';
   }
 
   function submitSearch(e) {
@@ -175,17 +197,17 @@
                 aria-label={allSelected ? 'Deselect all' : 'Select all visible'}
               />
             </th>
-            <th>
+            <th aria-sort={sortAria('name')}>
               <button type="button" class="th-button" onclick={() => fileBrowser.setSort('name')}>
                 Name {#if sortBy === 'name'}{@const Icon = sortIcon('name')}<Icon size={12} class="sort-i" />{:else}<ChevronsUpDown size={12} class="sort-i muted" />{/if}
               </button>
             </th>
-            <th class="size">
+            <th class="size" aria-sort={sortAria('size')}>
               <button type="button" class="th-button" onclick={() => fileBrowser.setSort('size')}>
                 Size {#if sortBy === 'size'}{@const Icon = sortIcon('size')}<Icon size={12} class="sort-i" />{:else}<ChevronsUpDown size={12} class="sort-i muted" />{/if}
               </button>
             </th>
-            <th class="ext">
+            <th class="ext" aria-sort={sortAria('extension')}>
               <button type="button" class="th-button" onclick={() => fileBrowser.setSort('extension')}>
                 Ext {#if sortBy === 'extension'}{@const Icon = sortIcon('extension')}<Icon size={12} class="sort-i" />{:else}<ChevronsUpDown size={12} class="sort-i muted" />{/if}
               </button>

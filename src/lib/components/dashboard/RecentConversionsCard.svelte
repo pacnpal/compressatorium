@@ -17,6 +17,11 @@
       const ta = Date.parse(a.completed_at ?? '') || 0;
       const tb = Date.parse(b.completed_at ?? '') || 0;
       if (ta !== tb) return tb - ta;
+      // Numeric fallback when both ids parse as numbers so "10" sorts
+      // after "2"; lexicographic for non-numeric ids (UUIDs, etc.).
+      const na = Number(a.id);
+      const nb = Number(b.id);
+      if (Number.isFinite(na) && Number.isFinite(nb)) return nb - na;
       return String(b.id).localeCompare(String(a.id));
     });
     return terminal.slice(0, 5);

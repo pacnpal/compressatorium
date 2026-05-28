@@ -42,6 +42,7 @@
           type="button"
           class="chip"
           class:active={isSelected('none')}
+          aria-pressed={isSelected('none')}
           onclick={() => conversion.toggleCodec('none')}
         >
           {#if isSelected('none')}<Check size={12} aria-hidden="true" />{/if}
@@ -53,6 +54,7 @@
               type="button"
               class="chip"
               class:active={isSelected(codec.value)}
+              aria-pressed={isSelected(codec.value)}
               title={codec.hint ?? ''}
               onclick={() => conversion.toggleCodec(codec.value)}
             >

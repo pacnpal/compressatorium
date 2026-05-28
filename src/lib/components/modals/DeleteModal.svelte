@@ -20,12 +20,16 @@
     busy = true;
     try {
       await api.deleteFile(target.path);
-      toast.success(`Deleted: ${target.name ?? target.path}`);
-      // Reflect the deletion in the listing without waiting for a manual
-      // refresh. forced refresh bypasses the auto-refresh-while-jobs-active
-      // guard since this is an explicit user action.
-      await fileBrowser.refresh({ force: true });
+      // Close + report success immediately so a downstream refresh
+      // failure doesn't surface as "Failed to delete" after the delete
+      // already happened server-side.
       ui.deleteTarget = null;
+      toast.success(`Deleted: ${target.name ?? target.path}`);
+      try {
+        await fileBrowser.refresh({ force: true });
+      } catch (_e) {
+        toast.warning('Deleted; refreshing the listing failed');
+      }
     } catch (e) {
       toast.error(e?.message ?? 'Failed to delete');
     } finally {

@@ -324,8 +324,15 @@ class FileBrowserStore {
 
   // ─── Selection ────────────────────────────────────────────────────────
   toggleSelect(entry, { shift = false } = {}) {
-    if (!entry || entry.type === 'directory') return;
-    const visible = this.visibleEntries.filter((e) => e.type !== 'directory');
+    if (!entry || entry.type === 'directory' || entry.type === 'archive') return;
+    // Range-selectable rows are non-directory AND non-archive. Including
+    // archive containers in the shift-range would silently insert the
+    // archive's own path into selectedFiles, and the backend rejects
+    // archive containers as conversion inputs (it expects archive::member
+    // or a regular file path). Same guard as toggleSelectAll.
+    const visible = this.visibleEntries.filter(
+      (e) => e.type !== 'directory' && e.type !== 'archive',
+    );
     const idx = visible.findIndex((e) => e.path === entry.path);
 
     if (shift && this.lastSelectedIndex >= 0 && idx >= 0) {

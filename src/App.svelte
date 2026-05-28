@@ -14,6 +14,7 @@
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { verification } from '$lib/stores/verification.svelte.js';
+  import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { ModeWatcher, mode } from 'mode-watcher';
   import { Toaster, toast } from 'svelte-sonner';
   import { STORAGE_KEYS } from '$lib/util/localStorage.js';
@@ -55,10 +56,10 @@
 
   onMount(() => {
     ui.loadVersion();
-    // Rehydrate the verified set so OK badges survive reloads. Fire and
-    // forget — failure leaves the set empty, which is the same as a
-    // fresh session.
+    // Rehydrate the verified set + DAT-library state so OK / DAT badges
+    // survive reloads. Fire and forget — failure leaves the cache empty.
     verification.loadVerified();
+    datMatching.refreshHasDats();
     jobs.connect();
     const stopRouter = startRouter();
     return () => {

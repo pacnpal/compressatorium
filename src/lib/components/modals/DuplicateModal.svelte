@@ -12,7 +12,7 @@
   import Badge from '$lib/components/ui/Badge.svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
-  /** @type {{ open: boolean, onResolve: (action: 'skip'|'overwrite'|null) => void }} */
+  /** @type {{ open: boolean, onResolve: (action: 'skip'|'overwrite'|'rename'|null) => void }} */
   let { open, onResolve } = $props();
 
   const check = $derived(conversion.duplicateCheck ?? []);
@@ -43,6 +43,7 @@
   {#snippet footer()}
     <Button variant="secondary" onclick={() => onResolve(null)}>Cancel</Button>
     <Button variant="secondary" onclick={() => onResolve('skip')}>Skip duplicates</Button>
+    <Button variant="secondary" onclick={() => onResolve('rename')}>Rename new</Button>
     <Button variant="destructive" onclick={() => onResolve('overwrite')}>Overwrite all</Button>
   {/snippet}
 </BaseModal>
