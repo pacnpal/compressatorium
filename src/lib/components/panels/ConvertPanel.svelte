@@ -2,6 +2,7 @@
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { verification } from '$lib/stores/verification.svelte.js';
+  import { ui } from '$lib/stores/ui.svelte.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
@@ -53,11 +54,13 @@
     if (duplicatePrompt) {
       const resolver = duplicatePrompt;
       duplicatePrompt = null;
+      ui.duplicatePromptOpen = false;
       resolver(action);
     }
   }
 
   async function awaitDuplicateChoice() {
+    ui.duplicatePromptOpen = true;
     return new Promise((resolve) => {
       duplicatePrompt = resolve;
     });

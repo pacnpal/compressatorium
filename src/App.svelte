@@ -47,18 +47,31 @@
 
   // Refresh the file listing when terminal job events arrive — newly
   // written outputs need to appear, delete-on-verify removals need to
-  // disappear, sibling badges (verified / output-ready) need to flip.
-  // Watching the sum of terminal counts gives one tick per new finish
-  // without imposing per-event coupling between the stores. The
-  // refresh path already self-throttles via auto-refresh and gates on
-  // jobs.hasActive, so this is safe to call freely.
+  // disappear, sibling badges flip.
+  //
+  // Refresh interferes with whatever the user was doing if we don't
+  // gate it carefully. Skip while any of the following hold; the
+  // counter advances only after refresh actually fires so the gates
+  // clearing (modal closes, batch finishes, etc.) immediately re-runs
+  // the effect and lets the deferred refresh through.
+  //   - User toggled auto-refresh off explicitly.
+  //   - Any modal that reads file-listing state is open.
+  //   - A conversion submit is mid-flight.
+  //   - A verify batch is running.
+  //   - fileBrowser is already loading.
+  //   - We're in search mode (refresh() short-circuits anyway).
   let _lastTerminal = $state(0);
   $effect(() => {
     const total = jobs.completedCount + jobs.failedCount + jobs.cancelledCount;
-    if (total > _lastTerminal) {
-      _lastTerminal = total;
-      fileBrowser.refresh().catch(() => {});
-    }
+    if (total <= _lastTerminal) return;
+    if (!fileBrowser.autoRefresh) return;
+    if (fileBrowser.loading) return;
+    if (fileBrowser.searchMode) return;
+    if (ui.anyEntryModalOpen) return;
+    if (conversion.converting) return;
+    if (verification.batchRun) return;
+    _lastTerminal = total;
+    fileBrowser.refresh().catch(() => {});
   });
 
   function handleSkip(e) {

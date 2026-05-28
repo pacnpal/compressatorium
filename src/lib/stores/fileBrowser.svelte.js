@@ -273,11 +273,13 @@ class FileBrowserStore {
         this.entriesError = e?.message ?? 'Failed to read archive';
       } finally {
         this.loading = false;
+        this._clampPage();
       }
       return;
     }
     if (!this.currentPath) {
       this.entries = [];
+      this._clampPage();
       return;
     }
     this.loading = true;
@@ -290,7 +292,19 @@ class FileBrowserStore {
       this.entries = [];
     } finally {
       this.loading = false;
+      this._clampPage();
     }
+  }
+
+  /**
+   * Clamp `page` into the new pageCount after entries shrink — a
+   * background refresh that drops the visible row count could
+   * otherwise strand the user on an empty page they can't see is
+   * empty. Never moves the page if the current value is still valid.
+   */
+  _clampPage() {
+    const max = this.pageCount;
+    if (this.page > max) this.page = max;
   }
 
   async search(query) {

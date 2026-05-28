@@ -49,10 +49,35 @@ class UIStore {
   showCancelAll = $state(false);
   showClearDone = $state(false);
   showHelp = $state(false);
+  // ConvertPanel awaits a per-submit user choice on duplicate outputs.
+  // Flag is observed by App.svelte so background refresh-on-terminal
+  // events can't swap entries out from under the open dialog.
+  duplicatePromptOpen = $state(false);
 
   // Focus signal — bumped on view change so App.svelte can move focus to
   // the main landmark without screen readers losing context.
   focusBump = $state(0);
+
+  /**
+   * True when any modal that depends on file-listing state is open.
+   * Used by App.svelte to suppress background refreshes that would
+   * swap entries / selection / paging underneath an open dialog. The
+   * pure-confirmation modals (cancel-all, clear-completed, help) are
+   * intentionally excluded since they don't reference fileBrowser
+   * entries.
+   */
+  get anyEntryModalOpen() {
+    return (
+      !!this.chdInfoTarget ||
+      !!this.renameTarget ||
+      !!this.deleteTarget ||
+      !!this.bulkDeleteEntries ||
+      !!this.bulkVerifyItems ||
+      !!this.duplicateCheck ||
+      !!this.deletePlan ||
+      this.duplicatePromptOpen
+    );
+  }
 
   // SSE connection-state tracking. Internal — only reportConnection() touches.
   _connectionToastId = null;
