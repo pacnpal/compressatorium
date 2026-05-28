@@ -11,9 +11,18 @@
   function close() { ui.showClearDone = false; }
 
   async function handleConfirm() {
+    // Snapshot the pre-clear count for the toast fallback. jobs.clearCompleted
+    // optimistically drops terminal jobs from the local store before the
+    // request resolves, so `total` would re-derive to 0 by the time the
+    // toast evaluates and we'd report "Removed 0 job(s)" on a real success.
+    const pending = total;
     try {
       const r = await jobs.clearCompleted();
-      toast.success(`Removed ${r?.removed_count ?? total} job(s) from history`);
+      // Backend /api/jobs/completed returns { deleted, count } — not
+      // `removed_count`. Fall back to the pre-clear snapshot when the
+      // count is missing for any reason.
+      const removed = typeof r?.count === 'number' ? r.count : pending;
+      toast.success(`Removed ${removed} job(s) from history`);
       close();
     } catch (e) {
       toast.error(e?.message ?? 'Failed to clear completed jobs');

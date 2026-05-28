@@ -11,9 +11,16 @@
   function close() { ui.showCancelAll = false; }
 
   async function handleConfirm() {
+    // Snapshot the pre-cancel count for the toast fallback — the
+    // SSE-driven jobs.queuedCount/processingCount can drop to 0
+    // before the toast evaluates if the cancellation races through.
+    const pending = queuedCount;
     try {
       const r = await jobs.cancelAll();
-      toast.success(`Cancelled ${r?.cancelled_count ?? queuedCount} job(s)`);
+      // Backend /api/jobs/cancel-all returns
+      // { requested, queued, processing, ... }. Not cancelled_count.
+      const cancelled = typeof r?.requested === 'number' ? r.requested : pending;
+      toast.success(`Cancelled ${cancelled} job(s)`);
       close();
     } catch (e) {
       toast.error(e?.message ?? 'Failed to cancel all jobs');

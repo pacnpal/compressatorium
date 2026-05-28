@@ -73,13 +73,16 @@
   // ran these hydration calls after every listing change. We mirror
   // that here so badges show up without per-row fetches. Effect runs
   // again whenever the visible page changes (navigation, pagination,
-  // search, filter).
+  // search, filter). hydrateAndMatch also kicks a background match
+  // job for uncached visible paths, so newly browsed/converted files
+  // pick up a DAT badge after one round-trip — the cache lookup
+  // alone never hashes.
   $effect(() => {
     const paths = entries.map((e) => e?.path).filter(Boolean);
     if (paths.length === 0) return;
     chdMetadata.hydrate(paths).catch(() => {});
     if (datMatching.hasDats) {
-      datMatching.hydrate(paths).catch(() => {});
+      datMatching.hydrateAndMatch(paths).catch(() => {});
     }
   });
 

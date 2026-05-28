@@ -72,6 +72,18 @@
       await conversion.submit(selectedPaths, { duplicateAction });
       conversion.clearDuplicateCheck();
       fileBrowser.clearSelection();
+      // Honor the per-deployment auto-return-from-search setting
+      // (/api/version → ui.searchAutoReturnToFileList). The legacy
+      // flow dropped users back to the pre-search directory after a
+      // successful submit so they could see the new output in
+      // context; otherwise the UI stays stuck in the recursive
+      // search result set even though those files are now queued.
+      if (fileBrowser.searchMode && ui.searchAutoReturnToFileList) {
+        fileBrowser.exitSearch();
+        // exitSearch only flips the flag; force a refresh so the
+        // entries actually swap back to the current directory.
+        fileBrowser.refresh({ force: true }).catch(() => {});
+      }
     } catch (_e) {
       // toast already raised in conversion.submit / checkDuplicates
     }

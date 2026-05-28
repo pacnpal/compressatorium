@@ -65,6 +65,29 @@ class DATMatchingStore {
     }
   }
 
+  /**
+   * Fetch cached matches AND kick a background match job for any
+   * paths the cache lookup didn't return. /api/dat/matches/lookup is
+   * read-only (it never hashes), so files that have never been
+   * matched by any session would otherwise never get a DAT badge.
+   * The startMatchJob handler de-dupes against the existing job queue
+   * server-side, so re-firing for the same path during a page
+   * navigation is cheap. Skipped when no DATs are imported — the
+   * match job would just no-op.
+   */
+  async hydrateAndMatch(paths) {
+    if (!paths?.length) return;
+    await this.hydrate(paths);
+    if (!this.hasDats) return;
+    const uncached = paths.filter((p) => !this.matches.has(p));
+    if (uncached.length === 0) return;
+    try {
+      await this.startMatchJob(uncached);
+    } catch (_e) {
+      // non-fatal — the file list still renders without badges
+    }
+  }
+
   async matchBatch(paths) {
     if (!paths?.length) return null;
     try {
@@ -173,13 +196,14 @@ class DATMatchingStore {
   }
 
   async cancelSync() {
-    try {
-      const res = await api.cancelSync();
-      this.syncing = false;
-      return res;
-    } catch (_e) {
-      return null;
-    }
+    // Don't swallow failures. /api/dat/sync/cancel returns 409 with
+    // "No sync in progress" when there's nothing to cancel; swallowing
+    // that would make DATView.handleCancelSync() always take the
+    // success path and tell the user cancellation was requested when
+    // it wasn't. Let the caller decide the UX.
+    const res = await api.cancelSync();
+    this.syncing = false;
+    return res;
   }
 }
 

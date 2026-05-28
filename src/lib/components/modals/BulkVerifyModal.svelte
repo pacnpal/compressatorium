@@ -89,18 +89,24 @@
     if (running || groups.groups.length === 0) return;
     running = true;
     runResults = { verified: 0, failed: 0 };
+    // Track totals locally and only assign to runResults after each
+    // group. Reading the just-assigned `runResults.verified` for the
+    // success toast can see the previous tick's value in some
+    // proxy-snapshot cases; the local count is unambiguous and the
+    // store update still drives the in-flight UI.
+    let verifiedTotal = 0;
+    let failedTotal = 0;
     try {
       for (let i = 0; i < groups.groups.length; i += 1) {
         groupIndex = i;
         const { tool, paths } = groups.groups[i];
         const result = await verification.verifyBatch(tool.id, paths);
-        runResults = {
-          verified: runResults.verified + (result?.verified ?? 0),
-          failed: runResults.failed + (result?.failed ?? 0),
-        };
+        verifiedTotal += result?.verified ?? 0;
+        failedTotal += result?.failed ?? 0;
+        runResults = { verified: verifiedTotal, failed: failedTotal };
       }
       toast.success(
-        `Verified ${runResults.verified} of ${totalPaths} file${totalPaths === 1 ? '' : 's'}`,
+        `Verified ${verifiedTotal} of ${totalPaths} file${totalPaths === 1 ? '' : 's'}`,
       );
     } catch (e) {
       if (e?.name !== 'AbortError') {
