@@ -7,6 +7,7 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import ModeSelect from './ModeSelect.svelte';
   import CompressionPicker from './CompressionPicker.svelte';
+  import DuplicateModal from '$lib/components/modals/DuplicateModal.svelte';
   import Settings2 from '@lucide/svelte/icons/settings-2';
   import Play from '@lucide/svelte/icons/play';
   import Loader from '@lucide/svelte/icons/loader-circle';
@@ -33,13 +34,43 @@
     selectedCount === 0 || converting || blockedByDeleteOnVerify,
   );
 
+  // Duplicate preflight: open the modal when the backend reports any
+  // output collision; await the user's pick (skip / overwrite / null
+  // for cancel) and only then submit. Skips the modal entirely when
+  // there are no collisions.
+  let duplicatePrompt = $state(null); // resolver fn while modal is open
+  const duplicateModalOpen = $derived(!!duplicatePrompt);
+
+  function resolveDuplicate(action) {
+    if (duplicatePrompt) {
+      const resolver = duplicatePrompt;
+      duplicatePrompt = null;
+      resolver(action);
+    }
+  }
+
+  async function awaitDuplicateChoice() {
+    return new Promise((resolve) => {
+      duplicatePrompt = resolve;
+    });
+  }
+
   async function handleSubmit() {
     if (submitDisabled) return;
     try {
-      await conversion.submit(selectedPaths);
+      const check = await conversion.checkDuplicates(selectedPaths);
+      const conflicts = Array.isArray(check) ? check.filter((d) => d?.exists) : [];
+      let duplicateAction = 'skip';
+      if (conflicts.length > 0) {
+        const choice = await awaitDuplicateChoice();
+        if (!choice) return;   // user cancelled
+        duplicateAction = choice;
+      }
+      await conversion.submit(selectedPaths, { duplicateAction });
+      conversion.clearDuplicateCheck();
       fileBrowser.clearSelection();
     } catch (_e) {
-      // toast already raised in conversion.submit
+      // toast already raised in conversion.submit / checkDuplicates
     }
   }
 
@@ -114,6 +145,8 @@
     </div>
   {/if}
 </section>
+
+<DuplicateModal open={duplicateModalOpen} onResolve={resolveDuplicate} />
 
 <style>
   .panel {

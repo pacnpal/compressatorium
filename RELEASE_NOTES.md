@@ -1,5 +1,15 @@
 # Release Notes
 
+## Unreleased — Duplicate-output preflight (P7 part 2)
+
+### ✨ New
+
+- **DuplicateModal preflight.** ConvertPanel now runs `conversion.checkDuplicates(paths)` before each submit. If the backend reports any output collision (`d.exists === true`), the dialog opens with the conflict list and three choices: Cancel, Skip duplicates, Overwrite all. Resolution flows back into `conversion.submit(paths, { duplicateAction })` via a per-submit `Promise` resolver — no global pending-state to leak. No collisions → submit fires straight through, no modal.
+
+### 🔧 Internal
+
+- Duplicate-modal state lives entirely inside ConvertPanel as a `$state` resolver-or-null. Opening sets the resolver; the modal's `onResolve` callback nulls it and resolves the awaited promise. Avoids stale-prompt bugs when the user submits, cancels, and re-submits.
+
 ## Unreleased — DAT view + dashboard cards (P7/P8)
 
 ### ✨ New
