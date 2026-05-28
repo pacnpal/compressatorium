@@ -154,6 +154,7 @@ class FileBrowserStore {
     this.currentPath = volume.path;
     this.currentArchivePath = null;
     this.clearSelection();
+    this.page = 1;                       // reset paging — new listing
     // Force so navigation isn't suppressed while jobs are running.
     await this.refresh({ force: true });
   }
@@ -164,15 +165,19 @@ class FileBrowserStore {
     this.currentPath = path;
     this.currentArchivePath = null;
     this.clearSelection();
+    this.page = 1;                       // smaller folder shouldn't strand on page N>1
     await this.refresh({ force: true });
   }
 
   async browseArchive(archivePath) {
     if (!archivePath) return;
-    this.currentArchivePath = archivePath;
+    // Load FIRST. If the listing fails (corrupt / unreadable archive),
+    // we don't want to flip currentArchivePath and strand the store in
+    // archive mode with the previous directory's rows still visible
+    // and the refresh path retrying the failed archive forever.
     try {
       const data = await api.listArchive(archivePath);
-      this.entries = (data.files ?? []).map((f) => {
+      const next = (data.files ?? []).map((f) => {
         // Archive members in subdirectories (e.g. "games/disc.cue") expose
         // the full subpath via `internal_path`. Falling back to `name` (the
         // basename) would build `archive::disc.cue` and the backend would
@@ -184,7 +189,17 @@ class FileBrowserStore {
           path: `${archivePath}::${member}`,
         };
       });
+      // Success — commit the archive view atomically: clear stale
+      // parent-dir selections (otherwise they invisibly tag along with
+      // archive-member submissions), reset paging, swap entries, then
+      // flip into archive mode.
+      this.clearSelection();
+      this.page = 1;
+      this.entries = next;
+      this.currentArchivePath = archivePath;
+      this.entriesError = null;
     } catch (e) {
+      // Leave the previous listing in place; surface the error.
       this.entriesError = e?.message ?? 'Failed to read archive';
     }
   }

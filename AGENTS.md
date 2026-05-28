@@ -15,7 +15,7 @@ Use it as an operational checklist, not as product documentation.
 
 ### 1. Local Dev (Web UI)
 
-The frontend is a **Svelte 5 + Vite SPA** (single-page application) under `src/` (see README §"Frontend Development"). The backend is FastAPI under `app/`. Build output lands in `static/` and is served by FastAPI via the existing `/static` mount.
+The frontend is a Svelte 5 + Vite single-page application (SPA) under `src/` (see README §"Frontend Development"). The backend is FastAPI under `app/`. Build output lands in `static/` and is served by FastAPI via the existing `/static` mount.
 
 - Production-style run (FastAPI serves the prebuilt SPA):
 

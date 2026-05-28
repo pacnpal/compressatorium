@@ -115,6 +115,11 @@ class ConversionStore {
   setMode(mode) {
     if (!registry.specFor(mode)) return;
     this.mode = mode;
+    // If the new mode doesn't support delete-on-verify (e.g. switching
+    // from a chdman create mode to an extract mode), clear the flag.
+    // The backend rejects the combination outright, so a sticky flag
+    // would fail the next submission instead of silently degrading.
+    if (!this.supportsDeleteOnVerify) this.deleteOnVerify = false;
   }
 
   setCompression(list) {
@@ -171,7 +176,11 @@ class ConversionStore {
         outputDir: this.outputDir || null,
         duplicateAction,
         compression: this.compressionValue,
-        deleteOnVerify: this.deleteOnVerify,
+        // Mask the flag at submit time too — defense in depth against
+        // any code path that might set deleteOnVerify true without
+        // going through setMode (the backend rejects the combination
+        // for extract/raw modes).
+        deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
       });
       ui.notify(`Queued ${filePaths.length} job(s)`, 'success');
       return result;

@@ -44,10 +44,15 @@
     mainEl?.focus({ preventScroll: false });
   }
 
-  function onBoundaryError(err, reset) {
+  // Per Svelte 5 svelte-boundary docs: do NOT call reset() inside
+  // onerror — if the underlying problem persists, the boundary
+  // immediately re-renders and re-throws, creating an error/retry
+  // loop. Surface a toast, leave the failed snippet visible, and let
+  // the user click "Try again" (which receives `reset` directly and
+  // fires it as a user-initiated action).
+  function onBoundaryError(err, _reset) {
     console.error('View boundary caught error:', err);
     ui.notify('Something went wrong. Try again.', 'error', 6000);
-    reset();
   }
 
   onMount(() => {
