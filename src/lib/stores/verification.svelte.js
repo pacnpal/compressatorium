@@ -109,6 +109,18 @@ class VerificationStore {
     this.batchRun = null;
   }
 
+  /**
+   * Drop the batchRun summary left behind after a run completes
+   * normally. cancelBatch() also aborts the in-flight fetch, which is
+   * wrong for an already-finished run; this is the no-abort variant
+   * the UI calls when dismissing a completed batch. Anything observing
+   * `batchRun` as a "batch is active" signal (e.g. the auto-refresh
+   * gate in App.svelte) needs this cleared or it stays blocked forever.
+   */
+  clearBatch() {
+    this.batchRun = null;
+  }
+
   _handleBatchProgress(evt) {
     if (!this.batchRun) return;
     switch (evt.type) {

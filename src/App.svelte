@@ -63,6 +63,14 @@
   let _lastTerminal = $state(0);
   $effect(() => {
     const total = jobs.completedCount + jobs.failedCount + jobs.cancelledCount;
+    // The count can drop when the user clears terminal history
+    // (jobs.clearCompleted). Track the watermark down too, otherwise a
+    // post-clear conversion whose new total is still below the old
+    // high-water mark would never trigger a refresh.
+    if (total < _lastTerminal) {
+      _lastTerminal = total;
+      return;
+    }
     if (total <= _lastTerminal) return;
     if (!fileBrowser.autoRefresh) return;
     if (fileBrowser.loading) return;

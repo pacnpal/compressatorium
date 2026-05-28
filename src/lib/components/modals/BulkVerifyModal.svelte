@@ -68,11 +68,18 @@
     running = false;
     groupIndex = 0;
     runResults = { verified: 0, failed: 0 };
+    // Drop the completed-run summary from the store. verifyBatch leaves
+    // batchRun populated after a successful run, and App.svelte treats
+    // a truthy batchRun as "a batch is active" to suppress auto-refresh
+    // — leaving it set would permanently block listing refreshes.
+    verification.clearBatch();
   }
 
   function handleOpenChange(value) {
     if (!value) {
-      // Cancel any in-flight batch when the user dismisses the dialog.
+      // Cancel any in-flight batch when the user dismisses the dialog;
+      // cancelBatch() aborts the fetch and nulls batchRun. close()
+      // clears any completed-run summary for the not-running case.
       if (running) verification.cancelBatch();
       close();
     }

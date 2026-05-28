@@ -139,12 +139,22 @@ class DATMatchingStore {
   }
 
   async pollSyncStatus() {
+    const wasSyncing = this.syncing;
     try {
       this.syncStatus = await api.getSyncStatus();
       const stillSyncing = !!this.syncStatus?.syncing;
       this.syncing = stillSyncing;
-      if (!stillSyncing) {
-        // Sync just finished — refresh hasDats so badges flip on.
+      if (!stillSyncing && wasSyncing) {
+        // Sync just finished (syncing → done transition). The backend
+        // has persisted the new DAT set and may have dropped the old
+        // one, so reload the full list — not just hasDats — and clear
+        // the stale match cache (new hashes can flip prior matches).
+        // loadDATs() refreshes hasDats internally.
+        this.matches.clear();
+        await this.loadDATs();
+      } else if (!stillSyncing) {
+        // Cold poll (e.g. on mount) with no sync running: cheap
+        // hasDats refresh is enough; no need to reload the whole list.
         await this.refreshHasDats();
       }
       return this.syncStatus;

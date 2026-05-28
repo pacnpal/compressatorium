@@ -80,16 +80,24 @@ class ConversionStore {
    * `.rvz` while in CHDMAN `createcd` mode.
    *
    * Paths inside archives (`archive.zip::dir/disc.cue`) are matched
-   * against their internal extension. When no mode is active or the
-   * spec has no `inputExtensions` declared (the registry guarantees
-   * one, but defensively), we accept anything to avoid silently
-   * blocking selection.
+   * against their internal extension, but only when the current spec
+   * actually accepts archive input — Dolphin/3DS and CHDMAN
+   * extract/copy modes set `allowsArchiveInput: false`, so submitting
+   * an archive member there just makes `plan_job()` skip it and the
+   * user ends up with zero queued jobs. Reject archive members
+   * up-front for those modes.
+   *
+   * When no mode is active or the spec has no `inputExtensions`
+   * declared (the registry guarantees one, but defensively), we accept
+   * anything to avoid silently blocking selection.
    */
   allowsInput(path) {
     if (!path) return false;
+    const isArchiveMember = path.includes('::');
+    if (isArchiveMember && !this.allowsArchiveInput) return false;
     const exts = this.currentSpec?.inputExtensions;
     if (!Array.isArray(exts) || exts.length === 0) return true;
-    const member = path.includes('::') ? path.split('::').pop() : path;
+    const member = isArchiveMember ? path.split('::').pop() : path;
     const lower = (member ?? '').toLowerCase();
     return exts.some((ext) => lower.endsWith(ext));
   }
