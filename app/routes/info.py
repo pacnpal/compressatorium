@@ -827,9 +827,12 @@ def _sse_batch_from_verify_stream(
                     nonlocal final_result
                     try:
                         async for update in cfg.service().verify_stream(path):
-                            await queue.put(update)
+                            # Record the terminal result before enqueueing so a
+                            # consumer that breaks on the "complete"/"error"
+                            # event can't cancel this task mid-update.
                             if update.get("type") in ("complete", "error"):
                                 final_result = update
+                            await queue.put(update)
                     except Exception as exc:
                         final_result = {
                             "type": "error",

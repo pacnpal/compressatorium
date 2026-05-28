@@ -8,6 +8,7 @@ and the sync 429 / SSE ``verify_error`` backpressure behavior.
 import asyncio
 import json
 import re
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -53,15 +54,21 @@ _TOOLS = {
 }
 
 
+_VERIFY_PATH_RE = re.compile(r"^/(?:dolphin-|z3ds-)?verify(?:-batch)?(?:/events)?$")
+
+
 def test_verify_route_table_is_byte_identical():
-    """Every verify URL path, HTTP method, and route name must be present."""
+    """The verify URL paths, HTTP methods, and route names must match exactly."""
     actual = set()
     for route in info_routes.router.routes:
-        methods = getattr(route, "methods", None) or set()
-        for method in methods:
+        if not _VERIFY_PATH_RE.fullmatch(route.path):
+            continue
+        for method in getattr(route, "methods", None) or set():
             actual.add((route.path, method, route.name))
-    missing = _EXPECTED_VERIFY_ROUTES - actual
-    assert not missing, f"missing verify routes: {missing}"
+    assert actual == _EXPECTED_VERIFY_ROUTES, (
+        f"missing: {_EXPECTED_VERIFY_ROUTES - actual}; "
+        f"unexpected: {actual - _EXPECTED_VERIFY_ROUTES}"
+    )
 
 
 @pytest.fixture
@@ -146,7 +153,7 @@ async def test_batch_sse_event_shape_snapshot(tool_id, verify_env, monkeypatch):
     response = await batch_fn(BulkVerifyRequest(paths=[path]))
     events = await _collect(response)
 
-    filename = path.rsplit("/", 1)[-1]
+    filename = Path(path).name
     assert events == [
         {"event": "verify_batch_start",
          "data": json.dumps({"total": 1, "paths": [path]})},
@@ -174,7 +181,7 @@ async def test_sse_heartbeat_shape(tool_id, verify_env, monkeypatch):
     service = Mock()
 
     async def stalled_stream(path):
-        await asyncio.sleep(5)
+        await asyncio.sleep(2.5)
         yield {"type": "complete", "valid": True, "message": "done"}
 
     service.verify_stream = stalled_stream
