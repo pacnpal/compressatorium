@@ -7,9 +7,14 @@
     <link rel="icon" type="image/x-icon" href="/static/images/favicon.ico" />
     <title>Compressatorium</title>
     <script>
+      // Allowlist clamp prevents an arbitrary localStorage value (corrupted
+      // store, extension-injected key) from being written as a data-theme
+      // attribute we can't resolve to a tokens.css block.
       (function () {
         try {
-          var stored = localStorage.getItem('theme-preference') || 'system';
+          var raw = localStorage.getItem('theme-preference');
+          var stored =
+            raw === 'light' || raw === 'dark' || raw === 'system' ? raw : 'system';
           var resolved =
             stored === 'system'
               ? window.matchMedia('(prefers-color-scheme: dark)').matches

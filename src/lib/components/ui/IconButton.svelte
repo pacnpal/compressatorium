@@ -1,17 +1,31 @@
 <script>
   /**
+   * Generic small icon button. Pass `toggle` for true on/off semantics so the
+   * button reports aria-pressed; otherwise we omit it and `active` is purely
+   * a visual style for "currently scoped" hints (e.g. selected nav item).
+   *
    * @typedef {Object} Props
    * @property {string} label - aria-label for the button
    * @property {(e: MouseEvent) => void} [onclick]
    * @property {'sm'|'md'|'lg'} [size]
    * @property {boolean} [disabled]
    * @property {boolean} [active]
+   * @property {boolean} [toggle]
    * @property {string} [title]
    * @property {import('svelte').Snippet} [children]
    */
 
   /** @type {Props} */
-  let { label, onclick, size = 'md', disabled = false, active = false, title, children } = $props();
+  let {
+    label,
+    onclick,
+    size = 'md',
+    disabled = false,
+    active = false,
+    toggle = false,
+    title,
+    children,
+  } = $props();
 </script>
 
 <button
@@ -19,6 +33,7 @@
   class="icon-btn size-{size}"
   class:active
   aria-label={label}
+  aria-pressed={toggle ? active : undefined}
   title={title ?? label}
   {disabled}
   {onclick}

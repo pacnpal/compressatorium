@@ -19,7 +19,7 @@
   ></div>
 {/if}
 
-<div class="drawer" class:open aria-hidden={!open}>
+<div class="drawer" class:open aria-hidden={!open} inert={!open}>
   <Sidebar />
 </div>
 
@@ -39,9 +39,13 @@
     transform: translateX(-100%);
     transition: transform var(--dur-base) var(--ease-out);
     box-shadow: var(--elev-3);
+    visibility: hidden;
+    pointer-events: none;
   }
   .drawer.open {
     transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
   }
   @media (min-width: 900px) {
     .backdrop,

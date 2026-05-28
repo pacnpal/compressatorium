@@ -4,14 +4,16 @@
 const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
 
-function safeParse(raw) {
+// Arrow function (not declaration) so older JSHint dictionaries reliably
+// recognize it inside nested closures used by the reconnect helpers.
+const safeParse = (raw) => {
   if (raw == null || raw === '') return null;
   try {
     return JSON.parse(raw);
   } catch (_e) {
     return raw;
   }
-}
+};
 
 /**
  * Auto-reconnecting EventSource wrapper. Used for /api/jobs/events — the

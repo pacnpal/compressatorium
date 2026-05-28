@@ -181,9 +181,12 @@ class JobsStore {
         for (const job of created) this._applyJob(job);
       }
       return created;
-    } catch (e) {
+    } finally {
+      // Always clear placeholders for the requested paths. _applyJob already
+      // removes the placeholder for any path that came back as a real job;
+      // this also drops placeholders for paths the backend skipped (e.g.
+      // duplicates with duplicate_action: 'skip') so they don't linger.
       for (const fp of filePaths) this._removeOptimistic(fp, mode);
-      throw e;
     }
   }
 

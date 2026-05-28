@@ -8,12 +8,20 @@
    * @property {string} value
    * @property {Option[]} options
    * @property {string} [label]
+   * @property {string} [ariaLabel] - fallback name when no visible label
    * @property {boolean} [disabled]
    * @property {(value: string) => void} [onchange]
    */
 
   /** @type {Props} */
-  let { value = $bindable(), options, label, disabled = false, onchange } = $props();
+  let {
+    value = $bindable(),
+    options,
+    label,
+    ariaLabel,
+    disabled = false,
+    onchange,
+  } = $props();
 
   function handle(e) {
     value = e.currentTarget.value;
@@ -23,7 +31,12 @@
 
 <label class="select" class:disabled>
   {#if label}<span class="label">{label}</span>{/if}
-  <select bind:value {disabled} onchange={handle}>
+  <select
+    bind:value
+    {disabled}
+    onchange={handle}
+    aria-label={label ? undefined : (ariaLabel ?? 'Select an option')}
+  >
     {#each options as opt (opt.value)}
       <option value={opt.value}>{opt.label}</option>
     {/each}

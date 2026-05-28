@@ -62,16 +62,30 @@ class ConversionStore {
   }
 
   /**
-   * The wire-format compression value sent to the backend. Backend expects:
-   * - comma-separated chdman codec list, or
-   * - dolphin compression level string (rvz/wia only), or
-   * - null if compression is unsupported by the current mode.
+   * The wire-format compression value sent to the backend.
+   *
+   * - chdman create/copy modes: comma-separated codec list (e.g. "zlib,lzma").
+   * - Dolphin RVZ/WIA: "<codec>:<level>" (e.g. "zstd:19"). The backend's
+   *   dolphin_tool service splits on `:` and passes the codec to
+   *   `dolphin-tool -c <codec> -l <level>`. Sending only the level (e.g.
+   *   "19") would be interpreted as the codec name and fail.
+   * - "none" selection: the literal string "none".
+   * - null when compression is not configurable for the current mode.
    */
   get compressionValue() {
     if (!this.supportsCompression && !this.supportsCompressionLevel) return null;
-    if (this.supportsCompressionLevel) return this.dolphinCompressionLevel;
-    if (this.compressionSelection.length === 0) return null;
-    return this.compressionSelection.join(',');
+    const selection = this.compressionSelection.filter((v) => v && v !== 'none');
+    if (this.compressionSelection.includes('none') && selection.length === 0) {
+      return 'none';
+    }
+    if (this.supportsCompressionLevel) {
+      // Dolphin RVZ/WIA: pick the first non-'none' codec and pair with level.
+      const codec = selection[0];
+      if (!codec) return 'none';
+      return `${codec}:${this.dolphinCompressionLevel}`;
+    }
+    if (selection.length === 0) return null;
+    return selection.join(',');
   }
 
   // ─── Setters ──────────────────────────────────────────────────────────

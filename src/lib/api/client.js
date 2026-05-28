@@ -52,13 +52,17 @@ export async function fetchJson(url, opts = {}, fallbackMessage = 'Request faile
 
 /** Convenience for POST application/json. */
 export function jsonPost(url, body, opts = {}, fallbackMessage) {
+  // Destructure first so a caller-supplied `headers` doesn't replace the
+  // Content-Type merge below, and so a caller-supplied `method`/`body` can't
+  // overwrite the POST + JSON envelope by accident.
+  const { headers = {}, method: _ignoredMethod, body: _ignoredBody, ...rest } = opts;
   return fetchJson(
     url,
     {
+      ...rest,
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(opts.headers ?? {}) },
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(body),
-      ...opts,
     },
     fallbackMessage,
   );

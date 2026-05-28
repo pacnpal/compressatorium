@@ -31,6 +31,7 @@ class FileBrowserStore {
   // Search
   searchMode = $state(false);
   searchResults = $state(null);
+  searchQuery = $state('');
 
   // View state
   filter = $state(null);
@@ -129,7 +130,8 @@ class FileBrowserStore {
     this.currentPath = volume.path;
     this.currentArchivePath = null;
     this.clearSelection();
-    await this.refresh();
+    // Force so navigation isn't suppressed while jobs are running.
+    await this.refresh({ force: true });
   }
 
   // ─── Navigation ───────────────────────────────────────────────────────
@@ -138,7 +140,7 @@ class FileBrowserStore {
     this.currentPath = path;
     this.currentArchivePath = null;
     this.clearSelection();
-    await this.refresh();
+    await this.refresh({ force: true });
   }
 
   async browseArchive(archivePath) {
@@ -165,12 +167,18 @@ class FileBrowserStore {
 
   leaveArchive() {
     this.currentArchivePath = null;
-    return this.refresh();
+    return this.refresh({ force: true });
   }
 
-  async refresh() {
+  /**
+   * @param {{ force?: boolean }} [opts] - `force: true` overrides the
+   *   "skip while jobs active and autoRefresh off" guard, so explicit
+   *   user navigation (volume switch, directory change, leave archive)
+   *   always updates the listing.
+   */
+  async refresh({ force = false } = {}) {
     if (this.searchMode) return;
-    if (jobs.hasActive && !this.autoRefresh) return;
+    if (!force && jobs.hasActive && !this.autoRefresh) return;
     if (!this.currentPath) {
       this.entries = [];
       return;
@@ -189,13 +197,18 @@ class FileBrowserStore {
   }
 
   async search(query) {
+    // /api/files/search has no query parameter — it returns every
+    // convertible file under the current path. The `query` is used
+    // client-side to filter the returned set (see filteredSearchResults).
     if (!query) {
       this.searchMode = false;
       this.searchResults = null;
+      this.searchQuery = '';
       return;
     }
     if (!this.currentPath) return;
     this.searchMode = true;
+    this.searchQuery = query;
     try {
       this.searchResults = await api.searchFiles(this.currentPath, true, true);
     } catch (e) {

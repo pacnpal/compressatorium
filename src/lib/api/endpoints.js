@@ -45,8 +45,17 @@ const runBatchVerify = async (url, paths, { onProgress, onFileComplete, signal }
       },
     },
   );
-  if (!completed && signal?.aborted) {
-    throw new DOMException('Aborted', 'AbortError');
+  if (!completed) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    // A stream that drains without verify_batch_complete is a failure mode
+    // (proxy timeout, backend crash). Surface it rather than silently
+    // returning the zero-counts default — callers update UI based on the
+    // returned result and would otherwise show "0 verified" as success.
+    const err = new Error('Batch verification stream ended before completion');
+    err.partial = finalResult;
+    throw err;
   }
   return finalResult;
 };

@@ -1,6 +1,6 @@
 {
   "_comment": "The app's frontend uses modern ES2020+ (const, arrow functions, async/await, template literals). JSHint defaults to ES5 and flags every const/let as a syntax error. Vendor files under static/vendor/ are third-party bundles we do not lint.",
-  "_comment_globals": "URLSearchParams/EventSource are standard browser globals but Codacy's JSHint build ships an older dictionary that omits them even with browser:true. Declare explicitly.",
+  "_comment_globals": "Browser globals Codacy's older JSHint dictionary omits even with browser:true: URLSearchParams, EventSource, AbortController, DOMException, TextDecoderStream. Declare explicitly.",
   "_comment_expr": "expr (W030) fires on optional-chaining expression heads like `err?.status` — Codacy's JSHint doesn't fully model ES2020 optional chaining even with esversion:11; the pattern itself is valid.",
   "esversion": 11,
   "browser": true,
@@ -10,6 +10,9 @@
   "expr": true,
   "globals": {
     "URLSearchParams": false,
-    "EventSource": false
+    "EventSource": false,
+    "AbortController": false,
+    "DOMException": false,
+    "TextDecoderStream": false
   }
 }

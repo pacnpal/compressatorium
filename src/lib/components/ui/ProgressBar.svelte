@@ -8,7 +8,7 @@
    */
 
   /** @type {Props} */
-  let { value, size = 'md', tone = 'accent', label } = $props();
+  let { value, size = 'md', tone = 'accent', label = 'Progress' } = $props();
 
   const indeterminate = $derived(value == null);
   const clamped = $derived(
