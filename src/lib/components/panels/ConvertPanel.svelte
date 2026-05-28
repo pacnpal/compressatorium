@@ -1,7 +1,6 @@
 <script>
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
-  import { verification } from '$lib/stores/verification.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -29,19 +28,12 @@
   const supportsDeleteOnVerify = $derived(conversion.supportsDeleteOnVerify);
   const converting = $derived(conversion.converting);
 
-  // Delete-on-verify preflight: each source must already be verified or
-  // the backend rejects the submission. Surfacing the unverified count in
-  // the UI prevents users from being surprised by a 400 at submit time.
-  const unverifiedSources = $derived.by(() => {
-    if (!conversion.deleteOnVerify) return [];
-    if (!supportsDeleteOnVerify) return [];
-    return selectedPaths.filter((p) => !verification.isVerified(p));
-  });
-  const blockedByDeleteOnVerify = $derived(unverifiedSources.length > 0);
-
-  const submitDisabled = $derived(
-    convertibleCount === 0 || converting || blockedByDeleteOnVerify,
-  );
+  // Delete-on-verify is validated by the backend against a snapshot of
+  // the selected sources, then the newly written output is verified before
+  // deletion. The verification store only tracks existing verified outputs,
+  // so source inputs must not be pre-filtered or block normal create/compress
+  // flows here.
+  const submitDisabled = $derived(convertibleCount === 0 || converting);
 
   // Duplicate preflight: open the modal when the backend reports any
   // output collision; await the user's pick (skip / overwrite / null
@@ -124,20 +116,10 @@
         <Checkbox
           bind:checked={conversion.deleteOnVerify}
           label="Delete sources after successful verification"
-          description="Each source is verified before deletion. Skipped if verify fails."
+          description="The created output is verified before sources are deleted. Skipped if verify fails."
         />
       {/if}
     </div>
-
-    {#if blockedByDeleteOnVerify}
-      <div class="warning" role="alert">
-        <TriangleAlert size={14} aria-hidden="true" />
-        <div>
-          <strong>{unverifiedSources.length} unverified file{unverifiedSources.length === 1 ? '' : 's'} selected.</strong>
-          Delete-on-verify requires every source to be verified first.
-        </div>
-      </div>
-    {/if}
 
     {#if incompatibleCount > 0}
       <div class="warning info" role="status">
