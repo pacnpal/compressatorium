@@ -1,5 +1,26 @@
 # Release Notes
 
+## Unreleased — Conversion config + job queue (P5)
+
+### ✨ New
+
+- **P5 conversion config + job queue shipped.** `ModeSelect`, `CompressionPicker`, `ConvertPanel`, `JobRow`, `JobsPanel`, `RowActionsMenu` components under `src/lib/components/panels/`. Pick mode (grouped by tool/group label from registry), pick compression (chdman: chip-multi; Dolphin: single codec + numeric level via codec metadata in registry; z3ds: nothing rendered), set output directory, toggle delete-on-verify, submit. Live progress, queue/completed/failed tabs with badge counts, per-row Cancel / Dismiss, global Cancel all + Clear, stuck-state banner with Recover action, "Show metadata jobs" toggle persists.
+- **Per-row file actions menu.** `bits-ui` DropdownMenu drives the FileRow `⋯` button: Info / Verify / Rename / Delete with keyboard-accessible focus management. Verify wires through `verification.verifyOne(toolId, path)` via registry lookup (`registry.toolForVerifyPath(path)`) — no tool-specific branches. Rename / Delete set `ui.renameTarget` / `ui.deleteTarget` for the modals to be wired in P7.
+- **Codec metadata in the registry.** Each tool descriptor now declares its `compressionCodecs`, `compressionStyle` (`'multi'` | `'single-with-level'` | `'none'`), and optional `compressionLevelRange`. `CompressionPicker` reads this and renders the right control with zero `if (tool === ...)` checks. chdman: 5 codecs as chips (zlib / lzma / lzma2 / flac / cdfl), comma-joined. Dolphin: 4 codecs + "no compression" via dropdown plus 1–22 level slider (default 19, MAME Redump). z3ds: control hidden.
+
+### 🔧 Internal
+
+- `conversion.svelte.js` gains `toggleCodec(codec)` (chdman chip toggle, with `'none'` mutex) and `setSingleCodec(codec)` (Dolphin) — clean store API for the picker.
+- `JobsPanel` consumes `jobs.pageJobs`, `jobs.queuedCount + jobs.processingCount`, etc. directly from the store so the rune-graph tracks updates without intermediate `$state` mirrors.
+- `bind:checked={() => jobs.showExternalScanJobs, (v) => jobs.setShowExternalScanJobs(v)}` uses Svelte 5.9+ function bindings to drive the metadata-jobs toggle through the store setter (which persists to localStorage).
+- `RowActionsMenu` styles its bits-ui primitives via `:global(...)` selectors keyed off the `[data-highlighted]` / `[data-disabled]` attributes the headless components emit.
+- `FileRow` drops its inline `.actions-trigger` styles; `RowActionsMenu` owns them now.
+
+### 📚 Documentation
+
+- `README.md` — Frontend Development section reflects the conversion config + job queue.
+- `AGENTS.md` — adds "Per-row actions live in `RowActionsMenu.svelte`" pointer.
+
 ## Unreleased — File browser + library adoptions (Lucide, Bits UI, svelte-sonner, mode-watcher)
 
 ### ✨ New

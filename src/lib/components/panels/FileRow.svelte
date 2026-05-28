@@ -12,8 +12,8 @@
   import File from '@lucide/svelte/icons/file';
   import CircleCheck from '@lucide/svelte/icons/circle-check';
   import BadgeCheck from '@lucide/svelte/icons/badge-check';
-  import MoreHorizontal from '@lucide/svelte/icons/ellipsis';
   import Badge from '$lib/components/ui/Badge.svelte';
+  import RowActionsMenu from './RowActionsMenu.svelte';
 
   /** @type {{ entry: any }} */
   let { entry } = $props();
@@ -152,15 +152,7 @@
   </td>
   <td class="actions">
     {#if isFile}
-      <button
-        type="button"
-        class="actions-trigger"
-        title="More actions"
-        aria-label={`Actions for ${entry.name}`}
-        disabled
-      >
-        <MoreHorizontal size={14} />
-      </button>
+      <RowActionsMenu {entry} />
     {/if}
   </td>
 </tr>
@@ -243,19 +235,4 @@
   }
 
   .actions { width: 40px; text-align: center; }
-  .actions-trigger {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    color: var(--text-2);
-    cursor: pointer;
-    transition: background var(--dur-fast) var(--ease-out);
-  }
-  .actions-trigger:hover:not(:disabled) { background: var(--surface-3); color: var(--text-1); }
-  .actions-trigger:disabled { opacity: 0.45; cursor: not-allowed; }
 </style>

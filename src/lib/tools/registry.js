@@ -77,6 +77,16 @@ export const TOOLS = [
     defaultMode: 'createcd',
     glyph: 'CD',
     accent: 'var(--badge-cd)',
+    // Compression options. chdman accepts a comma-separated codec list;
+    // CompressionPicker offers the union of these as toggleable chips.
+    compressionCodecs: [
+      { value: 'zlib',  label: 'zlib',  hint: 'Fast, baseline compatibility' },
+      { value: 'lzma',  label: 'lzma',  hint: 'Slower, better ratio' },
+      { value: 'lzma2', label: 'lzma2', hint: 'Best ratio, slowest' },
+      { value: 'flac',  label: 'flac',  hint: 'For CD audio tracks' },
+      { value: 'cdfl',  label: 'cdfl',  hint: 'CD-FLAC variant' },
+    ],
+    compressionStyle: 'multi',  // multi-codec list joined with commas
     modes: [
       { mode: 'createraw', kind: 'create',  label: 'Create Raw', group: 'create',
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
@@ -140,6 +150,17 @@ export const TOOLS = [
     defaultMode: 'dolphin_rvz',
     glyph: 'GC',
     accent: 'var(--badge-dat-match)',
+    // Dolphin RVZ / WIA accept exactly one codec + a compression level.
+    // GCZ ignores both; dolphin_iso is an extract op.
+    compressionCodecs: [
+      { value: 'zstd',  label: 'zstd',  hint: 'Recommended, level 19 matches MAME Redump' },
+      { value: 'bzip',  label: 'bzip',  hint: 'Good ratio, slower' },
+      { value: 'lzma',  label: 'lzma' },
+      { value: 'lzma2', label: 'lzma2' },
+      { value: 'none',  label: 'No compression' },
+    ],
+    compressionStyle: 'single-with-level',  // one codec + numeric level (0-22)
+    compressionLevelRange: { min: 1, max: 22, default: 19 },
     modes: [
       { mode: 'dolphin_rvz', kind: 'compress', label: 'Dolphin RVZ', group: 'dolphin',
         outputExt: '.rvz', inputExtensions: DOLPHIN_SOURCE_EXTS,
@@ -175,6 +196,9 @@ export const TOOLS = [
     defaultMode: 'z3ds_compress',
     glyph: '3DS',
     accent: 'var(--badge-dvd)',
+    // z3ds_compressor uses fixed compression; no codec or level controls.
+    compressionCodecs: [],
+    compressionStyle: 'none',
     modes: [
       { mode: 'z3ds_compress', kind: 'compress', label: 'Compress 3DS', group: 'z3ds',
         outputExt: null, inputExtensions: Z3DS_SOURCE_EXTS,

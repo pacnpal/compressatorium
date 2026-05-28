@@ -135,6 +135,28 @@ class ConversionStore {
     this.dolphinCompressionLevel = String(level);
   }
 
+  /**
+   * Toggle a chdman-style codec on/off. Selecting "none" clears the
+   * rest; selecting any other codec removes "none" if present.
+   */
+  toggleCodec(codec) {
+    if (codec === 'none') {
+      this.compressionSelection = ['none'];
+      return;
+    }
+    const current = this.compressionSelection.filter((c) => c !== 'none');
+    if (current.includes(codec)) {
+      this.compressionSelection = current.filter((c) => c !== codec);
+    } else {
+      this.compressionSelection = [...current, codec];
+    }
+  }
+
+  /** Replace selection with a single codec (dolphin RVZ/WIA pattern). */
+  setSingleCodec(codec) {
+    this.compressionSelection = codec ? [codec] : [];
+  }
+
   // ─── Preflight ────────────────────────────────────────────────────────
   async checkDuplicates(filePaths) {
     if (!filePaths?.length) return null;

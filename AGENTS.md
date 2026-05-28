@@ -22,7 +22,13 @@ The frontend is a Svelte 5 + Vite single-page application (SPA) under `src/` (se
 - Icons: `@lucide/svelte` — `import Sun from '@lucide/svelte/icons/sun'`, use as `<Sun size={16} />`.
 - Toasts: `svelte-sonner` — `import { toast } from 'svelte-sonner'`, then `toast.success(msg)` / `toast.error(msg)` / `toast.promise(p, {...})` from any store or component.
 - Theme (light/dark/system): `mode-watcher` — `import { setMode, userPrefersMode, mode } from 'mode-watcher'`. Do NOT roll your own theme state in `ui.svelte.js`.
-- Headless accessibility primitives: `bits-ui` — pull Dialog, DropdownMenu, ContextMenu, Tooltip from `bits-ui` rather than building modal/menu/tooltip components from scratch.
+- Headless accessibility primitives: `bits-ui` — pull Dialog, DropdownMenu, ContextMenu, Tooltip from `bits-ui` rather than building modal/menu/tooltip components from scratch. Per-row file actions use `bits-ui` DropdownMenu in `src/lib/components/panels/RowActionsMenu.svelte`; reuse it as the pattern for any future menu work (style with `:global(...)` selectors keyed off `[data-highlighted]` / `[data-disabled]`).
+
+**Where conversion config lives:**
+
+- Mode dropdown: `panels/ModeSelect.svelte`. Options come from `registry.modesByGroup(toolId)` — adding a new mode means editing `registry.js`, nothing else.
+- Compression UI: `panels/CompressionPicker.svelte`. Style is picked off `tool.compressionStyle` (`'multi'` / `'single-with-level'` / `'none'`); codecs from `tool.compressionCodecs`; level range from `tool.compressionLevelRange`.
+- Output dir + delete-on-verify + submit: `panels/ConvertPanel.svelte` (delete-on-verify blocks submit when any selected source is unverified — same backend invariant that `tools/spec.py` enforces).
 
 - Production-style run (FastAPI serves the prebuilt SPA):
 
