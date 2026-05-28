@@ -1,5 +1,17 @@
 // Main Compressatorium App
 import { api, formatSize, getFileIcon, isDolphinFile } from './api.js';
+import {
+    TOOLS,
+    MODE_GROUPS,
+    getTool,
+    getToolByVerifyKind,
+    entryOutputExists,
+    entryOutputReady,
+    entryOutputPath,
+    entryConvertibleBy,
+    resolveSourceProduct,
+    synthesizeArchiveOutputs
+} from './tools.js';
 
 const { html, render, useState, useEffect, useRef, useCallback, useMemo } = window;
 const ISO_TOOL_STORAGE_KEY = 'primary_tool_preference';
@@ -53,22 +65,7 @@ const get3dsProductPath = (path) => {
     return `${path.slice(0, -ext.length)}${outExt}`;
 };
 
-const getDolphinProductPath = (entry) => {
-    if (
-        !entry
-        || typeof entry.path !== 'string'
-        || (!entry.has_rvz && !entry.dolphin_ready)
-    ) return null;
-    if (typeof entry.dolphin_path === 'string' && entry.dolphin_path) {
-        return entry.dolphin_path;
-    }
-    const ext = getFileExtension(entry.path);
-    if (!ext || !entry.path.toLowerCase().endsWith(ext)) return null;
-    if (ext === '.iso') {
-        return `${entry.path.slice(0, -ext.length)}.rvz`;
-    }
-    return entry.path;
-};
+const getDolphinProductPath = (entry) => getTool('dolphin')?.productPath(entry) || null;
 
 const getModeTerm = (isoHandling, kind) => {
     if (kind === 'file') return 'file';
@@ -94,112 +91,21 @@ const normalizeDolphinLevel = (value) => {
     return raw;
 };
 
-const getPrimaryToolLabel = (toolSelection) => {
-    if (toolSelection === 'chdman') return 'CHDMAN';
-    if (toolSelection === 'dolphin') return 'Dolphin';
-    if (toolSelection === 'z3ds') return '3DS';
-    return 'None selected';
+const getPrimaryToolLabel = (toolSelection) => getTool(toolSelection)?.label || 'None selected';
+
+const getFilterOptions = (toolSelection) => {
+    const tool = getTool(toolSelection);
+    return tool?.filters || getTool('chdman').filters;
 };
-
-const getFilterOptions = (tool) => {
-    const common = [
-        { value: '', label: 'All Types' },
-        { value: '.zip,.7z,.rar', label: 'Archives' },
-        { value: '.chd', label: 'CHD Files' }
-    ];
-
-    if (tool === 'dolphin') {
-        return [
-            ...common,
-            { value: '.iso,.rvz,.wia,.gcz,.wbfs', label: 'GameCube/Wii Images' },
-            { value: '.iso', label: 'ISO Files' },
-            { value: 'custom', label: 'Custom...' }
-        ];
-    }
-
-    if (tool === 'z3ds') {
-        return [
-            ...common,
-            { value: '.cci,.cia,.3ds', label: '3DS ROMs' },
-            { value: 'custom', label: 'Custom...' }
-        ];
-    }
-
-    // Default (CHDMAN)
-    return [
-        ...common,
-        { value: '.cue,.bin,.gdi,.iso', label: 'Disc Images' },
-        { value: '.iso', label: 'ISO Files' },
-        { value: 'custom', label: 'Custom...' }
-    ];
-};
-
-
 
 const getPrimaryToolHint = (toolSelection) => {
     if (toolSelection === null) {
         return html`<span role="img" aria-label="Warning">⚠️</span> Please select your primary tool above to get started`;
     }
-    if (toolSelection === 'chdman') {
-        return html`Convert disc images to CHD format • Supports CD/DVD/LaserDisc`;
-    }
-    if (toolSelection === 'dolphin') {
-        return html`Convert GameCube/Wii disc images • Supports RVZ, WIA, GCZ, ISO formats`;
-    }
-    if (toolSelection === 'z3ds') {
-        return html`Compress Nintendo 3DS ROMs • Supports .cci/.cia/.3ds (cart & CIA) → .zcci/.zcia/.z3ds • ~50% size reduction • <strong>Decrypted ROMs only</strong>`;
-    }
+    const tool = getTool(toolSelection);
+    if (tool) return tool.hint({ html });
     return html`Current: ${getPrimaryToolLabel(toolSelection)}`;
 };
-
-const MODE_GROUPS = [
-    {
-        id: 'create',
-        label: 'Create CHD',
-        options: [
-            { value: 'createcd', label: 'Create CD CHD (Dreamcast, PS1, Sega CD)' },
-            { value: 'createdvd', label: 'Create DVD CHD (PSP, PS2)' },
-            { value: 'createraw', label: 'Create Raw CHD' },
-            { value: 'createhd', label: 'Create HD CHD' },
-            { value: 'createld', label: 'Create LaserDisc CHD' }
-        ]
-    },
-    {
-        id: 'extract',
-        label: 'Extract from CHD',
-        options: [
-            { value: 'extractcd', label: 'Extract CD (cue/bin)' },
-            { value: 'extractdvd', label: 'Extract DVD (iso)' },
-            { value: 'extractraw', label: 'Extract Raw' },
-            { value: 'extracthd', label: 'Extract HD' },
-            { value: 'extractld', label: 'Extract LaserDisc (avi)' }
-        ]
-    },
-    {
-        id: 'copy',
-        label: 'Copy / Recompress',
-        options: [
-            { value: 'copy', label: 'Copy / Recompress CHD' }
-        ]
-    },
-    {
-        id: 'dolphin',
-        label: 'Dolphin (GameCube/Wii)',
-        options: [
-            { value: 'dolphin_rvz', label: 'Convert to RVZ' },
-            { value: 'dolphin_wia', label: 'Convert to WIA' },
-            { value: 'dolphin_gcz', label: 'Convert to GCZ' },
-            { value: 'dolphin_iso', label: 'Convert to ISO (extract)' }
-        ]
-    },
-    {
-        id: 'z3ds',
-        label: 'Nintendo 3DS',
-        options: [
-            { value: 'z3ds_compress', label: 'Compress to ZCCI/ZCIA/Z3DS' }
-        ]
-    }
-];
 
 // ============ DAT Panel Component ============
 
@@ -622,9 +528,9 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         } else if (entry.extension === '.chd' && !isArchiveItem(entry)) {
             // For CHD files, show info (but checkbox still works for selection)
             onShowInfo(entry.path);
-        } else if (isArchiveItem(entry) && entry.chd_ready && entry.chd_path) {
+        } else if (isArchiveItem(entry) && entryOutputReady(entry, 'chdman') && entryOutputPath(entry, 'chdman')) {
             // For archive members with a converted CHD, show info for the output file
-            onShowInfo?.(entry.chd_path);
+            onShowInfo?.(entryOutputPath(entry, 'chdman'));
         } else if (isDolphinInfo && !isArchiveItem(entry)) {
             onShowInfo?.(entry.path);
         } else if (is3dsInfo && !isArchiveItem(entry)) {
@@ -637,8 +543,9 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
 
     const getVerifiablePath = (entry) => {
         const ext = entry.extension?.toLowerCase();
-        if (entry.chd_path && entry.chd_ready) return entry.chd_path;
-        if (!isArchiveItem(entry) && entry.dolphin_ready) {
+        const chdReadyPath = entryOutputReady(entry, 'chdman') ? entryOutputPath(entry, 'chdman') : null;
+        if (chdReadyPath) return chdReadyPath;
+        if (!isArchiveItem(entry) && entryOutputReady(entry, 'dolphin')) {
             const dolphinPath = getDolphinProductPath(entry);
             if (dolphinPath) return dolphinPath;
         }
@@ -651,8 +558,8 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         if (!isArchiveItem(entry) && is3dsVerifyFile(entry.path)) {
             return entry.path;
         }
-        if (!isArchiveItem(entry) && entry.z3ds_ready) {
-            return entry.z3ds_path || get3dsProductPath(entry.path);
+        if (!isArchiveItem(entry) && entryOutputReady(entry, 'z3ds')) {
+            return entryOutputPath(entry, 'z3ds') || get3dsProductPath(entry.path);
         }
         if (ext === '.chd') return entry.path;
         return null;
@@ -687,8 +594,8 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
             return `Archive: ${entry.name} - Click to browse contents`;
         }
         if (ext === '.chd' && !isArchiveItem(entry)) return 'Click to view CHD info';
-        if (isArchiveItem(entry) && entry.chd_ready && entry.chd_path) return 'Click to view output CHD info';
-        if (isArchiveItem(entry) && entry.has_chd && !entry.chd_ready) return 'CHD conversion in progress';
+        if (isArchiveItem(entry) && entryOutputReady(entry, 'chdman') && entryOutputPath(entry, 'chdman')) return 'Click to view output CHD info';
+        if (isArchiveItem(entry) && entryOutputExists(entry, 'chdman') && !entryOutputReady(entry, 'chdman')) return 'CHD conversion in progress';
         if (!isArchiveItem(entry) && ext === '.iso' && !isoIsDolphin) {
             return 'ISO info uses Dolphin tools. Switch Primary Tool to Dolphin for disc info/verify.';
         }
@@ -699,7 +606,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
         ) return 'Click to view disc info';
         if (!isArchiveItem(entry) && is3dsFile(entry.path)) return 'Click to view 3DS ROM info';
         if (canSelect(entry)) return 'Click to select';
-        if (entry.convertible) return entry.has_chd ? 'Already converted' : entry.name;
+        if (entryConvertibleBy(entry, 'chdman')) return entryOutputExists(entry, 'chdman') ? 'Already converted' : entry.name;
         return entry.name;
     };
 
@@ -797,13 +704,13 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
 
                 const canInlineCompress =
                     // CHDMAN create modes only: source images -> CHD
-                    (isCreateMode && isoHandling === 'chdman' && entry.convertible && !entry.has_chd) ||
+                    (isCreateMode && isoHandling === 'chdman' && entryConvertibleBy(entry, 'chdman') && !entryOutputExists(entry, 'chdman')) ||
                     // CHDMAN extract/copy modes: CHD inputs only
                     ((isExtractMode || conversionMode === 'copy') && entryExt === '.chd') ||
                     // Dolphin modes only
-                    (isDolphinMode && isoHandling === 'dolphin' && entry.dolphin_convertible) ||
+                    (isDolphinMode && isoHandling === 'dolphin' && entryConvertibleBy(entry, 'dolphin')) ||
                     // 3DS mode only
-                    (isZ3dsMode && isoHandling === 'z3ds' && entry.z3ds_convertible && !entry.has_z3ds);
+                    (isZ3dsMode && isoHandling === 'z3ds' && entryConvertibleBy(entry, 'z3ds') && !entryOutputExists(entry, 'z3ds'));
 
                 const isIsoEntry = entryExt === '.iso';
                 const isDolphinExt = ['.rvz', '.wia', '.gcz', '.wbfs'].includes(entryExt)
@@ -812,7 +719,7 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                     entry.extension === '.chd'
                     || (isDolphinExt && !isArchiveItem(entry))
                     || (!isArchiveItem(entry) && is3dsVerifyFile(chdPath))
-                    || (isArchiveItem(entry) && entry.chd_ready)
+                    || (isArchiveItem(entry) && entryOutputReady(entry, 'chdman'))
                 );
                 const archiveItems = entry.archive_items;
                 const archiveHasChd = entry.archive_has_chd;
@@ -845,18 +752,16 @@ function FileList({ entries, selectedFiles, canSelect, onNavigate, onToggleSelec
                         ${entry.size != null && entry.size !== undefined ? formatSize(entry.size) : ''}
                     </div>
                     <div class="file-cell file-status">
-                        ${entry.type !== 'archive' && entry.has_chd && html`
-                            <span class="status has-chd" title="A CHD file already exists for this source">CHD exists</span>
-                        `}
-                        ${entry.type !== 'archive' && entry.has_z3ds && html`
-                            <span class="status has-chd" title="A compressed 3DS file (.zcci/.zcia/.z3ds) already exists">Z3DS exists</span>
-                        `}
-                        ${entry.type !== 'archive' && entry.convertible && !entry.has_chd && html`
-                            <span class="status convertible" title="Can be converted to CHD">Convertible</span>
-                        `}
-                        ${entry.type !== 'archive' && entry.z3ds_convertible && !entry.has_z3ds && html`
-                            <span class="status convertible" title="Nintendo 3DS ROM - Can be compressed to ZCCI/ZCIA/Z3DS format">3DS ROM</span>
-                        `}
+                        ${entry.type !== 'archive' && TOOLS.map(tool => {
+                            const badge = tool.badges?.exists;
+                            if (!badge || !entryOutputExists(entry, tool.id)) return null;
+                            return html`<span key=${`${tool.id}-exists`} class="status has-chd" title=${badge.title}>${badge.label}</span>`;
+                        })}
+                        ${entry.type !== 'archive' && TOOLS.map(tool => {
+                            const badge = tool.badges?.convertible;
+                            if (!badge || !entryConvertibleBy(entry, tool.id) || entryOutputExists(entry, tool.id)) return null;
+                            return html`<span key=${`${tool.id}-conv`} class="status convertible" title=${badge.title}>${badge.label}</span>`;
+                        })}
                         ${entry.type === 'archive' && archiveItems != null && archiveItems > 0 && html`
                             <span class="status convertible" title="Convertible images inside this archive">
                                 ${archiveItems} image${archiveItems === 1 ? '' : 's'}
@@ -1126,17 +1031,14 @@ function CHDInfoModal({ path, onClose, infoMode, useDolphin }) {
         if (path) {
             setLoading(true);
             setError(null);
-            const fetchInfo = dolphin
-                ? api.getDolphinInfo(path)
-                : z3ds
-                    ? api.getZ3DSInfo(path)
-                    : api.getCHDInfo(path);
+            const tool = getToolByVerifyKind(mode);
+            const fetchInfo = tool ? tool.getInfo(path) : api.getCHDInfo(path);
             fetchInfo
                 .then(setInfo)
                 .catch(e => setError(e.message))
                 .finally(() => setLoading(false));
         }
-    }, [path, dolphin, z3ds]);
+    }, [path, mode]);
 
     if (!path) return null;
 
@@ -1589,40 +1491,8 @@ function DeleteModal({ entry, verifiedCHDs, verifyProgress, onDelete, onVerify, 
     ].includes(entryExt) : false;
     const isArchive = entry ? entry.type === 'archive' : false;
     const fileTerm = getModeTerm(isoHandling, 'file');
-    const resolveSourceProduct = (sourceEntry) => {
-        if (!sourceEntry?.path) return null;
 
-        const getChdPath = () => (
-            sourceEntry.has_chd ? sourceEntry.path.replace(/\.[^.]+$/, '.chd') : null
-        );
-        const getDolphinPath = () => (
-            sourceEntry.dolphin_ready ? getDolphinProductPath(sourceEntry) : null
-        );
-        const getZ3dsPath = () => (
-            sourceEntry.z3ds_ready ? (sourceEntry.z3ds_path || get3dsProductPath(sourceEntry.path)) : null
-        );
-
-        const preferredKinds = isoHandling === 'dolphin'
-            ? ['dolphin', 'chd', 'z3ds']
-            : isoHandling === 'z3ds'
-                ? ['z3ds', 'chd', 'dolphin']
-                : ['chd', 'dolphin', 'z3ds'];
-
-        for (const kind of preferredKinds) {
-            const productPath = kind === 'dolphin'
-                ? getDolphinPath()
-                : kind === 'z3ds'
-                    ? getZ3dsPath()
-                    : getChdPath();
-            if (productPath) {
-                return { path: productPath, kind };
-            }
-        }
-
-        return null;
-    };
-
-    const resolvedProduct = (isSourceFile && entry && !isArchive) ? resolveSourceProduct(entry) : null;
+    const resolvedProduct = (isSourceFile && entry && !isArchive) ? resolveSourceProduct(entry, isoHandling) : null;
     const productPath = resolvedProduct?.path || null;
     const termsIsoHandling = resolvedProduct?.kind === 'dolphin'
         ? 'dolphin'
@@ -1993,38 +1863,6 @@ function BulkDeleteModal({ entries, verifiedCHDs, onVerify, onClose, onRefresh, 
     const fileTerm = getModeTerm(isoHandling, 'file');
     const verifyTerm = getModeTerm(isoHandling, 'verification');
     const productTerm = getModeTerm(isoHandling, 'product');
-    const resolveSourceProduct = (entry) => {
-        if (!entry?.path) return null;
-
-        const getChdPath = () => (
-            entry.has_chd ? entry.path.replace(/\.[^.]+$/, '.chd') : null
-        );
-        const getDolphinPath = () => (
-            entry.dolphin_ready ? getDolphinProductPath(entry) : null
-        );
-        const getZ3dsPath = () => (
-            entry.z3ds_ready ? (entry.z3ds_path || get3dsProductPath(entry.path)) : null
-        );
-
-        const preferredKinds = isoHandling === 'dolphin'
-            ? ['dolphin', 'chd', 'z3ds']
-            : isoHandling === 'z3ds'
-                ? ['z3ds', 'chd', 'dolphin']
-                : ['chd', 'dolphin', 'z3ds'];
-
-        for (const kind of preferredKinds) {
-            const productPath = kind === 'dolphin'
-                ? getDolphinPath()
-                : kind === 'z3ds'
-                    ? getZ3dsPath()
-                    : getChdPath();
-            if (productPath) {
-                return { path: productPath, kind };
-            }
-        }
-
-        return null;
-    };
 
     // Categorize files
     const sourceFiles = entries.filter(e =>
@@ -2039,7 +1877,7 @@ function BulkDeleteModal({ entries, verifiedCHDs, onVerify, onClose, onRefresh, 
     );
     const sourceProductByPath = new Map();
     for (const entry of sourceFiles) {
-        const product = resolveSourceProduct(entry);
+        const product = resolveSourceProduct(entry, isoHandling);
         if (product) {
             sourceProductByPath.set(entry.path, product);
         }
@@ -2078,80 +1916,24 @@ function BulkDeleteModal({ entries, verifiedCHDs, onVerify, onClose, onRefresh, 
             let currentVerified = 0;
             let currentFailed = 0;
 
-            if (chdPaths.length > 0) {
-                let chdStartHandled = false;
-                await api.verifyBatchCHDs(chdPaths, {
-                    onProgress: (update) => {
-                        if (update.type === 'start') {
-                            if (!chdStartHandled && Number.isFinite(update.total)) {
-                                chdStartHandled = true;
-                                setVerifyState(prev => ({
-                                    ...prev,
-                                    total: prev.total - chdPaths.length + update.total
-                                }));
-                            }
-                        } else if (update.type === 'progress' || update.type === 'file_progress') {
-                            setVerifyState(prev => ({ ...prev, current: update.filename || update.path }));
-                        }
-                    },
-                    onFileComplete: (data) => {
-                        currentVerified += data.valid ? 1 : 0;
-                        currentFailed += data.valid ? 0 : 1;
-                        setVerifyState(prev => ({
-                            ...prev,
-                            verified: currentVerified,
-                            failed: currentFailed,
-                            current: null
-                        }));
-                        if (data.valid && onVerify) {
-                            onVerify(data.path);
-                        }
-                    }
-                });
-            }
+            const batches = [
+                { kind: 'chd', paths: chdPaths },
+                { kind: 'dolphin', paths: dolphinPaths },
+                { kind: 'z3ds', paths: z3dsPaths }
+            ];
 
-            if (dolphinPaths.length > 0) {
-                let dolphinStartHandled = false;
-                await api.verifyBatchDolphin(dolphinPaths, {
+            for (const { kind, paths } of batches) {
+                if (paths.length === 0) continue;
+                const tool = getToolByVerifyKind(kind);
+                let startHandled = false;
+                await tool.verifyBatch(paths, {
                     onProgress: (update) => {
                         if (update.type === 'start') {
-                            if (!dolphinStartHandled && Number.isFinite(update.total)) {
-                                dolphinStartHandled = true;
+                            if (!startHandled && Number.isFinite(update.total)) {
+                                startHandled = true;
                                 setVerifyState(prev => ({
                                     ...prev,
-                                    total: prev.total - dolphinPaths.length + update.total
-                                }));
-                            }
-                        } else if (update.type === 'progress' || update.type === 'file_progress') {
-                            setVerifyState(prev => ({ ...prev, current: update.filename || update.path }));
-                        }
-                    },
-                    onFileComplete: (data) => {
-                        currentVerified += data.valid ? 1 : 0;
-                        currentFailed += data.valid ? 0 : 1;
-                        setVerifyState(prev => ({
-                            ...prev,
-                            verified: currentVerified,
-                            failed: currentFailed,
-                            current: null
-                        }));
-                        if (data.valid && onVerify) {
-                            onVerify(data.path);
-                        }
-                    }
-                });
-            }
-
-            if (z3dsPaths.length > 0) {
-                let z3dsStartHandled = false;
-                await api.verifyBatchZ3DS(z3dsPaths, {
-                    onProgress: (update) => {
-                        if (update.type === 'start') {
-                            if (!z3dsStartHandled && Number.isFinite(update.total)) {
-                                z3dsStartHandled = true;
-                                setVerifyState(prev => ({
-                                    ...prev,
-                                    total: prev.total - z3dsPaths.length + update.total
+                                    total: prev.total - paths.length + update.total
                                 }));
                             }
                         } else if (update.type === 'progress' || update.type === 'file_progress') {
@@ -2446,22 +2228,24 @@ function BulkVerifyModal({ verifyItems, onComplete, onClose }) {
                 const allZ3DS = verifyItems.every(item => item.kind === 'z3ds');
                 let result = { verified: 0, failed: 0, total: verifyItems.length };
 
-                if (allChd) {
-                    const chdPaths = verifyItems.map(item => item.path);
-                    result = await api.verifyBatchCHDs(chdPaths, {
-                        onProgress: (update) => {
-                            if (cancelled) return;
-                            if (update.type === 'start') {
-                                // Use server-validated total (may be less than client count if paths were filtered)
-                                setState(prev => ({
-                                    ...prev,
-                                    total: update.total
-                                }));
-                            } else if (update.type === 'progress') {
-                                setState(prev => ({
-                                    ...prev,
-                                    current: update.filename
-                                }));
+                if (allChd || allDolphin || allZ3DS) {
+                    const kind = allChd ? 'chd' : (allDolphin ? 'dolphin' : 'z3ds');
+                    const tool = getToolByVerifyKind(kind);
+                    const paths = verifyItems.map(item => item.path);
+                    // The three tools used slightly different progress shapes
+                    // historically: chdman split progress/file_progress to gate
+                    // currentProgress on file_progress, dolphin ignored
+                    // currentProgress, z3ds always set it. Preserve those
+                    // tool-specific shapes here.
+                    const onProgress = (update) => {
+                        if (cancelled) return;
+                        if (update.type === 'start') {
+                            setState(prev => ({ ...prev, total: update.total }));
+                            return;
+                        }
+                        if (kind === 'chd') {
+                            if (update.type === 'progress') {
+                                setState(prev => ({ ...prev, current: update.filename }));
                             } else if (update.type === 'file_progress') {
                                 setState(prev => ({
                                     ...prev,
@@ -2469,67 +2253,22 @@ function BulkVerifyModal({ verifyItems, onComplete, onClose }) {
                                     currentProgress: update.progress
                                 }));
                             }
-                        },
-                        onFileComplete: (data) => {
-                            if (cancelled) return;
-                            setState(prev => ({
-                                ...prev,
-                                verified: data.verified,
-                                failed: data.failed,
-                                current: null,
-                                currentProgress: null,
-                                results: [...prev.results, data]
-                            }));
-                        }
-                    });
-                } else if (allDolphin) {
-                    const dolphinPaths = verifyItems.map(item => item.path);
-                    result = await api.verifyBatchDolphin(dolphinPaths, {
-                        onProgress: (update) => {
-                            if (cancelled) return;
-                            if (update.type === 'start') {
-                                // Use server-validated total (may be less than client count if paths were filtered)
-                                setState(prev => ({
-                                    ...prev,
-                                    total: update.total
-                                }));
-                            } else if (update.type === 'progress' || update.type === 'file_progress') {
-                                setState(prev => ({
-                                    ...prev,
-                                    current: update.filename || update.path
-                                }));
+                        } else if (kind === 'dolphin') {
+                            if (update.type === 'progress' || update.type === 'file_progress') {
+                                setState(prev => ({ ...prev, current: update.filename || update.path }));
                             }
-                        },
-                        onFileComplete: (data) => {
-                            if (cancelled) return;
-                            setState(prev => ({
-                                ...prev,
-                                verified: data.verified,
-                                failed: data.failed,
-                                current: null,
-                                currentProgress: null,
-                                results: [...prev.results, data]
-                            }));
-                        }
-                    });
-                } else if (allZ3DS) {
-                    const z3dsPaths = verifyItems.map(item => item.path);
-                    result = await api.verifyBatchZ3DS(z3dsPaths, {
-                        onProgress: (update) => {
-                            if (cancelled) return;
-                            if (update.type === 'start') {
-                                setState(prev => ({
-                                    ...prev,
-                                    total: update.total
-                                }));
-                            } else if (update.type === 'progress' || update.type === 'file_progress') {
+                        } else {
+                            if (update.type === 'progress' || update.type === 'file_progress') {
                                 setState(prev => ({
                                     ...prev,
                                     current: update.filename || update.path,
                                     currentProgress: update.progress
                                 }));
                             }
-                        },
+                        }
+                    };
+                    result = await tool.verifyBatch(paths, {
+                        onProgress,
                         onFileComplete: (data) => {
                             if (cancelled) return;
                             setState(prev => ({
@@ -2557,12 +2296,8 @@ function BulkVerifyModal({ verifyItems, onComplete, onClose }) {
                         const baseVerified = verified;
                         const baseFailed = failed;
 
-                        let verifyFn;
-                        if (kind === 'dolphin') verifyFn = api.verifyBatchDolphin.bind(api);
-                        else if (kind === 'z3ds') verifyFn = api.verifyBatchZ3DS.bind(api);
-                        else verifyFn = api.verifyBatchCHDs.bind(api);
-
-                        const batchResult = await verifyFn(paths, {
+                        const tool = getToolByVerifyKind(kind) || getTool('chdman');
+                        const batchResult = await tool.verifyBatch(paths, {
                             onProgress: (update) => {
                                 if (cancelled) return;
                                 if (update.type === 'start') {
@@ -2940,17 +2675,8 @@ function App() {
                         type: 'file',
                         size: file.size,
                         extension: file.extension,
-                        convertible: file.convertible,
-                        has_chd: file.has_chd || false,
-                        has_rvz: false,
-                        dolphin_ready: false,
-                        dolphin_path: null,
-                        has_z3ds: false,
-                        z3ds_ready: false,
-                        z3ds_path: null,
-                        chd_ready: Boolean(file.chd_ready),
+                        ...synthesizeArchiveOutputs(file),
                         output_stem: file.output_stem,
-                        chd_path: file.chd_path,
                         is_archive_item: true,
                         archive_path: archivePath
                     }));
@@ -2963,9 +2689,9 @@ function App() {
                                 return oldEntry.name !== newEntry.name ||
                                     oldEntry.path !== newEntry.path ||
                                     oldEntry.size !== newEntry.size ||
-                                    oldEntry.convertible !== newEntry.convertible ||
-                                    oldEntry.has_chd !== newEntry.has_chd ||
-                                    oldEntry.chd_ready !== newEntry.chd_ready;
+                                    entryConvertibleBy(oldEntry, 'chdman') !== entryConvertibleBy(newEntry, 'chdman') ||
+                                    entryOutputExists(oldEntry, 'chdman') !== entryOutputExists(newEntry, 'chdman') ||
+                                    entryOutputReady(oldEntry, 'chdman') !== entryOutputReady(newEntry, 'chdman');
                             });
                             if (!hasChanges) return prevEntries;
                         }
@@ -2994,21 +2720,17 @@ function App() {
                         if (prevEntries.length === newEntries.length) {
                             const hasChanges = newEntries.some((newEntry, i) => {
                                 const oldEntry = prevEntries[i];
-                                return oldEntry.name !== newEntry.name ||
+                                if (oldEntry.name !== newEntry.name ||
                                     oldEntry.path !== newEntry.path ||
                                     oldEntry.size !== newEntry.size ||
-                                    oldEntry.type !== newEntry.type ||
-                                    oldEntry.convertible !== newEntry.convertible ||
-                                    oldEntry.dolphin_convertible !== newEntry.dolphin_convertible ||
-                                    oldEntry.z3ds_convertible !== newEntry.z3ds_convertible ||
-                                    oldEntry.has_chd !== newEntry.has_chd ||
-                                    oldEntry.has_rvz !== newEntry.has_rvz ||
-                                    oldEntry.dolphin_ready !== newEntry.dolphin_ready ||
-                                    oldEntry.dolphin_path !== newEntry.dolphin_path ||
-                                    oldEntry.has_z3ds !== newEntry.has_z3ds ||
-                                    oldEntry.z3ds_ready !== newEntry.z3ds_ready ||
-                                    oldEntry.z3ds_path !== newEntry.z3ds_path ||
-                                    oldEntry.chd_ready !== newEntry.chd_ready;
+                                    oldEntry.type !== newEntry.type) return true;
+                                return TOOLS.some(tool => {
+                                    if (entryConvertibleBy(oldEntry, tool.id) !== entryConvertibleBy(newEntry, tool.id)) return true;
+                                    if (entryOutputExists(oldEntry, tool.id) !== entryOutputExists(newEntry, tool.id)) return true;
+                                    if (entryOutputReady(oldEntry, tool.id) !== entryOutputReady(newEntry, tool.id)) return true;
+                                    if (entryOutputPath(oldEntry, tool.id) !== entryOutputPath(newEntry, tool.id)) return true;
+                                    return false;
+                                });
                             });
                             // Only update if there are actual changes
                             if (!hasChanges) return prevEntries;
@@ -3089,8 +2811,8 @@ function App() {
         const getStatusPriority = (entry) => {
             if (entry.type === 'directory') return 0;
             if (entry.type === 'archive') return 1;
-            if (entry.has_chd || entry.has_rvz || entry.has_z3ds) return 2;
-            if (entry.convertible || entry.dolphin_convertible || entry.z3ds_convertible) return 3;
+            if (TOOLS.some(t => entryOutputExists(entry, t.id))) return 2;
+            if (TOOLS.some(t => entryConvertibleBy(entry, t.id))) return 3;
             return 4;
         };
 
@@ -4045,17 +3767,8 @@ function App() {
                 type: 'file',
                 size: file.size,
                 extension: file.extension,
-                convertible: file.convertible,
-                has_chd: file.has_chd || false,
-                has_rvz: false,
-                dolphin_ready: false,
-                dolphin_path: null,
-                has_z3ds: false,
-                z3ds_ready: false,
-                z3ds_path: null,
-                chd_ready: Boolean(file.chd_ready),
+                ...synthesizeArchiveOutputs(file),
                 output_stem: file.output_stem,
-                chd_path: file.chd_path,
                 is_archive_item: true,
                 archive_path: archivePath
             }));
@@ -4233,16 +3946,16 @@ function App() {
         }
 
         const verifyPath = force3ds && is3dsSourceFile(productPath)
-            ? (entry?.z3ds_path || get3dsProductPath(productPath) || productPath)
+            ? (entryOutputPath(entry, 'z3ds') || get3dsProductPath(productPath) || productPath)
             : productPath;
         const dolphin = forceDolphin || isDolphinFile(verifyPath);
         const z3ds = force3ds || is3dsFile(verifyPath);
-        const verifyFn = dolphin ? api.verifyDolphin.bind(api) : (z3ds ? api.verify3DS.bind(api) : api.verifyCHD.bind(api));
+        const verifyTool = dolphin ? getTool('dolphin') : (z3ds ? getTool('z3ds') : getTool('chdman'));
         const label = dolphin ? 'Disc' : (z3ds ? '3DS ROM' : 'CHD');
 
         setVerifyProgress(prev => new Map(prev).set(verifyPath, { progress: 0, message: 'Starting verification...' }));
         try {
-            const result = await verifyFn(verifyPath, {
+            const result = await verifyTool.verify(verifyPath, {
                 onProgress: (update) => {
                     setVerifyProgress(prev => {
                         const next = new Map(prev);
@@ -4294,8 +4007,9 @@ function App() {
             const isArchiveItem = entry.is_archive_item || entry.in_archive;
             const filename = entry.name || path.split('/').pop();
 
-            if (entry.chd_path && entry.chd_ready) {
-                items.push({ path: entry.chd_path, filename, kind: 'chd' });
+            const chdReadyPath = entryOutputReady(entry, 'chdman') ? entryOutputPath(entry, 'chdman') : null;
+            if (chdReadyPath) {
+                items.push({ path: chdReadyPath, filename, kind: 'chd' });
                 continue;
             }
             if (ext === '.chd') {
@@ -4306,7 +4020,7 @@ function App() {
                 items.push({ path, filename, kind: 'dolphin' });
                 continue;
             }
-            if (!isArchiveItem && entry.dolphin_ready) {
+            if (!isArchiveItem && entryOutputReady(entry, 'dolphin')) {
                 const dolphinPath = getDolphinProductPath(entry);
                 if (dolphinPath) {
                     items.push({ path: dolphinPath, filename, kind: 'dolphin' });
@@ -4320,8 +4034,8 @@ function App() {
                 items.push({ path, filename, kind: 'z3ds' });
                 continue;
             }
-            if (!isArchiveItem && is3dsSourceFile(path) && entry.z3ds_ready) {
-                const productPath = entry.z3ds_path || get3dsProductPath(path);
+            if (!isArchiveItem && is3dsSourceFile(path) && entryOutputReady(entry, 'z3ds')) {
+                const productPath = entryOutputPath(entry, 'z3ds') || get3dsProductPath(path);
                 if (productPath) {
                     items.push({ path: productPath, filename, kind: 'z3ds' });
                 }
@@ -4770,13 +4484,13 @@ function App() {
             const isIso = ext === '.iso';
             const isChd = ext === '.chd';
             const inArchive = Boolean(entry.is_archive_item || entry.in_archive || entry.path?.includes('::'));
-            const canDolphin = entry.dolphin_convertible === true
+            const canDolphin = entryConvertibleBy(entry, 'dolphin')
                 && !inArchive
                 && (!isIso || isoHandling === 'dolphin');
-            const canChdCreate = entry.convertible === true
+            const canChdCreate = entryConvertibleBy(entry, 'chdman')
                 && !isChd
                 && (!isIso || isoHandling !== 'dolphin');
-            const canZ3ds = entry.z3ds_convertible === true && !inArchive;
+            const canZ3ds = entryConvertibleBy(entry, 'z3ds') && !inArchive;
             allowCreate = allowCreate && canChdCreate;
             allowExtract = allowExtract && isChd;
             allowCopy = allowCopy && isChd;
@@ -4955,16 +4669,16 @@ function App() {
             if (!isDolphinMode && isoHandling === 'dolphin') return false;
         }
         if (isDolphinMode) {
-            return entry.dolphin_convertible === true;
+            return entryConvertibleBy(entry, 'dolphin');
         }
         if (isZ3dsMode) {
-            return entry.z3ds_convertible === true;
+            return entryConvertibleBy(entry, 'z3ds');
         }
         if (isExtractMode || isCopyMode) {
             return entry.extension === '.chd';
         }
         if (conversionMode === 'createcd' || conversionMode === 'createdvd') {
-            return entry.convertible;
+            return entryConvertibleBy(entry, 'chdman');
         }
         if (isCreateMode) {
             return entry.extension !== '.chd';
@@ -5045,35 +4759,19 @@ function App() {
             setCurrentPage(1);
 
             const combined = [
-                ...results.files.map(f => ({
-                    ...f,
-                    type: 'file',
-                    convertible: Boolean(f.convertible),
-                    dolphin_convertible: Boolean(f.dolphin_convertible),
-                    has_rvz: Boolean(f.has_rvz),
-                    dolphin_ready: Boolean(f.dolphin_ready),
-                    dolphin_path: f.dolphin_path || null,
-                    z3ds_convertible: Boolean(f.z3ds_convertible),
-                    has_z3ds: Boolean(f.has_z3ds),
-                    z3ds_ready: Boolean(f.z3ds_ready),
-                    z3ds_path: f.z3ds_path || null,
-                    chd_ready: Boolean(f.chd_ready)
-                })),
+                // /api/files/search files[] already carry convertible_by /
+                // outputs from the registry-driven backend (Phase 7), so
+                // spread them through unchanged.
+                ...results.files.map(f => ({ ...f, type: 'file' })),
+                // archives[] members keep the legacy CHD-only dict shape;
+                // synthesize the unified outputs/convertible_by shape so the
+                // FE doesn't need to special-case archive rows.
                 ...results.archives.map(a => ({
                     ...a,
                     name: `${a.name} (in ${a.archive_path.split('/').pop()})`,
                     type: 'file',
-                    convertible: Boolean(a.convertible),
-                    dolphin_convertible: Boolean(a.dolphin_convertible),
-                    has_rvz: false,
-                    dolphin_ready: false,
-                    dolphin_path: null,
-                    has_z3ds: false,
-                    z3ds_ready: false,
-                    z3ds_path: null,
-                    chd_ready: Boolean(a.chd_ready),
-                    is_archive_item: true,
-                    chd_path: a.chd_path
+                    ...synthesizeArchiveOutputs(a),
+                    is_archive_item: true
                 }))
             ];
             setEntries(combined);
