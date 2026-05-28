@@ -5,6 +5,7 @@ const STORAGE_KEYS = Object.freeze({
   PRIMARY_TOOL: 'primary_tool_preference',
   SHOW_METADATA_JOBS: 'compressatorium_show_metadata_jobs',
   THEME: 'theme-preference',
+  SIDEBAR_COLLAPSED: 'sidebar-collapsed',
 });
 
 function safe() {

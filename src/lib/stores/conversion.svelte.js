@@ -13,14 +13,11 @@ function loadPrimaryTool() {
   return registry.forTool(raw) ? raw : 'chdman';
 }
 
+// Each tool declares its own `defaultMode` in the registry descriptor.
+// chdman picks `createcd` (legacy/backend default for cue/bin/ISO), dolphin
+// picks rvz, z3ds picks compress. No tool-specific branching here.
 function defaultModeFor(toolId) {
-  // Preserve the legacy/backend default of `createcd` for chdman — the
-  // registry happens to list createraw first, but cue/bin/ISO workflows
-  // overwhelmingly want createcd. Other tools fall back to whichever
-  // mode the registry declares first.
-  if (toolId === 'chdman') return 'createcd';
-  const tool = registry.forTool(toolId);
-  return tool?.modes[0]?.mode ?? 'createcd';
+  return registry.defaultMode(toolId) ?? 'createcd';
 }
 
 const INITIAL_TOOL = loadPrimaryTool();

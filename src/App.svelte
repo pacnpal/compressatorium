@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { ui } from '$lib/stores/ui.svelte.js';
   import { startRouter } from '$lib/router/hashRouter.js';
   import Sidebar from '$lib/components/layout/Sidebar.svelte';
@@ -10,22 +10,49 @@
   import DATView from '$lib/components/views/DATView.svelte';
   import HelpView from '$lib/components/views/HelpView.svelte';
   import Notification from '$lib/components/ui/Notification.svelte';
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
   import { jobs } from '$lib/stores/jobs.svelte.js';
 
   let mediaQuery = null;
+  /** @type {HTMLElement | undefined} */
+  let mainEl;
 
   function onSystemChange(ev) {
     ui.systemIsDark = ev.matches;
     if (ui.theme === 'system') ui.applyTheme();
   }
 
+  // Move keyboard focus to the main landmark whenever the route changes,
+  // so screen readers / keyboard users don't lose context. Triggered by
+  // ui.focusBump (incremented in ui.applyHash) rather than reading the
+  // URL directly so it cleanly captures both initial mount and back/forward.
+  $effect(() => {
+    ui.focusBump;
+    if (!mainEl) return;
+    tick().then(() => {
+      try {
+        mainEl.focus({ preventScroll: false });
+      } catch (_e) {
+        // ignore — focus may fail on disconnected nodes mid-route swap
+      }
+    });
+  });
+
+  function handleSkip(e) {
+    e.preventDefault();
+    mainEl?.focus({ preventScroll: false });
+  }
+
+  function onBoundaryError(err, reset) {
+    console.error('View boundary caught error:', err);
+    ui.notify('Something went wrong. Try again.', 'error', 6000);
+    reset();
+  }
+
   onMount(() => {
     ui.applyTheme();
     ui.loadVersion();
-    // SSE hydrates the full job list via a one-time `snapshot` event
-    // emitted by the backend at connection time (and re-emitted after
-    // each reconnect). No separate /api/jobs round-trip needed; the
-    // refresh() method remains available for explicit manual recovery.
     jobs.connect();
     const stopRouter = startRouter();
 
@@ -42,6 +69,8 @@
   });
 </script>
 
+<a class="skip-link" href="#main-content" onclick={handleSkip}>Skip to main content</a>
+
 <div class="shell">
   <div class="sidebar-host">
     <Sidebar />
@@ -50,12 +79,34 @@
 
   <div class="main-col">
     <TopBar />
-    <main class="main">
-      {#if ui.activeView === 'dashboard'}<Dashboard />
-      {:else if ui.activeView === 'workspace'}<WorkArea />
-      {:else if ui.activeView === 'dat'}<DATView />
-      {:else if ui.activeView === 'help'}<HelpView />
-      {/if}
+    <main
+      id="main-content"
+      bind:this={mainEl}
+      class="main"
+      tabindex="-1"
+      aria-label="Main content"
+    >
+      <svelte:boundary onerror={onBoundaryError}>
+        {#if ui.activeView === 'dashboard'}<Dashboard />
+        {:else if ui.activeView === 'workspace'}<WorkArea />
+        {:else if ui.activeView === 'dat'}<DATView />
+        {:else if ui.activeView === 'help'}<HelpView />
+        {/if}
+
+        {#snippet failed(error, reset)}
+          <div class="error-frame">
+            <EmptyState
+              title="This view crashed"
+              description={error?.message ?? 'An unexpected error occurred while rendering.'}
+              glyph="!"
+            >
+              {#snippet actions()}
+                <Button variant="primary" onclick={reset}>Try again</Button>
+              {/snippet}
+            </EmptyState>
+          </div>
+        {/snippet}
+      </svelte:boundary>
     </main>
   </div>
 
@@ -86,5 +137,36 @@
   .main {
     flex: 1;
     overflow-y: auto;
+    outline: none;
+  }
+  .main:focus-visible {
+    box-shadow: inset 0 0 0 3px var(--accent);
+  }
+
+  /* Skip link: visually hidden until focused. Activated by Tab from the
+     document top, this lets keyboard users jump straight to <main>
+     without traversing the sidebar nav on every page load. */
+  .skip-link {
+    position: fixed;
+    top: var(--space-2);
+    left: var(--space-2);
+    z-index: calc(var(--z-notification) + 1);
+    padding: var(--space-2) var(--space-4);
+    background: var(--accent);
+    color: var(--accent-contrast);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    text-decoration: none;
+    transform: translateY(-150%);
+    transition: transform var(--dur-base) var(--ease-out);
+  }
+  .skip-link:focus-visible {
+    transform: translateY(0);
+    box-shadow: var(--elev-3);
+  }
+
+  .error-frame {
+    padding: var(--space-6);
   }
 </style>

@@ -202,12 +202,14 @@ export const api = {
    * the same handler as live updates. See convert.py:event_generator.
    *
    * @param {(evt: { type: string, data: any }) => void} onEvent
+   * @param {{onOpen?: () => void, onReconnecting?: () => void}} [status]
    */
-  subscribeToJobs(onEvent) {
+  subscribeToJobs(onEvent, status) {
     const conn = sseConnectNamed(
       `${API_BASE}/jobs/events`,
       ['snapshot', 'progress', 'complete', 'error', 'status', 'cancelled'],
       onEvent,
+      status,
     );
     return () => conn.close();
   },

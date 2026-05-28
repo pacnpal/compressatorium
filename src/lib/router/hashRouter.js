@@ -3,8 +3,10 @@
 
 import { ui } from '$lib/stores/ui.svelte.js';
 
+const DEFAULT_HASH = '#/workspace';
+
 function apply() {
-  const hash = window.location.hash || '#/dashboard';
+  const hash = window.location.hash || DEFAULT_HASH;
   ui.applyHash(hash);
 }
 
@@ -13,7 +15,7 @@ export function startRouter() {
   apply();
   if (!window.location.hash) {
     // Normalize the bare URL so the back button has somewhere to return to.
-    window.history.replaceState(null, '', '#/dashboard');
+    window.history.replaceState(null, '', DEFAULT_HASH);
   }
   window.addEventListener('hashchange', apply);
   return () => window.removeEventListener('hashchange', apply);

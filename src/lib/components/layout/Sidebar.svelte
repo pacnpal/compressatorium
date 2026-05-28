@@ -17,12 +17,21 @@
 
 <aside class="sidebar" class:collapsed aria-label="Primary navigation">
   <div class="brand">
-    <span class="brand-logo" aria-hidden="true">◧</span>
+    <img
+      class="brand-logo"
+      src="/static/images/logo.png"
+      alt=""
+      aria-hidden="true"
+      width="32"
+      height="32"
+    />
     {#if !collapsed}<span class="brand-text">Compressatorium</span>{/if}
     <span class="brand-spacer"></span>
     <IconButton
       label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
       size="sm"
+      toggle
+      active={collapsed}
       onclick={() => ui.toggleSidebar()}
     >
       {collapsed ? '›' : '‹'}
@@ -32,20 +41,20 @@
   <nav class="section">
     {#if !collapsed}<h2 class="section-title">Navigate</h2>{/if}
     <SidebarItem
-      label="Dashboard"
-      {collapsed}
-      active={view === 'dashboard'}
-      onclick={() => go('dashboard')}
-    >
-      {#snippet icon()}<span>◉</span>{/snippet}
-    </SidebarItem>
-    <SidebarItem
       label="Workspace"
       {collapsed}
       active={view === 'workspace'}
       onclick={() => go('workspace', tool)}
     >
-      {#snippet icon()}<span>◫</span>{/snippet}
+      {#snippet icon()}<span aria-hidden="true">▦</span>{/snippet}
+    </SidebarItem>
+    <SidebarItem
+      label="Dashboard"
+      {collapsed}
+      active={view === 'dashboard'}
+      onclick={() => go('dashboard')}
+    >
+      {#snippet icon()}<span aria-hidden="true">◉</span>{/snippet}
     </SidebarItem>
     <SidebarItem
       label="DAT Library"
@@ -53,7 +62,7 @@
       active={view === 'dat'}
       onclick={() => go('dat')}
     >
-      {#snippet icon()}<span>≣</span>{/snippet}
+      {#snippet icon()}<span aria-hidden="true">≣</span>{/snippet}
     </SidebarItem>
     <SidebarItem
       label="Help"
@@ -61,7 +70,7 @@
       active={view === 'help'}
       onclick={() => go('help')}
     >
-      {#snippet icon()}<span>?</span>{/snippet}
+      {#snippet icon()}<span aria-hidden="true">?</span>{/snippet}
     </SidebarItem>
   </nav>
 
@@ -75,7 +84,11 @@
         active={view === 'workspace' && tool === t.id}
         onclick={() => go('workspace', t.id)}
       >
-        {#snippet icon()}<span class="tool-glyph">{t.label[0]}</span>{/snippet}
+        {#snippet icon()}
+          <span class="tool-glyph" style:color={t.accent ?? 'var(--accent)'} aria-hidden="true">
+            {t.glyph ?? t.label[0]}
+          </span>
+        {/snippet}
       </SidebarItem>
     {/each}
   </nav>
@@ -107,8 +120,11 @@
     color: var(--text-1);
   }
   .brand-logo {
-    font-size: 22px;
-    color: var(--accent);
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
+    object-fit: contain;
   }
   .brand-text {
     font-weight: var(--weight-semibold);
@@ -141,8 +157,10 @@
     letter-spacing: 0.06em;
   }
   .tool-glyph {
-    font-weight: var(--weight-semibold);
-    font-size: 14px;
+    font-weight: var(--weight-bold);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    line-height: 1;
   }
   .spacer {
     flex: 1;

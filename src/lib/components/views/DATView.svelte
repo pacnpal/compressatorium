@@ -1,10 +1,18 @@
-<section class="view">
-  <header>
-    <h1>DAT Library</h1>
+<script>
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
+</script>
+
+<section class="view" aria-labelledby="dat-title">
+  <header class="header">
+    <h1 id="dat-title">DAT Library</h1>
     <p class="hint">Match converted files against No-Intro / Redump / MAMERedump datasets.</p>
   </header>
   <article class="panel">
-    <p class="placeholder">DATPanel migration lands in P7.</p>
+    <EmptyState
+      title="DAT management is on the way"
+      description="Importing custom DATs, syncing MAMERedump, and per-file match results land in a later phase."
+      glyph="≣"
+    />
   </article>
 </section>
 
@@ -18,7 +26,7 @@
     margin: 0 auto;
     width: 100%;
   }
-  h1 {
+  .header h1 {
     margin: 0;
     font-size: var(--text-2xl);
     font-weight: var(--weight-semibold);
@@ -34,10 +42,5 @@
     border-radius: var(--radius-lg);
     padding: var(--space-4);
     box-shadow: var(--elev-1);
-  }
-  .placeholder {
-    color: var(--text-3);
-    font-style: italic;
-    margin: 0;
   }
 </style>

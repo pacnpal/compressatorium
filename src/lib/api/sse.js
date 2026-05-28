@@ -2,11 +2,10 @@
 // SSE helpers — both auto-reconnecting (for the jobs stream) and
 // single-shot (for per-file verify streams).
 //
-// Note: an earlier safeParse helper was inlined into each call site
-// because Codacy's bundled JSHint kept flagging "safeParse is not
-// defined" for the const-arrow declaration despite esversion:11. The
-// duplication is trivial (3 lines per use) and removes the false
-// positive permanently.
+// JSON parsing is inlined at each call site (rather than via a helper)
+// because Codacy's bundled JSHint repeatedly flagged a const-arrow
+// `safeParse` helper as undefined despite esversion:11. The 3-line
+// inline pattern is trivial and removes the false positive.
 
 const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
@@ -17,12 +16,18 @@ const RECONNECT_MAX_MS = 30_000;
  * silently with no backoff, which floods. We force-close on error and
  * schedule a reconnect with exponential backoff (500ms → 30s, reset on open).
  *
+ * Status callbacks let callers wire connection state into UI feedback
+ * (e.g. "Lost connection — retrying…" toast):
+ *   - onOpen():         called every time the EventSource opens
+ *   - onReconnecting(): called when a reconnect is being scheduled
+ *
  * @param {string} url
  * @param {string[]} eventNames - named event types to subscribe to
  * @param {(evt: {type: string, data: any}) => void} onEvent
+ * @param {{onOpen?: () => void, onReconnecting?: () => void}} [statusHandlers]
  * @returns {{close: () => void}}
  */
-export function sseConnectNamed(url, eventNames, onEvent) {
+export function sseConnectNamed(url, eventNames, onEvent, statusHandlers = {}) {
   let es = null;
   let closed = false;
   let backoffMs = RECONNECT_INITIAL_MS;
@@ -49,6 +54,11 @@ export function sseConnectNamed(url, eventNames, onEvent) {
 
     es.onopen = () => {
       backoffMs = RECONNECT_INITIAL_MS;
+      try {
+        statusHandlers.onOpen?.();
+      } catch (_e) {
+        // ignore — status handlers must not break the stream
+      }
     };
 
     es.onerror = () => {
@@ -59,6 +69,11 @@ export function sseConnectNamed(url, eventNames, onEvent) {
         // ignore
       }
       es = null;
+      try {
+        statusHandlers.onReconnecting?.();
+      } catch (_e) {
+        // ignore
+      }
       reconnectTimer = setTimeout(() => {
         backoffMs = Math.min(backoffMs * 2, RECONNECT_MAX_MS);
         connect();

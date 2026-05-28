@@ -1,10 +1,18 @@
-<section class="view">
-  <header>
-    <h1>Help</h1>
+<script>
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
+</script>
+
+<section class="view" aria-labelledby="help-title">
+  <header class="header">
+    <h1 id="help-title">Help</h1>
     <p class="hint">Compression formats, modes, and the verification flow.</p>
   </header>
   <article class="panel">
-    <p class="placeholder">HelpPanel migration lands in P7.</p>
+    <EmptyState
+      title="Help content is on the way"
+      description="Format guides, mode reference, and troubleshooting tips will appear here."
+      glyph="?"
+    />
   </article>
 </section>
 
@@ -18,7 +26,7 @@
     margin: 0 auto;
     width: 100%;
   }
-  h1 {
+  .header h1 {
     margin: 0;
     font-size: var(--text-2xl);
     font-weight: var(--weight-semibold);
@@ -34,10 +42,5 @@
     border-radius: var(--radius-lg);
     padding: var(--space-4);
     box-shadow: var(--elev-1);
-  }
-  .placeholder {
-    color: var(--text-3);
-    font-style: italic;
-    margin: 0;
   }
 </style>

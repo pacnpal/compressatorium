@@ -1,6 +1,14 @@
 // Frontend tool registry — mirrors DESIGN_tool_plugin_architecture.md §3.7
 // field-for-field, extended with the ModeSpec metadata defined in
-// app/services/tools/spec.py so the UI never branches by tool id.
+// app/services/tools/spec.py.
+//
+// The registry is the single source of truth for tool identity. All
+// call sites (UI store, sidebar, SSE URL building, group labels, mode
+// metadata) look up via the helpers below — there is no hardcoded
+// `if (tool === 'chdman')` branching, and no map at the top of this
+// file that needs editing when adding a 4th tool. To add a tool:
+// declare one entry in TOOLS, register its plugin on the backend,
+// add the binary to the Dockerfile. That's it.
 
 import { api } from '$lib/api/endpoints.js';
 
@@ -13,21 +21,6 @@ const DOLPHIN_VERIFY_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
 const Z3DS_SOURCE_EXTS = ['.cci', '.cia', '.3ds'];
 const Z3DS_VERIFY_EXTS = ['.zcci', '.zcia', '.z3ds'];
 const Z3DS_OUT_MAP = { '.cci': '.zcci', '.cia': '.zcia', '.3ds': '.z3ds' };
-
-const VERIFY_URL = Object.freeze({
-  chdman: Object.freeze({
-    single: '/api/verify/events',
-    batch: '/api/verify-batch/events',
-  }),
-  dolphin: Object.freeze({
-    single: '/api/dolphin-verify/events',
-    batch: '/api/dolphin-verify-batch/events',
-  }),
-  z3ds: Object.freeze({
-    single: '/api/z3ds-verify/events',
-    batch: '/api/z3ds-verify-batch/events',
-  }),
-});
 
 /**
  * @typedef {Object} ModeEntry
@@ -48,10 +41,14 @@ const VERIFY_URL = Object.freeze({
  * @property {string} id
  * @property {string} label
  * @property {string} hint
- * @property {string} verifyPrefix
+ * @property {string} verifyPrefix              URL segment for /api/{prefix}-verify (or empty for /api/verify)
  * @property {string[]} sourceExts
  * @property {string[]} verifyExts
  * @property {string[]} modeGroups
+ * @property {Record<string,string>} groups     group id → human label
+ * @property {string} defaultMode               wire-mode the workspace selects when this tool is activated
+ * @property {string} [glyph]                   short text affordance for the sidebar / dashboard (1-2 chars)
+ * @property {string} [accent]                  CSS color or token for badges / chips (falls back to --accent)
  * @property {ModeEntry[]} modes
  * @property {(path: string) => Promise<object>} getInfo
  * @property {(path: string, opts?: object) => Promise<object>} verify
@@ -70,143 +67,61 @@ export const TOOLS = [
     id: 'chdman',
     label: 'CHDMAN',
     hint: 'Convert CD / DVD / LaserDisc images to and from CHD.',
-    verifyPrefix: 'chd',
+    // chdman is the original endpoint set, so it has no URL prefix:
+    // /api/verify, /api/verify-batch. Other tools use /api/<prefix>-verify.
+    verifyPrefix: '',
     sourceExts: CHDMAN_SOURCE_EXTS,
     verifyExts: CHDMAN_VERIFY_EXTS,
     modeGroups: ['create', 'extract', 'copy'],
+    groups: { create: 'Create', extract: 'Extract', copy: 'Copy' },
+    defaultMode: 'createcd',
+    glyph: 'CD',
+    accent: 'var(--badge-cd)',
     modes: [
-      {
-        mode: 'createraw',
-        kind: 'create',
-        label: 'Create Raw',
-        group: 'create',
-        outputExt: '.chd',
-        inputExtensions: CHDMAN_SOURCE_EXTS,
-        supportsCompression: true,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: true,
-      },
-      {
-        mode: 'createhd',
-        kind: 'create',
-        label: 'Create HD',
-        group: 'create',
-        outputExt: '.chd',
-        inputExtensions: CHDMAN_SOURCE_EXTS,
-        supportsCompression: true,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: true,
-      },
-      {
-        mode: 'createcd',
-        kind: 'create',
-        label: 'Create CD',
-        group: 'create',
-        outputExt: '.chd',
-        inputExtensions: CHDMAN_SOURCE_EXTS,
-        supportsCompression: true,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: true,
-      },
-      {
-        mode: 'createdvd',
-        kind: 'create',
-        label: 'Create DVD',
-        group: 'create',
-        outputExt: '.chd',
-        inputExtensions: CHDMAN_SOURCE_EXTS,
-        supportsCompression: true,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: true,
-      },
-      {
-        mode: 'createld',
-        kind: 'create',
-        label: 'Create LD',
-        group: 'create',
-        outputExt: '.chd',
-        inputExtensions: CHDMAN_SOURCE_EXTS,
-        supportsCompression: true,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: true,
-      },
-      {
-        mode: 'extractraw',
-        kind: 'extract',
-        label: 'Extract Raw',
-        group: 'extract',
-        outputExt: '.raw',
-        inputExtensions: ['.chd'],
-        supportsCompression: false,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: false,
-        allowsArchiveInput: false,
-      },
-      {
-        mode: 'extracthd',
-        kind: 'extract',
-        label: 'Extract HD',
-        group: 'extract',
-        outputExt: '.raw',
-        inputExtensions: ['.chd'],
-        supportsCompression: false,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: false,
-        allowsArchiveInput: false,
-      },
-      {
-        mode: 'extractcd',
-        kind: 'extract',
-        label: 'Extract CD',
-        group: 'extract',
-        outputExt: '.cue',
-        inputExtensions: ['.chd'],
-        supportsCompression: false,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: false,
-        allowsArchiveInput: false,
-      },
-      {
-        mode: 'extractdvd',
-        kind: 'extract',
-        label: 'Extract DVD',
-        group: 'extract',
-        outputExt: '.iso',
-        inputExtensions: ['.chd'],
-        supportsCompression: false,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: false,
-        allowsArchiveInput: false,
-      },
-      {
-        mode: 'extractld',
-        kind: 'extract',
-        label: 'Extract LD',
-        group: 'extract',
-        outputExt: '.avi',
-        inputExtensions: ['.chd'],
-        supportsCompression: false,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: false,
-        allowsArchiveInput: false,
-      },
-      {
-        mode: 'copy',
-        kind: 'copy',
-        label: 'Copy / Recompress',
-        group: 'copy',
-        outputExt: '.chd',
-        inputExtensions: ['.chd'],
-        supportsCompression: true,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: false,
-      },
+      { mode: 'createraw', kind: 'create',  label: 'Create Raw', group: 'create',
+        outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
+        supportsCompression: true,  supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'createhd',  kind: 'create',  label: 'Create HD',  group: 'create',
+        outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
+        supportsCompression: true,  supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'createcd',  kind: 'create',  label: 'Create CD',  group: 'create',
+        outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
+        supportsCompression: true,  supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'createdvd', kind: 'create',  label: 'Create DVD', group: 'create',
+        outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
+        supportsCompression: true,  supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'createld',  kind: 'create',  label: 'Create LD',  group: 'create',
+        outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
+        supportsCompression: true,  supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'extractraw', kind: 'extract', label: 'Extract Raw', group: 'extract',
+        outputExt: '.raw', inputExtensions: ['.chd'],
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+      { mode: 'extracthd',  kind: 'extract', label: 'Extract HD',  group: 'extract',
+        outputExt: '.raw', inputExtensions: ['.chd'],
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+      { mode: 'extractcd',  kind: 'extract', label: 'Extract CD',  group: 'extract',
+        outputExt: '.cue', inputExtensions: ['.chd'],
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+      { mode: 'extractdvd', kind: 'extract', label: 'Extract DVD', group: 'extract',
+        outputExt: '.iso', inputExtensions: ['.chd'],
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+      { mode: 'extractld',  kind: 'extract', label: 'Extract LD',  group: 'extract',
+        outputExt: '.avi', inputExtensions: ['.chd'],
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+      { mode: 'copy', kind: 'copy', label: 'Copy / Recompress', group: 'copy',
+        outputExt: '.chd', inputExtensions: ['.chd'],
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
     ],
     getInfo: (path) => api.getCHDInfo(path),
     verify: (path, opts) => api.verifyCHD(path, opts),
@@ -221,55 +136,27 @@ export const TOOLS = [
     sourceExts: DOLPHIN_SOURCE_EXTS,
     verifyExts: DOLPHIN_VERIFY_EXTS,
     modeGroups: ['dolphin'],
+    groups: { dolphin: 'Dolphin' },
+    defaultMode: 'dolphin_rvz',
+    glyph: 'GC',
+    accent: 'var(--badge-dat-match)',
     modes: [
-      {
-        mode: 'dolphin_rvz',
-        kind: 'compress',
-        label: 'Dolphin RVZ',
-        group: 'dolphin',
-        outputExt: '.rvz',
-        inputExtensions: DOLPHIN_SOURCE_EXTS,
-        supportsCompression: true,
-        supportsCompressionLevel: true,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: false,
-      },
-      {
-        mode: 'dolphin_wia',
-        kind: 'compress',
-        label: 'Dolphin WIA',
-        group: 'dolphin',
-        outputExt: '.wia',
-        inputExtensions: DOLPHIN_SOURCE_EXTS,
-        supportsCompression: true,
-        supportsCompressionLevel: true,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: false,
-      },
-      {
-        mode: 'dolphin_gcz',
-        kind: 'compress',
-        label: 'Dolphin GCZ',
-        group: 'dolphin',
-        outputExt: '.gcz',
-        inputExtensions: DOLPHIN_SOURCE_EXTS,
-        supportsCompression: false,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: false,
-      },
-      {
-        mode: 'dolphin_iso',
-        kind: 'extract',
-        label: 'Dolphin ISO',
-        group: 'dolphin',
-        outputExt: '.iso',
-        inputExtensions: DOLPHIN_SOURCE_EXTS,
-        supportsCompression: false,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: false,
-      },
+      { mode: 'dolphin_rvz', kind: 'compress', label: 'Dolphin RVZ', group: 'dolphin',
+        outputExt: '.rvz', inputExtensions: DOLPHIN_SOURCE_EXTS,
+        supportsCompression: true,  supportsCompressionLevel: true,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
+      { mode: 'dolphin_wia', kind: 'compress', label: 'Dolphin WIA', group: 'dolphin',
+        outputExt: '.wia', inputExtensions: DOLPHIN_SOURCE_EXTS,
+        supportsCompression: true,  supportsCompressionLevel: true,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
+      { mode: 'dolphin_gcz', kind: 'compress', label: 'Dolphin GCZ', group: 'dolphin',
+        outputExt: '.gcz', inputExtensions: DOLPHIN_SOURCE_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
+      { mode: 'dolphin_iso', kind: 'extract', label: 'Dolphin ISO', group: 'dolphin',
+        outputExt: '.iso', inputExtensions: DOLPHIN_SOURCE_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
     ],
     getInfo: (path) => api.getDolphinInfo(path),
     verify: (path, opts) => api.verifyDolphin(path, opts),
@@ -284,19 +171,15 @@ export const TOOLS = [
     sourceExts: Z3DS_SOURCE_EXTS,
     verifyExts: Z3DS_VERIFY_EXTS,
     modeGroups: ['z3ds'],
+    groups: { z3ds: '3DS' },
+    defaultMode: 'z3ds_compress',
+    glyph: '3DS',
+    accent: 'var(--badge-dvd)',
     modes: [
-      {
-        mode: 'z3ds_compress',
-        kind: 'compress',
-        label: 'Compress 3DS',
-        group: 'z3ds',
-        outputExt: null,
-        inputExtensions: Z3DS_SOURCE_EXTS,
-        supportsCompression: false,
-        supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true,
-        allowsArchiveInput: false,
-      },
+      { mode: 'z3ds_compress', kind: 'compress', label: 'Compress 3DS', group: 'z3ds',
+        outputExt: null, inputExtensions: Z3DS_SOURCE_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
     ],
     getInfo: (path) => api.getZ3DSInfo(path),
     verify: (path, opts) => api.verify3DS(path, opts),
@@ -321,9 +204,19 @@ function endsWithAny(path, exts) {
   return exts.some((ext) => lower.endsWith(ext));
 }
 
+/** Build the single/batch verify URL from the tool's verifyPrefix. */
+function deriveVerifyUrl(tool, kind) {
+  if (!tool) return null;
+  const seg = tool.verifyPrefix ? `${tool.verifyPrefix}-verify` : 'verify';
+  return kind === 'batch' ? `/api/${seg}-batch/events` : `/api/${seg}/events`;
+}
+
 export const registry = {
   /** All registered tools, in declared order. */
   all: () => TOOLS,
+
+  /** Set of registered tool ids — replaces hardcoded VALID_TOOLS in callers. */
+  ids: () => new Set(TOOLS.map((t) => t.id)),
 
   /** Lookup by tool id (`'chdman'`, `'dolphin'`, `'z3ds'`). */
   forTool: (id) => byId.get(id),
@@ -340,8 +233,8 @@ export const registry = {
   /** Tools whose source extensions match the given path (convertible sources). */
   toolsForSourcePath: (path) => TOOLS.filter((t) => endsWithAny(path, t.sourceExts)),
 
-  /** Build a verify URL — single or batch — for a tool id. */
-  verifyUrl: (toolId, kind) => VERIFY_URL[toolId]?.[kind] ?? null,
+  /** Verify URL — single or batch — for a tool id. Derived from verifyPrefix. */
+  verifyUrl: (toolId, kind) => deriveVerifyUrl(byId.get(toolId), kind),
 
   /** Group a tool's modes by `group` for menu rendering. */
   modesByGroup: (toolId) => {
@@ -356,21 +249,26 @@ export const registry = {
     return out;
   },
 
-  /** Mode-kind → human label for tab/section headings. */
-  groupLabel: (group) => {
-    switch (group) {
-      case 'create':
-        return 'Create';
-      case 'extract':
-        return 'Extract';
-      case 'copy':
-        return 'Copy';
-      case 'dolphin':
-        return 'Dolphin';
-      case 'z3ds':
-        return '3DS';
-      default:
-        return group;
+  /**
+   * Group label lookup. Each tool owns its group → label map via the
+   * `groups` field; falls back to the raw group id so a new tool with
+   * an unknown group still renders something readable.
+   */
+  groupLabel: (group, toolId) => {
+    if (toolId) {
+      const tool = byId.get(toolId);
+      if (tool?.groups?.[group]) return tool.groups[group];
     }
+    // Fallback: search every tool for the first matching group label
+    // (useful when the caller doesn't know which tool owns the group).
+    for (const tool of TOOLS) {
+      if (tool.groups?.[group]) return tool.groups[group];
+    }
+    return group;
   },
+
+  /** Default wire-mode for a tool — used when the workspace switches tools. */
+  defaultMode: (toolId) => byId.get(toolId)?.defaultMode
+    ?? byId.get(toolId)?.modes[0]?.mode
+    ?? null,
 };

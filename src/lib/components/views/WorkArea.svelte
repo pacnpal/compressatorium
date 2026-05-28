@@ -1,52 +1,41 @@
 <script>
   import { ui } from '$lib/stores/ui.svelte.js';
   import { registry } from '$lib/tools/registry.js';
+  import EmptyState from '$lib/components/ui/EmptyState.svelte';
 
   const tool = $derived(registry.forTool(ui.workspaceTool));
-  const modes = $derived(tool ? Array.from(registry.modesByGroup(tool.id).entries()) : []);
 </script>
 
-<section class="view">
+<section class="view" aria-labelledby="workspace-title">
   <header class="header">
-    <h1>{tool?.label ?? 'Workspace'}</h1>
+    <h1 id="workspace-title">{tool?.label ?? 'Workspace'}</h1>
     <p class="hint">{tool?.hint ?? ''}</p>
   </header>
 
   <div class="panels">
-    <article class="panel">
+    <article class="panel" aria-label="Volumes and files">
       <h2 class="panel-title">Volumes & Files</h2>
-      <p class="placeholder">FileList + Breadcrumb + VolumeList land in P4.</p>
+      <EmptyState
+        title="File browser is on the way"
+        description="Volumes, breadcrumb, and the convertible-file list arrive in the next phase."
+        glyph="◇"
+      />
     </article>
-    <article class="panel">
+    <article class="panel" aria-label="Conversion configuration">
       <h2 class="panel-title">Convert</h2>
-      <p class="placeholder">ConversionConfig + ToolPicker + CompressionPicker land in P5.</p>
-      {#if tool}
-        <details>
-          <summary>Available modes ({tool.modes.length})</summary>
-          <ul class="modes">
-            {#each modes as [group, list] (group)}
-              <li>
-                <strong>{registry.groupLabel(group)}</strong>
-                <ul>
-                  {#each list as m (m.mode)}
-                    <li>
-                      <code>{m.mode}</code> — {m.label}
-                      {#if m.supportsCompression}<span class="tag">compression</span>{/if}
-                      {#if m.supportsCompressionLevel}<span class="tag">level</span>{/if}
-                      {#if m.supportsDeleteOnVerify}<span class="tag">del-on-verify</span>{/if}
-                      {#if m.allowsArchiveInput}<span class="tag">archives</span>{/if}
-                    </li>
-                  {/each}
-                </ul>
-              </li>
-            {/each}
-          </ul>
-        </details>
-      {/if}
+      <EmptyState
+        title="Conversion controls are on the way"
+        description="Pick a mode, configure compression, and submit jobs from this panel once it's wired up."
+        glyph="◈"
+      />
     </article>
-    <article class="panel">
+    <article class="panel" aria-label="Job queue">
       <h2 class="panel-title">Jobs</h2>
-      <p class="placeholder">JobList lands in P5.</p>
+      <EmptyState
+        title="Job queue is on the way"
+        description="Live progress and history for every conversion will appear here."
+        glyph="◉"
+      />
     </article>
   </div>
 </section>
@@ -95,51 +84,5 @@
     color: var(--text-1);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-  }
-  .placeholder {
-    color: var(--text-3);
-    font-style: italic;
-    margin: 0;
-  }
-  details {
-    margin-top: var(--space-3);
-    color: var(--text-2);
-  }
-  summary {
-    cursor: pointer;
-    user-select: none;
-    color: var(--text-2);
-    font-size: var(--text-sm);
-  }
-  .modes {
-    list-style: none;
-    padding: 0;
-    margin: var(--space-2) 0 0;
-    font-size: var(--text-sm);
-  }
-  .modes > li {
-    margin-top: var(--space-2);
-  }
-  .modes ul {
-    margin: var(--space-1) 0 0 var(--space-4);
-    padding: 0;
-    list-style: disc;
-  }
-  code {
-    font-family: var(--font-mono);
-    background: var(--surface-2);
-    padding: 1px 5px;
-    border-radius: var(--radius-xs);
-    color: var(--text-1);
-  }
-  .tag {
-    display: inline-block;
-    margin-left: var(--space-1);
-    padding: 1px 6px;
-    background: var(--badge-bg);
-    color: var(--badge-text);
-    border-radius: var(--radius-full);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
   }
 </style>

@@ -6,6 +6,7 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api } from '$lib/api/endpoints.js';
 import { STORAGE_KEYS, readBool, writeBool } from '$lib/util/localStorage.js';
 import { verification } from './verification.svelte.js';
+import { ui } from './ui.svelte.js';
 
 const EXTERNAL_SCAN_MODES = new Set(['metadata_scan', 'dat_match']);
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -293,39 +294,45 @@ class JobsStore {
   // ─── SSE lifecycle ────────────────────────────────────────────────────
   connect() {
     if (this._unsubscribe) return;
-    this._unsubscribe = api.subscribeToJobs(({ type, data }) => {
-      switch (type) {
-        // Hydration emission from the backend on (re)connection. Same
-        // shape as progress; _applyJob is idempotent so re-running on
-        // reconnect just refreshes the slot.
-        case 'snapshot':
-        // falls through
-        case 'progress':
-        case 'cancelled':
-        case 'error':
-          if (data?.job) this._applyJob(data.job);
-          break;
-        case 'complete':
-          if (data?.job) this._applyJob(data.job);
-          // Job completion carries verified / source_deleted alongside the
-          // job payload (job_manager._notify_subscribers). When the new
-          // output passed verification, add it to the verified set;
-          // when delete-on-verify removed the source, drop it.
-          if (data?.verified && data?.job?.output_path) {
-            verification.statuses.add(data.job.output_path);
-          }
-          if (data?.source_deleted && data?.job?.file_path) {
-            verification.statuses.delete(data.job.file_path);
-          }
-          break;
-        case 'status':
-          // Status pulses don't carry a job payload in some emit paths.
-          if (data?.job) this._applyJob(data.job);
-          break;
-        default:
-          break;
-      }
-    });
+    this._unsubscribe = api.subscribeToJobs(
+      ({ type, data }) => {
+        switch (type) {
+          // Hydration emission from the backend on (re)connection. Same
+          // shape as progress; _applyJob is idempotent so re-running on
+          // reconnect just refreshes the slot.
+          case 'snapshot':
+          // falls through
+          case 'progress':
+          case 'cancelled':
+          case 'error':
+            if (data?.job) this._applyJob(data.job);
+            break;
+          case 'complete':
+            if (data?.job) this._applyJob(data.job);
+            // Job completion carries verified / source_deleted alongside
+            // the job payload (job_manager._notify_subscribers). When the
+            // new output passed verification, add it to the verified set;
+            // when delete-on-verify removed the source, drop it.
+            if (data?.verified && data?.job?.output_path) {
+              verification.statuses.add(data.job.output_path);
+            }
+            if (data?.source_deleted && data?.job?.file_path) {
+              verification.statuses.delete(data.job.file_path);
+            }
+            break;
+          case 'status':
+            // Status pulses don't carry a job payload in some emit paths.
+            if (data?.job) this._applyJob(data.job);
+            break;
+          default:
+            break;
+        }
+      },
+      {
+        onOpen: () => ui.reportConnection('open'),
+        onReconnecting: () => ui.reportConnection('reconnecting'),
+      },
+    );
   }
 
   dispose() {

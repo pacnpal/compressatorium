@@ -15,15 +15,29 @@ Use it as an operational checklist, not as product documentation.
 
 ### 1. Local Dev (Web UI)
 
-- Preferred: run helper script (loads `.env.local`, bootstraps `.venv`, starts uvicorn).
+The frontend is a **Svelte 5 + Vite SPA** under `src/` (see README §"Frontend Development"). The backend is FastAPI under `app/`. Build output lands in `static/` and is served by FastAPI via the existing `/static` mount.
+
+- Production-style run (FastAPI serves the prebuilt SPA):
 
 ```bash
 cd /Users/talor/github/projects/compressatorium
-./run_dev.sh
+npm install && npm run build      # one-time / when src/ changes
+./run_dev.sh                       # loads .env.local, bootstraps .venv, starts uvicorn
 ```
 
-- App URL: `http://localhost:8080`
+- Hot-reload dev loop (two terminals):
+
+```bash
+# Terminal 1 — backend
+./run_dev.sh                       # uvicorn on :8080
+
+# Terminal 2 — Vite with HMR
+npm run dev                        # http://localhost:5173 (proxies /api and /health to :8080)
+```
+
+- App URL: `http://localhost:8080` (prod-style) or `http://localhost:5173` (Vite HMR).
 - Important behavior: if `COMPRESSATORIUM_VOLUMES` is unset, volumes are auto-discovered under `COMPRESSATORIUM_MOUNT_ROOT/*`.
+- The legacy `static/js/app.js` + `static/vendor/standalone.mjs` (Preact + htm) frontend is being decommissioned; do not extend it. All new UI work goes in `src/`.
 
 ### 2. Test Workflow
 

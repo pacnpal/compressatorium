@@ -708,6 +708,47 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
+## Frontend Development
+
+The Web UI is a **Svelte 5 + Vite** single-page app. Source lives under `src/`, the build pipeline emits `index.html` plus hashed assets into `static/`, and FastAPI serves the result via the existing `/static` mount and root `FileResponse`. Source code follows the architecture documented in `DESIGN_tool_plugin_architecture.md` §3.7 — a declarative tool registry (`src/lib/tools/registry.js`) drives every tool-specific decision so adding a new converter is one entry in `TOOLS`, no `if (tool === ...)` branches anywhere.
+
+### Quick start
+
+```bash
+# Install JS deps (one-time)
+npm install
+
+# In one shell: start the FastAPI backend
+./run_dev.sh                          # or: uvicorn app.main:app --port 8080
+
+# In a second shell: start Vite with HMR
+npm run dev                           # → http://localhost:5173
+```
+
+Vite proxies `/api` and `/health` to `http://localhost:8080`, so the dev server runs the SPA against the live backend with hot reload.
+
+### Build & lint
+
+```bash
+npm run build       # Vite production build → static/index.html + static/assets/*
+npm run preview     # Serve the built bundle locally on :4173
+npm run lint        # ESLint (JS + .svelte) — flat config in eslint.config.js
+```
+
+### Architecture at a glance
+
+- `src/App.svelte` — root shell: sidebar + topbar + routed view, error boundary, focus management on route change, skip-to-content link.
+- `src/lib/stores/*.svelte.js` — class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
+- `src/lib/api/` — REST client + auto-reconnecting EventSource (`sse.js`) + POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state; no separate REST round-trip needed.
+- `src/lib/tools/registry.js` — every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, API bindings). Adding a 4th tool: one new entry + the backend plugin.
+- `src/styles/tokens.css` — semantic design tokens keyed by `[data-theme]` (light / dark). No hex colors live outside this file.
+
+### Docker / CI
+
+The multi-stage `Dockerfile` has a dedicated `frontend-builder` stage that runs `npm ci && npm run build` inside `node:lts-slim`, then copies the output into the Python runtime image. The runtime image has no Node; `node:lts-slim` ships `linux/amd64` + `linux/arm64` so the existing multi-arch buildx pipeline keeps working unchanged.
+
+---
+
 ## Acknowledgments
 
 This project is a fork of the original Docker CHD Converter project by [MarcTV](https://github.com/MarcTV). The original project provides a simple CLI-based batch converter, and this fork extends it with a Web UI and additional features.
