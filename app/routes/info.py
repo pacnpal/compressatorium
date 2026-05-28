@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from config import settings
@@ -650,7 +651,7 @@ class _VerifyRouteConfig:
     """Per-tool data the verify-route factory needs (no behavior branching)."""
 
     url_prefix: str          # "" -> /verify, "dolphin-" -> /dolphin-verify, ...
-    service_attr: str        # module global the tests monkeypatch
+    service: Callable        # returns the verify service (read at call time)
     sync_name: str           # FastAPI route name == legacy function name
     events_name: str
     batch_name: str
@@ -658,10 +659,13 @@ class _VerifyRouteConfig:
     verify_error_prefix: str  # 500 detail prefix raised by the sync endpoint
 
 
+# Each ``service`` getter resolves the module-global service name at call time
+# (not at import time), so the existing route tests can rebind
+# ``info_routes.<service>`` to a mock and have the factory pick it up.
 _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
     "chdman": _VerifyRouteConfig(
         url_prefix="",
-        service_attr="chdman_service",
+        service=lambda: chdman_service,
         sync_name="verify_chd",
         events_name="verify_chd_events",
         batch_name="verify_batch_events",
@@ -670,7 +674,7 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
     ),
     "dolphin": _VerifyRouteConfig(
         url_prefix="dolphin-",
-        service_attr="dolphin_tool_service",
+        service=lambda: dolphin_tool_service,
         sync_name="verify_dolphin",
         events_name="verify_dolphin_events",
         batch_name="verify_dolphin_batch_events",
@@ -679,7 +683,7 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
     ),
     "z3ds": _VerifyRouteConfig(
         url_prefix="z3ds-",
-        service_attr="z3ds_compress_service",
+        service=lambda: z3ds_compress_service,
         sync_name="verify_z3ds",
         events_name="verify_z3ds_events",
         batch_name="verify_z3ds_batch_events",
@@ -687,16 +691,6 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         verify_error_prefix="Failed to verify 3DS ROM",
     ),
 }
-
-
-def _verify_service(cfg: _VerifyRouteConfig):
-    """Resolve the verify service via the module global.
-
-    The route tests rebind ``info_routes.<service>`` to a mock, so the factory
-    must read the service through this module's namespace at call time rather
-    than capture the tool's own ``_service`` reference.
-    """
-    return globals()[cfg.service_attr]
 
 
 async def _guard_verify_path(
@@ -741,7 +735,7 @@ def _sse_from_verify_stream(
 
         async def run_verify():
             try:
-                async for update in _verify_service(cfg).verify_stream(path):
+                async for update in cfg.service().verify_stream(path):
                     await queue.put(update)
             except Exception as exc:
                 await queue.put({"type": "error", "valid": False, "message": str(exc)})
@@ -832,7 +826,7 @@ def _sse_batch_from_verify_stream(
                 async def run_verify(path=path):
                     nonlocal final_result
                     try:
-                        async for update in _verify_service(cfg).verify_stream(path):
+                        async for update in cfg.service().verify_stream(path):
                             await queue.put(update)
                             if update.get("type") in ("complete", "error"):
                                 final_result = update
@@ -945,8 +939,8 @@ def _sse_batch_from_verify_stream(
     return EventSourceResponse(wrapped_event_generator())
 
 
-def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> dict:
-    """Register the verify trio for ``tool`` and return the route functions.
+def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> tuple:
+    """Register the verify trio for ``tool`` and return ``(sync, events, batch)``.
 
     Paths stay byte-identical via the ``tool_id -> url_prefix`` alias map, and
     each route is named after its legacy handler so OpenAPI operation ids and
@@ -960,7 +954,7 @@ def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> dict:
         await _guard_verify_path(path, tool, cfg)
         verify_token = await _acquire_verify_lane_or_429()
         try:
-            result = await _verify_service(cfg).verify(path)
+            result = await cfg.service().verify(path)
             if result.get("valid"):
                 await verification_store.mark_verified(path)
             return result
@@ -998,13 +992,18 @@ def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> dict:
         verify_token = await _acquire_verify_lane_or_429()
         return _sse_batch_from_verify_stream(tool, cfg, valid_paths, verify_token)
 
-    return {
-        cfg.sync_name: _verify,
-        cfg.events_name: _verify_events,
-        cfg.batch_name: _verify_batch,
-    }
+    return _verify, _verify_events, _verify_batch
 
 
-for _tool in registry.all():
-    if _tool.id in _VERIFY_CONFIG:
-        globals().update(register_verify_routes(router, _tool))
+# Explicit (registry-driven) registration. The factory body has no per-tool
+# branching; binding the returned handlers to their legacy names keeps the
+# ``info_routes.verify_*`` attributes the route tests call directly.
+verify_chd, verify_chd_events, verify_batch_events = register_verify_routes(
+    router, registry.get("chdman"),
+)
+verify_dolphin, verify_dolphin_events, verify_dolphin_batch_events = register_verify_routes(
+    router, registry.get("dolphin"),
+)
+verify_z3ds, verify_z3ds_events, verify_z3ds_batch_events = register_verify_routes(
+    router, registry.get("z3ds"),
+)
