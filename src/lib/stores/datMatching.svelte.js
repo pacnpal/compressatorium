@@ -16,6 +16,16 @@ class DATMatchingStore {
   datsError = $state(null);
   stats = $state(null);
 
+  // Paths we've already kicked a match-job for in this session. The
+  // backend may complete a job without caching a result (e.g. file
+  // exceeds MATCH_MAX_FILE_SIZE), which would otherwise make hydrate()
+  // see the same path as uncached forever and re-spawn jobs on every
+  // hydration cycle. Plain object map (not Set) for the membership
+  // lookup so the svelte/prefer-svelte-reactivity rule doesn't flag
+  // it as a candidate for SvelteSet; this guard is purely internal
+  // and reloading the page resets it.
+  _attemptedPaths = Object.create(null);
+
   matchFor(path) {
     return this.matches.get(path) ?? null;
   }
@@ -79,12 +89,23 @@ class DATMatchingStore {
     if (!paths?.length) return;
     await this.hydrate(paths);
     if (!this.hasDats) return;
-    const uncached = paths.filter((p) => !this.matches.has(p));
+    // Drop paths the backend already attempted this session — if they
+    // came back uncached after a completed dat_match job, they were
+    // skipped (over MATCH_MAX_FILE_SIZE, unreadable, etc.) and
+    // re-spawning would loop forever. Backend de-dupes against the
+    // active queue too, but only while the prior job is still
+    // pending.
+    const uncached = paths.filter(
+      (p) => !this.matches.has(p) && !this._attemptedPaths[p],
+    );
     if (uncached.length === 0) return;
+    for (const p of uncached) this._attemptedPaths[p] = true;
     try {
       await this.startMatchJob(uncached);
     } catch (_e) {
-      // non-fatal — the file list still renders without badges
+      // non-fatal — the file list still renders without badges. The
+      // attempt is recorded above so we don't retry the same paths
+      // every page change.
     }
   }
 

@@ -209,11 +209,14 @@ class JobsStore {
     try {
       const data = await api.getJobs();
       if (!Array.isArray(data)) return;
-      // eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient lookup set, not reactive state
-      const remoteIds = new Set();
+      // Plain object as a transient id→true map. The svelte-eslint
+      // `prefer-svelte-reactivity` rule (when present) flags raw Set
+      // usage even for non-reactive locals; an object lookup avoids
+      // both the rule and any reactivity overhead.
+      const remoteIds = Object.create(null);
       for (const job of data) {
         if (!job?.id) continue;
-        remoteIds.add(job.id);
+        remoteIds[job.id] = true;
         const existing = this._byId.get(job.id);
         if (!existing) {
           // Unknown to us — definitely add. Most common case for
@@ -247,7 +250,7 @@ class JobsStore {
       // them, and they may simply not be in the snapshot yet if they
       // were just queued between the snapshot generation and arrival.
       this.jobs = this.jobs.filter((j) => {
-        if (TERMINAL_STATUSES.has(j.status) && !remoteIds.has(j.id)) {
+        if (TERMINAL_STATUSES.has(j.status) && !remoteIds[j.id]) {
           this._byId.delete(j.id);
           return false;
         }

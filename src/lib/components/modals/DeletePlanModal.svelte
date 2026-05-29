@@ -36,6 +36,18 @@
     return out;
   });
 
+  // Non-blocking warnings the backend wants the user to see before
+  // confirming — e.g. "Archive input detected; delete-on-verify will
+  // remove the entire archive". These don't disable the Confirm
+  // button but the user needs to read them.
+  const planWarnings = $derived.by(() => {
+    const out = [];
+    for (const item of items) {
+      for (const m of item.warnings ?? []) out.push(m);
+    }
+    return out;
+  });
+
   function shortName(p) {
     return p?.split(/[/\\]/).pop() ?? p ?? '';
   }
@@ -78,6 +90,19 @@
       </div>
     {/if}
 
+    {#if planWarnings.length > 0}
+      <div class="dp-warn" role="status">
+        <TriangleAlert size={14} aria-hidden="true" />
+        <div>
+          <strong>Heads up:</strong>
+          <ul class="dp-warn-list">
+            {#each planWarnings.slice(0, 8) as m (m)}<li>{m}</li>{/each}
+            {#if planWarnings.length > 8}<li>…and {planWarnings.length - 8} more</li>{/if}
+          </ul>
+        </div>
+      </div>
+    {/if}
+
     <ul class="dp-list">
       {#each items.slice(0, 20) as item, idx (item.source_path ?? idx)}
         <li class="dp-item">
@@ -115,6 +140,9 @@
   .dp-block { display: flex; gap: var(--space-2); background: var(--error-muted); color: var(--error); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); align-items: flex-start; }
   .dp-block strong { font-weight: var(--weight-semibold); }
   .dp-block-list { margin: var(--space-1) 0 0; padding-left: var(--space-4); font-size: var(--text-xs); }
+  .dp-warn { display: flex; gap: var(--space-2); background: var(--warning-muted); color: var(--warning); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); align-items: flex-start; }
+  .dp-warn strong { font-weight: var(--weight-semibold); }
+  .dp-warn-list { margin: var(--space-1) 0 0; padding-left: var(--space-4); font-size: var(--text-xs); }
   .dp-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--surface-2); }
   .dp-item { padding: 6px var(--space-2); border-bottom: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 2px; }
   .dp-item:last-child { border-bottom: none; }

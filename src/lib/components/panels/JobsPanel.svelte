@@ -29,12 +29,20 @@
   const failedCount = $derived(jobs.visibleFailedCount);
   const stuck = $derived(jobs.stuckState);
 
-  // Once-per-mount stuck-state probe. The backend exposes
-  // /api/jobs/stuck-status as a snapshot, not a stream — we hit it on
-  // mount so a queue with no active processor surfaces a banner instead
-  // of looking like it just sits there silently.
+  // Stuck-state probe. The backend exposes /api/jobs/stuck-status as
+  // a snapshot, not a stream, so we have to poll. Fire once on mount
+  // for the initial state and then every 60 s so a queue that
+  // becomes stuck mid-session surfaces the banner without requiring
+  // a remount.
+  let stuckTimer = null;
   onMount(() => {
     jobs.checkStuck().catch(() => {});
+    stuckTimer = setInterval(() => {
+      jobs.checkStuck().catch(() => {});
+    }, 60000);
+    return () => {
+      if (stuckTimer) { clearInterval(stuckTimer); stuckTimer = null; }
+    };
   });
 
   function handleCancelAll() {
