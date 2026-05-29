@@ -53,6 +53,8 @@ class UIStore {
   // Flag is observed by App.svelte so background refresh-on-terminal
   // events can't swap entries out from under the open dialog.
   duplicatePromptOpen = $state(false);
+  // Same idea for the delete-on-verify plan confirmation.
+  deletePlanPromptOpen = $state(false);
 
   // Focus signal — bumped on view change so App.svelte can move focus to
   // the main landmark without screen readers losing context.
@@ -75,7 +77,8 @@ class UIStore {
       !!this.bulkVerifyItems ||
       !!this.duplicateCheck ||
       !!this.deletePlan ||
-      this.duplicatePromptOpen
+      this.duplicatePromptOpen ||
+      this.deletePlanPromptOpen
     );
   }
 

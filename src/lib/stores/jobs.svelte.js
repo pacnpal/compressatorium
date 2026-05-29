@@ -60,6 +60,51 @@ class JobsStore {
     return this.jobs.reduce((n, j) => (j.status === 'cancelled' ? n + 1 : n), 0);
   }
 
+  /**
+   * Counts scoped to the same predicate as `visibleJobs` — i.e. they
+   * exclude jobs the user has locally hidden and (when the metadata
+   * toggle is off) external-scan modes. JobsPanel tab badges + the
+   * Cancel-all / Clear-all gating use these so a hidden DAT-match or
+   * metadata-scan can't drive a count > 0 while the row list is
+   * empty, and so destructive actions never operate on jobs the
+   * user explicitly chose to hide.
+   */
+  _matchesTabFilter(job, tab) {
+    if (this.hiddenIds.has(job.id)) return false;
+    if (!this.showExternalScanJobs && EXTERNAL_SCAN_MODES.has(job.mode)) return false;
+    switch (tab) {
+      case 'queue':
+        return ACTIVE_STATUSES.has(job.status);
+      case 'completed':
+        return job.status === 'completed';
+      case 'failed':
+        return job.status === 'failed' || job.status === 'cancelled';
+      default:
+        return true;
+    }
+  }
+
+  get visibleQueuedCount() {
+    return this.jobs.reduce(
+      (n, j) => (this._matchesTabFilter(j, 'queue') ? n + 1 : n),
+      0,
+    );
+  }
+
+  get visibleCompletedCount() {
+    return this.jobs.reduce(
+      (n, j) => (this._matchesTabFilter(j, 'completed') ? n + 1 : n),
+      0,
+    );
+  }
+
+  get visibleFailedCount() {
+    return this.jobs.reduce(
+      (n, j) => (this._matchesTabFilter(j, 'failed') ? n + 1 : n),
+      0,
+    );
+  }
+
   /** Filter by current `tab` + external-scan toggle + locally hidden ids. */
   get visibleJobs() {
     const filtered = this.jobs.filter((job) => {

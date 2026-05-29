@@ -118,6 +118,11 @@
 
   function clearSearch() {
     searchInput = '';
+    // Drop any selection picked up from the (now-invisible) search
+    // result set. The recursive results may live in any subdirectory,
+    // so leaving them in selectedFiles would let the selection bar /
+    // Convert panel act on rows the user can no longer see.
+    fileBrowser.clearSelection();
     fileBrowser.exitSearch();
   }
 </script>

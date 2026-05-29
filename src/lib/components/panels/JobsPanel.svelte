@@ -15,13 +15,18 @@
 
   // Each $derived pulls from the rune-tracked store fields, so they
   // re-evaluate whenever jobs.jobs / .tab / .page mutate.
+  //
+  // Tab counts + Cancel/Clear gating use the *visible* counts (which
+  // respect `Show metadata jobs` and locally-hidden ids) so the badge
+  // never reads non-zero while the list is empty, and destructive
+  // actions never operate on jobs the user chose to hide.
   const tab = $derived(jobs.tab);
   const pageJobs = $derived(jobs.pageJobs);
   const page = $derived(jobs.page);
   const pageCount = $derived(jobs.pageCount);
-  const queuedCount = $derived(jobs.queuedCount + jobs.processingCount);
-  const completedCount = $derived(jobs.completedCount);
-  const failedCount = $derived(jobs.failedCount + jobs.cancelledCount);
+  const queuedCount = $derived(jobs.visibleQueuedCount);
+  const completedCount = $derived(jobs.visibleCompletedCount);
+  const failedCount = $derived(jobs.visibleFailedCount);
   const stuck = $derived(jobs.stuckState);
 
   // Once-per-mount stuck-state probe. The backend exposes

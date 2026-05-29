@@ -8,6 +8,7 @@
   import ModeSelect from './ModeSelect.svelte';
   import CompressionPicker from './CompressionPicker.svelte';
   import DuplicateModal from '$lib/components/modals/DuplicateModal.svelte';
+  import DeletePlanModal from '$lib/components/modals/DeletePlanModal.svelte';
   import Settings2 from '@lucide/svelte/icons/settings-2';
   import Play from '@lucide/svelte/icons/play';
   import Loader from '@lucide/svelte/icons/loader-circle';
@@ -58,6 +59,28 @@
     });
   }
 
+  // Delete-on-verify preflight: when the checkbox is on, fetch the
+  // backend's delete-plan snapshot and show it for confirmation
+  // before destructive submission. Same resolver pattern.
+  let deletePlanPrompt = $state(null);
+  const deletePlanModalOpen = $derived(!!deletePlanPrompt);
+
+  function resolveDeletePlan(proceed) {
+    if (deletePlanPrompt) {
+      const resolver = deletePlanPrompt;
+      deletePlanPrompt = null;
+      ui.deletePlanPromptOpen = false;
+      resolver(proceed);
+    }
+  }
+
+  async function awaitDeletePlanChoice() {
+    ui.deletePlanPromptOpen = true;
+    return new Promise((resolve) => {
+      deletePlanPrompt = resolve;
+    });
+  }
+
   async function handleSubmit() {
     if (submitDisabled) return;
     try {
@@ -68,6 +91,23 @@
         const choice = await awaitDuplicateChoice();
         if (!choice) return;   // user cancelled
         duplicateAction = choice;
+      }
+      // Delete-on-verify destruction preview. We fetch the
+      // backend's delete plan (cue+bin sets, gdi+raw tracks, etc.)
+      // and require explicit confirmation before queueing — users
+      // shouldn't trip the destructive flow without seeing what
+      // disappears after each output verifies. The plan reflects
+      // the duplicate-action choice via the snapshot inputs.
+      if (conversion.deleteOnVerify && supportsDeleteOnVerify) {
+        try {
+          await conversion.fetchDeletePlan(selectedPaths);
+        } catch (_e) {
+          // toast already raised in fetchDeletePlan
+          return;
+        }
+        const proceed = await awaitDeletePlanChoice();
+        conversion.clearDeletePlan();
+        if (!proceed) return;
       }
       await conversion.submit(selectedPaths, { duplicateAction });
       conversion.clearDuplicateCheck();
@@ -165,6 +205,7 @@
 </section>
 
 <DuplicateModal open={duplicateModalOpen} onResolve={resolveDuplicate} />
+<DeletePlanModal open={deletePlanModalOpen} onResolve={resolveDeletePlan} />
 
 <style>
   .panel {
