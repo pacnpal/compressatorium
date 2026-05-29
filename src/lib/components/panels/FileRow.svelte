@@ -24,7 +24,6 @@
   const isFile = $derived(!isDirectory && !isArchive);
 
   const selected = $derived(fileBrowser.selectedFiles.has(path));
-  const verified = $derived(verification.isVerified(path));
   const datMatch = $derived(datMatching.matchFor(path));
   const chdMeta = $derived(chdMetadata.metadataFor(path));
 
@@ -42,6 +41,19 @@
   });
 
   const outputs = $derived(Array.isArray(entry?.outputs) ? entry.outputs : []);
+
+  // OK badge surfaces when EITHER this file itself is verified OR
+  // any of its declared outputs (entry.outputs[].path) is verified.
+  // The verification store is keyed by output paths, so a source
+  // .cue / .gdi row would otherwise lose the badge even though the
+  // backend listing already reports its .chd as verified.
+  const verified = $derived.by(() => {
+    if (verification.isVerified(path)) return true;
+    for (const out of outputs) {
+      if (out?.path && verification.isVerified(out.path)) return true;
+    }
+    return false;
+  });
 
   function iconComponent() {
     if (isDirectory) return Folder;

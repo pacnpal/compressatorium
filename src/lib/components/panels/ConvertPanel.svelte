@@ -96,18 +96,32 @@
       // backend's delete plan (cue+bin sets, gdi+raw tracks, etc.)
       // and require explicit confirmation before queueing — users
       // shouldn't trip the destructive flow without seeing what
-      // disappears after each output verifies. The plan reflects
-      // the duplicate-action choice via the snapshot inputs.
+      // disappears after each output verifies.
+      //
+      // Filter out duplicate-conflict paths when the user chose
+      // skip: those inputs won't be converted, so the plan should
+      // not include them. Otherwise the confirmation lists files
+      // that won't be touched, and a sidecar/missing-source error
+      // on a skipped input could block the whole submit.
       if (conversion.deleteOnVerify && supportsDeleteOnVerify) {
-        try {
-          await conversion.fetchDeletePlan(selectedPaths);
-        } catch (_e) {
-          // toast already raised in fetchDeletePlan
-          return;
+        const skippedConflicts = duplicateAction === 'skip'
+          ? new Set(conflicts.map((c) => c?.file_path).filter(Boolean))
+          : new Set();
+        const planInputs = selectedPaths.filter((p) => !skippedConflicts.has(p));
+        if (planInputs.length > 0) {
+          try {
+            await conversion.fetchDeletePlan(planInputs);
+          } catch (_e) {
+            // toast already raised in fetchDeletePlan
+            return;
+          }
+          const proceed = await awaitDeletePlanChoice();
+          conversion.clearDeletePlan();
+          if (!proceed) return;
         }
-        const proceed = await awaitDeletePlanChoice();
-        conversion.clearDeletePlan();
-        if (!proceed) return;
+        // planInputs empty means every input is a skipped duplicate:
+        // the submit will queue zero jobs and conversion.submit's
+        // toast will surface that. No need to show a plan modal.
       }
       await conversion.submit(selectedPaths, { duplicateAction });
       conversion.clearDuplicateCheck();

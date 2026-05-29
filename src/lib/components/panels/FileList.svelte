@@ -68,16 +68,34 @@
 
   let searchInput = $state('');
 
+  // Count of terminated dat_match background jobs. Tracked as a
+  // dep of the hydration effect so we re-pull the match cache when
+  // a backend dat_match job (kicked by hydrateAndMatch) finishes —
+  // without it, newly-browsed files keep an empty DAT badge until
+  // some unrelated navigation re-runs the effect.
+  const datMatchTerminalCount = $derived(
+    jobs.jobs.reduce(
+      (n, j) =>
+        j.mode === 'dat_match' &&
+        (j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled')
+          ? n + 1
+          : n,
+      0,
+    ),
+  );
+
   // Hydrate badge stores for the paths actually on screen. /api/files
   // doesn't pre-populate DAT matches or CHD media_type — the legacy UI
   // ran these hydration calls after every listing change. We mirror
   // that here so badges show up without per-row fetches. Effect runs
   // again whenever the visible page changes (navigation, pagination,
-  // search, filter). hydrateAndMatch also kicks a background match
-  // job for uncached visible paths, so newly browsed/converted files
-  // pick up a DAT badge after one round-trip — the cache lookup
-  // alone never hashes.
+  // search, filter) OR a dat_match background job completes.
+  // hydrateAndMatch also kicks a background match job for uncached
+  // visible paths, so newly browsed/converted files pick up a DAT
+  // badge after one round-trip — the cache lookup alone never hashes.
   $effect(() => {
+    // Track explicitly so the effect re-runs on dat_match completion.
+    datMatchTerminalCount;
     const paths = entries.map((e) => e?.path).filter(Boolean);
     if (paths.length === 0) return;
     chdMetadata.hydrate(paths).catch(() => {});
