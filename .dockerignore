@@ -33,6 +33,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+!/src/lib/
+!/src/lib/**
 lib64/
 parts/
 sdist/
@@ -98,6 +100,7 @@ yarn-error.log*
 .eslintcache
 .stylelintcache
 package-lock.json
+!/package-lock.json
 yarn.lock
 pnpm-lock.yaml
 

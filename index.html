@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/x-icon" href="/static/images/favicon.ico" />
+    <title>Compressatorium</title>
+    <script>
+      // FOUC-prevention inline script for the mode-watcher dark/light
+      // setup. Runs synchronously before the Vite bundle (and therefore
+      // before <ModeWatcher /> mounts and can inject its own head script).
+      //
+      // Reads the SAME localStorage key mode-watcher is configured with
+      // (theme-preference) and applies the `.dark` class + color-scheme
+      // style that mode-watcher would. ModeWatcher is then mounted with
+      // disableHeadScriptInjection so we don't double-process.
+      (function () {
+        try {
+          var raw = localStorage.getItem('theme-preference');
+          var mode =
+            raw === 'light' || raw === 'dark' || raw === 'system' ? raw : 'system';
+          var prefersDark =
+            mode === 'dark' ||
+            (mode === 'system' &&
+              window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.classList.toggle('dark', prefersDark);
+          document.documentElement.style.colorScheme = prefersDark ? 'dark' : 'light';
+        } catch (_e) {
+          document.documentElement.classList.add('dark');
+          document.documentElement.style.colorScheme = 'dark';
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

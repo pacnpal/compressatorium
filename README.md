@@ -708,6 +708,57 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
+## Frontend Development
+
+The Web UI is a **Svelte 5 + Vite** single-page app. Source lives under `src/`, the build pipeline emits `index.html` plus hashed assets into `static/`, and FastAPI serves the result via the existing `/static` mount and root `FileResponse`. Source code follows the architecture documented in `DESIGN_tool_plugin_architecture.md` §3.7 — a declarative tool registry (`src/lib/tools/registry.js`) drives every tool-specific decision so adding a new converter is one entry in `TOOLS`, no `if (tool === ...)` branches anywhere.
+
+### Quick start
+
+```bash
+# Install JS deps (one-time)
+npm install
+
+# In one shell: start the FastAPI backend
+./run_dev.sh                          # or: uvicorn app.main:app --port 8080
+
+# In a second shell: start Vite with HMR
+npm run dev                           # → http://localhost:5173
+```
+
+Vite proxies `/api` and `/health` to `http://localhost:8080`, so the dev server runs the SPA against the live backend with hot reload.
+
+### Build & lint
+
+```bash
+npm run build       # Vite production build → static/index.html + static/assets/*
+npm run preview     # Serve the built bundle locally on :4173
+npm run lint        # ESLint (JS + .svelte) — flat config in eslint.config.js
+```
+
+### Architecture at a glance
+
+* `src/App.svelte` — root shell: sidebar + topbar + routed view, error boundary, focus management on route change, skip-to-content link, mounts `<ModeWatcher />` (theme) and `<Toaster />` (notifications).
+* `src/lib/stores/*.svelte.js` — class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
+* `src/lib/api/` — REST client + auto-reconnecting EventSource (`sse.js`) + POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state; no separate REST round-trip needed.
+* `src/lib/tools/registry.js` — every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, **compression codecs / style / level range**, API bindings). Adding a 4th tool: one new entry + the backend plugin. Helpers like `registry.allFilterableExts()` keep UI surfaces (file-list filter dropdown, conversion mode dropdown, compression picker, etc.) automatically extended.
+* `src/lib/components/panels/` — `VolumeList`, `Breadcrumb`, `FileList`, `FileRow`, `RowActionsMenu` (file browser); `ModeSelect`, `CompressionPicker`, `ConvertPanel` (conversion config); `JobRow`, `JobsPanel` (queue / completed / failed tabs with global Cancel-all / Clear / stuck-state recovery).
+* `src/lib/components/modals/` — `BaseModal` (bits-ui Dialog wrapper), `ConfirmModal` (canonical confirm/cancel), then `BulkVerifyModal`, `DuplicateModal`, `DeleteModal`, `BulkDeleteModal`, `RenameModal`, `CHDInfoModal`, `CancelAllJobsModal`, `ClearDoneModal`. Each mounts in `App.svelte` and self-renders against a `ui` store target.
+* `src/lib/components/dashboard/` — `StatCard` wrapper + `QueueSummaryCard`, `VolumeOverviewCard`, `RecentConversionsCard`, `VerificationStatusCard`, `QuickToolsCard`. QuickToolsCard iterates `registry.all()` — adding a tool auto-adds a tile.
+* `src/styles/tokens.css` — semantic design tokens keyed by `:root` (light defaults) and `:root.dark` (dark overrides). No hex colors live outside this file.
+
+### Runtime dependencies
+
+* [`@lucide/svelte`](https://lucide.dev) — official Lucide icon library for Svelte 5 runes, tree-shakeable per icon.
+* [`bits-ui`](https://bits-ui.com) — headless accessibility primitives (Dialog, DropdownMenu, ContextMenu, Tooltip, etc.). Used incrementally as panels need them; per-component import keeps bundle costs minimal.
+* [`svelte-sonner`](https://svelte-sonner.vercel.app) — toast notifications. Call `toast.success(...)` / `toast.error(...)` / `toast.promise(...)` from anywhere; the `<Toaster />` in `App.svelte` is the surface.
+* [`mode-watcher`](https://mode-watcher.sveco.dev) — light/dark/system mode management with localStorage persistence, system-preference tracking, and cross-tab sync. Applies `.dark` class to `<html>`; a matching inline script in `index.html` prevents FOUC on first paint.
+
+### Docker / CI
+
+The multi-stage `Dockerfile` has a dedicated `frontend-builder` stage that runs `npm ci && npm run build` inside `node:lts-slim`, then copies the output into the Python runtime image. The runtime image has no Node; `node:lts-slim` ships `linux/amd64` + `linux/arm64` so the existing multi-arch buildx pipeline keeps working unchanged.
+
+---
+
 ## Acknowledgments
 
 This project is a fork of the original Docker CHD Converter project by [MarcTV](https://github.com/MarcTV). The original project provides a simple CLI-based batch converter, and this fork extends it with a Web UI and additional features.

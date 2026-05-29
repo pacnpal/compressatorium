@@ -1,5 +1,123 @@
 # Release Notes
 
+## Unreleased — Duplicate-output preflight (P7 part 2)
+
+### ✨ New
+
+- **DuplicateModal preflight.** ConvertPanel now runs `conversion.checkDuplicates(paths)` before each submit. If the backend reports any output collision (`d.exists === true`), the dialog opens with the conflict list and three choices: Cancel, Skip duplicates, Overwrite all. Resolution flows back into `conversion.submit(paths, { duplicateAction })` via a per-submit `Promise` resolver — no global pending-state to leak. No collisions → submit fires straight through, no modal.
+
+### 🔧 Internal
+
+- Duplicate-modal state lives entirely inside ConvertPanel as a `$state` resolver-or-null. Opening sets the resolver; the modal's `onResolve` callback nulls it and resolves the awaited promise. Avoids stale-prompt bugs when the user submits, cancels, and re-submits.
+
+## Unreleased — DAT view + dashboard cards (P7/P8)
+
+### ✨ New
+
+- **DAT view shipped.** `src/lib/components/views/DATView.svelte` exposes Import DAT (file picker → `api.importDAT`), Sync MAMERedump (with a 2 s poll loop that auto-stops when `syncStatus.syncing` flips false), per-DAT delete, and a stats strip (total DATs / entries / cached matches). The view drives the existing `datMatching` store; the FileList badges that the store already powers light up once imports complete.
+- **Dashboard shipped.** Five cards composed via a generic `StatCard` wrapper: `QueueSummaryCard` (queued / active / done / failed counts + stuck-state badge), `VolumeOverviewCard` (top 4 volumes + file counts), `RecentConversionsCard` (last 5 terminal jobs across any tool), `VerificationStatusCard` (cached verified count + in-flight batch), `QuickToolsCard` (one tile per registered tool, deep-links to `#/workspace/<tool>` — adding a 4th tool surfaces a 4th tile automatically).
+
+### 🔧 Internal
+
+- `datMatching` store gains `dats`, `datsLoading`, `datsError`, `stats` $state fields + `loadDATs()`. The duplicate `importDAT` definition is removed; the kept version refreshes the DATs list (not just hasDats) after import.
+- `StatCard` exposes `title`, `subtitle`, `icon` / `body` / `footer` snippets, and a `--card-accent` CSS variable so each tile can take its own accent color without per-tile style overrides.
+- DAT sync polling lives in a `$effect` keyed off `syncing`: start interval when sync flips on, clear on sync-end (or component unmount).
+
+## Unreleased — Confirmation + file modals (P7 part 1)
+
+### ✨ New
+
+- **Modal foundation.** `BaseModal.svelte` wraps bits-ui Dialog with shared chrome (header, title, close, description, footer); `ConfirmModal.svelte` provides the standard confirm/cancel pattern. All future modals slot into these via `{#snippet body()}` / `{#snippet footer()}`.
+- **DeleteModal + BulkDeleteModal.** The Delete action in `RowActionsMenu` now opens a destructive-styled confirm dialog; the "Delete" bulk-action in FileList's selection bar opens the bulk version (preview list capped at 20 rows + tail counter, calls `api.deleteBatch`). Both refresh the file listing on success.
+- **RenameModal.** RowActionsMenu Rename opens a file-name input pre-populated with the current name (Enter submits, Esc cancels, bits-ui Dialog handles focus-trap).
+- **CHDInfoModal.** RowActionsMenu Info opens a dialog that calls `tool.getInfo(path)` via `registry.toolForVerifyPath` — no `if (tool === 'chdman')` chains, works for `.chd` / `.rvz` / `.z3ds` identically. Renders the backend payload as a labelled key/value list with JSON pretty-print for nested objects.
+- **CancelAllJobsModal + ClearDoneModal.** Replace the inline `window.confirm()` calls in JobsPanel. The Cancel-all dialog reports the queued+processing count; the Clear dialog reports the completed+failed+cancelled count. Both bind their busy state to the store flags so the buttons disable mid-action.
+
+### 🔧 Internal
+
+- New `src/lib/components/modals/` (BaseModal, ConfirmModal, BulkVerifyModal, BulkDeleteModal, DeleteModal, RenameModal, CHDInfoModal, CancelAllJobsModal, ClearDoneModal). Each modal mounts via App.svelte and self-renders against a `ui` store target (`ui.deleteTarget`, `ui.bulkDeleteEntries`, `ui.renameTarget`, `ui.chdInfoTarget`, `ui.showCancelAll`, `ui.showClearDone`, `ui.bulkVerifyItems`).
+- `JobsPanel.handleCancelAll` / `handleClearCompleted` now just toggle `ui.show*` flags instead of running their own try/catch — the modal owns the confirmation + success/error toast.
+
+## Unreleased — Verify flows (P6)
+
+### ✨ New
+
+- **Single + batch verify shipped.** `RowActionsMenu` already routed Verify to `verification.verifyOne(toolId, path)` via `registry.toolForVerifyPath`; P6 adds the batch flow. The new `BulkVerifyModal` (bits-ui Dialog) opens from a "Verify selected" button in the FileList selection bar. It groups the selection by tool (`.chd` → chdman, `.rvz/.wia/.gcz/.wbfs` → dolphin, `.z3ds/.zcci/.zcia` → z3ds), runs each group as a back-to-back batch, shows live per-file progress + an overall counter, and supports mid-run cancel via `verification.cancelBatch()` (AbortController).
+- **Verified set rehydrates on reload.** `App.svelte` calls `verification.loadVerified()` on mount so `OK` badges and the delete-on-verify gate survive a page refresh.
+- **Selection bulk-action bar.** FileList's selection bar gains `Verify` (hidden when none of the selected files have a verify-extension match — registry-driven) and `Delete` actions; the Delete action sets `ui.bulkDeleteEntries` for the P7 modal to consume.
+
+### 🔧 Internal
+
+- New `src/lib/components/modals/` directory; mounted via App.svelte so any panel can launch a modal by writing to a `ui` target (`ui.bulkVerifyItems`, `ui.bulkDeleteEntries`, etc.). bits-ui Dialog handles focus-trap / Escape / overlay-click for free.
+- The bulk-verify dialog tracks its own `running` / `groupIndex` / `runResults` state and uses `verification.batchRun` for the in-flight per-file progress payload (`done`, `currentPath`, `currentFilename`, `currentPercent`, `message`).
+- Auto-cancel on dismiss: closing the dialog while a batch is running aborts the in-flight `fetch` via `verification.cancelBatch()` rather than letting it complete silently.
+
+## Unreleased — Conversion config + job queue (P5)
+
+### ✨ New
+
+- **P5 conversion config + job queue shipped.** `ModeSelect`, `CompressionPicker`, `ConvertPanel`, `JobRow`, `JobsPanel`, `RowActionsMenu` components under `src/lib/components/panels/`. Pick mode (grouped by tool/group label from registry), pick compression (chdman: chip-multi; Dolphin: single codec + numeric level via codec metadata in registry; z3ds: nothing rendered), set output directory, toggle delete-on-verify, submit. Live progress, queue/completed/failed tabs with badge counts, per-row Cancel / Dismiss, global Cancel all + Clear, stuck-state banner with Recover action, "Show metadata jobs" toggle persists.
+- **Per-row file actions menu.** `bits-ui` DropdownMenu drives the FileRow `⋯` button: Info / Verify / Rename / Delete with keyboard-accessible focus management. Verify wires through `verification.verifyOne(toolId, path)` via registry lookup (`registry.toolForVerifyPath(path)`) — no tool-specific branches. Rename / Delete set `ui.renameTarget` / `ui.deleteTarget` for the modals to be wired in P7.
+- **Codec metadata in the registry.** Each tool descriptor now declares its `compressionCodecs`, `compressionStyle` (`'multi'` | `'single-with-level'` | `'none'`), and optional `compressionLevelRange`. `CompressionPicker` reads this and renders the right control with zero `if (tool === ...)` checks. chdman: 5 codecs as chips (zlib / lzma / lzma2 / flac / cdfl), comma-joined. Dolphin: 4 codecs + "no compression" via dropdown plus 1–22 level slider (default 19, MAME Redump). z3ds: control hidden.
+
+### 🔧 Internal
+
+- `conversion.svelte.js` gains `toggleCodec(codec)` (chdman chip toggle, with `'none'` mutex) and `setSingleCodec(codec)` (Dolphin) — clean store API for the picker.
+- `JobsPanel` consumes `jobs.pageJobs`, `jobs.queuedCount + jobs.processingCount`, etc. directly from the store so the rune-graph tracks updates without intermediate `$state` mirrors.
+- `bind:checked={() => jobs.showExternalScanJobs, (v) => jobs.setShowExternalScanJobs(v)}` uses Svelte 5.9+ function bindings to drive the metadata-jobs toggle through the store setter (which persists to localStorage).
+- `RowActionsMenu` styles its bits-ui primitives via `:global(...)` selectors keyed off the `[data-highlighted]` / `[data-disabled]` attributes the headless components emit.
+- `FileRow` drops its inline `.actions-trigger` styles; `RowActionsMenu` owns them now.
+
+### 📚 Documentation
+
+- `README.md` — Frontend Development section reflects the conversion config + job queue.
+- `AGENTS.md` — adds "Per-row actions live in `RowActionsMenu.svelte`" pointer.
+
+## Unreleased — File browser + library adoptions (Lucide, Bits UI, svelte-sonner, mode-watcher)
+
+### ✨ New
+
+- **P4 file browser shipped.** `VolumeList` / `Breadcrumb` / `FileList` / `FileRow` / `ConvertPanel` / `JobsPanel` components under `src/lib/components/panels/`, all driven by the existing `fileBrowser` store. Sort, filter (extension list derived from `registry.allFilterableExts()`), paginate, shift-click range select, click-to-navigate folders, click-to-enter archives — works end-to-end. ConvertPanel + JobsPanel are placeholders for P5.
+- **Lucide Svelte icons** replace every Unicode glyph placeholder. ThemeToggle finally has unambiguous Sun / Moon / Monitor icons; FileRow uses Disc / Disc3 / Gamepad2 / Archive / Folder; etc.
+- **Bits UI** added as a dependency (no components in use yet — reserved for P5 DropdownMenu/ContextMenu row actions and P7 modal Dialog).
+- **svelte-sonner** replaces the hand-rolled `Notification.svelte`. Call `toast.success/error/info/warning(...)` from any store; the `<Toaster />` lives in `App.svelte`. Brings rich color, swipe-to-dismiss, keyboard support, multi-toast queueing for free.
+- **mode-watcher** replaces the hand-rolled theme state in `ui.svelte.js`. Cross-tab sync, system-preference tracking, `color-scheme` style management, and the dark/light class on `<html>` all delegated. The inline FOUC-prevention script in `index.html` uses the same storage key (`theme-preference`) for parity with the legacy frontend.
+
+### 🔧 Internal
+
+- `src/styles/tokens.css` selectors migrated from `[data-theme="light"|"dark"]` to `:root` (light defaults) + `:root.dark` (mode-watcher's class convention).
+- `ui.svelte.js` deletes ~70 lines: `theme` / `systemIsDark` / `resolvedTheme` / `setTheme` / `cycleTheme` / `applyTheme` / `notification` / `notify` / `dismissNotification`. `reportConnection` rewritten to use `toast.warning` (sticky) + `toast.dismiss(id)` + `toast.success` for the SSE reconnect flow.
+- `Notification.svelte` deleted.
+- `registry.allSourceExts()`, `registry.allVerifyExts()`, `registry.allFilterableExts()` added so the file-list filter dropdown is now extensible by registry edit alone.
+- `ConvertPanel.svelte` + `JobsPanel.svelte` extracted from `WorkArea.svelte` so P5 can fill them in without touching the layout.
+
+### 📚 Documentation
+
+- `README.md` — Frontend Development section lists the adopted runtime libraries.
+- `AGENTS.md` — explicit "don't reinvent these" list with import patterns for the four libraries.
+
+## Unreleased — Svelte 5 frontend rebuild
+
+### ✨ New
+
+- **Frontend rebuilt on Svelte 5 + Vite.** The 6,096-line Preact-via-htm monolith (`static/js/app.js`) is replaced by a Svelte 5 SPA under `src/`. Per-domain class-singleton stores with `$state` class fields (jobs, fileBrowser, conversion, verification, datMatching, chdMetadata, ui), one declarative `TOOLS` array in `src/lib/tools/registry.js` that drives every tool-specific decision, design tokens (`src/styles/tokens.css`) with `light` / `dark` / `system` themes, sidebar + dashboard layout with deep-linkable hash routes, mobile drawer + `inert` focus trap, skip-to-content link and `<main>` focus management on route change, error boundary around routed views.
+- **Backend SSE snapshot-on-connect.** `/api/jobs/events` now emits a one-time `snapshot` event per known job at connection time (and re-emits on every reconnect). Eliminates the hydration race that existed when clients had to do a separate `/api/jobs` fetch before subscribing. Additive change — legacy clients that don't listen for `snapshot` silently ignore it.
+- **Docker `frontend-builder` stage.** New `node:lts-slim` stage runs `npm ci && npm run build`; the runtime image stays Python-only. The existing multi-arch buildx pipeline (`linux/amd64` + `linux/arm64`) works unchanged because `node:lts-slim` ships both arches and the SPA has no native deps.
+
+### 🔧 Internal
+
+- Legacy frontend removed: `static/js/app.js` (6,096 lines), `static/js/api.js` (874 lines), `static/css/style.css` (2,424 lines), `static/vendor/*.mjs` (Preact + htm bundles). Git history preserves them.
+- New `npm run dev` / `npm run build` / `npm run preview` / `npm run lint` scripts. Vite dev server proxies `/api` and `/health` to the FastAPI sidecar.
+- ESLint flat config extended with `eslint-plugin-svelte` + `svelte-eslint-parser` for `.svelte` and `.svelte.js` files.
+- Per the project contract: every `.svelte` file is verified via the Svelte MCP `svelte-autofixer`.
+
+### 📚 Documentation
+
+- `README.md` — new "Frontend Development" section documenting Svelte as the default.
+- `ADDING_PLATFORMS_AND_TOOLS.md` — the "frontend" steps for adding a tool collapse to "one entry in `TOOLS`"; the per-file list at §3.3 is updated; §5.10 rewritten end-to-end with the new registry pattern.
+- `DESIGN_tool_plugin_architecture.md` — §3.7 marked implemented; descriptor updated to match what shipped (per-tool `groups`, `defaultMode`, `glyph`, `accent`; `verifyPrefix` is the URL segment).
+- `AGENTS.md` — §1 covers both prod-style and HMR dev loops.
+
 ## v3.7.8 - Optional PUID/PGID ownership remap for Unraid/home servers
 
 ### ✨ New Features

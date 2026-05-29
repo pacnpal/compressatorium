@@ -22,6 +22,24 @@ WORKDIR /tmp/z3ds
 RUN g++ -O3 src/*.cpp -o z3ds_compressor -lzstd && \
     chmod +x z3ds_compressor
 
+# ---------------------------------------------------------------------------
+# Frontend builder stage — compile the Svelte 5 SPA with Vite.
+#
+# Output is emitted to /build/static via vite.config.js (build.outDir),
+# which the runtime stage copies into /static.  Multi-arch safe:
+# node:lts-slim ships linux/amd64 and linux/arm64 manifests, and the SPA
+# has no native dependencies so QEMU emulation under buildx works.
+# ---------------------------------------------------------------------------
+FROM node:lts-slim AS frontend-builder
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY vite.config.js svelte.config.js index.html ./
+COPY src/ ./src/
+ARG APP_VERSION=dev
+ENV VITE_APP_VERSION=${APP_VERSION}
+RUN npm run build
+
 FROM debian:trixie-slim
 
 # ---------------------------------------------------------------------------
@@ -106,7 +124,12 @@ COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
 
 # Copy application
 COPY app/ /app/
+# Bring in tracked static assets (images, etc.) and then overlay the
+# Vite-built SPA (index.html + hashed assets/) from the frontend-builder
+# stage. emptyOutDir=false in vite.config.js, plus this ordering, keeps
+# /static/images alongside the generated /static/index.html + /static/assets.
 COPY static/ /static/
+COPY --from=frontend-builder /build/static/ /static/
 COPY migrations/ /migrations/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

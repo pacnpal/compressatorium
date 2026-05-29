@@ -15,15 +15,42 @@ Use it as an operational checklist, not as product documentation.
 
 ### 1. Local Dev (Web UI)
 
-- Preferred: run helper script (loads `.env.local`, bootstraps `.venv`, starts uvicorn).
+The frontend is a Svelte 5 + Vite single-page application (SPA) under `src/` (see README §"Frontend Development"). The backend is FastAPI under `app/`. Build output lands in `static/` and is served by FastAPI via the existing `/static` mount.
+
+**Adopted runtime libraries** (don't reinvent these):
+
+- Icons: `@lucide/svelte` — `import Sun from '@lucide/svelte/icons/sun'`, use as `<Sun size={16} />`.
+- Toasts: `svelte-sonner` — `import { toast } from 'svelte-sonner'`, then `toast.success(msg)` / `toast.error(msg)` / `toast.promise(p, {...})` from any store or component.
+- Theme (light/dark/system): `mode-watcher` — `import { setMode, userPrefersMode, mode } from 'mode-watcher'`. Do NOT roll your own theme state in `ui.svelte.js`.
+- Headless accessibility primitives: `bits-ui` — pull Dialog, DropdownMenu, ContextMenu, Tooltip from `bits-ui` rather than building modal/menu/tooltip components from scratch. Per-row file actions use `bits-ui` DropdownMenu in `src/lib/components/panels/RowActionsMenu.svelte`; reuse it as the pattern for any future menu work (style with `:global(...)` selectors keyed off `[data-highlighted]` / `[data-disabled]`).
+
+**Where conversion config lives:**
+
+- Mode dropdown: `panels/ModeSelect.svelte`. Options come from `registry.modesByGroup(toolId)` — adding a new mode means editing `registry.js`, nothing else.
+- Compression UI: `panels/CompressionPicker.svelte`. Style is picked off `tool.compressionStyle` (`'multi'` / `'single-with-level'` / `'none'`); codecs from `tool.compressionCodecs`; level range from `tool.compressionLevelRange`.
+- Output dir + delete-on-verify + submit: `panels/ConvertPanel.svelte` (delete-on-verify blocks submit when any selected source is unverified — same backend invariant that `tools/spec.py` enforces).
+
+- Production-style run (FastAPI serves the prebuilt SPA):
 
 ```bash
 cd /Users/talor/github/projects/compressatorium
-./run_dev.sh
+npm install && npm run build      # one-time / when src/ changes
+./run_dev.sh                       # loads .env.local, bootstraps .venv, starts uvicorn
 ```
 
-- App URL: `http://localhost:8080`
+- Hot-reload dev loop (two terminals):
+
+```bash
+# Terminal 1 — backend
+./run_dev.sh                       # uvicorn on :8080
+
+# Terminal 2 — Vite dev server with HMR (hot module replacement)
+npm run dev                        # http://localhost:5173 (proxies /api and /health to :8080)
+```
+
+- App URL: `http://localhost:8080` (prod-style) or `http://localhost:5173` (Vite HMR).
 - Important behavior: if `COMPRESSATORIUM_VOLUMES` is unset, volumes are auto-discovered under `COMPRESSATORIUM_MOUNT_ROOT/*`.
+- The legacy `static/js/app.js` + `static/vendor/standalone.mjs` (Preact + htm) frontend is being decommissioned; do not extend it. All new UI work goes in `src/`.
 
 ### 2. Test Workflow
 

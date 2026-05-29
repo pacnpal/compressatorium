@@ -1,0 +1,254 @@
+// DAT matching store — wraps /api/dat endpoints. Caches per-path match
+// results so FileList rows can render badges without per-row fetches.
+
+import { SvelteMap } from 'svelte/reactivity';
+import { api } from '$lib/api/endpoints.js';
+
+class DATMatchingStore {
+  matches = new SvelteMap();
+  hasDats = $state(false);
+  panelOpen = $state(false);
+  importingDat = $state(false);
+  syncing = $state(false);
+  syncStatus = $state(null);
+  dats = $state([]);
+  datsLoading = $state(false);
+  datsError = $state(null);
+  stats = $state(null);
+
+  // Paths we've already kicked a match-job for in this session. The
+  // backend may complete a job without caching a result (e.g. file
+  // exceeds MATCH_MAX_FILE_SIZE), which would otherwise make hydrate()
+  // see the same path as uncached forever and re-spawn jobs on every
+  // hydration cycle. Plain object map (not Set) for the membership
+  // lookup so the svelte/prefer-svelte-reactivity rule doesn't flag
+  // it as a candidate for SvelteSet; this guard is purely internal
+  // and reloading the page resets it.
+  _attemptedPaths = Object.create(null);
+
+  matchFor(path) {
+    return this.matches.get(path) ?? null;
+  }
+
+  async refreshHasDats() {
+    try {
+      const stats = await api.getDATStats();
+      this.stats = stats;
+      // /api/dat/stats returns total_dats (legacy UI checked this exact field);
+      // `total` / `imported_count` are not part of the response.
+      this.hasDats = (stats?.total_dats ?? 0) > 0;
+      return this.hasDats;
+    } catch (_e) {
+      this.hasDats = false;
+      return false;
+    }
+  }
+
+  async loadDATs() {
+    this.datsLoading = true;
+    this.datsError = null;
+    try {
+      // /api/dat/list returns a bare array of DAT records
+      // (app/services/dat_store.py:list_dats), not an envelope. Each
+      // record: { id, name, description, version, imported_at, file_count }.
+      const data = await api.listDATs();
+      this.dats = Array.isArray(data) ? data : (Array.isArray(data?.dats) ? data.dats : []);
+      await this.refreshHasDats();
+    } catch (e) {
+      this.datsError = e?.message ?? 'Failed to load DATs';
+    } finally {
+      this.datsLoading = false;
+    }
+  }
+
+  /** Fetch cached matches (never hashes) for a batch of paths. */
+  async hydrate(paths) {
+    if (!paths?.length) return;
+    try {
+      const data = await api.getMatchCache(paths);
+      const results = data?.results ?? {};
+      for (const [path, result] of Object.entries(results)) {
+        this.matches.set(path, result);
+      }
+    } catch (_e) {
+      // non-fatal
+    }
+  }
+
+  /**
+   * Fetch cached matches AND kick a background match job for any
+   * paths the cache lookup didn't return. /api/dat/matches/lookup is
+   * read-only (it never hashes), so files that have never been
+   * matched by any session would otherwise never get a DAT badge.
+   * The startMatchJob handler de-dupes against the existing job queue
+   * server-side, so re-firing for the same path during a page
+   * navigation is cheap. Skipped when no DATs are imported — the
+   * match job would just no-op.
+   */
+  async hydrateAndMatch(paths) {
+    if (!paths?.length) return;
+    await this.hydrate(paths);
+    if (!this.hasDats) return;
+    // Drop paths the backend already attempted this session — if they
+    // came back uncached after a completed dat_match job, they were
+    // skipped (over MATCH_MAX_FILE_SIZE, unreadable, etc.) and
+    // re-spawning would loop forever. Backend de-dupes against the
+    // active queue too, but only while the prior job is still
+    // pending.
+    const uncached = paths.filter(
+      (p) => !this.matches.has(p) && !this._attemptedPaths[p],
+    );
+    if (uncached.length === 0) return;
+    try {
+      await this.startMatchJob(uncached);
+      // Mark attempts only AFTER the backend accepted the job. A 409
+      // (another match job already active) would otherwise strand the
+      // paths permanently, and any other failure should also leave
+      // them eligible for the next hydration to retry.
+      for (const p of uncached) this._attemptedPaths[p] = true;
+    } catch (_e) {
+      // non-fatal — the file list still renders without badges. The
+      // next hydration cycle will try these paths again once any
+      // currently-active dat_match job has cleared.
+    }
+  }
+
+  /**
+   * Drop the session-scoped "already attempted" set. Called whenever
+   * the DAT library state changes (import, delete, MAMERedump sync
+   * finish) so files that were previously uncached against the old
+   * DAT set get re-considered against the new one.
+   */
+  _resetAttempts() {
+    this._attemptedPaths = Object.create(null);
+  }
+
+  async matchBatch(paths) {
+    if (!paths?.length) return null;
+    try {
+      const data = await api.matchBatch(paths);
+      const results = data?.results ?? {};
+      for (const [path, result] of Object.entries(results)) {
+        this.matches.set(path, result);
+      }
+      return data;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  async startMatchJob(paths) {
+    if (!paths?.length) return null;
+    return api.startMatchJob(paths);
+  }
+
+  async deleteDAT(datId) {
+    const result = await api.deleteDAT(datId);
+    // The backend cascades DATMatch rows for the deleted DAT, so any
+    // cached match entry that survives in the client map is now
+    // stale — files that were only matched by this DAT would keep
+    // showing the badge until next reload because hydrate() only adds
+    // returned rows, never removes absent ones. Drop the whole cache
+    // AND the session-scoped attempt set so the next FileList hydration
+    // re-runs against the now-smaller DAT library and re-establishes
+    // truth.
+    this.matches.clear();
+    this._resetAttempts();
+    await this.loadDATs();
+    return result;
+  }
+
+  async importDAT(file) {
+    this.importingDat = true;
+    try {
+      const result = await api.importDAT(file);
+      // The backend's _import_dat_sync wipes the DATMatch cache because
+      // newly-imported hashes may flip match results for files the
+      // user already has. Mirror that on the client so stale badges
+      // don't survive until the next visit — hydrate() only adds rows,
+      // it never removes absent ones. Reset attempted paths too so
+      // files previously deemed "uncached" against the old DAT get
+      // re-considered against the new one.
+      this.matches.clear();
+      this._resetAttempts();
+      await this.loadDATs();
+      return result;
+    } finally {
+      this.importingDat = false;
+    }
+  }
+
+  async syncMAMERedump(tag = null) {
+    // /api/dat/sync only schedules a background task and returns
+    // immediately. Do NOT clear `syncing` in a finally — the sync is
+    // still running on the backend. The store stays in the syncing
+    // state until pollSyncStatus() observes the backend reporting
+    // syncing=false, or cancelSync() is called explicitly.
+    this.syncing = true;
+    try {
+      return await api.syncMAMERedump(tag);
+    } catch (e) {
+      // 409 means a MAMERedump sync is already running on the
+      // backend. The legacy UI treated that as "good — keep polling
+      // and observe progress"; clearing `syncing` here would freeze
+      // any consumer poll/progress UI even though the backend is
+      // actively working. Stay in the syncing state.
+      if (e?.status === 409) return null;
+      // Any other error means the start request itself failed —
+      // there is no background work to wait for, so clear the flag
+      // and re-raise.
+      this.syncing = false;
+      throw e;
+    }
+  }
+
+  async pollSyncStatus() {
+    const wasSyncing = this.syncing;
+    try {
+      this.syncStatus = await api.getSyncStatus();
+      const stillSyncing = !!this.syncStatus?.syncing;
+      this.syncing = stillSyncing;
+      if (!stillSyncing && wasSyncing) {
+        // Sync just finished (syncing → done transition). The backend
+        // has persisted the new DAT set and may have dropped the old
+        // one, so reload the full list — not just hasDats — and clear
+        // the stale match cache (new hashes can flip prior matches).
+        // Reset attempts so previously-uncached paths get tried
+        // against the new DAT set. loadDATs() refreshes hasDats
+        // internally.
+        this.matches.clear();
+        this._resetAttempts();
+        await this.loadDATs();
+      } else if (!stillSyncing) {
+        // Cold poll (e.g. on mount) with no sync running: cheap
+        // hasDats refresh is enough; no need to reload the whole list.
+        await this.refreshHasDats();
+      }
+      return this.syncStatus;
+    } catch (_e) {
+      // Transient poll failures (brief backend restart, network blip)
+      // should not tear down the polling loop while we believe a sync
+      // is active. The legacy self-scheduling poller stayed armed
+      // across single failures; mirror that by leaving `syncing` set
+      // so the next poll attempt still fires. Only the cold-start
+      // case where we never observed a sync (wasSyncing=false) flips
+      // the flag off here.
+      this.syncStatus = null;
+      if (!wasSyncing) this.syncing = false;
+      return null;
+    }
+  }
+
+  async cancelSync() {
+    // Don't swallow failures. /api/dat/sync/cancel returns 409 with
+    // "No sync in progress" when there's nothing to cancel; swallowing
+    // that would make DATView.handleCancelSync() always take the
+    // success path and tell the user cancellation was requested when
+    // it wasn't. Let the caller decide the UX.
+    const res = await api.cancelSync();
+    this.syncing = false;
+    return res;
+  }
+}
+
+export const datMatching = new DATMatchingStore();
