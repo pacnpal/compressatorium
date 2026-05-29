@@ -99,14 +99,28 @@ class DATMatchingStore {
       (p) => !this.matches.has(p) && !this._attemptedPaths[p],
     );
     if (uncached.length === 0) return;
-    for (const p of uncached) this._attemptedPaths[p] = true;
     try {
       await this.startMatchJob(uncached);
+      // Mark attempts only AFTER the backend accepted the job. A 409
+      // (another match job already active) would otherwise strand the
+      // paths permanently, and any other failure should also leave
+      // them eligible for the next hydration to retry.
+      for (const p of uncached) this._attemptedPaths[p] = true;
     } catch (_e) {
       // non-fatal — the file list still renders without badges. The
-      // attempt is recorded above so we don't retry the same paths
-      // every page change.
+      // next hydration cycle will try these paths again once any
+      // currently-active dat_match job has cleared.
     }
+  }
+
+  /**
+   * Drop the session-scoped "already attempted" set. Called whenever
+   * the DAT library state changes (import, delete, MAMERedump sync
+   * finish) so files that were previously uncached against the old
+   * DAT set get re-considered against the new one.
+   */
+  _resetAttempts() {
+    this._attemptedPaths = Object.create(null);
   }
 
   async matchBatch(paths) {
@@ -135,8 +149,11 @@ class DATMatchingStore {
     // stale — files that were only matched by this DAT would keep
     // showing the badge until next reload because hydrate() only adds
     // returned rows, never removes absent ones. Drop the whole cache
-    // so the next FileList hydration re-establishes truth.
+    // AND the session-scoped attempt set so the next FileList hydration
+    // re-runs against the now-smaller DAT library and re-establishes
+    // truth.
     this.matches.clear();
+    this._resetAttempts();
     await this.loadDATs();
     return result;
   }
@@ -149,8 +166,11 @@ class DATMatchingStore {
       // newly-imported hashes may flip match results for files the
       // user already has. Mirror that on the client so stale badges
       // don't survive until the next visit — hydrate() only adds rows,
-      // it never removes absent ones.
+      // it never removes absent ones. Reset attempted paths too so
+      // files previously deemed "uncached" against the old DAT get
+      // re-considered against the new one.
       this.matches.clear();
+      this._resetAttempts();
       await this.loadDATs();
       return result;
     } finally {
@@ -193,8 +213,11 @@ class DATMatchingStore {
         // has persisted the new DAT set and may have dropped the old
         // one, so reload the full list — not just hasDats — and clear
         // the stale match cache (new hashes can flip prior matches).
-        // loadDATs() refreshes hasDats internally.
+        // Reset attempts so previously-uncached paths get tried
+        // against the new DAT set. loadDATs() refreshes hasDats
+        // internally.
         this.matches.clear();
+        this._resetAttempts();
         await this.loadDATs();
       } else if (!stillSyncing) {
         // Cold poll (e.g. on mount) with no sync running: cheap
