@@ -37,6 +37,9 @@
     <legend class="legend">Compression</legend>
 
     {#if style === 'multi'}
+      {@const max = conversion.CHDMAN_MAX_CODECS ?? 4}
+      {@const activeCount = selection.filter((c) => c && c !== 'none').length}
+      {@const atCap = activeCount >= max}
       <div class="chips" role="group" aria-label="Codec selection">
         <button
           type="button"
@@ -50,21 +53,27 @@
         </button>
         {#each codecs as codec (codec.value)}
           {#if codec.value !== 'none'}
+            {@const selected = isSelected(codec.value)}
+            {@const capped = atCap && !selected}
             <button
               type="button"
               class="chip"
-              class:active={isSelected(codec.value)}
-              aria-pressed={isSelected(codec.value)}
-              title={codec.hint ?? ''}
+              class:active={selected}
+              aria-pressed={selected}
+              title={capped ? `chdman accepts at most ${max} codecs` : (codec.hint ?? '')}
+              disabled={capped}
               onclick={() => conversion.toggleCodec(codec.value)}
             >
-              {#if isSelected(codec.value)}<Check size={12} aria-hidden="true" />{/if}
+              {#if selected}<Check size={12} aria-hidden="true" />{/if}
               {codec.label}
             </button>
           {/if}
         {/each}
       </div>
-      <p class="hint">Select one or more codecs. chdman tries them in order.</p>
+      <p class="hint">
+        Select up to {max} codecs. chdman tries them in order.
+        {#if atCap}<span class="cap-note">Limit reached — deselect one to add another.</span>{/if}
+      </p>
 
     {:else if style === 'single-with-level'}
       <label class="single-codec">
@@ -210,5 +219,10 @@
     margin: 0;
     color: var(--text-3);
     font-size: var(--text-xs);
+  }
+  .cap-note { color: var(--warning); margin-left: var(--space-1); }
+  .chip:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 </style>

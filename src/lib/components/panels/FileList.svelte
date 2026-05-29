@@ -99,16 +99,27 @@
     const allPaths = entries.map((e) => e?.path).filter(Boolean);
     if (allPaths.length === 0) return;
     // chdMetadata.hydrate is cheap for any path (no jobs spawned), so
-    // the full list is fine. DAT match jobs need filtering — the
-    // backend's dat_match job skips non-regular files without caching
-    // a result, so passing directories would make the
-    // datMatchTerminalCount-driven re-run see those same directories
-    // as still-uncached and start another job indefinitely. Restrict
-    // to actual file rows.
+    // the full list is fine. DAT match jobs need filtering on two
+    // axes:
+    //   1. Skip non-regular files (directories/archive containers) —
+    //      the backend dat_match job skips them without caching, so
+    //      re-firing the effect would re-pick them forever.
+    //   2. Restrict to extensions the DAT matcher can plausibly
+    //      identify (registered convertible source + verify
+    //      extensions). .cue / .gdi manifests, artwork, log files,
+    //      etc. would otherwise be hashed-and-stored-as-unmatched on
+    //      every page change, polluting the unmatched count and
+    //      wasting I/O.
     chdMetadata.hydrate(allPaths).catch(() => {});
     if (datMatching.hasDats) {
+      const matchableExts = registry.allFilterableExts();
+      const matchExtSet = new Set(matchableExts.map((e) => e.toLowerCase()));
       const filePaths = entries
-        .filter((e) => e?.path && e.type !== 'directory' && e.type !== 'archive')
+        .filter((e) => {
+          if (!e?.path || e.type === 'directory' || e.type === 'archive') return false;
+          const ext = (e.extension ?? '').toLowerCase();
+          return ext && matchExtSet.has(ext);
+        })
         .map((e) => e.path);
       if (filePaths.length > 0) {
         datMatching.hydrateAndMatch(filePaths).catch(() => {});

@@ -16,17 +16,19 @@ const CHDMAN_SOURCE_EXTS = ['.gdi', '.iso', '.cue', '.bin'];
 const CHDMAN_VERIFY_EXTS = ['.chd'];
 
 const DOLPHIN_SOURCE_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
-// `.iso` is included here even though it overlaps with CHDMAN's
-// CD/DVD source extension — without it GameCube/Wii ISOs have no
-// way to be inspected or verified from the row actions menu.
-// `toolForVerifyPath('disc.iso')` returns the FIRST tool whose
-// verifyExts match (declaration order: chdman → dolphin → z3ds), and
-// chdman.verifyExts is `.chd` only, so the .iso resolves to Dolphin.
-// This means Info/Verify on a CHDMAN CD ISO will hit
-// /api/dolphin-verify and fail; that's an accepted tradeoff over
-// having no path at all to verify a GC/Wii ISO. Future work: a
-// per-tool picker in RowActionsMenu for ambiguous extensions.
-const DOLPHIN_VERIFY_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
+// `.iso` is intentionally absent from DOLPHIN_VERIFY_EXTS even
+// though dolphin-tool itself can verify GC/Wii ISOs. Most ISOs in
+// any given directory are CHDMAN CD/DVD sources, and
+// `toolForVerifyPath()` returns the first tool whose verify list
+// matches — adding `.iso` here would route every CD ISO row's
+// Info/Verify action into /api/dolphin-verify (which fails for
+// non-Dolphin ISOs and confuses users). Users who want to verify a
+// GC/Wii ISO have two paths today: compress to `.rvz` first, then
+// verify the `.rvz`; or use RowActionsMenu's verify-from-output
+// flow, which targets any Dolphin output already declared in
+// `entry.outputs` (added in round 16). A future per-tool picker
+// in RowActionsMenu would let the user disambiguate directly.
+const DOLPHIN_VERIFY_EXTS = ['.gcz', '.wia', '.rvz', '.wbfs'];
 
 const Z3DS_SOURCE_EXTS = ['.cci', '.cia', '.3ds'];
 const Z3DS_VERIFY_EXTS = ['.zcci', '.zcia', '.z3ds'];

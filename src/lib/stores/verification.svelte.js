@@ -12,14 +12,37 @@ class VerificationStore {
   progress = new SvelteMap();
   batchRun = $state(null);
   _batchAbort = null;
+  // Snapshot of statuses at the moment loadVerified() started, used
+  // to detect paths added mid-flight (a `verifyOne` resolved, a
+  // `complete` SSE arrived, etc.) so the response replay doesn't
+  // erase them. Each loadVerified call overwrites the slot.
+  _loadBaseline = null;
 
   async loadVerified() {
+    // Snapshot the set we're about to overwrite. Anything in `statuses`
+    // that's NOT in this baseline at completion time was added during
+    // the in-flight request and must survive the replay.
+    const baseline = new Set(this.statuses);
+    this._loadBaseline = baseline;
     try {
       const data = await api.getVerifiedCHDs();
+      // Preserve mid-flight additions: paths added to `statuses` after
+      // we snapshotted `baseline` but before the response landed.
+      // Plain object map for the membership check — same reason as
+      // jobs.refresh's remoteIds (svelte/prefer-svelte-reactivity
+      // flags raw Set, and SvelteSet here would be pointless
+      // overhead for a transient local).
+      const addedSince = Object.create(null);
+      for (const p of this.statuses) {
+        if (!baseline.has(p)) addedSince[p] = true;
+      }
       this.statuses.clear();
       for (const path of data?.verified ?? []) this.statuses.add(path);
+      for (const path of Object.keys(addedSince)) this.statuses.add(path);
     } catch (_e) {
       // non-fatal — leave whatever we had
+    } finally {
+      if (this._loadBaseline === baseline) this._loadBaseline = null;
     }
   }
 

@@ -179,7 +179,14 @@ class ConversionStore {
   /**
    * Toggle a chdman-style codec on/off. Selecting "none" clears the
    * rest; selecting any other codec removes "none" if present.
+   *
+   * chdman accepts up to 4 codecs in `-c` (per its CLI help and the
+   * legacy UI). Refuse to add a 5th — the conversion would queue and
+   * then fail at runtime. Removing a codec from an existing 4-long
+   * selection still works.
    */
+  CHDMAN_MAX_CODECS = 4;
+
   toggleCodec(codec) {
     if (codec === 'none') {
       this.compressionSelection = ['none'];
@@ -188,9 +195,16 @@ class ConversionStore {
     const current = this.compressionSelection.filter((c) => c !== 'none');
     if (current.includes(codec)) {
       this.compressionSelection = current.filter((c) => c !== codec);
-    } else {
-      this.compressionSelection = [...current, codec];
+      return;
     }
+    if (current.length >= this.CHDMAN_MAX_CODECS) {
+      // Silently ignore — the picker chip is rendered with
+      // pointer-events still active for visual feedback; the cap
+      // message lives in the picker UI (CompressionPicker reads
+      // CHDMAN_MAX_CODECS for the disabled/limit hint).
+      return;
+    }
+    this.compressionSelection = [...current, codec];
   }
 
   /** Replace selection with a single codec (dolphin RVZ/WIA pattern). */

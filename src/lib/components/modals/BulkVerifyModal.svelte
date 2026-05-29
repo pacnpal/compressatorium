@@ -23,25 +23,44 @@
   const items = $derived(ui.bulkVerifyItems ?? []);
 
   // Group selected paths by the tool that owns their verify extension.
-  // Files with no matching verify tool are tallied as "skipped" so the
-  // user can see why their selection was partially processed.
+  // When the row is a source file (`.cue`, `.iso`, `.3ds`, etc.) that
+  // isn't itself a verify target, fall back to any existing generated
+  // output in `entry.outputs` — same idea as RowActionsMenu's
+  // verify-from-output. Lets a selection of source rows still get
+  // bulk-verified against their replacement outputs.
   const groups = $derived.by(() => {
-    // Group by tool id. Using a plain object keyed by tool id (rather
-    // than a Map) keeps the autofixer happy and is purely local to this
-    // derivation — no need for SvelteMap reactivity.
     const byId = Object.create(null);
     const order = [];
     const skipped = [];
-    for (const entry of items) {
+
+    function pickVerifyTarget(entry) {
       const path = typeof entry === 'string' ? entry : entry?.path;
-      if (!path) continue;
-      const tool = registry.toolForVerifyPath(path);
-      if (!tool) { skipped.push(path); continue; }
-      if (!byId[tool.id]) {
-        byId[tool.id] = { tool, paths: [] };
-        order.push(tool.id);
+      if (!path) return null;
+      const direct = registry.toolForVerifyPath(path);
+      if (direct) return { tool: direct, path };
+      const outputs = typeof entry === 'object' && Array.isArray(entry?.outputs)
+        ? entry.outputs
+        : [];
+      for (const out of outputs) {
+        if (!out?.exists || !out?.path) continue;
+        const t = registry.toolForVerifyPath(out.path);
+        if (t) return { tool: t, path: out.path };
       }
-      byId[tool.id].paths.push(path);
+      return null;
+    }
+
+    for (const entry of items) {
+      const target = pickVerifyTarget(entry);
+      if (!target) {
+        const path = typeof entry === 'string' ? entry : entry?.path;
+        if (path) skipped.push(path);
+        continue;
+      }
+      if (!byId[target.tool.id]) {
+        byId[target.tool.id] = { tool: target.tool, paths: [] };
+        order.push(target.tool.id);
+      }
+      byId[target.tool.id].paths.push(target.path);
     }
     return { groups: order.map((id) => byId[id]), skipped };
   });
