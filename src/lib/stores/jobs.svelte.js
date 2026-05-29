@@ -209,8 +209,11 @@ class JobsStore {
     try {
       const data = await api.getJobs();
       if (!Array.isArray(data)) return;
+      // eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient lookup set, not reactive state
+      const remoteIds = new Set();
       for (const job of data) {
         if (!job?.id) continue;
+        remoteIds.add(job.id);
         const existing = this._byId.get(job.id);
         if (!existing) {
           // Unknown to us — definitely add. Most common case for
@@ -235,6 +238,21 @@ class JobsStore {
         // Both terminal or both active: leave SSE-derived state
         // alone; live updates are at least as fresh as the snapshot.
       }
+      // Reconcile deletions. When another tab clears completed history
+      // (or the backend prunes old terminal jobs on its own), /api/jobs
+      // stops returning those ids — and there is no SSE event to drop
+      // them client-side, so the local store would keep showing stale
+      // rows indefinitely. Drop locally-known TERMINAL jobs that are
+      // absent from the snapshot. Active jobs are left alone: SSE owns
+      // them, and they may simply not be in the snapshot yet if they
+      // were just queued between the snapshot generation and arrival.
+      this.jobs = this.jobs.filter((j) => {
+        if (TERMINAL_STATUSES.has(j.status) && !remoteIds.has(j.id)) {
+          this._byId.delete(j.id);
+          return false;
+        }
+        return true;
+      });
     } catch (e) {
       console.error('Job snapshot hydration failed:', e);
     } finally {
@@ -422,16 +440,15 @@ class JobsStore {
     // The SSE feed does not emit anything for the QUEUED state — its
     // first frame for a normal job is the PROCESSING transition — so
     // a second tab/user's job sitting in the queue behind a long-
-    // running conversion is otherwise invisible until it starts
-    // processing. Mirror the legacy UI by polling /api/jobs every
-    // 30 s; refresh() already reconciles SSE-derived state and is
-    // idempotent. Active conversions don't need it (they update
-    // through SSE), so we only poll when no job is in progress, and
-    // skip while a modal is open so we don't race against
-    // user-driven actions.
+    // running local conversion stays invisible without this poll.
+    // We DON'T skip while hasActive is true: the queued job from the
+    // other client is exactly the case this exists to surface, and
+    // it's invisible precisely when we have an active conversion of
+    // our own. refresh() is idempotent — SSE-derived state always
+    // wins for jobs that overlap. Only skip while a modal is open so
+    // background entry swaps don't race user-driven actions.
     if (!this._pollTimer) {
       this._pollTimer = setInterval(() => {
-        if (this.hasActive) return;
         if (ui.anyEntryModalOpen) return;
         this.refresh().catch(() => {});
       }, 30000);

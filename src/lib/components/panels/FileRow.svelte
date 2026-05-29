@@ -162,9 +162,7 @@
     {/if}
   </td>
   <td class="actions">
-    {#if !isDirectory}
-      <RowActionsMenu {entry} />
-    {/if}
+    <RowActionsMenu {entry} />
   </td>
 </tr>
 
