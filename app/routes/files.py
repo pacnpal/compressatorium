@@ -493,6 +493,13 @@ async def rename_file(
         # (.chd, .rvz, .wia, .z3ds, .zcci, .zcia, …) so we have to do
         # this for the union, not just CHD. chd_metadata_store is
         # CHD-specific by design.
+        #
+        # Only carry the verification record across renames within the
+        # SAME extension. Cross-format renames (.chd → .rvz, .rvz →
+        # .wia) don't actually convert the file content, so the new
+        # path was never verified under its new tool/format; carrying
+        # the record would teach /api/verified to lie. Clear the old
+        # record in that case and require re-verification.
         verify_exts = registry.verify_extensions()
         old_ext = os.path.splitext(path)[1].lower()
         new_ext = os.path.splitext(new_path)[1].lower()
@@ -500,9 +507,10 @@ async def rename_file(
         new_is_verify = new_ext in verify_exts
         old_is_chd = old_ext == ".chd"
         new_is_chd = new_ext == ".chd"
-        if old_is_verify and new_is_verify:
+        if old_is_verify and new_is_verify and old_ext == new_ext:
             await verification_store.move(path, new_path)
-        elif old_is_verify and not new_is_verify:
+        elif old_is_verify:
+            # Cross-format rename, or new ext is not a verify class.
             await verification_store.clear(path)
         if old_is_chd and new_is_chd:
             await chd_metadata_store.move(path, new_path)

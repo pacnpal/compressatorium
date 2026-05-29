@@ -51,12 +51,17 @@
         // Cross-class renames (.chd → .iso, .rvz → .iso) drop the
         // badge because the new file is no longer the verifiable
         // product. Backend's verification_store only moves the
-        // record server-side for .chd → .chd today, so this is a
-        // session-level optimistic mirror; the next loadVerified()
-        // pulls the canonical server state for other formats.
+        // record for any verify-class extension AS LONG AS it stays
+        // in the same format — `.chd → .chd`, `.rvz → .rvz`, etc.
+        // Cross-format renames (`.chd → .rvz`) clear the badge
+        // because the file's actual content wasn't reverified under
+        // its new format; carrying the OK would mislead the user.
+        // Same rule the backend now applies in files.py rename_file.
+        const oldExt = oldPath.toLowerCase().match(/\.[^./\\]+$/)?.[0] ?? '';
+        const newExt = newPath.toLowerCase().match(/\.[^./\\]+$/)?.[0] ?? '';
         const oldTool = registry.toolForVerifyPath(oldPath);
         const newTool = registry.toolForVerifyPath(newPath);
-        if (oldTool && newTool && oldTool.id === newTool.id) {
+        if (oldTool && newTool && oldTool.id === newTool.id && oldExt === newExt) {
           verification.statuses.add(newPath);
         }
       }

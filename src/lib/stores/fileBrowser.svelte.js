@@ -255,7 +255,20 @@ class FileBrowserStore {
    *   always updates the listing.
    */
   async refresh({ force = false } = {}) {
-    if (this.searchMode) return;
+    // Search mode keeps the recursive result set, not the current
+    // directory. A vanilla refresh against currentPath would clobber
+    // the user's search view. But modals (rename/delete) DO call
+    // refresh({ force: true }) after a successful mutation expecting
+    // the listing to reflect the change — silently skipping in search
+    // mode leaves stale rows pointing at paths that no longer exist
+    // and the user can re-act on them. When forced, re-run the
+    // search instead of dropping the call entirely.
+    if (this.searchMode) {
+      if (force && this.searchQuery) {
+        await this.search(this.searchQuery);
+      }
+      return;
+    }
     if (!force && jobs.hasActive && !this.autoRefresh) return;
     // When the user is inside an archive view, a vanilla refresh against
     // currentPath would replace the archive members with the parent

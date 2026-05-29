@@ -6,7 +6,17 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
   const open = $derived(ui.showClearDone);
+  // /api/jobs/completed is a global op — it deletes every terminal
+  // job server-side, including hidden metadata-scan and dat-match
+  // history. Use the unfiltered total here (and call out hidden
+  // counts in the description) so users aren't surprised when
+  // background-job history disappears too. Visible-count gating
+  // stays in JobsPanel's Clear button surface.
+  const visibleTotal = $derived(
+    jobs.visibleCompletedCount + jobs.visibleFailedCount,
+  );
   const total = $derived(jobs.completedCount + jobs.failedCount + jobs.cancelledCount);
+  const hiddenCount = $derived(Math.max(0, total - visibleTotal));
 
   function close() { ui.showClearDone = false; }
 
@@ -35,7 +45,11 @@
   onClose={close}
   onConfirm={handleConfirm}
   title="Clear completed jobs?"
-  description={total === 0 ? 'No completed, failed, or cancelled jobs to clear.' : `Remove ${total} completed, failed, and cancelled job(s) from the history. Output files are not affected.`}
+  description={total === 0
+    ? 'No completed, failed, or cancelled jobs to clear.'
+    : hiddenCount > 0
+      ? `Remove all ${total} terminal job(s), including ${hiddenCount} hidden metadata/DAT background job(s). Output files are not affected.`
+      : `Remove ${total} completed, failed, and cancelled job(s) from the history. Output files are not affected.`}
   confirmLabel="Clear"
   cancelLabel="Keep"
   confirmVariant="primary"
