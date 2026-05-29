@@ -16,14 +16,17 @@ const CHDMAN_SOURCE_EXTS = ['.gdi', '.iso', '.cue', '.bin'];
 const CHDMAN_VERIFY_EXTS = ['.chd'];
 
 const DOLPHIN_SOURCE_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
-// `.iso` is intentionally NOT in DOLPHIN_VERIFY_EXTS even though
-// dolphin-tool can verify GC/Wii ISOs: the same extension covers
-// CHDMAN CD/DVD sources, and `toolForVerifyPath()` returns the first
-// matching tool. Treating every `.iso` as Dolphin-verifiable would
-// route Info/Verify on a normal CD ISO into /api/dolphin-verify and
-// fail. Users who want to verify a GC/Wii ISO can do it indirectly by
-// compressing to .rvz first, then verifying the .rvz.
-const DOLPHIN_VERIFY_EXTS = ['.gcz', '.wia', '.rvz', '.wbfs'];
+// `.iso` is included here even though it overlaps with CHDMAN's
+// CD/DVD source extension — without it GameCube/Wii ISOs have no
+// way to be inspected or verified from the row actions menu.
+// `toolForVerifyPath('disc.iso')` returns the FIRST tool whose
+// verifyExts match (declaration order: chdman → dolphin → z3ds), and
+// chdman.verifyExts is `.chd` only, so the .iso resolves to Dolphin.
+// This means Info/Verify on a CHDMAN CD ISO will hit
+// /api/dolphin-verify and fail; that's an accepted tradeoff over
+// having no path at all to verify a GC/Wii ISO. Future work: a
+// per-tool picker in RowActionsMenu for ambiguous extensions.
+const DOLPHIN_VERIFY_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
 
 const Z3DS_SOURCE_EXTS = ['.cci', '.cia', '.3ds'];
 const Z3DS_VERIFY_EXTS = ['.zcci', '.zcia', '.z3ds'];
@@ -87,11 +90,21 @@ export const TOOLS = [
     // Compression options. chdman accepts a comma-separated codec list;
     // CompressionPicker offers the union of these as toggleable chips.
     compressionCodecs: [
+      // Full codec catalog from the README + legacy UI. Backend
+      // forwards arbitrary tokens to `chdman -c`, so adding entries
+      // here only widens what the user can pick; chdman itself
+      // ignores incompatible combinations for the active mode.
       { value: 'zlib',  label: 'zlib',  hint: 'Fast, baseline compatibility' },
+      { value: 'zstd',  label: 'zstd',  hint: 'Modern general-purpose codec' },
       { value: 'lzma',  label: 'lzma',  hint: 'Slower, better ratio' },
       { value: 'lzma2', label: 'lzma2', hint: 'Best ratio, slowest' },
+      { value: 'huff',  label: 'huff',  hint: 'Huffman entropy coder' },
       { value: 'flac',  label: 'flac',  hint: 'For CD audio tracks' },
+      { value: 'cdzl',  label: 'cdzl',  hint: 'CD-zlib variant' },
+      { value: 'cdzs',  label: 'cdzs',  hint: 'CD-zstd variant' },
+      { value: 'cdlz',  label: 'cdlz',  hint: 'CD-lzma variant' },
       { value: 'cdfl',  label: 'cdfl',  hint: 'CD-FLAC variant' },
+      { value: 'avhu',  label: 'avhu',  hint: 'Audio/video Huffman' },
     ],
     compressionStyle: 'multi',  // multi-codec list joined with commas
     modes: [
@@ -161,7 +174,7 @@ export const TOOLS = [
     // GCZ ignores both; dolphin_iso is an extract op.
     compressionCodecs: [
       { value: 'zstd',  label: 'zstd',  hint: 'Recommended, level 19 matches MAME Redump' },
-      { value: 'bzip',  label: 'bzip',  hint: 'Good ratio, slower' },
+      { value: 'bzip2', label: 'bzip2', hint: 'Good ratio, slower' },
       { value: 'lzma',  label: 'lzma' },
       { value: 'lzma2', label: 'lzma2' },
       { value: 'none',  label: 'No compression' },

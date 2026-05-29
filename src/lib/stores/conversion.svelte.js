@@ -123,7 +123,19 @@ class ConversionStore {
       // Dolphin RVZ/WIA: pick the first non-'none' codec and pair with level.
       const codec = selection[0];
       if (!codec) return 'none';
-      return `${codec}:${this.dolphinCompressionLevel}`;
+      // Normalize the level — the picker's number input lets the user
+      // clear it temporarily (browsers allow empty string). If we
+      // forwarded that we'd build "<codec>:" and the backend would
+      // reject the token. Fall back to the registered default range
+      // value when the field is empty or non-numeric, then clamp into
+      // [min, max] so out-of-range edits also stay safe.
+      const range = this.currentTool?.compressionLevelRange ?? { min: 1, max: 22, default: 19 };
+      const rawLevel = this.dolphinCompressionLevel;
+      const parsed = Number.parseInt(rawLevel, 10);
+      const safeLevel = Number.isFinite(parsed)
+        ? Math.min(range.max, Math.max(range.min, parsed))
+        : (range.default ?? range.min);
+      return `${codec}:${safeLevel}`;
     }
     if (selection.length === 0) return null;
     return selection.join(',');
