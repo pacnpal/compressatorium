@@ -23,24 +23,65 @@
 
   const path = $derived(entry?.path ?? '');
   const inArchive = $derived(typeof path === 'string' && path.includes('::'));
+  const outputs = $derived(Array.isArray(entry?.outputs) ? entry.outputs : []);
 
-  // Which tool (if any) owns this file as a verifiable output?
-  const verifyTool = $derived(path ? registry.toolForVerifyPath(path) : null);
+  // Direct verify target for this row, if any (tool that owns the
+  // path as a verify-class output — .chd, .rvz, .z3ds, etc.).
+  const directVerifyTool = $derived(path ? registry.toolForVerifyPath(path) : null);
+
+  // Fallback: if the row itself isn't verifiable, look at any
+  // declared outputs (`entry.outputs[].path`) for an existing
+  // verifiable product — e.g. a .cue source row whose sibling .chd
+  // already exists. Lets the user verify the replacement directly
+  // from the source row before cleanup.
+  const outputVerifyTarget = $derived.by(() => {
+    if (directVerifyTool) return null;
+    for (const out of outputs) {
+      if (!out?.exists || !out?.path) continue;
+      const t = registry.toolForVerifyPath(out.path);
+      if (t) return { tool: t, path: out.path };
+    }
+    return null;
+  });
+
+  // The path we'll actually verify when the user picks Verify.
+  const verifyTool = $derived(directVerifyTool ?? outputVerifyTarget?.tool ?? null);
+  const verifyPath = $derived(outputVerifyTarget?.path ?? path);
   const canVerify = $derived(!!verifyTool && !inArchive);
-  const canGetInfo = $derived(!!verifyTool && !inArchive);
+
+  // Info is broader than verify: tools like z3ds expose /api/z3ds-info
+  // for source ROMs (.3ds/.cci/.cia) as well as compressed outputs.
+  // Try the registry's verify match first; if that fails, fall back
+  // to any tool that lists the row's extension as a source. The
+  // Info action targets the row's own path.
+  const infoTool = $derived.by(() => {
+    if (directVerifyTool) return directVerifyTool;
+    if (path && typeof path === 'string') {
+      const matches = registry.toolsForSourcePath(path);
+      // Prefer tools that actually expose Info for that source — for
+      // the current registry, every tool exposes `getInfo`, so the
+      // first match is fine. Future tools can opt out by leaving
+      // getInfo undefined.
+      const t = matches.find((tool) => typeof tool.getInfo === 'function');
+      if (t) return t;
+    }
+    return null;
+  });
+  const canGetInfo = $derived(!!infoTool && !inArchive);
+
   // Rename / Delete operate on the filesystem — archive members can't be
   // renamed or deleted in-place, so disable them inside archive views.
   const canRename = $derived(!inArchive);
   const canDelete = $derived(!inArchive);
 
   async function handleVerify() {
-    if (!verifyTool) return;
+    if (!verifyTool || !verifyPath) return;
     try {
-      const result = await verification.verifyOne(verifyTool.id, path);
+      const result = await verification.verifyOne(verifyTool.id, verifyPath);
       if (result?.valid) {
-        toast.success(`Verified: ${entry?.name ?? path}`);
+        toast.success(`Verified: ${verifyPath}`);
       } else {
-        toast.error(`Verification failed: ${result?.message ?? entry?.name}`);
+        toast.error(`Verification failed: ${result?.message ?? verifyPath}`);
       }
     } catch (e) {
       toast.error(e?.message ?? 'Verify failed');
@@ -48,7 +89,16 @@
   }
 
   function handleInfo() {
-    ui.chdInfoTarget = entry;
+    // CHDInfoModal looks up the tool via registry.toolForVerifyPath
+    // on the target's path. For source rows (z3ds), the row's path
+    // isn't a verify path so we have to surface the tool another way
+    // — set the target with an inline `_infoTool` hint the modal can
+    // honor without changing every existing call site.
+    if (!directVerifyTool && infoTool) {
+      ui.chdInfoTarget = { ...entry, _infoTool: infoTool.id };
+    } else {
+      ui.chdInfoTarget = entry;
+    }
   }
 
   function handleRename() {

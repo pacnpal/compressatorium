@@ -488,13 +488,25 @@ async def rename_file(
 
     try:
         await run_in_threadpool(os.rename, path, new_path)
-        old_is_chd = path.lower().endswith(".chd")
-        new_is_chd = new_path.lower().endswith(".chd")
-        if old_is_chd and new_is_chd:
+        # Path-bookkeeping that mirrors the rename. verification_store
+        # records carry verify-class outputs from any registered tool
+        # (.chd, .rvz, .wia, .z3ds, .zcci, .zcia, …) so we have to do
+        # this for the union, not just CHD. chd_metadata_store is
+        # CHD-specific by design.
+        verify_exts = registry.verify_extensions()
+        old_ext = os.path.splitext(path)[1].lower()
+        new_ext = os.path.splitext(new_path)[1].lower()
+        old_is_verify = old_ext in verify_exts
+        new_is_verify = new_ext in verify_exts
+        old_is_chd = old_ext == ".chd"
+        new_is_chd = new_ext == ".chd"
+        if old_is_verify and new_is_verify:
             await verification_store.move(path, new_path)
+        elif old_is_verify and not new_is_verify:
+            await verification_store.clear(path)
+        if old_is_chd and new_is_chd:
             await chd_metadata_store.move(path, new_path)
         elif old_is_chd and not new_is_chd:
-            await verification_store.clear(path)
             await chd_metadata_store.clear(path)
         return {
             "success": True,
@@ -533,8 +545,10 @@ async def delete_file(
             await run_in_threadpool(os.rmdir, path)
         else:
             await run_in_threadpool(os.remove, path)
-            if path.lower().endswith(".chd"):
+            ext = os.path.splitext(path)[1].lower()
+            if ext in registry.verify_extensions():
                 await verification_store.clear(path)
+            if ext == ".chd":
                 await chd_metadata_store.clear(path)
 
         return {"success": True, "path": path, "message": "Successfully deleted"}
@@ -589,8 +603,10 @@ async def delete_files_batch(request: BulkDeleteRequest) -> dict:
                 await run_in_threadpool(os.rmdir, path)
             else:
                 await run_in_threadpool(os.remove, path)
-                if path.lower().endswith(".chd"):
+                ext = os.path.splitext(path)[1].lower()
+                if ext in registry.verify_extensions():
                     await verification_store.clear(path)
+                if ext == ".chd":
                     await chd_metadata_store.clear(path)
 
             return {"path": path, "success": True}

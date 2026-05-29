@@ -9,7 +9,14 @@
 
   const open = $derived(!!ui.chdInfoTarget);
   const target = $derived(ui.chdInfoTarget);
-  const tool = $derived(target?.path ? registry.toolForVerifyPath(target.path) : null);
+  // Tool resolution: prefer the explicit hint set by RowActionsMenu
+  // for source rows (z3ds ROMs whose paths aren't in any tool's
+  // verify_extensions but whose tool still exposes getInfo). Fall
+  // back to the verify-path lookup for normal verifiable outputs.
+  const tool = $derived(
+    (target?._infoTool && registry.forTool(target._infoTool))
+    ?? (target?.path ? registry.toolForVerifyPath(target.path) : null),
+  );
 
   let info = $state(null);
   let loading = $state(false);

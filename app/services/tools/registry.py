@@ -69,3 +69,15 @@ class ToolRegistry:
             (t for t in self._tools.values() if ext in t.verify_extensions),
             None,
         )
+
+    def verify_extensions(self) -> frozenset[str]:
+        """Union of every registered tool's verify_extensions.
+
+        Used by file rename/delete handlers to decide whether the path
+        carries a verification record worth clearing — historically the
+        check hard-coded `.chd`, which left .rvz / .z3ds / etc. records
+        orphaned in the persistent store when the file was removed.
+        """
+        return frozenset().union(
+            *(t.verify_extensions for t in self._tools.values())
+        )
