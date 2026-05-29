@@ -31,6 +31,7 @@ class JobsStore {
   // index for O(1) lookup; not a $state because it's derived from this.jobs
   _byId = new SvelteMap();
   _unsubscribe = null;
+  _pollTimer = null;
 
   get activeCount() {
     return this.jobs.reduce((n, j) => (ACTIVE_STATUSES.has(j.status) ? n + 1 : n), 0);
@@ -403,16 +404,48 @@ class JobsStore {
         }
       },
       {
-        onOpen: () => ui.reportConnection('open'),
+        onOpen: () => {
+          ui.reportConnection('open');
+          // Re-sync verified state on every SSE (re)connect. Terminal
+          // job snapshots emitted at reconnect only carry the `job`
+          // payload — they drop the `verified` and `source_deleted`
+          // side-effect flags that the live `complete` event uses to
+          // mutate verification.statuses, so the OK badge cache could
+          // drift after a brief backend outage. Reloading from
+          // /api/verified is the cheapest way to re-establish truth.
+          verification.loadVerified();
+        },
         onReconnecting: () => ui.reportConnection('reconnecting'),
       },
     );
+    // Lightweight polling fallback for jobs queued by OTHER clients.
+    // The SSE feed does not emit anything for the QUEUED state — its
+    // first frame for a normal job is the PROCESSING transition — so
+    // a second tab/user's job sitting in the queue behind a long-
+    // running conversion is otherwise invisible until it starts
+    // processing. Mirror the legacy UI by polling /api/jobs every
+    // 30 s; refresh() already reconciles SSE-derived state and is
+    // idempotent. Active conversions don't need it (they update
+    // through SSE), so we only poll when no job is in progress, and
+    // skip while a modal is open so we don't race against
+    // user-driven actions.
+    if (!this._pollTimer) {
+      this._pollTimer = setInterval(() => {
+        if (this.hasActive) return;
+        if (ui.anyEntryModalOpen) return;
+        this.refresh().catch(() => {});
+      }, 30000);
+    }
   }
 
   dispose() {
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;
+    }
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
     }
   }
 }

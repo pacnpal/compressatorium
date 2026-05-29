@@ -96,11 +96,23 @@
   $effect(() => {
     // Track explicitly so the effect re-runs on dat_match completion.
     datMatchTerminalCount;
-    const paths = entries.map((e) => e?.path).filter(Boolean);
-    if (paths.length === 0) return;
-    chdMetadata.hydrate(paths).catch(() => {});
+    const allPaths = entries.map((e) => e?.path).filter(Boolean);
+    if (allPaths.length === 0) return;
+    // chdMetadata.hydrate is cheap for any path (no jobs spawned), so
+    // the full list is fine. DAT match jobs need filtering — the
+    // backend's dat_match job skips non-regular files without caching
+    // a result, so passing directories would make the
+    // datMatchTerminalCount-driven re-run see those same directories
+    // as still-uncached and start another job indefinitely. Restrict
+    // to actual file rows.
+    chdMetadata.hydrate(allPaths).catch(() => {});
     if (datMatching.hasDats) {
-      datMatching.hydrateAndMatch(paths).catch(() => {});
+      const filePaths = entries
+        .filter((e) => e?.path && e.type !== 'directory' && e.type !== 'archive')
+        .map((e) => e.path);
+      if (filePaths.length > 0) {
+        datMatching.hydrateAndMatch(filePaths).catch(() => {});
+      }
     }
   });
 
