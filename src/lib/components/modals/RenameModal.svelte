@@ -2,6 +2,7 @@
   import { ui } from '$lib/stores/ui.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { verification } from '$lib/stores/verification.svelte.js';
+  import { registry } from '$lib/tools/registry.js';
   import { api } from '$lib/api/endpoints.js';
   import { toast } from 'svelte-sonner';
   import BaseModal from './BaseModal.svelte';
@@ -45,9 +46,19 @@
       const newPath = result?.new_path;
       if (newPath && verification.statuses.has(oldPath)) {
         verification.statuses.delete(oldPath);
-        const oldIsChd = oldPath.toLowerCase().endsWith('.chd');
-        const newIsChd = newPath.toLowerCase().endsWith('.chd');
-        if (oldIsChd && newIsChd) verification.statuses.add(newPath);
+        // Preserve the OK badge across renames inside the same
+        // verify-class (e.g. .rvz → .rvz, .chd → .chd, .z3ds → .z3ds).
+        // Cross-class renames (.chd → .iso, .rvz → .iso) drop the
+        // badge because the new file is no longer the verifiable
+        // product. Backend's verification_store only moves the
+        // record server-side for .chd → .chd today, so this is a
+        // session-level optimistic mirror; the next loadVerified()
+        // pulls the canonical server state for other formats.
+        const oldTool = registry.toolForVerifyPath(oldPath);
+        const newTool = registry.toolForVerifyPath(newPath);
+        if (oldTool && newTool && oldTool.id === newTool.id) {
+          verification.statuses.add(newPath);
+        }
       }
       // Re-key the selection if the renamed file was selected.
       // Otherwise the selection-count + ConvertPanel would keep

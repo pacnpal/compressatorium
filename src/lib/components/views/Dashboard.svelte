@@ -4,6 +4,7 @@
   import RecentConversionsCard from '$lib/components/dashboard/RecentConversionsCard.svelte';
   import VerificationStatusCard from '$lib/components/dashboard/VerificationStatusCard.svelte';
   import QuickToolsCard from '$lib/components/dashboard/QuickToolsCard.svelte';
+  import MetadataScanCard from '$lib/components/dashboard/MetadataScanCard.svelte';
 </script>
 
 <section class="view" aria-labelledby="dashboard-title">
@@ -17,6 +18,7 @@
     <VerificationStatusCard />
     <VolumeOverviewCard />
     <RecentConversionsCard />
+    <MetadataScanCard />
     <QuickToolsCard />
   </div>
 </section>

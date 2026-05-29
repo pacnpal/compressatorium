@@ -325,6 +325,12 @@ class FileBrowserStore {
       this.searchQuery = query;
       this.searchMode = true;
       this.page = 1;
+      // Drop the current directory's selection set — those paths
+      // aren't necessarily in the recursive search results, so
+      // leaving them selected would let the bulk-action bar / Convert
+      // panel act on rows the user can't see. Symmetric with the
+      // cleanup the X button does on exitSearch.
+      this.clearSelection();
     } catch (e) {
       this.entriesError = e?.message ?? 'Search failed';
       // Stay out of search mode so the directory listing remains visible.
