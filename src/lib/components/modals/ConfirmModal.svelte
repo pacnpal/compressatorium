@@ -18,6 +18,7 @@
    * @property {string} [cancelLabel]
    * @property {'primary'|'destructive'} [confirmVariant]
    * @property {boolean} [busy]
+   * @property {boolean} [confirmDisabled]
    * @property {import('svelte').Snippet} [titleIcon]
    * @property {import('svelte').Snippet} [body]
    */
@@ -33,6 +34,7 @@
     cancelLabel = 'Cancel',
     confirmVariant = 'primary',
     busy = false,
+    confirmDisabled = false,
     titleIcon,
     body: bodySlot,
   } = $props();
@@ -48,7 +50,7 @@
   {/snippet}
   {#snippet footer()}
     <Button variant="secondary" onclick={onClose} disabled={busy}>{cancelLabel}</Button>
-    <Button variant={confirmVariant} onclick={handleConfirm} disabled={busy} loading={busy}>
+    <Button variant={confirmVariant} onclick={handleConfirm} disabled={busy || confirmDisabled} loading={busy}>
       {confirmLabel}
     </Button>
   {/snippet}

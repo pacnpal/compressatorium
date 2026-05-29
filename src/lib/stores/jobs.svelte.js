@@ -237,9 +237,26 @@ class JobsStore {
           // blip, tab backgrounded, etc.). The snapshot is the
           // source of truth for terminal jobs.
           this._applyJob(job);
+          continue;
         }
-        // Both terminal or both active: leave SSE-derived state
-        // alone; live updates are at least as fresh as the snapshot.
+        // Both active. Apply queued → processing transitions (and any
+        // progress bump on a processing job) when the SSE missed
+        // them. We only landed here for the OTHER-client polling
+        // case: a job we picked up as `queued` from a poll never
+        // gets a PROCESSING SSE frame from the backend if our SSE
+        // stream wasn't open when it transitioned, so the row would
+        // sit stuck at queued forever. The terminal+heal branch
+        // already covers terminal-while-active; this covers the
+        // queued-while-running progression.
+        const queuedToProcessing = existing.status === 'queued' && job.status === 'processing';
+        const progressBump = existing.status === job.status
+          && (job.progress ?? 0) > (existing.progress ?? 0);
+        if (queuedToProcessing || progressBump) {
+          this._applyJob(job);
+        }
+        // Both terminal or both active with no useful progression:
+        // leave SSE-derived state alone; live updates are at least
+        // as fresh as the snapshot.
       }
       // Reconcile deletions. When another tab clears completed history
       // (or the backend prunes old terminal jobs on its own), /api/jobs

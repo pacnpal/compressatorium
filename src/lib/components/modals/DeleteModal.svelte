@@ -6,10 +6,30 @@
   import { toast } from 'svelte-sonner';
   import ConfirmModal from './ConfirmModal.svelte';
   import Trash2 from '@lucide/svelte/icons/trash-2';
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
   const open = $derived(!!ui.deleteTarget);
   const target = $derived(ui.deleteTarget);
   let busy = $state(false);
+  // Two-step confirmation when the source has unverified replacement
+  // outputs. Same shape as BulkDeleteModal — required to mirror the
+  // legacy single-delete verification gate. Reset on open.
+  let acknowledged = $state(false);
+  $effect(() => {
+    if (open) acknowledged = false;
+  });
+
+  // entry.outputs entries with `exists: true` and a path that isn't
+  // in verification.statuses — i.e. a generated product whose
+  // correctness hasn't been confirmed. Deleting the source before the
+  // output is verified is the risk we want to surface.
+  const unverifiedOutputs = $derived.by(() => {
+    const outs = target && Array.isArray(target.outputs) ? target.outputs : [];
+    return outs.filter(
+      (o) => o?.exists && o.path && !verification.statuses.has(o.path),
+    );
+  });
+  const needsAck = $derived(unverifiedOutputs.length > 0 && !acknowledged);
 
   function close() {
     if (busy) return;
@@ -66,6 +86,58 @@
   cancelLabel="Keep"
   confirmVariant="destructive"
   {busy}
+  confirmDisabled={needsAck}
 >
   {#snippet titleIcon()}<Trash2 size={18} aria-hidden="true" />{/snippet}
+  {#snippet body()}
+    {#if unverifiedOutputs.length > 0}
+      <div class="dm-warn" role="alert">
+        <TriangleAlert size={14} aria-hidden="true" />
+        <div>
+          <strong>Unverified output{unverifiedOutputs.length === 1 ? '' : 's'} present.</strong>
+          Deleting this source removes the original before the
+          replacement has been confirmed correct. Verify the output
+          first, or acknowledge the risk to proceed.
+          <ul class="dm-warn-list">
+            {#each unverifiedOutputs as o (o.path)}
+              <li title={o.path}>{o.tool_id ?? '?'}: {o.path}</li>
+            {/each}
+          </ul>
+          <label class="dm-ack">
+            <input type="checkbox" bind:checked={acknowledged} />
+            <span>I understand and want to delete anyway.</span>
+          </label>
+        </div>
+      </div>
+    {/if}
+  {/snippet}
 </ConfirmModal>
+
+<style>
+  :global(.dm-warn) {
+    display: flex;
+    gap: var(--space-2);
+    background: var(--warning-muted);
+    color: var(--warning);
+    border-radius: var(--radius-md);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
+    align-items: flex-start;
+  }
+  :global(.dm-warn strong) { font-weight: var(--weight-semibold); }
+  :global(.dm-warn-list) {
+    margin: var(--space-1) 0;
+    padding-left: var(--space-4);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+  }
+  :global(.dm-ack) {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--text-1);
+    cursor: pointer;
+  }
+</style>
