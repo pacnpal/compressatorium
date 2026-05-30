@@ -40,9 +40,12 @@ function runningDescription(job) {
       : null;
   // The backend message (e.g. "Cancelling…", "Verifying output") is the
   // most useful line when present; fall back to the descriptor + percent.
+  // Use truthiness (not ??) for the fallbacks: `descriptorOf` returns ''
+  // for an unknown mode, and '' is not nullish — so `?? 'Processing…'`
+  // would surface a blank description instead of the fallback.
   const lead = job?.message || base;
-  if (pct && lead) return `${lead} · ${pct}`;
-  return pct ?? lead ?? 'Processing…';
+  if (lead && pct) return `${lead} · ${pct}`;
+  return lead || pct || 'Processing…';
 }
 
 class JobToastTracker {

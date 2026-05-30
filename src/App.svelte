@@ -93,9 +93,9 @@
     const list = jobs.jobs;
     const showExternalScan = jobs.showExternalScanJobs;
     for (const j of list) {
-      void j.status;
-      void j.progress;
-      void j.message;
+      void j?.status;
+      void j?.progress;
+      void j?.message;
     }
     jobToasts.reconcile(list, { showExternalScan });
   });
