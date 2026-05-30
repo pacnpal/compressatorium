@@ -12,6 +12,7 @@
   import IconButton from '$lib/components/ui/IconButton.svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
+  import FolderSearch from '@lucide/svelte/icons/folder-search';
   import XIcon from '@lucide/svelte/icons/x';
   import ChevronUp from '@lucide/svelte/icons/chevron-up';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -195,6 +196,14 @@
     </form>
 
     <div class="actions">
+      <IconButton
+        label="Search all convertible files (recursive, including inside archives)"
+        size="sm"
+        title="Search all — recursively list every convertible file under this folder, including inside archives"
+        onclick={() => fileBrowser.searchAll()}
+      >
+        <FolderSearch size={14} />
+      </IconButton>
       <label class="filter">
         <Filter size={12} />
         <select
@@ -246,7 +255,9 @@
     {#if searchMode}
       <EmptyState
         title="No matches"
-        description={`Nothing here matched "${fileBrowser.searchQuery}". Try a different query, or clear search to browse normally.`}
+        description={fileBrowser.searchQuery
+          ? `Nothing here matched "${fileBrowser.searchQuery}". Try a different query, or clear search to browse normally.`
+          : 'No convertible files were found anywhere under this folder (including inside archives). Clear search to browse normally.'}
         glyph="∅"
       />
     {:else}
