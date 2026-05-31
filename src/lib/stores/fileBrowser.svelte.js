@@ -264,8 +264,12 @@ class FileBrowserStore {
     // and the user can re-act on them. When forced, re-run the
     // search instead of dropping the call entirely.
     if (this.searchMode) {
-      if (force && this.searchQuery) {
-        await this.search(this.searchQuery);
+      // Re-run the recursive scan, preserving the active filter — which
+      // is an empty string for a one-click "Search all" view, so we
+      // re-fetch on any forced refresh rather than gating on a non-empty
+      // query (the legacy "Search All" behaviour).
+      if (force && this.currentPath) {
+        await this._enterSearch(this.searchQuery);
       }
       return;
     }
@@ -320,14 +324,15 @@ class FileBrowserStore {
     if (this.page > max) this.page = max;
   }
 
-  async search(query) {
-    // /api/files/search has no query parameter — it returns every
-    // convertible file under the current path. The `query` is used
-    // client-side to filter the returned set (see sourceEntries).
-    if (!query) {
-      this.exitSearch();
-      return;
-    }
+  /**
+   * Run the recursive `/api/files/search` scan (subdirectories + inside
+   * archives) and flip into search mode on success, applying `query` as
+   * the client-side filter. An empty `query` is valid — it surfaces every
+   * convertible file in the tree (the legacy "Search All" view); see
+   * sourceEntries, which returns the full flattened set when searchQuery
+   * is blank.
+   */
+  async _enterSearch(query) {
     if (!this.currentPath) return;
     try {
       const data = await api.searchFiles(this.currentPath, true, true);
@@ -348,6 +353,31 @@ class FileBrowserStore {
       this.entriesError = e?.message ?? 'Search failed';
       // Stay out of search mode so the directory listing remains visible.
     }
+  }
+
+  /**
+   * Text-box search: filters the recursive result set by `query`. An
+   * empty query exits search and returns to the plain directory listing
+   * (the X / clear-search contract).
+   */
+  async search(query) {
+    // /api/files/search has no query parameter — it returns every
+    // convertible file under the current path. The `query` is used
+    // client-side to filter the returned set (see sourceEntries).
+    if (!query) {
+      this.exitSearch();
+      return;
+    }
+    await this._enterSearch(query);
+  }
+
+  /**
+   * One-click "Search all" — recursively list every convertible file
+   * under the current path, including files inside archives, with no
+   * text filter. Restores the legacy "🔍 Search All" action.
+   */
+  async searchAll() {
+    await this._enterSearch('');
   }
 
   exitSearch() {

@@ -12,6 +12,7 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { jobToasts } from '$lib/stores/jobToasts.svelte.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { verification } from '$lib/stores/verification.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
@@ -82,6 +83,23 @@
     fileBrowser.refresh().catch(() => {});
   });
 
+  // Surface a live toast for every RUNNING job and resolve it on
+  // completion. Iterating the list (and touching status/progress/message)
+  // subscribes the effect at index granularity, so SSE progress frames —
+  // which replace a job slot via index assignment in jobs._applyJob —
+  // re-run the reconcile. jobToasts keys each toast by job id, so this is
+  // idempotent across re-runs.
+  $effect(() => {
+    const list = jobs.jobs;
+    const showExternalScan = jobs.showExternalScanJobs;
+    for (const j of list) {
+      void j?.status;
+      void j?.progress;
+      void j?.message;
+    }
+    jobToasts.reconcile(list, { showExternalScan });
+  });
+
   function handleSkip(e) {
     e.preventDefault();
     mainEl?.focus({ preventScroll: false });
@@ -103,6 +121,7 @@
     return () => {
       stopRouter();
       jobs.dispose();
+      jobToasts.dispose();
     };
   });
 </script>
