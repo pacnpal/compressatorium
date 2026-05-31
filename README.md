@@ -21,7 +21,7 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-too
 | Tool | Input Formats | Output Formats | Use Case |
 |------|--------------|----------------|----------|
 | **CHDMAN** | .gdi, .cue, .bin, .iso | .chd | CD/DVD/LaserDisc to CHD |
-| **Dolphin** | .iso, .gcm, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
+| **Dolphin** | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
 
 > **Archive inputs:** every input format above can be converted directly from inside a ZIP, 7z, or RAR archive — including 3DS ROMs and Dolphin disc images. Browse into the archive, pick a member, and convert. (CHDMAN extract/copy modes are the exception: they act on a finished `.chd`, which is an output, not a convertible source.)
