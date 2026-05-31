@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## 4.0.0-beta-3 (2026-05-31)
 
 ### Sidebar: full title + relocated collapse control
 
@@ -11,6 +11,12 @@
 #### ✨ Changed
 
 - **Collapse toggle promoted to its own section.** The sidebar collapse / expand control moved out of the brand row into a dedicated, full-width labelled row (`Collapse sidebar` / `Expand sidebar`) below the Tool list, set off by a divider — far more visible than the small icon previously tucked beside the logo. Relocating it freed the horizontal space the title needed, so the sidebar width is unchanged at 240px.
+
+### Archive conversion test coverage (#117)
+
+#### 🔧 Internal
+
+- New `tests/test_archive_conversion_e2e.py` exercises end-to-end archive conversion across every supported source extension, locking in the issue #113 fix. `.gcm` dropped from the README's supported-format list.
 
 ## 4.0.0-beta-2 (2026-05-31)
 
