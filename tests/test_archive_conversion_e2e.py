@@ -1,0 +1,162 @@
+"""End-to-end archive-conversion test for every convertible extension.
+
+Drives the *real* pipeline for each supported input format:
+
+    POST /jobs (convert route)  ->  plan_job (output-path naming)
+        ->  job_manager.create_job  ->  _process_job
+            ->  archive_service.extract_file   (REAL extraction from a
+                                                 real on-disk .zip)
+            ->  registry.for_mode(mode).convert (the only stubbed piece —
+                                                 stands in for the external
+                                                 chdman / dolphin-tool /
+                                                 z3ds_compressor binary)
+
+The stub binary reads the extracted member (proving extraction actually
+ran and handed over the right file) and writes the output the way the real
+tool would. The test then asserts the output landed next to the archive
+with the correct, input-derived extension and that the temp dir was cleaned
+up. This is the regression guard for issue #113 across the whole matrix.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+from app.routes import convert as convert_routes
+
+# (input extension, mode, expected output extension). Covers every member of
+# registry.archive_input_extensions(): chdman create sources, Dolphin sources,
+# and 3DS sources. z3ds is the interesting case — its output extension is
+# derived from the input, so .cci/.cia/.3ds must each map distinctly.
+MATRIX = [
+    (".gdi", ConversionMode.CREATECD, ".chd"),
+    (".cue", ConversionMode.CREATECD, ".chd"),
+    (".bin", ConversionMode.CREATECD, ".chd"),
+    (".iso", ConversionMode.CREATECD, ".chd"),
+    (".gcz", ConversionMode.DOLPHIN_RVZ, ".rvz"),
+    (".wia", ConversionMode.DOLPHIN_RVZ, ".rvz"),
+    (".wbfs", ConversionMode.DOLPHIN_RVZ, ".rvz"),
+    (".rvz", ConversionMode.DOLPHIN_ISO, ".iso"),
+    (".cci", ConversionMode.Z3DS_COMPRESS, ".zcci"),
+    (".cia", ConversionMode.Z3DS_COMPRESS, ".zcia"),
+    (".3ds", ConversionMode.Z3DS_COMPRESS, ".z3ds"),
+]
+
+
+@pytest.fixture(name="e2e_env")
+def _e2e_env(tmp_path: Path, monkeypatch):
+    """Confine the route to ``tmp_path`` and stub the converter binary.
+
+    Returns the recorded ``(input_path, output_path)`` the stub was invoked
+    with so tests can assert the real extracted file reached the tool.
+    """
+    # Confine path validation + extraction temp dir to the test directory.
+    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "temp_dir", str(tmp_path / "temp"))
+    monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
+
+    # createcd/createdvd would try to read a disc serial off the (junk) source;
+    # short-circuit it so the test stays deterministic and offline.
+    jm_mod = sys.modules[type(convert_routes.job_manager).__module__]
+    monkeypatch.setattr(jm_mod, "disc_id_from_source", lambda *a, **k: None)
+
+    calls: list[dict] = []
+
+    async def fake_convert(input_path, output_path, mode, *, compression=None,
+                           cancel_event=None):
+        # The member must have been extracted to a real temp file before the
+        # tool is invoked — this is the core of the archive-conversion path.
+        assert os.path.isfile(input_path), f"member not extracted: {input_path}"
+        # Capture the extracted bytes now: the temp dir is removed during the
+        # job's cleanup, so it can't be re-read after _process_job returns.
+        calls.append({
+            "input": input_path,
+            "output": output_path,
+            "content": Path(input_path).read_bytes(),
+        })
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        # Stand in for the binary: produce the output file.
+        Path(output_path).write_bytes(Path(input_path).read_bytes())
+        yield {"progress": 50, "message": "working"}
+        yield {"progress": 100, "message": "done"}
+
+    # registry is the shared singleton job_manager dispatches through.
+    for tool in convert_routes.registry.all():
+        monkeypatch.setattr(tool, "convert", fake_convert)
+
+    return {"tmp_path": tmp_path, "calls": calls}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("ext", "mode", "out_ext"), MATRIX, ids=[m[0] for m in MATRIX])
+async def test_archive_member_converts_end_to_end(e2e_env, ext, mode, out_ext):
+    tmp_path: Path = e2e_env["tmp_path"]
+
+    # A real archive with the member nested in a subdirectory so we also
+    # exercise the subdir->flattened-name path.
+    archive = tmp_path / "library.zip"
+    member = f"games/rom{ext}"
+    payload = b"PAYLOAD-" + ext.encode()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(member, payload)
+
+    request = JobCreateRequest(
+        file_path=f"{archive}::{member}",
+        mode=mode,
+        duplicate_action=DuplicateAction.SKIP,
+        delete_on_verify=False,
+    )
+
+    # Real route planning + queue (returns the job with the planned output_path).
+    job = await convert_routes.create_job(request)
+
+    # Real extraction + stubbed conversion + cleanup.
+    await convert_routes.job_manager._process_job(job.id)
+
+    # Output lands next to the archive, subdir flattened, with the
+    # input-derived extension (the .cci/.cia/.3ds distinction is the #113 fix).
+    expected_output = tmp_path / f"games_rom{out_ext}"
+    assert job.output_path == str(expected_output)
+    assert expected_output.is_file()
+    assert job.status.value == JobStatus.COMPLETED.value, job.error_message
+
+    # The stub binary received the genuinely-extracted member, not the
+    # "archive::member" pseudo-path.
+    assert len(e2e_env["calls"]) == 1
+    call = e2e_env["calls"][0]
+    assert os.path.basename(call["input"]) == f"rom{ext}"
+    assert call["content"] == payload
+
+    # Temp extraction dir is cleaned up after the job finishes (the job nulls
+    # its temp_dir handle, so verify via the now-removed extracted file).
+    assert job.temp_dir is None
+    assert not os.path.exists(call["input"])
+
+
+@pytest.mark.asyncio
+async def test_archive_chd_member_rejected_for_recompress(e2e_env):
+    """A .chd inside an archive is an output/recompress target, not a
+    convertible source: chdman copy/extract keep allows_archive_input=False,
+    so the route must reject it (the inverse guard for the #113 change)."""
+    from fastapi import HTTPException
+
+    tmp_path: Path = e2e_env["tmp_path"]
+    archive = tmp_path / "chds.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("disc.chd", b"chd-bytes")
+
+    request = JobCreateRequest(
+        file_path=f"{archive}::disc.chd",
+        mode=ConversionMode.COPY,
+        duplicate_action=DuplicateAction.SKIP,
+        delete_on_verify=False,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await convert_routes.create_job(request)
+    assert exc.value.status_code == 400
