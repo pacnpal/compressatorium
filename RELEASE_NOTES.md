@@ -1,6 +1,24 @@
 # Release Notes
 
-## 4.0.0-beta-2 — Archive conversion for every tool (issue #113) (2026-05-31)
+## 4.0.0-beta-2 (2026-05-31)
+
+### Live job toasts + one-click Search all
+
+#### ✨ New
+
+- **Live toast for every running job.** A new `jobToasts` tracker surfaces a svelte-sonner loading toast for each job in the `processing` state, keyed by job id, and resolves it to success / error / cancelled when the job reaches a terminal state. A single reconcile `$effect` in `App.svelte` drives it off `jobs.jobs`, so jobs restored from a snapshot/poll and jobs started by *other* clients get a toast too — not just ones queued in the current tab. External-scan modes (`metadata_scan` / `dat_match`) are excluded unless the user has opted to show them, matching the queue's default visibility.
+- **One-click "Search all" restored.** The Preact UI had a one-click action that recursively listed every convertible file under the current folder (including inside archives); the Svelte rebuild had gated the recursive scan behind a text query, so an empty query just exited search. A `FolderSearch` toolbar button now runs the all-files scan (empty filter = show everything), and a forced refresh re-runs it while in that view.
+
+#### 🐛 Fixed
+
+- **Correct empty-string toast description.** `runningDescription` used `pct ?? lead ?? 'Processing…'`, but `''` is not nullish, so a job with no message and an unrecognised mode produced a blank description. Truthiness fallbacks now land on the percentage or `Processing…` instead.
+
+#### 🔧 Internal
+
+- `jobToasts` uses null-prototype object maps (non-reactive): the reconcile effect both reads and writes the collection, so a `SvelteMap` would loop; the plain object map is also `svelte/prefer-svelte-reactivity` clean.
+- Optional chaining on job props in the `App.svelte` reactivity loop, matching reconcile's defensive `job?.id`.
+
+### Archive conversion for every tool (issue #113)
 
 #### 🐛 Fixed
 
