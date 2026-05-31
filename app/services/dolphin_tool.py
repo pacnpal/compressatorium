@@ -351,7 +351,10 @@ class DolphinToolService:
     ) -> str:
         """Get the output path for a dolphin-tool conversion."""
         input_p = Path(input_path)
-        stem = input_p.name if treat_as_stem else input_p.stem
+        # ``treat_as_stem`` inputs are synthetic flattened archive-member
+        # filenames (e.g. "games_disc.iso"); strip the extension like a real
+        # source so the output is "games_disc.rvz", not "games_disc.iso.rvz".
+        stem = input_p.stem
         _, ext = DOLPHIN_OUTPUT_FORMATS.get(mode, ("rvz", ".rvz"))
         filename = f"{stem}{ext}"
 

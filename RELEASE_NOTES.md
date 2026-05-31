@@ -1,5 +1,20 @@
 # Release Notes
 
+## Unreleased
+
+### Archive conversion for every tool (issue #113)
+
+#### 🐛 Fixed
+
+- **Convert any supported file from inside an archive.** A `.zip` (or `.7z`/`.rar`) containing 3DS ROMs previously showed nothing to convert — the archive listing only recognised CHDMAN source extensions, and only CHDMAN create modes accepted archive members. Now every convertible *source* is surfaced and convertible from inside an archive: CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), and 3DS (`.cci`/`.cia`/`.3ds`). CHDMAN extract/copy modes stay archive-disabled because they act on a finished `.chd` (an output, not a source).
+- **Correct output extension for 3DS archive members.** z3ds derives its output extension from the input (`.3ds`→`.z3ds`, `.cci`→`.zcci`, `.cia`→`.zcia`); archive members now preserve their original extension through path routing so the mapping is right (previously they would have defaulted to `.zcci`).
+
+#### 🔧 Internal
+
+- Archive listing is driven by the tool registry (`registry.archive_input_extensions()`) instead of a hardcoded set, so it stays in lockstep with the on-disk directory view and with the `allows_archive_input` mode flags.
+- `allows_archive_input` is now set on every convertible-source mode (Dolphin + 3DS, alongside CHDMAN create); the frontend tool registry mirrors the same flags.
+- New `ArchiveService._output_name_for_member()` keeps the member's extension on the flattened output name; CHDMAN/Dolphin strip it via `Path.stem`, leaving their output paths unchanged.
+
 ## 4.0.0-beta-1 — Svelte 5 frontend rebuild (2026-05-29)
 
 The first beta of the rebuilt frontend. Backend / REST / SSE contract

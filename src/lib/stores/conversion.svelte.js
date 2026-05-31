@@ -81,11 +81,13 @@ class ConversionStore {
    *
    * Paths inside archives (`archive.zip::dir/disc.cue`) are matched
    * against their internal extension, but only when the current spec
-   * actually accepts archive input — Dolphin/3DS and CHDMAN
-   * extract/copy modes set `allowsArchiveInput: false`, so submitting
-   * an archive member there just makes `plan_job()` skip it and the
-   * user ends up with zero queued jobs. Reject archive members
-   * up-front for those modes.
+   * actually accepts archive input. Every convertible-source mode
+   * (CHDMAN create, Dolphin, 3DS) now sets `allowsArchiveInput: true`,
+   * so any supported file inside an archive can be converted. Only
+   * CHDMAN extract/copy (which take a finished `.chd`, not a source)
+   * keep `allowsArchiveInput: false`; submitting an archive member
+   * there just makes `plan_job()` skip it and the user ends up with
+   * zero queued jobs, so reject those up-front.
    *
    * When no mode is active or the spec has no `inputExtensions`
    * declared (the registry guarantees one, but defensively), we accept

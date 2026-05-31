@@ -59,6 +59,25 @@ class ToolRegistry:
             *(t.input_extensions for t in self._tools.values())
         )
 
+    def archive_input_extensions(self) -> frozenset[str]:
+        """Input extensions accepted by at least one mode that allows
+        archive members as input.
+
+        Used by the archive listing to decide which members inside a
+        ``.zip`` / ``.7z`` / ``.rar`` are worth surfacing. Driving this off
+        the same mode specs that gate ``plan_job`` keeps the listing and the
+        conversion path in lockstep: a member is only listed as convertible
+        when some mode could actually accept it from an archive. Previously
+        the listing hard-coded CHDMAN's source set, so 3DS members were
+        silently hidden even though z3ds could compress them (issue #113).
+        """
+        exts: set[str] = set()
+        for tool in self._tools.values():
+            for mode in tool.modes:
+                if mode.allows_archive_input:
+                    exts |= set(mode.input_extensions)
+        return frozenset(exts)
+
     def tools_for_input(self, filename: str) -> list[ToolPlugin]:
         ext = Path(filename).suffix.lower()
         return [t for t in self._tools.values() if ext in t.input_extensions]

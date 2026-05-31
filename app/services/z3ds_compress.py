@@ -424,29 +424,21 @@ class Z3DSCompressService:
             Path for output file
 
         Note:
-            When treat_as_stem=True (archive members), the method defaults to .zcci
-            output since we cannot determine the original extension from the stem alone.
-            However, z3ds_compress mode blocks archive inputs, so this case should not occur.
+            ``treat_as_stem=True`` is used for archive members. The member's
+            original extension is preserved in the synthetic filename (see
+            ``ArchiveService._output_name_for_member``), so it maps the same
+            way as an on-disk file (.3ds -> .z3ds, .cci -> .zcci, .cia ->
+            .zcia). It only falls back to .zcci when the extension is missing
+            or unrecognised.
         """
         input_p = Path(input_path)
 
-        if treat_as_stem:
-            # input_path is just a stem (no extension)
-            # Default to .zcci since we can't determine .cci vs .cia from stem alone
-            # Note: This case should not occur as archives are blocked for z3ds mode
-            stem = input_p.name
-            output_ext = ".zcci"
-        else:
-            # Normal case: extract stem and map extension
-            stem = input_p.stem
-            ext = input_p.suffix.lower()
-
-            # Map input extension to output extension
-            if ext in Z3DS_OUTPUT_FORMATS:
-                output_ext = Z3DS_OUTPUT_FORMATS[ext]
-            else:
-                # Default to .zcci if extension unknown
-                output_ext = ".zcci"
+        # Both branches treat the input as a filename: archive members arrive
+        # as flattened filenames that keep their original extension, so the
+        # output mapping is identical to the on-disk case.
+        stem = input_p.stem
+        ext = input_p.suffix.lower()
+        output_ext = Z3DS_OUTPUT_FORMATS.get(ext, ".zcci")
 
         filename = f"{stem}{output_ext}"
 

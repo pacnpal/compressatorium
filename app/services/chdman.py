@@ -325,7 +325,10 @@ class ChdmanService:
     ) -> str:
         """Get the output CHD path for an input file or stem."""
         input_p = Path(input_path)
-        chd_name = input_p.name + ".chd" if treat_as_stem else input_p.stem + ".chd"
+        # ``treat_as_stem`` inputs are synthetic flattened archive-member
+        # filenames (e.g. "games_disc.cue"); strip the extension like a real
+        # source so the CHD name is "games_disc.chd", not "games_disc.cue.chd".
+        chd_name = input_p.stem + ".chd"
 
         if output_dir:
             return str(Path(output_dir) / chd_name)
@@ -340,12 +343,11 @@ class ChdmanService:
         treat_as_stem: bool = False,
     ) -> str:
         input_p = Path(input_path)
-        stem = input_p.name if treat_as_stem else input_p.stem
-
-        if mode.startswith("extract") and not treat_as_stem:
-            name = input_p.name
-            if name.lower().endswith(".chd"):
-                stem = name[:-4]
+        # ``treat_as_stem`` inputs are synthetic flattened archive-member
+        # filenames; treat them like real sources and strip the extension so
+        # the output base matches the on-disk path (Path.stem also drops the
+        # trailing ".chd" for extract modes).
+        stem = input_p.stem
 
         if mode == "copy":
             filename = f"{stem}_copy.chd"

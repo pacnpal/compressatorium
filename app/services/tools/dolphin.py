@@ -44,6 +44,7 @@ def _build_modes() -> list[ModeSpec]:
             supports_compression=supports_compression,
             supports_compression_level=supports_level,
             supports_delete_on_verify=True,
+            allows_archive_input=True,
         )
         for mode, (label, ext, kind, supports_compression, supports_level)
         in _MODES.items()

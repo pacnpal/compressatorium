@@ -122,7 +122,7 @@ class ModeSpec:
     supports_compression: bool = False
     supports_compression_level: bool = False   # dolphin rvz/wia only
     supports_delete_on_verify: bool = False
-    allows_archive_input: bool = False         # chdman create modes only
+    allows_archive_input: bool = False         # opt-in; set True on every convertible-source mode (chdman create, dolphin, z3ds). Only chdman extract/copy (.chd input) leave it False
 ```
 
 Every prefix check in the codebase maps to a field:

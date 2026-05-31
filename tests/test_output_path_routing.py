@@ -88,13 +88,26 @@ def test_extractcd_emits_cue_not_bin(output_dir):
     assert routed.endswith("game.cue")
 
 
-def test_archive_stem_keeps_full_name_as_stem():
-    # Documented edge case: treat_as_stem=True keeps the member's full name
-    # (no extension stripping) as the output stem.
+def test_archive_stem_strips_extension():
+    # treat_as_stem=True inputs are synthetic flattened archive-member
+    # filenames; the tool strips the extension like a real source, so a
+    # ".cue" member yields "disc.chd" (not "disc.cue.chd").
     routed = registry.for_mode("createcd").output_path(
         "createcd", "disc.cue", None, treat_as_stem=True,
     )
-    assert routed == "disc.cue.chd"
+    assert routed == "disc.chd"
+
+
+def test_archive_z3ds_member_maps_output_extension():
+    # z3ds output extension is derived from the input; archive members keep
+    # their original extension through treat_as_stem so the mapping holds
+    # (.3ds -> .z3ds, .cci -> .zcci) — regression guard for issue #113.
+    assert registry.for_mode("z3ds_compress").output_path(
+        "z3ds_compress", "games_rom.3ds", None, treat_as_stem=True,
+    ) == "games_rom.z3ds"
+    assert registry.for_mode("z3ds_compress").output_path(
+        "z3ds_compress", "games_rom.cci", "/out", treat_as_stem=True,
+    ) == "/out/games_rom.zcci"
 
 
 # Guards on the _queue_job_locked output_path fallback for direct service

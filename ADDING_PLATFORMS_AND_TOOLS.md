@@ -555,10 +555,14 @@ if is_nszip:
             detail="nszip mode requires Switch dumps (.nsp, .xci)")
 ```
 
-- **Archive inputs:** z3ds/dolphin block archive (`::`) inputs
-  (`convert.py:357` and `:606`). If your tool can't read out of archives, add
-  your mode to those guards. (chdman is the only tool that reads archive
-  members.)
+- **Archive inputs:** controlled by one flag — set `allows_archive_input=True`
+  on each `ModeSpec` whose input is a convertible *source* (see chdman create,
+  dolphin, and z3ds). A single guard in `plan_job` rejects archive (`::`)
+  members for any mode that leaves it `False` (the default), so you don't add
+  per-tool branches. The archive listing then surfaces your members
+  automatically because it's driven by `registry.archive_input_extensions()`.
+  Leave it `False` only when the input is an *output* class (like chdman
+  extract/copy on `.chd`) that shouldn't be listed as a convertible source.
 - Import the convertible set + service at the top of `convert.py`
   (`convert.py:27` shows the z3ds import).
 
@@ -952,12 +956,18 @@ but matter when your *platform* is a disc image processed by chdman.
   **new disc platform** get tags, add a parser branch in
   `extract_from_source` (`disc_id.py:379`) and a normalizer like
   `_normalize_ps_serial` (`disc_id.py:224`). Not needed for RVZ/3DS/etc.
-- **`app/services/archive.py`** has its **own** `CONVERTIBLE_EXTENSIONS`
-  (`archive.py:28`) listing inputs that can be converted *from inside* a
-  `.zip/.7z/.rar`. Only chdman reads from archives today; z3ds and dolphin
-  block archive (`::`) inputs in `convert.py`. Add to this set only if you
-  want your tool to consume archive members (and then you must handle
-  extraction + related-file handling in `job_manager._process_job`).
+- **`app/services/archive.py`** lists the inputs that can be converted *from
+  inside* a `.zip/.7z/.rar`. It no longer hardcodes a tool-specific set:
+  `ArchiveService._convertible_extensions()` reads
+  `registry.archive_input_extensions()` (the union of `input_extensions` for
+  every mode with `allows_archive_input=True`), with the module-level
+  `CONVERTIBLE_EXTENSIONS` kept only as a fallback. So once your mode opts in
+  via `allows_archive_input=True`, its members are surfaced automatically —
+  there's nothing to edit here. You still own extraction + related-file
+  handling in `job_manager._process_job` for multi-file formats (single-file
+  inputs like `.3ds`/`.rvz` need nothing extra). Output paths for archive
+  members flow through `_output_name_for_member`, which preserves the original
+  extension so input-derived outputs (e.g. z3ds `.3ds`→`.z3ds`) map correctly.
 - **DAT / MAMERedump** (`app/services/dat_*.py`, `app/routes/dat.py`,
   `app/services/file_hasher.py`) is for hash-matching dumps against DAT
   databases. Touch only if your platform participates in DAT verification.
