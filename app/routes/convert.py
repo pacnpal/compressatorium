@@ -315,11 +315,14 @@ async def plan_job(
         if not os.path.isfile(archive_path):
             raise SkipFile(SkipReason.ARCHIVE_NOT_FOUND)
 
-        # Calculate output path before extraction to avoid unnecessary work
+        # Calculate output path before extraction to avoid unnecessary work.
+        # Use the extension-preserving flattened name so tools whose output
+        # extension is derived from the input (e.g. z3ds .3ds -> .z3ds) map
+        # correctly; chdman/dolphin strip it back off via Path.stem.
         effective_output_dir = output_dir or archive_source_dir
-        output_stem = archive_service._output_stem_for_member(internal_path)
+        output_name = archive_service._output_name_for_member(internal_path)
         output_path = _get_output_path(
-            mode, output_stem, effective_output_dir, treat_as_stem=True,
+            mode, output_name, effective_output_dir, treat_as_stem=True,
         )
         base_output_path = output_path
 
@@ -348,12 +351,14 @@ async def plan_job(
         raise SkipFile(SkipReason.CREATE_REQUIRES_NON_CHD)
 
     if is_dolphin:
-        ext = Path(file_path).suffix.lower()
+        # Use the archive-aware extension (the member's, not the ".zip"
+        # container's) so archive members are validated against the real input.
+        ext = _input_extension(file_path)
         if ext not in spec.input_extensions:
             raise SkipFile(SkipReason.DOLPHIN_BAD_EXTENSION)
 
     if is_z3ds:
-        ext = Path(file_path).suffix.lower()
+        ext = _input_extension(file_path)
         if ext not in spec.input_extensions:
             raise SkipFile(SkipReason.Z3DS_BAD_EXTENSION)
 
@@ -448,9 +453,9 @@ async def check_duplicates(request: CheckDuplicatesRequest):
                 effective_output_dir = os.path.dirname(archive_path)
 
         if "::" in file_path:
-            output_stem = archive_service._output_stem_for_member(actual_filename)
+            output_name = archive_service._output_name_for_member(actual_filename)
             output_path = _get_output_path(
-                mode, output_stem, effective_output_dir, treat_as_stem=True,
+                mode, output_name, effective_output_dir, treat_as_stem=True,
             )
         else:
             output_path = _get_output_path(

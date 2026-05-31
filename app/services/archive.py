@@ -25,7 +25,16 @@ except ImportError:
 
 
 ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
-CONVERTIBLE_EXTENSIONS = {".gdi", ".iso", ".cue", ".bin"}
+# Fallback set of convertible archive-member extensions, used only when the
+# tool registry can't be consulted. The authoritative list comes from
+# ``ArchiveService._convertible_extensions()`` (which unions every mode that
+# allows archive input). Historically this was hardcoded to CHDMAN's sources,
+# which silently hid 3DS members (.3ds/.cci/.cia) inside archives — issue #113.
+CONVERTIBLE_EXTENSIONS = {
+    ".gdi", ".iso", ".cue", ".bin",          # chdman create modes
+    ".gcz", ".wia", ".rvz", ".wbfs",         # Dolphin (.iso shared above)
+    ".cci", ".cia", ".3ds",                  # 3DS (z3ds compress)
+}
 
 logger = logging.getLogger("chd.archive")
 
@@ -108,6 +117,28 @@ class ArchiveService:
         ext = Path(filename).suffix.lower()
         return ext in ARCHIVE_EXTENSIONS
 
+    @staticmethod
+    def _convertible_extensions() -> frozenset:
+        """Extensions treated as convertible archive members.
+
+        Sourced from the tool registry so archive listings surface the same
+        inputs the conversion path can actually accept from an archive
+        (chdman create + 3DS today). Falls back to the static set if the
+        registry can't be imported (defensive — it always loads in-app).
+        """
+        try:
+            from services.tools import registry
+
+            exts = registry.archive_input_extensions()
+            if exts:
+                return exts
+        except Exception:  # pragma: no cover - registry always loads in-app
+            logger.debug(
+                "Tool registry unavailable; using static convertible extensions",
+                exc_info=True,
+            )
+        return frozenset(CONVERTIBLE_EXTENSIONS)
+
     def list_archive_contents(
         self, archive_path: str, *, include_meta: bool = False
     ) -> Union[List[dict], Dict[str, Union[List[dict], bool]]]:
@@ -169,6 +200,7 @@ class ArchiveService:
         """List contents of a ZIP file."""
         entries = []
         max_entries, max_member_size, max_total_size = self._archive_limits()
+        convertible = self._convertible_extensions()
         total_size = 0
         truncated = False
         with zipfile.ZipFile(archive_path, "r") as zf:
@@ -182,7 +214,7 @@ class ArchiveService:
                 except ValueError:
                     continue
                 ext = Path(info.filename).suffix.lower()
-                if ext in CONVERTIBLE_EXTENSIONS:
+                if ext in convertible:
                     if max_member_size > 0 and info.file_size > max_member_size:
                         logger.warning(
                             "Skipping oversized archive member %s (%s)",
@@ -224,6 +256,7 @@ class ArchiveService:
         """List contents of a 7z file."""
         entries = []
         max_entries, max_member_size, max_total_size = self._archive_limits()
+        convertible = self._convertible_extensions()
         total_size = 0
         truncated = False
         with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
@@ -237,7 +270,7 @@ class ArchiveService:
                     except ValueError:
                         continue
                     ext = Path(name).suffix.lower()
-                    if ext in CONVERTIBLE_EXTENSIONS:
+                    if ext in convertible:
                         size = self._coerce_size(getattr(info, "uncompressed", None))
                         if size is None:
                             if max_member_size > 0 or max_total_size > 0:
@@ -296,7 +329,7 @@ class ArchiveService:
                     except ValueError:
                         continue
                     ext = Path(entry.filename).suffix.lower()
-                    if ext in CONVERTIBLE_EXTENSIONS:
+                    if ext in convertible:
                         size = self._coerce_size(entry.uncompressed)
                         if size is None:
                             if max_member_size > 0 or max_total_size > 0:
@@ -348,6 +381,7 @@ class ArchiveService:
         """List contents of a RAR file."""
         entries = []
         max_entries, max_member_size, max_total_size = self._archive_limits()
+        convertible = self._convertible_extensions()
         total_size = 0
         truncated = False
         with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
@@ -361,7 +395,7 @@ class ArchiveService:
                 except ValueError:
                     continue
                 ext = Path(info.filename).suffix.lower()
-                if ext in CONVERTIBLE_EXTENSIONS:
+                if ext in convertible:
                     if max_member_size > 0 and info.file_size > max_member_size:
                         logger.warning(
                             "Skipping oversized archive member %s (%s)",
@@ -665,6 +699,23 @@ class ArchiveService:
             return stem
         safe_parent = "_".join([p for p in parent.parts if p not in ("", ".")])
         return f"{safe_parent}_{stem}"
+
+    @staticmethod
+    def _output_name_for_member(member: str) -> str:
+        """Flattened *filename* (subdirectories collapsed) that preserves the
+        member's original extension.
+
+        Tools whose output extension is derived from the input — z3ds maps
+        ``.3ds`` -> ``.z3ds``, ``.cci`` -> ``.zcci`` — need the original
+        extension to pick the right output name. ``_output_stem_for_member``
+        drops it (it exists only for chd existing-output detection, which is
+        always ``<stem>.chd``), so archive conversions route the output path
+        through this helper instead. Each tool's ``get_output_path_for_mode``
+        treats the result as a normal filename when ``treat_as_stem=True``.
+        """
+        stem = ArchiveService._output_stem_for_member(member)
+        suffix = PurePosixPath(member).suffix
+        return f"{stem}{suffix}"
 
     def _extract_from_7z(
         self, archive_path: str, internal_path: str, destination: str

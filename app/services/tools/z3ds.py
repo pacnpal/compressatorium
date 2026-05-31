@@ -38,6 +38,7 @@ class Z3dsTool(BaseTool):
             output_ext=None,  # mapped from the input extension
             input_extensions=frozenset(Z3DS_CONVERTIBLE_EXTENSIONS),
             supports_delete_on_verify=True,
+            allows_archive_input=True,
         ),
     )
     output_extensions = _Z3DS_OUTPUTS

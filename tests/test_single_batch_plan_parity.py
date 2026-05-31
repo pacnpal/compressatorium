@@ -221,11 +221,18 @@ def _cases():
             "reject",
         ),
         (
-            "archive_dolphin_reject",  # ARCHIVE_INPUT_NOT_ALLOWED
+            "archive_dolphin_accept",  # archive allowed for Dolphin compress
             lambda t: f"{_make_zip(t, 'arch.zip')}::game.iso",
             ConversionMode.DOLPHIN_RVZ,
             DuplicateAction.SKIP,
-            "reject",
+            "accept",
+        ),
+        (
+            "archive_z3ds_accept",  # archive allowed for 3DS compress (issue #113)
+            lambda t: f"{_make_zip(t, 'arch.zip')}::game.3ds",
+            ConversionMode.Z3DS_COMPRESS,
+            DuplicateAction.SKIP,
+            "accept",
         ),
         (
             "archive_missing_reject",  # ARCHIVE_NOT_FOUND
