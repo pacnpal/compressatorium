@@ -1,5 +1,17 @@
 # Release Notes
 
+## Unreleased
+
+### Sidebar: full title + relocated collapse control
+
+#### 🐛 Fixed
+
+- **Brand title no longer truncates.** The "Compressatorium" wordmark was being clipped to an ellipsis in the sidebar; `.brand-text` now keeps its full width (no `flex-shrink`, no `overflow`/ellipsis clamp) and fits within the existing 240px rail.
+
+#### ✨ Changed
+
+- **Collapse toggle promoted to its own section.** The sidebar collapse / expand control moved out of the brand row into a dedicated, full-width labelled row (`Collapse sidebar` / `Expand sidebar`) below the Tool list, set off by a divider — far more visible than the small icon previously tucked beside the logo. Relocating it freed the horizontal space the title needed, so the sidebar width is unchanged at 240px.
+
 ## 4.0.0-beta-2 (2026-05-31)
 
 ### Live job toasts + one-click Search all

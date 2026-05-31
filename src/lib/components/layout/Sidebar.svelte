@@ -2,7 +2,6 @@
   import { ui } from '$lib/stores/ui.svelte.js';
   import { registry } from '$lib/tools/registry.js';
   import SidebarItem from './SidebarItem.svelte';
-  import IconButton from '$lib/components/ui/IconButton.svelte';
   import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
   import Boxes from '@lucide/svelte/icons/boxes';
   import Database from '@lucide/svelte/icons/database';
@@ -25,16 +24,6 @@
   <div class="brand">
     <img class="brand-logo" src="/static/images/logo.png" alt="" aria-hidden="true" width="32" height="32" />
     {#if !collapsed}<span class="brand-text">Compressatorium</span>{/if}
-    <span class="brand-spacer"></span>
-    <IconButton
-      label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-      size="sm"
-      toggle
-      active={collapsed}
-      onclick={() => ui.toggleSidebar()}
-    >
-      {#if collapsed}<ChevronRight size={14} />{:else}<ChevronLeft size={14} />{/if}
-    </IconButton>
   </div>
 
   <nav class="section">
@@ -70,6 +59,18 @@
         {/snippet}
       </SidebarItem>
     {/each}
+  </nav>
+
+  <nav class="section view">
+    <SidebarItem
+      label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      {collapsed}
+      onclick={() => ui.toggleSidebar()}
+    >
+      {#snippet icon()}
+        {#if collapsed}<ChevronRight size={16} />{:else}<ChevronLeft size={16} />{/if}
+      {/snippet}
+    </SidebarItem>
   </nav>
 
   <div class="spacer"></div>
@@ -108,14 +109,15 @@
   .brand-text {
     font-weight: var(--weight-semibold);
     font-size: var(--text-lg);
-    overflow: hidden;
-    text-overflow: ellipsis;
+    flex-shrink: 0;
     white-space: nowrap;
   }
-  .brand-spacer { flex: 1; }
   .collapsed .brand { justify-content: center; padding: var(--space-1); }
-  .collapsed .brand-spacer { display: none; }
   .section { display: flex; flex-direction: column; gap: 2px; }
+  .section.view {
+    border-top: 1px solid var(--border-subtle);
+    padding-top: var(--space-2);
+  }
   .section-title {
     margin: var(--space-2) var(--space-3) var(--space-1);
     font-size: var(--text-xs);
