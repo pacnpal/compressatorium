@@ -1,8 +1,6 @@
 # Release Notes
 
-## Unreleased
-
-### Archive conversion for every tool (issue #113)
+## 4.0.0-beta-2 — Archive conversion for every tool (issue #113) (2026-05-31)
 
 #### 🐛 Fixed
 
