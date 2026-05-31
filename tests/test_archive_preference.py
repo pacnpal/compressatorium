@@ -51,6 +51,8 @@ def test_list_zip_surfaces_3ds_member(tmp_path):
     members = {e["internal_path"]: e for e in entries}
     assert "Game/cart.3ds" in members
     assert members["Game/cart.3ds"]["extension"] == ".3ds"
+    # Non-convertible members (e.g. readme.txt) must be filtered out.
+    assert "readme.txt" not in members
     # output_stem flattens the subdir; the z3ds output extension is resolved
     # later from the member's real extension via _output_name_for_member.
     assert members["Game/cart.3ds"]["output_stem"] == "Game_cart"

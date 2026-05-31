@@ -24,6 +24,8 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-too
 | **Dolphin** | .iso, .gcm, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
 
+> **Archive inputs:** every input format above can be converted directly from inside a ZIP, 7z, or RAR archive — including 3DS ROMs and Dolphin disc images. Browse into the archive, pick a member, and convert. (CHDMAN extract/copy modes are the exception: they act on a finished `.chd`, which is an output, not a convertible source.)
+
 ### MAME Redump DAT Integration
 
 Compressatorium supports one-click sync of [MAME Redump](https://github.com/MetalSlug/MAMERedump) DAT files (Logiqx XML format) to verify that your compressed files match known-good Redump hashes. This enables hash-based matching with tools like [Hasheous](https://github.com/gaseous-project/hasheous) and [RomM](https://github.com/rommapp/romm).
@@ -187,13 +189,14 @@ The mobile interface features a card-based layout with touch-friendly controls (
 - Archives extract temporarily during conversion, then clean up automatically
 - When a `.cue`/`.gdi` is present in the same archive folder, `.bin` entries are suppressed and batch jobs are deduplicated by output path to avoid stalled conversions.
 - Archive listings include safety limits (max entries/size) and expose truncation metadata when limits are hit.
-- Archive inputs are limited to CHD create modes (not extract/copy/Dolphin).
+- **Any convertible source inside an archive can be converted** — CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), and 3DS (`.cci`/`.cia`/`.3ds`). Archive members are surfaced for whichever tool accepts them, exactly like on-disk files.
+- The only inputs that can't come from an archive are CHDMAN extract/copy modes, which operate on a finished `.chd` (an output, not a convertible source).
 
 **ISO Handling & Dolphin Tools (GameCube/Wii)**
 - Toggle ISO handling between CHDMAN and Dolphin (controls ISO info/verify and conversions)
 - Convert `.iso`, `.gcz`, `.wia`, `.rvz`, `.wbfs` with dolphin-tool (RVZ/WIA/GCZ/ISO output)
 - Disc info and verification for Dolphin formats (including batch verification)
-- Dolphin modes require direct disc images (archive members are not supported)
+- Dolphin sources may be converted directly from inside ZIP/7z/RAR archives (extracted to a temp dir for the conversion, then cleaned up)
 
 **Batch Conversion**
 - Select multiple files and convert them all at once
@@ -264,7 +267,7 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 - Compression is a single codec with an optional level (`zstd:5`, `bzip2:5`, `lzma:5`, `lzma2:5`).
 - `dolphin_gcz` uses fixed compression and ignores codec selection.
 - `dolphin_iso` outputs an uncompressed ISO image.
-- Archive members are **not** supported for Dolphin conversions.
+- Dolphin sources can be converted from inside ZIP/7z/RAR archives; the member is extracted to a temp dir for the conversion and cleaned up afterwards.
 - ISO info/verify and conversions follow the ISO Handling toggle in the UI (no default - user must choose).
 
 ---
@@ -312,7 +315,7 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 **Technical Limitations:**
 - z3ds_compressor binary is included in the Docker image (`Z3DS_COMPRESSOR_PATH=/usr/local/bin/z3ds_compressor`)
 - Compression settings are fixed - no user configuration needed or available
-- Archive members are **not** supported for 3DS conversions (requires direct file access)
+- 3DS ROMs can be compressed directly from inside ZIP/7z/RAR archives (e.g. a `.zip` of `.3ds` files); the member is extracted to a temp dir for the conversion and cleaned up afterwards
 - ROMs must be decrypted before compression (encrypted ROMs will not work)
 - Progress tracking is based on output file size estimation
 - Delete-on-verify is supported for automatic source file cleanup after successful compression
