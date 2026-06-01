@@ -61,7 +61,12 @@ class PreferencesStore:
     def _get_sync(self, key: str) -> dict | None:
         with self._session() as session:
             row = session.get(_db.Preference, key)
-            return dict(row.value) if row is not None and row.value is not None else None
+            if row is None or row.value is None:
+                return None
+            # SQLAlchemy decodes the JSON column to a fresh object per
+            # query, so returning it directly is safe (no shared state)
+            # and avoids coercing a non-dict blob through dict().
+            return row.value
 
     async def get(self, key: str) -> dict | None:
         """Return the stored JSON object for *key*, or None if unset."""

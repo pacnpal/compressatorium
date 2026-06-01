@@ -59,6 +59,10 @@ class LayoutStore {
   columns = $state({});
 
   #saveTimer = null;
+  // Bumped on every local edit. Captured before the boot server fetch so
+  // a late response can't clobber a width the user changed in the
+  // meantime.
+  #mutationVersion = 0;
 
   constructor() {
     const local = readLocal();
@@ -73,6 +77,11 @@ class LayoutStore {
   /** Column widths for a tool, defaults filled in for untouched columns. */
   columnsFor(toolId) {
     return { ...DEFAULT_COLUMNS, ...(this.columns[toolId] ?? {}) };
+  }
+
+  /** Min/max for a column, for the resize handle's aria-value range. */
+  columnLimit(col) {
+    return COLUMN_LIMITS[col] ?? { min: undefined, max: undefined };
   }
 
   // ── Mutations ────────────────────────────────────────────────────────
@@ -135,12 +144,36 @@ class LayoutStore {
     return { panels: { ...this.panels }, columns: { ...this.columns } };
   }
 
+  // `dirty` marks localStorage as holding an edit not yet confirmed saved
+  // to the server. If the tab closes before the debounced PUT fires, the
+  // next boot sees the flag and pushes local up instead of pulling stale
+  // server data down.
+  #writeLocal(dirty) {
+    writeString(STORAGE_KEYS.LAYOUT, JSON.stringify({ ...this.#serialize(), dirty }));
+  }
+
   async #syncFromServer() {
+    const local = readLocal();
+    if (local?.dirty) {
+      // Local has an unsynced edit — it wins. Push it up rather than
+      // overwriting it with whatever the server still holds.
+      try {
+        await api.putPreferences(this.#serialize());
+        this.#writeLocal(false);
+      } catch {
+        // Still offline; leave dirty set so the next boot retries.
+      }
+      return;
+    }
+    const before = this.#mutationVersion;
     try {
       const remote = await api.getPreferences();
+      // The user dragged something while the fetch was in flight — keep
+      // their in-progress layout instead of snapping back to the server's.
+      if (this.#mutationVersion !== before) return;
       if (remote && (remote.panels || remote.columns)) {
         this.#apply(remote);
-        writeString(STORAGE_KEYS.LAYOUT, JSON.stringify(this.#serialize()));
+        this.#writeLocal(false);
       }
     } catch {
       // Offline or endpoint missing — keep local values.
@@ -148,15 +181,23 @@ class LayoutStore {
   }
 
   #persist() {
-    const snapshot = this.#serialize();
-    writeString(STORAGE_KEYS.LAYOUT, JSON.stringify(snapshot));
+    this.#mutationVersion += 1;
+    const version = this.#mutationVersion;
+    // Mark dirty immediately so an unflushed change survives a tab close.
+    this.#writeLocal(true);
     if (!isBrowser) return;
     if (this.#saveTimer) clearTimeout(this.#saveTimer);
     this.#saveTimer = setTimeout(() => {
       this.#saveTimer = null;
-      api.putPreferences(snapshot).catch(() => {
-        // Best-effort; localStorage already holds the change.
-      });
+      const snapshot = this.#serialize();
+      api.putPreferences(snapshot)
+        .then(() => {
+          // Only clear dirty if no newer edit landed while saving.
+          if (this.#mutationVersion === version) this.#writeLocal(false);
+        })
+        .catch(() => {
+          // Best-effort; localStorage keeps the dirty change.
+        });
     }, SAVE_DEBOUNCE_MS);
   }
 }

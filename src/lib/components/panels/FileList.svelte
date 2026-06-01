@@ -49,8 +49,19 @@
   // Snapshot of a column's width at drag start; the move handler applies
   // the cumulative delta on top of it.
   let dragColStart = 0;
+  let tableEl = $state(null);
   function startColDrag(col) {
-    dragColStart = cols[col];
+    // Measure the actual rendered header width rather than trusting the
+    // stored value. The Name column flexes when unset, so its real width
+    // is wider than the default — without this it would jump to the
+    // default on the first drag. Pin that measured width so Name keeps
+    // its place and resizing continues smoothly from there.
+    const th = tableEl?.querySelector(`th[data-col="${col}"]`);
+    const measured = th?.offsetWidth;
+    dragColStart = measured ?? cols[col];
+    if (col === 'name' && nameSet == null && measured) {
+      layout.setColumnWidth(colTool, 'name', measured);
+    }
   }
   const error = $derived(fileBrowser.entriesError);
   const allSelected = $derived(fileBrowser.allVisibleSelected);
@@ -300,6 +311,8 @@
             variant="column"
             label={label}
             value={cols[col]}
+            min={layout.columnLimit(col).min}
+            max={layout.columnLimit(col).max}
             onstart={() => startColDrag(col)}
             onmove={(d) => layout.setColumnWidth(colTool, col, dragColStart + d)}
             onstep={(d) => layout.setColumnWidth(colTool, col, cols[col] + d)}
@@ -307,7 +320,7 @@
           />
         </span>
       {/snippet}
-      <table class="table" style="min-width: {tableMinWidth}px;" aria-label={searchMode ? 'Search results' : 'Files'}>
+      <table bind:this={tableEl} class="table" style="min-width: {tableMinWidth}px;" aria-label={searchMode ? 'Search results' : 'Files'}>
         <colgroup>
           <col class="col-sel" />
           <col style={nameSet ? `width: ${nameSet}px` : undefined} />
@@ -326,25 +339,25 @@
                 aria-label={allSelected ? 'Deselect all' : 'Select all visible'}
               />
             </th>
-            <th class="resizable" aria-sort={sortAria('name')}>
+            <th class="resizable" data-col="name" aria-sort={sortAria('name')}>
               <button type="button" class="th-button" onclick={() => fileBrowser.setSort('name')}>
                 Name {#if sortBy === 'name'}{@const Icon = sortIcon('name')}<Icon size={12} class="sort-i" />{:else}<ChevronsUpDown size={12} class="sort-i muted" />{/if}
               </button>
               {@render colHandle('name', 'Resize Name column')}
             </th>
-            <th class="size resizable" aria-sort={sortAria('size')}>
+            <th class="size resizable" data-col="size" aria-sort={sortAria('size')}>
               <button type="button" class="th-button" onclick={() => fileBrowser.setSort('size')}>
                 Size {#if sortBy === 'size'}{@const Icon = sortIcon('size')}<Icon size={12} class="sort-i" />{:else}<ChevronsUpDown size={12} class="sort-i muted" />{/if}
               </button>
               {@render colHandle('size', 'Resize Size column')}
             </th>
-            <th class="ext resizable" aria-sort={sortAria('extension')}>
+            <th class="ext resizable" data-col="ext" aria-sort={sortAria('extension')}>
               <button type="button" class="th-button" onclick={() => fileBrowser.setSort('extension')}>
                 Ext {#if sortBy === 'extension'}{@const Icon = sortIcon('extension')}<Icon size={12} class="sort-i" />{:else}<ChevronsUpDown size={12} class="sort-i muted" />{/if}
               </button>
               {@render colHandle('ext', 'Resize Ext column')}
             </th>
-            <th class="resizable">
+            <th class="resizable" data-col="status">
               Status
               {@render colHandle('status', 'Resize Status column')}
             </th>
@@ -551,18 +564,6 @@
     padding: var(--space-1);
   }
   .muted { color: var(--text-3); font-size: var(--text-sm); }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0,0,0,0);
-    white-space: nowrap;
-    border: 0;
-  }
 
   :global(.filelist .spin) { animation: spin 0.9s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }

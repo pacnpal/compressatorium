@@ -59,7 +59,13 @@
   function endDrag(e) {
     if (!dragging) return;
     dragging = false;
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    // releasePointerCapture throws (NotFoundError) if capture was never
+    // established or was already lost; we only care that the drag ends.
+    try {
+      e.currentTarget.releasePointerCapture?.(e.pointerId);
+    } catch {
+      // ignore — capture already gone
+    }
     onend?.();
   }
 
