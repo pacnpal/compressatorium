@@ -2,6 +2,10 @@
 
 Opt-in: it runs the actual ``nsz`` binary through the app's own service code on
 a real dump with real keys, doing compress -> verify -> decompress -> compare.
+For ``.nsp`` inputs the compare is a strict byte-for-byte SHA-256 match. For
+``.xci`` inputs nsz cannot reconstruct the gamecard certificate / card-unique
+region, so byte-identity is impossible; the bar there is nsz's own content
+verify passing plus a valid, non-empty decompressed image.
 It SKIPS (never fails) unless you supply both, so CI and normal `pytest` runs
 stay green.
 
@@ -127,5 +131,18 @@ async def test_nsz_real_round_trip(monkeypatch):
         restored.unlink()
     await _run(svc.convert(str(compressed), str(restored), "nsz_decompress"))
     assert restored.is_file(), "decompression produced no output"
-    assert _sha256(dump) == _sha256(restored), "round trip is not byte-identical"
-    print(f"round trip OK: {restored.name} matches original SHA-256")
+
+    if dump.suffix.lower() == ".nsp":
+        # NSP has no gamecard certificate / card-unique region, so nsz round
+        # trips byte-for-byte. This is the strict correctness bar.
+        assert _sha256(dump) == _sha256(restored), "round trip is not byte-identical"
+        print(f"round trip OK: {restored.name} matches original SHA-256")
+    else:
+        # XCI carries a gamecard certificate + card-unique region that nsz does
+        # not reconstruct: it zeroes/normalises those header fields and trims the
+        # card data, so the raw file can never come back byte-identical. The
+        # realistic correctness bar is that nsz's own content verify passed
+        # (asserted above) and decompression produced a valid, non-empty image.
+        assert restored.stat().st_size > 0, "decompression produced an empty file"
+        print(f"round trip OK ({dump.suffix}): verify passed, decompressed "
+              f"{restored.stat().st_size} bytes (byte-identity not expected for XCI)")
