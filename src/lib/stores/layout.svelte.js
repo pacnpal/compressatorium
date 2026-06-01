@@ -157,9 +157,12 @@ class LayoutStore {
     if (local?.dirty) {
       // Local has an unsynced edit — it wins. Push it up rather than
       // overwriting it with whatever the server still holds.
+      const before = this.#mutationVersion;
       try {
         await api.putPreferences(this.#serialize());
-        this.#writeLocal(false);
+        // Only clear dirty if the user didn't drag again during the PUT;
+        // otherwise that newer edit is still unsaved and must stay dirty.
+        if (this.#mutationVersion === before) this.#writeLocal(false);
       } catch {
         // Still offline; leave dirty set so the next boot retries.
       }

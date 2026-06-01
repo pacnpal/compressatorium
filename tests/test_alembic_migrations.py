@@ -92,15 +92,6 @@ def test_stamp_head_on_preexisting_schema(fresh_db_path: str):
     assert _db._BASELINE_TABLES.issubset(tables_before)
     assert "alembic_version" not in tables_before
 
-    # A genuine pre-Alembic install only had the baseline tables; models
-    # added in later migrations (e.g. preferences) didn't exist yet.
-    # create_all above over-creates them from the current metadata, so
-    # drop the non-baseline ones to faithfully simulate that older state
-    # before stamping + upgrading.
-    with engine.begin() as conn:
-        for table in set(inspect(engine).get_table_names()) - _db._BASELINE_TABLES:
-            conn.execute(text(f'DROP TABLE IF EXISTS "{table}"'))
-
     # Seed a row so we can prove stamping doesn't touch data.
     with engine.begin() as conn:
         conn.execute(

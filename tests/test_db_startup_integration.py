@@ -169,12 +169,6 @@ def test_pre_alembic_plus_json_coexistence(tmp_path: Path, db_path: str, reset_d
                 "VALUES ('pre00001', 'Pre-Alembic', '', '', '', 0)"
             )
         )
-        # The v3.6 create_all only made the baseline tables; tables added
-        # in later migrations (e.g. preferences) didn't exist yet. Drop
-        # the non-baseline ones the current metadata over-created so the
-        # stamp-baseline-then-upgrade path matches a real pre-Alembic DB.
-        for table in set(inspect(eng).get_table_names()) - _db._BASELINE_TABLES:
-            conn.execute(text(f'DROP TABLE IF EXISTS "{table}"'))
     reset_db_engine()
 
     # Now run the real startup sequence with JSON files dropped into the

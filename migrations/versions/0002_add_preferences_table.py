@@ -21,6 +21,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Tolerate a pre-created table. apply_migrations() documents the
+    # create_all-then-stamp path as supported: a DB built from the current
+    # ORM metadata (which already includes the Preference model) gets
+    # stamped at baseline 0001, then this migration runs. An unconditional
+    # CREATE TABLE would raise "table preferences already exists" there, so
+    # only create it when missing.
+    bind = op.get_bind()
+    if 'preferences' in sa.inspect(bind).get_table_names():
+        return
     op.create_table('preferences',
     sa.Column('key', sa.String(), nullable=False),
     sa.Column('value', sa.JSON(), nullable=False),

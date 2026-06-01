@@ -98,10 +98,12 @@
     gap: var(--space-4);
     min-width: 0;
   }
-  /* Splitters only make sense in the 3-column desktop layout. Hidden
-     (and so removed from grid flow) below 1280px, where the right panel
-     stacks and the left rail is a fixed width. */
-  .grid :global(.splitter) { display: none; }
+  /* The panel splitters only make sense in the 3-column desktop layout.
+     Hidden (and so removed from grid flow) below 1280px, where the right
+     panel stacks and the left rail is a fixed width. Direct-child only:
+     the file table's column handles are also .splitter elements but live
+     deep inside .main, and must stay usable at every width. */
+  .grid > :global(.splitter) { display: none; }
   @media (min-width: 900px) {
     .grid { grid-template-columns: 220px minmax(0, 1fr); }
   }
@@ -111,7 +113,7 @@
         var(--ws-left, 220px) auto minmax(0, 1fr) auto var(--ws-right, 360px);
       gap: var(--space-2);
     }
-    .grid :global(.splitter) { display: block; }
+    .grid > :global(.splitter) { display: block; }
   }
 
   .side, .main, .right {
