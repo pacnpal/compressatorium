@@ -50,6 +50,18 @@ def _current_rev(engine) -> str | None:
         return MigrationContext.configure(conn).get_current_revision()
 
 
+def _head_rev() -> str:
+    """Latest migration revision, read from the script directory.
+
+    Derived rather than hardcoded so adding a migration doesn't require
+    touching every revision assertion here.
+    """
+    from alembic.script import ScriptDirectory
+
+    cfg = _db._alembic_config(_db.make_engine(":memory:"))
+    return ScriptDirectory.from_config(cfg).get_current_head()
+
+
 def _run_startup(
     db_path: str,
     data_dir: Path,
@@ -93,7 +105,7 @@ def test_fresh_disk_no_legacy_json(tmp_path: Path, db_path: str):
     _run_startup(db_path, tmp_path)
 
     # Alembic drove schema, not create_all.
-    assert _current_rev(_db.engine) == "0001"
+    assert _current_rev(_db.engine) == _head_rev()
 
     tables = set(inspect(_db.engine).get_table_names())
     assert _db._BASELINE_TABLES.issubset(tables)
@@ -124,7 +136,7 @@ def test_full_legacy_migration(tmp_path: Path, db_path: str):
         dat_sync=SAMPLE_DAT_SYNC,
     )
 
-    assert _current_rev(_db.engine) == "0001"
+    assert _current_rev(_db.engine) == _head_rev()
 
     with _db.get_session() as s:
         assert s.query(_db.DAT).count() == 2
@@ -171,7 +183,7 @@ def test_pre_alembic_plus_json_coexistence(tmp_path: Path, db_path: str, reset_d
     )
 
     # Alembic stamped the baseline and upgraded to head.
-    assert _current_rev(_db.engine) == "0001"
+    assert _current_rev(_db.engine) == _head_rev()
 
     with _db.get_session() as s:
         # Pre-existing DAT survived; new dat_store JSON was NOT imported.

@@ -50,6 +50,17 @@ def _current_rev(engine) -> str | None:
         return MigrationContext.configure(conn).get_current_revision()
 
 
+def _head_rev() -> str:
+    """Latest migration revision, read from the script directory.
+
+    Derived rather than hardcoded so adding a migration doesn't require
+    touching every revision assertion here.
+    """
+    from alembic.script import ScriptDirectory
+    cfg = _db._alembic_config(_db.make_engine(":memory:"))
+    return ScriptDirectory.from_config(cfg).get_current_head()
+
+
 # ---------------------------------------------------------------------------
 # I1 — fresh DB
 # ---------------------------------------------------------------------------
@@ -65,7 +76,7 @@ def test_upgrade_head_on_fresh_db(fresh_db_path: str):
     tables = set(inspect(engine).get_table_names())
     assert _db._BASELINE_TABLES.issubset(tables)
     assert "alembic_version" in tables
-    assert _current_rev(engine) == "0001"
+    assert _current_rev(engine) == _head_rev()
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +106,7 @@ def test_stamp_head_on_preexisting_schema(fresh_db_path: str):
 
     # alembic_version is now present at head; schema is otherwise
     # unchanged; the seeded row still exists.
-    assert _current_rev(engine) == "0001"
+    assert _current_rev(engine) == _head_rev()
     with engine.begin() as conn:
         got = conn.execute(
             text("SELECT name FROM dats WHERE id = 'pre00001'")
@@ -117,7 +128,7 @@ def test_apply_migrations_idempotent(fresh_db_path: str):
     _db.apply_migrations()
     second_rev = _current_rev(_db.engine)
 
-    assert first_rev == second_rev == "0001"
+    assert first_rev == second_rev == _head_rev()
 
 
 # ---------------------------------------------------------------------------
