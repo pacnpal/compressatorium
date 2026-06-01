@@ -1,5 +1,17 @@
 # Release Notes
 
+## 4.0.0-beta-4 (2026-05-31)
+
+### In-app Help content
+
+#### ✨ New
+
+- **The Help view is no longer a placeholder.** It now covers the whole workflow end to end: picking a tool, browsing and Search All, a full mode reference per tool, the compression codecs and the zlib / AetherSX2 gotcha, where output lands and the skip / rename / overwrite choice, the job queue, the verify-then-delete safety flow, the CHD inspector, DAT matching, archive conversion, a troubleshooting list, an FAQ for the common edge cases, and how to file bugs and feature requests. All of it written to match the app, not the README.
+
+#### 🔧 Internal
+
+- **Repo links live in one place.** Added `repository`, `bugs`, and `homepage` to `package.json`. The Help view's GitHub and issues links are derived from those fields with a tree-shaken named import, so moving the repo is a one-line change instead of a hunt through hardcoded URLs.
+
 ## 4.0.0-beta-3 (2026-05-31)
 
 ### Sidebar: full title + relocated collapse control
