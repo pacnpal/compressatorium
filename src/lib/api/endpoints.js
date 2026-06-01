@@ -70,6 +70,23 @@ export const api = {
   // ─── Preferences (server-stored UI layout) ─────────────────────────────
   getPreferences: () =>
     fetchJson(`${API_BASE}/preferences`, undefined, 'Failed to fetch preferences'),
+  getConversionPrefs: () =>
+    fetchJson(
+      `${API_BASE}/preferences/conversion`,
+      undefined,
+      'Failed to fetch compression preferences',
+    ),
+  putConversionPrefs(prefs) {
+    return fetchJson(
+      `${API_BASE}/preferences/conversion`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prefs),
+      },
+      'Failed to save compression preferences',
+    );
+  },
   putPreferences(layout) {
     return fetchJson(
       `${API_BASE}/preferences`,
@@ -245,6 +262,17 @@ export const api = {
     return fetchJson(buildApiUrl('/z3ds-info', params), undefined, 'Failed to get 3DS ROM info');
   },
 
+  getNszInfo(path) {
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/nsz-info', params), undefined, 'Failed to get Switch file info');
+  },
+
+  // Which tools the UI should show. Switch is reported unavailable when no
+  // prod.keys are configured, so the sidebar can hide it entirely.
+  getTools() {
+    return fetchJson(`${API_BASE}/tools`, undefined, 'Failed to load tool availability');
+  },
+
   // ─── Single-file verify (SSE + sync fallback) ─────────────────────────
   verifyCHD(path, { onProgress } = {}) {
     if (onProgress) {
@@ -279,6 +307,17 @@ export const api = {
     return fetchJson(buildApiUrl('/z3ds-verify', params), undefined, 'Failed to verify 3DS ROM');
   },
 
+  verifyNsz(path, { onProgress } = {}) {
+    if (onProgress) {
+      const params = new URLSearchParams({ path });
+      return verifyEventSource(buildApiUrl('/nsz-verify/events', params), onProgress, {
+        failureFallback: 'Switch verification failed',
+      });
+    }
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/nsz-verify', params), undefined, 'Failed to verify Switch file');
+  },
+
   getVerifiedCHDs: () =>
     fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch verified CHDs'),
 
@@ -293,6 +332,10 @@ export const api = {
 
   verifyBatchZ3DS(paths, opts) {
     return runBatchVerify(`${API_BASE}/z3ds-verify-batch/events`, paths, opts);
+  },
+
+  verifyBatchNsz(paths, opts) {
+    return runBatchVerify(`${API_BASE}/nsz-verify-batch/events`, paths, opts);
   },
 
   // ─── CHD metadata cache ───────────────────────────────────────────────

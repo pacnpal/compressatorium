@@ -120,6 +120,23 @@ class Settings(BaseSettings):
         default="/usr/local/bin/z3ds_compressor", alias="Z3DS_COMPRESSOR_PATH",
     )
 
+    # nsz (Nintendo Switch NSP/XCI <-> NSZ/XCZ). Installed via pip into the
+    # venv, so the console script lives on PATH (/opt/venv/bin in Docker, .venv
+    # locally). A bare name resolves in both; set NSZ_PATH to pin an absolute
+    # path if needed.
+    nsz_path: str = Field(default="nsz", alias="NSZ_PATH")
+    # Directory holding the operator's own Switch keys (a `prod.keys`, or a
+    # `keys.txt`). nsz needs console keys to decrypt the NCA content before
+    # compressing (and to re-encrypt on decompress). We ship NO keys: the
+    # operator mounts their own and points SWITCH_KEYS at the directory. This is
+    # the source of truth when set. When unset, the app best-effort searches the
+    # standard locations (~/.switch, ~/.config/nsz) at runtime.
+    switch_keys_dir: str | None = Field(default=None, alias="SWITCH_KEYS")
+    # zstandard level for nsz compression (1-22, nsz default is 18).
+    nsz_compression_level: int = Field(
+        default=18, alias="NSZ_COMPRESSION_LEVEL", ge=1, le=22,
+    )
+
     # MAMERedump DAT sync
     mameredump_repo: str = Field(
         default="MetalSlug/MAMERedump", alias="MAMEREDUMP_REPO",

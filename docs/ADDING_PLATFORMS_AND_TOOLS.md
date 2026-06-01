@@ -7,7 +7,7 @@ vertical slice, from the binary in the Docker image, through the Python service
 and tool plugin, the job pipeline, the FastAPI routes, and finally the Svelte
 web UI, and shows how to add a tool and a platform in tandem.
 
-It is written against the codebase as it stands today, with three tools already
+It is written against the codebase as it stands today, with four tools already
 wired up:
 
 | Tool | Binary | Service module | Plugin | Handles |
@@ -15,11 +15,36 @@ wired up:
 | **chdman** | `mame-tools` (`/usr/bin/chdman`) | `app/services/chdman.py` | `app/services/tools/chdman.py` | CD/DVD/HD/Raw/LaserDisc disc images to/from `.chd` |
 | **dolphin-tool** | `dolphin-emu` (`/usr/local/bin/dolphin-tool`) | `app/services/dolphin_tool.py` | `app/services/tools/dolphin.py` | GameCube/Wii images to/from `.rvz/.wia/.gcz/.iso` |
 | **z3ds_compressor** | built from source (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | `app/services/tools/z3ds.py` | Nintendo 3DS ROMs to `.zcci/.zcia/.z3ds` |
+| **nsz** | `nsz` pip package (on PATH) | `app/services/nsz.py` | `app/services/tools/nsz.py` | Nintendo Switch `.nsp`/`.xci` to/from `.nsz`/`.xcz` |
 
 `z3ds` is the cleanest, most self-contained example of "a new tool that handles
 a new platform," so this guide uses it as the reference implementation
 throughout. When in doubt, **copy what z3ds does.**
 
+> **The `nszip` example below is now real.** This guide was written before
+> Switch support existed and uses a *fictional* `nszip` tool as its §5
+> walkthrough. That tool now ships for real as **`nsz`** (last row above). The
+> walkthrough still teaches the generic pattern, but the real `nsz`
+> implementation differs from the sketch in three ways worth knowing:
+>
+> 1. **Packaging is pip, not a g++ build.** `nsz` is a Python package added to
+>    `requirements.txt`; it lands on PATH in the venv. No builder-stage compile,
+>    no `.local-bin/` copy. `nsz_path` defaults to the bare name `nsz`.
+> 2. **It needs user-supplied `prod.keys`.** Switch content is encrypted, so nsz
+>    decrypts (losslessly, reversibly) before compressing. The app ships no
+>    keys; the operator mounts their own and sets `SWITCH_KEYS` to the directory
+>    holding them (else the app best-effort searches `~/.switch` and the
+>    volumes). nsz loads keys at import from `~/.switch/prod.keys` with no
+>    `--keys` flag, so the service runs it with a temp `$HOME` symlinked to the
+>    resolved key file, and fails fast with a clear message when keys are
+>    missing. No other tool takes user keys, so this is the one genuinely new
+>    pattern.
+> 3. **It has two modes:** `nsz_compress` (`COMPRESS`) and `nsz_decompress`
+>    (`EXTRACT`). Verify is scoped to the compressed outputs (`.nsz/.xcz`) via
+>    nsz's own `-V`, so delete-on-verify is offered for compress only.
+>
+> Read `app/services/nsz.py` and `app/services/tools/nsz.py` for the real thing.
+>
 > **The big idea: there is a tool registry.** Adding a tool used to mean editing
 > `if/elif` ladders in ~20 files. It doesn't anymore. The backend has a tool
 > registry (`app/services/tools/`) that mirrors the frontend one. You write a
@@ -1083,4 +1108,115 @@ DEPLOYMENT.md / DOCKER-COMPOSE.md    new env var, if any
 - **Binary path is config, not hardcoded.** Always read `settings.<tool>_path`
   (passed into the plugin, stored on the service in `__init__`) so deployments
   can relocate/override via env.
+
+---
+
+## 16. Tools that need user-supplied keys or secrets
+
+Some platforms encrypt their content (Nintendo Switch is the first here). To
+compress that content meaningfully a tool has to decrypt it first, which means
+it needs cryptographic keys. Those keys are copyrighted and console-specific:
+**the app must never ship them, and neither should the tool.** The operator
+supplies their own, dumped from hardware they own, for content they own.
+
+`nsz` (Switch) is the reference implementation. If you add another tool with the
+same shape (keys, DRM, firmware blobs, account tokens), follow this pattern.
+
+### 16.1 Never ship the secret
+
+- **`.gitignore`** every common key/secret filename so a stray copy can't be
+  committed (`prod.keys`, `*.keys`, `keys.txt`, `.switch/`, …).
+- **`.dockerignore`** the same names so they can't be baked into the image even
+  if present in the build context.
+- **Never log the secret's contents.** Log the *path* at most. Review your
+  service's debug logging for this before merging.
+- The image runs as uid 999; the operator mounts the secret **read-only**, and
+  it only needs to be world-readable, never writable.
+
+### 16.2 Detection: one env var is the source of truth, with best-effort fallback
+
+Add a single setting that points at the secret. Prefer a **directory** the
+operator mounts (matches how most key tools already organize files) over a
+single file path:
+
+```python
+# app/config.py
+switch_keys_dir: str | None = Field(default=None, alias="SWITCH_KEYS")
+```
+
+The service resolves the actual file with a `resolved_keys_file()` /
+`keys_available()` pair (see `app/services/nsz.py`):
+
+- When the env var **is set**, it is authoritative: look only inside that
+  directory; if the key isn't there, report unavailable (don't silently fall
+  back, or the operator can't tell their config is wrong).
+- When it is **unset**, do a *cheap, non-blocking, best-effort* search of a
+  fixed candidate list: the tool's standard locations (`~/.switch`,
+  `~/.config/...`), the app data dir, and the **roots of the configured game
+  volumes** (`settings.volumes`) plus a `.switch` subdir. Wrap volume access in
+  `try/except` so key discovery can never break a job.
+
+**Do not recurse into game libraries.** A full walk of multi-TB volumes can't be
+both exhaustive and non-blocking; check roots only and tell the operator to set
+the env var if their keys live deeper. Keep the whole check to a bounded set of
+`os.path.isfile`/`os.access` calls so it stays microsecond-cheap and can run on
+every availability check and at startup without blocking the event loop.
+
+### 16.3 Supplying the secret to the binary
+
+Check how the binary actually consumes keys before wiring this up — it is easy
+to get wrong, and unit tests that mock the subprocess won't catch it. **Run the
+real `--help`.** Two cases:
+
+- **The binary takes a flag** (e.g. `--keys /path`): just append it in
+  `_build_command`.
+- **The binary loads keys at import/startup from a fixed location** (nsz reads
+  `~/.switch/prod.keys` via `$HOME` and has *no* `--keys` flag — it even
+  `input()`-prompts and exits if none is found, which hangs under a pipe): you
+  cannot pass a flag. Instead run the child with a throwaway `$HOME` whose
+  `.switch/prod.keys` is a symlink to the resolved key file. See
+  `NszService._keys_home()`. Pass the modified env via `create_subprocess_exec(...,
+  env={**os.environ, "HOME": tmp})` and clean the temp dir up in `finally`.
+
+### 16.4 Fail safe, with an actionable message
+
+Guard **before** spawning. If keys aren't available, raise a `RuntimeError`
+whose message tells the operator exactly what to do (which env var, where to put
+the file). The job fails cleanly with that text instead of the binary dying with
+a cryptic error. Verify needs the same guard.
+
+### 16.5 Gate the UI so the tool is hidden without keys
+
+A tool that can never run without keys shouldn't clutter the UI. The backend
+exposes availability and the frontend hides unavailable tools entirely:
+
+- **Backend:** `GET /api/tools` (in `app/routes/info.py`) returns
+  `{"available": [...], "unavailable": [...]}`. A tool lands in `unavailable`
+  when its readiness check fails (for nsz, `keys_available()` is false).
+- **Frontend:** `App.svelte` fetches it on mount and calls
+  `ui.applyToolAvailability(available)`, which stores `ui.hiddenTools`. Sidebar
+  and the dashboard derive their tool list as
+  `registry.all().filter((t) => !ui.hiddenTools.has(t.id))`, and the active tool
+  falls back to a visible one if it gets hidden. No registry edits needed; this
+  is generic over tool id.
+
+### 16.6 Copyright posture
+
+State it plainly in the docs (README has a "Legal note"): the project ships no
+keys, firmware, or copyrighted content; the operator provides their own for
+hardware and content they own. Keep dual-use framing honest — this compresses
+backups the user already owns; it is not a circumvention tool, and the format
+preserves the original protection measures.
+
+### 16.7 Testing without the real secret
+
+- **Unit tests** mock `create_subprocess_exec` and a dummy key file on disk, so
+  they exercise the wiring (argv, `_keys_home`, the missing-keys guard,
+  availability gating) without real keys. See `tests/test_nsz_service.py` and
+  `tests/test_nsz_routes.py`.
+- **A real round-trip test** (`tests/test_nsz_roundtrip.py`) runs the actual
+  binary through the service on operator-supplied inputs and **skips** when they
+  aren't present, so CI stays green. Inputs live in a git-ignored
+  `testdata/<platform>/` scratch dir (only its README is tracked); the operator
+  drops their keys and a sample dump there or points env vars at them.
 

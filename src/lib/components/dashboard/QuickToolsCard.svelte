@@ -7,7 +7,7 @@
   import StatCard from './StatCard.svelte';
   import Zap from '@lucide/svelte/icons/zap';
 
-  const tools = $derived(registry.all());
+  const tools = $derived(registry.all().filter((t) => !ui.hiddenTools.has(t.id)));
 </script>
 
 <StatCard title="Quick tools" subtitle="Jump into a workspace" accent="var(--badge-dat-match)">

@@ -403,6 +403,22 @@ tests/__pycache__/
 secrets/
 .secrets/
 
+# Nintendo console keys. These are copyrighted and must never be committed or
+# shipped. nsz needs the operator's own prod.keys mounted at runtime; the app
+# bundles none. Block every common name/location so a stray copy can't land in
+# the repo or the image.
+prod.keys
+title.keys
+*.keys
+keys.txt
+.switch/
+
+# Local Switch round-trip test scratch. Your keys and dumps live here and must
+# never be committed; only the README is tracked so the layout is documented.
+/testdata/switch/keys/
+/testdata/switch/dumps/
+/testdata/switch/out/
+
 # Backup files
 *.backup
 *.old

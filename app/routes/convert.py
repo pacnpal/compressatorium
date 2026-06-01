@@ -214,6 +214,7 @@ class SkipReason(Enum):
     CREATE_REQUIRES_NON_CHD = "create_requires_non_chd"
     DOLPHIN_BAD_EXTENSION = "dolphin_bad_extension"
     Z3DS_BAD_EXTENSION = "z3ds_bad_extension"
+    NSZ_BAD_EXTENSION = "nsz_bad_extension"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
 
 
@@ -267,6 +268,10 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         400,
         "z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia, .3ds)",
     ),
+    SkipReason.NSZ_BAD_EXTENSION: (
+        400,
+        "nsz_compress requires .nsp/.xci; nsz_decompress requires .nsz/.xcz",
+    ),
     SkipReason.DOLPHIN_SAME_PATH: (
         400,
         "Output path matches input; overwriting would delete the source file",
@@ -296,6 +301,7 @@ async def plan_job(
     """
     is_dolphin = spec.tool_id == "dolphin"
     is_z3ds = spec.tool_id == "z3ds"
+    is_nsz = spec.tool_id == "nsz"
 
     archive_source_dir = None  # Directory where the archive is located (for output)
     output_path = None
@@ -361,6 +367,13 @@ async def plan_job(
         ext = _input_extension(file_path)
         if ext not in spec.input_extensions:
             raise SkipFile(SkipReason.Z3DS_BAD_EXTENSION)
+
+    if is_nsz:
+        # spec.input_extensions is per-mode, so this validates the right set for
+        # whichever direction (compress: .nsp/.xci, decompress: .nsz/.xcz).
+        ext = _input_extension(file_path)
+        if ext not in spec.input_extensions:
+            raise SkipFile(SkipReason.NSZ_BAD_EXTENSION)
 
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive
@@ -480,7 +493,10 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
     if not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
+            detail=(
+                "Delete-on-verify is only supported for "
+                "create/copy/Dolphin/3DS/Switch-compress modes"
+            ),
         )
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -540,10 +556,10 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
         )
-    if compression and not is_dolphin and ":" in compression:
+    if compression and ":" in compression and not spec.supports_compression_level:
         raise HTTPException(
             status_code=400,
-            detail="Compression levels are only supported for Dolphin formats",
+            detail="Compression levels are only supported for Dolphin and Switch formats",
         )
     if compression and mode == "dolphin_iso":
         raise HTTPException(
@@ -563,7 +579,10 @@ async def create_job(request: JobCreateRequest):
     if request.delete_on_verify and not spec.supports_delete_on_verify:
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
+            detail=(
+                "Delete-on-verify is only supported for "
+                "create/copy/Dolphin/3DS/Switch-compress modes"
+            ),
         )
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(
@@ -643,10 +662,10 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
         )
-    if compression and not is_dolphin and ":" in compression:
+    if compression and ":" in compression and not spec.supports_compression_level:
         raise HTTPException(
             status_code=400,
-            detail="Compression levels are only supported for Dolphin formats",
+            detail="Compression levels are only supported for Dolphin and Switch formats",
         )
     if compression and mode == "dolphin_iso":
         raise HTTPException(
@@ -666,7 +685,10 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     if request.delete_on_verify and not spec.supports_delete_on_verify:
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS modes",
+            detail=(
+                "Delete-on-verify is only supported for "
+                "create/copy/Dolphin/3DS/Switch-compress modes"
+            ),
         )
     if request.delete_on_verify:
         disallowed_archives = get_disallowed_archive_paths(request.file_paths)

@@ -29,6 +29,9 @@ class UIStore {
   // Routing
   activeView = $state(DEFAULT_VIEW);
   workspaceTool = $state(loadPrimaryTool());
+  // Tool ids the backend reports unavailable (e.g. Switch with no prod.keys).
+  // Empty until the first /api/tools fetch, so nothing flickers hidden->shown.
+  hiddenTools = $state(new Set());
 
   // Layout
   sidebarCollapsed = $state(readBool(STORAGE_KEYS.SIDEBAR_COLLAPSED, false));
@@ -142,6 +145,20 @@ class UIStore {
     writeString(STORAGE_KEYS.PRIMARY_TOOL, toolId);
     if (this.activeView === 'workspace') {
       this.navigate('workspace', toolId);
+    }
+  }
+
+  /**
+   * Apply the backend's tool-availability report (from GET /api/tools).
+   * Hides tools the backend can't run (e.g. Switch without prod.keys), and if
+   * the currently selected tool just got hidden, falls back to a visible one.
+   */
+  applyToolAvailability(available) {
+    const allow = new Set(available ?? [...VALID_TOOLS]);
+    this.hiddenTools = new Set([...VALID_TOOLS].filter((id) => !allow.has(id)));
+    if (this.hiddenTools.has(this.workspaceTool)) {
+      const fallback = registry.all().find((t) => !this.hiddenTools.has(t.id));
+      if (fallback) this.setWorkspaceTool(fallback.id);
     }
   }
 

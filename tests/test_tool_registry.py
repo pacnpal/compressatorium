@@ -20,6 +20,11 @@ from app.services.dolphin_tool import (
 from app.services.tools import registry
 from app.services.tools.registry import ToolRegistry
 from app.services.tools.spec import ModeKind, ModeSpec
+from app.services.nsz import (
+    NSZ_COMPRESS_EXTENSIONS,
+    NSZ_DECOMPRESS_EXTENSIONS,
+    nsz_service,
+)
 from app.services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
     z3ds_compress_service,
@@ -37,12 +42,14 @@ def _legacy_tool_for_mode(mode: str) -> str:
         return "dolphin"
     if mode == ConversionMode.Z3DS_COMPRESS.value:
         return "z3ds"
+    if mode.startswith("nsz_"):
+        return "nsz"
     return "chdman"
 
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 16
+    assert len(resolved) == 18
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -75,6 +82,9 @@ def test_kind_classification():
     # dolphin compress vs extract
     assert spec("dolphin_rvz").kind is ModeKind.COMPRESS
     assert spec("dolphin_iso").kind is ModeKind.EXTRACT
+    # nsz compress vs decompress
+    assert spec("nsz_compress").kind is ModeKind.COMPRESS
+    assert spec("nsz_decompress").kind is ModeKind.EXTRACT
 
 
 @pytest.mark.parametrize(
@@ -98,9 +108,11 @@ def test_supports_compression_matches_current_behavior(mode, expected):
 
 
 def test_compression_level_only_for_dolphin_rvz_wia():
-    for mode in ("dolphin_rvz", "dolphin_wia"):
+    # Dolphin RVZ/WIA and Switch compress expose a numeric level.
+    for mode in ("dolphin_rvz", "dolphin_wia", "nsz_compress"):
         assert registry.spec(mode).supports_compression_level is True
-    for mode in ("createcd", "copy", "dolphin_gcz", "dolphin_iso", "z3ds_compress"):
+    for mode in ("createcd", "copy", "dolphin_gcz", "dolphin_iso", "z3ds_compress",
+                 "nsz_decompress"):
         assert registry.spec(mode).supports_compression_level is False
 
 
@@ -109,6 +121,8 @@ def test_convertible_extensions_match_service_constants():
         set(CHDMAN_CONVERTIBLE_EXTENSIONS)
         | set(DOLPHIN_CONVERTIBLE_EXTENSIONS)
         | set(Z3DS_CONVERTIBLE_EXTENSIONS)
+        | set(NSZ_COMPRESS_EXTENSIONS)
+        | set(NSZ_DECOMPRESS_EXTENSIONS)
     )
     assert set(registry.convertible_extensions()) == expected
 
@@ -119,6 +133,8 @@ def test_tools_for_input_representative():
         "dolphin",
     ]
     assert [t.id for t in registry.tools_for_input("rom.3ds")] == ["z3ds"]
+    assert [t.id for t in registry.tools_for_input("game.nsp")] == ["nsz"]
+    assert [t.id for t in registry.tools_for_input("game.nsz")] == ["nsz"]
     assert [t.id for t in registry.tools_for_input("disc.gdi")] == ["chdman"]
     # A finished .chd is not a "convertible-from" source in the listing.
     assert registry.tools_for_input("out.chd") == []
@@ -128,6 +144,8 @@ def test_tool_for_verify_representative():
     assert registry.tool_for_verify("out.chd").id == "chdman"
     assert registry.tool_for_verify("rom.z3ds").id == "z3ds"
     assert registry.tool_for_verify("disc.rvz").id == "dolphin"
+    assert registry.tool_for_verify("game.nsz").id == "nsz"
+    assert registry.tool_for_verify("game.xcz").id == "nsz"
     assert registry.tool_for_verify("nope.txt") is None
 
 
@@ -144,6 +162,10 @@ def test_tool_for_verify_representative():
         ("dolphin_rvz", dolphin_tool_service, "/data/game.iso"),
         ("dolphin_iso", dolphin_tool_service, "/data/game.rvz"),
         ("z3ds_compress", z3ds_compress_service, "/data/rom.3ds"),
+        ("nsz_compress", nsz_service, "/data/game.nsp"),
+        ("nsz_compress", nsz_service, "/data/game.xci"),
+        ("nsz_decompress", nsz_service, "/data/game.nsz"),
+        ("nsz_decompress", nsz_service, "/data/game.xcz"),
     ],
 )
 def test_output_path_delegation_matches_service(
@@ -216,7 +238,7 @@ def test_mode_spec_tool_id_must_match_owner():
         ToolRegistry().register(_StubTool())
 
 
-@pytest.mark.parametrize("tool_id", ["chdman", "dolphin", "z3ds"])
+@pytest.mark.parametrize("tool_id", ["chdman", "dolphin", "z3ds", "nsz"])
 def test_output_extensions_cover_mode_output_exts(tool_id):
     tool = registry.get(tool_id)
     declared = {m.output_ext for m in tool.modes if m.output_ext is not None}

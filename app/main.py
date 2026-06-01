@@ -273,7 +273,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Compressatorium",
-    description="Web UI for converting game files with chdman, dolphin-tool, and z3ds_compressor",
+    description=(
+        "Web UI for converting game files with chdman, dolphin-tool, "
+        "z3ds_compressor, and nsz"
+    ),
     version=get_version(),
     lifespan=lifespan,
 )

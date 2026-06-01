@@ -262,6 +262,14 @@ config.local.*
 secrets/
 .secrets/
 
+# Nintendo console keys: never bake them into the image. They are mounted at
+# runtime, never built in.
+prod.keys
+title.keys
+*.keys
+keys.txt
+.switch/
+
 # Backup files
 *.backup
 *.old

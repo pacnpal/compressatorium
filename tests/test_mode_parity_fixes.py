@@ -110,7 +110,7 @@ async def test_delete_on_verify_error_messages_include_dolphin_and_3ds():
     with pytest.raises(HTTPException) as exc_info:
         await convert_routes.delete_plan(request)
     assert exc_info.value.status_code == 400
-    assert "create/copy/Dolphin/3DS" in str(exc_info.value.detail)
+    assert "create/copy/Dolphin/3DS/Switch-compress" in str(exc_info.value.detail)
 
     create_request = JobCreateRequest(
         file_path="/tmp/any.chd",
@@ -120,7 +120,7 @@ async def test_delete_on_verify_error_messages_include_dolphin_and_3ds():
     with pytest.raises(HTTPException) as create_exc:
         await convert_routes.create_job(create_request)
     assert create_exc.value.status_code == 400
-    assert "create/copy/Dolphin/3DS" in str(create_exc.value.detail)
+    assert "create/copy/Dolphin/3DS/Switch-compress" in str(create_exc.value.detail)
 
 
 @pytest.mark.asyncio
@@ -134,7 +134,29 @@ async def test_delete_plan_rejects_external_modes_without_crashing(mode):
     with pytest.raises(HTTPException) as exc_info:
         await convert_routes.delete_plan(request)
     assert exc_info.value.status_code == 400
-    assert "create/copy/Dolphin/3DS" in str(exc_info.value.detail)
+    assert "create/copy/Dolphin/3DS/Switch-compress" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_nsz_compress_accepts_level_token(tmp_path: Path, monkeypatch):
+    """nsz compression is '<solid|block>:<level>'; the route must allow the ':'
+    token for Switch (regression: validation previously only allowed Dolphin)."""
+    source_path = tmp_path / "game.nsp"
+    source_path.write_bytes(b"nsp")
+
+    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
+    create_job_mock = AsyncMock()
+    monkeypatch.setattr(convert_routes.job_manager, "create_job", create_job_mock)
+
+    request = JobCreateRequest(
+        file_path=str(source_path),
+        mode=ConversionMode.NSZ_COMPRESS,
+        compression="solid:18",
+    )
+    # Must not raise the "levels only for Dolphin" 400; the job is created.
+    await convert_routes.create_job(request)
+    create_job_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

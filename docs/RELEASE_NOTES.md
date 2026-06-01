@@ -1,5 +1,19 @@
 # Release Notes
 
+## 4.0.0-beta-8 (2026-06-01)
+
+### Nintendo Switch support (nsz)
+
+#### New
+
+- **A fourth tool: Switch.** Compress `.nsp`/`.xci` dumps to `.nsz`/`.xcz` and back, using [nsz](https://github.com/nicoboss/nsz) (the Tinfoil/DBI-compatible standard). Two modes: `nsz_compress` and `nsz_decompress`. Available in the Web UI and the REST API, with live progress, single + batch verify, and file-info.
+- **Bring your own keys.** Switch content is encrypted, so nsz decrypts it (losslessly, reversibly) before compressing. The app ships no keys: mount your own `prod.keys` and set `SWITCH_KEYS` to the directory holding it (or let the app best-effort find it in `~/.switch` or your volumes). Missing keys fail the job with a clear message instead of crashing, and hide the Switch tool from the UI entirely. Key file names are git-ignored and never baked into the image or logged.
+
+#### Internal
+
+- New `app/services/nsz.py` service and `app/services/tools/nsz.py` plugin, registered in the tool registry. nsz loads keys at import (no `--keys` flag), so the service runs it with a temp `$HOME` symlinked to the resolved key file; progress is estimated from output-file growth (nsz's enlighten bar is silent on a pipe); verify uses nsz's own `-V`. `nsz` is installed via `requirements.txt`. New settings: `NSZ_PATH`, `SWITCH_KEYS`, `NSZ_COMPRESSION_LEVEL`. New `GET /api/tools` reports tool availability so the UI can hide Switch when keys are absent.
+- Tests: `tests/test_nsz_service.py`, `tests/test_nsz_routes.py`, plus registry/parity coverage extended for the new modes.
+
 ## 4.0.0-beta-7 (2026-06-01)
 
 ### Resizable panels and table columns (#120)

@@ -37,6 +37,7 @@
     if (entry?.convertible) legacy.push('chdman');
     if (entry?.dolphin_convertible) legacy.push('dolphin');
     if (entry?.z3ds_convertible) legacy.push('z3ds');
+    if (entry?.nsz_convertible) legacy.push('nsz');
     return legacy;
   });
 

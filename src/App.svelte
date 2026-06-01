@@ -14,6 +14,7 @@
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { jobToasts } from '$lib/stores/jobToasts.svelte.js';
   import { conversion } from '$lib/stores/conversion.svelte.js';
+  import { api } from '$lib/api/endpoints.js';
   import { verification } from '$lib/stores/verification.svelte.js';
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
@@ -112,6 +113,13 @@
 
   onMount(() => {
     ui.loadVersion();
+    // Ask the backend which tools to show. Switch (nsz) is hidden until
+    // prod.keys are configured. Fire and forget — on failure nothing is hidden.
+    api.getTools()
+      .then((t) => ui.applyToolAvailability(t?.available))
+      .catch(() => {});
+    // Load remembered per-tool compression settings from the server.
+    conversion.loadServerPrefs();
     // Rehydrate the verified set + DAT-library state so OK / DAT badges
     // survive reloads. Fire and forget — failure leaves the cache empty.
     verification.loadVerified();

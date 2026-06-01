@@ -33,7 +33,15 @@ The full environment variable reference lives in [README.md](README.md#environme
 | `CHD_DATA_DIR` | `/config` | Persistent data; the SQLite DB lives here |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
 | `CHD_CHDMAN_NICE` / `CHD_CHDMAN_IOPRIO_CLASS` / `CHD_CHDMAN_IOPRIO_LEVEL` | `10` / `2` / `6` | CPU and I/O priority for chdman |
+| `SWITCH_KEYS` | (unset) | Directory holding your own Switch `prod.keys`. Source of truth for the Switch (nsz) tool; mount it read-only. When unset, the app best-effort checks `~/.switch` and your mounted volumes. No keys ship with the image. |
 | `STATIC_DIR` | `/static` | Static web assets |
+
+**Switch keys.** The Switch (nsz) tool needs your own `prod.keys`, dumped from a
+console you own. Mount the directory holding it read-only and set `SWITCH_KEYS`
+to that directory. When unset, the app does a cheap, non-blocking best-effort
+search of `~/.switch` and your mounted volumes at runtime. The app ships no keys,
+never logs them, and git-ignores key file names so they can't be committed or
+baked into an image. The file only needs to be readable by uid 999.
 
 Volume precedence:
 - If `COMPRESSATORIUM_VOLUMES` is set, that explicit list wins.
