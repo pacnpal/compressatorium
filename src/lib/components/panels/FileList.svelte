@@ -302,7 +302,7 @@
               </button>
             </th>
             <th>Status</th>
-            <th class="actions"><span class="sr-only">Actions</span></th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
