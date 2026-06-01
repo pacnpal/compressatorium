@@ -1560,7 +1560,8 @@ class JobManager:
                 if job.delete_on_verify:
                     if job.mode.value.startswith("extract"):
                         raise RuntimeError(
-                            "Delete-on-verify is only supported for create/copy/Dolphin/3DS/Switch-compress modes"
+                            "Delete-on-verify is only supported for "
+                            "create/copy/Dolphin/3DS/Switch-compress modes"
                         )
                     if cancel_event.is_set():
                         raise ConversionCancelled("Conversion cancelled")

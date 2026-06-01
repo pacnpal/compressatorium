@@ -107,10 +107,9 @@ class NszService:
             os.path.join(home, ".config", "nsz"),
         ]
         # Game volumes + the data dir: a user may just drop prod.keys there.
-        try:
+        # never let key discovery break a job
+        with contextlib.suppress(Exception):
             roots.extend(settings.volumes)
-        except Exception:  # never let key discovery break a job
-            pass
         with contextlib.suppress(Exception):
             roots.append(str(settings.data_dir))
 
@@ -269,8 +268,9 @@ class NszService:
                 except OSError:
                     pass
 
-        # cmd is built from validated settings paths (no shell interpretation).
-        process = await asyncio.create_subprocess_exec(
+        # cmd is built from validated settings paths (no shell interpretation);
+        # args are a fixed list, never shell-expanded.
+        process = await asyncio.create_subprocess_exec(  # nosemgrep
             cmd[0], *cmd[1:],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -480,7 +480,7 @@ class NszService:
 
         try:
             with self._keys_home() as env:
-                process = await asyncio.create_subprocess_exec(
+                process = await asyncio.create_subprocess_exec(  # nosemgrep
                     self.nsz_path, "-V", file_path,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
@@ -492,14 +492,21 @@ class NszService:
                     stdout, _ = await process.communicate()
                     output = (stdout or b"").decode("utf-8", errors="replace").strip()
                     if process.returncode == 0:
-                        yield {"type": "progress", "progress": 100, "message": "Integrity check passed"}
+                        yield {
+                            "type": "progress",
+                            "progress": 100,
+                            "message": "Integrity check passed",
+                        }
                         yield {
                             "type": "complete",
                             "valid": True,
                             "message": "File verified successfully",
                         }
                     else:
-                        tail = "\n".join(output.splitlines()[-5:]) if output else "verification failed"
+                        tail = (
+                            "\n".join(output.splitlines()[-5:])
+                            if output else "verification failed"
+                        )
                         yield {
                             "type": "error",
                             "valid": False,

@@ -44,7 +44,7 @@ throughout. When in doubt, **copy what z3ds does.**
 >    nsz's own `-V`, so delete-on-verify is offered for compress only.
 >
 > Read `app/services/nsz.py` and `app/services/tools/nsz.py` for the real thing.
-
+>
 > **The big idea: there is a tool registry.** Adding a tool used to mean editing
 > `if/elif` ladders in ~20 files. It doesn't anymore. The backend has a tool
 > registry (`app/services/tools/`) that mirrors the frontend one. You write a

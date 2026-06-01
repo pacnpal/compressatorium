@@ -493,7 +493,10 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
     if not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS/Switch-compress modes",
+            detail=(
+                "Delete-on-verify is only supported for "
+                "create/copy/Dolphin/3DS/Switch-compress modes"
+            ),
         )
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -576,7 +579,10 @@ async def create_job(request: JobCreateRequest):
     if request.delete_on_verify and not spec.supports_delete_on_verify:
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS/Switch-compress modes",
+            detail=(
+                "Delete-on-verify is only supported for "
+                "create/copy/Dolphin/3DS/Switch-compress modes"
+            ),
         )
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(
@@ -679,7 +685,10 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     if request.delete_on_verify and not spec.supports_delete_on_verify:
         raise HTTPException(
             status_code=400,
-            detail="Delete-on-verify is only supported for create/copy/Dolphin/3DS/Switch-compress modes",
+            detail=(
+                "Delete-on-verify is only supported for "
+                "create/copy/Dolphin/3DS/Switch-compress modes"
+            ),
         )
     if request.delete_on_verify:
         disallowed_archives = get_disallowed_archive_paths(request.file_paths)

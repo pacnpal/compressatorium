@@ -134,7 +134,7 @@ async def test_convert_without_keys_fails_before_spawn(tmp_path, monkeypatch):
 
     monkeypatch.setattr(nsz_module.asyncio, "create_subprocess_exec", fake_exec)
 
-    with pytest.raises(RuntimeError, match="prod.keys"):
+    with pytest.raises(RuntimeError, match=r"prod\.keys"):
         await _drain(
             nsz_module.nsz_service.convert(str(src_path), str(out_path), "nsz_compress"),
         )
