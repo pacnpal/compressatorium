@@ -7,9 +7,9 @@
 
 Adding one conversion tool today touches ~20 files, and the standing advice
 is "copy what z3ds does" in each of them. The tool-service contract already
-exists *implicitly* — every service (`chdman`, `dolphin_tool`,
+exists *implicitly*, every service (`chdman`, `dolphin_tool`,
 `z3ds_compress`) exposes the same shape (`convert` / `verify` /
-`verify_stream` / `info` / `is_convertible` / `get_output_path_for_mode`) —
+`verify_stream` / `info` / `is_convertible` / `get_output_path_for_mode`),
 but it was never formalized, so tool-specific knowledge is hand-scattered into
 hardcoded `if/elif` ladders and string-prefix checks across the codebase.
 
@@ -34,7 +34,7 @@ hardcoded `if/elif` ladders and string-prefix checks across the codebase.
 | Frontend dispatch | `static/js/app.js` (~10 sites), `api.js` | tool branches for label, hint, filters, `MODE_GROUPS`, info modal, verify routing |
 
 The rule of three is satisfied (three tools exist), so abstracting this is no
-longer premature — it is overdue.
+longer premature, it is overdue.
 
 ### 1.2 Goals / non-goals
 
@@ -98,7 +98,7 @@ app/services/tools/
   z3ds.py            # Z3dsTool
 ```
 
-### 3.1 `spec.py` — modes carry metadata
+### 3.1 `spec.py`: modes carry metadata
 
 ```python
 from dataclasses import dataclass
@@ -136,11 +136,11 @@ Every prefix check in the codebase maps to a field:
 | `supports_delete_on_verify(mode)` (`convert.py:87`) | `spec.supports_delete_on_verify` |
 | GCZ/ISO compression special-cases (`convert.py:315`–`324`) | `spec.supports_compression` |
 
-`ConversionMode` (the Pydantic enum in `models.py`) **stays** — it remains the
+`ConversionMode` (the Pydantic enum in `models.py`) **stays**, it remains the
 validated wire type. `ModeSpec.mode` equals `ConversionMode(...).value`. The
 registry is the bridge between the two.
 
-### 3.2 `base.py` — the plugin contract
+### 3.2 `base.py`: the plugin contract
 
 ```python
 from collections.abc import AsyncGenerator, Sequence
@@ -174,7 +174,7 @@ class ToolPlugin(Protocol):
     def active_pids(self) -> list[int]: ...
 
     # Optional post-processing hook (chdman uses it to embed disc-ID GAME/NAME
-    # tags after createcd/createdvd — today hardcoded at job_manager.py:1514).
+    # tags after createcd/createdvd, today hardcoded at job_manager.py:1514).
     async def post_convert(self, input_path: str, output_path: str, mode: str) -> None: ...
 ```
 
@@ -201,7 +201,7 @@ class BaseTool:
                 return m
         raise KeyError(mode)
 
-    # default verify() wraps verify_stream() — identical in all 3 services today
+    # default verify() wraps verify_stream(), identical in all 3 services today
     async def verify(self, path: str) -> dict:
         final = {"valid": False, "message": "Verification failed"}
         async for u in self.verify_stream(path):
@@ -222,9 +222,9 @@ class BaseTool:
 > **Normalization note:** `info()` is async on the contract.
 > `chdman.info`/`dolphin.header` are already async; `z3ds.info` is sync, so
 > `Z3dsTool.info` wraps it in `run_in_threadpool`. `dolphin` exposes header
-> data via `header()` today — `DolphinTool.info` simply calls it.
+> data via `header()` today, `DolphinTool.info` simply calls it.
 
-### 3.3 `runner.py` — shared subprocess orchestration
+### 3.3 `runner.py`: shared subprocess orchestration
 
 This collapses ~150 near-identical lines now living in each of
 `chdman.py:96`–`334`, `dolphin_tool.py:109`–`356`, `z3ds_compress.py:137`–`347`.
@@ -357,10 +357,10 @@ and instead loop `for tool in registry.all()` calling a tool-provided
 > See `src/lib/tools/registry.js` for the source of truth.
 
 ```js
-// src/lib/tools/registry.js (abridged — see file for full schema)
+// src/lib/tools/registry.js (abridged, see file for full schema)
 export const TOOLS = [
   { id: 'chdman', label: 'CHDMAN', hint: '…',
-    verifyPrefix: '',                                    // URL segment — '' → /api/verify
+    verifyPrefix: '',                                    // URL segment, '' → /api/verify
     sourceExts: ['.gdi','.iso','.cue','.bin'], verifyExts: ['.chd'],
     modeGroups: ['create','extract','copy'],
     groups: { create: 'Create', extract: 'Extract', copy: 'Copy' },
@@ -384,15 +384,15 @@ into `TOOLS` instead of `if (tool === 'dolphin') …` chains.
 
 Before: ~20 files (see `ADDING_PLATFORMS_AND_TOOLS.md` §3). After:
 
-1. `app/services/tools/nszip.py` — one `BaseTool` subclass with `modes`,
+1. `app/services/tools/nszip.py`, one `BaseTool` subclass with `modes`,
    `_build_command`, `_parse_progress`, `verify_stream`, `info`, `info_model`.
-2. `app/services/tools/__init__.py` — one `registry.register(NszipTool(...))`.
-3. `app/config.py` — one `nszip_path` Field.
-4. `static/js/tools.js` — one entry in `TOOLS`.
-5. `Dockerfile` — install the binary (irreducible).
+2. `app/services/tools/__init__.py`, one `registry.register(NszipTool(...))`.
+3. `app/config.py`, one `nszip_path` Field.
+4. `static/js/tools.js`, one entry in `TOOLS`.
+5. `Dockerfile`, install the binary (irreducible).
 6. tests + docs.
 
-Dispatch in `job_manager`, `convert`, `files`, `info` — **no edits**, because
+Dispatch in `job_manager`, `convert`, `files`, `info`, **no edits**, because
 they iterate the registry. That is the whole point.
 
 ---
@@ -405,20 +405,20 @@ Each phase is independently shippable, preserves behavior, and ends green
 Phases are ordered so the **registry exists first** and consumers migrate one
 at a time. Nothing here changes the wire API until Phase 9 (optional).
 
-### Phase 0 — Scaffold the registry around existing services (no behavior change)
+### Phase 0: Scaffold the registry around existing services (no behavior change)
 - Add `app/services/tools/` with `spec.py`, `base.py`, `registry.py`.
 - Write `ModeSpec` rows for **every** current `ConversionMode` value.
 - Create thin `ChdmanTool`/`DolphinTool`/`Z3dsTool` that **delegate** to the
   existing `chdman_service`/`dolphin_tool_service`/`z3ds_compress_service`
   singletons (no logic moved yet).
 - Add `registry` singleton.
-- **Tests:** new `tests/test_tool_registry.py` — assert every
+- **Tests:** new `tests/test_tool_registry.py`, assert every
   `ConversionMode` resolves to exactly one tool; assert
   `registry.spec(m).supports_delete_on_verify` matches today's
   `supports_delete_on_verify(m)` for all modes (characterization).
 - Risk: ~none (additive).
 
-### Phase 1 — Replace prefix checks with `ModeSpec` in `convert.py`
+### Phase 1: Replace prefix checks with `ModeSpec` in `convert.py`
 - Swap `mode.startswith(...)` / `== "z3ds_compress"` and
   `supports_delete_on_verify` for `registry.spec(mode)` field reads.
 - Keep the duplicated single/batch structure for now.
@@ -426,7 +426,7 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
   pass unchanged.
 - Risk: low; pure substitution guarded by characterization tests from Phase 0.
 
-### Phase 2 — Route output-path resolution through the registry
+### Phase 2: Route output-path resolution through the registry
 - `convert._get_output_path` (`:100`) → `registry.for_mode(mode).output_path(...)`.
 - `job_manager._queue_job_locked` (`:139`) → same.
 - Implement `output_path()` on each tool by calling the existing
@@ -436,7 +436,7 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
 - Risk: low-medium (path edge cases: `extractcd` `.cue`, archive stems). The
   equivalence test is the safety net.
 
-### Phase 3 — Route conversion + verify dispatch through the registry
+### Phase 3: Route conversion + verify dispatch through the registry
 - `job_manager._process_job` `_convert_service` ladder (`:1444`) →
   `registry.for_mode(job.mode.value)`.
 - Verify branch (`:1556`, `:1591`) → `plugin.verify(output_path)` uniformly
@@ -448,14 +448,14 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
 - Risk: medium (hot path). Ship behind close review; the behavior is a 1:1
   re-route.
 
-### Phase 4 — Deduplicate single vs batch in `convert.py`
+### Phase 4: Deduplicate single vs batch in `convert.py`
 - Extract `plan_job(file_path, mode, output_dir, duplicate_action, …) -> JobPlan|Skip`.
 - `create_job` and `create_batch_jobs` both call it.
 - **Tests:** `test_mode_parity_fixes.py` becomes near-trivial (one code path);
   keep it as a regression guard.
 - Risk: medium; well-covered by the existing parity suite.
 
-### Phase 5 — Extract `SubprocessRunner`; slim the three services
+### Phase 5: Extract `SubprocessRunner`; slim the three services
 - Add `runner.py`; refactor `convert()` in each tool to use it.
 - Move the real `chdman`/`dolphin`/`z3ds` logic *into*
   `services/tools/{chdman,dolphin,z3ds}.py` (Phase 0 left them delegating).
@@ -468,17 +468,17 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
   at once; keep `ConversionCancelled` in its current import location to avoid
   breaking `job_manager`'s `except`.
 
-### Phase 6 — Generic info/verify routes from the registry
+### Phase 6: Generic info/verify routes from the registry
 - Replace the three endpoint trios in `info.py` with the factory (§3.5) +
   shared SSE adapters. Maintain the `tool_id → url_prefix` alias map so paths
-  (`/api/chd-verify`? no — keep `/api/verify`, `/api/dolphin-verify`,
+  (`/api/chd-verify`? no, keep `/api/verify`, `/api/dolphin-verify`,
   `/api/z3ds-verify`) are byte-for-byte identical.
 - **Tests:** `test_z3ds_routes.py`, `test_dolphin_routes.py`, and CHD verify
   route tests must pass without edits (same URLs, same events).
-- Risk: medium; the SSE event names/shapes are load-bearing for the frontend —
+- Risk: medium; the SSE event names/shapes are load-bearing for the frontend,
   assert them explicitly.
 
-### Phase 7 — Generic `FileEntry` outputs + registry loop in `files.py`
+### Phase 7: Generic `FileEntry` outputs + registry loop in `files.py`
 - Add `convertible_by` / `outputs`; populate from `registry.all()`.
 - Keep legacy booleans (`has_chd`, `dolphin_ready`, …) populated **in
   parallel** so the frontend keeps working.
@@ -486,16 +486,16 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
   flags and new `outputs` agree.
 - Risk: low (additive on the model).
 
-### Phase 8 — Frontend descriptor table
+### Phase 8: Frontend descriptor table
 - Add `static/js/tools.js`; migrate the ~10 `app.js` branch sites + `api.js`
   to consume it.
 - Switch `FileList` badges to read `entry.outputs`/`convertible_by`.
-- **Tests:** manual UI pass (no JS test harness in repo) — browse, convert,
+- **Tests:** manual UI pass (no JS test harness in repo), browse, convert,
   verify, info modal, for each tool; confirm SSE progress + badges.
 - Risk: medium (no automated FE tests). Verify in a browser per
-  `ADDING_PLATFORMS_AND_TOOLS.md` §15 (no build step — edit JS directly).
+  `ADDING_PLATFORMS_AND_TOOLS.md` §15 (no build step, edit JS directly).
 
-### Phase 9 — Cleanup (optional, behavior-preserving)
+### Phase 9: Cleanup (optional, behavior-preserving)
 - Remove the now-unused legacy `FileEntry` booleans once the frontend reads
   `outputs` exclusively.
 - Delete the old `services/{chdman,dolphin,z3ds_compress}.py` shims; update

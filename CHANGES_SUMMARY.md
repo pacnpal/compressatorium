@@ -1,197 +1,26 @@
-# Changes Summary - Docker Compose & Deployment Audit
+# Changes summary: Docker Compose and deployment docs
 
-## Overview
-This PR adds Docker Compose configurations and performs a comprehensive deployment readiness audit for the CHD Converter Web UI.
+This records the change that added the Docker Compose configs and the deployment docs. It's a historical summary, not current reference. For the live docs, see [DEPLOYMENT.md](DEPLOYMENT.md) and [DOCKER-COMPOSE.md](DOCKER-COMPOSE.md).
 
----
+## What it added
 
-## 📦 New Files Created (7 files, 638+ lines)
+**Compose files**
+- `docker-compose.yml`: single-volume Web UI setup with a health check, a restart policy, and active resource limits.
+- `docker-compose.multi-volume.yml`: four game-library mounts as separate volumes.
+- `docker-compose.cli.yml`: CLI batch mode that exits after the run, with no restart policy.
 
-### Docker Compose Configurations (3 files)
+**Docs**
+- `DEPLOYMENT.md`: deployment guide covering security, the health check, tuning, and a checklist.
+- `DOCKER-COMPOSE.md`: quick reference for the compose files, common commands, and troubleshooting.
+- `README.md`: added the Docker Compose section and links to both guides.
 
-1. **docker-compose.yml** (38 lines)
-   - Single volume setup for basic usage
-   - Configured for Web UI mode
-   - Includes health checks and restart policy
-   - Commented resource limits ready to enable
+**Build**
+- `.dockerignore`: keeps the build context small.
 
-2. **docker-compose.multi-volume.yml** (40 lines)
-   - Multiple volume configuration example
-   - Pre-configured with 4 game library paths
-   - Ideal for organizing different console libraries
+## Security review at the time
 
-3. **docker-compose.cli.yml** (22 lines)
-   - CLI batch processing mode
-   - No restart policy (exits after conversion)
-   - Perfect for automated/scheduled conversions
+The code review found no hardcoded secrets, path-traversal protection in `files.py` and `convert.py`, command execution through `asyncio.create_subprocess_exec()` with no shell, file paths validated against the configured volumes, and archive extraction guarded by the same validation. Those still hold. See [DEPLOYMENT.md](DEPLOYMENT.md) for the current state.
 
-### Documentation (3 files)
+## Follow-ups since
 
-4. **DEPLOYMENT.md** (292 lines)
-   - Comprehensive deployment readiness audit
-   - Security assessment (path traversal, secrets, injection)
-   - Docker best practices review
-   - Production deployment checklist
-   - Recommendations for hardening
-
-5. **DOCKER-COMPOSE.md** (174 lines)
-   - Quick reference guide
-   - Common commands
-   - Troubleshooting tips
-   - Environment variables reference
-
-6. **README.md** (Updated)
-   - Added Docker Compose section
-   - Quick start instructions
-   - Links to deployment guides
-
-### Build Optimization
-
-7. **.dockerignore** (44 lines)
-   - Excludes unnecessary files from Docker builds
-   - Reduces build context size
-   - Improves build speed and caching
-
----
-
-## 🔒 Security Audit Results
-
-### ✅ Passed Security Checks
-
-- **No hardcoded secrets**: No passwords, API keys, or tokens in codebase
-- **Path traversal protection**: Implemented in both `files.py` and `convert.py`
-- **Command injection protection**: Uses `asyncio.create_subprocess_exec()` without shell
-- **Input validation**: All file paths validated against configured volumes
-- **Archive handling**: Secure extraction with proper path validation
-
-### ⚠️ Recommendations
-
-1. **Add non-root user** to Dockerfile (high priority)
-2. **Enable resource limits** in production deployments
-3. **Add security headers** for web UI
-4. **Configure HTTPS** if exposing externally
-5. **Consider rate limiting** for public deployments
-
----
-
-## ✅ Validation Results
-
-All Docker Compose files validated:
-- ✅ Valid YAML syntax
-- ✅ Service definitions correct
-- ✅ Required fields present (image, volumes, environment)
-- ✅ Health checks configured
-- ✅ Environment variables documented
-
----
-
-## 📊 Deployment Readiness Status
-
-**Overall Assessment: ✅ READY**
-
-### Development/Staging
-- **Status**: ✅ Ready to deploy immediately
-- **Action**: Run `docker-compose up -d`
-
-### Production
-- **Status**: ✅ Ready with recommendations
-- **Action**: Implement high-priority security recommendations first
-
----
-
-## 🚀 Quick Start
-
-### For Users
-
-**Basic setup:**
-```bash
-docker-compose up -d
-```
-Access at: http://localhost:8080
-
-**Multiple libraries:**
-```bash
-docker-compose -f docker-compose.multi-volume.yml up -d
-```
-
-**Batch conversion:**
-```bash
-docker-compose -f docker-compose.cli.yml up
-```
-
-### For Developers
-
-**Review deployment guide:**
-```bash
-cat DEPLOYMENT.md
-```
-
-**Quick reference:**
-```bash
-cat DOCKER-COMPOSE.md
-```
-
----
-
-## 📈 Impact
-
-- **Ease of deployment**: Significantly improved with ready-to-use compose files
-- **Documentation**: Comprehensive guides for all deployment scenarios
-- **Security**: Audited and documented with actionable recommendations
-- **Build optimization**: Faster builds with .dockerignore
-- **Production readiness**: Clear path to production deployment
-
----
-
-## 🔄 Next Steps (Optional)
-
-1. Set `PUID`/`PGID` in runtime configs where host ownership mapping is required
-2. Add security headers middleware
-3. Create production-specific compose file with TLS
-4. Add monitoring/metrics endpoint
-5. Set up automated security scanning
-
----
-
-## 📝 Files Modified
-
-- `README.md` - Added Docker Compose section with examples
-
-## 📦 Files Added
-
-- `.dockerignore` - Build optimization
-- `docker-compose.yml` - Single volume setup
-- `docker-compose.multi-volume.yml` - Multiple volumes
-- `docker-compose.cli.yml` - CLI mode
-- `DEPLOYMENT.md` - Comprehensive deployment guide
-- `DOCKER-COMPOSE.md` - Quick reference
-- `CHANGES_SUMMARY.md` - This file
-
----
-
-## ✅ Testing Performed
-
-- [x] YAML syntax validation (all files)
-- [x] Service definition validation
-- [x] Security audit (code review)
-- [x] Documentation review
-- [x] Path traversal testing (code review)
-- [x] Environment variables validation
-
----
-
-## 🎯 Problem Statement Addressed
-
-✅ **Created docker-compose.yml**
-- Three different configurations for various use cases
-- Well-documented and ready to use
-- Includes best practices and resource limits
-
-✅ **Audited repository for deployment readiness**
-- Comprehensive security audit completed
-- No critical issues found
-- Recommendations documented
-- Production deployment guide created
-- Deployment checklist provided
-
-**The repository is now deployment-ready!**
+Some items flagged here have since shipped. The runtime drops to a non-root `converter` user (`entrypoint.sh` plus `gosu`), and the compose files carry resource limits. What's still left to the operator: HTTPS and auth through a reverse proxy, security headers, rate limiting, and monitoring. DEPLOYMENT.md tracks the live list.

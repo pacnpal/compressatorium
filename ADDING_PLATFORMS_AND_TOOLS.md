@@ -3,9 +3,9 @@
 This is a developer guide for extending Compressatorium with **new conversion
 tools** (e.g. a brand-new compressor binary) and **new platforms / formats**
 (e.g. a new chdman create mode, or a new file type a tool can handle). It
-walks the full vertical slice — from the binary in the Docker image, through
+walks the full vertical slice, from the binary in the Docker image, through
 the Python service and job pipeline, the FastAPI routes, and finally the
-Preact web UI — and shows how to add a tool and a platform *in tandem*.
+Preact web UI, and shows how to add a tool and a platform *in tandem*.
 
 It is written against the codebase as it stands today, with three tools
 already wired up:
@@ -29,7 +29,7 @@ touching the same layers in the same order:
 
 ```
             ┌─────────────────── Web UI (Svelte 5 + Vite, under src/) ───────────────┐
-            │  src/lib/tools/registry.js: one TOOLS entry per tool — drives all UI   │
+            │  src/lib/tools/registry.js: one TOOLS entry per tool, drives all UI   │
             │  src/lib/api/endpoints.js:  HTTP / SSE / batch-verify client methods   │
             └───────────────────────────────────┬───────────────────────────────────┘
                                                  │  POST /api/jobs   (mode=...)
@@ -58,9 +58,9 @@ touching the same layers in the same order:
 
 Two supporting layers:
 
-- **`app/models.py`** — `ConversionMode` enum (every mode string lives here)
+- **`app/models.py`**, `ConversionMode` enum (every mode string lives here)
   and the Pydantic info models (`CHDInfo`, `DolphinDiscInfo`, `Z3DSInfo`).
-- **`app/config.py`** — `Settings` holds the binary path for each tool
+- **`app/config.py`**, `Settings` holds the binary path for each tool
   (`chdman_path`, `dolphin_tool_path`, `z3ds_compressor_path`).
 
 ### The tool-service contract
@@ -85,13 +85,13 @@ Each service module also exposes, at module scope:
 - a **module-level singleton instance** (e.g. `z3ds_compress_service = Z3DSCompressService()`).
 
 `ConversionCancelled` is defined once in `app/services/chdman.py:22` and
-imported by the other services — reuse it, don't define your own.
+imported by the other services, reuse it, don't define your own.
 
 ---
 
 ## 2. Two kinds of extension
 
-### Scenario A — a new platform on an *existing* tool
+### Scenario A: a new platform on an *existing* tool
 
 This is the lightweight case: the binary already ships and the service class
 already exists; you just need a new mode string or a new input extension.
@@ -106,14 +106,14 @@ Examples:
 
 Go to **§4**.
 
-### Scenario B — a brand-new tool (and usually a new platform with it)
+### Scenario B: a brand-new tool (and usually a new platform with it)
 
 A new binary, a new service module, a new `ConversionMode`, new info/verify
 endpoints, and new UI wiring. This is the z3ds-shaped case.
 
 Go to **§5**.
 
-### Scenario C — a tool and a platform in tandem
+### Scenario C: a tool and a platform in tandem
 
 This is the common real-world request: "support platform X, which needs new
 binary Y." It is just **Scenario B**, because adding the tool *is* what makes
@@ -151,7 +151,7 @@ detail for the non-obvious rows is in §8–§14.
 | # | File | What you do | When |
 |---|------|-------------|------|
 | 7 | `app/config.py` | Add a `<tool>_path` `Field` with an env alias (`<TOOL>_PATH`). | New tool |
-| 8 | `app/services/<tool>.py` | New service module — `convert`/`verify`/`verify_stream`/`info`/`is_convertible`/`get_output_path_for_mode`/`active_pids`, the `*_CONVERTIBLE_EXTENSIONS` set, `*_OUTPUT_FORMATS`, and the module singleton. | New tool |
+| 8 | `app/services/<tool>.py` | New service module, `convert`/`verify`/`verify_stream`/`info`/`is_convertible`/`get_output_path_for_mode`/`active_pids`, the `*_CONVERTIBLE_EXTENSIONS` set, `*_OUTPUT_FORMATS`, and the module singleton. | New tool |
 | 9 | `app/models.py` | Add `ConversionMode` value(s); add a `<Tool>Info` model; add `FileEntry` flags (`<tool>_convertible`, `has_<tool>`, `<tool>_ready`, `<tool>_path`). | New mode and/or tool |
 | 10 | `app/services/job_manager.py` | Import the service; add output-path branch in `_queue_job_locked`; add `_convert_service` branch in `_process_job`; add verify branch if delete-on-verify is supported. | New tool |
 | 11 | `app/routes/convert.py` | `_get_output_path` branch; extension validation in `create_job` **and** `create_batch_jobs`; `supports_delete_on_verify`; archive-input guard. | New mode and/or tool |
@@ -162,12 +162,12 @@ detail for the non-obvious rows is in §8–§14.
 | 16 | `app/services/dat_*.py` / `app/routes/dat.py` | Touch only if the platform participates in DAT (MAMERedump) hash-matching. | Rare |
 | 17 | `migrations/versions/*.py` | New Alembic migration **only** if you add DB-persisted columns/tables (use `scripts/new_migration.sh`). The verification/metadata stores are keyed by path and need no migration for a new tool. | If schema changes |
 
-### 3.3 Frontend (Svelte 5 + Vite — one new entry in the registry)
+### 3.3 Frontend (Svelte 5 + Vite: one new entry in the registry)
 
 | # | File | What you do | When |
 |---|------|-------------|------|
 | 18 | `src/lib/api/endpoints.js` | `get<Tool>Info`, `verify<Tool>`, `verifyBatch<Tool>` client methods alongside the existing ones. | New tool |
-| 19 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array (id, label, hint, verifyPrefix, sourceExts, verifyExts, modeGroups, groups, defaultMode, glyph, accent, modes, getInfo/verify/verifyBatch/productPath). Everything else — sidebar, workspace, badges, modals, verify dispatch, SSE URL building — looks up this registry. | New mode and/or tool |
+| 19 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array (id, label, hint, verifyPrefix, sourceExts, verifyExts, modeGroups, groups, defaultMode, glyph, accent, modes, getInfo/verify/verifyBatch/productPath). Everything else, sidebar, workspace, badges, modals, verify dispatch, SSE URL building, looks up this registry. | New mode and/or tool |
 | 20 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. | If new visual identity |
 
 ### 3.4 Tests
@@ -190,7 +190,7 @@ detail for the non-obvious rows is in §8–§14.
 | 30 | `.github/dependabot.yml` | Dependency bumps. | Only if adding a new ecosystem |
 | 31 | `pyproject.toml` | pylint + ruff config (Codacy reads this). | Respect line-length 100, py310 |
 | 32 | `.pylintrc`, `.prospector.yaml`, `.bandit` | Python lint/security (bandit flags `shell=True`, predictable tmp). | Follow the no-shell rule (§15) |
-| 33 | `eslint.config.js`, `.eslintrc.json`, `.jshintrc` | JS lint for `static/js`. | New JS must pass |
+| 33 | `eslint.config.js`, `.eslintrc.json`, `.jshintrc` | ESLint for the frontend (`src/`). | New JS and Svelte must pass |
 | 34 | `.stylelintrc.json`, `.csslintrc` | CSS lint. | If you edit CSS |
 | 35 | `.markdownlint.json` | Markdown lint. | If you add docs |
 | 36 | `.codacy.yml`, `.codacy/` | Codacy tool config/excludes. | Rarely |
@@ -206,18 +206,18 @@ detail for the non-obvious rows is in §8–§14.
 | 41 | `RELEASE_NOTES.md` | Changelog entry. | Every change |
 | 42 | `DEPLOYMENT.md`, `DOCKER-COMPOSE.md` | New env vars / volumes / tool requirements. | If deploy surface changes |
 | 43 | `walkthrough.md`, `CHANGES_SUMMARY.md` | Narrative docs, if you maintain them. | Optional |
-| 44 | `AGENTS.md` | Runbook — add a test/run note if workflow changes. | Optional |
-| 45 | `.github/copilot-instructions.md` | Repo AI guidance — update if conventions change. | Optional |
+| 44 | `AGENTS.md` | Runbook, add a test/run note if workflow changes. | Optional |
+| 45 | `.github/copilot-instructions.md` | Repo AI guidance, update if conventions change. | Optional |
 
 ---
 
-## 4. Scenario A — add a platform/mode to an existing tool
+## 4. Scenario A: add a platform/mode to an existing tool
 
 Worked example: add a hypothetical **`createcd_audio`** chdman mode (pretend
 it produces `.chd` with a platform-specific flag). The same pattern applies
 to any new chdman/dolphin sub-format.
 
-### 4.1 Add the mode to the enum — `app/models.py`
+### 4.1 Add the mode to the enum: `app/models.py`
 
 ```python
 class ConversionMode(str, Enum):
@@ -232,7 +232,7 @@ The string value is what travels over the API and what `job_manager` /
 prefix convention (`create*`, `extract*`, `dolphin_*`, `z3ds_compress`),
 because a lot of logic keys off these prefixes (see below).
 
-### 4.2 Teach the service the new mode — `app/services/chdman.py`
+### 4.2 Teach the service the new mode: `app/services/chdman.py`
 
 - If it needs special binary flags, branch in `_build_command`
   (`chdman.py:34`), mirroring the existing `createdvd` `-hs 2048` special case
@@ -243,28 +243,28 @@ because a lot of logic keys off these prefixes (see below).
 - If it accepts a new input extension, add it to
   `CHDMAN_CONVERTIBLE_EXTENSIONS` (`chdman.py:16`).
 
-### 4.3 Wire validation — `app/routes/convert.py`
+### 4.3 Wire validation: `app/routes/convert.py`
 
 `convert.py` keys off mode **prefixes** in several places. Because
 `create_job` / `create_batch_jobs` treat anything starting with `create`
 generically (e.g. the `.chd` input rejection at `convert.py:407`, output
 path via `_get_output_path` at `convert.py:100`), a new `create*` mode often
-needs **no new validation code** — it inherits the create-mode rules. Verify
+needs **no new validation code**, it inherits the create-mode rules. Verify
 the prefix-based helpers cover you:
 
-- `supports_delete_on_verify` (`convert.py:87`) — `create*` already returns True.
-- `_get_output_path` (`convert.py:100`) — routes to `chdman_service` by
+- `supports_delete_on_verify` (`convert.py:87`), `create*` already returns True.
+- `_get_output_path` (`convert.py:100`), routes to `chdman_service` by
   default, so a chdman mode is covered.
 
 If your mode breaks a prefix assumption, add an explicit branch.
 
-### 4.4 Surface it in the UI — `src/lib/tools/registry.js`
+### 4.4 Surface it in the UI: `src/lib/tools/registry.js`
 
 Append one `ModeEntry` to the chdman descriptor's `modes` array (the
 group's human label is already declared via `groups.create: 'Create'`):
 
 ```js
-// src/lib/tools/registry.js — inside the chdman TOOLS entry
+// src/lib/tools/registry.js, inside the chdman TOOLS entry
 modes: [
   // …existing entries…
   { mode: 'createcd_audio', kind: 'create', label: 'Create CD CHD (Audio)',
@@ -287,22 +287,22 @@ single + batch create) and `tests/test_chdman_annotations.py` if relevant.
 
 ---
 
-## 5. Scenario B/C — add a brand-new tool (with its platform)
+## 5. Scenario B/C: add a brand-new tool (with its platform)
 
 Worked example throughout: a fictional **`nszip`** tool that compresses
 Nintendo Switch `.nsp`/`.xci` dumps into `.nsz`/`.xcz`. Replace names as
 needed. This mirrors z3ds exactly.
 
-### 5.1 Install the binary — `Dockerfile`
+### 5.1 Install the binary: `Dockerfile`
 
 Three patterns exist in the current `Dockerfile`; pick the one that fits:
 
 - **Distro package** (chdman via `mame-tools`, pinned to a
-  `snapshot.debian.org` `.deb` with a SHA256 check — see `Dockerfile:38`).
-- **Distro package, best-effort** (dolphin-emu, amd64-only, non-fatal —
+  `snapshot.debian.org` `.deb` with a SHA256 check, see `Dockerfile:38`).
+- **Distro package, best-effort** (dolphin-emu, amd64-only, non-fatal,
   `Dockerfile:67`). A wrapper script is created at
   `/usr/local/bin/dolphin-tool` only if the binary exists (`Dockerfile:92`).
-- **Build from source in a builder stage** (z3ds — `Dockerfile:1-23`), then
+- **Build from source in a builder stage** (z3ds, `Dockerfile:1-23`), then
   copy the artifact into the runtime image (`Dockerfile:105`).
 
 For `nszip` built from source, add to the builder stage:
@@ -326,7 +326,7 @@ COPY --from=builder /tmp/nszip/nszip /usr/local/bin/nszip
 
 If the tool needs a runtime shared lib, add it to the runtime `apt-get
 install` list (`Dockerfile:53`). Note that `zstd` (the CLI) is already
-installed — z3ds's `verify_stream` shells out to `zstd -t`, so if your tool's
+installed, z3ds's `verify_stream` shells out to `zstd -t`, so if your tool's
 output is a zstd container you can reuse that.
 
 > Multi-arch: the image builds `linux/amd64` and `linux/arm64`
@@ -334,7 +334,7 @@ output is a zstd container you can reuse that.
 > arch automatically; a downloaded `.deb` needs a per-arch URL/SHA like the
 > `mame-tools` block (`Dockerfile:40`).
 
-### 5.2 Add the binary path setting — `app/config.py`
+### 5.2 Add the binary path setting: `app/config.py`
 
 Add next to the other tool paths (`config.py:111-121`):
 
@@ -347,7 +347,7 @@ nszip_path: str = Field(
 This lets ops override the path/env without code changes, and is what the
 service reads in `__init__`.
 
-### 5.3 Write the service module — `app/services/nszip.py`
+### 5.3 Write the service module: `app/services/nszip.py`
 
 This is the heart of the work. Copy `app/services/z3ds_compress.py` and
 adapt. The required shape (see the contract in §1):
@@ -434,10 +434,10 @@ class NszipService:
         return str(Path(output_dir) / filename) if output_dir else str(input_p.parent / filename)
 
 
-nszip_service = NszipService()   # module-level singleton — imported everywhere
+nszip_service = NszipService()   # module-level singleton, imported everywhere
 ```
 
-**Critical implementation rules** (all enforced by the existing services —
+**Critical implementation rules** (all enforced by the existing services,
 copy them, don't improvise):
 
 - **Never** use `shell=True` / string commands. Build an argv list and use
@@ -453,11 +453,11 @@ copy them, don't improvise):
   estimate from output-file growth like z3ds does (`z3ds_compress.py:251`),
   or emit a heartbeat with elapsed seconds like dolphin (`dolphin_tool.py:241`).
 - Respect `settings.chdman_nice` / `chdman_ioprio_*` (these knobs are shared
-  across all tools — they aren't chdman-specific despite the name).
+  across all tools, they aren't chdman-specific despite the name).
 - Track PIDs (`_track_pid`/`_untrack_pid`) so the debug heartbeat can report
   them.
 
-### 5.4 Add the mode + info model — `app/models.py`
+### 5.4 Add the mode + info model: `app/models.py`
 
 ```python
 class ConversionMode(str, Enum):
@@ -466,7 +466,7 @@ class ConversionMode(str, Enum):
     NSZIP_COMPRESS = "nszip_compress"        # NEW
     ...
 
-class NszipInfo(BaseModel):                  # NEW — shape it like Z3DSInfo (models.py:193)
+class NszipInfo(BaseModel):                  # NEW, shape it like Z3DSInfo (models.py:193)
     file: str
     size: int
     size_display: str
@@ -478,9 +478,9 @@ class NszipInfo(BaseModel):                  # NEW — shape it like Z3DSInfo (m
 
 If your tool extracts/decompresses too, add a second mode
 (e.g. `NSZIP_EXTRACT = "nszip_extract"`). Keep a consistent prefix
-(`nszip_`) — the job pipeline and routes pattern-match on it.
+(`nszip_`), the job pipeline and routes pattern-match on it.
 
-### 5.5 Dispatch in the job pipeline — `app/services/job_manager.py`
+### 5.5 Dispatch in the job pipeline: `app/services/job_manager.py`
 
 Two edits:
 
@@ -499,7 +499,7 @@ if output_path is None:
 ```
 
 (In practice `convert.py` almost always passes an explicit `output_path`, so
-this branch is a fallback — but wire it for correctness.)
+this branch is a fallback, but wire it for correctness.)
 
 **b) Service selection** in `_process_job` (`job_manager.py:1444`). Extend the
 `_convert_service` ladder:
@@ -523,7 +523,7 @@ source" feature for this tool, also extend the verify branch in
 because its verify lives outside the dolphin/chdman pair. Add an analogous
 branch calling `nszip_service.verify(...)`, or generalize the selector.
 
-### 5.6 Validation + output dispatch — `app/routes/convert.py`
+### 5.6 Validation + output dispatch: `app/routes/convert.py`
 
 - **Output path dispatch:** extend `_get_output_path` (`convert.py:100`):
 
@@ -555,7 +555,7 @@ if is_nszip:
             detail="nszip mode requires Switch dumps (.nsp, .xci)")
 ```
 
-- **Archive inputs:** controlled by one flag — set `allows_archive_input=True`
+- **Archive inputs:** controlled by one flag, set `allows_archive_input=True`
   on each `ModeSpec` whose input is a convertible *source* (see chdman create,
   dolphin, and z3ds). A single guard in `plan_job` rejects archive (`::`)
   members for any mode that leaves it `False` (the default), so you don't add
@@ -566,7 +566,7 @@ if is_nszip:
 - Import the convertible set + service at the top of `convert.py`
   (`convert.py:27` shows the z3ds import).
 
-### 5.7 Mark inputs convertible in listings — `app/routes/files.py`
+### 5.7 Mark inputs convertible in listings: `app/routes/files.py`
 
 `files.py` annotates each `FileEntry` with convertibility flags so the UI can
 badge rows and gate selection. Today it imports each tool's extension set
@@ -577,7 +577,7 @@ badge rows and gate selection. Today it imports each tool's extension set
 2. Add a model field. In `app/models.py` `FileEntry` (`models.py:42`) add
    `nszip_convertible: bool = False` and, if you show "output already exists"
    badges, `has_nszip: bool = False`, `nszip_ready: bool = False`,
-   `nszip_path: str | None = None` — paralleling the z3ds fields
+   `nszip_path: str | None = None`, paralleling the z3ds fields
    (`models.py:56`).
 3. In `scan_directory` (`files.py:150`) compute
    `is_nszip_convertible = ext in NSZIP_CONVERTIBLE_EXTENSIONS` and an
@@ -587,7 +587,7 @@ badge rows and gate selection. Today it imports each tool's extension set
 4. Do the same in `search_files` (`files.py:316` adds the extension to the
    "is this file interesting" test, and `:349` records the flags).
 
-### 5.8 Info + verify endpoints — `app/routes/info.py`
+### 5.8 Info + verify endpoints: `app/routes/info.py`
 
 Mirror the z3ds endpoints (`info.py:338-663`, `:1506`). Add:
 
@@ -604,30 +604,30 @@ Mirror the z3ds endpoints (`info.py:338-663`, `:1506`). Add:
 - Define `NSZIP_VERIFY_EXTENSIONS` / `NSZIP_INFO_EXTENSIONS` near the z3ds
   ones (`info.py:341`) and a `_is_nszip_verify_file` helper.
 
-No new router registration is needed — `info.router` is already mounted under
+No new router registration is needed, `info.router` is already mounted under
 `/api` in `app/main.py:285`.
 
-### 5.9 Frontend — `src/lib/api/endpoints.js`
+### 5.9 Frontend: `src/lib/api/endpoints.js`
 
 Add client methods next to the z3ds ones:
 
-- `getNszipInfo(path)` — like `getZ3DSInfo`.
-- `verifyNszip(path, {onProgress})` — single-file SSE, like `verify3DS`.
+- `getNszipInfo(path)`, like `getZ3DSInfo`.
+- `verifyNszip(path, {onProgress})`, single-file SSE, like `verify3DS`.
   Routes through `verifyEventSource` from `sse.js`.
-- `verifyBatchNszip(paths, {onProgress, onFileComplete, signal})` — like
+- `verifyBatchNszip(paths, {onProgress, onFileComplete, signal})`, like
   `verifyBatchZ3DS`. Routes through `runBatchVerify` + `sseFetchPost`
   (POST-body SSE) under the hood.
 
 `createJob` / `createBatchJobs` are generic over `mode`, so no change there
-— the registry's submit path just passes `mode: 'nszip_compress'`. The
+, the registry's submit path just passes `mode: 'nszip_compress'`. The
 verify URL is **derived automatically** from `verifyPrefix: 'nszip'` in
 the registry descriptor; no edits to any URL map.
 
-### 5.10 Frontend — `src/lib/tools/registry.js`
+### 5.10 Frontend: `src/lib/tools/registry.js`
 
 The frontend is a **Svelte 5 + Vite SPA** under `src/` and is driven by a
 single declarative tool registry (`src/lib/tools/registry.js`). The registry
-is the only place that knows tool identity — there are no `if (tool === ...)`
+is the only place that knows tool identity, there are no `if (tool === ...)`
 branches anywhere downstream. Sidebar, workspace, file badges, conversion
 config, info modal, verify dispatch, and SSE URL building all look up the
 registry. Adding `nszip` to the frontend is **one new entry** appended to
@@ -644,7 +644,7 @@ the `TOOLS` array:
   sourceExts: ['.nsp', '.xci'],
   verifyExts: ['.nsz', '.xcz'],
   modeGroups: ['nszip'],
-  // Human labels for any group ids the tool introduces — replaces
+  // Human labels for any group ids the tool introduces, replaces
   // the old hardcoded switch in registry.groupLabel.
   groups: { nszip: 'Nintendo Switch' },
   defaultMode: 'nszip_compress',
@@ -669,20 +669,20 @@ the `TOOLS` array:
 
 That's the entire frontend change. Specifically you do **NOT** need to:
 
-- Edit a `VERIFY_URL` map — `registry.verifyUrl(toolId, kind)` derives both
+- Edit a `VERIFY_URL` map, `registry.verifyUrl(toolId, kind)` derives both
   single and batch URLs from `verifyPrefix` (`''` for chdman, `'<segment>'`
   for everyone else).
-- Edit a `VALID_TOOLS` set — `ui.svelte.js` reads `registry.ids()`.
-- Edit a `groupLabel()` switch — group labels live on `tool.groups`.
-- Edit the Sidebar component — it iterates `registry.all()` and reads
+- Edit a `VALID_TOOLS` set, `ui.svelte.js` reads `registry.ids()`.
+- Edit a `groupLabel()` switch, group labels live on `tool.groups`.
+- Edit the Sidebar component, it iterates `registry.all()` and reads
   `t.glyph` / `t.accent` (with sensible fallbacks).
-- Edit the Workspace, file list, conversion config, or any modal — they all
+- Edit the Workspace, file list, conversion config, or any modal, they all
   call `registry.specFor(mode)`, `registry.forTool(id)`,
   `registry.modesByGroup(id)`, `registry.toolForVerifyPath(path)`, etc.
 
 The four `api.*` calls you reference (`getNszipInfo`, `verifyNszip`,
 `verifyBatchNszip`, and any others) need to exist in `src/lib/api/endpoints.js`
-— add them alongside the existing `getCHDInfo` / `verifyCHD` /
+, add them alongside the existing `getCHDInfo` / `verifyCHD` /
 `verifyBatchCHDs` patterns. Headers (`X-CHD-Action-Confirm`), error
 normalization, and SSE helpers (`sse.js`, `sseFetch.js`) all stay the same.
 
@@ -697,9 +697,9 @@ normalization, and SSE helpers (`sse.js`, `sseFetch.js`) all stay the same.
 
 Add, modeled on the existing suites:
 
-- `tests/test_nszip_routes.py` — info + verify endpoint behavior
+- `tests/test_nszip_routes.py`, info + verify endpoint behavior
   (copy `tests/test_z3ds_routes.py`).
-- `tests/test_nszip_service.py` — `convert`/`verify` happy path, cancel path,
+- `tests/test_nszip_service.py`, `convert`/`verify` happy path, cancel path,
   bad-extension rejection (copy `tests/test_z3ds_verification_service.py`).
 - Extend `tests/test_mode_parity_fixes.py` so single-job and batch-job
   validation stay in lockstep for the new mode.
@@ -719,7 +719,7 @@ installed.
 - Update `README.md` (tool table / supported formats) and `RELEASE_NOTES.md`.
 - Bump the version with `./scripts/sync-version.sh <new-version>` (keeps
   `.version`, `package.json`, `package-lock.json`, `RELEASE_NOTES.md` in
-  sync — see `AGENTS.md` §5).
+  sync, see `AGENTS.md` §5).
 
 ---
 
@@ -763,7 +763,7 @@ FRONTEND
     (id, label, hint, verifyPrefix, sourceExts, verifyExts, modeGroups,
     groups, defaultMode, glyph, accent, modes[], getInfo/verify/
     verifyBatch/productPath). Sidebar, workspace, badges, modals, and
-    verify dispatch all pick it up via registry lookups — no other
+    verify dispatch all pick it up via registry lookups, no other
     .svelte edits.
 
 TESTS + DOCS
@@ -786,7 +786,7 @@ PERIPHERAL (don't forget)
 
 ---
 
-## 8. The Docker image in depth — `Dockerfile`, `.dockerignore`, deps
+## 8. The Docker image in depth: `Dockerfile`, `.dockerignore`, deps
 
 The image is a two-stage multi-arch build (`debian:trixie-slim`).
 
@@ -821,7 +821,7 @@ layers clean (combine `apt-get update && install`, `rm -rf
 
 **`.dockerignore`**: `app/`, `static/`, `migrations/`, `entrypoint.sh`,
 `requirements.txt` are copied in. `tests/` and most `*.md` (except
-`README.md`) are excluded — so this guide and your service tests never enter
+`README.md`) are excluded, so this guide and your service tests never enter
 the image. If you reference a new top-level file from the Dockerfile, confirm
 it isn't ignored.
 
@@ -838,11 +838,11 @@ Drop your compiled binary there and point `<TOOL>_PATH` at it (or add it to
 
 ---
 
-## 9. Headless CLI mode — `entrypoint.sh`
+## 9. Headless CLI mode: `entrypoint.sh`
 
 `entrypoint.sh` supports `CHD_MODE=cli` (batch-convert a volume with no web
 UI; see `docker-compose.cli.yml`). **This path is independent of the Python
-app** — it shells out to `chdman` directly and currently only knows
+app**, it shells out to `chdman` directly and currently only knows
 `createcd`/`createdvd` over `*.gdi *.iso *.cue` (`entrypoint.sh:127-176`),
 validating `CHDMAN_MODE` against that allow-list (`entrypoint.sh:135`).
 
@@ -854,7 +854,7 @@ If your new tool/platform should be usable headlessly:
 - Skip-if-output-exists logic (`[[ -e "${i%.*}.<ext>" ]]`) should match your
   output suffix.
 
-If headless mode is out of scope, you can skip this — the web UI path
+If headless mode is out of scope, you can skip this, the web UI path
 (`exec uvicorn main:app …`, `entrypoint.sh:197`) already dispatches your tool
 via the Python pipeline.
 
@@ -869,7 +869,7 @@ The same file also handles **PUID/PGID remap** and the privilege drop to
 |----------|---------|-------------------------|
 | `docker-image.yml` | **release published** | Builds/pushes multi-arch image to Docker Hub + GHCR, runs **hadolint** (Dockerfile must pass), **Trivy** CRITICAL/HIGH scan (a vulnerable new dep can fail this), generates SBOM + provenance attestation, and **publishes `README.md` as the Docker Hub description**. Also auto-syncs `package.json` from the release tag. |
 | `codacy.yml` | push, PR, weekly | Runs the Codacy CLI (ruff, eslint, pylint, bandit, etc.). New Python/JS must lint clean. Honors `pyproject.toml`, `.pylintrc`, `eslint.config.js`, `.codacy.yml`. |
-| `codeql.yml` | push, weekly | CodeQL SAST for **python** and **javascript-typescript** (`codeql.yml:30-32`). New code is scanned automatically — no config change, but don't introduce flagged patterns (e.g. command injection — another reason for the no-`shell=True` rule). |
+| `codeql.yml` | push, weekly | CodeQL SAST for **python** and **javascript-typescript** (`codeql.yml:30-32`). New code is scanned automatically, no config change, but don't introduce flagged patterns (e.g. command injection, another reason for the no-`shell=True` rule). |
 | `label.yml` + `labeler.yml` | PR | Path-based auto-labels. Add a glob if you want your area labeled. |
 | `stale.yml` | schedule | Marks stale issues/PRs. Irrelevant. |
 | `dependabot.yml` | schedule | Dependency PRs. Add an ecosystem entry only if you introduce a new manifest. |
@@ -880,7 +880,7 @@ Key takeaways for a contributor:
   builds `linux/amd64,linux/arm64` and tags `latest`/`beta` accordingly.
 - **Trivy can block a release** if a new system/python package pulls a
   CRITICAL/HIGH CVE (`ignore-unfixed: true` softens this). Prefer pinned,
-  patched packages — the `mame-tools` snapshot pin is the model.
+  patched packages, the `mame-tools` snapshot pin is the model.
 - **Dockerfile changes must pass hadolint** locally before you push
   (`hadolint Dockerfile`).
 
@@ -891,11 +891,11 @@ Key takeaways for a contributor:
 Run these before pushing (they mirror Codacy):
 
 ```bash
-cd /home/user/compressatorium
-ruff check app tests            # style/lint — config in pyproject.toml ([tool.ruff], py310)
+# from the repo root
+ruff check app tests            # style/lint, config in pyproject.toml ([tool.ruff], py310)
 pylint app                      # config in .pylintrc / pyproject.toml ([tool.pylint])
 pytest -q tests                 # full suite (binaries are stubbed in conftest)
-npx eslint static/js            # JS lint — eslint.config.js
+npm run lint                    # ESLint over JS + .svelte, eslint.config.js
 hadolint Dockerfile             # if you touched the Dockerfile
 ```
 
@@ -962,7 +962,7 @@ but matter when your *platform* is a disc image processed by chdman.
   `registry.archive_input_extensions()` (the union of `input_extensions` for
   every mode with `allows_archive_input=True`), with the module-level
   `CONVERTIBLE_EXTENSIONS` kept only as a fallback. So once your mode opts in
-  via `allows_archive_input=True`, its members are surfaced automatically —
+  via `allows_archive_input=True`, its members are surfaced automatically,
   there's nothing to edit here. You still own extraction + related-file
   handling in `job_manager._process_job` for multi-file formats (single-file
   inputs like `.3ds`/`.rvz` need nothing extra). Output paths for archive
@@ -1023,13 +1023,14 @@ DEPLOYMENT.md / DOCKER-COMPOSE.md    new env var, if any
   `MAX_VERIFY_CONCURRENCY` via `workload_limiter` (`info.py:55`). Always
   acquire/release the token in verify endpoints, or you'll bypass
   backpressure.
-- **Reuse `ConversionCancelled`** from `services.chdman` — the pipeline's
+- **Reuse `ConversionCancelled`** from `services.chdman`, the pipeline's
   cancel handling (`job_manager.py:1782`) catches that specific class.
 - **`MAX_CONCURRENT_JOBS` defaults to 1.** Conversions are I/O-heavy; the
   dispatcher runs them serially unless host capacity is validated
   (`AGENTS.md` note). Don't assume parallelism in a service.
-- **No frontend build step.** `static/js/*.js` are served as-is. ESLint
-  config exists (`eslint.config.js`) — keep the style consistent.
+- **The frontend has a build step.** The Svelte 5 + Vite source lives in
+  `src/`; `npm run build` emits the bundle into `static/`. Run `npm run lint`
+  (ESLint flat config in `eslint.config.js`) and keep the style consistent.
 - **The image runs as uid 999 (`converter`).** Binaries must be executable by
   a non-root user; install them to a world-readable path like
   `/usr/local/bin` as the existing tools do.

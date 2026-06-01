@@ -1,20 +1,20 @@
 # Compressatorium
 
-> **Fork Notice:** This project is a fork of MarcTV's original Docker CHD Converter project with an added Web UI and additional features. Thanks to [MarcTV](https://github.com/MarcTV) for the original CLI-based converter!
+> **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and two more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), and **z3ds_compressor** (Nintendo 3DS).
+A disc image converter that wraps three tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), and **z3ds_compressor** (Nintendo 3DS). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
-## ✨ Features
+## Features
 
-* **🎮 Three Primary Tools:** Choose between CHDMAN, Dolphin, or 3DS compression
-* **🌐 Web UI** for easy file browsing and conversion with intuitive tool selection
-* **📁 Nested directories** and **compressed archives** (ZIP, 7z, RAR) support
-* **💾 Multiple volume mounts** for organizing different game libraries
-* **🔄 Smart file detection** - automatically identifies convertible files for each tool
-* **✅ Existing output detection** with skip/rename/overwrite options
-* **🗑️ Delete-on-verify** - optional automatic source removal after successful conversion
-* **📊 Progress tracking** with real-time job queue monitoring
-* **🔍 File information** - view metadata for CHD, Dolphin, and 3DS files
+* **Three tools in one.** CHDMAN, Dolphin, or 3DS compression, chosen per job.
+* **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
+* **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
+* **Multiple volume mounts** so you can keep separate game libraries separate.
+* **File detection** that works out which files each tool can convert.
+* **Existing-output detection** with skip, rename, or overwrite.
+* **Delete-on-verify.** Optionally remove the source after a conversion verifies. Off by default.
+* **Progress tracking** through a live job queue.
+* **File info** for CHD, Dolphin, and 3DS files.
 
 ### Supported Conversions
 
@@ -24,11 +24,11 @@ Multi-tool game disc image converter supporting **CHDMAN** (MAME), **dolphin-too
 | **Dolphin** | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
 
-> **Archive inputs:** every input format above can be converted directly from inside a ZIP, 7z, or RAR archive — including 3DS ROMs and Dolphin disc images. Browse into the archive, pick a member, and convert. (CHDMAN extract/copy modes are the exception: they act on a finished `.chd`, which is an output, not a convertible source.)
+> **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs and Dolphin disc images. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
 
 ### MAME Redump DAT Integration
 
-Compressatorium supports one-click sync of [MAME Redump](https://github.com/MetalSlug/MAMERedump) DAT files (Logiqx XML format) to verify that your compressed files match known-good Redump hashes. This enables hash-based matching with tools like [Hasheous](https://github.com/gaseous-project/hasheous) and [RomM](https://github.com/rommapp/romm).
+Compressatorium can sync [MAME Redump](https://github.com/MetalSlug/MAMERedump) DAT files (Logiqx XML) in one click and check your compressed files against known-good Redump hashes. The same hashes let tools like [Hasheous](https://github.com/gaseous-project/hasheous) and [RomM](https://github.com/rommapp/romm) match your library.
 
 - **One-click sync**: Click "Sync from MAME Redump" in the DAT panel to download all ~69 DATs automatically from GitHub
 - **Auto-sync**: Set `MAMEREDUMP_AUTO_SYNC=true` to sync DATs on container startup when none are loaded
@@ -83,7 +83,7 @@ Or pin to a specific pre-release (recommended if you want to control when you up
 docker pull pacnpal/compressatorium:3.7.0-beta-3
 ```
 
-> **⚠️ Warning — beta builds can cause data loss.** Pre-releases may contain unfinished migrations, experimental conversion logic, or breaking changes to the job database. Running a beta against a database populated by a stable release can corrupt or irreversibly migrate it, and downgrading back to `:latest` afterwards is **not supported**. Before pulling `:beta`:
+> **Warning: beta builds can cause data loss.** Pre-releases may carry unfinished migrations, experimental conversion logic, or breaking changes to the job database. Running a beta against a database that a stable release created can corrupt it or migrate it past the point of return, and downgrading back to `:latest` afterwards is **not supported**. Before you pull `:beta`:
 >
 > - Back up your SQLite database (`compressatorium.db` in your data volume) and any in-flight output files.
 > - Prefer a separate data volume for beta testing rather than pointing a beta container at your production volume.
@@ -101,7 +101,7 @@ When you open the Web UI, you'll see three tool options at the top:
 * **Dolphin** - For GameCube/Wii disc image conversions
 * **3DS** - For compressing Nintendo 3DS ROMs
 
-**Choose the tool that matches your files.** The interface will automatically show only relevant modes and file types.
+**Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
 
 ### 2. Browse and Select Files
 
@@ -121,7 +121,7 @@ When you open the Web UI, you'll see three tool options at the top:
 
 ## Web UI Mode (Default)
 
-The easiest way to use CHD Converter is through the web interface:
+The web interface is the easiest way to run Compressatorium:
 
 ```bash
 docker run -d \
@@ -170,19 +170,19 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 |-------|------|
 | ![Workspace · CHDMAN, light](docs/screenshots/workspace-chdman-light.png) | ![Workspace · CHDMAN, dark](docs/screenshots/workspace-chdman-dark.png) |
 
-**Batch selection** — tick multiple files and the convert panel arms itself, showing how many sources are queued and a one-click **Start conversion**.
+**Batch selection.** Tick multiple files and the convert panel arms itself, showing how many sources are queued and a one-click **Start conversion**.
 
 | Light | Dark |
 |-------|------|
 | ![Batch selection, light](docs/screenshots/workspace-batch-light.png) | ![Batch selection, dark](docs/screenshots/workspace-batch-dark.png) |
 
-**Dolphin (GameCube / Wii)** — compress discs to RVZ, WIA, or GCZ with a codec and compression-level picker.
+**Dolphin (GameCube / Wii).** Compress discs to RVZ, WIA, or GCZ, with a codec and compression-level picker.
 
 | Light | Dark |
 |-------|------|
 | ![Dolphin tool, light](docs/screenshots/workspace-dolphin-light.png) | ![Dolphin tool, dark](docs/screenshots/workspace-dolphin-dark.png) |
 
-**3DS** — compress `.cci`, `.cia`, and `.3ds` ROMs with z3ds_compressor.
+**3DS.** Compress `.cci`, `.cia`, and `.3ds` ROMs with z3ds_compressor.
 
 | Light | Dark |
 |-------|------|
@@ -228,7 +228,7 @@ The interface reflows cleanly across breakpoints:
 
 ![Mobile View](docs-mobile-view.png)
 
-The mobile interface features a card-based layout with touch-friendly controls (44-48px minimum touch targets), full-width inputs, and optimized spacing for better usability on small screens.
+On small screens the file list switches to a card layout. Controls use 44 to 48px touch targets, inputs go full width, and the spacing opens up so it stays usable on a phone.
 
 ### Features
 
@@ -243,7 +243,7 @@ The mobile interface features a card-based layout with touch-friendly controls (
 - Archives extract temporarily during conversion, then clean up automatically
 - When a `.cue`/`.gdi` is present in the same archive folder, `.bin` entries are suppressed and batch jobs are deduplicated by output path to avoid stalled conversions.
 - Archive listings include safety limits (max entries/size) and expose truncation metadata when limits are hit.
-- **Any convertible source inside an archive can be converted** — CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), and 3DS (`.cci`/`.cia`/`.3ds`). Archive members are surfaced for whichever tool accepts them, exactly like on-disk files.
+- **Any convertible source inside an archive can be converted.** That covers CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), and 3DS (`.cci`/`.cia`/`.3ds`). Archive members show up for whichever tool accepts them, exactly like on-disk files.
 - The only inputs that can't come from an archive are CHDMAN extract/copy modes, which operate on a finished `.chd` (an output, not a convertible source).
 
 **ISO Handling & Dolphin Tools (GameCube/Wii)**
@@ -264,7 +264,7 @@ The mobile interface features a card-based layout with touch-friendly controls (
 **Bulk Operations**
 - **Bulk Delete**: Delete multiple selected files at once
 - **Bulk Verify**: Verify integrity of multiple CHD + Dolphin images simultaneously
-- Smart categorization showing source files with/without CHD backups
+- Sorts sources by whether they already have a CHD backup
 - Warnings for files without verified CHD backups before deletion
 
 **Verification**
@@ -280,11 +280,11 @@ The mobile interface features a card-based layout with touch-friendly controls (
 - SHA1 and Data SHA1 checksums displayed
 - Raw chdman output available for advanced inspection
 - Dolphin disc info shows game ID, region, format, compression, and raw output
-- **Game ID & Title** — PS1, PS2, PSP, and Dreamcast game serials are extracted from CHD sector data (SYSTEM.CNF, PARAM.SFO, IP.BIN) and displayed in the info modal; human-readable titles are shown when available (e.g. "Patapon", "DEAD OR ALIVE 2")
+- **Game ID and title.** PS1, PS2, PSP, and Dreamcast serials are read from CHD sector data (SYSTEM.CNF, PARAM.SFO, IP.BIN) and shown in the info modal, with human-readable titles when available (for example "Patapon", "DEAD OR ALIVE 2")
 
 **CHD Metadata Cache**
 - Background metadata scan with CD/DVD badges
-- **Retroactive game ID tagging** — scan embeds `GAME` and `NAME` metadata tags into existing CHDs that don't have them yet; future scans skip already-tagged files
+- **Retroactive game ID tagging.** The scan writes `GAME` and `NAME` tags into existing CHDs that lack them. Later scans skip files that are already tagged
 - "Scan Metadata" and "Force Rescan" actions to refresh cached metadata
 - Cache stored in `/config/chd_metadata.json`
 
@@ -381,7 +381,7 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
 | `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo for DAT sync |
 | `MAMEREDUMP_AUTO_SYNC` | `false` | Auto-sync DATs on startup if none loaded |
-| `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub PAT — raises API rate limit from 60 to 5 000 req/hr for DAT sync |
+| `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub PAT that raises the API rate limit from 60 to 5,000 req/hr for DAT sync |
 
 ### REST API Endpoints
 
@@ -608,7 +608,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHD_VERIFY_PROGRESS_TIMEOUT` | `0` | Timeout in seconds without verify output (0 disables) |
 | `LOGLEVEL` | `INFO` | Log verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
 | `LOG_PATH` | (none) | Path to log file (logs to stdout only if unset) |
-| `LOG_COLOR` | `always` | ANSI-color stdout logs by level. Values: `always` (default — colored `docker logs` out of the box), `auto` (TTY + no `NO_COLOR`), `never`. File logs are never colored. |
+| `LOG_COLOR` | `always` | ANSI-color stdout logs by level. Values: `always` (default, colored `docker logs` out of the box), `auto` (TTY and no `NO_COLOR`), `never`. File logs are never colored. |
 | `CHD_DEBUG_HEARTBEAT` | `30` | Maintenance loop interval in seconds |
 | `CHD_DEBUG_PROGRESS_INTERVAL` | `30` | Debug progress log interval in seconds |
 | `CHD_DEBUG_PROGRESS_TIMEOUT` | `300` | Debug progress timeout in seconds |
@@ -638,7 +638,7 @@ The `/config` volume is **required** and must be mounted for the application to 
 
 #### First-run migration from JSON
 
-On first startup after upgrading from a JSON-backed install, the app automatically imports `dat_store.json`, `verified_chds.json`, `chd_metadata.json`, and `dat_sync.json` into the new SQLite database. The originals are renamed to `<name>.migrated.bak` — **never deleted** — so you can always roll back. Migration is transactional, idempotent, and validates row counts; a failed or corrupt file is quarantined (`.corrupt` suffix) without blocking the other stores. These migration guarantees are described above in this section.
+On the first startup after upgrading from a JSON-backed install, the app imports `dat_store.json`, `verified_chds.json`, `chd_metadata.json`, and `dat_sync.json` into the new SQLite database. The originals are renamed to `<name>.migrated.bak` and never deleted, so you can always roll back. Migration is transactional, idempotent, and checks row counts. A failed or corrupt file is quarantined with a `.corrupt` suffix and the other stores still migrate.
 
 #### Schema changes (for developers)
 
@@ -656,7 +656,7 @@ scripts/new_migration.sh "add foo column to dats"
 # commit the new migration alongside your ORM changes
 ```
 
-The test `test_no_model_drift_after_upgrade` fails if `Base.metadata` drifts from the migration chain — it runs on every test run and catches forgotten migrations.
+The test `test_no_model_drift_after_upgrade` fails if `Base.metadata` drifts from the migration chain. It runs on every test run and catches forgotten migrations.
 
 ### Ephemeral Runtime Data
 
@@ -767,7 +767,7 @@ For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Frontend Development
 
-The Web UI is a **Svelte 5 + Vite** single-page app. Source lives under `src/`, the build pipeline emits `index.html` plus hashed assets into `static/`, and FastAPI serves the result via the existing `/static` mount and root `FileResponse`. Source code follows the architecture documented in `DESIGN_tool_plugin_architecture.md` §3.7 — a declarative tool registry (`src/lib/tools/registry.js`) drives every tool-specific decision so adding a new converter is one entry in `TOOLS`, no `if (tool === ...)` branches anywhere.
+The Web UI is a **Svelte 5 + Vite** single-page app. Source lives under `src/`, the build emits `index.html` plus hashed assets into `static/`, and FastAPI serves the result through the `/static` mount and a root `FileResponse`. The code follows the architecture in `DESIGN_tool_plugin_architecture.md` §3.7. A declarative tool registry (`src/lib/tools/registry.js`) drives every tool-specific decision, so adding a converter is one entry in `TOOLS` with no `if (tool === ...)` branches anywhere.
 
 ### Quick start
 
@@ -789,26 +789,26 @@ Vite proxies `/api` and `/health` to `http://localhost:8080`, so the dev server 
 ```bash
 npm run build       # Vite production build → static/index.html + static/assets/*
 npm run preview     # Serve the built bundle locally on :4173
-npm run lint        # ESLint (JS + .svelte) — flat config in eslint.config.js
+npm run lint        # ESLint (JS + .svelte), flat config in eslint.config.js
 ```
 
 ### Architecture at a glance
 
-* `src/App.svelte` — root shell: sidebar + topbar + routed view, error boundary, focus management on route change, skip-to-content link, mounts `<ModeWatcher />` (theme) and `<Toaster />` (notifications).
-* `src/lib/stores/*.svelte.js` — class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
-* `src/lib/api/` — REST client + auto-reconnecting EventSource (`sse.js`) + POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state; no separate REST round-trip needed.
-* `src/lib/tools/registry.js` — every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, **compression codecs / style / level range**, API bindings). Adding a 4th tool: one new entry + the backend plugin. Helpers like `registry.allFilterableExts()` keep UI surfaces (file-list filter dropdown, conversion mode dropdown, compression picker, etc.) automatically extended.
-* `src/lib/components/panels/` — `VolumeList`, `Breadcrumb`, `FileList`, `FileRow`, `RowActionsMenu` (file browser); `ModeSelect`, `CompressionPicker`, `ConvertPanel` (conversion config); `JobRow`, `JobsPanel` (queue / completed / failed tabs with global Cancel-all / Clear / stuck-state recovery).
-* `src/lib/components/modals/` — `BaseModal` (bits-ui Dialog wrapper), `ConfirmModal` (canonical confirm/cancel), then `BulkVerifyModal`, `DuplicateModal`, `DeleteModal`, `BulkDeleteModal`, `RenameModal`, `CHDInfoModal`, `CancelAllJobsModal`, `ClearDoneModal`. Each mounts in `App.svelte` and self-renders against a `ui` store target.
-* `src/lib/components/dashboard/` — `StatCard` wrapper + `QueueSummaryCard`, `VolumeOverviewCard`, `RecentConversionsCard`, `VerificationStatusCard`, `QuickToolsCard`. QuickToolsCard iterates `registry.all()` — adding a tool auto-adds a tile.
-* `src/styles/tokens.css` — semantic design tokens keyed by `:root` (light defaults) and `:root.dark` (dark overrides). No hex colors live outside this file.
+* `src/App.svelte`: the root shell. Sidebar, topbar, routed view, error boundary, focus management on route change, skip-to-content link, and the `<ModeWatcher />` (theme) and `<Toaster />` (notifications) mounts.
+* `src/lib/stores/*.svelte.js`: class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
+* `src/lib/api/`: REST client, auto-reconnecting EventSource (`sse.js`), and a POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state, so there's no separate REST round-trip.
+* `src/lib/tools/registry.js`: every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, **compression codecs / style / level range**, API bindings). Adding a fourth tool is one new entry plus the backend plugin. Helpers like `registry.allFilterableExts()` keep UI surfaces (file-list filter dropdown, conversion mode dropdown, compression picker, and so on) extended automatically.
+* `src/lib/components/panels/`: `VolumeList`, `Breadcrumb`, `FileList`, `FileRow`, `RowActionsMenu` (file browser); `ModeSelect`, `CompressionPicker`, `ConvertPanel` (conversion config); `JobRow`, `JobsPanel` (queue / completed / failed tabs with global Cancel-all / Clear / stuck-state recovery).
+* `src/lib/components/modals/`: `BaseModal` (bits-ui Dialog wrapper), `ConfirmModal` (canonical confirm/cancel), then `BulkVerifyModal`, `DuplicateModal`, `DeleteModal`, `BulkDeleteModal`, `RenameModal`, `CHDInfoModal`, `CancelAllJobsModal`, `ClearDoneModal`. Each mounts in `App.svelte` and self-renders against a `ui` store target.
+* `src/lib/components/dashboard/`: `StatCard` wrapper plus `QueueSummaryCard`, `VolumeOverviewCard`, `RecentConversionsCard`, `VerificationStatusCard`, `QuickToolsCard`. QuickToolsCard iterates `registry.all()`, so adding a tool auto-adds a tile.
+* `src/styles/tokens.css`: semantic design tokens keyed by `:root` (light defaults) and `:root.dark` (dark overrides). No hex colors live outside this file.
 
 ### Runtime dependencies
 
-* [`@lucide/svelte`](https://lucide.dev) — official Lucide icon library for Svelte 5 runes, tree-shakeable per icon.
-* [`bits-ui`](https://bits-ui.com) — headless accessibility primitives (Dialog, DropdownMenu, ContextMenu, Tooltip, etc.). Used incrementally as panels need them; per-component import keeps bundle costs minimal.
-* [`svelte-sonner`](https://svelte-sonner.vercel.app) — toast notifications. Call `toast.success(...)` / `toast.error(...)` / `toast.promise(...)` from anywhere; the `<Toaster />` in `App.svelte` is the surface.
-* [`mode-watcher`](https://mode-watcher.sveco.dev) — light/dark/system mode management with localStorage persistence, system-preference tracking, and cross-tab sync. Applies `.dark` class to `<html>`; a matching inline script in `index.html` prevents FOUC on first paint.
+* [`@lucide/svelte`](https://lucide.dev): the official Lucide icon library for Svelte 5 runes, tree-shakeable per icon.
+* [`bits-ui`](https://bits-ui.com): headless accessibility primitives (Dialog, DropdownMenu, ContextMenu, Tooltip, and so on). Pulled in per component as panels need them, which keeps the bundle small.
+* [`svelte-sonner`](https://svelte-sonner.vercel.app): toast notifications. Call `toast.success(...)` / `toast.error(...)` / `toast.promise(...)` from anywhere. The `<Toaster />` in `App.svelte` is the surface.
+* [`mode-watcher`](https://mode-watcher.sveco.dev): light/dark/system mode with localStorage persistence, system-preference tracking, and cross-tab sync. It adds the `.dark` class to `<html>`, and a matching inline script in `index.html` prevents a flash of the wrong theme on first paint.
 
 ### Docker / CI
 
@@ -826,4 +826,4 @@ This project is a fork of the original Docker CHD Converter project by [MarcTV](
 **Additional Tools:**
 - [z3ds_compress](https://github.com/energeticokay/z3ds_compress) by [energeticokay](https://github.com/energeticokay) - Nintendo 3DS ROM compression
 
-Thank you MarcTV and energeticokay for creating and sharing these tools!
+Thanks to MarcTV and energeticokay for building and sharing these tools.
