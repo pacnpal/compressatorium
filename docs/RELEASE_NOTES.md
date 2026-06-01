@@ -8,6 +8,7 @@
 
 - **A fourth tool: Switch.** Compress `.nsp`/`.xci` dumps to `.nsz`/`.xcz` and back, using [nsz](https://github.com/nicoboss/nsz) (the Tinfoil/DBI-compatible standard). Two modes: `nsz_compress` and `nsz_decompress`. Available in the Web UI and the REST API, with live progress, single + batch verify, and file-info.
 - **Bring your own keys.** Switch content is encrypted, so nsz decrypts it (losslessly, reversibly) before compressing. The app ships no keys: mount your own `prod.keys` and set `SWITCH_KEYS` to the directory holding it (or let the app best-effort find it in `~/.switch` or your volumes). Missing keys fail the job with a clear message instead of crashing, and hide the Switch tool from the UI entirely. Key file names are git-ignored and never baked into the image or logged.
+- **Per-job compression, remembered.** Switch Compress exposes a layout choice (Solid = smaller, Block = random access) and a zstandard level (1-22) per job, threaded through to nsz. Your choice is saved server-side per tool (new `GET`/`PUT /api/preferences/conversion`) so it persists across sessions and browsers — and the same mechanism now remembers chdman and Dolphin compression settings too.
 
 #### Internal
 
