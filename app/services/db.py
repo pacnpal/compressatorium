@@ -131,6 +131,20 @@ class Verification(Base):
     verified_at = Column(String, nullable=False, default="")
 
 
+class Preference(Base):
+    """Generic key/value store for app preferences (UI layout, etc.).
+
+    A single row per key holds an arbitrary JSON blob.  Kept generic so
+    future preferences reuse the same table instead of growing a column
+    per setting.
+    """
+
+    __tablename__ = "preferences"
+    key = Column(String, primary_key=True)
+    value = Column(JSON, nullable=False, default=dict)
+    updated_at = Column(String, nullable=False, default="")
+
+
 # Additional index on dat_matches.dat_id so cascade-on-DAT-delete is
 # O(rows-in-that-DAT) rather than a full table scan.
 Index("ix_dat_matches_dat_id", DATMatch.dat_id)

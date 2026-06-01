@@ -11,6 +11,8 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import Splitter from '$lib/components/ui/Splitter.svelte';
+  import { layout } from '$lib/stores/layout.svelte.js';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import FolderSearch from '@lucide/svelte/icons/folder-search';
@@ -33,6 +35,23 @@
   const filter = $derived(fileBrowser.filter);
   const loading = $derived(fileBrowser.loading);
   const searching = $derived(fileBrowser.searching);
+
+  // Resizable table columns, stored per tool. `cols` carries the
+  // effective widths (defaults filled in); `nameSet` is the explicit
+  // Name width if the user has dragged it — when unset, Name has no fixed
+  // width so it absorbs the table's slack. The table min-width forces the
+  // horizontal scrollbar once the fixed columns outgrow the container.
+  const colTool = $derived(ui.workspaceTool);
+  const cols = $derived(layout.columnsFor(colTool));
+  const nameSet = $derived(layout.columns[colTool]?.name ?? null);
+  const tableMinWidth = $derived(32 + 40 + cols.size + cols.ext + cols.status + (nameSet ?? 160));
+
+  // Snapshot of a column's width at drag start; the move handler applies
+  // the cumulative delta on top of it.
+  let dragColStart = 0;
+  function startColDrag(col) {
+    dragColStart = cols[col];
+  }
   const error = $derived(fileBrowser.entriesError);
   const allSelected = $derived(fileBrowser.allVisibleSelected);
   const selectedCount = $derived(fileBrowser.selectedFiles.size);
@@ -275,7 +294,28 @@
     {/if}
   {:else}
     <div class="table-wrap">
-      <table class="table" aria-label={searchMode ? 'Search results' : 'Files'}>
+      {#snippet colHandle(col, label)}
+        <span class="col-resize">
+          <Splitter
+            variant="column"
+            label={label}
+            value={cols[col]}
+            onstart={() => startColDrag(col)}
+            onmove={(d) => layout.setColumnWidth(colTool, col, dragColStart + d)}
+            onstep={(d) => layout.setColumnWidth(colTool, col, cols[col] + d)}
+            onreset={() => layout.resetColumn(colTool, col)}
+          />
+        </span>
+      {/snippet}
+      <table class="table" style="min-width: {tableMinWidth}px;" aria-label={searchMode ? 'Search results' : 'Files'}>
+        <colgroup>
+          <col class="col-sel" />
+          <col style={nameSet ? `width: ${nameSet}px` : undefined} />
+          <col style="width: {cols.size}px" />
+          <col style="width: {cols.ext}px" />
+          <col style="width: {cols.status}px" />
+          <col class="col-actions" />
+        </colgroup>
         <thead>
           <tr>
             <th class="sel">
@@ -286,22 +326,28 @@
                 aria-label={allSelected ? 'Deselect all' : 'Select all visible'}
               />
             </th>
-            <th aria-sort={sortAria('name')}>
+            <th class="resizable" aria-sort={sortAria('name')}>
               <button type="button" class="th-button" onclick={() => fileBrowser.setSort('name')}>
                 Name {#if sortBy === 'name'}{@const Icon = sortIcon('name')}<Icon size={12} class="sort-i" />{:else}<ChevronsUpDown size={12} class="sort-i muted" />{/if}
               </button>
+              {@render colHandle('name', 'Resize Name column')}
             </th>
-            <th class="size" aria-sort={sortAria('size')}>
+            <th class="size resizable" aria-sort={sortAria('size')}>
               <button type="button" class="th-button" onclick={() => fileBrowser.setSort('size')}>
                 Size {#if sortBy === 'size'}{@const Icon = sortIcon('size')}<Icon size={12} class="sort-i" />{:else}<ChevronsUpDown size={12} class="sort-i muted" />{/if}
               </button>
+              {@render colHandle('size', 'Resize Size column')}
             </th>
-            <th class="ext" aria-sort={sortAria('extension')}>
+            <th class="ext resizable" aria-sort={sortAria('extension')}>
               <button type="button" class="th-button" onclick={() => fileBrowser.setSort('extension')}>
                 Ext {#if sortBy === 'extension'}{@const Icon = sortIcon('extension')}<Icon size={12} class="sort-i" />{:else}<ChevronsUpDown size={12} class="sort-i muted" />{/if}
               </button>
+              {@render colHandle('ext', 'Resize Ext column')}
             </th>
-            <th>Status</th>
+            <th class="resizable">
+              Status
+              {@render colHandle('status', 'Resize Status column')}
+            </th>
             <th class="actions"><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
@@ -444,9 +490,16 @@
   .table {
     width: 100%;
     border-collapse: collapse;
-    table-layout: auto;
+    /* Fixed layout so column widths come from the <colgroup> (driven by
+       the per-tool layout store) instead of content. min-width on the
+       table (set inline) lets .table-wrap scroll horizontally once the
+       columns outgrow the panel. */
+    table-layout: fixed;
   }
+  .table col.col-sel { width: 32px; }
+  .table col.col-actions { width: 40px; }
   thead th {
+    position: relative;
     text-align: left;
     padding: var(--space-2) var(--space-3);
     background: var(--surface-2);
@@ -458,10 +511,21 @@
     border-bottom: 1px solid var(--border-subtle);
     white-space: nowrap;
   }
-  thead th.sel { width: 32px; text-align: center; padding: var(--space-2); }
-  thead th.size { width: 80px; text-align: right; }
-  thead th.ext { width: 60px; }
-  thead th.actions { width: 40px; }
+  thead th.sel { text-align: center; padding: var(--space-2); }
+  thead th.size { text-align: right; }
+  thead th.actions { text-align: center; }
+  /* The resize handle straddles the right border of a header cell. */
+  .col-resize {
+    position: absolute;
+    top: 0;
+    right: -5px;
+    height: 100%;
+    display: flex;
+    z-index: 2;
+  }
+  /* The Size column's sort button is right-aligned, so its handle would
+     overlap the label; nudge the button clear of the grab area. */
+  thead th.size .th-button { margin-right: var(--space-1); }
   .th-button {
     background: none;
     border: none;

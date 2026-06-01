@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ConversionMode(str, Enum):
@@ -209,3 +209,18 @@ class Z3DSInfo(BaseModel):
     extension: str
     compressed: bool
     compression_type: str | None = None
+
+
+class LayoutPreferences(BaseModel):
+    """Workspace layout widths persisted across sessions.
+
+    ``panels`` holds the global panel-split widths (px); ``columns`` holds
+    per-tool table column widths keyed by tool id. Extra keys are allowed
+    so the client can evolve the shape without a schema change here — the
+    server just stores and returns the JSON.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    panels: dict | None = None
+    columns: dict | None = None

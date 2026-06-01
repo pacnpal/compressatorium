@@ -67,6 +67,21 @@ export const api = {
   // ─── Volumes ──────────────────────────────────────────────────────────
   getVolumes: () => fetchJson(`${API_BASE}/volumes`, undefined, 'Failed to fetch volumes'),
 
+  // ─── Preferences (server-stored UI layout) ─────────────────────────────
+  getPreferences: () =>
+    fetchJson(`${API_BASE}/preferences`, undefined, 'Failed to fetch preferences'),
+  putPreferences(layout) {
+    return fetchJson(
+      `${API_BASE}/preferences`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(layout),
+      },
+      'Failed to save preferences',
+    );
+  },
+
   // ─── Files ────────────────────────────────────────────────────────────
   listFiles(path, showArchives = true) {
     const params = new URLSearchParams({ path, show_archives: String(showArchives) });

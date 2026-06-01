@@ -50,6 +50,17 @@ def _current_rev(engine) -> str | None:
         return MigrationContext.configure(conn).get_current_revision()
 
 
+def _head_rev() -> str:
+    """Latest migration revision, read from the script directory.
+
+    Derived rather than hardcoded so adding a migration doesn't require
+    touching every revision assertion here.
+    """
+    from alembic.script import ScriptDirectory
+    cfg = _db._alembic_config(_db.make_engine(":memory:"))
+    return ScriptDirectory.from_config(cfg).get_current_head()
+
+
 # ---------------------------------------------------------------------------
 # I1 — fresh DB
 # ---------------------------------------------------------------------------
@@ -65,7 +76,7 @@ def test_upgrade_head_on_fresh_db(fresh_db_path: str):
     tables = set(inspect(engine).get_table_names())
     assert _db._BASELINE_TABLES.issubset(tables)
     assert "alembic_version" in tables
-    assert _current_rev(engine) == "0001"
+    assert _current_rev(engine) == _head_rev()
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +92,15 @@ def test_stamp_head_on_preexisting_schema(fresh_db_path: str):
     assert _db._BASELINE_TABLES.issubset(tables_before)
     assert "alembic_version" not in tables_before
 
+    # A genuine pre-Alembic install only had the baseline tables; models
+    # added in later migrations (e.g. preferences) didn't exist yet.
+    # create_all above over-creates them from the current metadata, so
+    # drop the non-baseline ones to faithfully simulate that older state
+    # before stamping + upgrading.
+    with engine.begin() as conn:
+        for table in set(inspect(engine).get_table_names()) - _db._BASELINE_TABLES:
+            conn.execute(text(f'DROP TABLE IF EXISTS "{table}"'))
+
     # Seed a row so we can prove stamping doesn't touch data.
     with engine.begin() as conn:
         conn.execute(
@@ -95,7 +115,7 @@ def test_stamp_head_on_preexisting_schema(fresh_db_path: str):
 
     # alembic_version is now present at head; schema is otherwise
     # unchanged; the seeded row still exists.
-    assert _current_rev(engine) == "0001"
+    assert _current_rev(engine) == _head_rev()
     with engine.begin() as conn:
         got = conn.execute(
             text("SELECT name FROM dats WHERE id = 'pre00001'")
@@ -117,7 +137,7 @@ def test_apply_migrations_idempotent(fresh_db_path: str):
     _db.apply_migrations()
     second_rev = _current_rev(_db.engine)
 
-    assert first_rev == second_rev == "0001"
+    assert first_rev == second_rev == _head_rev()
 
 
 # ---------------------------------------------------------------------------
