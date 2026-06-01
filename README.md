@@ -160,17 +160,71 @@ In the Web UI, you can specify a custom output directory for converted CHD, Dolp
 
 ### Screenshots
 
-The Web UI is fully responsive and works seamlessly on desktop, tablet, and mobile devices:
+The Web UI ships with light and dark themes and is fully responsive from desktop down to phones. Each surface below is shown as a light / dark pair.
 
-**Desktop View (1280px)**
+#### Workspace
+
+A three-pane layout: navigation and tool picker on the left, the volume and file browser in the middle, and a live convert panel with the job queue on the right. Selecting a tool (CHDMAN, Dolphin, or 3DS) refilters the file list and the convert options to match.
+
+| Light | Dark |
+|-------|------|
+| ![Workspace · CHDMAN, light](docs/screenshots/workspace-chdman-light.png) | ![Workspace · CHDMAN, dark](docs/screenshots/workspace-chdman-dark.png) |
+
+**Batch selection** — tick multiple files and the convert panel arms itself, showing how many sources are queued and a one-click **Start conversion**.
+
+| Light | Dark |
+|-------|------|
+| ![Batch selection, light](docs/screenshots/workspace-batch-light.png) | ![Batch selection, dark](docs/screenshots/workspace-batch-dark.png) |
+
+**Dolphin (GameCube / Wii)** — compress discs to RVZ, WIA, or GCZ with a codec and compression-level picker.
+
+| Light | Dark |
+|-------|------|
+| ![Dolphin tool, light](docs/screenshots/workspace-dolphin-light.png) | ![Dolphin tool, dark](docs/screenshots/workspace-dolphin-dark.png) |
+
+**3DS** — compress `.cci`, `.cia`, and `.3ds` ROMs with z3ds_compressor.
+
+| Light | Dark |
+|-------|------|
+| ![3DS tool, light](docs/screenshots/workspace-3ds-light.png) | ![3DS tool, dark](docs/screenshots/workspace-3ds-dark.png) |
+
+#### Dashboard
+
+An at-a-glance view of the job queue, verification cache, mounted volumes, recent conversions, and quick tool shortcuts.
+
+| Light | Dark |
+|-------|------|
+| ![Dashboard, light](docs/screenshots/dashboard-light.png) | ![Dashboard, dark](docs/screenshots/dashboard-dark.png) |
+
+#### DAT Library
+
+Import or sync No-Intro / Redump / MAMERedump datasets and match converted files against known-good hashes.
+
+| Light | Dark |
+|-------|------|
+| ![DAT Library, light](docs/screenshots/dat-light.png) | ![DAT Library, dark](docs/screenshots/dat-dark.png) |
+
+#### Help
+
+In-app reference for tools, formats, compression, and verification.
+
+| Light | Dark |
+|-------|------|
+| ![Help, light](docs/screenshots/help-light.png) | ![Help, dark](docs/screenshots/help-dark.png) |
+
+#### Responsive layouts
+
+The interface reflows cleanly across breakpoints:
+
+**Desktop (1280px)**
 
 ![Desktop View](docs-desktop-view.png)
 
-**Tablet View (768px)**
+**Tablet (768px)**
 
 ![Tablet View](docs-tablet-view.png)
 
-**Mobile View (375px)**
+**Mobile (375px)**
 
 ![Mobile View](docs-mobile-view.png)
 
