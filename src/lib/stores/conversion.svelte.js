@@ -27,8 +27,13 @@ function defaultModeFor(toolId) {
 // submitted a Dolphin job without first opening the codec picker. Seed with
 // a tool-appropriate default so the first submission always works.
 function defaultCompressionFor(toolId) {
-  return toolId === 'dolphin' ? ['zstd'] : ['zlib'];
+  if (toolId === 'dolphin') return ['zstd'];
+  if (toolId === 'nsz') return ['solid'];
+  return ['zlib'];
 }
+
+const PREF_SAVE_DEBOUNCE_MS = 500;
+const isBrowser = typeof window !== 'undefined';
 
 const INITIAL_TOOL = loadPrimaryTool();
 
@@ -47,6 +52,12 @@ class ConversionStore {
   duplicateCheck = $state(null);
   deletePlan = $state(null);
   converting = $state(false);
+
+  // Server-saved per-tool compression defaults ({ [toolId]: "<wire value>" }).
+  // Loaded once on boot; updated and PUT (debounced) whenever the user changes
+  // compression, so the choice follows them across sessions and browsers.
+  #compressionPrefs = {};
+  #saveTimer = null;
 
   // ─── Derived ──────────────────────────────────────────────────────────
   get currentTool() {
@@ -157,7 +168,58 @@ class ConversionStore {
     // Same default-mode logic as the initial load — chdman keeps createcd
     // as its default, others use their first registered mode.
     this.mode = defaultModeFor(toolId);
-    this.compressionSelection = defaultCompressionFor(toolId);
+    // Seed compression from the saved server preference for this tool, falling
+    // back to the per-tool default.
+    this.#applyCompressionPref(toolId);
+  }
+
+  // ─── Server-saved compression preference ────────────────────────────────
+  /** Fetch saved per-tool compression defaults and apply the current tool's. */
+  async loadServerPrefs() {
+    try {
+      const prefs = await api.getConversionPrefs();
+      if (prefs && typeof prefs === 'object') {
+        this.#compressionPrefs = prefs;
+        this.#applyCompressionPref(this.primaryTool);
+      }
+    } catch {
+      // Best-effort; leave the local defaults in place.
+    }
+  }
+
+  /** Apply a saved compression string for `toolId`, else the tool default. */
+  #applyCompressionPref(toolId) {
+    const value = this.#compressionPrefs[toolId];
+    const tool = registry.forTool(toolId);
+    if (!value) {
+      this.compressionSelection = defaultCompressionFor(toolId);
+      return;
+    }
+    if (value === 'none') {
+      this.compressionSelection = ['none'];
+      return;
+    }
+    if ((tool?.compressionStyle ?? 'none') === 'single-with-level') {
+      const [codec, lvl] = value.split(':');
+      this.compressionSelection = codec ? [codec] : defaultCompressionFor(toolId);
+      if (lvl) this.dolphinCompressionLevel = String(lvl);
+      return;
+    }
+    this.compressionSelection = value.split(',').filter(Boolean);
+  }
+
+  /** Remember the current tool's compression value on the server (debounced). */
+  #persistCompression() {
+    const value = this.compressionValue;
+    if (value == null) return; // mode without compression — nothing to save
+    this.#compressionPrefs = { ...this.#compressionPrefs, [this.primaryTool]: value };
+    if (!isBrowser) return;
+    if (this.#saveTimer) clearTimeout(this.#saveTimer);
+    const snapshot = { ...this.#compressionPrefs };
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = null;
+      api.putConversionPrefs(snapshot).catch(() => {});
+    }, PREF_SAVE_DEBOUNCE_MS);
   }
 
   setMode(mode) {
@@ -172,10 +234,12 @@ class ConversionStore {
 
   setCompression(list) {
     this.compressionSelection = Array.isArray(list) ? list.slice() : [];
+    this.#persistCompression();
   }
 
   setDolphinLevel(level) {
     this.dolphinCompressionLevel = String(level);
+    this.#persistCompression();
   }
 
   /**
@@ -192,11 +256,13 @@ class ConversionStore {
   toggleCodec(codec) {
     if (codec === 'none') {
       this.compressionSelection = ['none'];
+      this.#persistCompression();
       return;
     }
     const current = this.compressionSelection.filter((c) => c !== 'none');
     if (current.includes(codec)) {
       this.compressionSelection = current.filter((c) => c !== codec);
+      this.#persistCompression();
       return;
     }
     if (current.length >= this.CHDMAN_MAX_CODECS) {
@@ -207,11 +273,13 @@ class ConversionStore {
       return;
     }
     this.compressionSelection = [...current, codec];
+    this.#persistCompression();
   }
 
-  /** Replace selection with a single codec (dolphin RVZ/WIA pattern). */
+  /** Replace selection with a single codec (dolphin RVZ/WIA, nsz solid/block). */
   setSingleCodec(codec) {
     this.compressionSelection = codec ? [codec] : [];
+    this.#persistCompression();
   }
 
   // ─── Preflight ────────────────────────────────────────────────────────

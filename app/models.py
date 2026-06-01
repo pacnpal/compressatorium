@@ -241,3 +241,14 @@ class LayoutPreferences(BaseModel):
 
     panels: dict | None = None
     columns: dict | None = None
+
+
+class ConversionPreferences(BaseModel):
+    """Per-tool compression defaults, keyed by tool id.
+
+    Values are the wire-format compression string the convert pipeline expects
+    (e.g. ``"solid:18"`` for nsz, ``"zstd:19"`` for dolphin, ``"zlib,lzma"`` for
+    chdman). Extra keys are allowed so new tools persist without a schema change.
+    """
+
+    model_config = ConfigDict(extra="allow")

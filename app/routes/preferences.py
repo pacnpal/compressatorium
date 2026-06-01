@@ -8,7 +8,7 @@ survives a browser/cache wipe.
 import logging
 
 from fastapi import APIRouter
-from models import LayoutPreferences
+from models import ConversionPreferences, LayoutPreferences
 from services.preferences_store import preferences_store
 
 logger = logging.getLogger("chd.routes.preferences")
@@ -17,6 +17,8 @@ router = APIRouter()
 
 # The single key the workspace layout is stored under.
 LAYOUT_KEY = "layout"
+# Per-tool compression defaults (the convert panel's remembered settings).
+CONVERSION_KEY = "conversion"
 
 
 @router.get("/preferences")
@@ -31,3 +33,16 @@ async def put_preferences(prefs: LayoutPreferences) -> dict:
     """Upsert the workspace layout and return the saved object."""
     payload = prefs.model_dump(exclude_none=True)
     return await preferences_store.put(LAYOUT_KEY, payload)
+
+
+@router.get("/preferences/conversion")
+async def get_conversion_preferences() -> dict:
+    """Return remembered per-tool compression settings, or an empty object."""
+    stored = await preferences_store.get(CONVERSION_KEY)
+    return stored or {}
+
+
+@router.put("/preferences/conversion")
+async def put_conversion_preferences(prefs: ConversionPreferences) -> dict:
+    """Upsert per-tool compression settings and return the saved object."""
+    return await preferences_store.put(CONVERSION_KEY, prefs.model_dump(exclude_none=True))

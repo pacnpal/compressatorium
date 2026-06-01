@@ -273,6 +273,34 @@ def test_output_path_rejects_unknown_extension():
         nsz_module.nsz_service.get_output_path_for_mode("nsz_compress", "/data/file.iso")
 
 
+@pytest.mark.parametrize(
+    ("compression", "expect_flag", "expect_level"),
+    [
+        ("solid:5", "-S", "5"),
+        ("block:20", "-B", "20"),
+        ("block:99", "-B", "22"),       # clamped to nsz max
+        ("solid:0", "-S", "1"),         # clamped to nsz min
+        ("solid", "-S", "18"),          # no level -> configured default
+        (None, None, "18"),             # nothing specified -> default, no mode flag
+        ("none", None, "18"),
+    ],
+)
+def test_build_command_threads_compression(compression, expect_flag, expect_level):
+    svc = nsz_module.nsz_service
+    cmd = svc._build_command("/data/game.nsp", "/work", "nsz_compress", compression)
+    # level is always passed
+    assert cmd[cmd.index("-l") + 1] == expect_level
+    for flag in ("-S", "-B"):
+        assert (flag in cmd) == (flag == expect_flag)
+
+
+def test_build_command_decompress_ignores_compression():
+    svc = nsz_module.nsz_service
+    cmd = svc._build_command("/data/game.nsz", "/work", "nsz_decompress", "block:20")
+    assert "-D" in cmd
+    assert "-C" not in cmd and "-l" not in cmd and "-B" not in cmd
+
+
 def test_keys_available_reads_configured_dir(tmp_path, monkeypatch):
     keys_dir = tmp_path / "keys"
     keys_dir.mkdir()

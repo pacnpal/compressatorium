@@ -153,12 +153,43 @@ class NszService:
 
     # ----- command ----------------------------------------------------------
 
-    def _build_command(self, input_path: str, work_dir: str, mode: str) -> list[str]:
+    def _parse_compression(self, compression: str | None) -> tuple[bool | None, int]:
+        """Resolve a per-job ``compression`` string into (block, level).
+
+        Format is ``"<mode>:<level>"`` where mode is ``solid`` or ``block`` —
+        the same ``codec:level`` shape the UI sends for Dolphin. ``block`` is
+        None when unspecified (let nsz pick its per-container default). Level
+        falls back to the configured default and is clamped to nsz's 1-22 range.
+        """
+        level = settings.nsz_compression_level
+        block: bool | None = None
+        if compression and compression.lower() != "none":
+            mode_part, _, level_part = compression.partition(":")
+            mode_part = mode_part.strip().lower()
+            if mode_part == "block":
+                block = True
+            elif mode_part == "solid":
+                block = False
+            if level_part.strip():
+                try:
+                    level = int(level_part)
+                except ValueError:
+                    pass
+        return block, max(1, min(22, level))
+
+    def _build_command(
+        self, input_path: str, work_dir: str, mode: str, compression: str | None = None,
+    ) -> list[str]:
         cmd = [self.nsz_path]
         if mode == "nsz_decompress":
             cmd.append("-D")
         else:
-            cmd += ["-C", "-l", str(settings.nsz_compression_level)]
+            block, level = self._parse_compression(compression)
+            cmd += ["-C", "-l", str(level)]
+            if block is True:
+                cmd.append("-B")
+            elif block is False:
+                cmd.append("-S")
         cmd += ["-o", work_dir, input_path]
 
         if (
@@ -231,7 +262,7 @@ class NszService:
         output_path: str,
         mode: str = "nsz_compress",
         *,
-        compression: str | None = None,  # unused; kept for interface parity
+        compression: str | None = None,  # per-job "<solid|block>:<level>"
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         verb = "decompression" if mode == "nsz_decompress" else "compression"
@@ -248,7 +279,8 @@ class NszService:
         try:
             with self._keys_home() as env:
                 async for update in self._run_convert(
-                    input_path, produced_path, work_dir, mode, verb, env, cancel_event,
+                    input_path, produced_path, work_dir, mode, verb, env,
+                    cancel_event, compression,
                 ):
                     yield update
 
@@ -258,8 +290,8 @@ class NszService:
             await asyncio.to_thread(shutil.rmtree, work_dir, True)
 
     async def _run_convert(self, input_path, produced_path, work_dir, mode, verb,
-                           env, cancel_event) -> AsyncGenerator[dict, None]:
-        cmd = self._build_command(input_path, work_dir, mode)
+                           env, cancel_event, compression=None) -> AsyncGenerator[dict, None]:
+        cmd = self._build_command(input_path, work_dir, mode, compression)
 
         def _preexec():
             if settings.chdman_nice is not None:

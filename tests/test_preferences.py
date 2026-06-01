@@ -45,3 +45,20 @@ async def test_keys_are_independent(store: PreferencesStore) -> None:
     await store.put("other", {"b": 2})
     assert await store.get("layout") == {"a": 1}
     assert await store.get("other") == {"b": 2}
+
+
+@pytest.mark.asyncio
+async def test_conversion_prefs_route_round_trips(tmp_path: Path, monkeypatch) -> None:
+    """GET/PUT /preferences/conversion persist per-tool compression strings."""
+    from app.models import ConversionPreferences
+    from app.routes import preferences as preferences_routes
+
+    store = PreferencesStore(str(tmp_path / "conv.db"))
+    monkeypatch.setattr(preferences_routes, "preferences_store", store)
+
+    assert await preferences_routes.get_conversion_preferences() == {}
+
+    prefs = ConversionPreferences.model_validate({"nsz": "block:20", "dolphin": "zstd:19"})
+    saved = await preferences_routes.put_conversion_preferences(prefs)
+    assert saved == {"nsz": "block:20", "dolphin": "zstd:19"}
+    assert await preferences_routes.get_conversion_preferences() == saved

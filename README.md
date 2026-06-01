@@ -434,29 +434,41 @@ in Tinfoil and DBI.
 
 ### Supported File Formats
 
-- **`.nsp`** - Nintendo Submission Package (eShop-style dump)
-- **`.xci`** - Cartridge image (game card dump)
-- **`.nsz`** - Compressed NSP (zstandard over decrypted NCA content)
-- **`.xcz`** - Compressed XCI
+* **`.nsp`** - Nintendo Submission Package (eShop-style dump)
+* **`.xci`** - Cartridge image (game card dump)
+* **`.nsz`** - Compressed NSP (zstandard over decrypted NCA content)
+* **`.xcz`** - Compressed XCI
 
 Compress maps `.nsp` → `.nsz` and `.xci` → `.xcz`; decompress reverses it.
 
+### Compression settings
+
+The Compress mode exposes two controls in the convert panel, per job:
+
+* **Layout** - *Solid* (best ratio; must be decompressed to run) or *Block*
+  (slightly larger, but installable/playable without full decompression).
+* **Level** - the zstandard level, 1-22.
+
+Your choice is remembered server-side (per tool), so it persists across
+sessions and browsers. `NSZ_COMPRESSION_LEVEL` is the fallback default when no
+per-job level is set.
+
 ### Technical Details
 
-- nsz is installed from pip and runs as a subprocess (no shell). Verify uses
+* nsz is installed from pip and runs as a subprocess (no shell). Verify uses
   nsz's own `-V` integrity check on the compressed container.
-- The compress/decompress round trip is lossless. nsz keeps all protection
+* The compress/decompress round trip is lossless. nsz keeps all protection
   measures in place (the first 0x4000 bytes of each NCZ stay encrypted, and the
   NCZ header records how to re-encrypt), so decompression reproduces the
   original byte-for-byte.
-- Delete-on-verify is offered for compress only, since verify validates the
+* Delete-on-verify is offered for compress only, since verify validates the
   compressed `.nsz`/`.xcz` output.
-- Archive (ZIP/7z/RAR) inputs are not supported for Switch; convert the file on
+* Archive (ZIP/7z/RAR) inputs are not supported for Switch; convert the file on
   disk.
 
 ### Keys: setup and security
 
-- **Recommended:** mount the directory holding your keys read-only and set
+* **Recommended:** mount the directory holding your keys read-only and set
   `SWITCH_KEYS` to it:
 
   ```yaml
@@ -469,13 +481,13 @@ Compress maps `.nsp` → `.nsz` and `.xci` → `.xcz`; decompress reverses it.
         - /host/path/to/switch-keys:/keys:ro
   ```
 
-- `SWITCH_KEYS` is the source of truth when set. When unset, the app does a
+* `SWITCH_KEYS` is the source of truth when set. When unset, the app does a
   cheap, non-blocking best-effort search at runtime: `~/.switch`, the nsz config
   dirs, and the roots of your mounted game volumes (it does not recurse into
   large game trees).
-- Keys are never baked into the image and are git-ignored, so a stray copy can't
+* Keys are never baked into the image and are git-ignored, so a stray copy can't
   be committed. The file only needs to be readable by uid 999 (`converter`).
-- Keys are never logged.
+* Keys are never logged.
 
 ### Environment Variables
 
@@ -483,15 +495,15 @@ Compress maps `.nsp` → `.nsz` and `.xci` → `.xcz`; decompress reverses it.
 |----------|---------|-------------|
 | `NSZ_PATH` | `nsz` | Path to the nsz binary (resolved on PATH by default) |
 | `SWITCH_KEYS` | *(unset)* | Directory holding your `prod.keys`. Source of truth when set; otherwise a best-effort search of `~/.switch` and your volumes runs at startup. |
-| `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for compression (1-22) |
+| `NSZ_COMPRESSION_LEVEL` | `18` | Fallback zstandard level (1-22) when no per-job level is set in the UI |
 
 ### REST API Endpoints
 
-- `POST /api/jobs` or `POST /api/jobs/batch` - Queue Switch jobs (use `mode: "nsz_compress"` or `"nsz_decompress"`)
-- `GET /api/nsz-info?path=/path/to/game.nsp` - Get file information (size, format, compression status)
-- `GET /api/nsz-verify?path=/path/to/game.nsz` - Verify a compressed Switch output
-- `GET /api/nsz-verify/events?path=/path/to/game.nsz` - SSE stream for Switch verify progress
-- `POST /api/nsz-verify-batch/events` - SSE stream for batch Switch verification
+* `POST /api/jobs` or `POST /api/jobs/batch` - Queue Switch jobs (use `mode: "nsz_compress"` or `"nsz_decompress"`; optional `compression: "solid:18"` / `"block:20"`)
+* `GET /api/nsz-info?path=/path/to/game.nsp` - Get file information (size, format, compression status)
+* `GET /api/nsz-verify?path=/path/to/game.nsz` - Verify a compressed Switch output
+* `GET /api/nsz-verify/events?path=/path/to/game.nsz` - SSE stream for Switch verify progress
+* `POST /api/nsz-verify-batch/events` - SSE stream for batch Switch verification
 
 ### Legal note
 

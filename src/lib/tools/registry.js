@@ -257,14 +257,22 @@ export const TOOLS = [
     defaultMode: 'nsz_compress',
     glyph: 'NSW',
     accent: 'var(--badge-dat-match)',
-    // nsz picks its own zstandard level; no UI codec/level controls.
-    compressionCodecs: [],
-    compressionStyle: 'none',
+    // nsz exposes a zstandard level plus a solid/block layout. We model the
+    // layout as the "codec" dropdown and the level as the slider, reusing the
+    // single-with-level picker. The wire value is "<solid|block>:<level>".
+    compressionStyle: 'single-with-level',
+    compressionCodecs: [
+      { value: 'solid', label: 'Solid (smaller)',
+        hint: 'Best ratio; must be decompressed to run. nsz default for NSZ.' },
+      { value: 'block', label: 'Block (random access)',
+        hint: 'Slightly larger; supports playing/installing without full decompression.' },
+    ],
+    compressionLevelRange: { min: 1, max: 22, default: 18 },
     modes: [
       { mode: 'nsz_compress', kind: 'compress', label: 'Compress (NSP/XCI → NSZ/XCZ)',
         group: 'nsz',
         outputExt: null, inputExtensions: NSZ_COMPRESS_EXTS,
-        supportsCompression: false, supportsCompressionLevel: false,
+        supportsCompression: false, supportsCompressionLevel: true,
         supportsDeleteOnVerify: true, allowsArchiveInput: false },
       { mode: 'nsz_decompress', kind: 'extract', label: 'Decompress (NSZ/XCZ → NSP/XCI)',
         group: 'nsz',

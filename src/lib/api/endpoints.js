@@ -70,6 +70,23 @@ export const api = {
   // ─── Preferences (server-stored UI layout) ─────────────────────────────
   getPreferences: () =>
     fetchJson(`${API_BASE}/preferences`, undefined, 'Failed to fetch preferences'),
+  getConversionPrefs: () =>
+    fetchJson(
+      `${API_BASE}/preferences/conversion`,
+      undefined,
+      'Failed to fetch compression preferences',
+    ),
+  putConversionPrefs(prefs) {
+    return fetchJson(
+      `${API_BASE}/preferences/conversion`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prefs),
+      },
+      'Failed to save compression preferences',
+    );
+  },
   putPreferences(layout) {
     return fetchJson(
       `${API_BASE}/preferences`,

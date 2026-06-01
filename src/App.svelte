@@ -118,6 +118,8 @@
     api.getTools()
       .then((t) => ui.applyToolAvailability(t?.available))
       .catch(() => {});
+    // Load remembered per-tool compression settings from the server.
+    conversion.loadServerPrefs();
     // Rehydrate the verified set + DAT-library state so OK / DAT badges
     // survive reloads. Fire and forget — failure leaves the cache empty.
     verification.loadVerified();
