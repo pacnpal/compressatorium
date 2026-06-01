@@ -556,10 +556,10 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
         )
-    if compression and not is_dolphin and ":" in compression:
+    if compression and ":" in compression and not spec.supports_compression_level:
         raise HTTPException(
             status_code=400,
-            detail="Compression levels are only supported for Dolphin formats",
+            detail="Compression levels are only supported for Dolphin and Switch formats",
         )
     if compression and mode == "dolphin_iso":
         raise HTTPException(
@@ -662,10 +662,10 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             status_code=400,
             detail="Compression is only supported for CHD creation/copy",
         )
-    if compression and not is_dolphin and ":" in compression:
+    if compression and ":" in compression and not spec.supports_compression_level:
         raise HTTPException(
             status_code=400,
-            detail="Compression levels are only supported for Dolphin formats",
+            detail="Compression levels are only supported for Dolphin and Switch formats",
         )
     if compression and mode == "dolphin_iso":
         raise HTTPException(

@@ -108,9 +108,11 @@ def test_supports_compression_matches_current_behavior(mode, expected):
 
 
 def test_compression_level_only_for_dolphin_rvz_wia():
-    for mode in ("dolphin_rvz", "dolphin_wia"):
+    # Dolphin RVZ/WIA and Switch compress expose a numeric level.
+    for mode in ("dolphin_rvz", "dolphin_wia", "nsz_compress"):
         assert registry.spec(mode).supports_compression_level is True
-    for mode in ("createcd", "copy", "dolphin_gcz", "dolphin_iso", "z3ds_compress"):
+    for mode in ("createcd", "copy", "dolphin_gcz", "dolphin_iso", "z3ds_compress",
+                 "nsz_decompress"):
         assert registry.spec(mode).supports_compression_level is False
 
 

@@ -37,6 +37,9 @@ class NszTool(BaseTool):
             group="nsz",
             output_ext=None,  # mapped from the input extension
             input_extensions=frozenset(NSZ_COMPRESS_EXTENSIONS),
+            # The UI sends "<solid|block>:<level>"; the route allows the ':'
+            # token only when the spec advertises level support.
+            supports_compression_level=True,
             supports_delete_on_verify=True,
             allows_archive_input=False,
         ),

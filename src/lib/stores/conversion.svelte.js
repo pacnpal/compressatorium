@@ -191,6 +191,13 @@ class ConversionStore {
   #applyCompressionPref(toolId) {
     const value = this.#compressionPrefs[toolId];
     const tool = registry.forTool(toolId);
+    const isLevel = (tool?.compressionStyle ?? 'none') === 'single-with-level';
+    // Seed the level from this tool's own default first, so a value from a
+    // previously selected single-with-level tool can't leak across (e.g.
+    // Dolphin's 19 bleeding into Switch, which defaults to 18).
+    if (isLevel) {
+      this.dolphinCompressionLevel = String(tool?.compressionLevelRange?.default ?? 19);
+    }
     if (!value) {
       this.compressionSelection = defaultCompressionFor(toolId);
       return;
@@ -199,7 +206,7 @@ class ConversionStore {
       this.compressionSelection = ['none'];
       return;
     }
-    if ((tool?.compressionStyle ?? 'none') === 'single-with-level') {
+    if (isLevel) {
       const [codec, lvl] = value.split(':');
       this.compressionSelection = codec ? [codec] : defaultCompressionFor(toolId);
       if (lvl) this.dolphinCompressionLevel = String(lvl);
