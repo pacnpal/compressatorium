@@ -1,5 +1,21 @@
 # Release Notes
 
+## 4.0.0-beta-5 (2026-05-31)
+
+### Search all: instant feedback + clear label (#118)
+
+#### 🐛 Fixed
+
+- **"Search all" now reacts the instant you click it.** The recursive scan (which walks into archives and can take a few seconds) ran with no loading state, so the button sat silent until results came back. It now flips to a spinner with "Searching…" the moment you click and disables itself while the scan runs, matching the Refresh button. This restores the immediate feedback the old Preact UI had.
+- **The button says what it does.** Replaced the bare folder-search icon with a labelled "Search all" button, so it's no longer a guess.
+- **Stale error banner no longer survives a search.** `_enterSearch` now clears `entriesError` on entry, the same as the directory load paths. A failed search used to leave the error banner up through a retry and even past a later successful search.
+
+#### 🔧 Internal
+
+- "Search all" uses the shared `Button` component instead of a one-off `<button>` with hand-rolled hover/focus/disabled CSS. The spinner is driven through the `icon` snippet because `Button`'s `loading` prop only dims and changes the cursor.
+- Overlapping `_enterSearch` calls are dropped with an early return, so a finishing request can't clear the busy flag while a later one is still running.
+- Removed a dead `.warning strong` CSS selector in `ConvertPanel`; `svelte-check` is clean (0 errors, 0 warnings).
+
 ## 4.0.0-beta-4 (2026-05-31)
 
 ### In-app Help content
