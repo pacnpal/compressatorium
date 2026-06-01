@@ -33,6 +33,7 @@ class FileBrowserStore {
   searchMode = $state(false);
   searchResults = $state(null);
   searchQuery = $state('');
+  searching = $state(false);
 
   // View state
   filter = $state(null);
@@ -334,6 +335,15 @@ class FileBrowserStore {
    */
   async _enterSearch(query) {
     if (!this.currentPath) return;
+    // Drop overlapping searches — a second in-flight call would clear the
+    // `searching` flag when it finishes and let the busy state lift while
+    // an earlier request is still running.
+    if (this.searching) return;
+    this.searching = true;
+    // Clear any stale error from a prior failed search/load — symmetric
+    // with the directory load paths. Otherwise the error banner survives
+    // through a retry and even past a later successful search.
+    this.entriesError = null;
     try {
       const data = await api.searchFiles(this.currentPath, true, true);
       // Flip into search mode only on success. If the request fails,
@@ -352,6 +362,8 @@ class FileBrowserStore {
     } catch (e) {
       this.entriesError = e?.message ?? 'Search failed';
       // Stay out of search mode so the directory listing remains visible.
+    } finally {
+      this.searching = false;
     }
   }
 

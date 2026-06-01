@@ -10,6 +10,7 @@
   import Pager from '$lib/components/ui/Pager.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import FolderSearch from '@lucide/svelte/icons/folder-search';
@@ -31,6 +32,7 @@
   const sortOrder = $derived(fileBrowser.sortOrder);
   const filter = $derived(fileBrowser.filter);
   const loading = $derived(fileBrowser.loading);
+  const searching = $derived(fileBrowser.searching);
   const error = $derived(fileBrowser.entriesError);
   const allSelected = $derived(fileBrowser.allVisibleSelected);
   const selectedCount = $derived(fileBrowser.selectedFiles.size);
@@ -196,14 +198,18 @@
     </form>
 
     <div class="actions">
-      <IconButton
-        label="Search all convertible files (recursive, including inside archives)"
+      <Button
+        variant="secondary"
         size="sm"
-        title="Search all — recursively list every convertible file under this folder, including inside archives"
+        loading={searching}
+        title="Recursively list every convertible file under this folder, including inside archives"
         onclick={() => fileBrowser.searchAll()}
       >
-        <FolderSearch size={14} />
-      </IconButton>
+        {#snippet icon()}
+          {#if searching}<Loader class="spin" size={14} />{:else}<FolderSearch size={14} />{/if}
+        {/snippet}
+        {searching ? 'Searching…' : 'Search all'}
+      </Button>
       <label class="filter">
         <Filter size={12} />
         <select
