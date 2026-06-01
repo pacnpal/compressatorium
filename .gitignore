@@ -1,5 +1,6 @@
 # ============ Claude Code ============
-.claude/settings.local.json
+# Tooling/session state (logs, state, memory). Not project source.
+.claude/
 
 # ============ Operating System ============
 # macOS
@@ -429,3 +430,6 @@ test_error.png
 # the Svelte source folder under src/lib so frontend modules are tracked.
 !/src/lib/
 !/src/lib/**
+
+# ...except Claude Code tooling state that lands inside src/lib by mistake.
+/src/lib/**/.claude/
