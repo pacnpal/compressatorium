@@ -192,18 +192,26 @@ class NszService:
                 cmd.append("-S")
         cmd += ["-o", work_dir, input_path]
 
+        # Apply nice/ionice via command wrappers, NOT preexec_fn: forking a
+        # Python callable in a multithreaded app (this one uses threadpools) can
+        # deadlock the child before exec. `nice`/`ionice` are exec-only.
+        prefix: list[str] = []
+        if settings.chdman_nice is not None:
+            nice = shutil.which("nice")
+            if nice:
+                prefix += [nice, "-n", str(settings.chdman_nice)]
         if (
             settings.chdman_ioprio_class is not None
             and settings.chdman_ioprio_level is not None
         ):
             ionice = shutil.which("ionice")
             if ionice:
-                cmd = [
+                prefix += [
                     ionice,
                     "-c", str(settings.chdman_ioprio_class),
                     "-n", str(settings.chdman_ioprio_level),
-                ] + cmd
-        return cmd
+                ]
+        return prefix + cmd
 
     def _track_pid(self, pid: int):
         with self._pid_lock:
@@ -293,20 +301,13 @@ class NszService:
                            env, cancel_event, compression=None) -> AsyncGenerator[dict, None]:
         cmd = self._build_command(input_path, work_dir, mode, compression)
 
-        def _preexec():
-            if settings.chdman_nice is not None:
-                try:
-                    os.nice(settings.chdman_nice)
-                except OSError:
-                    pass
-
         # cmd is built from validated settings paths (no shell interpretation);
-        # args are a fixed list, never shell-expanded.
+        # args are a fixed list, never shell-expanded. nice/ionice are applied
+        # as command wrappers in _build_command, so there's no preexec_fn.
         process = await asyncio.create_subprocess_exec(  # nosemgrep
             cmd[0], *cmd[1:],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            preexec_fn=_preexec if os.name == "posix" else None,
             env=env,
         )
         if process.stdout is None:

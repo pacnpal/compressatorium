@@ -23,11 +23,20 @@ compress → verify (`nsz -V`) → decompress → compare SHA-256 of the origina
 the round-tripped file. It **skips** (does not fail) while the placeholder keys
 are in place or no real dump is present, so CI stays green.
 
-To point at files elsewhere, override with env vars:
+To point at files elsewhere, override with env vars. Relative to the current
+directory:
 
 ```bash
-SWITCH_KEYS=/path/to/keysdir \
-NSZ_ROUNDTRIP_DUMP=/path/to/game.nsp \
+SWITCH_KEYS="$(pwd)/keys" \
+NSZ_ROUNDTRIP_DUMP="$(pwd)/dumps/game.nsp" \
+PYTHONPATH=app .venv/bin/python -m pytest tests/test_nsz_roundtrip.py -v -s
+```
+
+…or with explicit absolute paths:
+
+```bash
+SWITCH_KEYS=/srv/switch/keys \
+NSZ_ROUNDTRIP_DUMP=/srv/switch/dumps/game.nsp \
 PYTHONPATH=app .venv/bin/python -m pytest tests/test_nsz_roundtrip.py -v -s
 ```
 
