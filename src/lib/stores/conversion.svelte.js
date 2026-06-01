@@ -58,6 +58,9 @@ class ConversionStore {
   // compression, so the choice follows them across sessions and browsers.
   #compressionPrefs = {};
   #saveTimer = null;
+  // Set once the user changes any compression control, so a late boot
+  // preference fetch can't revert an edit made while it was in flight.
+  #compressionTouched = false;
 
   // ─── Derived ──────────────────────────────────────────────────────────
   get currentTool() {
@@ -180,7 +183,8 @@ class ConversionStore {
       const prefs = await api.getConversionPrefs();
       if (prefs && typeof prefs === 'object') {
         this.#compressionPrefs = prefs;
-        this.#applyCompressionPref(this.primaryTool);
+        // Don't clobber a selection the user made while the fetch was in flight.
+        if (!this.#compressionTouched) this.#applyCompressionPref(this.primaryTool);
       }
     } catch {
       // Best-effort; leave the local defaults in place.
@@ -217,6 +221,7 @@ class ConversionStore {
 
   /** Remember the current tool's compression value on the server (debounced). */
   #persistCompression() {
+    this.#compressionTouched = true;
     const value = this.compressionValue;
     if (value == null) return; // mode without compression — nothing to save
     this.#compressionPrefs = { ...this.#compressionPrefs, [this.primaryTool]: value };
