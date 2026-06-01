@@ -335,6 +335,10 @@ class FileBrowserStore {
    */
   async _enterSearch(query) {
     if (!this.currentPath) return;
+    // Drop overlapping searches — a second in-flight call would clear the
+    // `searching` flag when it finishes and let the busy state lift while
+    // an earlier request is still running.
+    if (this.searching) return;
     this.searching = true;
     // Clear any stale error from a prior failed search/load — symmetric
     // with the directory load paths. Otherwise the error banner survives
