@@ -1,5 +1,28 @@
 # Release Notes
 
+## 4.0.0-beta-7 (2026-06-01)
+
+### Resizable panels and table columns (#120)
+
+#### ✨ New
+
+- **The workspace layout is now adjustable.** Drag the divider between the file list and the right Convert/Jobs panel to give the table more room, and drag individual table column borders (Name, Size, Ext, Status) to size them how you like. Double-click a divider or column border to reset it. The handles are keyboard-accessible too (focus, then arrow keys; Enter or Home resets).
+- **Widths are remembered on the server.** Layout preferences persist through a browser or cache wipe and follow you across browsers. This is the first server-stored preference; everything else still lives in localStorage. The panel split is shared, while column widths are kept per tool (chdman / dolphin / z3ds) since each lists different file types.
+
+#### 🔧 Internal
+
+- New generic `preferences` key/value table (Alembic migration `0002`, idempotent) with a `PreferencesStore` service and `GET`/`PUT /api/preferences`. Single-user, no auth. Reusable for future preferences.
+- A `layout` store loads localStorage synchronously on boot (no flash), reconciles with the server, and writes both back debounced. A dirty flag plus a mutation-version guard keep an in-flight server sync from clobbering a width the user just changed, and keep an unsaved edit from being lost on tab close.
+- A reusable `Splitter` component (WAI-ARIA window-splitter pattern) drives both the panel dividers and the column handles. The file table moved to `table-layout: fixed` with a `<colgroup>`; the Name column absorbs slack and a min-width keeps the horizontal scroll when columns outgrow the panel.
+
+## 4.0.0-beta-6 (2026-06-01)
+
+### Visible Actions header (#119)
+
+#### ✨ Changed
+
+- **The file table's Actions column has a visible header.** It was a screen-reader-only label before; now it reads "Actions" like the other column headers.
+
 ## 4.0.0-beta-5 (2026-05-31)
 
 ### Search all: instant feedback + clear label (#118)
