@@ -117,6 +117,9 @@ RUN apt-get update -o Acquire::Retries=3 && \
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt /app/
+# This also installs `nsz` (Nintendo Switch NSP/XCI <-> NSZ/XCZ), which lands on
+# PATH at /opt/venv/bin/nsz. nsz needs the operator's own prod.keys mounted at
+# runtime (NSZ_KEYS_PATH); no keys are baked into this image.
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Install z3ds_compressor from builder stage

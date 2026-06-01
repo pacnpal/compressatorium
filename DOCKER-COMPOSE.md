@@ -141,6 +141,8 @@ Volume behavior:
 | `CHDMAN_MODE` | `createcd` | Conversion mode: `createcd` or `createdvd` (CLI mode) |
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
+| `SWITCH_KEYS` | *(unset)* | Directory holding your own Switch `prod.keys`. Source of truth for Switch (nsz); mount it read-only. When unset, the app best-effort checks `~/.switch` and your mounted volumes. No keys ship with the image. |
+| `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for Switch compression (1-22) |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
 | `MAX_JOB_HISTORY` | `500` | Completed jobs to retain in history |
 | `CHD_CHDMAN_NICE` | `10` | Nice level for chdman (0-19) |

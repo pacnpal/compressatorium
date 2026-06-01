@@ -16,6 +16,7 @@ from models import (
     ConversionMode,
     DolphinDiscInfo,
     MetadataBatchRequest,
+    NszInfo,
     Z3DSInfo,
 )
 from services.chd_metadata_store import chd_metadata_store
@@ -32,6 +33,11 @@ from services.tools import registry
 from services.tools.base import ToolPlugin
 from services.workload_limiter import WorkloadToken, workload_limiter
 from services.job_manager import ExternalJobCancelled, job_manager
+from services.nsz import (
+    NSZ_COMPRESS_EXTENSIONS,
+    NSZ_DECOMPRESS_EXTENSIONS,
+    nsz_service,
+)
 from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
 from services.verification_store import verification_store
 from sse_starlette.sse import EventSourceResponse
@@ -351,6 +357,14 @@ def _is_z3ds_info_file(path: str) -> bool:
     return ext in Z3DS_INFO_EXTENSIONS
 
 
+NSZ_INFO_EXTENSIONS = NSZ_COMPRESS_EXTENSIONS | NSZ_DECOMPRESS_EXTENSIONS
+
+
+def _is_nsz_info_file(path: str) -> bool:
+    ext = os.path.splitext(path)[1].lower()
+    return ext in NSZ_INFO_EXTENSIONS
+
+
 @router.get("/info", response_model=CHDInfo)
 async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     """Get information about a CHD file (cached with mtime-based invalidation)."""
@@ -636,6 +650,62 @@ async def get_z3ds_info(
         ) from None
 
 
+@router.get("/tools")
+async def list_tools():
+    """Which tools the frontend should show.
+
+    A tool is unavailable when its runtime prerequisites are missing. Today the
+    only gated tool is Switch (nsz), which needs the operator's prod.keys; when
+    they aren't found it is reported unavailable so the UI hides it entirely.
+    """
+    nsz_ready = await run_in_threadpool(nsz_service.keys_available)
+    available, unavailable = [], []
+    for tool in registry.all():
+        if tool.id == "nsz" and not nsz_ready:
+            unavailable.append(tool.id)
+        else:
+            available.append(tool.id)
+    return {"available": available, "unavailable": unavailable}
+
+
+@router.get("/nsz-info", response_model=NszInfo)
+async def get_nsz_info(
+    path: str = Query(..., description="Path to Switch NSP/XCI/NSZ/XCZ file"),
+):
+    """Get basic information about a Nintendo Switch file."""
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: path outside configured volumes",
+        )
+    if not await run_in_threadpool(os.path.isfile, path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_nsz_info_file(path):
+        raise HTTPException(
+            status_code=400,
+            detail="Not a supported Switch format (.nsp, .xci, .nsz, .xcz)",
+        )
+
+    try:
+        info = await run_in_threadpool(nsz_service.info, path)
+        return NszInfo(
+            file=info["file"],
+            size=info["size"],
+            size_display=info["size_display"],
+            format=info.get("format"),
+            extension=info["extension"],
+            compressed=info["compressed"],
+            compression_type=info.get("compression_type"),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read Switch file info: {e!s}",
+        ) from None
+
+
 # ============ Generic verify routes (registry-driven) ============
 #
 # The three tools expose identical verify machinery (sync verify, an SSE
@@ -689,6 +759,15 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         batch_name="verify_z3ds_batch_events",
         bad_ext_detail="Not a supported compressed 3DS format (.z3ds, .zcci, .zcia)",
         verify_error_prefix="Failed to verify 3DS ROM",
+    ),
+    "nsz": _VerifyRouteConfig(
+        url_prefix="nsz-",
+        service=lambda: nsz_service,
+        sync_name="verify_nsz",
+        events_name="verify_nsz_events",
+        batch_name="verify_nsz_batch_events",
+        bad_ext_detail="Not a supported compressed Switch format (.nsz, .xcz)",
+        verify_error_prefix="Failed to verify Switch file",
     ),
 }
 
@@ -1009,4 +1088,7 @@ verify_dolphin, verify_dolphin_events, verify_dolphin_batch_events = register_ve
 )
 verify_z3ds, verify_z3ds_events, verify_z3ds_batch_events = register_verify_routes(
     router, registry.get("z3ds"),
+)
+verify_nsz, verify_nsz_events, verify_nsz_batch_events = register_verify_routes(
+    router, registry.get("nsz"),
 )

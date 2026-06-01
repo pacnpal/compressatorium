@@ -24,9 +24,18 @@ services:
       - CHD_CHDMAN_NICE=10
       - CHD_CHDMAN_IOPRIO_CLASS=2
       - CHD_CHDMAN_IOPRIO_LEVEL=6
+      # Nintendo Switch (nsz): directory holding your own prod.keys. Source of
+      # truth when set; required for Switch compress/decompress. When unset, the
+      # app best-effort looks in ~/.switch and your mounted volumes. No keys
+      # ship with the image.
+      # - SWITCH_KEYS=/keys
     volumes:
       # Required: Persistent config storage
       - ./config:/config
+      # Optional: Switch keys for the nsz tool. Mount a directory containing
+      # your own prod.keys, read-only. Keys come from a console you own; none
+      # ship with this image.
+      # - /host/path/to/switch-keys:/keys:ro
       # Optional: mount custom temp location (must match CHD_TEMP_DIR)
       # - ./temp:/temp
       # Mount your game directories here

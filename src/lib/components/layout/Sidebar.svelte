@@ -12,7 +12,7 @@
   const collapsed = $derived(ui.sidebarCollapsed);
   const view = $derived(ui.activeView);
   const tool = $derived(ui.workspaceTool);
-  const tools = registry.all();
+  const tools = $derived(registry.all().filter((t) => !ui.hiddenTools.has(t.id)));
 
   function go(target, t) {
     ui.closeDrawer();

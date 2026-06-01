@@ -1,12 +1,12 @@
 # Compressatorium
 
-> **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and two more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
+> **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A disc image converter that wraps three tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), and **z3ds_compressor** (Nintendo 3DS). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A disc image converter that wraps four tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), and **nsz** (Nintendo Switch). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
-* **Three tools in one.** CHDMAN, Dolphin, or 3DS compression, chosen per job.
+* **Four tools in one.** CHDMAN, Dolphin, 3DS, or Switch compression, chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -14,7 +14,7 @@ A disc image converter that wraps three tools: **CHDMAN** (MAME), **dolphin-tool
 * **Existing-output detection** with skip, rename, or overwrite.
 * **Delete-on-verify.** Optionally remove the source after a conversion verifies. Off by default.
 * **Progress tracking** through a live job queue.
-* **File info** for CHD, Dolphin, and 3DS files.
+* **File info** for CHD, Dolphin, 3DS, and Switch files.
 
 ### Supported Conversions
 
@@ -23,6 +23,7 @@ A disc image converter that wraps three tools: **CHDMAN** (MAME), **dolphin-tool
 | **CHDMAN** | .gdi, .cue, .bin, .iso | .chd | CD/DVD/LaserDisc to CHD |
 | **Dolphin** | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
+| **Switch** | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Nintendo Switch compress/decompress (needs your own prod.keys) |
 
 > **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs and Dolphin disc images. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
 
@@ -95,11 +96,12 @@ docker pull pacnpal/compressatorium:3.7.0-beta-3
 
 ### 1. Select Your Primary Tool
 
-When you open the Web UI, you'll see three tool options at the top:
+When you open the Web UI, you'll see the tool options at the top:
 
 * **CHDMAN** - For converting CD/DVD/LaserDisc images to CHD format
 * **Dolphin** - For GameCube/Wii disc image conversions
 * **3DS** - For compressing Nintendo 3DS ROMs
+* **Switch** - For compressing/decompressing Nintendo Switch dumps (needs your own prod.keys)
 
 **Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
 
@@ -399,6 +401,103 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 - `GET /api/z3ds-verify?path=/path/to/rom.zcci` - Verify compressed 3DS output integrity
 - `GET /api/z3ds-verify/events?path=/path/to/rom.zcci` - SSE stream for 3DS verify progress
 - `POST /api/z3ds-verify-batch/events` - SSE stream for batch 3DS verification
+
+---
+
+## Nintendo Switch Support
+
+Switch compression and decompression use [nsz](https://github.com/nicoboss/nsz),
+the homebrew-standard tool. It shrinks `.nsp`/`.xci` dumps into `.nsz`/`.xcz`
+(40-80% smaller) and reverses the process. Compressed output stays installable
+in Tinfoil and DBI.
+
+> **You must provide your own `prod.keys`.** Switch game content (the NCA files
+> inside an NSP/XCI) is encrypted, and encrypted data does not compress. nsz
+> decrypts the content, compresses it, and stores how to re-encrypt it so
+> decompression rebuilds a byte-identical original. That decrypt step needs your
+> console's keys. **This app ships no keys and nsz ships no keys.** You supply
+> your own, dumped from a console you own, for games you own. Without keys, the
+> Switch tool is hidden from the UI entirely. See the legal note at the bottom
+> of this section.
+
+### How to Use
+
+1. **Provide keys:** Mount the directory holding your `prod.keys` into the
+   container (read-only) and set `SWITCH_KEYS` to it (see below). Or place the
+   file at `~/.switch/prod.keys` for the `converter` user. The Switch tool only
+   appears once keys are found.
+2. **Select Primary Tool:** Choose **Switch** in the Web UI.
+3. **Pick a mode:** *Compress* (`.nsp`/`.xci` → `.nsz`/`.xcz`) or *Decompress*
+   (`.nsz`/`.xcz` → `.nsp`/`.xci`).
+4. **Browse and select** your files, then convert. Progress streams live.
+5. **Done:** Output lands alongside the source (or in your chosen output dir).
+
+### Supported File Formats
+
+- **`.nsp`** - Nintendo Submission Package (eShop-style dump)
+- **`.xci`** - Cartridge image (game card dump)
+- **`.nsz`** - Compressed NSP (zstandard over decrypted NCA content)
+- **`.xcz`** - Compressed XCI
+
+Compress maps `.nsp` → `.nsz` and `.xci` → `.xcz`; decompress reverses it.
+
+### Technical Details
+
+- nsz is installed from pip and runs as a subprocess (no shell). Verify uses
+  nsz's own `-V` integrity check on the compressed container.
+- The compress/decompress round trip is lossless. nsz keeps all protection
+  measures in place (the first 0x4000 bytes of each NCZ stay encrypted, and the
+  NCZ header records how to re-encrypt), so decompression reproduces the
+  original byte-for-byte.
+- Delete-on-verify is offered for compress only, since verify validates the
+  compressed `.nsz`/`.xcz` output.
+- Archive (ZIP/7z/RAR) inputs are not supported for Switch; convert the file on
+  disk.
+
+### Keys: setup and security
+
+- **Recommended:** mount the directory holding your keys read-only and set
+  `SWITCH_KEYS` to it:
+
+  ```yaml
+  # docker-compose.yml
+  services:
+    compressatorium:
+      environment:
+        - SWITCH_KEYS=/keys           # directory containing prod.keys
+      volumes:
+        - /host/path/to/switch-keys:/keys:ro
+  ```
+
+- `SWITCH_KEYS` is the source of truth when set. When unset, the app does a
+  cheap, non-blocking best-effort search at runtime: `~/.switch`, the nsz config
+  dirs, and the roots of your mounted game volumes (it does not recurse into
+  large game trees).
+- Keys are never baked into the image and are git-ignored, so a stray copy can't
+  be committed. The file only needs to be readable by uid 999 (`converter`).
+- Keys are never logged.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NSZ_PATH` | `nsz` | Path to the nsz binary (resolved on PATH by default) |
+| `SWITCH_KEYS` | *(unset)* | Directory holding your `prod.keys`. Source of truth when set; otherwise a best-effort search of `~/.switch` and your volumes runs at startup. |
+| `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for compression (1-22) |
+
+### REST API Endpoints
+
+- `POST /api/jobs` or `POST /api/jobs/batch` - Queue Switch jobs (use `mode: "nsz_compress"` or `"nsz_decompress"`)
+- `GET /api/nsz-info?path=/path/to/game.nsp` - Get file information (size, format, compression status)
+- `GET /api/nsz-verify?path=/path/to/game.nsz` - Verify a compressed Switch output
+- `GET /api/nsz-verify/events?path=/path/to/game.nsz` - SSE stream for Switch verify progress
+- `POST /api/nsz-verify-batch/events` - SSE stream for batch Switch verification
+
+### Legal note
+
+Compress only games you own, using keys you dumped from your own console. You
+are responsible for how you use this tool. The project distributes no Nintendo
+keys, firmware, or copyrighted game data.
 
 ---
 

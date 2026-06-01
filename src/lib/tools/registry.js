@@ -34,6 +34,14 @@ const Z3DS_SOURCE_EXTS = ['.cci', '.cia', '.3ds'];
 const Z3DS_VERIFY_EXTS = ['.zcci', '.zcia', '.z3ds'];
 const Z3DS_OUT_MAP = { '.cci': '.zcci', '.cia': '.zcia', '.3ds': '.z3ds' };
 
+// Switch (nsz). Both directions are "sources" depending on the chosen mode.
+const NSZ_COMPRESS_EXTS = ['.nsp', '.xci'];
+const NSZ_VERIFY_EXTS = ['.nsz', '.xcz'];
+const NSZ_SOURCE_EXTS = [...NSZ_COMPRESS_EXTS, ...NSZ_VERIFY_EXTS];
+const NSZ_OUT_MAP = {
+  '.nsp': '.nsz', '.xci': '.xcz', '.nsz': '.nsp', '.xcz': '.xci',
+};
+
 /**
  * @typedef {Object} ModeEntry
  * @property {string} mode
@@ -235,6 +243,43 @@ export const TOOLS = [
       if (!m) return path;
       const ext = `.${m[1].toLowerCase()}`;
       return swapExt(path, Z3DS_OUT_MAP[ext] ?? ext);
+    },
+  },
+  {
+    id: 'nsz',
+    label: 'Switch',
+    hint: 'Compress and decompress Nintendo Switch dumps (NSP/XCI ↔ NSZ/XCZ). Needs your own prod.keys.',
+    verifyPrefix: 'nsz',
+    sourceExts: NSZ_SOURCE_EXTS,
+    verifyExts: NSZ_VERIFY_EXTS,
+    modeGroups: ['nsz'],
+    groups: { nsz: 'Nintendo Switch' },
+    defaultMode: 'nsz_compress',
+    glyph: 'NSW',
+    accent: 'var(--badge-dat-match)',
+    // nsz picks its own zstandard level; no UI codec/level controls.
+    compressionCodecs: [],
+    compressionStyle: 'none',
+    modes: [
+      { mode: 'nsz_compress', kind: 'compress', label: 'Compress (NSP/XCI → NSZ/XCZ)',
+        group: 'nsz',
+        outputExt: null, inputExtensions: NSZ_COMPRESS_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
+      { mode: 'nsz_decompress', kind: 'extract', label: 'Decompress (NSZ/XCZ → NSP/XCI)',
+        group: 'nsz',
+        outputExt: null, inputExtensions: NSZ_VERIFY_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+    ],
+    getInfo: (path) => api.getNszInfo(path),
+    verify: (path, opts) => api.verifyNsz(path, opts),
+    verifyBatch: (paths, opts) => api.verifyBatchNsz(paths, opts),
+    productPath: (path) => {
+      const m = /\.(nsp|xci|nsz|xcz)$/i.exec(path);
+      if (!m) return path;
+      const ext = `.${m[1].toLowerCase()}`;
+      return swapExt(path, NSZ_OUT_MAP[ext] ?? ext);
     },
   },
 ];

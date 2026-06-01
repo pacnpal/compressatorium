@@ -157,9 +157,11 @@ async def list_files(
                         is_convertible = "chdman" in convertible_by
                         is_dolphin_convertible = "dolphin" in convertible_by
                         is_z3ds_convertible = "z3ds" in convertible_by
+                        is_nsz_convertible = "nsz" in convertible_by
                         chd_status = by_tool.get("chdman")
                         dolphin_status = by_tool.get("dolphin")
                         z3ds_status = by_tool.get("z3ds")
+                        nsz_status = by_tool.get("nsz")
                         has_chd = chd_status is not None
                         chd_ready = chd_status.exists if chd_status else False
                         has_rvz = dolphin_status is not None
@@ -168,6 +170,9 @@ async def list_files(
                         has_z3ds = z3ds_status is not None
                         z3ds_ready = z3ds_status.exists if z3ds_status else False
                         z3ds_path = z3ds_status.path if z3ds_status else None
+                        has_nsz = nsz_status is not None
+                        nsz_ready = nsz_status.exists if nsz_status else False
+                        nsz_path = nsz_status.path if nsz_status else None
 
                         archive_items = None
                         archive_has_chd = None
@@ -212,6 +217,10 @@ async def list_files(
                             has_z3ds=has_z3ds,
                             z3ds_ready=z3ds_ready,
                             z3ds_path=z3ds_path,
+                            nsz_convertible=is_nsz_convertible,
+                            has_nsz=has_nsz,
+                            nsz_ready=nsz_ready,
+                            nsz_path=nsz_path,
                             archive_items=archive_items,
                             archive_has_chd=archive_has_chd,
                             archive_truncated=archive_truncated
@@ -291,9 +300,11 @@ async def search_files(
                                 is_chd_convertible = "chdman" in convertible_by
                                 is_dolphin_convertible = "dolphin" in convertible_by
                                 is_z3ds_convertible = "z3ds" in convertible_by
+                                is_nsz_convertible = "nsz" in convertible_by
                                 chd_status = by_tool.get("chdman")
                                 dolphin_status = by_tool.get("dolphin")
                                 z3ds_status = by_tool.get("z3ds")
+                                nsz_status = by_tool.get("nsz")
                                 chd_path = (
                                     str(Path(item_path).with_suffix(".chd"))
                                     if is_chd_convertible
@@ -311,6 +322,9 @@ async def search_files(
                                 has_z3ds = z3ds_status is not None
                                 z3ds_ready = z3ds_status.exists if z3ds_status else False
                                 z3ds_path = z3ds_status.path if z3ds_status else None
+                                has_nsz = nsz_status is not None
+                                nsz_ready = nsz_status.exists if nsz_status else False
+                                nsz_path = nsz_status.path if nsz_status else None
                                 files.append(
                                     {
                                         "name": item,
@@ -329,6 +343,10 @@ async def search_files(
                                         "has_z3ds": has_z3ds,
                                         "z3ds_ready": z3ds_ready,
                                         "z3ds_path": z3ds_path,
+                                        "nsz_convertible": is_nsz_convertible,
+                                        "has_nsz": has_nsz,
+                                        "nsz_ready": nsz_ready,
+                                        "nsz_path": nsz_path,
                                         "in_archive": False,
                                         "convertible_by": convertible_by,
                                         "outputs": outputs,
