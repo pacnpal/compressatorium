@@ -1,5 +1,19 @@
 # Release Notes
 
+## 4.0.0-beta-9 (2026-06-01)
+
+### File browser polish + Switch key visibility
+
+#### New
+
+- **The file browser hides OS/NAS junk.** Clutter like `.DS_Store`, AppleDouble (`._*`), `Thumbs.db`, `desktop.ini`, `$RECYCLE.BIN`, `System Volume Information`, `@eaDir`, `#recycle`/`@Recycle`, `lost+found`, `.Trash-*`, and `.nfs*`/`.fuse_hidden*` no longer show up in listings or search (matched case-insensitively).
+- **Delete non-empty folders, with a guardrail.** You can now delete a directory and everything inside it. It takes two explicit confirmations — the second spells out that it's recursive and permanent. Files and empty folders are unchanged (one confirm), and deletion is still blocked while a conversion is using anything under the folder.
+
+#### Internal
+
+- **Switch key discovery is now logged at startup.** The log says whether the Switch (nsz) tool is enabled and, when it isn't, which locations were searched for `prod.keys` and how to enable it (`SWITCH_KEYS`). Previously the decision was silent.
+- Documentation moved under `docs/` with internal links updated.
+
 ## 4.0.0-beta-8 (2026-06-01)
 
 ### Nintendo Switch support (nsz)
