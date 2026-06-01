@@ -44,7 +44,7 @@
   const colTool = $derived(ui.workspaceTool);
   const cols = $derived(layout.columnsFor(colTool));
   const nameSet = $derived(layout.columns[colTool]?.name ?? null);
-  const tableMinWidth = $derived(32 + 40 + cols.size + cols.ext + cols.status + (nameSet ?? 160));
+  const tableMinWidth = $derived(32 + 84 + cols.size + cols.ext + cols.status + (nameSet ?? 160));
 
   // Snapshot of a column's width at drag start; the move handler applies
   // the cumulative delta on top of it.
@@ -348,7 +348,7 @@
               Status
               {@render colHandle('status', 'Resize Status column')}
             </th>
-            <th class="actions"><span class="sr-only">Actions</span></th>
+            <th class="actions">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -497,7 +497,9 @@
     table-layout: fixed;
   }
   .table col.col-sel { width: 32px; }
-  .table col.col-actions { width: 40px; }
+  /* Wide enough for the visible "Actions" header (uppercased) plus the
+     row's action buttons. */
+  .table col.col-actions { width: 84px; }
   thead th {
     position: relative;
     text-align: left;
