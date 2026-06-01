@@ -285,7 +285,6 @@
     font-size: var(--text-sm);
     align-items: flex-start;
   }
-  .warning strong { font-weight: var(--weight-semibold); }
   .warning.info { background: var(--info-muted); color: var(--info); }
 
   .actions {

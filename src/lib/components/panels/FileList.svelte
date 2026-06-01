@@ -31,6 +31,7 @@
   const sortOrder = $derived(fileBrowser.sortOrder);
   const filter = $derived(fileBrowser.filter);
   const loading = $derived(fileBrowser.loading);
+  const searching = $derived(fileBrowser.searching);
   const error = $derived(fileBrowser.entriesError);
   const allSelected = $derived(fileBrowser.allVisibleSelected);
   const selectedCount = $derived(fileBrowser.selectedFiles.size);
@@ -196,14 +197,24 @@
     </form>
 
     <div class="actions">
-      <IconButton
-        label="Search all convertible files (recursive, including inside archives)"
-        size="sm"
-        title="Search all — recursively list every convertible file under this folder, including inside archives"
+      <button
+        type="button"
+        class="search-all"
+        class:busy={searching}
+        disabled={searching}
+        aria-label="Search all convertible files (recursive, including inside archives)"
+        aria-busy={searching}
+        title="Recursively list every convertible file under this folder, including inside archives"
         onclick={() => fileBrowser.searchAll()}
       >
-        <FolderSearch size={14} />
-      </IconButton>
+        {#if searching}
+          <Loader class="spin" size={14} />
+          <span>Searching…</span>
+        {:else}
+          <FolderSearch size={14} />
+          <span>Search all</span>
+        {/if}
+      </button>
       <label class="filter">
         <Filter size={12} />
         <select
@@ -378,6 +389,36 @@
     cursor: pointer;
   }
   .filter select:focus-visible { outline: none; }
+
+  .search-all {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    background: var(--surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    color: var(--text-1);
+    font-size: var(--text-sm);
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out);
+  }
+  .search-all:hover:not(:disabled) {
+    background: var(--surface-3, var(--surface-2));
+    border-color: var(--border-strong, var(--border-subtle));
+  }
+  .search-all:focus-visible {
+    outline: 2px solid var(--accent, var(--text-1));
+    outline-offset: 1px;
+  }
+  .search-all:disabled,
+  .search-all.busy {
+    cursor: default;
+    color: var(--text-2);
+  }
 
   .selection-bar {
     display: flex;

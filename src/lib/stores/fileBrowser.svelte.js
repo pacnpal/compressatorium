@@ -33,6 +33,7 @@ class FileBrowserStore {
   searchMode = $state(false);
   searchResults = $state(null);
   searchQuery = $state('');
+  searching = $state(false);
 
   // View state
   filter = $state(null);
@@ -334,6 +335,7 @@ class FileBrowserStore {
    */
   async _enterSearch(query) {
     if (!this.currentPath) return;
+    this.searching = true;
     try {
       const data = await api.searchFiles(this.currentPath, true, true);
       // Flip into search mode only on success. If the request fails,
@@ -352,6 +354,8 @@ class FileBrowserStore {
     } catch (e) {
       this.entriesError = e?.message ?? 'Search failed';
       // Stay out of search mode so the directory listing remains visible.
+    } finally {
+      this.searching = false;
     }
   }
 
