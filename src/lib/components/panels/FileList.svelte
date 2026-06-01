@@ -10,6 +10,7 @@
   import Pager from '$lib/components/ui/Pager.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import IconButton from '$lib/components/ui/IconButton.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import FolderSearch from '@lucide/svelte/icons/folder-search';
@@ -197,24 +198,18 @@
     </form>
 
     <div class="actions">
-      <button
-        type="button"
-        class="search-all"
-        class:busy={searching}
-        disabled={searching}
-        aria-label="Search all convertible files (recursive, including inside archives)"
-        aria-busy={searching}
+      <Button
+        variant="secondary"
+        size="sm"
+        loading={searching}
         title="Recursively list every convertible file under this folder, including inside archives"
         onclick={() => fileBrowser.searchAll()}
       >
-        {#if searching}
-          <Loader class="spin" size={14} />
-          <span>Searching…</span>
-        {:else}
-          <FolderSearch size={14} />
-          <span>Search all</span>
-        {/if}
-      </button>
+        {#snippet icon()}
+          {#if searching}<Loader class="spin" size={14} />{:else}<FolderSearch size={14} />{/if}
+        {/snippet}
+        {searching ? 'Searching…' : 'Search all'}
+      </Button>
       <label class="filter">
         <Filter size={12} />
         <select
@@ -389,36 +384,6 @@
     cursor: pointer;
   }
   .filter select:focus-visible { outline: none; }
-
-  .search-all {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-2) var(--space-3);
-    background: var(--surface-2);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md);
-    color: var(--text-1);
-    font-size: var(--text-sm);
-    white-space: nowrap;
-    cursor: pointer;
-    transition: background var(--dur-fast) var(--ease-out),
-      color var(--dur-fast) var(--ease-out),
-      border-color var(--dur-fast) var(--ease-out);
-  }
-  .search-all:hover:not(:disabled) {
-    background: var(--surface-3, var(--surface-2));
-    border-color: var(--border-strong, var(--border-subtle));
-  }
-  .search-all:focus-visible {
-    outline: 2px solid var(--accent, var(--text-1));
-    outline-offset: 1px;
-  }
-  .search-all:disabled,
-  .search-all.busy {
-    cursor: default;
-    color: var(--text-2);
-  }
 
   .selection-bar {
     display: flex;

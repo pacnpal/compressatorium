@@ -336,6 +336,10 @@ class FileBrowserStore {
   async _enterSearch(query) {
     if (!this.currentPath) return;
     this.searching = true;
+    // Clear any stale error from a prior failed search/load — symmetric
+    // with the directory load paths. Otherwise the error banner survives
+    // through a retry and even past a later successful search.
+    this.entriesError = null;
     try {
       const data = await api.searchFiles(this.currentPath, true, true);
       // Flip into search mode only on success. If the request fails,
