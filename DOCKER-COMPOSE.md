@@ -20,7 +20,7 @@ docker-compose up -d
 - Mode: Web UI
 - Concurrent jobs: 1
 
-**Use case:** Perfect for a top-level directory containing games organized in subdirectories. The Web UI will recursively browse all subdirectories, allowing you to navigate and convert files anywhere in the directory tree.
+**Use case:** A top-level directory with games in subfolders. The Web UI browses every subdirectory, so you can convert files anywhere in the tree.
 
 ---
 
@@ -39,7 +39,7 @@ docker-compose -f docker-compose.multi-volume.yml up -d
 - `./games/ps2` → `/data/ps2`
 - Temp: `/config/temp` (inside `./config`)
 
-**Use case:** Ideal when you have games stored in completely separate directories (e.g., different physical drives or network shares). Each mount point appears as a separate volume in the Web UI.
+**Use case:** Games kept in separate directories, like different drives or network shares. Each mount shows up as its own volume in the Web UI.
 
 **Customization:**
 Edit the file to add/remove volume mounts under `/data/*`.
@@ -225,7 +225,7 @@ docker-compose exec compressatorium bash
 
 ## Production Deployment
 
-For production deployment guidance, security recommendations, and comprehensive checklists, see **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+For production guidance, security notes, and checklists, see **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 Key recommendations:
 - Enable resource limits

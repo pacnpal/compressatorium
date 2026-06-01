@@ -4,12 +4,12 @@
 
 ### Resizable panels and table columns (#120)
 
-#### ✨ New
+#### New
 
 - **The workspace layout is now adjustable.** Drag the divider between the file list and the right Convert/Jobs panel to give the table more room, and drag individual table column borders (Name, Size, Ext, Status) to size them how you like. Double-click a divider or column border to reset it. The handles are keyboard-accessible too (focus, then arrow keys; Enter or Home resets).
 - **Widths are remembered on the server.** Layout preferences persist through a browser or cache wipe and follow you across browsers. This is the first server-stored preference; everything else still lives in localStorage. The panel split is shared, while column widths are kept per tool (chdman / dolphin / z3ds) since each lists different file types.
 
-#### 🔧 Internal
+#### Internal
 
 - New generic `preferences` key/value table (Alembic migration `0002`, idempotent) with a `PreferencesStore` service and `GET`/`PUT /api/preferences`. Single-user, no auth. Reusable for future preferences.
 - A `layout` store loads localStorage synchronously on boot (no flash), reconciles with the server, and writes both back debounced. A dirty flag plus a mutation-version guard keep an in-flight server sync from clobbering a width the user just changed, and keep an unsaved edit from being lost on tab close.
@@ -19,7 +19,7 @@
 
 ### Visible Actions header (#119)
 
-#### ✨ Changed
+#### Changed
 
 - **The file table's Actions column has a visible header.** It was a screen-reader-only label before; now it reads "Actions" like the other column headers.
 
@@ -27,13 +27,13 @@
 
 ### Search all: instant feedback + clear label (#118)
 
-#### 🐛 Fixed
+#### Fixed
 
 - **"Search all" now reacts the instant you click it.** The recursive scan (which walks into archives and can take a few seconds) ran with no loading state, so the button sat silent until results came back. It now flips to a spinner with "Searching…" the moment you click and disables itself while the scan runs, matching the Refresh button. This restores the immediate feedback the old Preact UI had.
 - **The button says what it does.** Replaced the bare folder-search icon with a labelled "Search all" button, so it's no longer a guess.
 - **Stale error banner no longer survives a search.** `_enterSearch` now clears `entriesError` on entry, the same as the directory load paths. A failed search used to leave the error banner up through a retry and even past a later successful search.
 
-#### 🔧 Internal
+#### Internal
 
 - "Search all" uses the shared `Button` component instead of a one-off `<button>` with hand-rolled hover/focus/disabled CSS. The spinner is driven through the `icon` snippet because `Button`'s `loading` prop only dims and changes the cursor.
 - Overlapping `_enterSearch` calls are dropped with an early return, so a finishing request can't clear the busy flag while a later one is still running.
@@ -43,11 +43,11 @@
 
 ### In-app Help content
 
-#### ✨ New
+#### New
 
 - **The Help view is no longer a placeholder.** It now covers the whole workflow end to end: picking a tool, browsing and Search All, a full mode reference per tool, the compression codecs and the zlib / AetherSX2 gotcha, where output lands and the skip / rename / overwrite choice, the job queue, the verify-then-delete safety flow, the CHD inspector, DAT matching, archive conversion, a troubleshooting list, an FAQ for the common edge cases, and how to file bugs and feature requests. All of it written to match the app, not the README.
 
-#### 🔧 Internal
+#### Internal
 
 - **Repo links live in one place.** Added `repository`, `bugs`, and `homepage` to `package.json`. The Help view's GitHub and issues links are derived from those fields with a tree-shaken named import, so moving the repo is a one-line change instead of a hunt through hardcoded URLs.
 
@@ -55,17 +55,17 @@
 
 ### Sidebar: full title + relocated collapse control
 
-#### 🐛 Fixed
+#### Fixed
 
 - **Brand title no longer truncates.** The "Compressatorium" wordmark was being clipped to an ellipsis in the sidebar; `.brand-text` now keeps its full width (no `flex-shrink`, no `overflow`/ellipsis clamp) and fits within the existing 240px rail.
 
-#### ✨ Changed
+#### Changed
 
-- **Collapse toggle promoted to its own section.** The sidebar collapse / expand control moved out of the brand row into a dedicated, full-width labelled row (`Collapse sidebar` / `Expand sidebar`) below the Tool list, set off by a divider — far more visible than the small icon previously tucked beside the logo. Relocating it freed the horizontal space the title needed, so the sidebar width is unchanged at 240px.
+- **Collapse toggle promoted to its own section.** The sidebar collapse / expand control moved out of the brand row into a dedicated, full-width labelled row (`Collapse sidebar` / `Expand sidebar`) below the Tool list, set off by a divider, far more visible than the small icon previously tucked beside the logo. Relocating it freed the horizontal space the title needed, so the sidebar width is unchanged at 240px.
 
 ### Archive conversion test coverage (#117)
 
-#### 🔧 Internal
+#### Internal
 
 - New `tests/test_archive_conversion_e2e.py` exercises end-to-end archive conversion across every supported source extension, locking in the issue #113 fix. `.gcm` dropped from the README's supported-format list.
 
@@ -73,34 +73,34 @@
 
 ### Live job toasts + one-click Search all
 
-#### ✨ New
+#### New
 
-- **Live toast for every running job.** A new `jobToasts` tracker surfaces a svelte-sonner loading toast for each job in the `processing` state, keyed by job id, and resolves it to success / error / cancelled when the job reaches a terminal state. A single reconcile `$effect` in `App.svelte` drives it off `jobs.jobs`, so jobs restored from a snapshot/poll and jobs started by *other* clients get a toast too — not just ones queued in the current tab. External-scan modes (`metadata_scan` / `dat_match`) are excluded unless the user has opted to show them, matching the queue's default visibility.
+- **Live toast for every running job.** A new `jobToasts` tracker surfaces a svelte-sonner loading toast for each job in the `processing` state, keyed by job id, and resolves it to success / error / cancelled when the job reaches a terminal state. A single reconcile `$effect` in `App.svelte` drives it off `jobs.jobs`, so jobs restored from a snapshot/poll and jobs started by *other* clients get a toast too, not just ones queued in the current tab. External-scan modes (`metadata_scan` / `dat_match`) are excluded unless the user has opted to show them, matching the queue's default visibility.
 - **One-click "Search all" restored.** The Preact UI had a one-click action that recursively listed every convertible file under the current folder (including inside archives); the Svelte rebuild had gated the recursive scan behind a text query, so an empty query just exited search. A `FolderSearch` toolbar button now runs the all-files scan (empty filter = show everything), and a forced refresh re-runs it while in that view.
 
-#### 🐛 Fixed
+#### Fixed
 
 - **Correct empty-string toast description.** `runningDescription` used `pct ?? lead ?? 'Processing…'`, but `''` is not nullish, so a job with no message and an unrecognised mode produced a blank description. Truthiness fallbacks now land on the percentage or `Processing…` instead.
 
-#### 🔧 Internal
+#### Internal
 
 - `jobToasts` uses null-prototype object maps (non-reactive): the reconcile effect both reads and writes the collection, so a `SvelteMap` would loop; the plain object map is also `svelte/prefer-svelte-reactivity` clean.
 - Optional chaining on job props in the `App.svelte` reactivity loop, matching reconcile's defensive `job?.id`.
 
 ### Archive conversion for every tool (issue #113)
 
-#### 🐛 Fixed
+#### Fixed
 
-- **Convert any supported file from inside an archive.** A `.zip` (or `.7z`/`.rar`) containing 3DS ROMs previously showed nothing to convert — the archive listing only recognised CHDMAN source extensions, and only CHDMAN create modes accepted archive members. Now every convertible *source* is surfaced and convertible from inside an archive: CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), and 3DS (`.cci`/`.cia`/`.3ds`). CHDMAN extract/copy modes stay archive-disabled because they act on a finished `.chd` (an output, not a source).
+- **Convert any supported file from inside an archive.** A `.zip` (or `.7z`/`.rar`) containing 3DS ROMs previously showed nothing to convert, the archive listing only recognised CHDMAN source extensions, and only CHDMAN create modes accepted archive members. Now every convertible *source* is surfaced and convertible from inside an archive: CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), and 3DS (`.cci`/`.cia`/`.3ds`). CHDMAN extract/copy modes stay archive-disabled because they act on a finished `.chd` (an output, not a source).
 - **Correct output extension for 3DS archive members.** z3ds derives its output extension from the input (`.3ds`→`.z3ds`, `.cci`→`.zcci`, `.cia`→`.zcia`); archive members now preserve their original extension through path routing so the mapping is right (previously they would have defaulted to `.zcci`).
 
-#### 🔧 Internal
+#### Internal
 
 - Archive listing is driven by the tool registry (`registry.archive_input_extensions()`) instead of a hardcoded set, so it stays in lockstep with the on-disk directory view and with the `allows_archive_input` mode flags.
 - `allows_archive_input` is now set on every convertible-source mode (Dolphin + 3DS, alongside CHDMAN create); the frontend tool registry mirrors the same flags.
 - New `ArchiveService._output_name_for_member()` keeps the member's extension on the flattened output name; CHDMAN/Dolphin strip it via `Path.stem`, leaving their output paths unchanged.
 
-## 4.0.0-beta-1 — Svelte 5 frontend rebuild (2026-05-29)
+## 4.0.0-beta-1: Svelte 5 frontend rebuild (2026-05-29)
 
 The first beta of the rebuilt frontend. Backend / REST / SSE contract
 unchanged; the whole `static/js/app.js` Preact-via-htm monolith is
@@ -116,22 +116,22 @@ bits-ui, svelte-sonner, mode-watcher).
 
 ### Duplicate-output preflight (P7 part 2)
 
-#### ✨ New
+#### New
 
-- **DuplicateModal preflight.** ConvertPanel now runs `conversion.checkDuplicates(paths)` before each submit. If the backend reports any output collision (`d.exists === true`), the dialog opens with the conflict list and three choices: Cancel, Skip duplicates, Overwrite all. Resolution flows back into `conversion.submit(paths, { duplicateAction })` via a per-submit `Promise` resolver — no global pending-state to leak. No collisions → submit fires straight through, no modal.
+- **DuplicateModal preflight.** ConvertPanel now runs `conversion.checkDuplicates(paths)` before each submit. If the backend reports any output collision (`d.exists === true`), the dialog opens with the conflict list and three choices: Cancel, Skip duplicates, Overwrite all. Resolution flows back into `conversion.submit(paths, { duplicateAction })` via a per-submit `Promise` resolver, no global pending-state to leak. No collisions → submit fires straight through, no modal.
 
-#### 🔧 Internal
+#### Internal
 
 - Duplicate-modal state lives entirely inside ConvertPanel as a `$state` resolver-or-null. Opening sets the resolver; the modal's `onResolve` callback nulls it and resolves the awaited promise. Avoids stale-prompt bugs when the user submits, cancels, and re-submits.
 
 ### DAT view + dashboard cards (P7/P8)
 
-#### ✨ New
+#### New
 
 - **DAT view shipped.** `src/lib/components/views/DATView.svelte` exposes Import DAT (file picker → `api.importDAT`), Sync MAMERedump (with a 2 s poll loop that auto-stops when `syncStatus.syncing` flips false), per-DAT delete, and a stats strip (total DATs / entries / cached matches). The view drives the existing `datMatching` store; the FileList badges that the store already powers light up once imports complete.
-- **Dashboard shipped.** Five cards composed via a generic `StatCard` wrapper: `QueueSummaryCard` (queued / active / done / failed counts + stuck-state badge), `VolumeOverviewCard` (top 4 volumes + file counts), `RecentConversionsCard` (last 5 terminal jobs across any tool), `VerificationStatusCard` (cached verified count + in-flight batch), `QuickToolsCard` (one tile per registered tool, deep-links to `#/workspace/<tool>` — adding a 4th tool surfaces a 4th tile automatically).
+- **Dashboard shipped.** Five cards composed via a generic `StatCard` wrapper: `QueueSummaryCard` (queued / active / done / failed counts + stuck-state badge), `VolumeOverviewCard` (top 4 volumes + file counts), `RecentConversionsCard` (last 5 terminal jobs across any tool), `VerificationStatusCard` (cached verified count + in-flight batch), `QuickToolsCard` (one tile per registered tool, deep-links to `#/workspace/<tool>`, adding a 4th tool surfaces a 4th tile automatically).
 
-#### 🔧 Internal
+#### Internal
 
 - `datMatching` store gains `dats`, `datsLoading`, `datsError`, `stats` $state fields + `loadDATs()`. The duplicate `importDAT` definition is removed; the kept version refreshes the DATs list (not just hasDats) after import.
 - `StatCard` exposes `title`, `subtitle`, `icon` / `body` / `footer` snippets, and a `--card-accent` CSS variable so each tile can take its own accent color without per-tile style overrides.
@@ -139,28 +139,28 @@ bits-ui, svelte-sonner, mode-watcher).
 
 ### Confirmation + file modals (P7 part 1)
 
-#### ✨ New
+#### New
 
 - **Modal foundation.** `BaseModal.svelte` wraps bits-ui Dialog with shared chrome (header, title, close, description, footer); `ConfirmModal.svelte` provides the standard confirm/cancel pattern. All future modals slot into these via `{#snippet body()}` / `{#snippet footer()}`.
 - **DeleteModal + BulkDeleteModal.** The Delete action in `RowActionsMenu` now opens a destructive-styled confirm dialog; the "Delete" bulk-action in FileList's selection bar opens the bulk version (preview list capped at 20 rows + tail counter, calls `api.deleteBatch`). Both refresh the file listing on success.
 - **RenameModal.** RowActionsMenu Rename opens a file-name input pre-populated with the current name (Enter submits, Esc cancels, bits-ui Dialog handles focus-trap).
-- **CHDInfoModal.** RowActionsMenu Info opens a dialog that calls `tool.getInfo(path)` via `registry.toolForVerifyPath` — no `if (tool === 'chdman')` chains, works for `.chd` / `.rvz` / `.z3ds` identically. Renders the backend payload as a labelled key/value list with JSON pretty-print for nested objects.
+- **CHDInfoModal.** RowActionsMenu Info opens a dialog that calls `tool.getInfo(path)` via `registry.toolForVerifyPath`, no `if (tool === 'chdman')` chains, works for `.chd` / `.rvz` / `.z3ds` identically. Renders the backend payload as a labelled key/value list with JSON pretty-print for nested objects.
 - **CancelAllJobsModal + ClearDoneModal.** Replace the inline `window.confirm()` calls in JobsPanel. The Cancel-all dialog reports the queued+processing count; the Clear dialog reports the completed+failed+cancelled count. Both bind their busy state to the store flags so the buttons disable mid-action.
 
-#### 🔧 Internal
+#### Internal
 
 - New `src/lib/components/modals/` (BaseModal, ConfirmModal, BulkVerifyModal, BulkDeleteModal, DeleteModal, RenameModal, CHDInfoModal, CancelAllJobsModal, ClearDoneModal). Each modal mounts via App.svelte and self-renders against a `ui` store target (`ui.deleteTarget`, `ui.bulkDeleteEntries`, `ui.renameTarget`, `ui.chdInfoTarget`, `ui.showCancelAll`, `ui.showClearDone`, `ui.bulkVerifyItems`).
-- `JobsPanel.handleCancelAll` / `handleClearCompleted` now just toggle `ui.show*` flags instead of running their own try/catch — the modal owns the confirmation + success/error toast.
+- `JobsPanel.handleCancelAll` / `handleClearCompleted` now just toggle `ui.show*` flags instead of running their own try/catch, the modal owns the confirmation + success/error toast.
 
 ### Verify flows (P6)
 
-#### ✨ New
+#### New
 
 - **Single + batch verify shipped.** `RowActionsMenu` already routed Verify to `verification.verifyOne(toolId, path)` via `registry.toolForVerifyPath`; P6 adds the batch flow. The new `BulkVerifyModal` (bits-ui Dialog) opens from a "Verify selected" button in the FileList selection bar. It groups the selection by tool (`.chd` → chdman, `.rvz/.wia/.gcz/.wbfs` → dolphin, `.z3ds/.zcci/.zcia` → z3ds), runs each group as a back-to-back batch, shows live per-file progress + an overall counter, and supports mid-run cancel via `verification.cancelBatch()` (AbortController).
 - **Verified set rehydrates on reload.** `App.svelte` calls `verification.loadVerified()` on mount so `OK` badges and the delete-on-verify gate survive a page refresh.
-- **Selection bulk-action bar.** FileList's selection bar gains `Verify` (hidden when none of the selected files have a verify-extension match — registry-driven) and `Delete` actions; the Delete action sets `ui.bulkDeleteEntries` for the P7 modal to consume.
+- **Selection bulk-action bar.** FileList's selection bar gains `Verify` (hidden when none of the selected files have a verify-extension match, registry-driven) and `Delete` actions; the Delete action sets `ui.bulkDeleteEntries` for the P7 modal to consume.
 
-#### 🔧 Internal
+#### Internal
 
 - New `src/lib/components/modals/` directory; mounted via App.svelte so any panel can launch a modal by writing to a `ui` target (`ui.bulkVerifyItems`, `ui.bulkDeleteEntries`, etc.). bits-ui Dialog handles focus-trap / Escape / overlay-click for free.
 - The bulk-verify dialog tracks its own `running` / `groupIndex` / `runResults` state and uses `verification.batchRun` for the in-flight per-file progress payload (`done`, `currentPath`, `currentFilename`, `currentPercent`, `message`).
@@ -168,36 +168,36 @@ bits-ui, svelte-sonner, mode-watcher).
 
 ### Conversion config + job queue (P5)
 
-#### ✨ New
+#### New
 
 - **P5 conversion config + job queue shipped.** `ModeSelect`, `CompressionPicker`, `ConvertPanel`, `JobRow`, `JobsPanel`, `RowActionsMenu` components under `src/lib/components/panels/`. Pick mode (grouped by tool/group label from registry), pick compression (chdman: chip-multi; Dolphin: single codec + numeric level via codec metadata in registry; z3ds: nothing rendered), set output directory, toggle delete-on-verify, submit. Live progress, queue/completed/failed tabs with badge counts, per-row Cancel / Dismiss, global Cancel all + Clear, stuck-state banner with Recover action, "Show metadata jobs" toggle persists.
-- **Per-row file actions menu.** `bits-ui` DropdownMenu drives the FileRow `⋯` button: Info / Verify / Rename / Delete with keyboard-accessible focus management. Verify wires through `verification.verifyOne(toolId, path)` via registry lookup (`registry.toolForVerifyPath(path)`) — no tool-specific branches. Rename / Delete set `ui.renameTarget` / `ui.deleteTarget` for the modals to be wired in P7.
+- **Per-row file actions menu.** `bits-ui` DropdownMenu drives the FileRow `⋯` button: Info / Verify / Rename / Delete with keyboard-accessible focus management. Verify wires through `verification.verifyOne(toolId, path)` via registry lookup (`registry.toolForVerifyPath(path)`), no tool-specific branches. Rename / Delete set `ui.renameTarget` / `ui.deleteTarget` for the modals to be wired in P7.
 - **Codec metadata in the registry.** Each tool descriptor now declares its `compressionCodecs`, `compressionStyle` (`'multi'` | `'single-with-level'` | `'none'`), and optional `compressionLevelRange`. `CompressionPicker` reads this and renders the right control with zero `if (tool === ...)` checks. chdman: 5 codecs as chips (zlib / lzma / lzma2 / flac / cdfl), comma-joined. Dolphin: 4 codecs + "no compression" via dropdown plus 1–22 level slider (default 19, MAME Redump). z3ds: control hidden.
 
-#### 🔧 Internal
+#### Internal
 
-- `conversion.svelte.js` gains `toggleCodec(codec)` (chdman chip toggle, with `'none'` mutex) and `setSingleCodec(codec)` (Dolphin) — clean store API for the picker.
+- `conversion.svelte.js` gains `toggleCodec(codec)` (chdman chip toggle, with `'none'` mutex) and `setSingleCodec(codec)` (Dolphin), clean store API for the picker.
 - `JobsPanel` consumes `jobs.pageJobs`, `jobs.queuedCount + jobs.processingCount`, etc. directly from the store so the rune-graph tracks updates without intermediate `$state` mirrors.
 - `bind:checked={() => jobs.showExternalScanJobs, (v) => jobs.setShowExternalScanJobs(v)}` uses Svelte 5.9+ function bindings to drive the metadata-jobs toggle through the store setter (which persists to localStorage).
 - `RowActionsMenu` styles its bits-ui primitives via `:global(...)` selectors keyed off the `[data-highlighted]` / `[data-disabled]` attributes the headless components emit.
 - `FileRow` drops its inline `.actions-trigger` styles; `RowActionsMenu` owns them now.
 
-#### 📚 Documentation
+#### Documentation
 
-- `README.md` — Frontend Development section reflects the conversion config + job queue.
-- `AGENTS.md` — adds "Per-row actions live in `RowActionsMenu.svelte`" pointer.
+- `README.md`, Frontend Development section reflects the conversion config + job queue.
+- `AGENTS.md`, adds "Per-row actions live in `RowActionsMenu.svelte`" pointer.
 
 ### File browser + library adoptions (Lucide, Bits UI, svelte-sonner, mode-watcher) (P4)
 
-#### ✨ New
+#### New
 
-- **P4 file browser shipped.** `VolumeList` / `Breadcrumb` / `FileList` / `FileRow` / `ConvertPanel` / `JobsPanel` components under `src/lib/components/panels/`, all driven by the existing `fileBrowser` store. Sort, filter (extension list derived from `registry.allFilterableExts()`), paginate, shift-click range select, click-to-navigate folders, click-to-enter archives — works end-to-end. ConvertPanel + JobsPanel are placeholders for P5.
+- **P4 file browser shipped.** `VolumeList` / `Breadcrumb` / `FileList` / `FileRow` / `ConvertPanel` / `JobsPanel` components under `src/lib/components/panels/`, all driven by the existing `fileBrowser` store. Sort, filter (extension list derived from `registry.allFilterableExts()`), paginate, shift-click range select, click-to-navigate folders, click-to-enter archives, works end-to-end. ConvertPanel + JobsPanel are placeholders for P5.
 - **Lucide Svelte icons** replace every Unicode glyph placeholder. ThemeToggle finally has unambiguous Sun / Moon / Monitor icons; FileRow uses Disc / Disc3 / Gamepad2 / Archive / Folder; etc.
-- **Bits UI** added as a dependency (no components in use yet — reserved for P5 DropdownMenu/ContextMenu row actions and P7 modal Dialog).
+- **Bits UI** added as a dependency (no components in use yet, reserved for P5 DropdownMenu/ContextMenu row actions and P7 modal Dialog).
 - **svelte-sonner** replaces the hand-rolled `Notification.svelte`. Call `toast.success/error/info/warning(...)` from any store; the `<Toaster />` lives in `App.svelte`. Brings rich color, swipe-to-dismiss, keyboard support, multi-toast queueing for free.
 - **mode-watcher** replaces the hand-rolled theme state in `ui.svelte.js`. Cross-tab sync, system-preference tracking, `color-scheme` style management, and the dark/light class on `<html>` all delegated. The inline FOUC-prevention script in `index.html` uses the same storage key (`theme-preference`) for parity with the legacy frontend.
 
-#### 🔧 Internal
+#### Internal
 
 - `src/styles/tokens.css` selectors migrated from `[data-theme="light"|"dark"]` to `:root` (light defaults) + `:root.dark` (mode-watcher's class convention).
 - `ui.svelte.js` deletes ~70 lines: `theme` / `systemIsDark` / `resolvedTheme` / `setTheme` / `cycleTheme` / `applyTheme` / `notification` / `notify` / `dismissNotification`. `reportConnection` rewritten to use `toast.warning` (sticky) + `toast.dismiss(id)` + `toast.success` for the SSE reconnect flow.
@@ -205,42 +205,42 @@ bits-ui, svelte-sonner, mode-watcher).
 - `registry.allSourceExts()`, `registry.allVerifyExts()`, `registry.allFilterableExts()` added so the file-list filter dropdown is now extensible by registry edit alone.
 - `ConvertPanel.svelte` + `JobsPanel.svelte` extracted from `WorkArea.svelte` so P5 can fill them in without touching the layout.
 
-#### 📚 Documentation
+#### Documentation
 
-- `README.md` — Frontend Development section lists the adopted runtime libraries.
-- `AGENTS.md` — explicit "don't reinvent these" list with import patterns for the four libraries.
+- `README.md`, Frontend Development section lists the adopted runtime libraries.
+- `AGENTS.md`, explicit "don't reinvent these" list with import patterns for the four libraries.
 
 ### Svelte 5 frontend rebuild (P0–P3)
 
-#### ✨ New
+#### New
 
 - **Frontend rebuilt on Svelte 5 + Vite.** The 6,096-line Preact-via-htm monolith (`static/js/app.js`) is replaced by a Svelte 5 SPA under `src/`. Per-domain class-singleton stores with `$state` class fields (jobs, fileBrowser, conversion, verification, datMatching, chdMetadata, ui), one declarative `TOOLS` array in `src/lib/tools/registry.js` that drives every tool-specific decision, design tokens (`src/styles/tokens.css`) with `light` / `dark` / `system` themes, sidebar + dashboard layout with deep-linkable hash routes, mobile drawer + `inert` focus trap, skip-to-content link and `<main>` focus management on route change, error boundary around routed views.
-- **Backend SSE snapshot-on-connect.** `/api/jobs/events` now emits a one-time `snapshot` event per known job at connection time (and re-emits on every reconnect). Eliminates the hydration race that existed when clients had to do a separate `/api/jobs` fetch before subscribing. Additive change — legacy clients that don't listen for `snapshot` silently ignore it.
+- **Backend SSE snapshot-on-connect.** `/api/jobs/events` now emits a one-time `snapshot` event per known job at connection time (and re-emits on every reconnect). Eliminates the hydration race that existed when clients had to do a separate `/api/jobs` fetch before subscribing. Additive change, legacy clients that don't listen for `snapshot` silently ignore it.
 - **Docker `frontend-builder` stage.** New `node:lts-slim` stage runs `npm ci && npm run build`; the runtime image stays Python-only. The existing multi-arch buildx pipeline (`linux/amd64` + `linux/arm64`) works unchanged because `node:lts-slim` ships both arches and the SPA has no native deps.
 
-#### 🔧 Internal
+#### Internal
 
 - Legacy frontend removed: `static/js/app.js` (6,096 lines), `static/js/api.js` (874 lines), `static/css/style.css` (2,424 lines), `static/vendor/*.mjs` (Preact + htm bundles). Git history preserves them.
 - New `npm run dev` / `npm run build` / `npm run preview` / `npm run lint` scripts. Vite dev server proxies `/api` and `/health` to the FastAPI sidecar.
 - ESLint flat config extended with `eslint-plugin-svelte` + `svelte-eslint-parser` for `.svelte` and `.svelte.js` files.
 - Per the project contract: every `.svelte` file is verified via the Svelte MCP `svelte-autofixer`.
 
-#### 📚 Documentation
+#### Documentation
 
-- `README.md` — new "Frontend Development" section documenting Svelte as the default.
-- `ADDING_PLATFORMS_AND_TOOLS.md` — the "frontend" steps for adding a tool collapse to "one entry in `TOOLS`"; the per-file list at §3.3 is updated; §5.10 rewritten end-to-end with the new registry pattern.
-- `DESIGN_tool_plugin_architecture.md` — §3.7 marked implemented; descriptor updated to match what shipped (per-tool `groups`, `defaultMode`, `glyph`, `accent`; `verifyPrefix` is the URL segment).
-- `AGENTS.md` — §1 covers both prod-style and HMR dev loops.
+- `README.md`, new "Frontend Development" section documenting Svelte as the default.
+- `ADDING_PLATFORMS_AND_TOOLS.md`, the "frontend" steps for adding a tool collapse to "one entry in `TOOLS`"; the per-file list at §3.3 is updated; §5.10 rewritten end-to-end with the new registry pattern.
+- `DESIGN_tool_plugin_architecture.md`, §3.7 marked implemented; descriptor updated to match what shipped (per-tool `groups`, `defaultMode`, `glyph`, `accent`; `verifyPrefix` is the URL segment).
+- `AGENTS.md`, §1 covers both prod-style and HMR dev loops.
 
 ## v3.7.8 - Optional PUID/PGID ownership remap for Unraid/home servers
 
-### ✨ New Features
+### New Features
 
 - **Added optional `PUID`/`PGID` support for container file ownership mapping.** On startup, the entrypoint now accepts `PUID`/`PGID` (default `999:999`) and remaps the internal `converter` account before launching the app. This aligns output ownership with host conventions used by Unraid and other home-server setups.
 - **Safe GID fallback for common Unraid defaults.** When `PGID` points to a GID that already exists in the base image (for example `100`), the startup remap falls back from `groupmod` to `usermod -g` so `converter` is reassigned to the existing group instead of failing.
 - **Privilege drop now handled by `gosu` in entrypoint.** The image installs `gosu`, keeps startup as root only long enough to perform optional remapping, then immediately re-execs as `converter`.
 
-### 🔧 Internal
+### Internal
 
 - `Dockerfile` now installs `gosu` and no longer sets `USER converter` at build time.
 - `entrypoint.sh` now:
@@ -249,7 +249,7 @@ bits-ui, svelte-sonner, mode-watcher).
   - preserves old behavior when env vars are unset (`999:999`),
   - drops privileges with `exec gosu converter "$0" "$@"`.
 
-### 📚 Documentation
+### Documentation
 
 - Updated `README.md`, `DOCKER-COMPOSE.md`, `DEPLOYMENT.md`, and compose examples to document `PUID`/`PGID` as an optional runtime ownership setting.
 
@@ -257,54 +257,54 @@ bits-ui, svelte-sonner, mode-watcher).
 
 ## v3.7.7 - Cancellable metadata scan and DAT match jobs
 
-### ✨ New Features
+### New Features
 
-- **Metadata scan and DAT match jobs are now cancellable from the UI.** Both job types are "external jobs" (they bypass the conversion queue and drive their own execution), and until this release were deliberately excluded from cancellation — once started, a full-volume metadata scan or DAT match had to run to completion, even if the user realised they kicked it off on the wrong volume or wanted to free the workload lane for something else. The existing per-row **Cancel** button and the **Cancel All** button now both accept these jobs. No new endpoints — the existing `DELETE /api/jobs/{id}` and `POST /api/jobs/cancel-all` routes were widened.
-- **Partial results are preserved on cancel.** Any match entries already written to `dat_matches`, or metadata/disc-id tags already extracted and committed to `chd_metadata`, stay durable. This matches the pre-existing "durable mid-run" comment in `_run_match_job` — cancelling mid-loop gives you a partial cache, not a rollback.
+- **Metadata scan and DAT match jobs are now cancellable from the UI.** Both job types are "external jobs" (they bypass the conversion queue and drive their own execution), and until this release were deliberately excluded from cancellation, once started, a full-volume metadata scan or DAT match had to run to completion, even if the user realised they kicked it off on the wrong volume or wanted to free the workload lane for something else. The existing per-row **Cancel** button and the **Cancel All** button now both accept these jobs. No new endpoints, the existing `DELETE /api/jobs/{id}` and `POST /api/jobs/cancel-all` routes were widened.
+- **Partial results are preserved on cancel.** Any match entries already written to `dat_matches`, or metadata/disc-id tags already extracted and committed to `chd_metadata`, stay durable. This matches the pre-existing "durable mid-run" comment in `_run_match_job`, cancelling mid-loop gives you a partial cache, not a rollback.
 - **Cancel-All now cancels every kind of job.** `cancel_all_jobs()` no longer filters out external modes, and the matching three frontend guards (`handleRequestCancelAll` activeCount, `handleCancelAllJobs` per-job state map, `queuedJobsCount` / `processingJobsCount`) were removed so the button's visibility, the summary counts, and the optimistic "Cancelling..." state update all apply uniformly.
 
-### 🐛 Bug Fixes & Hardening
+### Bug Fixes & Hardening
 
 - **`_run_match_job` releases the match-job lock *before* its finalize awaits.** Previously the `async with _get_match_job_lock(): _active_match_job_id = None` cleanup was the last statement in the `finally` block, after both `finish_external_job` and `finish_external_job_cancelled`. If either finalize call raised (e.g. a subscriber queue throwing), `_active_match_job_id` stayed pinned to the dead job id and every subsequent match request returned HTTP 409 until process restart. The reset now runs at the top of the `finally`, so the lock is released even if finalize blows up.
-- **Startup migrated from deprecated `@app.on_event("startup")` to FastAPI lifespan context manager.** Silences the `DeprecationWarning: on_event is deprecated, use lifespan event handlers instead` the test suite was emitting, and puts us on the supported path for future FastAPI upgrades. No behaviour change — same startup body, same ordering (`configure_logging` → DB init → Alembic → JSON→SQLite import → background tasks → auto-sync).
+- **Startup migrated from deprecated `@app.on_event("startup")` to FastAPI lifespan context manager.** Silences the `DeprecationWarning: on_event is deprecated, use lifespan event handlers instead` the test suite was emitting, and puts us on the supported path for future FastAPI upgrades. No behaviour change, same startup body, same ordering (`configure_logging` → DB init → Alembic → JSON→SQLite import → background tasks → auto-sync).
 - **"Cancelling..." string unified across backend and frontend.** The new external-job cancel path briefly used a Unicode ellipsis (`"Cancelling…"`) while the pre-existing conversion-job path and the frontend's optimistic update used ASCII (`"Cancelling..."`). Because SSE delivery races the local optimistic write, the displayed string would flip between the two forms. Backend now emits ASCII everywhere.
 
-### 🔧 Internal
+### Internal
 
 - **New cancellation primitives on `JobManager`.**
-    - `ExternalJobCancelled` — purpose-built exception raised inside external-job loops when `cancel_job()` has been requested. Only caught by the dedicated `except` branch in each loop; will never mask a real `Exception`.
-    - `is_cancelled(job_id) -> bool` — cheap polling check used at the top of each loop iteration in `_run_match_job` and both phases of `scan_metadata_task`.
-    - `get_cancel_event(job_id) -> asyncio.Event | None` — awaitable form for future use.
-    - `finish_external_job_cancelled(job_id, *, message)` — terminal finalize that sets `JobStatus.CANCELLED`, clears cancel state, emits the `cancelled` SSE event, and archives the job. Symmetric with `finish_external_job(success=...)`.
+    - `ExternalJobCancelled`, purpose-built exception raised inside external-job loops when `cancel_job()` has been requested. Only caught by the dedicated `except` branch in each loop; will never mask a real `Exception`.
+    - `is_cancelled(job_id) -> bool`, cheap polling check used at the top of each loop iteration in `_run_match_job` and both phases of `scan_metadata_task`.
+    - `get_cancel_event(job_id) -> asyncio.Event | None`, awaitable form for future use.
+    - `finish_external_job_cancelled(job_id, *, message)`, terminal finalize that sets `JobStatus.CANCELLED`, clears cancel state, emits the `cancelled` SSE event, and archives the job. Symmetric with `finish_external_job(success=...)`.
 - **Tri-state `job_success`** in both loops (`True` = success, `False` = failure, `None` = cancelled). Cancelled path takes `finish_external_job_cancelled`; non-cancelled path keeps the pre-existing `finish_external_job(success=...)` call so DAT match's "all files errored → mark failed" signal is unchanged.
 - **Cancel events auto-register on external-job creation.** `create_external_job` now populates `_cancel_events[job_id]` when a running loop is available (falls back silently under sync test setups).
 
-### 🧪 Tests (+16, total 324)
+### Tests (+16, total 324)
 
-- `test_cancel_job_signals_metadata_scan` / `..._signals_dat_match` / `..._emits_status_event_for_external_job` — cancel_job on a PROCESSING external job sets the event, flips the message, returns True, and emits a `status` SSE event.
-- `test_cancel_all_includes_external_jobs` — Cancel-All requests both a metadata scan and a DAT match.
-- `test_cancel_job_returns_false_for_terminal_external_job` — terminal external jobs are not re-cancellable.
-- `test_finish_external_job_cancelled_sets_status_and_message` / `..._emits_cancelled_event` / `..._clears_cancel_state` / `..._noop_for_unknown_id` — terminal-finalize semantics.
-- `test_run_match_job_cancellation_ends_in_cancelled_status` — mid-loop cancel flips the job to CANCELLED and clears `_active_match_job_id`.
-- `test_run_match_job_cancellation_keeps_partial_cache` — per-file matches written before cancel stay in `dat_store`.
-- `test_scan_metadata_cancellation_flips_to_cancelled` — Phase 1 cancel path.
-- `test_scan_metadata_cancellation_during_phase2` — Phase 2 (disc-id) cancel path covered independently.
+- `test_cancel_job_signals_metadata_scan` / `..._signals_dat_match` / `..._emits_status_event_for_external_job`, cancel_job on a PROCESSING external job sets the event, flips the message, returns True, and emits a `status` SSE event.
+- `test_cancel_all_includes_external_jobs`, Cancel-All requests both a metadata scan and a DAT match.
+- `test_cancel_job_returns_false_for_terminal_external_job`, terminal external jobs are not re-cancellable.
+- `test_finish_external_job_cancelled_sets_status_and_message` / `..._emits_cancelled_event` / `..._clears_cancel_state` / `..._noop_for_unknown_id`, terminal-finalize semantics.
+- `test_run_match_job_cancellation_ends_in_cancelled_status`, mid-loop cancel flips the job to CANCELLED and clears `_active_match_job_id`.
+- `test_run_match_job_cancellation_keeps_partial_cache`, per-file matches written before cancel stay in `dat_store`.
+- `test_scan_metadata_cancellation_flips_to_cancelled`, Phase 1 cancel path.
+- `test_scan_metadata_cancellation_during_phase2`, Phase 2 (disc-id) cancel path covered independently.
 - Two pre-existing tests (`test_cancel_job_returns_false_for_metadata_scan`, `test_cancel_all_skips_metadata_scan_jobs`) were rewritten to reflect the new behaviour.
 
 324 tests pass, 0 warnings (was 323 + 2 FastAPI deprecation warnings before this release).
 
-### 📁 Files Changed
+### Files Changed
 
-- `app/services/job_manager.py` — `ExternalJobCancelled`, `is_cancelled` / `get_cancel_event`, `finish_external_job_cancelled`, cancel-event registration in `create_external_job`, `cancel_job` external-job branch, `cancel_all_jobs` no longer filters external modes.
-- `app/routes/dat.py` — `_run_match_job` gains a per-iteration cancel check, tri-state `job_success`, dedicated `except ExternalJobCancelled` branch, and early match-lock release in the `finally`.
-- `app/routes/info.py` — `scan_metadata_task` gains cancel checks at the top of both Phase 1 and Phase 2 loops, and a cancelled branch in the `finally` that calls `finish_external_job_cancelled`.
-- `app/main.py` — `@app.on_event("startup")` → `@asynccontextmanager async def lifespan(app)` passed to `FastAPI(lifespan=...)`. Startup body unchanged.
-- `static/js/app.js` — Cancel button on `JobList` row is no longer suppressed for external scan modes; Cancel-All count filter, per-job state map, and `queuedJobsCount` / `processingJobsCount` no longer exclude them.
+- `app/services/job_manager.py`, `ExternalJobCancelled`, `is_cancelled` / `get_cancel_event`, `finish_external_job_cancelled`, cancel-event registration in `create_external_job`, `cancel_job` external-job branch, `cancel_all_jobs` no longer filters external modes.
+- `app/routes/dat.py`, `_run_match_job` gains a per-iteration cancel check, tri-state `job_success`, dedicated `except ExternalJobCancelled` branch, and early match-lock release in the `finally`.
+- `app/routes/info.py`, `scan_metadata_task` gains cancel checks at the top of both Phase 1 and Phase 2 loops, and a cancelled branch in the `finally` that calls `finish_external_job_cancelled`.
+- `app/main.py`, `@app.on_event("startup")` → `@asynccontextmanager async def lifespan(app)` passed to `FastAPI(lifespan=...)`. Startup body unchanged.
+- `static/js/app.js`, Cancel button on `JobList` row is no longer suppressed for external scan modes; Cancel-All count filter, per-job state map, and `queuedJobsCount` / `processingJobsCount` no longer exclude them.
 
-### ⚠️ Upgrade Notes
+### Upgrade Notes
 
 - **No action required.** The `DELETE /api/jobs/{id}` endpoint keeps its existing contract (returns 200 on success, 404 on unknown id); external jobs just no longer fall through to a silent `False` return.
-- **Cancelling a metadata scan mid-run leaves partial metadata cached.** If you cancel and re-trigger, the re-triggered scan skips already-refreshed entries via the normal `is_stale` check — no duplicate work, no lost data.
+- **Cancelling a metadata scan mid-run leaves partial metadata cached.** If you cancel and re-trigger, the re-triggered scan skips already-refreshed entries via the normal `is_stale` check, no duplicate work, no lost data.
 - **Cancelling a DAT match mid-run leaves per-file matches cached.** Re-matching the same paths skips the ones already in `dat_matches`; size-cap and missing-file skips are re-evaluated.
 - **"Cancel All" now cancels scans too.** If you were relying on Cancel-All stopping only conversion jobs while a metadata scan kept running, use the per-row Cancel button on the conversion jobs instead.
 
@@ -312,28 +312,28 @@ bits-ui, svelte-sonner, mode-watcher).
 
 ## v3.7.6 - ACL enforcement on post-sync rematch + UI signals
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
-- **Post-sync rematch now re-validates every path against `CONFIGURED_VOLUMES`.** v3.7.5's rematch hook snapshotted paths from `DATMatch` and handed them to `schedule_match_job` unchanged. Those paths were ACL-approved at write time, but a later tightening of `CONFIGURED_VOLUMES` (a mount unmounted, a library removed) or a symlink retargeted since the original scan would slip through undetected. `schedule_match_job` now runs every incoming path through `os.path.realpath` + `is_within_configured_volumes` and drops denied entries with a `WARNING` log (`"schedule_match_job: dropped N path(s) outside configured volumes"`). The check is idempotent — the HTTP `/dat/match-batch/job` handler pre-filters, so duplicate filtering is a no-op for the HTTP path.
-- **`_background_match_tasks` set-membership invariant is now self-checking.** `schedule_match_job` logs a warning if the strong-ref set is non-empty when a new task is about to be scheduled — the concurrency guard should make this impossible, so a warning here surfaces a guard-bypass regression that would otherwise be silent.
+- **Post-sync rematch now re-validates every path against `CONFIGURED_VOLUMES`.** v3.7.5's rematch hook snapshotted paths from `DATMatch` and handed them to `schedule_match_job` unchanged. Those paths were ACL-approved at write time, but a later tightening of `CONFIGURED_VOLUMES` (a mount unmounted, a library removed) or a symlink retargeted since the original scan would slip through undetected. `schedule_match_job` now runs every incoming path through `os.path.realpath` + `is_within_configured_volumes` and drops denied entries with a `WARNING` log (`"schedule_match_job: dropped N path(s) outside configured volumes"`). The check is idempotent, the HTTP `/dat/match-batch/job` handler pre-filters, so duplicate filtering is a no-op for the HTTP path.
+- **`_background_match_tasks` set-membership invariant is now self-checking.** `schedule_match_job` logs a warning if the strong-ref set is non-empty when a new task is about to be scheduled, the concurrency guard should make this impossible, so a warning here surfaces a guard-bypass regression that would otherwise be silent.
 
-### ✨ UX Improvements
+### UX Improvements
 
-- **Sync result / status payload carries `rematch_status` + `rematch_job_id`.** `GET /dat/sync/status` now reports whether the post-sync rematch was `scheduled` (with a `rematch_job_id` the UI can poll), `deferred` (another match job held the concurrency lock — user can retry after it completes), `failed` (scheduling raised; DAT import still succeeded), or `None` (sync had errors; no rematch attempted). Previously the UI had to infer rematch progress from log-tailing.
+- **Sync result / status payload carries `rematch_status` + `rematch_job_id`.** `GET /dat/sync/status` now reports whether the post-sync rematch was `scheduled` (with a `rematch_job_id` the UI can poll), `deferred` (another match job held the concurrency lock, user can retry after it completes), `failed` (scheduling raised; DAT import still succeeded), or `None` (sync had errors; no rematch attempted). Previously the UI had to infer rematch progress from log-tailing.
 
-### 🧪 Tests (+5, total 313)
+### Tests (+5, total 313)
 
-- `test_schedule_match_job_returns_none_when_all_paths_denied` — empty allow-list short-circuits before job creation.
-- `test_schedule_match_job_filters_denied_paths_but_schedules_remainder` — mixed allow/deny list drops the deny with a warning log, schedules the rest.
-- `test_do_sync_surfaces_rematch_scheduled_status` / `..._deferred_status` / `..._failed_status` — each rematch outcome propagates into the progress payload and result dict.
+- `test_schedule_match_job_returns_none_when_all_paths_denied`, empty allow-list short-circuits before job creation.
+- `test_schedule_match_job_filters_denied_paths_but_schedules_remainder`, mixed allow/deny list drops the deny with a warning log, schedules the rest.
+- `test_do_sync_surfaces_rematch_scheduled_status` / `..._deferred_status` / `..._failed_status`, each rematch outcome propagates into the progress payload and result dict.
 - Existing `test_schedule_match_job_uses_create_task_without_background_tasks` now additionally asserts `_background_match_tasks` set membership before the task completes and cleanup afterward.
 
-### 📁 Files Changed
+### Files Changed
 
-- `app/routes/dat.py` — new `_filter_paths_within_volumes` helper; `schedule_match_job` runs it before claiming the concurrency slot; `_background_match_tasks` size-guard warning; inline comment explaining why scheduling lives outside the lock.
-- `app/services/dat_sync.py` — `_do_sync()` captures `rematch_status` + `rematch_job_id` and surfaces them through `_update_progress` and the return dict.
+- `app/routes/dat.py`, new `_filter_paths_within_volumes` helper; `schedule_match_job` runs it before claiming the concurrency slot; `_background_match_tasks` size-guard warning; inline comment explaining why scheduling lives outside the lock.
+- `app/services/dat_sync.py`, `_do_sync()` captures `rematch_status` + `rematch_job_id` and surfaces them through `_update_progress` and the return dict.
 
-### ⚠️ Upgrade Notes
+### Upgrade Notes
 
 - **No action required.** The ACL re-check is idempotent on already-admitted paths, so existing workflows are unaffected.
 - **Frontend integration:** existing UI consumers of `/dat/sync/status` see two new optional keys inside `progress` (`rematch_status`, `rematch_job_id`). Old clients that ignore unknown keys keep working unchanged.
@@ -342,97 +342,97 @@ bits-ui, svelte-sonner, mode-watcher).
 
 ## v3.7.5 - Post-sync auto-rematch + hardened match-job error handling
 
-### ✨ New Features
+### New Features
 
 - **DAT re-syncs now auto-rematch previously-scanned files.** When a DAT re-sync wipes the match cache (via `_persist_sync` in `app/services/dat_store.py`), the sync now snapshots the pre-wipe path list and enqueues a background `/dat/match-batch/job` against those paths. Before this, `GET /dat/stats` would read `matched=0, scanned=0` immediately after a sync until the user manually browsed every affected directory to re-trigger the frontend's match-batch effect. On a typical install with 1500+ scanned files across a dozen volumes, that was easy to miss. Now the stats counter refreshes on its own within a few minutes of sync completion.
-- **`schedule_match_job()` helper.** Extracted from the `/dat/match-batch/job` HTTP handler so non-HTTP callers (like the new post-sync hook) can reuse the same concurrency-guarded scheduling path. Works with or without a FastAPI `BackgroundTasks` — `asyncio.create_task` with a module-level strong-reference set (`_background_match_tasks`) is used for non-HTTP callers so the task can't be garbage-collected mid-run.
+- **`schedule_match_job()` helper.** Extracted from the `/dat/match-batch/job` HTTP handler so non-HTTP callers (like the new post-sync hook) can reuse the same concurrency-guarded scheduling path. Works with or without a FastAPI `BackgroundTasks`, `asyncio.create_task` with a module-level strong-reference set (`_background_match_tasks`) is used for non-HTTP callers so the task can't be garbage-collected mid-run.
 
-### 🐛 Bug Fixes & Hardening
+### Bug Fixes & Hardening
 
-- **Failure counting in `_run_match_job`.** Previously a dropped volume produced a misleading `"complete, 0 matched"` signal — every per-file OSError was WARN-logged and the job finished green. Two new counters (`errors` + `skips`) now track real failures vs. policy skips. When `errors == total` the job flips to `failed` with a `"check volume accessibility"` error message so operators see a red signal instead of a DAT-coverage-gap illusion.
+- **Failure counting in `_run_match_job`.** Previously a dropped volume produced a misleading `"complete, 0 matched"` signal, every per-file OSError was WARN-logged and the job finished green. Two new counters (`errors` + `skips`) now track real failures vs. policy skips. When `errors == total` the job flips to `failed` with a `"check volume accessibility"` error message so operators see a red signal instead of a DAT-coverage-gap illusion.
 - **Mid-loop exception preserves counter context.** When the outer `except Exception` in `_run_match_job` fires (e.g., `job_manager.update_external_job` starts throwing), the error message now includes `processed N/M, K error(s)` so operators know how far the job got before failure.
 - **Programmer-error tracebacks surface.** Two broad `except Exception` blocks in `_hash_one_for_job` and `_run_match_job`'s cache-write path now use `logger.exception` (ERROR level with full traceback) rather than `logger.warning`. A `KeyError`/`AttributeError` from a refactor bug is visible in logs instead of buried as a one-line warning.
 - **Background match-task exceptions surface too.** If `_run_match_job` raises past its own `try/finally` (rare, but possible if `finish_external_job` throws), the exception is now routed through the project logger instead of only appearing as asyncio's "Task exception was never retrieved" warning on GC.
-- **`list_match_paths` failure no longer leaks staged DATs.** If the snapshot SELECT raised (DB locked, disk error), the sync would abort before `persist()` committed, leaving DATs staged in `_pending_imports` — the next sync would double-stage and corrupt the store. Snapshot failure is now best-effort: empty list + `logger.exception`, and `persist()` still runs so the DAT import is durable.
-- **Rematch `ImportError` no longer silently swallowed.** The rematch scheduling's `try/except Exception` would hide a missing-module deployment bug as a silent "complete" sync. `from routes.dat import schedule_match_job` is now outside the try/except — a real ImportError propagates and fails the sync loudly so operators notice.
+- **`list_match_paths` failure no longer leaks staged DATs.** If the snapshot SELECT raised (DB locked, disk error), the sync would abort before `persist()` committed, leaving DATs staged in `_pending_imports`, the next sync would double-stage and corrupt the store. Snapshot failure is now best-effort: empty list + `logger.exception`, and `persist()` still runs so the DAT import is durable.
+- **Rematch `ImportError` no longer silently swallowed.** The rematch scheduling's `try/except Exception` would hide a missing-module deployment bug as a silent "complete" sync. `from routes.dat import schedule_match_job` is now outside the try/except, a real ImportError propagates and fails the sync loudly so operators notice.
 - **`schedule_match_job` scheduling failure rolls back `_active_match_job_id`.** If `asyncio.create_task` or `background_tasks.add_task` raises after the lock was claimed, future match jobs would return HTTP 409 forever. The rollback clears the id and finalizes the phantom external job before re-raising.
 - **Canonical internal imports.** Removed three `try: from services.x / except ImportError: from app.services.x` fallback pairs in `app/services/dat_sync.py`. Under the project's `PYTHONPATH=app` convention the fallback path was unreachable, and the `except ImportError` would silently absorb a real circular-import bug if one ever arose. Production-only feature-gate imports in `archive.py` / `disc_id.py` are untouched.
 
-### 🧪 Tests
+### Tests
 
-- `test_do_sync_schedules_rematch_after_success` / `..._when_no_previous_matches` / `..._on_partial_failure` / `..._logs_when_skipped_due_to_active_job` — post-sync rematch hook.
-- `test_do_sync_list_match_paths_failure_is_best_effort` — snapshot SELECT failure is handled.
-- `test_do_sync_rematch_schedule_exception_does_not_poison_sync` — rematch failure doesn't mark sync as errored.
-- `test_run_match_job_reports_errors_in_final_message` / `..._marks_failure_when_all_files_error` / `..._skip_count_does_not_trip_failure` / `..._cache_write_failure_counts_as_error` / `..._outer_exception_includes_counter_context` — failure-counter coverage.
-- `test_hash_one_for_job_logs_match_error_with_traceback` — programmer-error tracebacks land at ERROR level.
-- `test_schedule_match_job_returns_none_on_empty_paths` / `..._returns_none_when_active` / `..._rolls_back_active_id_on_scheduling_failure` / `..._uses_create_task_without_background_tasks` — helper behavior.
-- `test_list_match_paths_returns_empty_on_fresh_store` / `..._returns_all_paths` — snapshot query.
+- `test_do_sync_schedules_rematch_after_success` / `..._when_no_previous_matches` / `..._on_partial_failure` / `..._logs_when_skipped_due_to_active_job`, post-sync rematch hook.
+- `test_do_sync_list_match_paths_failure_is_best_effort`, snapshot SELECT failure is handled.
+- `test_do_sync_rematch_schedule_exception_does_not_poison_sync`, rematch failure doesn't mark sync as errored.
+- `test_run_match_job_reports_errors_in_final_message` / `..._marks_failure_when_all_files_error` / `..._skip_count_does_not_trip_failure` / `..._cache_write_failure_counts_as_error` / `..._outer_exception_includes_counter_context`, failure-counter coverage.
+- `test_hash_one_for_job_logs_match_error_with_traceback`, programmer-error tracebacks land at ERROR level.
+- `test_schedule_match_job_returns_none_on_empty_paths` / `..._returns_none_when_active` / `..._rolls_back_active_id_on_scheduling_failure` / `..._uses_create_task_without_background_tasks`, helper behavior.
+- `test_list_match_paths_returns_empty_on_fresh_store` / `..._returns_all_paths`, snapshot query.
 
 308 tests pass (+14 new since v3.7.3).
 
-### 📁 Files Changed
+### Files Changed
 
-- `app/routes/dat.py` — `schedule_match_job` helper + `_log_background_match_task_error` callback; `_run_match_job` refactored for error/skip counting, `logger.exception` for broad catches, counter context in outer-except message.
-- `app/services/dat_store.py` — `has_stale_dats()` and `list_match_paths()` helpers.
-- `app/services/dat_sync.py` — `_do_sync()` now snapshots match paths (best-effort) and schedules rematch after successful commit; three `except ImportError` fallbacks removed.
-- `app/main.py` — startup lifespan now auto-triggers self-heal sync when any DAT has `file_count=0` (shipped in v3.7.3).
+- `app/routes/dat.py`, `schedule_match_job` helper + `_log_background_match_task_error` callback; `_run_match_job` refactored for error/skip counting, `logger.exception` for broad catches, counter context in outer-except message.
+- `app/services/dat_store.py`, `has_stale_dats()` and `list_match_paths()` helpers.
+- `app/services/dat_sync.py`, `_do_sync()` now snapshots match paths (best-effort) and schedules rematch after successful commit; three `except ImportError` fallbacks removed.
+- `app/main.py`, startup lifespan now auto-triggers self-heal sync when any DAT has `file_count=0` (shipped in v3.7.3).
 
-### ⚠️ Upgrade Notes
+### Upgrade Notes
 
 - **No action required.** After restart, if your DAT store has stale rows they self-heal (v3.7.3 behavior), and if that sync runs it now auto-rematches your scanned files. If a match job is already active when the post-sync hook fires, the rematch is skipped with a log line and you can re-trigger manually via `POST /dat/sync {"force": true}`.
-- **Jobs panel:** after a sync you'll see a `"DAT Match"` external job tick through your previously-scanned files. If a volume is offline while it runs, the job now finishes with `failed` + `"all N file(s) failed — check volume accessibility"` instead of a misleading `"0 matched"` success.
+- **Jobs panel:** after a sync you'll see a `"DAT Match"` external job tick through your previously-scanned files. If a volume is offline while it runs, the job now finishes with `failed` + `"all N file(s) failed, check volume accessibility"` instead of a misleading `"0 matched"` success.
 
 ---
 
 ## v3.7.3 - DAT self-heal fires automatically on startup
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
-- **Stale DATs now repair themselves on server restart.** v3.7.2 taught `DATSyncService` to skip its `already_synced` fast-path whenever any DAT had `file_count=0`, but the self-heal only ran when `sync()` was explicitly called — via the UI sync button or `POST /api/dat/sync`. Users who had never clicked sync stayed stuck with 67 empty DATs (the classic pre-#49 state: every CD/softlist `<disk>` DAT showing 0 entries while Nintendo GameCube + Wii — the two `<rom>`-based ones — were healthy). Startup auto-sync previously gated on `MAMEREDUMP_AUTO_SYNC=true` AND an empty DAT store, so it never fired for someone who already had 69 DATs sitting in broken state.
+- **Stale DATs now repair themselves on server restart.** v3.7.2 taught `DATSyncService` to skip its `already_synced` fast-path whenever any DAT had `file_count=0`, but the self-heal only ran when `sync()` was explicitly called, via the UI sync button or `POST /api/dat/sync`. Users who had never clicked sync stayed stuck with 67 empty DATs (the classic pre-#49 state: every CD/softlist `<disk>` DAT showing 0 entries while Nintendo GameCube + Wii, the two `<rom>`-based ones, were healthy). Startup auto-sync previously gated on `MAMEREDUMP_AUTO_SYNC=true` AND an empty DAT store, so it never fired for someone who already had 69 DATs sitting in broken state.
 
   Startup now has a second trigger: whenever any DAT has `file_count=0`, a background sync kicks off unconditionally (no env-var gate, no empty-store gate). The service's existing self-heal logic then rebuilds the DAT set in place using the current parser. Fresh-install behaviour (`MAMEREDUMP_AUTO_SYNC=true` + empty store) is unchanged.
 
-### 🧪 Tests
+### Tests
 
-- `test_has_stale_dats_empty_store_returns_false` / `_all_healthy_returns_false` / `_detects_zero_count` — unit tests for the new `DATStore.has_stale_dats()` existence check.
+- `test_has_stale_dats_empty_store_returns_false` / `_all_healthy_returns_false` / `_detects_zero_count`, unit tests for the new `DATStore.has_stale_dats()` existence check.
 
-### 📁 Files Changed
+### Files Changed
 
-- `app/services/dat_store.py` — new `has_stale_dats()` method (single-row SQL existence check, cheap enough for startup).
-- `app/main.py` — startup auto-sync split into two independent triggers; shared task-spawn helper extracted.
-- `tests/test_db_store_operations.py` — three new tests for `has_stale_dats()`.
+- `app/services/dat_store.py`, new `has_stale_dats()` method (single-row SQL existence check, cheap enough for startup).
+- `app/main.py`, startup auto-sync split into two independent triggers; shared task-spawn helper extracted.
+- `tests/test_db_store_operations.py`, three new tests for `has_stale_dats()`.
 
-### ⚠️ Upgrade Notes
+### Upgrade Notes
 
-- **No action required.** Restart the server once and stale DATs heal within ~60 s (given network access to the MAMERedump repo). If GitHub is unreachable the sync errors into the log and state is preserved — identical to the existing manual-sync behaviour.
+- **No action required.** Restart the server once and stale DATs heal within ~60 s (given network access to the MAMERedump repo). If GitHub is unreachable the sync errors into the log and state is preserved, identical to the existing manual-sync behaviour.
 
 ---
 
 ## v3.7.2 - Self-healing DAT re-sync after the softlist &lt;disk&gt; parser fix
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
-- **DATs with only `<disk>` hash entries no longer stay stuck at 0 entries after an upgrade.** The v3.7.0 parser (PR #49) added `<disk>` support so MAME-Redump softlist DATs for disc-based systems (Amiga CD / CD32 / CDTV, Bandai Pippin, Konami FireBeat / System 573, Sega Naomi / Chihiro / Lindbergh, Atari Jaguar CD, IBM PC, etc.) import correctly. However, anyone who ran the DAT sync *before* that parser change ended up with DAT rows whose `file_count=0` because the old parser silently ignored `<disk>` elements, and the `DATSyncService` treated the (cached, correct) tag as "already synced" — trapping users in the stale state.
+- **DATs with only `<disk>` hash entries no longer stay stuck at 0 entries after an upgrade.** The v3.7.0 parser (PR #49) added `<disk>` support so MAME-Redump softlist DATs for disc-based systems (Amiga CD / CD32 / CDTV, Bandai Pippin, Konami FireBeat / System 573, Sega Naomi / Chihiro / Lindbergh, Atari Jaguar CD, IBM PC, etc.) import correctly. However, anyone who ran the DAT sync *before* that parser change ended up with DAT rows whose `file_count=0` because the old parser silently ignored `<disk>` elements, and the `DATSyncService` treated the (cached, correct) tag as "already synced", trapping users in the stale state.
 
   The sync service now self-heals: if `last_sync_tag` matches but any existing DAT has `file_count=0`, the fast-path is skipped and the DAT set is rebuilt in place. The old DATs are only deleted after the new set is fully imported, so there's never a window with zero DATs.
 
-### ✨ New Features
+### New Features
 
-- **`POST /api/dat/sync` accepts `"force": true`** — bypasses the `already_synced` fast-path unconditionally, useful when operators want to rebuild the DAT set for any reason (repo-side fixes, local DB corruption, etc.). Default remains `false`.
+- **`POST /api/dat/sync` accepts `"force": true`**, bypasses the `already_synced` fast-path unconditionally, useful when operators want to rebuild the DAT set for any reason (repo-side fixes, local DB corruption, etc.). Default remains `false`.
 
-### 🧪 Tests
+### Tests
 
-- `test_sync_auto_forces_when_any_dat_has_zero_entries` — regression test for the self-heal path.
-- `test_sync_force_bypasses_already_synced_guard` — covers the explicit `force=True` opt-in.
-- `test_sync_already_synced_requires_nonzero_file_counts` — the fast-path still fires when every DAT is healthy.
+- `test_sync_auto_forces_when_any_dat_has_zero_entries`, regression test for the self-heal path.
+- `test_sync_force_bypasses_already_synced_guard`, covers the explicit `force=True` opt-in.
+- `test_sync_already_synced_requires_nonzero_file_counts`, the fast-path still fires when every DAT is healthy.
 
-### 📁 Files Changed
+### Files Changed
 
-- `app/routes/dat.py` — `SyncRequest` gains `force: bool = False`; route forwards it to the service.
-- `app/services/dat_sync.py` — `sync()` / `_do_sync()` take `force`; the fast-path skips when any DAT has `file_count=0`.
-- `tests/test_dat_sync.py`, `tests/test_dat_routes.py` — new regressions + existing assertions updated for the new kwarg.
+- `app/routes/dat.py`, `SyncRequest` gains `force: bool = False`; route forwards it to the service.
+- `app/services/dat_sync.py`, `sync()` / `_do_sync()` take `force`; the fast-path skips when any DAT has `file_count=0`.
+- `tests/test_dat_sync.py`, `tests/test_dat_routes.py`, new regressions + existing assertions updated for the new kwarg.
 
-### ⚠️ Upgrade Notes
+### Upgrade Notes
 
 - **No action required.** On next sync click the service notices the stale state and rebuilds automatically. If you prefer to trigger it explicitly, POST `/api/dat/sync` with `{"force": true}`.
 
@@ -440,188 +440,188 @@ bits-ui, svelte-sonner, mode-watcher).
 
 ## v3.7.1 - Color-coded stdout logs
 
-### ✨ New Features
+### New Features
 
-- **ANSI-colored log levels on stdout** — Log lines now highlight `%(levelname)s` with an SGR color so severity is easy to skim in `docker logs` output: `DEBUG` dim, `INFO` green, `WARNING` yellow, `ERROR` red, `CRITICAL` bold red. Message bodies are left uncolored so copy-paste stays clean.
-- **`LOG_COLOR` env var** — Controls the stream-handler color policy. Values:
-  - `always` (**default**) — colored stdout out of the box, so Docker users see colors without any configuration. `docker logs` does not allocate a TTY, so this was the right default rather than `auto`.
-  - `auto` — color iff stdout is a TTY and the `NO_COLOR` env var (<https://no-color.org>) is unset.
-  - `never` — disable entirely.
+- **ANSI-colored log levels on stdout**, Log lines now highlight `%(levelname)s` with an SGR color so severity is easy to skim in `docker logs` output: `DEBUG` dim, `INFO` green, `WARNING` yellow, `ERROR` red, `CRITICAL` bold red. Message bodies are left uncolored so copy-paste stays clean.
+- **`LOG_COLOR` env var**, Controls the stream-handler color policy. Values:
+  - `always` (**default**), colored stdout out of the box, so Docker users see colors without any configuration. `docker logs` does not allocate a TTY, so this was the right default rather than `auto`.
+  - `auto`, color iff stdout is a TTY and the `NO_COLOR` env var (<https://no-color.org>) is unset.
+  - `never`, disable entirely.
   Invalid values log a warning and fall back to `auto`.
-- **File logs are never colored** — `LOG_PATH` output always uses the plain formatter regardless of `LOG_COLOR`, keeping `grep` / log-aggregator pipelines intact.
+- **File logs are never colored**, `LOG_PATH` output always uses the plain formatter regardless of `LOG_COLOR`, keeping `grep` / log-aggregator pipelines intact.
 
-### 📁 Files Changed
+### Files Changed
 
-- `app/main.py` — added `ColorFormatter`, `_resolve_color()`, wired into `configure_logging()`.
-- `app/config.py` — added `log_color: str` setting.
-- `README.md` — `LOG_COLOR` row in the env-var table.
-- `tests/test_logging_config.py` — +14 tests: default value, resolver TTY/`NO_COLOR` logic, formatter round-trip, end-to-end colored stream, and a guarantee that the file handler never emits ANSI escapes even with `LOG_COLOR=always`.
+- `app/main.py`, added `ColorFormatter`, `_resolve_color()`, wired into `configure_logging()`.
+- `app/config.py`, added `log_color: str` setting.
+- `README.md`, `LOG_COLOR` row in the env-var table.
+- `tests/test_logging_config.py`, +14 tests: default value, resolver TTY/`NO_COLOR` logic, formatter round-trip, end-to-end colored stream, and a guarantee that the file handler never emits ANSI escapes even with `LOG_COLOR=always`.
 
 ---
 
 ## v3.7.0 - Unified SQLite Store, Alembic Migrations, and Wider DAT Matching
 
-### ✨ New Features
+### New Features
 
-- **Unified SQLite persistence layer** — The four legacy JSON stores (`dat_store.json`, `chd_metadata.json`, `verified_chds.json`, `dat_sync.json`) are consolidated into a single `compressatorium.db` SQLite file backed by SQLAlchemy 2.0. Tuned for this workload: WAL journal mode, `synchronous=NORMAL`, `foreign_keys=ON`, 30s `busy_timeout`. Composite primary keys let sha1/md5 coexist; foreign keys give cascade-on-DAT-delete for hashes and set-null semantics for cached matches so UI history survives DAT removal.
-- **One-shot JSON → SQLite migration on startup** — On first boot against the new release, legacy JSON stores are imported into the DB and the source files are renamed to `*.migrated.bak` (never deleted). Migration is isolated per store: a failure in one does not block the others, leaves that store's JSON untouched, rolls the transaction back, and retries on the next startup. Corrupt JSON is renamed to `*.corrupt` and logged loudly.
-- **Alembic schema versioning** — Schema is driven by Alembic migrations (`migrations/versions/0001_baseline_schema.py`) rather than `create_all`. Pre-Alembic databases (anyone who ran the SQLite-migration build before Alembic landed) are detected by baseline-table presence and auto-stamped to `0001` before upgrade — existing rows are preserved untouched.
-- **DAT match badge widened to raw disc images with bounded hashing** — The match badge now evaluates raw `.iso`/`.bin`/`.cue`/`.gdi` sources in addition to CHDs, with a bounded hashing window so large images can't stall the scan. Softlist `<disk>` elements are parsed as part of DAT matching, and matches run as a background job so the UI stays responsive.
-- **`:beta` Docker tag for pre-releases** — Pre-release GitHub releases now publish a moving `:beta` tag (in addition to the semver tag) on both Docker Hub and GHCR; stable releases continue to publish `:latest`. Consumers opting in to betas pull `pacnpal/compressatorium:beta`. See the README "Opting in to beta updates" section for the data-loss warning — running a beta against a production data volume can irreversibly migrate the DB, and downgrading to `:latest` afterwards is not supported.
+- **Unified SQLite persistence layer**, The four legacy JSON stores (`dat_store.json`, `chd_metadata.json`, `verified_chds.json`, `dat_sync.json`) are consolidated into a single `compressatorium.db` SQLite file backed by SQLAlchemy 2.0. Tuned for this workload: WAL journal mode, `synchronous=NORMAL`, `foreign_keys=ON`, 30s `busy_timeout`. Composite primary keys let sha1/md5 coexist; foreign keys give cascade-on-DAT-delete for hashes and set-null semantics for cached matches so UI history survives DAT removal.
+- **One-shot JSON → SQLite migration on startup**, On first boot against the new release, legacy JSON stores are imported into the DB and the source files are renamed to `*.migrated.bak` (never deleted). Migration is isolated per store: a failure in one does not block the others, leaves that store's JSON untouched, rolls the transaction back, and retries on the next startup. Corrupt JSON is renamed to `*.corrupt` and logged loudly.
+- **Alembic schema versioning**, Schema is driven by Alembic migrations (`migrations/versions/0001_baseline_schema.py`) rather than `create_all`. Pre-Alembic databases (anyone who ran the SQLite-migration build before Alembic landed) are detected by baseline-table presence and auto-stamped to `0001` before upgrade, existing rows are preserved untouched.
+- **DAT match badge widened to raw disc images with bounded hashing**, The match badge now evaluates raw `.iso`/`.bin`/`.cue`/`.gdi` sources in addition to CHDs, with a bounded hashing window so large images can't stall the scan. Softlist `<disk>` elements are parsed as part of DAT matching, and matches run as a background job so the UI stays responsive.
+- **`:beta` Docker tag for pre-releases**, Pre-release GitHub releases now publish a moving `:beta` tag (in addition to the semver tag) on both Docker Hub and GHCR; stable releases continue to publish `:latest`. Consumers opting in to betas pull `pacnpal/compressatorium:beta`. See the README "Opting in to beta updates" section for the data-loss warning, running a beta against a production data volume can irreversibly migrate the DB, and downgrading to `:latest` afterwards is not supported.
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
-- **DAT match no longer leaks `OSError` internals to clients** (#56) — `_match_single_file` previously surfaced filesystem error detail (paths, errno strings) in the API response. It now returns a generic failure code and logs the detail server-side.
+- **DAT match no longer leaks `OSError` internals to clients** (#56), `_match_single_file` previously surfaced filesystem error detail (paths, errno strings) in the API response. It now returns a generic failure code and logs the detail server-side.
 
-### 🧪 Tests
+### Tests
 
-A comprehensive test suite has been added around the new SQLite feature — 26 new tests across 5 files covering every documented invariant end-to-end:
+A full test suite has been added around the new SQLite feature, 26 new tests across 5 files covering every documented invariant end-to-end:
 
-- **`tests/test_db_engine_pragmas.py`** — verifies WAL, `synchronous=NORMAL`, `busy_timeout ≥ 30s`, and `foreign_keys=ON` are actually applied on every checked-out connection (SQLite PRAGMAs are per-connection), and that FK enforcement raises `IntegrityError` on orphaned inserts.
-- **`tests/test_db_startup_integration.py`** — replays the exact `startup_event` ordering: fresh disk, full legacy migration, pre-Alembic + JSON coexistence, and cross-restart idempotency.
-- **`tests/test_db_store_operations.py`** — DAT cascade-delete wipes hashes; DAT delete sets cached match `dat_id` to `NULL` (not delete); `_set_matches_batch_sync` round-trips at the 899/900/901/1800 boundary against SQLite's 999-bind-parameter limit; `VerificationStore._mark_sync` is idempotent; CHDMetadata JSON column survives unicode, nested structures, and emoji; `DATSyncState` singleton never duplicates.
-- **`tests/test_db_migration_edge_cases.py`** — backup-filename collision preserves the source JSON, mid-migration rollback preserves JSON and doesn't block other stores, unicode + ~1800-char paths round-trip, empty collections migrate cleanly, orphaned match `dat_id` becomes `NULL` rather than failing, and truncated JSON bodies land as `.corrupt` (not `.migrated.bak`).
-- **`tests/test_verification_store.py`** — added a concurrent-writer test (two asyncio tasks × 200 writes each) proving WAL + busy_timeout end-to-end through `mark_verified`.
-- **`tests/test_db_migration.py` and `tests/test_alembic_migrations.py`** (introduced during the beta cycle) — cover the five no-data-loss migration invariants and the five Alembic invariants (fresh DB, pre-Alembic stamp-then-upgrade, idempotency, ORM drift guard, called-before-init guard).
+- **`tests/test_db_engine_pragmas.py`**, verifies WAL, `synchronous=NORMAL`, `busy_timeout ≥ 30s`, and `foreign_keys=ON` are actually applied on every checked-out connection (SQLite PRAGMAs are per-connection), and that FK enforcement raises `IntegrityError` on orphaned inserts.
+- **`tests/test_db_startup_integration.py`**, replays the exact `startup_event` ordering: fresh disk, full legacy migration, pre-Alembic + JSON coexistence, and cross-restart idempotency.
+- **`tests/test_db_store_operations.py`**, DAT cascade-delete wipes hashes; DAT delete sets cached match `dat_id` to `NULL` (not delete); `_set_matches_batch_sync` round-trips at the 899/900/901/1800 boundary against SQLite's 999-bind-parameter limit; `VerificationStore._mark_sync` is idempotent; CHDMetadata JSON column survives unicode, nested structures, and emoji; `DATSyncState` singleton never duplicates.
+- **`tests/test_db_migration_edge_cases.py`**, backup-filename collision preserves the source JSON, mid-migration rollback preserves JSON and doesn't block other stores, unicode + ~1800-char paths round-trip, empty collections migrate cleanly, orphaned match `dat_id` becomes `NULL` rather than failing, and truncated JSON bodies land as `.corrupt` (not `.migrated.bak`).
+- **`tests/test_verification_store.py`**, added a concurrent-writer test (two asyncio tasks × 200 writes each) proving WAL + busy_timeout end-to-end through `mark_verified`.
+- **`tests/test_db_migration.py` and `tests/test_alembic_migrations.py`** (introduced during the beta cycle), cover the five no-data-loss migration invariants and the five Alembic invariants (fresh DB, pre-Alembic stamp-then-upgrade, idempotency, ORM drift guard, called-before-init guard).
 
 Total suite: 270 tests, all green.
 
-### 🛠 CI / Infrastructure
+### CI / Infrastructure
 
-- **Docker workflow** — `docker-image.yml` now emits `:beta` for pre-releases and `:latest` only for stable releases. Semver tags (`X.Y.Z`, `X.Y.Z-beta-N`, `X.Y`, `X` for non-v0.x) and `sha-<short>` tags continue to be emitted for all releases.
-- **Code scanning noise reduced** — Project-wide linter configs expanded, Codacy bandit engine disabled, and remaining flagged false positives silenced with inline rationale.
-- **Dependabot** — bumped `actions/stale` 5→10, `docker/build-push-action` 7.0.0→7.1.0, `docker/login-action` 3.7.0→4.1.0, `actions/labeler` 4.3.0→6.0.1, `actions/attest-build-provenance`, and `globals` 17.4.0→17.5.0.
+- **Docker workflow**, `docker-image.yml` now emits `:beta` for pre-releases and `:latest` only for stable releases. Semver tags (`X.Y.Z`, `X.Y.Z-beta-N`, `X.Y`, `X` for non-v0.x) and `sha-<short>` tags continue to be emitted for all releases.
+- **Code scanning noise reduced**, Project-wide linter configs expanded, Codacy bandit engine disabled, and remaining flagged false positives silenced with inline rationale.
+- **Dependabot**, bumped `actions/stale` 5→10, `docker/build-push-action` 7.0.0→7.1.0, `docker/login-action` 3.7.0→4.1.0, `actions/labeler` 4.3.0→6.0.1, `actions/attest-build-provenance`, and `globals` 17.4.0→17.5.0.
 
-### 📁 Files Added / Changed (high-level)
+### Files Added / Changed (high-level)
 
-- `app/services/db.py` (new) — engine init, PRAGMA hook, Alembic bootstrap (`apply_migrations`), `init_and_migrate`, per-store migrators.
-- `app/services/dat_store.py`, `verification_store.py`, `chd_metadata_store.py`, `dat_sync.py` — re-pointed at the SQLAlchemy session factory; chunked upserts where bulk operations cross SQLite's 999-bind-parameter limit.
-- `migrations/` (new) — `alembic.ini`, `env.py`, `versions/0001_baseline_schema.py`.
-- `app/main.py` — `startup_event` initialises the DB, runs Alembic, then `init_and_migrate` before any store is touched.
-- `.github/workflows/docker-image.yml` — `:beta` tag for pre-releases.
-- `README.md` — "Available Tags" table expanded with `:beta` and pre-release semver entries; new "Opting in to beta updates" section with data-loss warning.
-- `tests/` — 5 new DB test modules plus shared `conftest.py` with sample JSON payloads and the `reset_db_engine` fixture.
+- `app/services/db.py` (new), engine init, PRAGMA hook, Alembic bootstrap (`apply_migrations`), `init_and_migrate`, per-store migrators.
+- `app/services/dat_store.py`, `verification_store.py`, `chd_metadata_store.py`, `dat_sync.py`, re-pointed at the SQLAlchemy session factory; chunked upserts where bulk operations cross SQLite's 999-bind-parameter limit.
+- `migrations/` (new), `alembic.ini`, `env.py`, `versions/0001_baseline_schema.py`.
+- `app/main.py`, `startup_event` initialises the DB, runs Alembic, then `init_and_migrate` before any store is touched.
+- `.github/workflows/docker-image.yml`, `:beta` tag for pre-releases.
+- `README.md`, "Available Tags" table expanded with `:beta` and pre-release semver entries; new "Opting in to beta updates" section with data-loss warning.
+- `tests/`, 5 new DB test modules plus shared `conftest.py` with sample JSON payloads and the `reset_db_engine` fixture.
 
-### ⚠️ Upgrade Notes
+### Upgrade Notes
 
-- **Back up your `data_dir`** before upgrading, especially if you have a large `dat_store.json` — this is a one-way migration. The legacy JSON is preserved as `*.migrated.bak` on successful import, but the new DB is the source of truth after restart.
+- **Back up your `data_dir`** before upgrading, especially if you have a large `dat_store.json`, this is a one-way migration. The legacy JSON is preserved as `*.migrated.bak` on successful import, but the new DB is the source of truth after restart.
 - **Downgrading to v3.6.x** after `compressatorium.db` has accepted writes is not supported. If you need to roll back, restore the `.migrated.bak` files (remove the suffix) and delete `compressatorium.db` before starting the older image.
-- **Read-only `/config` volumes** — the DB falls back to `$TMPDIR/compressatorium/compressatorium.db` if `data_dir` is unwritable, matching the legacy JSON-store fallback. Set `CHD_DB_PATH` explicitly if you want a different location.
+- **Read-only `/config` volumes**, the DB falls back to `$TMPDIR/compressatorium/compressatorium.db` if `data_dir` is unwritable, matching the legacy JSON-store fallback. Set `CHD_DB_PATH` explicitly if you want a different location.
 
 ---
 
 ## v3.3.2 - CD CHD Sector Extraction Fix
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
-- **PS1 serial extraction from CD CHDs** — `_extract_from_chd_sectors` previously returned `None` for all CD-based CHDs (unit_bytes=2352/2448), meaning PS1 game serials could only be extracted from companion `.bin`/`.cue` files or if those CHDs were already tagged at conversion time.  The function now probes both **Mode 2 Form 1** (24-byte header) and **Mode 1** (16-byte header) sector framing when reading 2352- or 2448-byte CD sectors, allowing it to walk the embedded ISO 9660 filesystem directly — exactly as libchdr-based emulators (PCSX2, AetherSX2, NetherSX2) do.  For CHDs created from Mode 2 Form 1 BIN/CUE images (the most common PS1 format), extraction now succeeds without requiring a companion source file.
+- **PS1 serial extraction from CD CHDs**, `_extract_from_chd_sectors` previously returned `None` for all CD-based CHDs (unit_bytes=2352/2448), meaning PS1 game serials could only be extracted from companion `.bin`/`.cue` files or if those CHDs were already tagged at conversion time. The function now probes both **Mode 2 Form 1** (24-byte header) and **Mode 1** (16-byte header) sector framing when reading 2352- or 2448-byte CD sectors, allowing it to walk the embedded ISO 9660 filesystem directly, exactly as libchdr-based emulators (PCSX2, AetherSX2, NetherSX2) do. For CHDs created from Mode 2 Form 1 BIN/CUE images (the most common PS1 format), extraction now succeeds without requiring a companion source file.
 
-### 🧪 Tests
+### Tests
 
-- Added `test_extract_from_chd_sectors_ps1_cd_mode1` — verifies PS1 serial extraction from a CD CHD with 2352-byte Mode 1 sectors.
-- Added `test_extract_from_chd_sectors_ps1_cd_mode2` — verifies PS1 serial extraction from a CD CHD with 2352-byte Mode 2 Form 1 sectors.
-- Added `test_extract_from_chd_sectors_cd_no_recognizable_content` — confirms that a CD CHD with no ISO 9660 filesystem still returns `None` gracefully.
+- Added `test_extract_from_chd_sectors_ps1_cd_mode1`, verifies PS1 serial extraction from a CD CHD with 2352-byte Mode 1 sectors.
+- Added `test_extract_from_chd_sectors_ps1_cd_mode2`, verifies PS1 serial extraction from a CD CHD with 2352-byte Mode 2 Form 1 sectors.
+- Added `test_extract_from_chd_sectors_cd_no_recognizable_content`, confirms that a CD CHD with no ISO 9660 filesystem still returns `None` gracefully.
 - Replaced the now-obsolete `test_extract_from_chd_sectors_non_dvd_returns_none` test (which verified the old early-return shortcut) with the three new tests above.
 
-### 📁 Files Changed
+### Files Changed
 
-- `app/services/disc_id.py` — `_extract_from_chd_sectors` extended to handle CD CHDs; docstrings updated throughout
-- `tests/test_disc_id.py` — Three new CD CHD extraction tests; module docstring updated
+- `app/services/disc_id.py`, `_extract_from_chd_sectors` extended to handle CD CHDs; docstrings updated throughout
+- `tests/test_disc_id.py`, Three new CD CHD extraction tests; module docstring updated
 
 ---
 
 ## v3.3.1 - Structured Logging with LOGLEVEL
 
-### ✨ New Features
+### New Features
 
-- **`LOGLEVEL` environment variable** — Replaces the removed `CHD_DEBUG` flag. Set to `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` to control log verbosity. Defaults to `INFO` so useful operational logs are visible out of the box without any configuration. Legacy `CHD_DEBUG=true` is still honoured and maps to `LOGLEVEL=DEBUG` for backwards compatibility.
-- **`LOG_PATH`** — Replaces the removed `CHD_DEBUG_LOG_PATH`. Optionally write logs to a file in addition to stdout, at any log level (not just debug). Legacy `CHD_DEBUG_LOG_PATH` is still read for backwards compatibility.
+- **`LOGLEVEL` environment variable**, Replaces the removed `CHD_DEBUG` flag. Set to `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` to control log verbosity. Defaults to `INFO` so useful operational logs are visible out of the box without any configuration. Legacy `CHD_DEBUG=true` is still honoured and maps to `LOGLEVEL=DEBUG` for backwards compatibility.
+- **`LOG_PATH`**, Replaces the removed `CHD_DEBUG_LOG_PATH`. Optionally write logs to a file in addition to stdout, at any log level (not just debug). Legacy `CHD_DEBUG_LOG_PATH` is still read for backwards compatibility.
 
-### 🔍 Enhanced Metadata Scan Logging
+### Enhanced Metadata Scan Logging
 
 Metadata scans now emit detailed, structured `INFO`-level logs covering every stage, so users can fully understand what the application is doing by inspecting logs:
 
-- **Scan start** — Logs `force` mode, number of volumes, and their paths.
-- **Discovery** — Logs how many CHD files were found across how many volumes; warns on any missing/inaccessible volume.
-- **Phase 1 (metadata extraction)** — Logs each file with a `[n/total]` counter as its `chdman info` metadata is extracted and cached. Logs success per file; warns on failure.
-- **Phase 1 summary** — Reports how many files were refreshed vs already up-to-date.
-- **Phase 2 (disc ID tagging)** — Logs when each previously-unchecked CHD is scanned for a GAME/NAME tag. When a disc ID is successfully embedded into the CHD file, logs the filename and extracted `game_id`. When no disc ID can be found, logs that the file was marked as checked.
-- **Phase 2 summary** — Reports already-checked, newly-checked, and embedded tag counts.
-- **Flush** — Logs when the metadata store is being persisted and when it completes.
-- **Final summary** — Reports total metadata refreshed, disc IDs embedded, and total elapsed time.
+- **Scan start**, Logs `force` mode, number of volumes, and their paths.
+- **Discovery**, Logs how many CHD files were found across how many volumes; warns on any missing/inaccessible volume.
+- **Phase 1 (metadata extraction)**, Logs each file with a `[n/total]` counter as its `chdman info` metadata is extracted and cached. Logs success per file; warns on failure.
+- **Phase 1 summary**, Reports how many files were refreshed vs already up-to-date.
+- **Phase 2 (disc ID tagging)**, Logs when each previously-unchecked CHD is scanned for a GAME/NAME tag. When a disc ID is successfully embedded into the CHD file, logs the filename and extracted `game_id`. When no disc ID can be found, logs that the file was marked as checked.
+- **Phase 2 summary**, Reports already-checked, newly-checked, and embedded tag counts.
+- **Flush**, Logs when the metadata store is being persisted and when it completes.
+- **Final summary**, Reports total metadata refreshed, disc IDs embedded, and total elapsed time.
 
 Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also promoted from `DEBUG` to `INFO` so the source of each embedded tag (CHD sectors, GDRO, or companion file) is visible in normal operation.
 
-### 🛠 Internal Changes
+### Internal Changes
 
 - The background maintenance loop (stuck-job detection, stale lock cleanup) now always runs, not only when `LOGLEVEL=DEBUG`. It was previously gated behind `CHD_DEBUG=true`, meaning stuck-job recovery silently didn't operate in production.
 
-### 📁 Files Changed
+### Files Changed
 
-- `app/config.py` — Removed `debug`/`CHD_DEBUG`; added `log_level`/`LOGLEVEL` (default `INFO`) and `log_path`/`LOG_PATH`
-- `app/main.py` — `configure_logging()` parses `LOGLEVEL` instead of the old boolean flag
-- `app/services/job_manager.py` — Maintenance loop always starts; removed `settings.debug` gate
-- `app/routes/info.py` — Comprehensive structured INFO logging throughout `scan_metadata_task`
-- `app/services/disc_id.py` — Embedding log calls promoted from `DEBUG` to `INFO`
-- `README.md`, `DEPLOYMENT.md`, `DOCKER-COMPOSE.md` — Updated env var tables
+- `app/config.py`, Removed `debug`/`CHD_DEBUG`; added `log_level`/`LOGLEVEL` (default `INFO`) and `log_path`/`LOG_PATH`
+- `app/main.py`, `configure_logging()` parses `LOGLEVEL` instead of the old boolean flag
+- `app/services/job_manager.py`, Maintenance loop always starts; removed `settings.debug` gate
+- `app/routes/info.py`, Detailed structured INFO logging throughout `scan_metadata_task`
+- `app/services/disc_id.py`, Embedding log calls promoted from `DEBUG` to `INFO`
+- `README.md`, `DEPLOYMENT.md`, `DOCKER-COMPOSE.md`, Updated env var tables
 
 ---
 
 ## v3.3.0 - Game ID & Title Extraction for CD and DVD CHDs
 
-### ✨ New Features
+### New Features
 
-- **Game ID & Title in CHD Inspector** — PS1, PS2, PSP, and Dreamcast game serials are extracted from CHD sector data (via `SYSTEM.CNF`, `PARAM.SFO`, and `IP.BIN`) and displayed in the CHD info modal. Human-readable titles (e.g. "Patapon", "DEAD OR ALIVE 2") are shown when available; the serial is used as a fallback title.
-- **CHD metadata tagging at conversion time** — When a CD or DVD CHD is created, the game serial is embedded as a `GAME` tag and the title as a `NAME` tag inside the CHD file itself, making it readable by emulator frontends and database scrapers.
-- **Retroactive game ID tagging** — The metadata scan (Phase 2) now loops over all CHDs and embeds `GAME`/`NAME` tags into any file that doesn't have them yet. Already-tagged and previously-scanned files are skipped efficiently.
-- **Persistent disc-ID cache** — Extracted game IDs and titles are stored in the metadata cache (`chd_metadata.json`). The `/api/info` endpoint reads from the cache first; `chdman dumpmeta` subprocesses are only spawned on a cache miss, and "nothing found" results are also cached to prevent repeated subprocess calls for unsupported discs.
+- **Game ID & Title in CHD Inspector**, PS1, PS2, PSP, and Dreamcast game serials are extracted from CHD sector data (via `SYSTEM.CNF`, `PARAM.SFO`, and `IP.BIN`) and displayed in the CHD info modal. Human-readable titles (e.g. "Patapon", "DEAD OR ALIVE 2") are shown when available; the serial is used as a fallback title.
+- **CHD metadata tagging at conversion time**, When a CD or DVD CHD is created, the game serial is embedded as a `GAME` tag and the title as a `NAME` tag inside the CHD file itself, making it readable by emulator frontends and database scrapers.
+- **Retroactive game ID tagging**, The metadata scan (Phase 2) now loops over all CHDs and embeds `GAME`/`NAME` tags into any file that doesn't have them yet. Already-tagged and previously-scanned files are skipped efficiently.
+- **Persistent disc-ID cache**, Extracted game IDs and titles are stored in the metadata cache (`chd_metadata.json`). The `/api/info` endpoint reads from the cache first; `chdman dumpmeta` subprocesses are only spawned on a cache miss, and "nothing found" results are also cached to prevent repeated subprocess calls for unsupported discs.
 
-### 🔬 Implementation Details
+### Implementation Details
 
-- `app/services/disc_id.py` — New service implementing:
-  - `_CHDReader` — minimal CHD v5 sector reader (ZLIB, LZMA, ZSTD, NONE, MINI compression)
-  - `extract_from_source()` — PS1/PS2 `.iso`/`.bin`/`.cue`/`.gdi` serial extractor
-  - `extract_from_chd()` — four-strategy extractor (embedded GAME tag → sector read → Dreamcast GDRO → companion source files)
-  - `ensure_disc_id_embedded()` — retroactive CHD tagger called during metadata scan
-- `app/services/chd_metadata_store.py` — Added `get_disc_id_info()`, `update_disc_id_info()`, `is_disc_id_checked()`, and `mark_disc_id_checked()`; `set_metadata()` now preserves `game_id`, `title`, `disc_id_checked`, and `disc_id_checked_mtime` during Phase 1 metadata refreshes
-- `app/routes/info.py` — `/api/info` uses the metadata cache; CHDs already scanned (Phase 2 or prior `/api/info` call) with no game ID skip re-extraction
-- `app/models.py` — `CHDInfo` model extended with optional `game_id` and `title` fields
-- `static/js/app.js` — CHD info modal shows "Game ID" and "Title" rows when values are present
+- `app/services/disc_id.py`, New service implementing:
+  - `_CHDReader`, minimal CHD v5 sector reader (ZLIB, LZMA, ZSTD, NONE, MINI compression)
+  - `extract_from_source()`, PS1/PS2 `.iso`/`.bin`/`.cue`/`.gdi` serial extractor
+  - `extract_from_chd()`, four-strategy extractor (embedded GAME tag → sector read → Dreamcast GDRO → companion source files)
+  - `ensure_disc_id_embedded()`, retroactive CHD tagger called during metadata scan
+- `app/services/chd_metadata_store.py`, Added `get_disc_id_info()`, `update_disc_id_info()`, `is_disc_id_checked()`, and `mark_disc_id_checked()`; `set_metadata()` now preserves `game_id`, `title`, `disc_id_checked`, and `disc_id_checked_mtime` during Phase 1 metadata refreshes
+- `app/routes/info.py`, `/api/info` uses the metadata cache; CHDs already scanned (Phase 2 or prior `/api/info` call) with no game ID skip re-extraction
+- `app/models.py`, `CHDInfo` model extended with optional `game_id` and `title` fields
+- `static/js/app.js`, CHD info modal shows "Game ID" and "Title" rows when values are present
 
-### 🧪 Tests
+### Tests
 
 - 12 new tests covering `_CHDReader` MINI hunk decoding, `_extract_cue` (including missing-file fallback and multi-file fallback), source-file extraction, CHD sector extraction, metadata store disc-ID methods, and retroactive embedding
 
-### 📁 Files Changed
+### Files Changed
 
-- `app/services/disc_id.py` — New service (source extractor + CHD reader + retroactive tagger)
-- `app/services/job_manager.py` — Embeds `GAME`/`NAME` tags at conversion time
-- `app/services/chd_metadata_store.py` — Disc-ID cache methods; `set_metadata()` field preservation
-- `app/routes/info.py` — `/api/info` disc-ID cache lookup + Phase 2 retroactive tagging
-- `app/models.py` — `CHDInfo.game_id` / `CHDInfo.title` fields
-- `static/js/app.js` — Game ID and Title rows in CHD info modal
-- `tests/test_disc_id.py` — Comprehensive disc-ID extraction tests
-- `tests/test_metadata.py` — Metadata store disc-ID caching tests
+- `app/services/disc_id.py`, New service (source extractor + CHD reader + retroactive tagger)
+- `app/services/job_manager.py`, Embeds `GAME`/`NAME` tags at conversion time
+- `app/services/chd_metadata_store.py`, Disc-ID cache methods; `set_metadata()` field preservation
+- `app/routes/info.py`, `/api/info` disc-ID cache lookup + Phase 2 retroactive tagging
+- `app/models.py`, `CHDInfo.game_id` / `CHDInfo.title` fields
+- `static/js/app.js`, Game ID and Title rows in CHD info modal
+- `tests/test_disc_id.py`, Full disc-ID extraction tests
+- `tests/test_metadata.py`, Metadata store disc-ID caching tests
 
 ---
 
 ## v3.2.3 - Batched Notifications, Deferred UI Updates & Job Index
 
-### 🎨 UI / UX
+### UI / UX
 
 - **Batched terminal notifications** - Completed, failed, and cancelled job notifications are now aggregated per flush cycle. Instead of one toast per job, a single summary toast is shown (e.g. "Completed 5 jobs", "2 jobs failed"). Individual filenames are still shown when only one job completes.
 - **Batched verified-CHD set updates** - `setVerifiedCHDs` is called once per flush with all added/removed paths collected during the batch, eliminating per-job Set cloning.
 - **Deferred UI updates during dropdown interaction** - A `deferJobUiUpdatesRef` flag pauses job-driven React re-renders while a `<select>` dropdown (mode, filter, page-size) is focused or has its menu open. This prevents the dropdown from closing mid-selection when an SSE update or poll cycle triggers a state change. Dropdowns set the flag on `focus`/`mousedown` and clear it on `blur`/`change`.
 - **Capped placeholder rows** - Optimistic "creating" placeholders are capped at `MAX_VISIBLE_CREATING_PLACEHOLDERS` (100). For larger batches, remaining jobs are counted but not rendered, with an info toast showing the total queued count.
 
-### ⚙️ Reliability & Performance
+### Reliability & Performance
 
 - **Job index map** - `applyQueuedJobUpdates` now builds a lazy `Map<jobId, index>` via `ensureJobIndex()` on first lookup, replacing O(n) `findIndex` per update with O(1) map lookups. The index is maintained as jobs are inserted or replaced.
 - **Extracted `applyPolledJobs` helper** - The poll-interval and initial-fetch merge logic is deduplicated into a single `applyPolledJobs(serverJobs)` function. It also checks `deferJobUiUpdatesRef` to skip state updates while a dropdown is open.
 - **Stuck-state polling guard** - `checkStuckStatus` responses are silently discarded when `deferJobUiUpdatesRef` is active, preventing spurious stuck-state banner flickers during dropdown interaction.
 - **New-job insertion order** - Hydrated jobs arriving via SSE for unknown IDs are now appended (`push`) instead of prepended (`unshift`), maintaining chronological order and avoiding unnecessary array shifts.
 
-### 📁 Files Changed
+### Files Changed
 
 - `static/js/app.js` - All changes above: batched notifications, deferred UI flag, `ensureJobIndex`, `applyPolledJobs`, placeholder cap, dropdown `onFocus`/`onBlur`/`onMouseDown` handlers
 
@@ -629,28 +629,28 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v3.2.2 - Search View Snapshot & Auto-Return
 
-### ✨ New Features
+### New Features
 
 - **Search view snapshot / restore** - Before "Search All" runs, the current file-list state (entries, archive path, selection, page) is captured. The "← File List" button restores this snapshot exactly, preserving scroll position context instead of re-fetching the directory.
 - **Auto-return to file list** - After a successful conversion from search results, the UI automatically restores the pre-search file-list view when `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` is `true` (default). The setting is served from `/api/version` and respected by the frontend at runtime.
 - **New config setting** - `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` (default `true`) with legacy alias `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` via Pydantic `AliasChoices`.
 
-### 🐞 Bug Fixes
+### Bug Fixes
 
 - **Conversion return values** - `executeConversion` and `maybeConfirmDeletePlan` now return `boolean` success indicators, enabling callers to decide post-conversion behavior (e.g. auto-return).
 - **Snapshot invalidation** - Pre-search snapshot is cleared on volume switch and directory navigation so stale state is never restored.
 
-### 📖 Documentation
+### Documentation
 
 - **README** - Added `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` and legacy alias to env var table.
 - **DEPLOYMENT.md** - Added new env var to deployment reference.
 - **DOCKER-COMPOSE.md** - Added new env var to compose reference.
 
-### 🧪 Tests
+### Tests
 
 - **Search auto-return config** - New `test_search_auto_return_default_and_legacy_alias` verifies the setting defaults to `true` and respects the legacy `CHD_` alias.
 
-### 📁 Files Changed
+### Files Changed
 
 - `app/config.py` - `search_auto_return_to_file_list` field with `AliasChoices`
 - `app/routes/info.py` - `/api/version` response includes `search_auto_return_to_file_list`
@@ -662,14 +662,14 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v3.2.1 - CI Release Notes from Commit Log
 
-### ⚙️ CI / CD
+### CI / CD
 
 - **Auto-generated release body** - The `create-release` job now checks out the repo with full history and tags, derives the previous semver tag, and builds a changelog from `git log --no-merges` between the two tags. The result is written to `RELEASE_BODY.md` and passed via `body_path` instead of relying on GitHub's `generate_release_notes`.
 - **Previous-tag derivation** - New `previous_tag` output in the `release_meta` step finds the most recent `v*.*.*` tag excluding the current one, enabling accurate commit-range changelogs.
 - **Full changelog link** - The generated release body includes a GitHub compare URL (`previous_tag...current_tag`) for easy diff browsing.
 - **Fallback handling** - If no previous tag exists (first release) or no non-merge commits are found, sensible defaults are emitted instead of an empty body.
 
-### 📁 Files Changed
+### Files Changed
 
 - `.github/workflows/docker-image.yml` - Added checkout step with `fetch-depth: 0` and `fetch-tags: true`, commit-log changelog generation, `body_path` release body
 
@@ -677,18 +677,18 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v3.2.0 - Job Tabs & Queue Pagination
 
-### ✨ New Features
+### New Features
 
 - **Job tabs** - The jobs panel is now split into three tabs: **Queue** (queued + processing + creating), **Completed**, and **Failed/Cancelled**. Each tab shows its own count. The "Failed/Cancelled" tab auto-hides when empty and auto-switches back to Queue if emptied while active.
 - **Job pagination** - Jobs within each tab are paginated with configurable page-size (10 / 25 / 50 / 100 / All), page navigation buttons, and a "Showing X–Y of Z" summary. Current page is clamped when the list shrinks.
 
-### 🎨 UI / UX
+### UI / UX
 
 - **Tab bar styling** - Pill-shaped tab buttons with uppercase labels, accent-color active state, hover highlights, and full-width equal-sizing on mobile (≤768 px).
 - **Job header count** - The "Jobs" heading now displays the combined total across all tabs rather than the raw `jobs.length`.
 - **Empty-state messaging** - Each tab shows contextual empty titles and help text (e.g. "Select files and click Convert" for Queue, "Successfully completed jobs will appear here" for Completed).
 
-### 📁 Files Changed
+### Files Changed
 
 - `static/js/app.js` - Job tab state, `displayedJobs` / `queueJobs` / `completedJobs` / `issueJobs` memos, `jobsPagination` / `paginatedJobs` computed values, tab bar and pagination controls, contextual empty-state props
 - `static/css/style.css` - `.job-tabs`, `.job-tab`, `.job-tab.active`, `.job-tab:hover` styles + mobile responsive rules
@@ -697,25 +697,25 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v3.1.1 - SSE Batching, Verify Concurrency & Test Coverage
 
-### 🐞 Bug Fixes
+### Bug Fixes
 
 - **Verify concurrency default** - `MAX_VERIFY_CONCURRENCY` default changed from `2` to `1` to match serial-first processing policy, preventing unexpected parallel verify workloads on low-resource hosts.
 
-### 🎨 UI / UX
+### UI / UX
 
 - **SSE job-update batching** - Rapid Server-Sent Events are now coalesced in a micro-batch window (`JOB_UPDATE_BATCH_WINDOW_MS`) before applying to React state. Only the latest update per job is kept, drastically reducing re-renders during high-throughput conversions.
 - **Lazy state cloning** - `setJobs` updater uses an `ensureMutable()` helper that clones the jobs array at most once per flush, avoiding unnecessary allocations when no fields actually changed.
 - **Flush-on-terminal** - Terminal events (`complete`, `error`, `cancelled`) force an immediate flush of the pending batch so the UI reflects final state without waiting for the batch timer.
 
-### 📖 Documentation
+### Documentation
 
 - **README** - Updated `MAX_VERIFY_CONCURRENCY` default from `2` to `1` in the environment variable table.
 
-### 🧪 Tests
+### Tests
 
 - **Serial concurrency defaults** - New `test_concurrency_defaults_are_serial` in `tests/test_volume_discovery.py` asserts both `max_concurrent_jobs` and `max_verify_concurrency` default to `1`.
 
-### 📁 Files Changed
+### Files Changed
 
 - `app/config.py` - `max_verify_concurrency` default `2` → `1`
 - `static/js/app.js` - SSE micro-batching, lazy array cloning, flush-on-terminal
@@ -726,14 +726,14 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v3.1.0 - Volume Discovery, Queue Controls & UI Refresh
 
-### ✨ New Features
+### New Features
 
 - **Automatic volume discovery** - When `COMPRESSATORIUM_VOLUMES` is not set, the app discovers mounted libraries from `COMPRESSATORIUM_MOUNT_ROOT/*` at startup. Mount-point children are preferred over plain directories; results are cached for stable runtime behavior.
 - **Queue-wide cancellation** - New `POST /api/jobs/cancel-all` endpoint with `X-CHD-Action-Confirm: cancel-all-jobs` header guard. A confirmation modal in the UI prevents accidental bulk cancellation.
 - **Clear completed jobs** - New `DELETE /api/jobs/completed` endpoint with `X-CHD-Action-Confirm: clear-completed-jobs` header guard. Adds a "Clear Done" button with a confirmation modal showing the count of jobs to remove.
 - **Entrypoint volume discovery** - `entrypoint.sh` now runs the same discover-volumes logic at container startup and logs whether volumes are explicit or auto-discovered, with proper comma-delimited iteration and whitespace trimming.
 
-### 🐞 Bug Fixes
+### Bug Fixes
 
 - **Serial queue enforcement** - When `MAX_CONCURRENT_JOBS=1`, the dispatcher now awaits `_run_job()` inline instead of spawning a detached task, preventing race-condition parallel processing.
 - **Serial verify default** - `MAX_VERIFY_CONCURRENCY` now defaults to `1` so verification workloads are single-lane unless explicitly increased.
@@ -743,7 +743,7 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 - **Progress update deduplication** - SSE event handler skips `setJobs` when all tracked fields are identical, eliminating unnecessary React re-renders.
 - **File-list auto-refresh paused during work** - Auto-refresh interval is suppressed while any jobs are creating, queued, or processing, preventing disruptive list flickers mid-batch.
 
-### 🎨 UI / UX
+### UI / UX
 
 - **Header and footer logo** - `logo.png` is displayed in the header alongside the title and in the app footer.
 - **Favicon** - `index.html` now uses `favicon.ico` from `/static/images/`.
@@ -753,13 +753,13 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 - **Stale progress ref cleanup** - `progressRenderAtRef` entries are pruned on terminal events and during `mergeJobs`, preventing memory leaks from long sessions.
 - **Clear Done confirmation modal** - New `ClearDoneModal` component shows job count and guards accidental clears. Button shows a spinner (`clearingCompletedJobs` state) during the API call.
 
-### ⚙️ Reliability & Maintenance
+### Reliability & Maintenance
 
 - **Environment variable standardization** - Preferred env names are `COMPRESSATORIUM_MOUNT_ROOT` and `COMPRESSATORIUM_VOLUMES`. Legacy `CHD_MOUNT_ROOT` / `CHD_VOLUMES` remain supported via Pydantic `AliasChoices`.
 - **Startup volume caching** - `Settings.scan_data_mounts_on_startup()` snapshots discovered volumes once at boot so the runtime volume list is stable even if mount points change later.
 - **Data mount root config** - New `data_mount_root` setting (default `/data`) controls where the auto-discovery scan looks.
 
-### 📖 Documentation
+### Documentation
 
 - **README** - Updated batch conversion docs, added cancel-all / clear-done mentions, documented confirmation headers on destructive API actions, added new 3DS verify endpoints, updated environment variable table with `COMPRESSATORIUM_*` names and legacy aliases, updated example docker-compose snippet.
 - **DEPLOYMENT.md** - Refreshed for new environment variable names.
@@ -768,7 +768,7 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 - **Docker Compose files** - All three compose files (`docker-compose.yml`, `docker-compose.multi-volume.yml`, `docker-compose.cli.yml`) updated from `CHD_VOLUMES` to `COMPRESSATORIUM_MOUNT_ROOT=/data`.
 - **run_dev.sh** - Updated to use `COMPRESSATORIUM_MOUNT_ROOT` / `COMPRESSATORIUM_VOLUMES` with fallback to legacy names.
 
-### 🧪 Tests
+### Tests
 
 - **Volume discovery** - New `tests/test_volume_discovery.py` covering explicit volumes, auto-discovery from children, and startup cache stability.
 - **Cancel-all confirmation header** - Test that `cancel_all_jobs` rejects requests missing the confirmation header with `400`.
@@ -777,7 +777,7 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 - **Serial dispatcher concurrency** - End-to-end test proving `max_concurrent=1` never exceeds one simultaneous conversion.
 - **z3ds / Dolphin test fixtures** - Added `data_mount_root` monkeypatch to `test_z3ds_routes.py`, `test_metadata.py`, `test_dolphin_routes.py`, and `test_mode_parity_fixes.py` to satisfy the new required setting.
 
-### 📁 Files Changed
+### Files Changed
 
 - `app/config.py` - Volume discovery engine, `data_mount_root`, `AliasChoices`, startup scan cache
 - `app/main.py` - Index `Cache-Control: no-store`, version query param on `app.js`
@@ -802,7 +802,7 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v3.0.1 - Clear Queue Feature
 
-### ✨ New Features
+### New Features
 
 - **Clear Queue** - Added a "Clear Queue" button to the job queue header that allows users to cancel all running and queued jobs at once.
     - **API Endpoint** - `POST /api/jobs/cancel-all` endpoint exposed for bulk cancellation.
@@ -812,7 +812,7 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v3.0.0 - Nintendo 3DS Support & Docker Compose Overhaul
 
-### ✨ New Features
+### New Features
 
 - **Nintendo 3DS Support** - Native support for compressing `.cci`, `.cia`, and `.3ds` ROMs using `z3ds_compress`.
     - **New Tool Option** - Select **3DS** from the main tool selector to access 3DS compression modes.
@@ -823,13 +823,13 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
     - `docker-compose.multi-volume.yml` - Template for multiple volume mounts.
     - `docker-compose.cli.yml` - Dedicated CLI batch processing configuration.
 
-### ⚠️ Breaking Changes
+### Breaking Changes
 
 - **ISO Handling Policy** - The "ISO Handling" setting no longer defaults to Dolphin.
     - **Explicit Selection Required** - Users must now explicitly choose between "CHDMAN" (for PS2/DVD) or "Dolphin" (for GameCube/Wii) when processing `.iso` files.
     - **UI Validation** - The interface prevents conversion of ISO files until a handler is selected, preventing accidental invalid conversions.
 
-### 🐞 Bug Fixes
+### Bug Fixes
 
 - **Delete-on-verify messaging** - Corrected messaging for z3ds mode delete-on-verify operations in `static/js/app.js`.
 - **Lock Manager** - Fixed `ensure_lock_manager` usage in `services/job_manager.py` to prevent race conditions during z3ds detection.
@@ -841,10 +841,10 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 - **UI Accessibility** - Increased warning text size and improved color contrast for better readability in `static/css/style.css`.
 - **ISO Handling Validation** - Added strict check for `iso_handling` parameter in `routes/convert.py`, rejecting requests where it is null.
 
-### ⚙️ Reliability & Maintenance
+### Reliability & Maintenance
 
 - **Periodic Lock Cleanup** - Added `cleanup_stale_locks_periodic` to `JobManager` (services/job_manager.py), running every 10 debug heartbeats (approx. 5 minutes) to automatically remove stale lock files.
-- **Z3DS Metadata Optimization** - Added `has_z3ds` and `z3ds_convertible` flags to file search responses in `routes/files.py` to optimize frontend filtering.
+- **Z3DS metadata flags** - Added `has_z3ds` and `z3ds_convertible` flags to file search responses in `routes/files.py` to speed up frontend filtering.
 - **Conversion Queue Backpressure** - Added queue depth limiting for job creation endpoints:
     - New `MAX_QUEUE_DEPTH` guard applies to `/api/jobs` and `/api/jobs/batch`.
     - Requests now return HTTP `429` when queued + processing jobs exceed configured capacity.
@@ -857,7 +857,7 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
     - Adds `CHD_PROGRESS_TIMEOUT_PER_GIB` seconds per GiB of input.
     - Enforces upper bound with `CHD_PROGRESS_TIMEOUT_CAP`.
 
-### 🔧 Technical Details
+### Technical Details
 
 - **Z3DS Integration** - Implemented `Z3DS_INFO_EXTENSIONS` and `Z3DS_VERIFY_EXTENSIONS` constants for centralized file type management.
 - **Path Helper Methods** - Added `_is_z3ds_info_file` and `_is_z3ds_verify_file` helpers in `routes/info.py` for consistent file type checking.
@@ -869,13 +869,13 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 - **Regression Coverage** - Added tests for queue-capacity `429`, verify-lane `429`, and adaptive timeout math.
 
 
-### 🛡️ Deployment & Security
+### Deployment & Security
 
 - **New Deployment Guide** - `DEPLOYMENT.md` covers security best practices, resource limits, and production hardening.
 - **Docker Documentation** - `DOCKER-COMPOSE.md` provides a quick reference for common commands and troubleshooting.
 - **Security Audit** - verified path traversal protections, secret scanning, and container security.
 
-### 📁 Files Changed
+### Files Changed
 
 - `static/js/app.js` - Added 3DS tool logic and frontend integration.
 - `app/services/z3ds_compress.py` - New service for 3DS compression.
@@ -898,31 +898,31 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v2.0.1 - Mobile-Responsive Design
 
-### 🎨 UI/UX Improvements
+### UI/UX Improvements
 
-- **Mobile-responsive Web UI** - Complete mobile optimization with card-based file list layout, touch-friendly controls (44-48px minimum touch targets), and single-column layout for screens under 768px.
-- **Responsive breakpoints** - Added media queries at 480px, 768px, 900px, and 1200px for seamless experience across all devices.
-- **Touch-optimized controls** - All interactive elements meet WCAG accessibility standards with proper touch target sizing.
+- **Mobile-responsive Web UI** - A full mobile layout with a card-based file list, touch-friendly controls (44-48px minimum touch targets), and a single column for screens under 768px.
+- **Responsive breakpoints** - Added media queries at 480px, 768px, 900px, and 1200px for a consistent layout across phones, tablets, and desktops.
+- **Touch-friendly controls** - Interactive elements meet WCAG touch-target sizing.
 - **Card-based file list** - On mobile, file list converts from table layout to vertical cards with better information hierarchy.
 - **Full-width inputs** - Form controls, dropdowns, and buttons span full width on mobile for easier interaction.
 - **Vertical stacking** - ISO handling options, toolbar elements, and compression options stack vertically on mobile.
 - **Modal improvements** - Modals now use 95% viewport width on mobile with proper scrolling (90vh max-height).
 - **Screenshots documentation** - Added responsive design screenshots to README showcasing desktop, tablet, and mobile views.
 
-### 🔧 Technical Details
+### Technical Details
 
 - Pure CSS solution with no JavaScript changes required
 - Zero breaking changes to desktop functionality
 - 627 lines of responsive CSS added
 - Desktop layout (3-column) fully preserved for screens ≥1200px
 
-### 📁 Files Changed
+### Files Changed
 
-- `static/css/style.css` - Added comprehensive mobile-responsive styles with multiple breakpoints
+- `static/css/style.css` - Added mobile-responsive styles with multiple breakpoints
 - `README.md` - Added Screenshots section with responsive design examples
 - `docs-desktop-view.png`, `docs-tablet-view.png`, `docs-mobile-view.png` - Added documentation screenshots
 
-### ✨ New Features
+### New Features
 
 - **Archive delete-on-verify** - Archive inputs can now delete the entire archive after a successful conversion + verification, with an explicit warning in the delete plan.
 
@@ -930,24 +930,24 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v1.2.1 - Archive Safety Limits & Timeout Controls
 
-### ✨ New Features
+### New Features
 
 - **Archive safety limits** - Configure maximum archive entries, per-member size, and total extraction size with `CHD_ARCHIVE_MAX_ENTRIES`, `CHD_ARCHIVE_MAX_MEMBER_SIZE`, and `CHD_ARCHIVE_MAX_TOTAL_SIZE`.
 - **Archive truncation metadata** - File listing/search responses now report when archive listings are truncated by safety limits.
 - **Verification timeouts** - New `CHD_VERIFY_TIMEOUT` and `CHD_VERIFY_PROGRESS_TIMEOUT` allow you to stop long-running or stalled `chdman verify` operations.
 
-### 🛡️ Safety Improvements
+### Safety Improvements
 
 - **Output directory validation** - Output directories are trimmed and rejected if empty, preventing accidental writes to invalid paths.
 - **Safe temp cleanup** - Temporary directories are only removed if they are within expected temp locations.
 - **Chdman info timeout** - `CHD_INFO_TIMEOUT` prevents `chdman info` from hanging indefinitely.
 
-### 🐞 Bug Fixes
+### Bug Fixes
 
 - **Archive enumeration errors** - Directory scans skip problematic entries instead of failing entire requests.
 - **Output path creation** - Output directories are only created when a directory component exists.
 
-### 📁 Files Changed
+### Files Changed
 
 - `app/config.py` - Added archive and timeout configuration values
 - `app/models.py` - Archive truncation metadata
@@ -963,25 +963,25 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v1.2.0 - Delete-on-Verify & Safer File Ops
 
-### ✨ New Features
+### New Features
 
 - **Delete-on-verify** - Optional post-conversion verification that deletes the original source only after a successful CHD verify (create/copy modes).
 - **Delete plan confirmation** - New `/api/jobs/delete-plan` endpoint + UI modal showing exactly which files will be removed before conversion starts.
 - **Track-aware deletes** - `.cue`/`.gdi` companion tracks are included in the delete plan and removed as a set.
 
-### 🛡️ Safety Improvements
+### Safety Improvements
 
 - **Snapshot + fingerprint validation** - Delete plans are revalidated at completion and must match original fingerprints before any deletion.
 - **In-use protection** - File delete/rename operations are blocked while a path is used by an active job (including cue/gdi track files).
 - **Lock hygiene** - Hash-based lock filenames and startup cleanup for stale file locks.
 - **Cancel-safe** - If a cancel occurs after verify, deletion is skipped.
 
-### 🎛️ UI/UX
+### UI/UX
 
 - **Always-visible Select All** checkbox with indeterminate state.
 - **Conversion panel refresh** with clearer post-conversion options and copy-mode warnings.
 
-### 📁 Files Changed
+### Files Changed
 
 - `app/utils/delete_plan.py` - Track parsing, delete plan snapshotting, safety checks
 - `app/services/job_manager.py` - Delete-on-verify orchestration + safety validation
@@ -997,13 +997,13 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v1.1.5 - Archive Conversion Safety & Stall Watchdog
 
-### 🐞 Bug Fixes
+### Bug Fixes
 
 - **Archive member selection** - When both `.cue`/`.gdi` and `.bin` exist in the same archive folder, `.bin` entries are now suppressed. This prevents conversions from starting with an incomplete input set (missing TOC/track layout), which can stall `chdman` and never reach completion.
 - **Batch dedupe by output path** - Batch job creation now keeps only one job per output CHD and prefers `.cue`/`.gdi` > `.iso` > `.bin` when multiple archive members map to the same output. This avoids duplicate work, conflicting locks, and stuck jobs.
 - **Stall watchdog** - New `CHD_PROGRESS_TIMEOUT` fails a conversion if both progress and output size stay unchanged for the configured period (default 600s). The job is marked failed with a clear error instead of lingering at 99%.
 
-### 📁 Files Changed
+### Files Changed
 
 - `app/services/archive.py` - Prefer `.cue`/`.gdi` over `.bin` for archive listings
 - `app/routes/convert.py` - Deduplicate batch jobs by output path and prioritize safe inputs
@@ -1016,12 +1016,12 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v1.1.4 - Python 3.8 Compatibility Fix
 
-### 🐞 Bug Fix
+### Bug Fix
 
 - **Conversion completion regression** - On Python 3.8, the new `list[str]` annotation in `app/services/chdman.py` raises `TypeError: 'type' object is not subscriptable` at runtime. That exception happens inside the conversion generator before the "complete" event is emitted, so jobs never transition to `completed` on the frontend even if `chdman` finishes. The annotation is now `typing.List[str]` to keep Python 3.8 compatibility.
 - **Guardrail test** - Added a test that fails if `list[...]` annotations appear in `chdman.py` without `from __future__ import annotations`, preventing this regression.
 
-### 📁 Files Changed
+### Files Changed
 
 - `app/services/chdman.py` - Python 3.8-safe annotation for output buffering
 - `tests/test_chdman_annotations.py` - Regression test for annotation compatibility
@@ -1030,7 +1030,7 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 ## v1.1.1 - Async I/O & Reliability Improvements
 
-### 🔧 Internal Improvements
+### Internal Improvements
 
 - **Async I/O Refactor** - Filesystem operations on request paths (info, files, stores) now offload to threadpool, preventing event loop blocking
 - **Version-Gated Persistence** - Metadata and verification stores implement last-write-wins with version checks to prevent stale overwrites
@@ -1038,10 +1038,10 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 - **Timezone-Aware Timestamps** - Replaced deprecated `datetime.utcnow()` with `datetime.now(timezone.utc)`
 - **Concurrency Tests** - Added test coverage for concurrent metadata/verification store writes
 
-### 📁 Files Changed
+### Files Changed
 
 - `app/services/chd_metadata_store.py` - Async persistence, version-gated replace
-- `app/services/verification_store.py` - Async I/O, version-gated replace  
+- `app/services/verification_store.py` - Async I/O, version-gated replace
 - `app/services/job_manager.py` - Timezone-aware timestamps
 - `app/routes/info.py` - Threadpool offloading for filesystem checks
 - `app/routes/files.py` - Async filesystem operations
@@ -1053,13 +1053,13 @@ Disc ID embedding operations inside `disc_id.py` (strategies 2–4) are also pro
 
 # Release Notes - v1.0.0
 
-## 🎉 Major Release: CHD Metadata Caching & Version System
+## Major Release: CHD Metadata Caching & Version System
 
 This release introduces significant new features including intelligent CHD metadata caching, a unified version system, and enhanced UI capabilities.
 
 ---
 
-## ✨ New Features
+## New Features
 
 ### CHD Metadata Caching System
 - **Persistent metadata cache** - CHD file metadata is now cached to disk, avoiding repeated `chdman info` calls
@@ -1083,7 +1083,7 @@ This release introduces significant new features including intelligent CHD metad
 
 ---
 
-## 🔧 Technical Improvements
+## Technical Improvements
 
 ### Performance
 - **Non-blocking persistence** - Metadata cache writes use thread pool to avoid blocking event loop
@@ -1101,7 +1101,7 @@ This release introduces significant new features including intelligent CHD metad
 
 ---
 
-## 📁 Files Changed
+## Files Changed
 
 - `.version` - New version source of truth
 - `scripts/sync-version.sh` - New version sync utility
@@ -1118,6 +1118,6 @@ This release introduces significant new features including intelligent CHD metad
 
 ---
 
-## 🔄 Upgrade Notes
+## Upgrade Notes
 
 This release is backwards compatible. The metadata cache will be built automatically as CHD files are accessed or when "Scan Metadata" is clicked.

@@ -1,24 +1,31 @@
 # Adding Platforms and Compression/Decompression Tools
 
 This is a developer guide for extending Compressatorium with **new conversion
-tools** (e.g. a brand-new compressor binary) and **new platforms / formats**
-(e.g. a new chdman create mode, or a new file type a tool can handle). It
-walks the full vertical slice — from the binary in the Docker image, through
-the Python service and job pipeline, the FastAPI routes, and finally the
-Preact web UI — and shows how to add a tool and a platform *in tandem*.
+tools** (a brand-new compressor binary) and **new platforms / formats** (a new
+chdman create mode, or a new file type a tool can handle). It walks the full
+vertical slice, from the binary in the Docker image, through the Python service
+and tool plugin, the job pipeline, the FastAPI routes, and finally the Svelte
+web UI, and shows how to add a tool and a platform in tandem.
 
-It is written against the codebase as it stands today, with three tools
-already wired up:
+It is written against the codebase as it stands today, with three tools already
+wired up:
 
-| Tool | Binary | Service module | Handles |
-|------|--------|----------------|---------|
-| **chdman** | `mame-tools` (`/usr/bin/chdman`) | `app/services/chdman.py` | CD/DVD/HD/Raw/LaserDisc disc images ↔ `.chd` |
-| **dolphin-tool** | `dolphin-emu` (`/usr/local/bin/dolphin-tool`) | `app/services/dolphin_tool.py` | GameCube/Wii images ↔ `.rvz/.wia/.gcz/.iso` |
-| **z3ds_compressor** | built from source (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | Nintendo 3DS ROMs → `.zcci/.zcia/.z3ds` |
+| Tool | Binary | Service module | Plugin | Handles |
+|------|--------|----------------|--------|---------|
+| **chdman** | `mame-tools` (`/usr/bin/chdman`) | `app/services/chdman.py` | `app/services/tools/chdman.py` | CD/DVD/HD/Raw/LaserDisc disc images to/from `.chd` |
+| **dolphin-tool** | `dolphin-emu` (`/usr/local/bin/dolphin-tool`) | `app/services/dolphin_tool.py` | `app/services/tools/dolphin.py` | GameCube/Wii images to/from `.rvz/.wia/.gcz/.iso` |
+| **z3ds_compressor** | built from source (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | `app/services/tools/z3ds.py` | Nintendo 3DS ROMs to `.zcci/.zcia/.z3ds` |
 
-`z3ds_compress` is the cleanest, most self-contained example of "a new tool
-that handles a new platform," so this guide uses it as the reference
-implementation throughout. When in doubt, **copy what z3ds does.**
+`z3ds` is the cleanest, most self-contained example of "a new tool that handles
+a new platform," so this guide uses it as the reference implementation
+throughout. When in doubt, **copy what z3ds does.**
+
+> **The big idea: there is a tool registry.** Adding a tool used to mean editing
+> `if/elif` ladders in ~20 files. It doesn't anymore. The backend has a tool
+> registry (`app/services/tools/`) that mirrors the frontend one. You write a
+> small plugin class, register it once, and the generic dispatch in
+> `job_manager` and `convert.py` picks it up by mode. Most of the old per-tool
+> branches are gone. The sections below reflect that.
 
 ---
 
@@ -29,26 +36,26 @@ touching the same layers in the same order:
 
 ```
             ┌─────────────────── Web UI (Svelte 5 + Vite, under src/) ───────────────┐
-            │  src/lib/tools/registry.js: one TOOLS entry per tool — drives all UI   │
+            │  src/lib/tools/registry.js: one TOOLS entry per tool, drives all UI   │
             │  src/lib/api/endpoints.js:  HTTP / SSE / batch-verify client methods   │
             └───────────────────────────────────┬───────────────────────────────────┘
                                                  │  POST /api/jobs   (mode=...)
             ┌────────────────────────────────────▼──────────────────────────────────────┐
             │  Routes (app/routes)                                                        │
-            │   convert.py  – validate mode/extension, compute output path, enqueue job   │
+            │   convert.py  – validate mode/extension (via registry.spec), enqueue job    │
             │   files.py    – mark files convertible in directory listings + search       │
             │   info.py     – per-tool info + verify (single + batch + SSE) endpoints      │
             └────────────────────────────────────┬──────────────────────────────────────┘
                                                   │  job_manager.create_job(mode=...)
             ┌─────────────────────────────────────▼─────────────────────────────────────┐
             │  Job pipeline (app/services/job_manager.py)                                 │
-            │   _queue_job_locked  – pick output path                                      │
-            │   _process_job       – pick service, stream convert(), optional verify+delete│
+            │   _queue_job_locked  – registry.for_mode(mode).output_path(...)              │
+            │   _process_job       – registry.for_mode(mode).convert(...) / .verify(...)   │
             └─────────────────────────────────────┬─────────────────────────────────────┘
-                                                   │  service.convert(...) async generator
+                                                   │  plugin.convert(...) async generator
             ┌──────────────────────────────────────▼────────────────────────────────────┐
-            │  Tool service (app/services/<tool>.py)                                      │
-            │   spawns the binary, parses progress, yields {progress, message}            │
+            │  Tool plugin (app/services/tools/<tool>.py) + service (app/services/<tool>.py)│
+            │   plugin holds ModeSpec rows; service spawns the binary, parses progress     │
             └──────────────────────────────────────┬────────────────────────────────────┘
                                                     │  subprocess
             ┌────────────────────────────────────────▼───────────────────────────────────┐
@@ -58,71 +65,109 @@ touching the same layers in the same order:
 
 Two supporting layers:
 
-- **`app/models.py`** — `ConversionMode` enum (every mode string lives here)
-  and the Pydantic info models (`CHDInfo`, `DolphinDiscInfo`, `Z3DSInfo`).
-- **`app/config.py`** — `Settings` holds the binary path for each tool
+- **`app/models.py`** holds the `ConversionMode` enum (every mode string lives
+  here) and the Pydantic info models (`CHDInfo`, `DolphinDiscInfo`, `Z3DSInfo`).
+- **`app/config.py`** `Settings` holds the binary path for each tool
   (`chdman_path`, `dolphin_tool_path`, `z3ds_compressor_path`).
 
-### The tool-service contract
+### The tool registry
 
-The job pipeline talks to every tool through a small duck-typed interface.
-A new service class must provide:
+`app/services/tools/` is the heart of the backend. It has five parts:
 
-| Member | Signature | Purpose |
-|--------|-----------|---------|
-| `convert` | `async def convert(self, input_path, output_path, mode="...", *, compression=None, cancel_event=None) -> AsyncGenerator[dict, None]` | Spawn the binary, `yield {"progress": int, "message": str}`, raise on failure, `yield {"progress": 100, ...}` at the end. Must raise `ConversionCancelled` when `cancel_event` fires. |
-| `verify` | `async def verify(self, path) -> {"valid": bool, "message": str}` | Deep integrity check of an output file (used by delete-on-verify and the Verify button). |
-| `verify_stream` | `async def verify_stream(self, path) -> AsyncGenerator[dict, None]` | Streaming variant yielding `{"type": "progress"/"complete"/"error", ...}`. `verify()` is normally just a wrapper over this. |
-| `info` | `def info(self, path) -> dict` *(or async)* | Metadata for the info modal. |
-| `is_convertible` | `@staticmethod (filename) -> bool` | Whether a filename is an input for this tool. |
-| `get_output_path_for_mode` | `@staticmethod (mode, input_path, output_dir=None, *, treat_as_stem=False) -> str` | Compute the output path for a mode. |
-| `active_pids` | `() -> list[int]` | Optional but recommended; used by the debug heartbeat. |
+- **`spec.py`** defines `ModeKind` (`CREATE` / `EXTRACT` / `COPY` / `COMPRESS`)
+  and the frozen `ModeSpec` dataclass: per-mode metadata that the routes and
+  pipeline read instead of branching on the mode string.
+- **`base.py`** defines the `ToolPlugin` protocol (the contract) and a `BaseTool`
+  helper that supplies sensible defaults so concrete plugins stay tiny.
+- **`registry.py`** defines `ToolRegistry`, the lookup object. It indexes tools
+  by id and by mode and answers `for_mode(mode)`, `spec(mode)`,
+  `archive_input_extensions()`, `verify_extensions()`, and friends.
+- **`chdman.py` / `dolphin.py` / `z3ds.py`** are the three plugins. Each is a
+  thin `BaseTool` subclass that holds `ModeSpec` rows and delegates the real
+  work to the underlying service singleton.
+- **`__init__.py`** builds the `registry` singleton and registers the three
+  tools. This is the single wiring point.
 
-Each service module also exposes, at module scope:
+### The plugin contract: `ModeSpec` and `BaseTool`
 
-- a `*_CONVERTIBLE_EXTENSIONS` set (input extensions),
-- usually a `*_OUTPUT_FORMATS` map (input ext → output ext, or mode → output),
-- a **module-level singleton instance** (e.g. `z3ds_compress_service = Z3DSCompressService()`).
+A `ModeSpec` row (`spec.py`) describes one mode:
 
-`ConversionCancelled` is defined once in `app/services/chdman.py:22` and
-imported by the other services — reuse it, don't define your own.
+```python
+@dataclass(frozen=True)
+class ModeSpec:
+    mode: str                                 # wire value == a ConversionMode value
+    tool_id: str                              # "chdman" | "dolphin" | "z3ds"
+    kind: ModeKind                            # CREATE | EXTRACT | COPY | COMPRESS
+    label: str                                # UI label
+    group: str                                # UI group id
+    output_ext: str | None                    # ".chd"/".rvz"/None (None = mapped from input)
+    input_extensions: frozenset[str]
+    supports_compression: bool = False
+    supports_compression_level: bool = False  # dolphin rvz/wia only
+    supports_delete_on_verify: bool = False
+    allows_archive_input: bool = False        # chdman create modes today
+```
+
+A plugin subclasses `BaseTool` and provides:
+
+| Member | Purpose |
+|--------|---------|
+| `id`, `display_name`, `binary_path` | identity + binary path (from settings) |
+| `modes` | a tuple of `ModeSpec` rows |
+| `output_extensions`, `verify_extensions` | produced extensions (for "output exists" badges) and verify-accepted extensions |
+| `convert(input_path, output_path, mode, *, compression=None, cancel_event=None)` | async generator yielding `{"progress": int, "message": str}`, raising `ConversionCancelled` when `cancel_event` fires |
+| `verify(path)` / `verify_stream(path)` | deep integrity check, one-shot and streaming |
+| `info(path)` / `info_model(raw, path)` | metadata dict + the Pydantic model it maps to |
+| `output_path(mode, input_path, output_dir=None, *, treat_as_stem=False)` | compute the output path |
+| `detect_output(input_path)` | optional, returns an `OutputStatus` so the file list can badge "output already exists" |
+| `active_pids()` | PIDs for the debug heartbeat |
+| `post_convert(input_path, output_path, mode)` | optional hook, default no-op |
+
+`BaseTool` fills in `input_extensions` (the union of every mode's
+`input_extensions`), `spec(mode)`, and no-op `detect_output` / `post_convert`,
+so a real plugin only overrides what differs. See `app/services/tools/z3ds.py`
+for the smallest complete example (~120 lines, mostly delegation).
+
+`ConversionCancelled` is defined once in `app/services/subprocess_runner.py` and
+re-exported through `services.chdman` and `services.tools.runner`. Import it,
+don't define your own.
 
 ---
 
 ## 2. Two kinds of extension
 
-### Scenario A — a new platform on an *existing* tool
+### Scenario A: a new platform on an *existing* tool
 
-This is the lightweight case: the binary already ships and the service class
-already exists; you just need a new mode string or a new input extension.
+The lightweight case: the binary already ships and the plugin already exists.
+You add a mode string or an input extension.
 
 Examples:
-- A new chdman create variant (chdman already supports `createcd`,
-  `createdvd`, …). You add a `ConversionMode`, teach
-  `chdman.get_output_path_for_mode` the new suffix, add validation in
-  `convert.py`, and surface it in the UI `MODE_GROUPS`.
+- A new chdman create variant. Add a `ConversionMode`, add a `ModeSpec` row to
+  `ChdmanTool.modes`, teach the underlying `chdman.get_output_path_for_mode` the
+  new suffix if it differs, and surface it in the UI registry.
 - Letting chdman accept a new input extension: add it to
-  `CHDMAN_CONVERTIBLE_EXTENSIONS` in `app/services/chdman.py:16`.
+  `CHDMAN_CONVERTIBLE_EXTENSIONS` in `app/services/chdman.py` and to the
+  relevant `ModeSpec.input_extensions`.
 
 Go to **§4**.
 
-### Scenario B — a brand-new tool (and usually a new platform with it)
+### Scenario B: a brand-new tool (and usually a new platform with it)
 
-A new binary, a new service module, a new `ConversionMode`, new info/verify
-endpoints, and new UI wiring. This is the z3ds-shaped case.
+A new binary, a new service module, a new plugin, a new `ConversionMode`, new
+info/verify endpoints, and new UI wiring. This is the z3ds-shaped case.
 
 Go to **§5**.
 
-### Scenario C — a tool and a platform in tandem
+### Scenario C: a tool and a platform in tandem
 
-This is the common real-world request: "support platform X, which needs new
-binary Y." It is just **Scenario B**, because adding the tool *is* what makes
-the platform reachable. The platform shows up as:
+The common real-world request: "support platform X, which needs new binary Y."
+It is just **Scenario B**, because adding the tool is what makes the platform
+reachable. The platform shows up as:
 
-- the input extensions in `*_CONVERTIBLE_EXTENSIONS`,
+- the input extensions in `*_CONVERTIBLE_EXTENSIONS` and `ModeSpec.input_extensions`,
 - the `ConversionMode` value(s) the tool exposes,
-- a UI entry in `MODE_GROUPS` plus a primary-tool option,
-- (optionally) platform-specific flags inside `_build_command`.
+- a UI entry in the registry plus a primary-tool option,
+- (optionally) platform-specific flags inside the service's `_build_command`.
 
 Follow §5 end to end. §6 is the concrete tandem checklist.
 
@@ -130,10 +175,10 @@ Follow §5 end to end. §6 is the concrete tandem checklist.
 
 ## 3. Inventory: every file a tool/platform touches
 
-This is the **exhaustive** list. Not every item is required for every change
-(the right-hand column says when it applies), but check every row. The order
-is the recommended implementation order (bottom of the stack → top). Deep
-detail for the non-obvious rows is in §8–§14.
+This is the exhaustive list. Not every item is required for every change (the
+right-hand column says when it applies), but check every row. The order is the
+recommended implementation order (bottom of the stack to top). Deeper detail for
+the non-obvious rows is in §8 to §14.
 
 ### 3.1 Binary / packaging
 
@@ -151,73 +196,74 @@ detail for the non-obvious rows is in §8–§14.
 | # | File | What you do | When |
 |---|------|-------------|------|
 | 7 | `app/config.py` | Add a `<tool>_path` `Field` with an env alias (`<TOOL>_PATH`). | New tool |
-| 8 | `app/services/<tool>.py` | New service module — `convert`/`verify`/`verify_stream`/`info`/`is_convertible`/`get_output_path_for_mode`/`active_pids`, the `*_CONVERTIBLE_EXTENSIONS` set, `*_OUTPUT_FORMATS`, and the module singleton. | New tool |
-| 9 | `app/models.py` | Add `ConversionMode` value(s); add a `<Tool>Info` model; add `FileEntry` flags (`<tool>_convertible`, `has_<tool>`, `<tool>_ready`, `<tool>_path`). | New mode and/or tool |
-| 10 | `app/services/job_manager.py` | Import the service; add output-path branch in `_queue_job_locked`; add `_convert_service` branch in `_process_job`; add verify branch if delete-on-verify is supported. | New tool |
-| 11 | `app/routes/convert.py` | `_get_output_path` branch; extension validation in `create_job` **and** `create_batch_jobs`; `supports_delete_on_verify`; archive-input guard. | New mode and/or tool |
-| 12 | `app/routes/files.py` | Import the ext set; set convertibility/output-existence flags in `scan_directory` **and** `search_files`. | New tool |
-| 13 | `app/routes/info.py` | `/<tool>-info`, `/<tool>-verify`, `/<tool>-verify/events`, `/<tool>-verify-batch/events`; `*_VERIFY_EXTENSIONS`; verify-lane token. | New tool |
-| 14 | `app/services/disc_id.py` | Add a serial/title parser if the new **disc** platform should get GAME/NAME tags embedded (chdman create modes only). | New disc platform, optional |
-| 15 | `app/services/archive.py` | Add input extensions to its `CONVERTIBLE_EXTENSIONS` only if the tool must read inputs out of `.zip/.7z/.rar`. | Rare (chdman-only today) |
-| 16 | `app/services/dat_*.py` / `app/routes/dat.py` | Touch only if the platform participates in DAT (MAMERedump) hash-matching. | Rare |
-| 17 | `migrations/versions/*.py` | New Alembic migration **only** if you add DB-persisted columns/tables (use `scripts/new_migration.sh`). The verification/metadata stores are keyed by path and need no migration for a new tool. | If schema changes |
+| 8 | `app/services/<tool>.py` | The underlying service: `_build_command`, the subprocess spawn, progress parsing, cancel handling, the `*_CONVERTIBLE_EXTENSIONS` set, `*_OUTPUT_FORMATS`, and the module singleton. | New tool |
+| 9 | `app/services/tools/<tool>.py` | The plugin: a `BaseTool` subclass with `id`, `display_name`, `modes` (`ModeSpec` rows), `output_extensions`, `verify_extensions`, delegating `convert`/`verify`/`info`/`output_path`/`detect_output` to the service. | New tool |
+| 10 | `app/services/tools/__init__.py` | One line: `registry.register(<Tool>(settings.<tool>_path))` (plus the import). This is the only dispatch wiring. | New tool |
+| 11 | `app/models.py` | Add `ConversionMode` value(s); add a `<Tool>Info` model; add `FileEntry` flags (`<tool>_convertible`, `has_<tool>`, `<tool>_ready`, `<tool>_path`). | New mode and/or tool |
+| 12 | `app/routes/convert.py` | Usually nothing for output paths or dispatch (the registry handles both). Add an extension-validation block in `plan_job` if your inputs need a specific check, mirroring the z3ds one. | New tool, sometimes |
+| 13 | `app/routes/files.py` | Add the per-tool convertibility/output-existence flags in the directory scan **and** in `search_files`, paralleling the z3ds flags. | New tool |
+| 14 | `app/routes/info.py` | A `GET /<tool>-info` endpoint, plus one `register_verify_routes(router, registry.get("<tool>"))` call to generate the verify trio. | New tool |
+| 15 | `app/services/job_manager.py` | Usually nothing: convert and verify dispatch through the registry. Touch only for special post-processing (disc-id tagging, multi-file sidecars). | Rare |
+| 16 | `app/services/disc_id.py` | Add a serial/title parser if the new **disc** platform should get GAME/NAME tags embedded (chdman create modes only). | New disc platform, optional |
+| 17 | `app/services/archive.py` | Nothing for a new tool: archive input extensions come from `registry.archive_input_extensions()`. Set `allows_archive_input=True` on your `ModeSpec` to opt in. | Rare |
+| 18 | `app/services/dat_*.py` / `app/routes/dat.py` | Touch only if the platform participates in DAT (MAMERedump) hash-matching. | Rare |
+| 19 | `migrations/versions/*.py` | New Alembic migration **only** if you add DB-persisted columns/tables (use `scripts/new_migration.sh`). The verification/metadata stores are keyed by path and need no migration for a new tool. | If schema changes |
 
-### 3.3 Frontend (Svelte 5 + Vite — one new entry in the registry)
+### 3.3 Frontend (Svelte 5 + Vite: one new entry in the registry)
 
 | # | File | What you do | When |
 |---|------|-------------|------|
-| 18 | `src/lib/api/endpoints.js` | `get<Tool>Info`, `verify<Tool>`, `verifyBatch<Tool>` client methods alongside the existing ones. | New tool |
-| 19 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array (id, label, hint, verifyPrefix, sourceExts, verifyExts, modeGroups, groups, defaultMode, glyph, accent, modes, getInfo/verify/verifyBatch/productPath). Everything else — sidebar, workspace, badges, modals, verify dispatch, SSE URL building — looks up this registry. | New mode and/or tool |
-| 20 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. | If new visual identity |
+| 20 | `src/lib/api/endpoints.js` | `get<Tool>Info`, `verify<Tool>`, `verifyBatch<Tool>` client methods alongside the existing ones. | New tool |
+| 21 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array. Everything downstream (sidebar, workspace, badges, modals, verify dispatch, SSE URL building) looks up this registry. | New mode and/or tool |
+| 22 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. | If new visual identity |
 
 ### 3.4 Tests
 
 | # | File | What you do | When |
 |---|------|-------------|------|
-| 22 | `tests/test_<tool>_routes.py` | Info + verify endpoint tests (copy `test_z3ds_routes.py`). | New tool |
-| 23 | `tests/test_<tool>_service.py` | `convert`/`verify`/cancel/bad-extension tests (copy `test_z3ds_verification_service.py`). | New tool |
-| 24 | `tests/test_mode_parity_fixes.py` | Add the mode so single-vs-batch validation parity is enforced. | New mode |
-| 25 | `tests/conftest.py` | Add a binary stub/fixture if the service needs the binary present. | New tool |
+| 23 | `tests/test_<tool>_routes.py` | Info + verify endpoint tests (copy `test_z3ds_routes.py`). | New tool |
+| 24 | `tests/test_<tool>_service.py` | `convert`/`verify`/cancel/bad-extension tests (copy `test_z3ds_verification_service.py`). | New tool |
+| 25 | `tests/test_tool_registry.py` | Assert your modes resolve to your tool and the spec flags are right. | New tool/mode |
+| 26 | `tests/test_mode_parity_fixes.py` | Add the mode so single-vs-batch validation parity is enforced. | New mode |
+| 27 | `tests/conftest.py` | Add a binary stub/fixture if the service needs the binary present. | New tool |
 
 ### 3.5 CI / quality gates (must stay green)
 
 | # | File | What it enforces | Action |
 |---|------|------------------|--------|
-| 26 | `.github/workflows/codacy.yml` | Push/PR: ruff, eslint, pylint, etc. via Codacy CLI. | New code must pass; see §11 |
-| 27 | `.github/workflows/codeql.yml` | Weekly + push CodeQL for Python **and** JS/TS. | Auto-covers new code |
-| 28 | `.github/workflows/docker-image.yml` | On release: hadolint, multi-arch build, Trivy scan, SBOM/attestation. | Dockerfile must pass hadolint; see §8/§10 |
-| 29 | `.github/labeler.yml` / `label.yml` | PR auto-labeling by path. | Add a path glob if you want a label |
-| 30 | `.github/dependabot.yml` | Dependency bumps. | Only if adding a new ecosystem |
-| 31 | `pyproject.toml` | pylint + ruff config (Codacy reads this). | Respect line-length 100, py310 |
-| 32 | `.pylintrc`, `.prospector.yaml`, `.bandit` | Python lint/security (bandit flags `shell=True`, predictable tmp). | Follow the no-shell rule (§15) |
-| 33 | `eslint.config.js`, `.eslintrc.json`, `.jshintrc` | JS lint for `static/js`. | New JS must pass |
-| 34 | `.stylelintrc.json`, `.csslintrc` | CSS lint. | If you edit CSS |
-| 35 | `.markdownlint.json` | Markdown lint. | If you add docs |
-| 36 | `.codacy.yml`, `.codacy/` | Codacy tool config/excludes. | Rarely |
-| 37 | `config/pmd/ruleset.xml` | PMD ruleset (Codacy). | Rarely |
+| 28 | `.github/workflows/codacy.yml` | Push/PR/weekly: ruff, eslint, pylint, etc. via Codacy CLI. | New code must pass; see §11 |
+| 29 | `.github/workflows/codeql.yml` | Push/PR/weekly CodeQL for Python **and** JS/TS. | Auto-covers new code |
+| 30 | `.github/workflows/docker-image.yml` | On release: hadolint, multi-arch build, Trivy scan, SBOM/attestation. | Dockerfile must pass hadolint; see §8/§10 |
+| 31 | `.github/workflows/label.yml` + `.github/labeler.yml` | PR auto-labeling by path. | Add a path glob if you want a label |
+| 32 | `.github/dependabot.yml` | Dependency bumps. | Only if adding a new ecosystem |
+| 33 | `pyproject.toml` | pylint + ruff config (Codacy reads this). | Respect line-length 100, py310 |
+| 34 | `.pylintrc`, `.prospector.yaml`, `.bandit` | Python lint/security (bandit flags `shell=True`, predictable tmp). | Follow the no-shell rule (§15) |
+| 35 | `eslint.config.js`, `.eslintrc.json`, `.jshintrc` | ESLint for the frontend (`src/`). | New JS and Svelte must pass |
+| 36 | `.stylelintrc.json`, `.csslintrc` | CSS lint. | If you edit CSS |
+| 37 | `.markdownlint.json` | Markdown lint. | If you add docs |
+| 38 | `.codacy.yml`, `.codacy/` | Codacy tool config/excludes. | Rarely |
+| 39 | `config/pmd/ruleset.xml` | PMD ruleset (Codacy). | Rarely |
 
 ### 3.6 Deployment & docs
 
 | # | File | What you do | When |
 |---|------|-------------|------|
-| 38 | `docker-compose.yml` / `.cli.yml` / `.multi-volume.yml` | Document/override the new `<TOOL>_PATH` env or CLI mode env if relevant. | If ops needs the knob |
-| 39 | `.version` (+ `scripts/sync-version.sh`) | Bump version across `.version`, `package.json`, `package-lock.json`, `RELEASE_NOTES.md`. | Every release |
-| 40 | `README.md` | Supported-formats/tool table, feature list. Also the **Docker Hub** description (published from README by CI). | New tool/platform |
-| 41 | `RELEASE_NOTES.md` | Changelog entry. | Every change |
-| 42 | `DEPLOYMENT.md`, `DOCKER-COMPOSE.md` | New env vars / volumes / tool requirements. | If deploy surface changes |
-| 43 | `walkthrough.md`, `CHANGES_SUMMARY.md` | Narrative docs, if you maintain them. | Optional |
-| 44 | `AGENTS.md` | Runbook — add a test/run note if workflow changes. | Optional |
-| 45 | `.github/copilot-instructions.md` | Repo AI guidance — update if conventions change. | Optional |
+| 40 | `docker-compose.yml` / `.cli.yml` / `.multi-volume.yml` | Document/override the new `<TOOL>_PATH` env or CLI mode env if relevant. | If ops needs the knob |
+| 41 | `package.json` | The version lives here. A release bumps `package.json` and publishes a GitHub Release; there is no `.version` file or `sync-version.sh` script. | Every release |
+| 42 | `README.md` | Supported-formats/tool table, feature list. Also the **Docker Hub** description (published from README by CI). | New tool/platform |
+| 43 | `RELEASE_NOTES.md` | Changelog entry. | Every change |
+| 44 | `DEPLOYMENT.md`, `DOCKER-COMPOSE.md` | New env vars / volumes / tool requirements. | If deploy surface changes |
+| 45 | `AGENTS.md`, `.github/copilot-instructions.md` | Runbook / AI guidance, update if conventions change. | Optional |
 
 ---
 
-## 4. Scenario A — add a platform/mode to an existing tool
+## 4. Scenario A: add a platform/mode to an existing tool
 
-Worked example: add a hypothetical **`createcd_audio`** chdman mode (pretend
-it produces `.chd` with a platform-specific flag). The same pattern applies
-to any new chdman/dolphin sub-format.
+Worked example: add a hypothetical **`createcd_audio`** chdman mode (pretend it
+produces `.chd` with a platform-specific flag). The same pattern applies to any
+new chdman/dolphin sub-format.
 
-### 4.1 Add the mode to the enum — `app/models.py`
+### 4.1 Add the mode to the enum: `app/models.py`
 
 ```python
 class ConversionMode(str, Enum):
@@ -227,44 +273,46 @@ class ConversionMode(str, Enum):
     ...
 ```
 
-The string value is what travels over the API and what `job_manager` /
-`convert.py` switch on. Pick a value consistent with the tool's existing
-prefix convention (`create*`, `extract*`, `dolphin_*`, `z3ds_compress`),
-because a lot of logic keys off these prefixes (see below).
+The string value is what travels over the API and what the registry indexes on.
+Pick a value consistent with the tool's existing prefix convention (`create*`,
+`extract*`, `dolphin_*`, `z3ds_compress`), because a few places still key off
+these prefixes (see §15).
 
-### 4.2 Teach the service the new mode — `app/services/chdman.py`
+### 4.2 Add a `ModeSpec` row: `app/services/tools/chdman.py`
 
-- If it needs special binary flags, branch in `_build_command`
-  (`chdman.py:34`), mirroring the existing `createdvd` `-hs 2048` special case
-  at `chdman.py:42`.
-- Add the output-suffix rule in `get_output_path_for_mode`
-  (`chdman.py:561`). The `create*` branch already maps to `{stem}.chd`
-  (`chdman.py:579`); only touch this if your suffix differs.
-- If it accepts a new input extension, add it to
-  `CHDMAN_CONVERTIBLE_EXTENSIONS` (`chdman.py:16`).
+Add a `ModeSpec` to `ChdmanTool.modes`, modeled on the existing `createcd` row:
 
-### 4.3 Wire validation — `app/routes/convert.py`
+```python
+ModeSpec(
+    mode="createcd_audio", tool_id="chdman", kind=ModeKind.CREATE,
+    label="Create CD CHD (Audio)", group="create",
+    output_ext=".chd", input_extensions=CHDMAN_CONVERTIBLE_EXTENSIONS,
+    supports_compression=True, supports_delete_on_verify=True,
+    allows_archive_input=True,
+),
+```
 
-`convert.py` keys off mode **prefixes** in several places. Because
-`create_job` / `create_batch_jobs` treat anything starting with `create`
-generically (e.g. the `.chd` input rejection at `convert.py:407`, output
-path via `_get_output_path` at `convert.py:100`), a new `create*` mode often
-needs **no new validation code** — it inherits the create-mode rules. Verify
-the prefix-based helpers cover you:
+Because `kind=CREATE` and `output_ext=".chd"`, the route validation, output-path
+computation, archive-input handling, and delete-on-verify all work off this row
+with no further code. Only touch the underlying service if the mode needs
+special binary flags (branch in `chdman._build_command`) or a different output
+suffix (`chdman.get_output_path_for_mode`).
 
-- `supports_delete_on_verify` (`convert.py:87`) — `create*` already returns True.
-- `_get_output_path` (`convert.py:100`) — routes to `chdman_service` by
-  default, so a chdman mode is covered.
+### 4.3 Validation: `app/routes/convert.py`
 
-If your mode breaks a prefix assumption, add an explicit branch.
+Usually **nothing**. `convert.py` reads `registry.spec(mode)` and validates off
+the spec flags (`spec.kind`, `spec.allows_archive_input`,
+`spec.supports_delete_on_verify`). A new `create*` chdman mode inherits the
+create-mode rules (for example the `.chd`-input rejection for `kind == CREATE`).
+Add an explicit check only if your mode breaks a spec assumption.
 
-### 4.4 Surface it in the UI — `src/lib/tools/registry.js`
+### 4.4 Surface it in the UI: `src/lib/tools/registry.js`
 
-Append one `ModeEntry` to the chdman descriptor's `modes` array (the
-group's human label is already declared via `groups.create: 'Create'`):
+Append one mode entry to the chdman descriptor's `modes` array (the group's
+human label is already declared via `groups.create: 'Create'`):
 
 ```js
-// src/lib/tools/registry.js — inside the chdman TOOLS entry
+// src/lib/tools/registry.js, inside the chdman TOOLS entry
 modes: [
   // …existing entries…
   { mode: 'createcd_audio', kind: 'create', label: 'Create CD CHD (Audio)',
@@ -275,37 +323,39 @@ modes: [
 ],
 ```
 
-Because it reuses the chdman tool and `.chd` output, file badges, the
-conversion config panel, the info modal, and the verify path all already
-work. The new mode appears wherever `registry.modesByGroup('chdman')`
-or `registry.specFor('createcd_audio')` is consulted. Done.
+`CHDMAN_SOURCE_EXTS` is a local `const` in `registry.js` (not exported). Because
+the mode reuses the chdman tool and `.chd` output, file badges, the conversion
+config panel, the info modal, and the verify path all already work. The mode
+shows up wherever `registry.modesByGroup('chdman')` or
+`registry.specFor('createcd_audio')` is consulted.
 
 ### 4.5 Test
 
-Add a case to `tests/test_mode_parity_fixes.py` (validation parity between
-single + batch create) and `tests/test_chdman_annotations.py` if relevant.
+Add a case to `tests/test_mode_parity_fixes.py` (validation parity between single
++ batch create), `tests/test_tool_registry.py` (the mode resolves to chdman with
+the right flags), and `tests/test_chdman_annotations.py` if relevant.
 
 ---
 
-## 5. Scenario B/C — add a brand-new tool (with its platform)
+## 5. Scenario B/C: add a brand-new tool (with its platform)
 
-Worked example throughout: a fictional **`nszip`** tool that compresses
-Nintendo Switch `.nsp`/`.xci` dumps into `.nsz`/`.xcz`. Replace names as
-needed. This mirrors z3ds exactly.
+Worked example throughout: a fictional **`nszip`** tool that compresses Nintendo
+Switch `.nsp`/`.xci` dumps into `.nsz`/`.xcz`. Replace names as needed. This
+mirrors z3ds exactly.
 
-### 5.1 Install the binary — `Dockerfile`
+### 5.1 Install the binary: `Dockerfile`
 
-Three patterns exist in the current `Dockerfile`; pick the one that fits:
+Three patterns exist in the current `Dockerfile` (a three-stage build: `builder`,
+`frontend-builder`, runtime). Pick the one that fits:
 
-- **Distro package** (chdman via `mame-tools`, pinned to a
-  `snapshot.debian.org` `.deb` with a SHA256 check — see `Dockerfile:38`).
-- **Distro package, best-effort** (dolphin-emu, amd64-only, non-fatal —
-  `Dockerfile:67`). A wrapper script is created at
-  `/usr/local/bin/dolphin-tool` only if the binary exists (`Dockerfile:92`).
-- **Build from source in a builder stage** (z3ds — `Dockerfile:1-23`), then
-  copy the artifact into the runtime image (`Dockerfile:105`).
+- **Distro package** (chdman via `mame-tools`, pinned to a `snapshot.debian.org`
+  `.deb` with per-arch SHA256 checks).
+- **Distro package, best-effort** (dolphin-emu, amd64-only, non-fatal). A wrapper
+  script at `/usr/local/bin/dolphin-tool` is created only if the binary exists.
+- **Build from source in the `builder` stage** (z3ds), then copy the artifact
+  into the runtime image.
 
-For `nszip` built from source, add to the builder stage:
+For `nszip` built from source, add to the `builder` stage:
 
 ```dockerfile
 FROM debian:trixie-slim AS builder
@@ -317,26 +367,24 @@ WORKDIR /tmp/nszip
 RUN g++ -O3 src/*.cpp -o nszip -lzstd && chmod +x nszip
 ```
 
-…and copy it into the runtime stage next to the existing z3ds copy
-(`Dockerfile:105`):
+…and copy it into the runtime stage next to the existing z3ds copy:
 
 ```dockerfile
 COPY --from=builder /tmp/nszip/nszip /usr/local/bin/nszip
 ```
 
-If the tool needs a runtime shared lib, add it to the runtime `apt-get
-install` list (`Dockerfile:53`). Note that `zstd` (the CLI) is already
-installed — z3ds's `verify_stream` shells out to `zstd -t`, so if your tool's
-output is a zstd container you can reuse that.
+If the tool needs a runtime shared lib, add it to the runtime `apt-get install`
+list. The `zstd` CLI is already installed (z3ds's `verify_stream` shells out to
+`zstd -t`), so if your tool's output is a zstd container you can reuse it.
 
-> Multi-arch: the image builds `linux/amd64` and `linux/arm64`
-> (see `.github/workflows/docker-image.yml`). A source build compiles per
-> arch automatically; a downloaded `.deb` needs a per-arch URL/SHA like the
-> `mame-tools` block (`Dockerfile:40`).
+> Multi-arch: the image builds `linux/amd64` and `linux/arm64`. A source build
+> compiles per arch automatically; a downloaded `.deb` needs a per-arch URL/SHA
+> like the `mame-tools` block.
 
-### 5.2 Add the binary path setting — `app/config.py`
+### 5.2 Add the binary path setting: `app/config.py`
 
-Add next to the other tool paths (`config.py:111-121`):
+Add next to the other tool paths (`chdman_path`, `dolphin_tool_path`,
+`z3ds_compressor_path`):
 
 ```python
 nszip_path: str = Field(
@@ -344,13 +392,18 @@ nszip_path: str = Field(
 )
 ```
 
-This lets ops override the path/env without code changes, and is what the
-service reads in `__init__`.
+This lets ops override the path/env without code changes, and is what the plugin
+passes to its service in `__init__`.
 
-### 5.3 Write the service module — `app/services/nszip.py`
+### 5.3 Write the service + the plugin
 
-This is the heart of the work. Copy `app/services/z3ds_compress.py` and
-adapt. The required shape (see the contract in §1):
+There are two files. The **service** (`app/services/nszip.py`) owns the
+subprocess: build the command, spawn it, parse progress, handle cancel. Copy
+`app/services/z3ds_compress.py` and adapt. The **plugin**
+(`app/services/tools/nszip.py`) is a thin `BaseTool` subclass that holds the
+`ModeSpec` rows and delegates to the service. Copy `app/services/tools/z3ds.py`.
+
+The service skeleton:
 
 ```python
 import asyncio, contextlib, logging, os, shutil, threading, time
@@ -358,8 +411,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from config import settings
-from fastapi.concurrency import run_in_threadpool
-from services.chdman import ConversionCancelled          # reuse the shared exception
+from services.subprocess_runner import ConversionCancelled   # reuse the shared exception
 from services.timeout_policy import compute_progress_stall_timeout
 
 NSZIP_CONVERTIBLE_EXTENSIONS = {".nsp", ".xci"}
@@ -385,12 +437,9 @@ class NszipService:
                        "-n", str(settings.chdman_ioprio_level)] + cmd
         return cmd
 
-    def _track_pid(self, pid): 
-        with self._pid_lock: self._active_pids.add(pid)
-    def _untrack_pid(self, pid):
-        with self._pid_lock: self._active_pids.discard(pid)
     def active_pids(self):
-        with self._pid_lock: return list(self._active_pids)
+        with self._pid_lock:
+            return list(self._active_pids)
 
     async def convert(self, input_path, output_path, mode="nszip_compress",
                       *, compression=None, cancel_event=None) -> AsyncGenerator[dict, None]:
@@ -405,59 +454,96 @@ class NszipService:
         # 8. finally yield {"progress": 100, "message": "Compression complete"}
         ...
 
-    async def verify(self, path) -> dict:
-        final = {"valid": False, "message": "Verification failed"}
-        async for u in self.verify_stream(path):
-            if u.get("type") in ("complete", "error"):
-                final = u
-        return {"valid": bool(final.get("valid")), "message": final.get("message") or "Verification failed"}
+    async def verify(self, path) -> dict: ...
+    async def verify_stream(self, path) -> AsyncGenerator[dict, None]: ...
+    def info(self, path) -> dict: ...
 
-    async def verify_stream(self, path) -> AsyncGenerator[dict, None]:
-        # deep integrity check; yield {"type":"progress"/"complete"/"error", ...}
-        ...
-
-    def info(self, path) -> dict:
-        # filesystem-level metadata; return keys matching your info model
-        ...
-
-    @staticmethod
-    def is_convertible(filename) -> bool:
-        return Path(filename).suffix.lower() in NSZIP_CONVERTIBLE_EXTENSIONS
-
-    @staticmethod
-    def get_output_path_for_mode(mode, input_path, output_dir=None, *, treat_as_stem=False) -> str:
+    def get_output_path(self, input_path, output_dir=None) -> str:
         input_p = Path(input_path)
-        stem = input_p.name if treat_as_stem else input_p.stem
-        ext = "" if treat_as_stem else input_p.suffix.lower()
-        out_ext = NSZIP_OUTPUT_FORMATS.get(ext, ".nsz")
-        filename = f"{stem}{out_ext}"
+        out_ext = NSZIP_OUTPUT_FORMATS.get(input_p.suffix.lower(), ".nsz")
+        filename = f"{input_p.stem}{out_ext}"
         return str(Path(output_dir) / filename) if output_dir else str(input_p.parent / filename)
 
 
-nszip_service = NszipService()   # module-level singleton — imported everywhere
+nszip_service = NszipService()   # module-level singleton
 ```
 
-**Critical implementation rules** (all enforced by the existing services —
-copy them, don't improvise):
+The plugin skeleton (copy `app/services/tools/z3ds.py`):
 
-- **Never** use `shell=True` / string commands. Build an argv list and use
-  `asyncio.create_subprocess_exec(cmd[0], *cmd[1:], ...)`. The binary path
-  comes from validated settings; inputs are never shell-interpreted.
+```python
+from fastapi.concurrency import run_in_threadpool
+from models import NszipInfo, OutputStatus
+from services.nszip import (
+    NSZIP_CONVERTIBLE_EXTENSIONS, NSZIP_OUTPUT_FORMATS, nszip_service,
+)
+from .base import BaseTool
+from .spec import ModeKind, ModeSpec
+
+
+class NszipTool(BaseTool):
+    id = "nszip"
+    display_name = "Switch"
+    modes = (
+        ModeSpec(
+            mode="nszip_compress", tool_id="nszip", kind=ModeKind.COMPRESS,
+            label="Compress to NSZ/XCZ", group="nszip",
+            output_ext=None,  # mapped from the input extension
+            input_extensions=frozenset(NSZIP_CONVERTIBLE_EXTENSIONS),
+            supports_delete_on_verify=True,
+        ),
+    )
+    output_extensions = frozenset(NSZIP_OUTPUT_FORMATS.values())
+    verify_extensions = output_extensions
+
+    def __init__(self, binary_path):
+        super().__init__(binary_path)
+
+    def output_path(self, mode, input_path, output_dir=None, *, treat_as_stem=False):
+        return nszip_service.get_output_path(input_path, output_dir)
+
+    def convert(self, input_path, output_path, mode, *, compression=None, cancel_event=None):
+        return nszip_service.convert(input_path, output_path, mode,
+                                     compression=compression, cancel_event=cancel_event)
+
+    async def verify(self, path): return await nszip_service.verify(path)
+    def verify_stream(self, path): return nszip_service.verify_stream(path)
+    async def info(self, path): return await run_in_threadpool(nszip_service.info, path)
+    def info_model(self, raw, path): return NszipInfo(**raw)
+    def active_pids(self): return nszip_service.active_pids()
+```
+
+**Critical service rules** (all enforced by the existing services, copy them):
+
+- **Never** use `shell=True`. Build an argv list and use
+  `asyncio.create_subprocess_exec(cmd[0], *cmd[1:], ...)`. The binary path comes
+  from validated settings; inputs are never shell-interpreted.
 - **Always** support `cancel_event`: spawn a watcher task that
-  `process.terminate()`s (then `kill()`s after a timeout), set a
-  `cancelled_by_request` flag, clean up the partial output file, and raise
-  `ConversionCancelled`. See `z3ds_compress.py:193` and `chdman.py:156`.
-- **Always** apply a stall timeout via `compute_progress_stall_timeout(...)`
-  (`z3ds_compress.py:182`) so a wedged binary can't hang a job forever.
-- **Progress** is a 0–100 int. If the binary doesn't report percentages,
-  estimate from output-file growth like z3ds does (`z3ds_compress.py:251`),
-  or emit a heartbeat with elapsed seconds like dolphin (`dolphin_tool.py:241`).
-- Respect `settings.chdman_nice` / `chdman_ioprio_*` (these knobs are shared
-  across all tools — they aren't chdman-specific despite the name).
-- Track PIDs (`_track_pid`/`_untrack_pid`) so the debug heartbeat can report
-  them.
+  `process.terminate()`s (then `kill()`s after a timeout), clean up the partial
+  output file, and raise `ConversionCancelled`. See `z3ds_compress.py`.
+- **Always** apply a stall timeout via `compute_progress_stall_timeout(...)` so a
+  wedged binary can't hang a job forever.
+- **Progress** is a 0 to 100 int. If the binary doesn't report percentages,
+  estimate from output-file growth like z3ds does, or emit an elapsed-seconds
+  heartbeat via the shared `SubprocessRunner` like dolphin does.
+- Respect `settings.chdman_nice` / `chdman_ioprio_*`. These knobs are shared
+  across all tools; they aren't chdman-specific despite the name.
+- Track PIDs so the debug heartbeat can report them.
 
-### 5.4 Add the mode + info model — `app/models.py`
+### 5.4 Register the plugin: `app/services/tools/__init__.py`
+
+This is the single dispatch wiring step. Add the import and one `register` call:
+
+```python
+from .nszip import NszipTool
+...
+registry.register(NszipTool(settings.nszip_path))
+```
+
+Once registered, `job_manager` and `convert.py` dispatch your mode through the
+registry with no further edits. The registry validates on register: duplicate
+ids or mode names raise, and every `ModeSpec.tool_id` must equal the tool's `id`.
+
+### 5.5 Add the mode + info model: `app/models.py`
 
 ```python
 class ConversionMode(str, Enum):
@@ -466,7 +552,7 @@ class ConversionMode(str, Enum):
     NSZIP_COMPRESS = "nszip_compress"        # NEW
     ...
 
-class NszipInfo(BaseModel):                  # NEW — shape it like Z3DSInfo (models.py:193)
+class NszipInfo(BaseModel):                  # NEW, shape it like Z3DSInfo
     file: str
     size: int
     size_display: str
@@ -476,162 +562,116 @@ class NszipInfo(BaseModel):                  # NEW — shape it like Z3DSInfo (m
     compression_type: str | None = None
 ```
 
-If your tool extracts/decompresses too, add a second mode
-(e.g. `NSZIP_EXTRACT = "nszip_extract"`). Keep a consistent prefix
-(`nszip_`) — the job pipeline and routes pattern-match on it.
+Every `ModeSpec.mode` must equal a `ConversionMode` value: the route layer
+validates the incoming `request.mode` against `ConversionMode`, so an unlisted
+mode never reaches dispatch. Keep a consistent prefix (`nszip_`) if you add a
+second mode (for example `NSZIP_EXTRACT = "nszip_extract"`).
 
-### 5.5 Dispatch in the job pipeline — `app/services/job_manager.py`
+### 5.6 The job pipeline: usually nothing
 
-Two edits:
+`job_manager._process_job` dispatches convert and verify generically:
+`registry.for_mode(job.mode.value).convert(...)` and
+`registry.for_mode(job.mode.value).verify(...)`. `_queue_job_locked` computes the
+output path via `registry.for_mode(mode.value).output_path(...)`. So once your
+plugin is registered, **the pipeline needs no edits** for a standard
+compress-style tool.
 
-**a) Output-path selection** in `_queue_job_locked` (`job_manager.py:139`).
-Today it special-cases z3ds and otherwise calls `chdman_service.get_chd_path`:
+Touch `job_manager` only for special post-processing. The current special cases
+are chdman-specific: GAME/NAME disc-id tagging after `createcd`/`createdvd`, and
+`.bin` sidecar handling for multi-track CD inputs. A clean single-file tool like
+nszip needs none of that.
+
+### 5.7 Validation + output dispatch: `app/routes/convert.py`
+
+Output paths and the generic spec-flag validation are handled by the registry,
+so you usually add **only** an extension-validation block. `plan_job` validates
+the input extension per tool; mirror the z3ds block (which checks
+`spec.tool_id == "z3ds"` and the input extension against the spec). For nszip:
 
 ```python
-if output_path is None:
-    if mode == ConversionMode.Z3DS_COMPRESS:
-        output_path = z3ds_compress_service.get_output_path(file_path, output_dir)
-    elif mode == ConversionMode.NSZIP_COMPRESS:                       # NEW
-        output_path = nszip_service.get_output_path_for_mode(         # NEW
-            mode.value, file_path, output_dir)                        # NEW
-    else:
-        output_path = chdman_service.get_chd_path(file_path, output_dir)
+if spec.tool_id == "nszip":
+    ext = Path(file_path).suffix.lower()
+    if ext not in spec.input_extensions:
+        raise SkipFile(SkipReason.NSZIP_BAD_EXTENSION)   # add the reason to the enum
 ```
 
-(In practice `convert.py` almost always passes an explicit `output_path`, so
-this branch is a fallback — but wire it for correctness.)
+Everything else is spec-driven:
 
-**b) Service selection** in `_process_job` (`job_manager.py:1444`). Extend the
-`_convert_service` ladder:
+- **Output path:** `_get_output_path` delegates to
+  `registry.for_mode(mode).output_path(...)`. No branch to add.
+- **Delete-on-verify:** `supports_delete_on_verify(mode)` reads
+  `registry.spec(mode).supports_delete_on_verify`. Set the flag on your
+  `ModeSpec`, not in `convert.py`.
+- **Archive inputs:** the single guard in `plan_job` rejects archive (`::`)
+  members for any mode whose `spec.allows_archive_input` is `False` (the
+  default). Set it `True` only when the input is a convertible *source*, and the
+  archive listing surfaces your members automatically via
+  `registry.archive_input_extensions()`. Leave it `False` when the input is an
+  *output* class (like chdman extract/copy on `.chd`).
+
+### 5.8 Mark inputs convertible in listings: `app/routes/files.py`
+
+`files.py` annotates each file in directory listings and search results with
+per-tool convertibility and output-existence flags so the UI can badge rows and
+gate selection. It imports the registry and computes per-tool flags (today
+`is_chd_convertible` / `is_dolphin_convertible` / `is_z3ds_convertible` plus
+`has_*` output-existence checks).
+
+1. Add the model fields. In `app/models.py` `FileEntry`, add
+   `nszip_convertible: bool = False` and, for "output already exists" badges,
+   `has_nszip: bool = False`, `nszip_ready: bool = False`,
+   `nszip_path: str | None = None`, paralleling the z3ds fields.
+2. In the directory scan, compute `is_nszip_convertible` from the extension and
+   an output-existence check (use your plugin's `detect_output(...)` or an
+   inline check modeled on the z3ds path), then set them on the `FileEntry`.
+3. Do the same in `search_files`, both in the "is this file interesting" test
+   and where it records the flags.
+
+### 5.9 Info + verify endpoints: `app/routes/info.py`
+
+Verify endpoints are **factory-generated**. You don't hand-write them. Add one
+call alongside the existing tool registrations:
 
 ```python
-_convert_service = (
-    dolphin_tool_service if job.mode.value.startswith("dolphin_")
-    else z3ds_compress_service if job.mode == ConversionMode.Z3DS_COMPRESS
-    else nszip_service if job.mode == ConversionMode.NSZIP_COMPRESS      # NEW
-    else chdman_service
+verify_nszip, verify_nszip_events, verify_nszip_batch_events = register_verify_routes(
+    router, registry.get("nszip"),
 )
 ```
 
-Add the import at the top (`job_manager.py:27` neighborhood):
-`from services.nszip import nszip_service`.
+`register_verify_routes(router, tool)` generates the trio (`/api/nszip-verify`,
+`/api/nszip-verify/events`, `/api/nszip-verify-batch/events`) from the plugin's
+`verify_extensions`, acquires the global verify lane
+(`_acquire_verify_lane_or_429`, bounded by `workload_limiter`), and calls
+`verification_store.mark_verified(path)` on success. No per-tool extension
+constants are needed; the factory reads them off the plugin.
 
-**c) Delete-on-verify** (optional). If you want the "verify then delete
-source" feature for this tool, also extend the verify branch in
-`_process_job`. z3ds has a dedicated branch at `job_manager.py:1556`
-(`if job.mode.value == "z3ds_compress": ... z3ds_compress_service.verify(...)`)
-because its verify lives outside the dolphin/chdman pair. Add an analogous
-branch calling `nszip_service.verify(...)`, or generalize the selector.
+Info is hand-written per tool. Add a `GET /api/nszip-info` endpoint modeled on
+`get_z3ds_info`, returning your `NszipInfo` model. No router registration is
+needed; `info.router` is already mounted under `/api` in `app/main.py`.
 
-### 5.6 Validation + output dispatch — `app/routes/convert.py`
+### 5.10 Frontend: `src/lib/api/endpoints.js`
 
-- **Output path dispatch:** extend `_get_output_path` (`convert.py:100`):
+Add client methods on the `api` object next to the z3ds ones. The naming
+convention is `get<Tool>Info` / `verify<Tool>` / `verifyBatch<Tool>`:
 
-```python
-def _get_output_path(mode, input_path, output_dir, *, treat_as_stem=False):
-    if _is_dolphin_mode(mode):
-        return dolphin_tool_service.get_output_path_for_mode(...)
-    if mode == ConversionMode.Z3DS_COMPRESS.value:
-        return z3ds_compress_service.get_output_path_for_mode(...)
-    if mode == ConversionMode.NSZIP_COMPRESS.value:                    # NEW
-        return nszip_service.get_output_path_for_mode(                 # NEW
-            mode, input_path, output_dir, treat_as_stem=treat_as_stem) # NEW
-    return chdman_service.get_output_path_for_mode(...)
-```
+- `getNszipInfo(path)`, like `getZ3DSInfo`.
+- `verifyNszip(path, {onProgress})`, single-file SSE. Routes through
+  `verifyEventSource` from `sse.js`.
+- `verifyBatchNszip(paths, {onProgress, onFileComplete, signal})`, batch SSE.
+  Routes through the module-local `runBatchVerify` helper, which wraps
+  `sseFetchPost` from `sseFetch.js`.
 
-- **delete-on-verify support:** add your mode to `supports_delete_on_verify`
-  (`convert.py:87`) if applicable.
-- **Extension validation:** add a block in both `create_job`
-  (`convert.py:421`, the z3ds example) and `create_batch_jobs`
-  (`convert.py:662`):
+`createJob` / `createBatchJobs` are generic over `mode`, so no change there: the
+registry's submit path passes `mode: 'nszip_compress'`. The verify URL is
+**derived automatically** from `verifyPrefix: 'nszip'` in the registry
+descriptor; there's no URL map to edit.
 
-```python
-is_nszip = mode == ConversionMode.NSZIP_COMPRESS.value
-...
-if is_nszip:
-    ext = Path(file_path).suffix.lower()
-    if ext not in NSZIP_CONVERTIBLE_EXTENSIONS:
-        raise HTTPException(status_code=400,
-            detail="nszip mode requires Switch dumps (.nsp, .xci)")
-```
+### 5.11 Frontend: `src/lib/tools/registry.js`
 
-- **Archive inputs:** controlled by one flag — set `allows_archive_input=True`
-  on each `ModeSpec` whose input is a convertible *source* (see chdman create,
-  dolphin, and z3ds). A single guard in `plan_job` rejects archive (`::`)
-  members for any mode that leaves it `False` (the default), so you don't add
-  per-tool branches. The archive listing then surfaces your members
-  automatically because it's driven by `registry.archive_input_extensions()`.
-  Leave it `False` only when the input is an *output* class (like chdman
-  extract/copy on `.chd`) that shouldn't be listed as a convertible source.
-- Import the convertible set + service at the top of `convert.py`
-  (`convert.py:27` shows the z3ds import).
-
-### 5.7 Mark inputs convertible in listings — `app/routes/files.py`
-
-`files.py` annotates each `FileEntry` with convertibility flags so the UI can
-badge rows and gate selection. Today it imports each tool's extension set
-(`files.py:11-13`) and sets `convertible` / `dolphin_convertible` /
-`z3ds_convertible` plus output-existence flags.
-
-1. Import your set: `from services.nszip import NSZIP_CONVERTIBLE_EXTENSIONS, NSZIP_OUTPUT_FORMATS`.
-2. Add a model field. In `app/models.py` `FileEntry` (`models.py:42`) add
-   `nszip_convertible: bool = False` and, if you show "output already exists"
-   badges, `has_nszip: bool = False`, `nszip_ready: bool = False`,
-   `nszip_path: str | None = None` — paralleling the z3ds fields
-   (`models.py:56`).
-3. In `scan_directory` (`files.py:150`) compute
-   `is_nszip_convertible = ext in NSZIP_CONVERTIBLE_EXTENSIONS` and an
-   output-existence check modeled on `_detect_z3ds_output_path`
-   (`files.py:34`), then pass them into the `FileEntry(...)` constructor
-   (`files.py:232`).
-4. Do the same in `search_files` (`files.py:316` adds the extension to the
-   "is this file interesting" test, and `:349` records the flags).
-
-### 5.8 Info + verify endpoints — `app/routes/info.py`
-
-Mirror the z3ds endpoints (`info.py:338-663`, `:1506`). Add:
-
-- `GET /api/nszip-info` → `nszip_service.info(...)`, returns your `NszipInfo`
-  model. Model the validation on `get_z3ds_info` (`info.py:1506`).
-- `GET /api/nszip-verify` (one-shot) and `GET /api/nszip-verify/events`
-  (SSE), modeled on `verify_z3ds` (`info.py:527`) and `verify_z3ds_events`
-  (`info.py:564`). **Acquire the verify lane** with
-  `_acquire_verify_lane_or_429()` (`info.py:55`) so verification stays
-  globally bounded by `MAX_VERIFY_CONCURRENCY`, and call
-  `verification_store.mark_verified(path)` on success.
-- `POST /api/nszip-verify-batch/events` (SSE) modeled on
-  `verify_z3ds_batch_events` (`info.py:355`).
-- Define `NSZIP_VERIFY_EXTENSIONS` / `NSZIP_INFO_EXTENSIONS` near the z3ds
-  ones (`info.py:341`) and a `_is_nszip_verify_file` helper.
-
-No new router registration is needed — `info.router` is already mounted under
-`/api` in `app/main.py:285`.
-
-### 5.9 Frontend — `src/lib/api/endpoints.js`
-
-Add client methods next to the z3ds ones:
-
-- `getNszipInfo(path)` — like `getZ3DSInfo`.
-- `verifyNszip(path, {onProgress})` — single-file SSE, like `verify3DS`.
-  Routes through `verifyEventSource` from `sse.js`.
-- `verifyBatchNszip(paths, {onProgress, onFileComplete, signal})` — like
-  `verifyBatchZ3DS`. Routes through `runBatchVerify` + `sseFetchPost`
-  (POST-body SSE) under the hood.
-
-`createJob` / `createBatchJobs` are generic over `mode`, so no change there
-— the registry's submit path just passes `mode: 'nszip_compress'`. The
-verify URL is **derived automatically** from `verifyPrefix: 'nszip'` in
-the registry descriptor; no edits to any URL map.
-
-### 5.10 Frontend — `src/lib/tools/registry.js`
-
-The frontend is a **Svelte 5 + Vite SPA** under `src/` and is driven by a
-single declarative tool registry (`src/lib/tools/registry.js`). The registry
-is the only place that knows tool identity — there are no `if (tool === ...)`
-branches anywhere downstream. Sidebar, workspace, file badges, conversion
-config, info modal, verify dispatch, and SSE URL building all look up the
-registry. Adding `nszip` to the frontend is **one new entry** appended to
-the `TOOLS` array:
+The frontend is a **Svelte 5 + Vite SPA** under `src/`, driven by a single
+declarative tool registry (`src/lib/tools/registry.js`). The registry is the only
+place that knows tool identity; there are no `if (tool === ...)` branches
+downstream. Adding `nszip` is **one new entry** appended to the `TOOLS` array:
 
 ```js
 // src/lib/tools/registry.js
@@ -644,16 +684,16 @@ the `TOOLS` array:
   sourceExts: ['.nsp', '.xci'],
   verifyExts: ['.nsz', '.xcz'],
   modeGroups: ['nszip'],
-  // Human labels for any group ids the tool introduces — replaces
-  // the old hardcoded switch in registry.groupLabel.
-  groups: { nszip: 'Nintendo Switch' },
+  groups: { nszip: 'Nintendo Switch' },   // human labels for the tool's group ids
   defaultMode: 'nszip_compress',
-  glyph: 'NSW',                       // 2–3 char affordance for sidebar / dashboard
-  accent: 'var(--badge-dat-match)',   // optional CSS color or token
+  glyph: 'NSW',                           // 2-3 char affordance for sidebar / dashboard
+  accent: 'var(--badge-dat-match)',       // CSS color or token
+  // compressionStyle / compressionCodecs only if the tool exposes codec choices
+  // (chdman uses 'multi', dolphin 'single-with-level'); omit for a fixed compressor.
   modes: [
     { mode: 'nszip_compress', kind: 'compress', label: 'Compress to NSZ/XCZ',
       group: 'nszip',
-      outputExt: null,                // mapped from input extension
+      outputExt: null,                    // mapped from input extension
       inputExtensions: ['.nsp', '.xci'],
       supportsCompression: false,
       supportsCompressionLevel: false,
@@ -667,65 +707,59 @@ the `TOOLS` array:
 },
 ```
 
-That's the entire frontend change. Specifically you do **NOT** need to:
+That's the entire frontend change. The tool fields above are the real schema;
+chdman additionally carries `prefix`, and tools with codec choices carry
+`compressionStyle` / `compressionCodecs`. You do **NOT** need to:
 
-- Edit a `VERIFY_URL` map — `registry.verifyUrl(toolId, kind)` derives both
-  single and batch URLs from `verifyPrefix` (`''` for chdman, `'<segment>'`
-  for everyone else).
-- Edit a `VALID_TOOLS` set — `ui.svelte.js` reads `registry.ids()`.
-- Edit a `groupLabel()` switch — group labels live on `tool.groups`.
-- Edit the Sidebar component — it iterates `registry.all()` and reads
-  `t.glyph` / `t.accent` (with sensible fallbacks).
-- Edit the Workspace, file list, conversion config, or any modal — they all
+- Edit a `VERIFY_URL` map. `registry.verifyUrl(toolId, kind)` derives both single
+  and batch URLs from `verifyPrefix` (`''` for chdman, `'<segment>'` otherwise).
+- Edit a `VALID_TOOLS` set. `ui.svelte.js` reads `registry.ids()`.
+- Edit a `groupLabel()` switch. Group labels live on `tool.groups`; the lookup is
+  `registry.groupLabel(group, toolId)`.
+- Edit the Sidebar, Workspace, file list, conversion config, or any modal. They
   call `registry.specFor(mode)`, `registry.forTool(id)`,
-  `registry.modesByGroup(id)`, `registry.toolForVerifyPath(path)`, etc.
+  `registry.modesByGroup(id)`, `registry.toolForVerifyPath(path)`, and so on.
 
-The four `api.*` calls you reference (`getNszipInfo`, `verifyNszip`,
-`verifyBatchNszip`, and any others) need to exist in `src/lib/api/endpoints.js`
-— add them alongside the existing `getCHDInfo` / `verifyCHD` /
-`verifyBatchCHDs` patterns. Headers (`X-CHD-Action-Confirm`), error
-normalization, and SSE helpers (`sse.js`, `sseFetch.js`) all stay the same.
+> **Build step.** The SPA compiles with Vite. Run `npm run dev` for HMR against
+> the FastAPI backend, or `npm run build` to emit `static/index.html` +
+> `static/assets/*` (used by FastAPI in production and by the Docker
+> `frontend-builder` stage). When editing any `.svelte` file, run it through the
+> Svelte MCP `svelte-autofixer` per the project contract.
 
-> **Build step.** The SPA compiles with Vite. Run `npm run dev` for HMR
-> against the FastAPI sidecar, or `npm run build` to emit
-> `static/index.html` + `static/assets/*` (used by FastAPI in
-> production and by the Docker `frontend-builder` stage). When editing
-> any `.svelte` file, run it through the Svelte MCP `svelte-autofixer`
-> per the project contract.
-
-### 5.11 Tests
+### 5.12 Tests
 
 Add, modeled on the existing suites:
 
-- `tests/test_nszip_routes.py` — info + verify endpoint behavior
-  (copy `tests/test_z3ds_routes.py`).
-- `tests/test_nszip_service.py` — `convert`/`verify` happy path, cancel path,
+- `tests/test_nszip_routes.py`, info + verify endpoint behavior (copy
+  `tests/test_z3ds_routes.py`).
+- `tests/test_nszip_service.py`, `convert`/`verify` happy path, cancel path,
   bad-extension rejection (copy `tests/test_z3ds_verification_service.py`).
-- Extend `tests/test_mode_parity_fixes.py` so single-job and batch-job
-  validation stay in lockstep for the new mode.
+- Extend `tests/test_tool_registry.py` so your mode resolves to your tool with
+  the right spec flags.
+- Extend `tests/test_mode_parity_fixes.py` so single-job and batch-job validation
+  stay in lockstep for the new mode.
 
 Run them:
 
 ```bash
-cd /home/user/compressatorium
-pytest -q tests/test_nszip_routes.py tests/test_mode_parity_fixes.py
+# from the repo root
+pytest -q tests/test_nszip_routes.py tests/test_tool_registry.py tests/test_mode_parity_fixes.py
 ```
 
 `tests/conftest.py` stubs the binaries, so tests don't need the real tool
 installed.
 
-### 5.12 Docs + version
+### 5.13 Docs + version
 
 - Update `README.md` (tool table / supported formats) and `RELEASE_NOTES.md`.
-- Bump the version with `./scripts/sync-version.sh <new-version>` (keeps
-  `.version`, `package.json`, `package-lock.json`, `RELEASE_NOTES.md` in
-  sync — see `AGENTS.md` §5).
+- The version lives in `package.json`. A release bumps it and publishes a GitHub
+  Release tagged `vX.Y.Z`, which is what triggers the image build (see §10).
 
 ---
 
 ## 6. Tandem checklist (copy/paste)
 
-A new tool **is** a new platform, so do all of these together:
+A new tool **is** a new platform, so do these together:
 
 ```
 BINARY
@@ -736,40 +770,39 @@ SERVICE (app/services/<tool>.py)
 [ ] *_CONVERTIBLE_EXTENSIONS, *_OUTPUT_FORMATS, module-level singleton
 [ ] convert(): exec (no shell), progress yields, cancel_event, stall timeout,
     nice/ionice, PID tracking, ConversionCancelled, final 100%
-[ ] verify() + verify_stream()
-[ ] info(), is_convertible(), get_output_path_for_mode(), active_pids()
+[ ] verify() + verify_stream(), info(), get_output_path()
+
+PLUGIN (app/services/tools/<tool>.py)
+[ ] BaseTool subclass: id, display_name, modes (ModeSpec rows),
+    output_extensions, verify_extensions
+[ ] delegate convert/verify/verify_stream/info/info_model/output_path/active_pids
+[ ] optional: detect_output() for "output exists" badges
+
+REGISTER (app/services/tools/__init__.py)
+[ ] registry.register(<Tool>(settings.<tool>_path))
 
 MODE + MODELS (app/models.py)
 [ ] ConversionMode.<TOOL>_<ACTION> with a consistent prefix
 [ ] <Tool>Info model (if it has an info modal)
 [ ] FileEntry: <tool>_convertible / has_<tool> / <tool>_ready / <tool>_path
 
-PIPELINE (app/services/job_manager.py)
-[ ] import the service
-[ ] _queue_job_locked: output-path branch
-[ ] _process_job: _convert_service ladder branch
-[ ] _process_job: verify branch (only if delete-on-verify supported)
-
 ROUTES
-[ ] convert.py: _get_output_path branch, extension validation (single+batch),
-    supports_delete_on_verify, archive-input guard
-[ ] files.py: import ext set, compute flags in scan_directory + search_files
-[ ] info.py: /<tool>-info, /<tool>-verify(+/events), /<tool>-verify-batch/events,
-    *_VERIFY_EXTENSIONS, verify-lane acquire, mark_verified
+[ ] convert.py: extension-validation block in plan_job (only if needed)
+[ ] files.py: compute flags in the directory scan + search_files
+[ ] info.py: register_verify_routes(router, registry.get("<tool>")) + /<tool>-info
+
+PIPELINE (app/services/job_manager.py)
+[ ] usually nothing (registry dispatches convert + verify)
+[ ] only for special post-processing (disc-id tags, multi-file sidecars)
 
 FRONTEND
 [ ] src/lib/api/endpoints.js: get<Tool>Info, verify<Tool>, verifyBatch<Tool>
 [ ] src/lib/tools/registry.js: one new entry in the TOOLS array
-    (id, label, hint, verifyPrefix, sourceExts, verifyExts, modeGroups,
-    groups, defaultMode, glyph, accent, modes[], getInfo/verify/
-    verifyBatch/productPath). Sidebar, workspace, badges, modals, and
-    verify dispatch all pick it up via registry lookups — no other
-    .svelte edits.
 
 TESTS + DOCS
-[ ] tests/test_<tool>_routes.py, tests/test_<tool>_service.py, mode-parity
+[ ] tests/test_<tool>_routes.py, tests/test_<tool>_service.py, registry, mode-parity
 [ ] tests/conftest.py: binary stub fixture
-[ ] README / RELEASE_NOTES / ./scripts/sync-version.sh
+[ ] README / RELEASE_NOTES / package.json version bump
 
 PERIPHERAL (don't forget)
 [ ] .dockerignore: confirm nothing new is excluded
@@ -777,7 +810,6 @@ PERIPHERAL (don't forget)
 [ ] .local-bin/<binary>: local-dev copy (from-source tools)
 [ ] entrypoint.sh: CLI-mode loop (only if headless batch support wanted)
 [ ] disc_id.py: serial/title parser (only for new disc platforms w/ tagging)
-[ ] archive.py CONVERTIBLE_EXTENSIONS (only if reading from archives)
 [ ] migrations/: new Alembic rev (only if persisting new columns/tables)
 [ ] docker-compose*.yml + DEPLOYMENT.md + DOCKER-COMPOSE.md: env/volume docs
 [ ] lint clean: ruff, pylint, eslint, hadolint (Dockerfile), markdownlint
@@ -786,80 +818,79 @@ PERIPHERAL (don't forget)
 
 ---
 
-## 8. The Docker image in depth — `Dockerfile`, `.dockerignore`, deps
+## 8. The Docker image in depth: `Dockerfile`, `.dockerignore`, deps
 
-The image is a two-stage multi-arch build (`debian:trixie-slim`).
+The image is a **three-stage** multi-arch build on `debian:trixie-slim`: a
+`builder` stage (compiles from-source binaries), a `frontend-builder` stage on
+`node:lts-slim` (runs `npm ci && npm run build` for the Svelte UI), and the
+runtime stage (no Node).
 
-**Build args & arch.** `ARG TARGETARCH` (`Dockerfile:36`) is `amd64`/`arm64`.
-A from-source build (g++) compiles per-arch automatically. A downloaded
-`.deb`/binary needs a **per-arch URL + SHA256**, like the `mame-tools` block
-(`Dockerfile:38-84`) which branches on `TARGETARCH` and verifies with
-`sha256sum -c`. Reproduce that pattern for any pinned download.
+**Build args & arch.** `ARG TARGETARCH` (set in the runtime stage) is
+`amd64`/`arm64`. A from-source build (g++) compiles per-arch automatically. A
+downloaded `.deb`/binary needs a **per-arch URL + SHA256**, like the `mame-tools`
+block which branches on `TARGETARCH` and verifies with `sha256sum -c`. Reproduce
+that pattern for any pinned download.
 
-**Builder stage** (`Dockerfile:1-23`): install toolchain (`build-essential`,
-`libzstd-dev`, …), `git clone`, compile, `chmod +x`. Add your build here.
+**Builder stage:** install toolchain (`build-essential`, `libzstd-dev`, …),
+`git clone`, compile, `chmod +x`. Add your build here.
 
-**Runtime stage** (`Dockerfile:25+`):
-- Add any runtime shared libraries to the `apt-get install` list
-  (`Dockerfile:53-66`). The CLI `zstd` is already present (z3ds verify uses
-  `zstd -t`); `ionice`/`nice` come from `util-linux`.
-- `COPY --from=builder /tmp/<tool>/<binary> /usr/local/bin/<binary>`
-  (next to the z3ds copy at `Dockerfile:105`).
+**Runtime stage:**
+- Add any runtime shared libraries to the `apt-get install` list. The CLI `zstd`
+  is already present (z3ds verify uses `zstd -t`); `ionice`/`nice` come from
+  `util-linux`.
+- `COPY --from=builder /tmp/<tool>/<binary> /usr/local/bin/<binary>` next to the
+  z3ds copy.
 - Optional/best-effort installs (a tool that only exists on one arch) should
-  follow the dolphin-emu pattern: install with `|| echo WARNING`
-  (`Dockerfile:67-73`) and create a wrapper only `if command -v` succeeds
-  (`Dockerfile:92-95`). The service must then tolerate a missing binary
-  gracefully (surface a clear runtime error).
-- The image runs as **uid/gid 999 (`converter`)** (`Dockerfile:148`). Install
-  to a world-readable path (`/usr/local/bin`) and `chmod +x`.
-- `HEALTHCHECK` (`Dockerfile:137`) only probes the web UI; no change needed.
+  follow the dolphin-emu pattern: install with `|| echo WARNING` and create a
+  wrapper only `if command -v` succeeds. The service must then tolerate a missing
+  binary gracefully (surface a clear runtime error).
+- The image runs as **uid/gid 999 (`converter`)**. Install to a world-readable
+  path (`/usr/local/bin`) and `chmod +x`.
+- `HEALTHCHECK` only probes the web UI; no change needed.
 
 **hadolint** runs in CI (`docker-image.yml` `lint` job) with
-`failure-threshold: error` and `ignore: DL3008,DL3013`. Keep your `RUN`
-layers clean (combine `apt-get update && install`, `rm -rf
-/var/lib/apt/lists/*`, pin where the existing file pins).
+`failure-threshold: error` and `ignore: DL3008,DL3013`. Keep your `RUN` layers
+clean (combine `apt-get update && install`, `rm -rf /var/lib/apt/lists/*`, pin
+where the existing file pins).
 
-**`.dockerignore`**: `app/`, `static/`, `migrations/`, `entrypoint.sh`,
-`requirements.txt` are copied in. `tests/` and most `*.md` (except
-`README.md`) are excluded — so this guide and your service tests never enter
-the image. If you reference a new top-level file from the Dockerfile, confirm
-it isn't ignored.
+**`.dockerignore`:** `app/`, `static/`, `migrations/`, `entrypoint.sh`,
+`requirements.txt` are copied in. `tests/` and most `*.md` (except `README.md`)
+are excluded, so this guide and your service tests never enter the image. If you
+reference a new top-level file from the Dockerfile, confirm it isn't ignored.
 
-**Python deps**: anything your service `import`s that isn't stdlib or already
-in `requirements.txt` must be added there (and it'll be picked up by
-`pip install -r` at `Dockerfile:102`). Dev/test-only deps go in
-`requirements-dev.txt`.
+**Python deps:** anything your service `import`s that isn't stdlib or already in
+`requirements.txt` must be added there (picked up by `pip install -r` in the
+runtime stage). Dev/test-only deps go in `requirements-dev.txt`.
 
-**Local dev (`run_dev.sh`)**: it bootstraps a `.venv` and runs uvicorn
-against your host. From-source binaries are kept in `.local-bin/` (the repo
-already ships `.local-bin/z3ds_compressor`) so the app works without Docker.
-Drop your compiled binary there and point `<TOOL>_PATH` at it (or add it to
-`PATH`) for local testing.
+**Local dev (`run_dev.sh`):** it bootstraps a `.venv` and runs uvicorn against
+your host. From-source binaries are kept in `.local-bin/` (the repo ships
+`.local-bin/z3ds_compressor`) so the app works without Docker. Drop your compiled
+binary there and point `<TOOL>_PATH` at it (or add it to `PATH`) for local
+testing.
 
 ---
 
-## 9. Headless CLI mode — `entrypoint.sh`
+## 9. Headless CLI mode: `entrypoint.sh`
 
-`entrypoint.sh` supports `CHD_MODE=cli` (batch-convert a volume with no web
-UI; see `docker-compose.cli.yml`). **This path is independent of the Python
-app** — it shells out to `chdman` directly and currently only knows
-`createcd`/`createdvd` over `*.gdi *.iso *.cue` (`entrypoint.sh:127-176`),
-validating `CHDMAN_MODE` against that allow-list (`entrypoint.sh:135`).
+`entrypoint.sh` supports `CHD_MODE=cli` (batch-convert a volume with no web UI;
+see `docker-compose.cli.yml`). This path is **independent of the Python app**: it
+shells out to `chdman` directly and currently only knows `createcd`/`createdvd`
+over `*.gdi *.iso *.cue`, validating `CHDMAN_MODE` against that allow-list with a
+`case` statement.
 
 If your new tool/platform should be usable headlessly:
-- Extend the `CHDMAN_MODE` case statement (or add a parallel `CONVERT_TOOL`
-  env) to accept your mode.
-- Add a globbing loop for your input extensions and invoke your binary,
-  mirroring the existing `for i in *.gdi *.iso *.cue` block.
+- Extend the `CHDMAN_MODE` case statement (or add a parallel `CONVERT_TOOL` env)
+  to accept your mode.
+- Add a globbing loop for your input extensions and invoke your binary, mirroring
+  the existing `for i in *.gdi *.iso *.cue` block.
 - Skip-if-output-exists logic (`[[ -e "${i%.*}.<ext>" ]]`) should match your
   output suffix.
 
-If headless mode is out of scope, you can skip this — the web UI path
-(`exec uvicorn main:app …`, `entrypoint.sh:197`) already dispatches your tool
-via the Python pipeline.
+If headless mode is out of scope, skip this: the web UI path (`exec uvicorn
+main:app …`) already dispatches your tool via the Python pipeline.
 
-The same file also handles **PUID/PGID remap** and the privilege drop to
-`converter` (`entrypoint.sh:4-60`). No changes needed there.
+The same file handles **PUID/PGID remap** and the privilege drop to `converter`
+(`exec gosu converter`). No changes needed there.
 
 ---
 
@@ -867,20 +898,20 @@ The same file also handles **PUID/PGID remap** and the privilege drop to
 
 | Workflow | Trigger | Relevance to a new tool |
 |----------|---------|-------------------------|
-| `docker-image.yml` | **release published** | Builds/pushes multi-arch image to Docker Hub + GHCR, runs **hadolint** (Dockerfile must pass), **Trivy** CRITICAL/HIGH scan (a vulnerable new dep can fail this), generates SBOM + provenance attestation, and **publishes `README.md` as the Docker Hub description**. Also auto-syncs `package.json` from the release tag. |
+| `docker-image.yml` | **release published** | Builds/pushes multi-arch image to Docker Hub + GHCR, runs **hadolint** (Dockerfile must pass), **Trivy** CRITICAL/HIGH scan (a vulnerable new dep can fail this), generates SBOM + provenance attestation, and **publishes `README.md` as the Docker Hub description**. Also syncs `package.json` from the release tag. |
 | `codacy.yml` | push, PR, weekly | Runs the Codacy CLI (ruff, eslint, pylint, bandit, etc.). New Python/JS must lint clean. Honors `pyproject.toml`, `.pylintrc`, `eslint.config.js`, `.codacy.yml`. |
-| `codeql.yml` | push, weekly | CodeQL SAST for **python** and **javascript-typescript** (`codeql.yml:30-32`). New code is scanned automatically — no config change, but don't introduce flagged patterns (e.g. command injection — another reason for the no-`shell=True` rule). |
+| `codeql.yml` | push, PR, weekly | CodeQL SAST for **python** and **javascript-typescript**. New code is scanned automatically, no config change, but don't introduce flagged patterns (for example command injection, another reason for the no-`shell=True` rule). |
 | `label.yml` + `labeler.yml` | PR | Path-based auto-labels. Add a glob if you want your area labeled. |
 | `stale.yml` | schedule | Marks stale issues/PRs. Irrelevant. |
 | `dependabot.yml` | schedule | Dependency PRs. Add an ecosystem entry only if you introduce a new manifest. |
 
 Key takeaways for a contributor:
-- **The image only builds on a GitHub Release.** There is no build-on-push.
-  To ship your tool you (or a maintainer) cut a release tag `vX.Y.Z`; CI then
+- **The image only builds on a GitHub Release.** There is no build-on-push. To
+  ship your tool you (or a maintainer) publish a release tagged `vX.Y.Z`; CI then
   builds `linux/amd64,linux/arm64` and tags `latest`/`beta` accordingly.
 - **Trivy can block a release** if a new system/python package pulls a
-  CRITICAL/HIGH CVE (`ignore-unfixed: true` softens this). Prefer pinned,
-  patched packages — the `mame-tools` snapshot pin is the model.
+  CRITICAL/HIGH CVE (`ignore-unfixed: true` softens this). Prefer pinned, patched
+  packages; the `mame-tools` snapshot pin is the model.
 - **Dockerfile changes must pass hadolint** locally before you push
   (`hadolint Dockerfile`).
 
@@ -891,48 +922,48 @@ Key takeaways for a contributor:
 Run these before pushing (they mirror Codacy):
 
 ```bash
-cd /home/user/compressatorium
-ruff check app tests            # style/lint — config in pyproject.toml ([tool.ruff], py310)
+# from the repo root
+ruff check app tests            # style/lint, config in pyproject.toml ([tool.ruff], py310)
 pylint app                      # config in .pylintrc / pyproject.toml ([tool.pylint])
 pytest -q tests                 # full suite (binaries are stubbed in conftest)
-npx eslint static/js            # JS lint — eslint.config.js
+npm run lint                    # ESLint over JS + .svelte, eslint.config.js
 hadolint Dockerfile             # if you touched the Dockerfile
 ```
 
 Conventions baked into the configs that affect new tool code:
 
 - **Line length 100** (`pyproject.toml [tool.pylint.format]`, ruff `py310`).
-- **`bandit`** (`.bandit`) flags `subprocess` with `shell=True` and
-  predictable temp paths. The services deliberately use
-  `create_subprocess_exec` with argv lists and document the temp-dir
-  reasoning (`config.py:186-194`). Follow suit or bandit/CodeQL will flag you.
+- **`bandit`** (`.bandit`) flags `subprocess` with `shell=True` and predictable
+  temp paths. The services use `create_subprocess_exec` with argv lists and
+  document the temp-dir reasoning in `config.py`. Follow suit or bandit/CodeQL
+  will flag you.
 - **Broad `except Exception`** at subprocess boundaries is allowed by
-  `.pylintrc`/`pyproject.toml` *if* you log at the call site (review
-  enforces this). The existing services do `logger.exception(...)`.
-- **`isort`/import order** is enforced in CI (pylint's `wrong-import-order` is
-  disabled because ruff/isort own it). Keep imports sorted.
-- Markdown docs are linted by `.markdownlint.json`; CSS by
-  `.stylelintrc.json`.
+  `.pylintrc`/`pyproject.toml` *if* you log at the call site (review enforces
+  this). The existing services do `logger.exception(...)`.
+- **Import order** is owned by ruff/isort (pylint's `wrong-import-order` is
+  disabled). Keep imports sorted.
+- Markdown is linted by `.markdownlint.json`; CSS by `.stylelintrc.json`.
 
 ---
 
 ## 12. Database, migrations & persistence
 
 The app uses **SQLite via SQLAlchemy + Alembic** (`app/services/db.py`,
-`migrations/`). On startup, `apply_migrations()` brings the schema to head and
-imports legacy JSON stores (`app/main.py:137-201`).
+`migrations/`). On startup, the `lifespan` handler in `app/main.py` calls
+`apply_migrations()` (defined in the db module) to bring the schema to head and
+then imports any legacy JSON stores.
 
 For a **new tool**, you almost certainly need **no migration**, because the
 persistence layers are generic over file paths:
 
-- **`verification_store`** records "this output path was verified" keyed by
-  path. Your verify endpoints call `verification_store.mark_verified(path)`
-  and it just works for any extension.
-- **`chd_metadata_store`** caches CHD-specific metadata; a non-CHD tool
-  doesn't use it.
+- **`verification_store`** records "this output path was verified" keyed by path.
+  Your verify endpoints call `verification_store.mark_verified(path)` and it just
+  works for any extension.
+- **`chd_metadata_store`** caches CHD-specific metadata; a non-CHD tool doesn't
+  use it.
 
-You need a migration **only** if you add new persisted columns/tables (e.g. a
-tool-specific metadata cache). In that case:
+You need a migration **only** if you add new persisted columns/tables (for
+example a tool-specific metadata cache). In that case:
 
 ```bash
 ./scripts/new_migration.sh "add nszip metadata table"
@@ -947,27 +978,27 @@ references. `tests/test_alembic_migrations.py` validates head consistency.
 
 ## 13. Supporting services: disc_id, archive, DAT
 
-These are **disc-format-specific** and usually irrelevant to a non-disc tool,
-but matter when your *platform* is a disc image processed by chdman.
+These are **disc-format-specific** and usually irrelevant to a non-disc tool, but
+matter when your *platform* is a disc image processed by chdman.
 
-- **`app/services/disc_id.py`** extracts a game serial/title (e.g.
-  `SLUS-20312`) from PS1/PS2/PSP/Dreamcast sources and embeds GAME/NAME tags
-  into the CHD after `createcd`/`createdvd` (`job_manager.py:1514`). To make a
-  **new disc platform** get tags, add a parser branch in
-  `extract_from_source` (`disc_id.py:379`) and a normalizer like
-  `_normalize_ps_serial` (`disc_id.py:224`). Not needed for RVZ/3DS/etc.
-- **`app/services/archive.py`** lists the inputs that can be converted *from
-  inside* a `.zip/.7z/.rar`. It no longer hardcodes a tool-specific set:
-  `ArchiveService._convertible_extensions()` reads
-  `registry.archive_input_extensions()` (the union of `input_extensions` for
-  every mode with `allows_archive_input=True`), with the module-level
-  `CONVERTIBLE_EXTENSIONS` kept only as a fallback. So once your mode opts in
-  via `allows_archive_input=True`, its members are surfaced automatically —
-  there's nothing to edit here. You still own extraction + related-file
-  handling in `job_manager._process_job` for multi-file formats (single-file
-  inputs like `.3ds`/`.rvz` need nothing extra). Output paths for archive
-  members flow through `_output_name_for_member`, which preserves the original
-  extension so input-derived outputs (e.g. z3ds `.3ds`→`.z3ds`) map correctly.
+- **`app/services/disc_id.py`** extracts a game serial/title (for example
+  `SLUS-20312`) from PS1/PS2/PSP/Dreamcast sources and embeds GAME/NAME tags into
+  the CHD after `createcd`/`createdvd` (driven from `job_manager._process_job`).
+  To make a **new disc platform** get tags, add a parser branch in
+  `extract_from_source` and a normalizer like `_normalize_ps_serial`. Not needed
+  for RVZ/3DS/etc.
+- **`app/services/archive.py`** lists the inputs that can be converted from
+  inside a `.zip/.7z/.rar`. It no longer hardcodes a tool-specific set:
+  `ArchiveService` reads `registry.archive_input_extensions()` (the union of
+  `input_extensions` for every mode with `allows_archive_input=True`), with the
+  module-level `CONVERTIBLE_EXTENSIONS` kept only as a fallback. So once your
+  mode opts in via `allows_archive_input=True`, its members are surfaced
+  automatically; there's nothing to edit here. You still own extraction +
+  related-file handling in `job_manager._process_job` for multi-file formats
+  (single-file inputs like `.3ds`/`.rvz` need nothing extra). Output paths for
+  archive members flow through `archive_service._output_name_for_member`, which
+  preserves the original extension so input-derived outputs (for example z3ds
+  `.3ds` to `.z3ds`) map correctly.
 - **DAT / MAMERedump** (`app/services/dat_*.py`, `app/routes/dat.py`,
   `app/services/file_hasher.py`) is for hash-matching dumps against DAT
   databases. Touch only if your platform participates in DAT verification.
@@ -976,34 +1007,35 @@ but matter when your *platform* is a disc image processed by chdman.
 
 ## 14. End-to-end "in tandem" example map
 
-For the `nszip` (Nintendo Switch) tandem example used in §5, here is every
-edit on one screen:
+For the `nszip` (Nintendo Switch) tandem example used in §5, here is every edit
+on one screen:
 
 ```
-Dockerfile                      builder: clone+g++ nszip; runtime: COPY binary, libs
-.dockerignore                   (verify nothing new is excluded)
-requirements.txt                (only if service imports a new pip pkg)
-.local-bin/nszip                local-dev binary for run_dev.sh
-entrypoint.sh                   (optional) CLI-mode loop for .nsp/.xci
-app/config.py                   nszip_path Field (NSZIP_PATH)
-app/services/nszip.py           NszipService + NSZIP_CONVERTIBLE_EXTENSIONS + singleton
-app/models.py                   ConversionMode.NSZIP_COMPRESS; NszipInfo; FileEntry flags
-app/services/job_manager.py     import; _queue_job_locked + _process_job + verify branches
-app/routes/convert.py           _get_output_path; validation (single+batch); del-on-verify
-app/routes/files.py             import set; flags in scan_directory + search_files
-app/routes/info.py              /nszip-info, /nszip-verify(+events+batch); VERIFY exts; lane
-src/lib/api/endpoints.js        getNszipInfo, verifyNszip, verifyBatchNszip
-src/lib/tools/registry.js       one new entry in TOOLS (id, label, hint, verifyPrefix,
-                                sourceExts, verifyExts, modeGroups, groups, defaultMode,
-                                glyph, accent, modes[], getInfo/verify/verifyBatch/productPath)
-static/css/style.css            (only if new badge classes)
-tests/test_nszip_routes.py      info+verify endpoint tests
-tests/test_nszip_service.py     convert/verify/cancel/bad-ext tests
-tests/test_mode_parity_fixes.py add nszip_compress to parity matrix
-tests/conftest.py               binary stub fixture
-docker-compose*.yml             (optional) NSZIP_PATH / CLI env docs
-.version + scripts/sync-version.sh   version bump
-README.md / RELEASE_NOTES.md    supported-formats table + changelog
+Dockerfile                          builder: clone+g++ nszip; runtime: COPY binary, libs
+.dockerignore                       (verify nothing new is excluded)
+requirements.txt                    (only if service imports a new pip pkg)
+.local-bin/nszip                    local-dev binary for run_dev.sh
+entrypoint.sh                       (optional) CLI-mode loop for .nsp/.xci
+app/config.py                       nszip_path Field (NSZIP_PATH)
+app/services/nszip.py               NszipService + NSZIP_CONVERTIBLE_EXTENSIONS + singleton
+app/services/tools/nszip.py         NszipTool plugin (BaseTool + ModeSpec rows)
+app/services/tools/__init__.py      registry.register(NszipTool(settings.nszip_path))
+app/models.py                       ConversionMode.NSZIP_COMPRESS; NszipInfo; FileEntry flags
+app/routes/convert.py               extension-validation block in plan_job (if needed)
+app/routes/files.py                 flags in the directory scan + search_files
+app/routes/info.py                  register_verify_routes(registry.get("nszip")); /nszip-info
+app/services/job_manager.py         usually nothing (registry dispatches)
+src/lib/api/endpoints.js            getNszipInfo, verifyNszip, verifyBatchNszip
+src/lib/tools/registry.js           one new entry in TOOLS
+src/styles/tokens.css               (only if new badge classes)
+tests/test_nszip_routes.py          info+verify endpoint tests
+tests/test_nszip_service.py         convert/verify/cancel/bad-ext tests
+tests/test_tool_registry.py         mode resolves to nszip with the right flags
+tests/test_mode_parity_fixes.py     add nszip_compress to the parity matrix
+tests/conftest.py                   binary stub fixture
+docker-compose*.yml                 (optional) NSZIP_PATH / CLI env docs
+package.json                        version bump (release)
+README.md / RELEASE_NOTES.md        supported-formats table + changelog
 DEPLOYMENT.md / DOCKER-COMPOSE.md    new env var, if any
 ```
 
@@ -1011,31 +1043,39 @@ DEPLOYMENT.md / DOCKER-COMPOSE.md    new env var, if any
 
 ## 15. Gotchas & conventions
 
-- **Mode prefixes are load-bearing.** Code branches on
+- **The registry dispatches; don't add ladders.** Convert and verify run through
+  `registry.for_mode(mode)`; output paths through the plugin's `output_path()`;
+  validation through `registry.spec(mode)` flags. The old `_convert_service`
+  if/elif ladders are gone. Add behavior by setting `ModeSpec` flags, not by
+  branching on the mode string.
+- **A few prefixes are still load-bearing.** Some code still branches on
   `mode.startswith("create"|"extract"|"dolphin_")` and on equality with
-  `z3ds_compress`. Choose a clear, unique prefix and grep for every
-  prefix check when you add a mode that doesn't fit an existing family.
-- **Single-job and batch endpoints must validate identically.**
-  `create_job` and `create_batch_jobs` in `convert.py` duplicate their
-  validation; `tests/test_mode_parity_fixes.py` exists to catch drift. Edit
-  both.
+  `z3ds_compress` for special-casing (disc-id tagging, `.bin` sidecars,
+  compression nuances). Choose a clear, unique prefix and grep for prefix checks
+  when you add a mode that doesn't fit an existing family.
+- **Single-job and batch endpoints must validate identically.** `create_job` and
+  `create_batch_jobs` in `convert.py` share `plan_job`, and
+  `tests/test_mode_parity_fixes.py` exists to catch drift. Keep them in lockstep.
 - **The verify lane is global.** All verification across all tools shares
-  `MAX_VERIFY_CONCURRENCY` via `workload_limiter` (`info.py:55`). Always
-  acquire/release the token in verify endpoints, or you'll bypass
-  backpressure.
-- **Reuse `ConversionCancelled`** from `services.chdman` — the pipeline's
-  cancel handling (`job_manager.py:1782`) catches that specific class.
+  `MAX_VERIFY_CONCURRENCY` via `workload_limiter`. The verify-route factory
+  acquires the token for you (`_acquire_verify_lane_or_429`); don't bypass it.
+- **Reuse `ConversionCancelled`.** It lives in
+  `app/services/subprocess_runner.py` (re-exported via `services.chdman` and
+  `services.tools.runner`). The pipeline's cancel handling in
+  `job_manager._process_job` catches that specific class.
 - **`MAX_CONCURRENT_JOBS` defaults to 1.** Conversions are I/O-heavy; the
-  dispatcher runs them serially unless host capacity is validated
-  (`AGENTS.md` note). Don't assume parallelism in a service.
-- **No frontend build step.** `static/js/*.js` are served as-is. ESLint
-  config exists (`eslint.config.js`) — keep the style consistent.
-- **The image runs as uid 999 (`converter`).** Binaries must be executable by
-  a non-root user; install them to a world-readable path like
-  `/usr/local/bin` as the existing tools do.
-- **chdman is the only archive-aware tool.** If your tool can't decompress its
-  inputs straight out of `.zip/.7z/.rar`, block `::` archive paths in
-  `convert.py` (as z3ds and dolphin do).
-- **Binary path is config, not hardcoded.** Always read
-  `settings.<tool>_path` in `__init__` so deployments can relocate/override
-  via env.
+  dispatcher runs them serially unless host capacity is validated. Don't assume
+  parallelism in a service.
+- **The frontend has a build step.** The Svelte 5 + Vite source lives in `src/`;
+  `npm run build` emits the bundle into `static/`. Run `npm run lint` (ESLint
+  flat config in `eslint.config.js`) and keep the style consistent.
+- **The image runs as uid 999 (`converter`).** Binaries must be executable by a
+  non-root user; install them to a world-readable path like `/usr/local/bin`.
+- **chdman is the only archive-aware tool today.** If your tool can't decompress
+  its inputs straight out of `.zip/.7z/.rar`, leave `allows_archive_input=False`
+  on its `ModeSpec` (the default) and the single guard in `plan_job` blocks
+  archive (`::`) members automatically.
+- **Binary path is config, not hardcoded.** Always read `settings.<tool>_path`
+  (passed into the plugin, stored on the service in `__init__`) so deployments
+  can relocate/override via env.
+
