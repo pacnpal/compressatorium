@@ -254,6 +254,7 @@ the non-obvious rows is in §8 to §14.
 | 43 | `RELEASE_NOTES.md` | Changelog entry. | Every change |
 | 44 | `DEPLOYMENT.md`, `DOCKER-COMPOSE.md` | New env vars / volumes / tool requirements. | If deploy surface changes |
 | 45 | `AGENTS.md`, `.github/copilot-instructions.md` | Runbook / AI guidance, update if conventions change. | Optional |
+| 46 | `app/main.py` | The FastAPI `description=` (shown at `/docs`) names the tools. Add the new tool so it stays accurate. | New tool |
 
 ---
 
@@ -752,6 +753,8 @@ installed.
 ### 5.13 Docs + version
 
 - Update `README.md` (tool table / supported formats) and `RELEASE_NOTES.md`.
+- Update the FastAPI app description in `app/main.py` (the `description=` shown
+  at `/docs`) so it names the new tool. It lists every tool, so keep it current.
 - The version lives in `package.json`. A release bumps it and publishes a GitHub
   Release tagged `vX.Y.Z`, which is what triggers the image build (see §10).
 
@@ -803,6 +806,7 @@ TESTS + DOCS
 [ ] tests/test_<tool>_routes.py, tests/test_<tool>_service.py, registry, mode-parity
 [ ] tests/conftest.py: binary stub fixture
 [ ] README / RELEASE_NOTES / package.json version bump
+[ ] app/main.py: add the tool to the FastAPI description= string (shown at /docs)
 
 PERIPHERAL (don't forget)
 [ ] .dockerignore: confirm nothing new is excluded
@@ -1035,6 +1039,7 @@ tests/test_mode_parity_fixes.py     add nszip_compress to the parity matrix
 tests/conftest.py                   binary stub fixture
 docker-compose*.yml                 (optional) NSZIP_PATH / CLI env docs
 package.json                        version bump (release)
+app/main.py                         add the tool to the FastAPI description= (shown at /docs)
 README.md / RELEASE_NOTES.md        supported-formats table + changelog
 DEPLOYMENT.md / DOCKER-COMPOSE.md    new env var, if any
 ```
