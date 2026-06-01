@@ -5,9 +5,9 @@ A quick execution guide for agents working in this repo. Treat it as an operatio
 ## Canonical references
 
 - `README.md`
-- `RELEASE_NOTES.md`
-- `DOCKER-COMPOSE.md`
-- `DEPLOYMENT.md`
+- `docs/RELEASE_NOTES.md`
+- `docs/DOCKER-COMPOSE.md`
+- `docs/DEPLOYMENT.md`
 - `.github/workflows/docker-image.yml`
 
 ## Current workflows
@@ -112,7 +112,7 @@ curl -s http://localhost:8080/api/chd-metadata/scan/status
 
 ### 5. Version and release
 
-The version lives in `package.json` (`version`). There is no `.version` file. A release means bumping `package.json`, updating `RELEASE_NOTES.md` (Keep a Changelog format), and publishing a GitHub Release tagged `vX.Y.Z`. Publishing the release is what triggers the image build.
+The version lives in `package.json` (`version`). There is no `.version` file. A release means bumping `package.json`, updating `docs/RELEASE_NOTES.md` (Keep a Changelog format), and publishing a GitHub Release tagged `vX.Y.Z`. Publishing the release is what triggers the image build.
 
 Schema changes use `scripts/new_migration.sh` (see README, "Schema changes"). That's the only script in `scripts/`.
 

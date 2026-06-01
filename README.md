@@ -220,15 +220,15 @@ The interface reflows cleanly across breakpoints:
 
 **Desktop (1280px)**
 
-![Desktop View](docs-desktop-view.png)
+![Desktop View](docs/screenshots/docs-desktop-view.png)
 
 **Tablet (768px)**
 
-![Tablet View](docs-tablet-view.png)
+![Tablet View](docs/screenshots/docs-tablet-view.png)
 
 **Mobile (375px)**
 
-![Mobile View](docs-mobile-view.png)
+![Mobile View](docs/screenshots/docs-mobile-view.png)
 
 On small screens the file list switches to a card layout. Controls use 44 to 48px touch targets, inputs go full width, and the spacing opens up so it stays usable on a phone.
 
@@ -851,7 +851,7 @@ services:
     restart: unless-stopped
 ```
 
-For production deployment guidance, see [DEPLOYMENT.md](DEPLOYMENT.md).
+For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ---
 

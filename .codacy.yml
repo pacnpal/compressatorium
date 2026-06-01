@@ -78,8 +78,6 @@ exclude_paths:
   - ".local-bin/**"
   - "**/*.png"
   - "**/*.ico"
-  - "verify_test.py"
-  - "ui.png"
   # Generated / captured runtime logs checked in for debugging
   - "*.log"
   - "server_*.log"

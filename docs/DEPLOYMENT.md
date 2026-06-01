@@ -22,7 +22,7 @@ The image ships a `HEALTHCHECK` (30s interval, 10s timeout, 10s start period, 3 
 
 ## Environment and volumes
 
-The full environment variable reference lives in [README.md](README.md#environment-variables). The ones that matter most for a deployment:
+The full environment variable reference lives in [README.md](../README.md#environment-variables). The ones that matter most for a deployment:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

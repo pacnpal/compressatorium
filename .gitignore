@@ -2,6 +2,9 @@
 # Tooling/session state (logs, state, memory). Not project source.
 .claude/
 
+# Draft 4.0.0 release notes — kept local, not tracked.
+docs/RELEASE_NOTES_4.0.0.md
+
 # ============ Operating System ============
 # macOS
 .DS_Store
@@ -449,3 +452,6 @@ test_error.png
 
 # ...except Claude Code tooling state that lands inside src/lib by mistake.
 /src/lib/**/.claude/
+
+# ...and macOS Finder junk, which the re-include above would otherwise track.
+/src/lib/**/.DS_Store

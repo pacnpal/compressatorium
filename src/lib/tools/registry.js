@@ -1,4 +1,4 @@
-// Frontend tool registry — mirrors DESIGN_tool_plugin_architecture.md §3.7
+// Frontend tool registry — mirrors docs/DESIGN_tool_plugin_architecture.md §3.7
 // field-for-field, extended with the ModeSpec metadata defined in
 // app/services/tools/spec.py.
 //
