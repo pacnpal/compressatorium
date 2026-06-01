@@ -140,7 +140,14 @@ class NszService:
         try:
             switch_dir = os.path.join(home_dir, ".switch")
             os.makedirs(switch_dir, exist_ok=True)
-            os.symlink(os.path.abspath(keys_file), os.path.join(switch_dir, "prod.keys"))
+            dest = os.path.join(switch_dir, "prod.keys")
+            src = os.path.abspath(keys_file)
+            try:
+                os.symlink(src, dest)
+            except (OSError, NotImplementedError):
+                # Symlinks need a privilege on Windows; the key file is tiny, so
+                # just copy it into the throwaway HOME instead.
+                shutil.copy2(src, dest)
             yield {**os.environ, "HOME": home_dir}
         finally:
             shutil.rmtree(home_dir, ignore_errors=True)
@@ -447,7 +454,12 @@ class NszService:
         if not os.path.exists(file_path):
             yield {"type": "error", "valid": False, "message": "File not found"}
             return
-        if os.path.getsize(file_path) == 0:
+        try:
+            is_empty = os.path.getsize(file_path) == 0
+        except OSError as e:
+            yield {"type": "error", "valid": False, "message": f"Error reading file: {e}"}
+            return
+        if is_empty:
             yield {"type": "error", "valid": False, "message": "File is empty"}
             return
         ext = Path(file_path).suffix.lower()

@@ -133,7 +133,9 @@ class Settings(BaseSettings):
     # standard locations (~/.switch, ~/.config/nsz) at runtime.
     switch_keys_dir: str | None = Field(default=None, alias="SWITCH_KEYS")
     # zstandard level for nsz compression (1-22, nsz default is 18).
-    nsz_compression_level: int = Field(default=18, alias="NSZ_COMPRESSION_LEVEL")
+    nsz_compression_level: int = Field(
+        default=18, alias="NSZ_COMPRESSION_LEVEL", ge=1, le=22,
+    )
 
     # MAMERedump DAT sync
     mameredump_repo: str = Field(
