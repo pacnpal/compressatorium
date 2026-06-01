@@ -15,9 +15,31 @@
   // outputs. Same shape as BulkDeleteModal — required to mirror the
   // legacy single-delete verification gate. Reset on open.
   let acknowledged = $state(false);
+  // Escalation step for deleting a NON-EMPTY directory: the first confirm
+  // attempts a normal delete; if the backend reports the directory isn't
+  // empty (409), we bump to step 2 and require a second confirmation before
+  // retrying with recursive=true. Files and empty dirs never reach step 2.
+  let step = $state(1);
   $effect(() => {
-    if (open) acknowledged = false;
+    if (open) {
+      acknowledged = false;
+      step = 1;
+    }
   });
+
+  const confirmingRecursiveDir = $derived(step === 2);
+  const dialogTitle = $derived(
+    confirmingRecursiveDir ? 'Delete folder and everything inside?' : 'Delete?',
+  );
+  const dialogDescription = $derived.by(() => {
+    if (!target) return '';
+    const name = target.name ?? target.path;
+    if (confirmingRecursiveDir) {
+      return `“${name}” is not empty. Permanently delete the folder and ALL of its contents? This cannot be undone.`;
+    }
+    return `Permanently delete ${name}? This cannot be undone.`;
+  });
+  const confirmLabel = $derived(confirmingRecursiveDir ? 'Delete everything' : 'Delete');
 
   // entry.outputs entries with `exists: true` and a path that isn't
   // in verification.statuses — i.e. a generated product whose
@@ -46,7 +68,7 @@
     // failure even though the backend has already removed the file.
     const deletedName = target.name ?? deletedPath;
     try {
-      await api.deleteFile(deletedPath);
+      await api.deleteFile(deletedPath, { recursive: confirmingRecursiveDir });
       // Drop the now-deleted path from the selection set so the
       // selection bar / conversion panel doesn't keep an invisible
       // entry around that the next batch submit would forward to the
@@ -69,6 +91,13 @@
         toast.warning('Deleted; refreshing the listing failed');
       }
     } catch (e) {
+      // Non-empty directory on the first attempt: escalate to a second
+      // confirmation rather than surfacing it as an error. (Other 409s —
+      // locked / in-use by a job — fall through to the toast.)
+      if (step === 1 && e?.status === 409 && /not empty/i.test(e?.message ?? '')) {
+        step = 2;
+        return;
+      }
       toast.error(e?.message ?? 'Failed to delete');
     } finally {
       busy = false;
@@ -80,9 +109,9 @@
   {open}
   onClose={close}
   onConfirm={handleConfirm}
-  title="Delete file?"
-  description={target ? `Permanently delete ${target.name ?? target.path}? This cannot be undone.` : ''}
-  confirmLabel="Delete"
+  title={dialogTitle}
+  description={dialogDescription}
+  {confirmLabel}
   cancelLabel="Keep"
   confirmVariant="destructive"
   {busy}
@@ -90,6 +119,16 @@
 >
   {#snippet titleIcon()}<Trash2 size={18} aria-hidden="true" />{/snippet}
   {#snippet body()}
+    {#if confirmingRecursiveDir}
+      <div class="dm-warn" role="alert">
+        <TriangleAlert size={14} aria-hidden="true" />
+        <div>
+          <strong>This deletes the folder and everything inside it.</strong>
+          All files and subfolders under it are permanently removed. There is no
+          undo.
+        </div>
+      </div>
+    {/if}
     {#if unverifiedOutputs.length > 0}
       <div class="dm-warn" role="alert">
         <TriangleAlert size={14} aria-hidden="true" />

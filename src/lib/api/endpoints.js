@@ -128,8 +128,9 @@ export const api = {
     );
   },
 
-  deleteFile(path) {
+  deleteFile(path, { recursive = false } = {}) {
     const params = new URLSearchParams({ path });
+    if (recursive) params.set('recursive', 'true');
     return fetchJson(
       buildApiUrl('/files/delete', params),
       { method: 'DELETE' },

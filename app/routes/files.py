@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from config import settings
@@ -22,8 +23,33 @@ router = APIRouter()
 logger = logging.getLogger("chd.files")
 
 
-def _is_macos_metadata_entry(name: str) -> bool:
-    return name == ".DS_Store" or name.startswith("._") or name == "__MACOSX"
+# Known OS / NAS / filesystem junk to hide from listings (best-effort). Matched
+# case-insensitively against the entry name (file or directory).
+_JUNK_EXACT = frozenset({
+    # macOS
+    ".ds_store", "__macosx", ".appledouble", ".lsoverride", "icon\r",
+    ".documentrevisions-v100", ".fseventsd", ".spotlight-v100",
+    ".temporaryitems", ".trashes", ".volumeicon.icns",
+    ".com.apple.timemachine.donotpresent", ".appledb", ".appledesktop",
+    "network trash folder", "temporary items", ".apdisk",
+    # Windows
+    "thumbs.db", "thumbs.db:encryptable", "ehthumbs.db", "ehthumbs_vista.db",
+    "desktop.ini", "$recycle.bin", "recycler", "system volume information",
+    # Synology / QNAP / NAS
+    "@eadir", "@tmp", "#recycle", "@recycle", ".@__thumb", "#snapshot",
+    # Linux / *nix
+    "lost+found", ".directory", ".trash",
+})
+# Prefix patterns for families with variable suffixes.
+_JUNK_PREFIXES = ("._", ".trash-", ".nfs", ".fuse_hidden", ".smbdelete")
+
+
+def _is_junk_entry(name: str) -> bool:
+    """True for known OS/NAS metadata and trash entries that shouldn't show."""
+    lower = name.lower()
+    if lower in _JUNK_EXACT:
+        return True
+    return any(lower.startswith(prefix) for prefix in _JUNK_PREFIXES)
 
 
 def _detect_file_outputs(
@@ -126,7 +152,7 @@ async def list_files(
         try:
             # This outer try-except catches errors from os.listdir() itself
             for item in sorted(os.listdir(target_path)):
-                if _is_macos_metadata_entry(item):
+                if _is_junk_entry(item):
                     continue
                 item_path = os.path.join(target_path, item)
                 ext = Path(item).suffix.lower()
@@ -279,7 +305,7 @@ async def search_files(
             visited_dirs.add(real_dir)
             try:
                 for item in os.listdir(dir_path):
-                    if _is_macos_metadata_entry(item):
+                    if _is_junk_entry(item):
                         continue
                     item_path = os.path.join(dir_path, item)
                     ext = Path(item).suffix.lower()
@@ -547,8 +573,15 @@ async def rename_file(
 @router.delete("/files/delete")
 async def delete_file(
     path: str = Query(..., description="Path to file or directory to delete"),
+    recursive: bool = Query(
+        False,
+        description=(
+            "Allow deleting a non-empty directory and everything inside it. "
+            "The Web UI only sets this after a double confirmation."
+        ),
+    ),
 ) -> dict:
-    """Delete a file or empty directory."""
+    """Delete a file, an empty directory, or (with ``recursive``) a non-empty one."""
     if not await run_in_threadpool(is_within_configured_volumes, path, treat_archives=False):
         raise HTTPException(
             status_code=403, detail="Access denied: path outside configured volumes",
@@ -558,17 +591,24 @@ async def delete_file(
         raise HTTPException(status_code=404, detail="File or directory not found")
 
     is_dir = await run_in_threadpool(os.path.isdir, path)
+    # For a recursive directory delete this also rejects the request if any
+    # active job's path lives under the directory (see _assert_path_not_in_use).
     await _assert_path_not_in_use(path, is_dir=is_dir)
 
     try:
         if is_dir:
-            # Only delete empty directories for safety
             contents = await run_in_threadpool(os.listdir, path)
-            if contents:
+            if contents and not recursive:
+                # Non-empty without explicit opt-in: the UI re-requests with
+                # recursive=true after a second confirmation.
                 raise HTTPException(
-                    status_code=400, detail="Cannot delete non-empty directory",
+                    status_code=409,
+                    detail="Directory is not empty; confirm recursive delete to remove it",
                 )
-            await run_in_threadpool(os.rmdir, path)
+            if contents:
+                await run_in_threadpool(shutil.rmtree, path)
+            else:
+                await run_in_threadpool(os.rmdir, path)
         else:
             await run_in_threadpool(os.remove, path)
             ext = os.path.splitext(path)[1].lower()
