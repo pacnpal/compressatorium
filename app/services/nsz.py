@@ -85,6 +85,33 @@ class NszService:
     def keys_available(self) -> bool:
         return self.resolved_keys_file() is not None
 
+    def key_search_dirs(self) -> list[str]:
+        """Directories checked when SWITCH_KEYS is unset (for startup logging)."""
+        seen: list[str] = []
+        for candidate in self._default_keys_candidates():
+            directory = os.path.dirname(candidate)
+            if directory not in seen:
+                seen.append(directory)
+        return seen
+
+    def log_startup_status(self) -> None:
+        """Log once, at startup, whether Switch (nsz) is enabled and where the
+        keys were found (or which locations were searched and came up empty)."""
+        keys_file = self.resolved_keys_file()
+        if keys_file:
+            logger.info("Switch (nsz) enabled: prod.keys found at %s", keys_file)
+        elif settings.switch_keys_dir:
+            logger.warning(
+                "Switch (nsz) disabled: SWITCH_KEYS=%s has no prod.keys/keys.txt",
+                settings.switch_keys_dir,
+            )
+        else:
+            logger.info(
+                "Switch (nsz) disabled: no prod.keys found (searched %s). Set "
+                "SWITCH_KEYS to the directory holding your prod.keys to enable it.",
+                ", ".join(self.key_search_dirs()),
+            )
+
     @staticmethod
     def _readable(path: str) -> bool:
         return os.path.isfile(path) and os.access(path, os.R_OK)
@@ -101,19 +128,19 @@ class NszService:
         """
         home = os.path.expanduser("~")
         xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
-        roots = [
-            os.path.join(home, ".switch"),
-            os.path.join(xdg, "nsz"),
-            os.path.join(home, ".config", "nsz"),
+        # Standard nsz/homebrew key locations (explicit files).
+        candidates = [
+            os.path.join(home, ".switch", "prod.keys"),
+            os.path.join(xdg, "nsz", "prod.keys"),
+            os.path.join(home, ".config", "nsz", "prod.keys"),
         ]
-        # Game volumes + the data dir: a user may just drop prod.keys there.
-        # never let key discovery break a job
+        # Game volumes + the data dir: a user may just drop prod.keys at a
+        # volume root (or its .switch subdir). Never let discovery break a job.
+        roots: list[str] = []
         with contextlib.suppress(Exception):
             roots.extend(settings.volumes)
         with contextlib.suppress(Exception):
             roots.append(str(settings.data_dir))
-
-        candidates: list[str] = []
         for root in roots:
             candidates.append(os.path.join(root, "prod.keys"))
             candidates.append(os.path.join(root, "keys.txt"))

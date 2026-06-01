@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from routes import convert, dat, files, info, preferences
 from services.job_manager import job_manager
+from services.nsz import nsz_service
 
 
 def get_version() -> str:
@@ -216,6 +217,9 @@ async def lifespan(app: FastAPI):
         discovered_volumes,
         settings.volumes,
     )
+    # Surface the Switch (nsz) key-discovery decision so operators can see
+    # whether the tool is enabled and, if not, where keys were looked for.
+    nsz_service.log_startup_status()
     # Initialise the set used to hold strong references to background tasks so
     # they are not garbage-collected before they finish.
     app.state.background_tasks = set()
