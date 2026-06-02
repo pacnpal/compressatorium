@@ -126,7 +126,7 @@ RUN apt-get update -o Acquire::Retries=3 && \
       bash \
       gosu \
       liblz4-1 \
-      libuv1 \
+      libuv1t64 \
       libdeflate0 \
       zlib1g \
       ca-certificates && \
