@@ -260,6 +260,8 @@ def test_scannable_extensions_are_output_plus_verify():
     assert scannable == registry.output_extensions() | registry.verify_extensions()
     # Non-CHD outputs that historically were never scanned are now eligible.
     assert {".chd", ".rvz", ".wia", ".gcz", ".nsz", ".xcz"} <= scannable
+    # The extractcd .bin data-track sidecar (what Redump DATs index) is in too.
+    assert ".bin" in scannable
 
 
 # z3ds/nsz have no embedded-hash source, so they use the BaseTool default.

@@ -586,6 +586,35 @@ async def test_match_single_file_dolphin_miss_skips_container_hash(
 
 
 @pytest.mark.asyncio
+async def test_match_single_file_chd_hash_miss_falls_back_to_file_sha1(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A CHD whose cached header/data SHA1 miss the DAT still falls back to the
+    .chd file-level SHA1 (a CHD-container DAT may index it): chdman is not
+    'exhaustive', unlike Dolphin."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake chd")
+
+    mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=False)
+    # Cached hashes that are NOT in the imported DAT.
+    mock_metadata_store.get_metadata = AsyncMock(
+        return_value={"sha1": "1" * 40, "data_sha1": "2" * 40}
+    )
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value=target_sha1))
+
+    with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
+        result = await dat_routes._match_single_file(str(chd))
+
+    assert result["matched"] is True
+    assert result["match_type"] == "file_sha1"
+
+
+@pytest.mark.asyncio
 async def test_match_single_file_uncached_chd_falls_back_to_file_sha1(
     tmp_path, isolated_dat_store, monkeypatch,
 ):

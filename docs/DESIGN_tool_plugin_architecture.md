@@ -156,8 +156,9 @@ class ToolPlugin(Protocol):
     binary_path: str
     modes: Sequence["ModeSpec"]
     input_extensions: frozenset[str]    # convertible-from
-    output_extensions: frozenset[str]   # produced (for "output exists" badges)
+    output_extensions: frozenset[str]   # produced (badges + scan discovery)
     verify_extensions: frozenset[str]   # accepted by verify()
+    embedded_hash_is_exhaustive: bool   # miss => definitive (skip file SHA1)
 
     def output_path(self, mode: str, input_path: str, output_dir: str | None = None,
                     *, treat_as_stem: bool = False) -> str: ...

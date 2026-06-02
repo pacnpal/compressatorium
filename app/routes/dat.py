@@ -837,12 +837,13 @@ async def _match_single_file(
             return {**base_result, "error": "embedded hash unavailable"}
         if match:
             return match
-        if had_candidates:
-            # The tool's content hash(es) are authoritative for DAT matching
-            # (CHD header SHA1, Dolphin disc SHA1 == the Redump hash). A miss
-            # is definitive — the container's file-level SHA1 can't match the
-            # DAT — so record a (cacheable) unmatched result without paying to
-            # re-read the whole file.
+        if had_candidates and tool.embedded_hash_is_exhaustive:
+            # The tool's content hashes are exhaustive (e.g. Dolphin's disc
+            # SHA1): a miss is definitive and the container's file-level SHA1
+            # can never match the DAT, so record a (cacheable) unmatched result
+            # without re-reading the whole file. Tools whose own container
+            # bytes may be DAT-indexed (e.g. CHD) deliberately fall through to
+            # the file-level SHA1 below.
             return base_result
 
     # Defense-in-depth: respect the operator-configured size cap so

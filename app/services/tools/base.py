@@ -41,6 +41,14 @@ class ToolPlugin(Protocol):
     input_extensions: frozenset[str]    # convertible-from
     output_extensions: frozenset[str]   # produced (for "output exists" badges)
     verify_extensions: frozenset[str]   # accepted by verify()
+    # When the tool's embedded_hashes are *exhaustive*: a miss of every
+    # reported content hash means the file definitively isn't in the DAT, so
+    # the DAT matcher must NOT fall back to a file-level SHA1 of the container
+    # (which can't be indexed anyway and would re-read the whole file). True
+    # only for formats whose container bytes never appear in a DAT, e.g.
+    # Dolphin's recompressed RVZ/WIA/GCZ. False (default) for formats whose own
+    # file SHA1 may legitimately be indexed (e.g. a CHD-container DAT).
+    embedded_hash_is_exhaustive: bool
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
@@ -124,6 +132,9 @@ class BaseTool:
     modes: Sequence[ModeSpec] = ()
     output_extensions: frozenset[str] = frozenset()
     verify_extensions: frozenset[str] = frozenset()
+    # Default False: a tool whose container file SHA1 might be DAT-indexed
+    # still falls back to a file-level hash after an embedded-hash miss.
+    embedded_hash_is_exhaustive: bool = False
 
     def __init__(self, binary_path: str) -> None:
         self.binary_path = binary_path

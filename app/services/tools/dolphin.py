@@ -62,6 +62,11 @@ class DolphinTool(BaseTool):
     modes = _build_modes()
     output_extensions = frozenset({".rvz", ".wia", ".gcz", ".iso"})
     verify_extensions = frozenset(DOLPHIN_CONVERTIBLE_EXTENSIONS)
+    # The compressed/container formats (.rvz/.wia/.gcz/.wbfs) are recompressed
+    # by dolphin-tool, so their on-disk bytes never appear in a DAT — only the
+    # reconstructed disc SHA1 does. A disc-hash miss is therefore definitive;
+    # don't fall back to a (meaningless) file-level hash of the container.
+    embedded_hash_is_exhaustive = True
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

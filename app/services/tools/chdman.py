@@ -83,8 +83,11 @@ class ChdmanTool(BaseTool):
     display_name = "CHDMAN"
     modes = _build_modes()
     # All extensions chdman produces: .chd from create/copy, plus the extract
-    # targets (.cue/.iso/.raw/.avi). verify only applies to finished CHDs.
-    output_extensions = frozenset({".chd", ".cue", ".iso", ".raw", ".avi"})
+    # targets (.cue/.iso/.raw/.avi) and the .bin data-track sidecar that
+    # extractcd writes alongside the .cue. The .bin is what Redump-style DATs
+    # index (the tiny .cue isn't), so it must be discoverable by the scan.
+    # verify only applies to finished CHDs.
+    output_extensions = frozenset({".chd", ".cue", ".bin", ".iso", ".raw", ".avi"})
     verify_extensions = frozenset({".chd"})
 
     def __init__(self, binary_path: str) -> None:
