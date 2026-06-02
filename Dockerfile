@@ -1,5 +1,5 @@
 # Base images pinned to their multi-arch index digests (not just the moving
-# tags) so the FROM layer is stable across builds — moving tags get new digests
+# tags) so the FROM layer is stable across builds; moving tags get new digests
 # upstream every few days, which busts the entire layer cache and forces a full
 # rebuild. Pinning keeps the registry build cache effective and the build
 # reproducible. apt-get update inside the stages still pulls security patches;
@@ -30,7 +30,7 @@ RUN g++ -O3 src/*.cpp -o z3ds_compressor -lzstd && \
     chmod +x z3ds_compressor
 
 # ---------------------------------------------------------------------------
-# Frontend builder stage — compile the Svelte 5 SPA with Vite.
+# Frontend builder stage: compile the Svelte 5 SPA with Vite.
 #
 # Output is emitted to /build/static via vite.config.js (build.outDir),
 # which the runtime stage copies into /static.  Multi-arch safe:
@@ -53,7 +53,7 @@ FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b
 # Immutable pin: mame-tools 0.285+dfsg1-1 from snapshot.debian.org
 #
 # All runtime deps (libflac14, libsdl2-2.0-0, libutf8proc3, zlib1g, etc.)
-# are satisfiable from trixie-slim's own repos — no foreign sources needed.
+# are satisfiable from trixie-slim's own repos; no foreign sources needed.
 #
 # snapshot.debian.org URLs are content-addressed and timestamp-locked;
 # the .deb behind a given URL will never change.

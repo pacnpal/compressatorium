@@ -1,4 +1,4 @@
-"""Preferences routes — server-stored UI layout widths.
+"""Preferences routes: server-stored UI layout widths and compression defaults.
 
 Single-user app, no auth. The workspace layout (panel split + per-tool
 table column widths) lives under the ``layout`` preference key so it

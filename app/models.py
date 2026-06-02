@@ -233,7 +233,7 @@ class LayoutPreferences(BaseModel):
 
     ``panels`` holds the global panel-split widths (px); ``columns`` holds
     per-tool table column widths keyed by tool id. Extra keys are allowed
-    so the client can evolve the shape without a schema change here — the
+    so the client can evolve the shape without a schema change here; the
     server just stores and returns the JSON.
     """
 

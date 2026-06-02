@@ -215,7 +215,7 @@ class NszService:
     def _parse_compression(self, compression: str | None) -> tuple[bool | None, int]:
         """Resolve a per-job ``compression`` string into (block, level).
 
-        Format is ``"<mode>:<level>"`` where mode is ``solid`` or ``block`` —
+        Format is ``"<mode>:<level>"`` where mode is ``solid`` or ``block``,
         the same ``codec:level`` shape the UI sends for Dolphin. ``block`` is
         None when unspecified (let nsz pick its per-container default). Level
         falls back to the configured default and is clamped to nsz's 1-22 range.
