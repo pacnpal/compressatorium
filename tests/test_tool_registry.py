@@ -112,6 +112,10 @@ def test_kind_classification():
         ("dolphin_gcz", False),
         ("dolphin_iso", False),
         ("z3ds_compress", False),
+        # cso/zso compress expose an effort preset; decompress does not.
+        ("cso_compress", True),
+        ("zso_compress", True),
+        ("cso_decompress", False),
     ],
 )
 def test_supports_compression_matches_current_behavior(mode, expected):

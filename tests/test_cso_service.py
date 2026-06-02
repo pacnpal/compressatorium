@@ -238,6 +238,27 @@ def test_build_command_flags():
     assert "--format=zso" not in decompress
 
 
+_ALL_EFFORT_FLAGS = ("--fast", "--use-zopfli", "--use-libdeflate", "--use-lz4brute")
+
+
+@pytest.mark.parametrize(
+    ("mode", "effort", "expected"),
+    [
+        ("cso_compress", "fast", ["--fast"]),
+        ("cso_compress", "max", ["--use-zopfli", "--use-libdeflate"]),
+        ("cso_compress", "default", []),
+        ("cso_compress", None, []),
+        ("zso_compress", "fast", ["--fast"]),
+        ("zso_compress", "max", ["--use-lz4brute"]),       # lz4 format -> lz4 trials
+        ("cso_decompress", "max", []),                      # effort ignored on decompress
+    ],
+)
+def test_build_command_effort_flags(mode, effort, expected):
+    cmd = service._build_command("/data/in", "/data/out", mode, effort)
+    for flag in _ALL_EFFORT_FLAGS:
+        assert (flag in cmd) == (flag in expected)
+
+
 def test_info_reports_compression_state(tmp_path):
     cso_path = tmp_path / "game.cso"
     cso_path.write_bytes(b"x" * 2048)

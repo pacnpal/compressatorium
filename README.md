@@ -553,9 +553,14 @@ are required.
   the whole file and logs its CRC32, so a clean run proves the file decodes intact.
 * Delete-on-verify is offered for the compress modes only (verify validates the
   compressed `.cso`/`.zso` output).
-* The compression format is chosen by the mode (CSO vs ZSO); there are no extra codec
-  controls. `.iso` rows can be handled by CHDMAN, Dolphin, or CSO; the primary-tool
-  picker decides which one acts on them.
+* The output format is chosen by the mode (CSO vs ZSO). The compress modes also
+  expose a compression-**effort** preset:
+  * **Fast** - `--fast` (basic zlib/lz4): fastest, largest output.
+  * **Default** - maxcso's default trials (zlib + 7zdeflate for CSO, lz4hc for ZSO).
+  * **Max** - extra trials for the smallest output, slowest: `--use-zopfli --use-libdeflate`
+    for CSO, `--use-lz4brute` for ZSO.
+* `.iso` rows can be handled by CHDMAN, Dolphin, or CSO; the primary-tool picker
+  decides which one acts on them.
 * CSO/ZSO sources can be converted from inside ZIP/7z/RAR archives.
 
 ### Environment Variables

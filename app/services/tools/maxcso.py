@@ -40,6 +40,8 @@ class MaxcsoTool(BaseTool):
             group="cso",
             output_ext=".cso",
             input_extensions=frozenset(MAXCSO_COMPRESS_EXTENSIONS),
+            # The UI sends an effort preset (fast|default|max), no numeric level.
+            supports_compression=True,
             supports_delete_on_verify=True,
             allows_archive_input=True,
         ),
@@ -51,6 +53,7 @@ class MaxcsoTool(BaseTool):
             group="cso",
             output_ext=".zso",
             input_extensions=frozenset(MAXCSO_COMPRESS_EXTENSIONS),
+            supports_compression=True,
             supports_delete_on_verify=True,
             allows_archive_input=True,
         ),

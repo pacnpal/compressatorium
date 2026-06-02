@@ -308,18 +308,24 @@ export const TOOLS = [
     defaultMode: 'cso_compress',
     glyph: 'CSO',
     accent: 'var(--badge-cso)',
-    // maxcso picks the format per mode (CSO vs ZSO), so there are no codec
-    // controls; the output extension is fixed by the chosen mode.
-    compressionCodecs: [],
-    compressionStyle: 'none',
+    // The output format is fixed by the mode (CSO vs ZSO); the codec dropdown
+    // picks a compression *effort* preset (no numeric level). 'single-with-level'
+    // shows just the dropdown because the compress modes set
+    // supportsCompressionLevel:false (the picker hides the slider then).
+    compressionCodecs: [
+      { value: 'default', label: 'Default', hint: 'Balanced (maxcso default trials)' },
+      { value: 'fast', label: 'Fast', hint: 'Fastest, larger output (--fast)' },
+      { value: 'max', label: 'Max', hint: 'Smallest, slowest (extra deflate/lz4 trials)' },
+    ],
+    compressionStyle: 'single-with-level',
     modes: [
       { mode: 'cso_compress', kind: 'compress', label: 'Compress ISO → CSO', group: 'cso',
         outputExt: '.cso', inputExtensions: CSO_COMPRESS_EXTS,
-        supportsCompression: false, supportsCompressionLevel: false,
+        supportsCompression: true, supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, allowsArchiveInput: true },
       { mode: 'zso_compress', kind: 'compress', label: 'Compress ISO → ZSO', group: 'cso',
         outputExt: '.zso', inputExtensions: CSO_COMPRESS_EXTS,
-        supportsCompression: false, supportsCompressionLevel: false,
+        supportsCompression: true, supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, allowsArchiveInput: true },
       { mode: 'cso_decompress', kind: 'extract', label: 'Decompress CSO/ZSO/DAX → ISO',
         group: 'cso',

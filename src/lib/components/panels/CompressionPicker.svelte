@@ -2,7 +2,9 @@
   // Compression configuration. Three "styles" supported, picked off the
   // tool descriptor:
   //   - 'multi'             chdman: comma-separated codec list (chips).
-  //   - 'single-with-level' Dolphin RVZ/WIA: one codec + numeric level.
+  //   - 'single-with-level' Dolphin RVZ/WIA / CSO: one codec, plus a numeric
+  //                         level only when the mode sets supportsCompressionLevel
+  //                         (CSO's effort presets show the dropdown alone).
   //   - 'none'              z3ds: fixed compression; renders nothing.
   // The CompressionPicker has zero tool-specific branches, adding a new
   // tool means declaring its codec list + style in registry.js and
@@ -89,7 +91,7 @@
         </select>
       </label>
 
-      {#if singleCodec && singleCodec !== 'none'}
+      {#if spec?.supportsCompressionLevel && singleCodec && singleCodec !== 'none'}
         <label class="level">
           <span class="sublabel">Level (compression effort)</span>
           <div class="level-row">

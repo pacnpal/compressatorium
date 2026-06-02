@@ -48,6 +48,29 @@ MAXCSO_OUTPUT_BY_MODE = {
 _COMPRESS_RATIO = 0.5    # compressed output is ~50% of the source
 _DECOMPRESS_RATIO = 2.0  # decompressed .iso is ~2x the compressed source
 
+# Compression-effort presets. The UI sends one of these tokens (see the `cso`
+# entry in src/lib/tools/registry.js); each maps to the maxcso trial flags that
+# trade speed for ratio. "default" keeps maxcso's own default (zlib + 7zdeflate
+# for CSO, lz4hc for ZSO) and adds nothing. lz4-based ZSO can't use the deflate
+# trials, so "max" bruteforces lz4 there instead.
+_EFFORT_FAST = "fast"
+_EFFORT_MAX = "max"
+
+
+def _effort_flags(mode: str, compression: str | None) -> list[str]:
+    """maxcso trial flags for a compression-effort token (compress modes only)."""
+    if mode == "cso_decompress" or not compression:
+        return []
+    effort = compression.strip().lower()
+    if effort == _EFFORT_FAST:
+        return ["--fast"]
+    if effort == _EFFORT_MAX:
+        if mode == "zso_compress":
+            return ["--use-lz4brute"]
+        return ["--use-zopfli", "--use-libdeflate"]
+    return []  # "default"/"none"/unknown -> maxcso defaults
+
+
 logger = get_logger("maxcso")
 
 
@@ -63,6 +86,7 @@ class MaxcsoService:
 
     def _build_command(
         self, input_path: str, output_path: str, mode: str,
+        compression: str | None = None,
     ) -> list[str]:
         if mode not in MAXCSO_OUTPUT_BY_MODE:
             raise ValueError(f"Unsupported maxcso mode: {mode}")
@@ -72,6 +96,7 @@ class MaxcsoService:
         elif mode == "zso_compress":
             cmd += ["--format=zso"]
         # cso_compress uses the default cso1 format (no flag).
+        cmd += _effort_flags(mode, compression)
         cmd += [input_path, "-o", output_path]
 
         # Apply nice/ionice via command wrappers, NOT preexec_fn: forking a
@@ -143,7 +168,7 @@ class MaxcsoService:
         output_path: str,
         mode: str = "cso_compress",
         *,
-        compression: str | None = None,  # unused: format is chosen by the mode
+        compression: str | None = None,  # effort preset: fast | default | max
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         decompress = mode == "cso_decompress"
@@ -153,7 +178,7 @@ class MaxcsoService:
             if output_dir:
                 await asyncio.to_thread(os.makedirs, output_dir, exist_ok=True)
 
-            cmd = self._build_command(input_path, output_path, mode)
+            cmd = self._build_command(input_path, output_path, mode, compression)
 
             # cmd is built from validated settings paths (no shell interpretation);
             # args are a fixed list, never shell-expanded. nice/ionice are applied

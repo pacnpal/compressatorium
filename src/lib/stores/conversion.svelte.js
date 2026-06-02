@@ -29,7 +29,7 @@ function defaultModeFor(toolId) {
 function defaultCompressionFor(toolId) {
   if (toolId === 'dolphin') return ['zstd'];
   if (toolId === 'nsz') return ['solid'];
-  if (toolId === 'cso') return [];  // format is chosen by the mode, no codec picker
+  if (toolId === 'cso') return ['default'];  // compression-effort preset
   return ['zlib'];
 }
 

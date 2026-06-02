@@ -183,8 +183,9 @@
     <h2 class="panel-title">Compression</h2>
     <p class="lead">
       CHD create and copy modes take a list of codecs. Dolphin RVZ/WIA take one codec plus a
-      level, and Switch compress takes a layout plus a level. GCZ, the decompress/extract
-      modes, 3DS, and CSO/ZSO have no settings at all.
+      level, Switch compress takes a layout plus a level, and CSO/ZSO compress takes an
+      effort preset (Fast / Default / Max). GCZ, the decompress/extract modes, and 3DS
+      have no settings at all.
     </p>
     <p>
       Smaller is not always better. Some emulators only read certain codecs, and a file
@@ -224,6 +225,12 @@
       fully decompressed before it runs; Block is a little larger but stays installable and
       playable without unpacking first. Level runs 1 to 22; the default 18 is a good balance.
       Your choice is remembered per tool between sessions.
+    </p>
+    <p>
+      For CSO/ZSO, pick an effort preset instead of a codec: <strong>Fast</strong> for the
+      quickest result, <strong>Default</strong> for a balanced trade-off, or
+      <strong>Max</strong> for the smallest file at the cost of speed. The output is identical
+      either way; only size and time change.
     </p>
   </article>
 
