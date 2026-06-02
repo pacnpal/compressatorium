@@ -46,6 +46,59 @@ def _detect_file_outputs(
     return convertible_by, outputs, by_tool
 
 
+def _detect_archive_member_outputs(
+    entry: dict, archive_dir: str,
+) -> tuple[str, list[str], list[OutputStatus], dict[str, OutputStatus]]:
+    """Registry-driven convertibility + output detection for an archive member.
+
+    The member doesn't exist on disk yet, but each tool's ``detect_output``
+    resolves its sibling output by swapping the suffix on the input path. So we
+    synthesise the path the extracted member *would* occupy next to its archive
+    (``<archive_dir>/<output_stem><ext>``) and reuse the same on-disk detection
+    the regular file scan uses. This keeps the listing in lock-step with the
+    job pipeline — which extracts the member into the archive's directory before
+    converting — and means any newly registered archive-aware tool surfaces in
+    the browse/search views without another CHD-style special case.
+    """
+    output_stem = (
+        entry.get("output_stem") or Path(entry["internal_path"]).stem
+    )
+    member_ext = (entry.get("extension") or Path(entry["name"]).suffix).lower()
+    synthetic_input = os.path.join(archive_dir, f"{output_stem}{member_ext}")
+    convertible_by, outputs, by_tool = _detect_file_outputs(
+        synthetic_input, member_ext,
+    )
+    return output_stem, convertible_by, outputs, by_tool
+
+
+def _legacy_output_fields(
+    convertible_by: list[str], by_tool: dict[str, OutputStatus],
+) -> dict:
+    """Derive the legacy per-tool booleans/paths from registry detection.
+
+    Single source of truth shared by the on-disk and archive-member listing
+    paths so the flat ``has_*`` / ``*_ready`` / ``*_convertible`` flags the
+    frontend still reads can't drift from ``convertible_by`` / ``outputs``.
+    """
+    fields: dict = {}
+    for tool_id, has_key, ready_key, path_key in (
+        ("chdman", "has_chd", "chd_ready", None),
+        ("dolphin", "has_rvz", "dolphin_ready", "dolphin_path"),
+        ("z3ds", "has_z3ds", "z3ds_ready", "z3ds_path"),
+        ("nsz", "has_nsz", "nsz_ready", "nsz_path"),
+    ):
+        status = by_tool.get(tool_id)
+        fields[has_key] = status is not None
+        fields[ready_key] = status.exists if status else False
+        if path_key is not None:
+            fields[path_key] = status.path if status else None
+    fields["convertible"] = "chdman" in convertible_by
+    fields["dolphin_convertible"] = "dolphin" in convertible_by
+    fields["z3ds_convertible"] = "z3ds" in convertible_by
+    fields["nsz_convertible"] = "nsz" in convertible_by
+    return fields
+
+
 async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     _, is_locked = await run_in_threadpool(lock_manager.check_file_status, path)
     if is_locked:
@@ -152,25 +205,7 @@ async def list_files(
                             convertible_by, outputs, by_tool = _detect_file_outputs(
                                 item_path, ext,
                             )
-                        is_convertible = "chdman" in convertible_by
-                        is_dolphin_convertible = "dolphin" in convertible_by
-                        is_z3ds_convertible = "z3ds" in convertible_by
-                        is_nsz_convertible = "nsz" in convertible_by
-                        chd_status = by_tool.get("chdman")
-                        dolphin_status = by_tool.get("dolphin")
-                        z3ds_status = by_tool.get("z3ds")
-                        nsz_status = by_tool.get("nsz")
-                        has_chd = chd_status is not None
-                        chd_ready = chd_status.exists if chd_status else False
-                        has_rvz = dolphin_status is not None
-                        dolphin_ready = dolphin_status.exists if dolphin_status else False
-                        dolphin_path = dolphin_status.path if dolphin_status else None
-                        has_z3ds = z3ds_status is not None
-                        z3ds_ready = z3ds_status.exists if z3ds_status else False
-                        z3ds_path = z3ds_status.path if z3ds_status else None
-                        has_nsz = nsz_status is not None
-                        nsz_ready = nsz_status.exists if nsz_status else False
-                        nsz_path = nsz_status.path if nsz_status else None
+                        tool_fields = _legacy_output_fields(convertible_by, by_tool)
 
                         archive_items = None
                         archive_has_chd = None
@@ -196,7 +231,7 @@ async def list_files(
                                 )
                                 if file_exists or is_converting:
                                     archive_has_chd += 1
-                            has_chd = archive_has_chd > 0
+                            tool_fields["has_chd"] = archive_has_chd > 0
 
                         entry = FileEntry(
                             name=item,
@@ -204,21 +239,6 @@ async def list_files(
                             type="archive" if is_archive else "file",
                             size=size,
                             extension=ext,
-                            convertible=is_convertible,
-                            has_chd=has_chd,
-                            has_rvz=has_rvz,
-                            dolphin_ready=dolphin_ready,
-                            dolphin_path=dolphin_path,
-                            chd_ready=chd_ready,
-                            dolphin_convertible=is_dolphin_convertible,
-                            z3ds_convertible=is_z3ds_convertible,
-                            has_z3ds=has_z3ds,
-                            z3ds_ready=z3ds_ready,
-                            z3ds_path=z3ds_path,
-                            nsz_convertible=is_nsz_convertible,
-                            has_nsz=has_nsz,
-                            nsz_ready=nsz_ready,
-                            nsz_path=nsz_path,
                             archive_items=archive_items,
                             archive_has_chd=archive_has_chd,
                             archive_truncated=archive_truncated
@@ -226,6 +246,7 @@ async def list_files(
                             else None,
                             convertible_by=convertible_by,
                             outputs=outputs,
+                            **tool_fields,
                         )
                         entries.append(entry)
                 except OSError:
@@ -295,34 +316,14 @@ async def search_files(
                                     item_path, ext,
                                 )
                             if convertible_by:
-                                is_chd_convertible = "chdman" in convertible_by
-                                is_dolphin_convertible = "dolphin" in convertible_by
-                                is_z3ds_convertible = "z3ds" in convertible_by
-                                is_nsz_convertible = "nsz" in convertible_by
-                                chd_status = by_tool.get("chdman")
-                                dolphin_status = by_tool.get("dolphin")
-                                z3ds_status = by_tool.get("z3ds")
-                                nsz_status = by_tool.get("nsz")
+                                tool_fields = _legacy_output_fields(
+                                    convertible_by, by_tool,
+                                )
                                 chd_path = (
                                     str(Path(item_path).with_suffix(".chd"))
-                                    if is_chd_convertible
+                                    if tool_fields["convertible"]
                                     else None
                                 )
-                                has_chd = chd_status is not None
-                                chd_ready = chd_status.exists if chd_status else False
-                                has_rvz = dolphin_status is not None
-                                dolphin_ready = (
-                                    dolphin_status.exists if dolphin_status else False
-                                )
-                                dolphin_path = (
-                                    dolphin_status.path if dolphin_status else None
-                                )
-                                has_z3ds = z3ds_status is not None
-                                z3ds_ready = z3ds_status.exists if z3ds_status else False
-                                z3ds_path = z3ds_status.path if z3ds_status else None
-                                has_nsz = nsz_status is not None
-                                nsz_ready = nsz_status.exists if nsz_status else False
-                                nsz_path = nsz_status.path if nsz_status else None
                                 files.append(
                                     {
                                         "name": item,
@@ -330,24 +331,10 @@ async def search_files(
                                         "size": os.path.getsize(item_path),
                                         "extension": ext,
                                         "chd_path": chd_path,
-                                        "has_chd": has_chd,
-                                        "has_rvz": has_rvz,
-                                        "dolphin_ready": dolphin_ready,
-                                        "dolphin_path": dolphin_path,
-                                        "chd_ready": chd_ready,
-                                        "convertible": is_chd_convertible,
-                                        "dolphin_convertible": is_dolphin_convertible,
-                                        "z3ds_convertible": is_z3ds_convertible,
-                                        "has_z3ds": has_z3ds,
-                                        "z3ds_ready": z3ds_ready,
-                                        "z3ds_path": z3ds_path,
-                                        "nsz_convertible": is_nsz_convertible,
-                                        "has_nsz": has_nsz,
-                                        "nsz_ready": nsz_ready,
-                                        "nsz_path": nsz_path,
                                         "in_archive": False,
                                         "convertible_by": convertible_by,
                                         "outputs": outputs,
+                                        **tool_fields,
                                     },
                                 )
                             elif include_archive_scan and is_archive:
@@ -360,15 +347,16 @@ async def search_files(
                                     archives_truncated.add(item_path)
                                 archive_dir = os.path.dirname(item_path)
                                 for entry in archive_contents:
-                                    output_stem = (
-                                        entry.get("output_stem")
-                                        or Path(entry["internal_path"]).stem
+                                    (
+                                        output_stem,
+                                        member_convertible_by,
+                                        member_outputs,
+                                        member_by_tool,
+                                    ) = _detect_archive_member_outputs(
+                                        entry, archive_dir,
                                     )
-                                    chd_path = os.path.join(
-                                        archive_dir, f"{output_stem}.chd",
-                                    )
-                                    file_exists, is_converting = (
-                                        lock_manager.check_file_status(chd_path)
+                                    tool_fields = _legacy_output_fields(
+                                        member_convertible_by, member_by_tool,
                                     )
                                     archives.append(
                                         {
@@ -379,19 +367,13 @@ async def search_files(
                                             "size": entry["size"],
                                             "extension": entry["extension"],
                                             "output_stem": output_stem,
-                                            "chd_path": chd_path,
-                                            "has_chd": file_exists or is_converting,
-                                            "has_rvz": False,
-                                            "dolphin_ready": False,
-                                            "dolphin_path": None,
-                                            "chd_ready": file_exists,
-                                            "convertible": (
-                                                entry.get("extension")
-                                                in registry.get("chdman").input_extensions
+                                            "chd_path": os.path.join(
+                                                archive_dir, f"{output_stem}.chd",
                                             ),
-                                            "dolphin_convertible": False,
-                                            "z3ds_ready": False,
                                             "in_archive": True,
+                                            "convertible_by": member_convertible_by,
+                                            "outputs": member_outputs,
+                                            **tool_fields,
                                         },
                                     )
                     except OSError:
@@ -443,17 +425,19 @@ async def list_archive(
     contents = contents_result["entries"]
     truncated = bool(contents_result["truncated"])
 
-    # Check for existing CHD files in the archive's directory
+    # Registry-driven convertibility + sibling-output detection for each
+    # member, mirroring the on-disk file scan so every archive-aware tool
+    # (chdman, dolphin, z3ds, nsz, …) gets badged — not just CHDMAN.
     archive_dir = os.path.dirname(path)
     for file_entry in contents:
-        # Get the base name without extension and add .chd
-        base_name = file_entry.get("output_stem") or Path(file_entry["name"]).stem
-        chd_path = os.path.join(archive_dir, f"{base_name}.chd")
-        # Use atomic check to get both file existence and lock status
-        file_exists, is_converting = lock_manager.check_file_status(chd_path)
-        file_entry["has_chd"] = file_exists or is_converting
-        file_entry["chd_ready"] = file_exists
-        file_entry["chd_path"] = chd_path
+        output_stem, convertible_by, outputs, by_tool = (
+            _detect_archive_member_outputs(file_entry, archive_dir)
+        )
+        file_entry.update(_legacy_output_fields(convertible_by, by_tool))
+        file_entry["output_stem"] = output_stem
+        file_entry["chd_path"] = os.path.join(archive_dir, f"{output_stem}.chd")
+        file_entry["convertible_by"] = convertible_by
+        file_entry["outputs"] = outputs
 
     return {
         "archive": path,
