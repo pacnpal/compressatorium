@@ -41,7 +41,7 @@ class NszTool(BaseTool):
             # token only when the spec advertises level support.
             supports_compression_level=True,
             supports_delete_on_verify=True,
-            allows_archive_input=False,
+            allows_archive_input=True,
         ),
         ModeSpec(
             mode="nsz_decompress",
@@ -55,7 +55,7 @@ class NszTool(BaseTool):
             # verify_extensions (we verify compressed containers), so we can't
             # confirm the output before deleting the source.
             supports_delete_on_verify=False,
-            allows_archive_input=False,
+            allows_archive_input=True,
         ),
     )
     # Everything the tool can produce (both directions), for output badges.

@@ -29,13 +29,15 @@ def test_keeps_bin_when_no_cue_or_gdi():
 
 def test_archive_input_extensions_cover_all_source_tools():
     # The archive listing must surface every convertible source, chdman
-    # create sources, Dolphin sources, and 3DS sources (issue #113). A bare
-    # .chd is an output/recompress target, not a convertible source, so it
-    # stays out (chdman copy/extract disallow archive input).
+    # create sources, Dolphin sources, 3DS sources (issue #113), and Switch
+    # (nsz) sources. A bare .chd is an output/recompress target, not a
+    # convertible source, so it stays out (chdman copy/extract disallow
+    # archive input).
     exts = registry.archive_input_extensions()
     assert {".3ds", ".cci", ".cia"} <= exts          # 3DS (the reported gap)
     assert {".rvz", ".gcz", ".wia", ".wbfs"} <= exts  # Dolphin
     assert {".gdi", ".iso", ".cue", ".bin"} <= exts   # chdman create
+    assert {".nsp", ".xci", ".nsz", ".xcz"} <= exts   # Switch (nsz)
     assert ".chd" not in exts
 
 

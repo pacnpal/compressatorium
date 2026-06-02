@@ -31,8 +31,9 @@ from app.routes import convert as convert_routes
 
 # (input extension, mode, expected output extension). Covers every member of
 # registry.archive_input_extensions(): chdman create sources, Dolphin sources,
-# and 3DS sources. z3ds is the interesting case, its output extension is
-# derived from the input, so .cci/.cia/.3ds must each map distinctly.
+# 3DS sources, and Switch (nsz) sources. z3ds and nsz are the interesting
+# cases, their output extension is derived from the input, so each input
+# extension must map distinctly.
 MATRIX = [
     (".gdi", ConversionMode.CREATECD, ".chd"),
     (".cue", ConversionMode.CREATECD, ".chd"),
@@ -45,6 +46,10 @@ MATRIX = [
     (".cci", ConversionMode.Z3DS_COMPRESS, ".zcci"),
     (".cia", ConversionMode.Z3DS_COMPRESS, ".zcia"),
     (".3ds", ConversionMode.Z3DS_COMPRESS, ".z3ds"),
+    (".nsp", ConversionMode.NSZ_COMPRESS, ".nsz"),
+    (".xci", ConversionMode.NSZ_COMPRESS, ".xcz"),
+    (".nsz", ConversionMode.NSZ_DECOMPRESS, ".nsp"),
+    (".xcz", ConversionMode.NSZ_DECOMPRESS, ".xci"),
 ]
 
 

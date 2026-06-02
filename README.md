@@ -25,7 +25,7 @@ A disc image converter that wraps four tools: **CHDMAN** (MAME), **dolphin-tool*
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
 | **Switch** | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Nintendo Switch compress/decompress (needs your own prod.keys) |
 
-> **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs and Dolphin disc images. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
+> **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
 
 ### MAME Redump DAT Integration
 
@@ -463,8 +463,9 @@ per-job level is set.
   original byte-for-byte.
 * Delete-on-verify is offered for compress only, since verify validates the
   compressed `.nsz`/`.xcz` output.
-* Archive (ZIP/7z/RAR) inputs are not supported for Switch; convert the file on
-  disk.
+* Archive (ZIP/7z/RAR) inputs are supported for Switch: browse into the archive,
+  pick the `.nsp`/`.xci`/`.nsz`/`.xcz` member, and convert. Your own `prod.keys`
+  are still required, exactly as for on-disk files.
 
 ### Keys: setup and security
 
@@ -610,7 +611,7 @@ Notes:
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
 - 3DS compression uses fixed settings (no user configuration needed).
-- Archive inputs are supported for CHD create modes only (not extract/copy/Dolphin/3DS).
+- Archive inputs are supported for every convertible source (CHD create, Dolphin, 3DS, and Switch), except CHDMAN extract/copy modes, which act on a finished `.chd` output.
 
 ---
 
