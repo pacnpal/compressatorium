@@ -385,7 +385,7 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
-| `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/ZSO) |
+| `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/CSO v2/ZSO/DAX) |
 | `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo for DAT sync |
 | `MAMEREDUMP_AUTO_SYNC` | `false` | Auto-sync DATs on startup if none loaded |
 | `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub PAT that raises the API rate limit from 60 to 5,000 req/hr for DAT sync |
@@ -565,6 +565,15 @@ decompress step. No keys are required.
     CSO/CSO2/DAX formats, lz4hc for ZSO).
   * **Max** - extra trials for the smallest output, slowest: `--use-zopfli --use-libdeflate`
     for CSO/CSO2/DAX, `--use-lz4brute` for ZSO.
+* There is **no numeric compression level** for CSO — maxcso has no level concept, so the
+  Fast/Default/Max effort preset is the only tuning knob (unlike Dolphin RVZ/WIA or Switch,
+  which take a numeric level).
+* **Which format?** Use plain **CSO** (v1) when in doubt — every PPSSPP/PCSX2 reads it.
+  Pick **ZSO** when decode speed matters most (lz4), **CSO v2** for the best size on recent
+  emulators, and **DAX** only for legacy tools that specifically require it.
+* The same compression picker, single + batch verify, file-info modal, and library
+  scan / DAT-match that the other tools use all apply to CSO automatically (it's a
+  registry-driven plugin, so nothing is special-cased).
 * `.iso` rows can be handled by CHDMAN, Dolphin, or CSO; the primary-tool picker
   decides which one acts on them.
 * CSO/ZSO/DAX sources can be converted from inside ZIP/7z/RAR archives.
@@ -803,7 +812,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
-| `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/ZSO) |
+| `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/CSO v2/ZSO/DAX) |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (`1` = serial queue processing) |
 | `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
 | `MAX_VERIFY_CONCURRENCY` | `1` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |

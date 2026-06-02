@@ -229,11 +229,22 @@
       Your choice is remembered per tool between sessions.
     </p>
     <p>
-      For CSO/ZSO, pick an effort preset instead of a codec: <strong>Fast</strong> for the
-      quickest result, <strong>Default</strong> for a balanced trade-off, or
-      <strong>Max</strong> for the smallest file at the cost of speed. All presets are lossless,
-      so the decompressed ISO is identical either way; only the compressed file's size and the
-      time to make it change.
+      CSO works differently: you don't pick a codec, you pick a <strong>format</strong> (which
+      <em>is</em> the mode) and an <strong>effort</strong> preset. The format decides which
+      container you get — <strong>CSO</strong> (v1, deflate, the universally-supported default
+      that every PPSSPP/PCSX2 reads), <strong>CSO v2</strong> (better block alignment, needs a
+      recent PPSSPP/PCSX2), <strong>ZSO</strong> (lz4, decodes the fastest), or
+      <strong>DAX</strong> (legacy PSP format some older tools expect). When in doubt, use plain
+      CSO. CSO v1 and CSO v2 both produce a <code>.cso</code> file; the version differs inside.
+    </p>
+    <p>
+      The effort preset trades speed for size: <strong>Fast</strong> for the quickest result,
+      <strong>Default</strong> for a balanced trade-off, or <strong>Max</strong> for the
+      smallest file at the cost of speed (extra Zopfli + libdeflate trials for CSO/CSO v2/DAX,
+      brute-forced lz4 for ZSO). There is no numeric level — maxcso has no level concept, so the
+      preset is the only knob. Every preset is lossless, so the decompressed ISO comes back
+      byte-for-byte identical; only the compressed file's size and the time to make it change.
+      Your choice is remembered per tool between sessions.
     </p>
   </article>
 
@@ -288,6 +299,14 @@
       doesn't sit forever.
     </p>
     <p>
+      CSO verifies a little differently: it decompresses the whole <code>.cso</code>,
+      <code>.zso</code>, or <code>.dax</code> container and logs its CRC32, so a clean run
+      proves the file decodes end to end. Because the proof is on the <em>compressed</em>
+      output, delete-on-verify is offered on the CSO compress modes (CSO, CSO v2, ZSO, DAX) but
+      not on decompress, where the plain <code>.iso</code> output has nothing to check it
+      against.
+    </p>
+    <p>
       Deleting from the file list is a separate action. A file or an empty folder takes one
       confirmation. A <strong>non-empty folder</strong> takes two: the second spells out
       that it removes everything inside, permanently. Either way the app refuses the
@@ -337,7 +356,9 @@
     </p>
     <p>
       The archive is unpacked to a temp directory for the conversion and cleaned up after.
-      Any convertible source works this way, including 3DS ROMs and Dolphin discs. Two
+      Any convertible source works this way, including 3DS ROMs, Dolphin discs, and PSP/PS2
+      images — both the <code>.iso</code> you compress and the <code>.cso</code>/<code>.zso</code>/<code>.dax</code>
+      you decompress. Two
       exceptions: CHDMAN extract and copy act on a finished <code>.chd</code> (an output, not
       a source), and Switch (nsz) reads from disk only, so convert
       <code>.nsp</code>/<code>.xci</code> files in place, not from inside an archive.
