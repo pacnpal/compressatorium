@@ -19,6 +19,19 @@ from models import OutputStatus
 from .spec import ModeSpec
 
 
+class EmbeddedHashUnavailable(Exception):
+    """A tool could not derive its embedded content hash for a file.
+
+    Raised by ``embedded_hashes`` when the tool *should* be able to report a
+    content hash for this file type but the attempt failed transiently (e.g.
+    ``dolphin-tool verify`` timed out / exited non-zero / the binary is
+    missing). The DAT-match path treats this as a non-cacheable error rather
+    than collapsing to a meaningless file-level hash and caching a false
+    "unmatched" result. Tools that legitimately have no embedded hash for a
+    file (so a file-level SHA1 fallback is correct) return ``[]`` instead.
+    """
+
+
 @runtime_checkable
 class ToolPlugin(Protocol):
     id: str
@@ -80,7 +93,12 @@ class ToolPlugin(Protocol):
         label describing where it came from. The DAT-match fast path tries
         these against the imported DATs before falling back to a full
         file-level SHA1. Return an empty list when the tool has no cheap or
-        format-meaningful hash to offer.
+        format-meaningful hash to offer (file-level SHA1 fallback is correct).
+
+        Raise :class:`EmbeddedHashUnavailable` when the tool *should* yield a
+        hash for this file type but the attempt failed transiently, so the
+        caller skips the (meaningless) file-level fallback and does not cache
+        a false negative.
         """
 
     def active_pids(self) -> list[int]:

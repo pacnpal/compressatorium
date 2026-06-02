@@ -198,9 +198,17 @@ async def scan_metadata_task(
                         # realpath before caching) and the CHD metadata store,
                         # and so symlink aliases are de-duplicated.
                         real = os.path.realpath(os.path.join(root, file))
-                        if real not in seen:
-                            seen.add(real)
-                            paths.append(real)
+                        if real in seen:
+                            continue
+                        # A symlink can resolve outside the configured volumes;
+                        # Phase 3 would otherwise hash/cache that target without
+                        # the ACL gate the DAT endpoints apply. Drop it here.
+                        if not is_within_configured_volumes(
+                            real, treat_archives=False,
+                        ):
+                            continue
+                        seen.add(real)
+                        paths.append(real)
         return paths
 
     # Tri-state: True = success, False = failure, None = cancelled.

@@ -369,6 +369,54 @@ async def test_scan_phase3_skips_when_no_dats(tmp_path, monkeypatch):
     assert called == []
 
 
+@pytest.mark.asyncio
+async def test_scan_skips_symlink_escaping_volume(tmp_path, monkeypatch):
+    """A scannable symlink resolving outside the volume is dropped in discovery
+    (not hashed/cached by Phase 3), while in-volume files are kept."""
+    from unittest.mock import AsyncMock
+
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    vol = tmp_path / "vol"
+    vol.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "evil.rvz").write_text("x")
+    (vol / "good.rvz").write_text("y")
+    # Symlink inside the volume whose target lives outside the configured volumes.
+    (vol / "link.rvz").symlink_to(outside / "evil.rvz")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(vol))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(vol))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+    monkeypatch.setattr(global_dat_store, "set_match", AsyncMock())
+
+    matched: list[str] = []
+
+    async def fake_match_single(path):
+        matched.append(path)
+        return {"path": path, "matched": False}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    assert os.path.realpath(str(vol / "good.rvz")) in matched
+    # The symlink's out-of-volume target must never reach Phase 3.
+    assert os.path.realpath(str(outside / "evil.rvz")) not in matched
+
+
 @pytest.fixture
 def metadata_store_path(tmp_path):
     # SQLite file per test. Name kept as "chd_metadata.db" for clarity.

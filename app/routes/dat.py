@@ -17,6 +17,7 @@ from services.dat_store import dat_store
 from services.file_hasher import compute_file_sha1
 from services.job_manager import ExternalJobCancelled, job_manager
 from services.tools import registry
+from services.tools.base import EmbeddedHashUnavailable
 from services.workload_limiter import workload_limiter
 from utils.path_utils import is_within_configured_volumes
 
@@ -806,7 +807,15 @@ async def _match_single_file(file_path: str) -> dict:
     # can manage it, e.g. CHD header hashes from the metadata store).
     tool = registry.tool_for_verify(file_path)
     if tool is not None:
-        match = await _try_embedded_hash_match(file_path, tool)
+        try:
+            match = await _try_embedded_hash_match(file_path, tool)
+        except EmbeddedHashUnavailable as e:
+            # The tool couldn't derive its content hash (e.g. dolphin-tool
+            # verify failed). For these formats the file-level SHA1 of the
+            # container is meaningless against a DAT, so return a
+            # non-cacheable error instead of a false "unmatched".
+            logger.info("Embedded hash unavailable for %s: %s", file_path, e)
+            return {**base_result, "error": "embedded hash unavailable"}
         if match:
             return match
 
@@ -863,6 +872,10 @@ async def _try_embedded_hash_match(file_path: str, tool) -> dict | None:
     """
     try:
         candidates = await tool.embedded_hashes(file_path)
+    except EmbeddedHashUnavailable:
+        # Transient "couldn't derive the hash" — let the caller decide it's a
+        # non-cacheable error rather than falling back to a file-level hash.
+        raise
     except Exception:  # pragma: no cover - best-effort fast path
         logger.warning("embedded_hashes failed for %s", file_path, exc_info=True)
         return None

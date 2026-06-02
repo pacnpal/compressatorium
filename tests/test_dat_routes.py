@@ -436,6 +436,71 @@ async def test_dolphin_disc_hash_respects_size_cap(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dolphin_hook_runs_under_match_lane(tmp_path, monkeypatch):
+    """The Dolphin verify pass holds the 'match' workload lane while running."""
+    from services.tools import registry
+    from services.workload_limiter import workload_limiter
+
+    rvz = tmp_path / "g.rvz"
+    rvz.write_bytes(b"x")
+    dolphin = registry.get("dolphin")
+
+    seen = {}
+
+    async def fake_disc_hashes(path):
+        seen["in_use"] = workload_limiter.in_use("match")
+        return ["a" * 40]
+
+    monkeypatch.setattr(dolphin._service, "disc_hashes", fake_disc_hashes)
+
+    await dolphin.embedded_hashes(str(rvz))
+
+    # The lane was held (>=1 in use) during the expensive verify.
+    assert seen["in_use"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_dolphin_hook_raises_on_verify_failure(tmp_path, monkeypatch):
+    """A failed verify (empty hash output) raises EmbeddedHashUnavailable."""
+    from services.tools import registry
+    from services.tools.base import EmbeddedHashUnavailable
+
+    rvz = tmp_path / "bad.rvz"
+    rvz.write_bytes(b"x")
+    dolphin = registry.get("dolphin")
+    monkeypatch.setattr(dolphin._service, "disc_hashes", AsyncMock(return_value=[]))
+
+    with pytest.raises(EmbeddedHashUnavailable):
+        await dolphin.embedded_hashes(str(rvz))
+
+
+@pytest.mark.asyncio
+async def test_match_single_file_non_cacheable_on_dolphin_failure(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A Dolphin verify failure yields a non-cacheable error, not a false miss."""
+    from services.tools import registry
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    rvz = tmp_path / "bad.rvz"
+    rvz.write_bytes(b"x")
+    monkeypatch.setattr(
+        registry.get("dolphin")._service, "disc_hashes", AsyncMock(return_value=[]),
+    )
+    # The container's file SHA1 must NOT be used as a fallback here.
+    file_sha1_mock = AsyncMock(return_value="deadbeef" * 5)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", file_sha1_mock)
+
+    result = await dat_routes._match_single_file(str(rvz))
+
+    assert result["matched"] is False
+    assert result.get("error") == "embedded hash unavailable"
+    file_sha1_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_match_single_file_uses_dolphin_hook(tmp_path, isolated_dat_store, monkeypatch):
     """_match_single_file routes .rvz through the dolphin hook before file SHA1."""
     from services.tools import registry

@@ -16,8 +16,9 @@ from services.dolphin_tool import (
     dolphin_tool_service,
 )
 from services.lock_manager import lock_manager
+from services.workload_limiter import workload_limiter
 
-from .base import BaseTool
+from .base import BaseTool, EmbeddedHashUnavailable
 from .spec import ModeKind, ModeSpec
 
 # mode -> (label, output_ext, kind, supports_compression, supports_level)
@@ -155,10 +156,26 @@ class DolphinTool(BaseTool):
                     return []
             except OSError:
                 return []
+        # Gate the verify under the "match" workload lane so MAX_MATCH_CONCURRENCY
+        # bounds how many full-disc reconstructions run at once, even across a
+        # metadata scan and concurrent /dat/match requests.
         try:
-            hashes = await self._service.disc_hashes(path)
-        except Exception:
-            return []
+            async with await workload_limiter.acquire("match"):
+                hashes = await self._service.disc_hashes(path)
+        except Exception as e:
+            # Spawn failure (e.g. binary missing) or unexpected error: treat as
+            # a transient inability to derive the hash, not "no hash exists".
+            raise EmbeddedHashUnavailable(
+                f"dolphin-tool verify failed for {path}: {e}",
+            ) from e
+        if not hashes:
+            # A compressed Dolphin container must yield a disc hash; an empty
+            # result means verify failed / produced nothing. Signal a
+            # non-cacheable miss rather than collapsing to the container's
+            # (meaningless-against-Redump) file SHA1 and caching it.
+            raise EmbeddedHashUnavailable(
+                f"dolphin-tool verify produced no hash for {path}",
+            )
         return [(h, "dolphin_disc_sha1") for h in hashes]
 
     def info_model(self, raw: dict, path: str) -> DolphinDiscInfo:
