@@ -9,6 +9,22 @@
 - **The background library scan discovers all tool outputs, not just `.chd`.** Discovery is registry-driven (every registered tool's output / verify extensions), so Dolphin (`.rvz`/`.wia`/`.gcz`), 3DS (`.z3ds`/`.zcci`/`.zcia`), Switch (`.nsz`/`.xcz`), and plain `.iso` libraries are now visited. A new scan phase primes the DAT-match cache for every discovered file, so non-CHD libraries get cached match results just like CHDs.
 - **Compressed Dolphin images match Redump DATs.** Matching now uses each tool's embedded/derivable content hashes via a per-tool hook: chdman reports the CHD header/data SHA1, and Dolphin reports the reconstructed disc SHA1 from `dolphin-tool verify` — the hash MAME Redump records for GameCube/Wii discs — so `.rvz`/`.wia`/`.gcz` outputs match without the container bytes being identical. Formats with no embedded hash fall back to file-level SHA1 as before. The `MATCH_MAX_FILE_SIZE` cap is honored before the (expensive) Dolphin verify pass.
 
+#### Internal
+
+- `ToolPlugin` gains an `embedded_hashes(path, *, cancel_event=None)` hook (default empty), with `EmbeddedHashUnavailable` signalling a non-cacheable miss (stale CHD cache / failed Dolphin verify). `ToolRegistry` gains `output_extensions()` / `scannable_extensions()`. The shared `SubprocessRunner` gains a one-shot `run_capture()` (cancel + timeout aware) that backs the Dolphin disc-hash extraction. `media_type`, disc-ID embedding, and the `chd_metadata_store` cache remain CHD-only.
+
+### Tool-neutral process priority and timeout settings (#132)
+
+#### New
+
+- **The process-priority and timeout knobs are no longer chdman-specific.** The nice level, I/O priority, and info/verify timeouts govern *every* conversion tool (chdman, Dolphin, 3DS, Switch), not just chdman, so they're now exposed under tool-neutral names: `COMPRESSATORIUM_TOOL_NICE`, `COMPRESSATORIUM_TOOL_IOPRIO_CLASS`, `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL`, `COMPRESSATORIUM_TOOL_INFO_TIMEOUT`, and `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT`. The old `CHD_CHDMAN_*` / `CHD_INFO_TIMEOUT` / `CHD_VERIFY_TIMEOUT` names keep working as aliases, so existing setups are unaffected.
+- **Per-tool overrides.** You can give a single tool a different priority or timeout with `COMPRESSATORIUM_<TOOL>_*` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`), falling back to the shared default when unset. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, or `Z3DS`; the info-timeout override applies only to the tools whose `info` runs a subprocess (chdman, Dolphin).
+- **Switch/3DS verification now honors the verify timeout.** Long or hung `nsz`/`z3ds` verify runs are bounded by `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` (or the per-tool override), matching chdman and Dolphin; previously these ran unbounded.
+
+#### Internal
+
+- The priority/timeout policy is resolved once in the shared `SubprocessRunner` (`nice_value` / `ioprio_prefix` / `nice_prefix` / `apply_nice` / `info_timeout` / `verify_timeout`) instead of each service re-reading a chdman-named setting. The Docker image no longer bakes the priority defaults as `ENV` (which would have shadowed the lower-precedence legacy aliases); the 10/2/6 defaults come from app config.
+
 ### Delete-on-verify no longer leaks verification records (#130)
 
 #### Fixed

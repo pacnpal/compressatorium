@@ -3,13 +3,18 @@ import asyncio
 import logging
 from logging_setup import get_logger
 import re
-import shutil
 import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from config import settings
-from services.subprocess_runner import ConversionCancelled, SubprocessRunner
+from services.subprocess_runner import (
+    ConversionCancelled,
+    SubprocessRunner,
+    info_timeout,
+    ioprio_prefix,
+    verify_timeout,
+)
 
 # Re-exported for backwards compatibility: ``ConversionCancelled`` historically
 # lived here and is imported as ``from services.chdman import ConversionCancelled``
@@ -63,21 +68,11 @@ class ChdmanService:
         }:
             cmd = cmd[:2] + ["-c", compression] + cmd[2:]
 
-        if (
-            settings.chdman_ioprio_class is not None
-            and settings.chdman_ioprio_level is not None
-        ):
-            ionice = shutil.which("ionice")
-            if ionice:
-                cmd = [
-                    ionice,
-                    "-c",
-                    str(settings.chdman_ioprio_class),
-                    "-n",
-                    str(settings.chdman_ioprio_level),
-                ] + cmd
-            elif logger.isEnabledFor(logging.DEBUG):
-                logger.debug("ionice not found; skipping I/O priority settings")
+        prefix = ioprio_prefix(self._runner.owner)
+        if prefix:
+            cmd = prefix + cmd
+        elif logger.isEnabledFor(logging.DEBUG):
+            logger.debug("ionice not found; skipping I/O priority settings")
 
         return cmd
 
@@ -117,7 +112,7 @@ class ChdmanService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        timeout = max(0, int(getattr(settings, "chdman_info_timeout", 0) or 0))
+        timeout = info_timeout(self._runner.owner)
         try:
             if timeout:
                 stdout, stderr = await asyncio.wait_for(
@@ -172,9 +167,7 @@ class ChdmanService:
         stall_timeout = max(
             0, int(getattr(settings, "verify_progress_timeout", 0) or 0),
         )
-        overall_timeout = max(
-            0, int(getattr(settings, "chdman_verify_timeout", 0) or 0),
-        )
+        overall_timeout = verify_timeout(self._runner.owner)
         timeout_error = None
 
         async def _check_timeouts(now: float) -> bool:
