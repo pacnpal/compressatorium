@@ -159,9 +159,19 @@ class DolphinTool(BaseTool):
         size_cap = max(0, int(getattr(settings, "match_max_file_size", 0) or 0))
         if size_cap > 0:
             try:
-                if await run_in_threadpool(os.path.getsize, path) > size_cap:
-                    return []
-            except OSError:
+                size_bytes = await run_in_threadpool(os.path.getsize, path)
+            except OSError as e:
+                # Couldn't stat the file: for an exhaustive tool this is an
+                # inability to derive the disc hash, not "no embedded hash".
+                # Surface it as non-cacheable so the caller doesn't fall back
+                # to a (meaningless) container SHA1 and cache a false negative.
+                raise EmbeddedHashUnavailable(
+                    f"could not stat {path}: {e}",
+                ) from e
+            if size_bytes > size_cap:
+                # Over the cap: report no embedded hash and let the caller's
+                # own size-cap handling return a non-cacheable "file too large"
+                # rather than paying for a full-disc verify.
                 return []
         # Gate the verify under the "match" workload lane so MAX_MATCH_CONCURRENCY
         # bounds how many full-disc reconstructions run at once, even across a

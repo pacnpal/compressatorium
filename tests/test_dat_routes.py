@@ -463,6 +463,22 @@ async def test_dolphin_disc_hash_respects_size_cap(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dolphin_hook_stat_failure_raises(tmp_path, monkeypatch):
+    """A stat failure under the size cap is non-cacheable (EmbeddedHashUnavailable),
+    not a silent fall-through to the container SHA1, for the exhaustive tool."""
+    from services.tools import dolphin as dolphin_module
+    from services.tools import registry
+    from services.tools.base import EmbeddedHashUnavailable
+
+    dolphin = registry.get("dolphin")
+    # Cap must be enabled for the getsize() path to run.
+    monkeypatch.setattr(dolphin_module.settings, "match_max_file_size", 100)
+    # Missing file -> getsize() raises (FileNotFoundError is an OSError).
+    with pytest.raises(EmbeddedHashUnavailable):
+        await dolphin.embedded_hashes(str(tmp_path / "gone.rvz"))
+
+
+@pytest.mark.asyncio
 async def test_dolphin_hook_runs_under_match_lane(tmp_path, monkeypatch):
     """The Dolphin verify pass holds the 'match' workload lane while running."""
     from services.tools import registry
