@@ -364,10 +364,11 @@ async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chd_hook_raises_on_stale_metadata(tmp_path):
-    """A changed CHD (stale cache) refuses its outdated hashes, non-cacheably."""
+async def test_chd_hook_stale_metadata_suppresses_embedded_hashes(tmp_path):
+    """A changed CHD (stale cache) reports no embedded candidates so its
+    outdated header/data SHA1 aren't matched, but the file-level SHA1 fallback
+    is preserved (chdman is non-exhaustive)."""
     from services.tools import registry
-    from services.tools.base import EmbeddedHashUnavailable
 
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake chd")
@@ -379,8 +380,36 @@ async def test_chd_hook_raises_on_stale_metadata(tmp_path):
     )
 
     with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
-        with pytest.raises(EmbeddedHashUnavailable):
-            await registry.get("chdman").embedded_hashes(str(chd))
+        result = await registry.get("chdman").embedded_hashes(str(chd))
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_match_single_file_stale_chd_falls_back_to_file_sha1(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A stale CHD still matches via the file-level SHA1 fallback (the stale
+    embedded disc hash is suppressed, the current container hash is used)."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake chd")
+
+    mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=True)
+    mock_metadata_store.get_metadata = AsyncMock(
+        return_value={"sha1": "9" * 40, "data_sha1": "8" * 40}
+    )
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value=target_sha1))
+
+    with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
+        result = await dat_routes._match_single_file(str(chd))
+
+    assert result["matched"] is True
+    assert result["match_type"] == "file_sha1"
 
 
 @pytest.mark.asyncio

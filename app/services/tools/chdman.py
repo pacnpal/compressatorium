@@ -14,7 +14,7 @@ from models import CHDInfo, OutputStatus
 from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
 from services.lock_manager import lock_manager
 
-from .base import BaseTool, EmbeddedHashUnavailable
+from .base import BaseTool
 from .spec import ModeKind, ModeSpec
 
 _CREATE_MODES = {
@@ -163,18 +163,15 @@ class ChdmanTool(BaseTool):
         from services.chd_metadata_store import chd_metadata_store
 
         metadata = await chd_metadata_store.get_metadata(path)
-        if not metadata:
-            # Never cached: no candidates. The caller falls back to a
-            # file-level SHA1 (``is_stale`` is also True here, so this check
-            # must come first to avoid misreporting an uncached CHD as a
-            # transient hash failure).
+        if not metadata or await chd_metadata_store.is_stale(path):
+            # No cached metadata, or the file changed since it was cached so the
+            # stored header/data SHA1 describe an older disc. Either way report
+            # *no embedded candidates* (rather than raise): chdman is
+            # non-exhaustive, so the caller still falls back to a file-level
+            # SHA1 of the current .chd, which is valid for any DAT that indexes
+            # the container bytes. Only the stale embedded hashes are
+            # suppressed, not the whole match.
             return []
-        # A cached row exists but the file changed since: the stored hashes
-        # describe an older disc. Refuse them (rather than match/cache a stale
-        # result) so the caller treats it as a non-cacheable miss until the
-        # cache is refreshed.
-        if await chd_metadata_store.is_stale(path):
-            raise EmbeddedHashUnavailable(f"CHD metadata is stale for {path}")
         out: list[tuple[str, str]] = []
         sha1 = (metadata.get("sha1") or "").strip().lower()
         if sha1:
