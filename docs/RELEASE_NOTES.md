@@ -7,7 +7,8 @@
 #### New
 
 - **A fifth tool: CSO.** Compress PSP/PS2 `.iso` disc images to every format [maxcso](https://github.com/unknownbrackets/maxcso) writes, and back. Five modes: `cso_compress` (ISO → CSO v1, the universally-supported default), `cso2_compress` (ISO → CSO v2, better block alignment for recent emulators), `zso_compress` (ISO → ZSO, lz4, faster to decode), `dax_compress` (ISO → DAX, legacy PSP format), and `cso_decompress` (CSO/ZSO/DAX → ISO). PPSSPP and PCSX2 read these formats directly, so no separate decompress step is needed to play. Available in the Web UI and REST API, with live progress, single + batch verify, and file-info. No keys required.
-- **Compression-effort presets.** The compress modes expose a Fast / Default / Max effort preset (mapped to maxcso's `--fast`, default trials, and extra `--use-zopfli`/`--use-libdeflate` / `--use-lz4brute` trials), reusing the same compression picker the other tools use and remembered per tool between sessions.
+- **Compression-effort presets.** The compress modes expose a Fast / Default / Max effort preset (mapped to maxcso's `--fast`, default trials, and extra `--use-zopfli`/`--use-libdeflate` / `--use-lz4brute` trials), reusing the same compression picker the other tools use and remembered per tool between sessions. CSO ships a strong default (the Max preset, smallest output).
+- **Reset to default.** Every compression-capable tool (CHD, Dolphin, Switch, CSO) gains a "Reset to default" button under its compression picker that restores that tool's codec/layout/level/effort to its default and confirms with a toast (disabled when already at the default).
 - **Lossless and verifiable.** The compress/decompress round trip reproduces the original `.iso` byte-for-byte. Verify runs maxcso's `--crc` over the compressed container, and delete-on-verify is offered for the compress modes. CSO/ZSO/DAX sources can also be converted from inside ZIP/7z/RAR archives.
 
 #### Internal

@@ -1,13 +1,17 @@
 """Wrapper for the ``maxcso`` tool (https://github.com/unknownbrackets/maxcso).
 
-maxcso losslessly compresses PSP/PS2 ``.iso`` disc images into ``.cso``/``.zso``
-(and decompresses them back). PPSSPP and PCSX2 read CSO/ZSO directly, so this is
-a native, emulator-friendly compression target that needs no keys.
+maxcso losslessly compresses PSP/PS2 ``.iso`` disc images into every format it
+writes -- CSO v1, CSO v2, ZSO and DAX -- and decompresses them back. PPSSPP and
+PCSX2 read these directly, so this is a native, emulator-friendly compression
+target that needs no keys. CSO v1 and v2 share the ``.cso`` extension; the
+version differs internally and is selected by the ``--format`` flag.
 
-Three modes:
+Five modes:
 
 - ``cso_compress``   ``.iso`` -> ``.cso``  (``maxcso <in> -o <out>``; cso1 default)
+- ``cso2_compress``  ``.iso`` -> ``.cso``  (``maxcso --format=cso2 <in> -o <out>``)
 - ``zso_compress``   ``.iso`` -> ``.zso``  (``maxcso --format=zso <in> -o <out>``)
+- ``dax_compress``   ``.iso`` -> ``.dax``  (``maxcso --format=dax <in> -o <out>``)
 - ``cso_decompress`` ``.cso``/``.zso``/``.dax`` -> ``.iso`` (``maxcso --decompress``)
 
 maxcso writes the output file directly (``-o``), so unlike nsz there is no work

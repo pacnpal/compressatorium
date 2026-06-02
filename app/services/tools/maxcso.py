@@ -108,13 +108,14 @@ class MaxcsoTool(BaseTool):
         self._service = maxcso_service
 
     def detect_output(self, input_path: str) -> OutputStatus | None:
-        # Compress direction only: badge "the .cso/.zso already exists" next to
-        # an .iso source. Decompress-direction badging is out of scope.
+        # Compress direction only: badge "the .cso/.zso/.dax already exists" next
+        # to an .iso source. Decompress-direction badging is out of scope.
         source = Path(input_path)
         if source.suffix.lower() not in MAXCSO_COMPRESS_EXTENSIONS:
             return None
-        # Either compress target counts; .cso (the default) is checked first.
-        for ext in (_PRIMARY_OUTPUT_EXT, ".zso"):
+        # Any compress target counts (.cso covers both CSO v1 and v2); .cso (the
+        # default) is checked first, then the other formats this tool can write.
+        for ext in (_PRIMARY_OUTPUT_EXT, ".zso", ".dax"):
             candidate = str(source.with_suffix(ext))
             file_exists, is_converting = lock_manager.check_file_status(candidate)
             if file_exists or is_converting:

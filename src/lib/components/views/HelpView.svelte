@@ -244,7 +244,14 @@
       brute-forced lz4 for ZSO). There is no numeric level — maxcso has no level concept, so the
       preset is the only knob. Every preset is lossless, so the decompressed ISO comes back
       byte-for-byte identical; only the compressed file's size and the time to make it change.
-      Your choice is remembered per tool between sessions.
+      CSO ships a strong default — the <strong>Max</strong> preset — for the smallest files out
+      of the box. Your choice is remembered per tool between sessions.
+    </p>
+    <p>
+      Every tool that takes compression settings (CHD, Dolphin, Switch, CSO) has a
+      <strong>Reset to default</strong> button under its picker: one click puts that tool's
+      codec / layout / level / effort back to its default and confirms with a toast. It's
+      greyed out when you're already on the defaults.
     </p>
   </article>
 

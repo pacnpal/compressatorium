@@ -509,7 +509,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
             status_code=400,
             detail=(
                 "Delete-on-verify is only supported for "
-                "create/copy/Dolphin/3DS/Switch-compress/CSO/ZSO/DAX-compress modes"
+                "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress modes"
             ),
         )
 
@@ -595,7 +595,7 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail=(
                 "Delete-on-verify is only supported for "
-                "create/copy/Dolphin/3DS/Switch-compress/CSO/ZSO/DAX-compress modes"
+                "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress modes"
             ),
         )
     if not is_within_configured_volumes(request.file_path):
@@ -701,7 +701,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             status_code=400,
             detail=(
                 "Delete-on-verify is only supported for "
-                "create/copy/Dolphin/3DS/Switch-compress/CSO/ZSO/DAX-compress modes"
+                "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress modes"
             ),
         )
     if request.delete_on_verify:

@@ -567,7 +567,9 @@ decompress step. No keys are required.
     for CSO/CSO2/DAX, `--use-lz4brute` for ZSO.
 * There is **no numeric compression level** for CSO — maxcso has no level concept, so the
   Fast/Default/Max effort preset is the only tuning knob (unlike Dolphin RVZ/WIA or Switch,
-  which take a numeric level).
+  which take a numeric level). CSO defaults to the **Max** preset (smallest output); a
+  **Reset to default** button under the compression picker restores it (every
+  compression-capable tool — CHD, Dolphin, Switch, CSO — has this button).
 * **Which format?** Use plain **CSO** (v1) when in doubt — every PPSSPP/PCSX2 reads it.
   Pick **ZSO** when decode speed matters most (lz4), **CSO v2** for the best size on recent
   emulators, and **DAX** only for legacy tools that specifically require it.
@@ -588,7 +590,7 @@ decompress step. No keys are required.
 
 * `POST /api/jobs` or `POST /api/jobs/batch` - Queue CSO jobs (use `mode: "cso_compress"`, `"cso2_compress"`, `"zso_compress"`, `"dax_compress"`, or `"cso_decompress"`)
 * `GET /api/cso-info?path=/path/to/game.cso` - Get file information (size, format, compression status)
-* `GET /api/cso-verify?path=/path/to/game.cso` - Verify a compressed CSO/ZSO output
+* `GET /api/cso-verify?path=/path/to/game.cso` - Verify a compressed CSO/ZSO/DAX output
 * `GET /api/cso-verify/events?path=/path/to/game.cso` - SSE stream for CSO verify progress
 * `POST /api/cso-verify-batch/events` - SSE stream for batch CSO verification
 
@@ -785,7 +787,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/cso-info` | Get CSO/ISO file metadata |
-| GET | `/api/cso-verify` | Verify a compressed CSO/ZSO file's integrity |
+| GET | `/api/cso-verify` | Verify a compressed CSO/ZSO/DAX file's integrity |
 | GET | `/api/cso-verify/events` | SSE stream for CSO verification progress |
 | POST | `/api/cso-verify-batch/events` | SSE stream for batch CSO verification |
 
