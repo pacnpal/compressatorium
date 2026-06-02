@@ -25,7 +25,7 @@
   import BulkDeleteModal from '$lib/components/modals/BulkDeleteModal.svelte';
   import DeleteModal from '$lib/components/modals/DeleteModal.svelte';
   import RenameModal from '$lib/components/modals/RenameModal.svelte';
-  import CHDInfoModal from '$lib/components/modals/CHDInfoModal.svelte';
+  import FileInfoModal from '$lib/components/modals/FileInfoModal.svelte';
   import CancelAllJobsModal from '$lib/components/modals/CancelAllJobsModal.svelte';
   import ClearDoneModal from '$lib/components/modals/ClearDoneModal.svelte';
 
@@ -160,7 +160,7 @@
 <BulkDeleteModal />
 <DeleteModal />
 <RenameModal />
-<CHDInfoModal />
+<FileInfoModal />
 <CancelAllJobsModal />
 <ClearDoneModal />
 

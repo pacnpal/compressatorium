@@ -332,6 +332,32 @@ export const registry = {
   /** Tools whose source extensions match the given path (convertible sources). */
   toolsForSourcePath: (path) => TOOLS.filter((t) => endsWithAny(path, t.sourceExts)),
 
+  /**
+   * Info-capable tools for a path, richest-first, deduped by id. A path
+   * can be claimed by more than one tool (a raw .iso is both a chdman
+   * create source and a Dolphin disc) and only one actually reads it, so
+   * callers try these in order and keep the first getInfo() that returns.
+   * Order: the verify-path owner, then any source-claiming tool. Tools
+   * without a getInfo binding are skipped.
+   */
+  infoToolsForPath: (path) => {
+    if (!path) return [];
+    // Verify-path owner first, then every source-claiming tool, in
+    // declared order. Dedup by reference (same TOOLS objects) and skip
+    // tools without a getInfo binding.
+    const ordered = [
+      TOOLS.find((t) => endsWithAny(path, t.verifyExts)),
+      ...TOOLS.filter((t) => endsWithAny(path, t.sourceExts)),
+    ];
+    const out = [];
+    for (const t of ordered) {
+      if (t && typeof t.getInfo === 'function' && !out.includes(t)) {
+        out.push(t);
+      }
+    }
+    return out;
+  },
+
   /** Verify URL, single or batch, for a tool id. Derived from verifyPrefix. */
   verifyUrl: (toolId, kind) => deriveVerifyUrl(byId.get(toolId), kind),
 

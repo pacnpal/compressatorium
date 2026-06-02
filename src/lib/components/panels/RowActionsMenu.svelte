@@ -124,15 +124,14 @@
   }
 
   function handleInfo() {
-    // CHDInfoModal looks up the tool via registry.toolForVerifyPath
-    // on the target's path. For source rows (z3ds), the row's path
-    // isn't a verify path so we have to surface the tool another way,
-    // set the target with an inline `_infoTool` hint the modal can
-    // honor without changing every existing call site.
+    // FileInfoModal resolves candidate tools from the target's path via
+    // registry.infoToolsForPath. For source rows (z3ds), the row's path
+    // isn't a verify path, so we surface the tool another way: set an
+    // inline `_infoTool` hint the modal prepends to its candidate list.
     if (!directVerifyTool && infoTool) {
-      ui.chdInfoTarget = { ...entry, _infoTool: infoTool.id };
+      ui.infoTarget = { ...entry, _infoTool: infoTool.id };
     } else {
-      ui.chdInfoTarget = entry;
+      ui.infoTarget = entry;
     }
   }
 
