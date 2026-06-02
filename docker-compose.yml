@@ -20,10 +20,10 @@ services:
       - CHDMAN_MODE=createcd
       # Maximum parallel conversion jobs (Web UI only)
       - MAX_CONCURRENT_JOBS=1
-      # Reduce CPU/IO impact of chdman
-      - CHD_CHDMAN_NICE=10
-      - CHD_CHDMAN_IOPRIO_CLASS=2
-      - CHD_CHDMAN_IOPRIO_LEVEL=6
+      # Reduce CPU/IO impact of conversions (applies to all tools)
+      - COMPRESSATORIUM_TOOL_NICE=10
+      - COMPRESSATORIUM_TOOL_IOPRIO_CLASS=2
+      - COMPRESSATORIUM_TOOL_IOPRIO_LEVEL=6
       # Nintendo Switch (nsz): directory holding your own prod.keys. Source of
       # truth when set; required for Switch compress/decompress. When unset, the
       # app best-effort looks in ~/.switch and your mounted volumes. No keys
