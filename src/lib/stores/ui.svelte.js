@@ -42,7 +42,7 @@ class UIStore {
   searchAutoReturnToFileList = $state(true);
 
   // Modal targets, one at a time
-  chdInfoTarget = $state(null);
+  infoTarget = $state(null);
   renameTarget = $state(null);
   deleteTarget = $state(null);
   bulkDeleteEntries = $state(null);
@@ -73,7 +73,7 @@ class UIStore {
    */
   get anyEntryModalOpen() {
     return (
-      !!this.chdInfoTarget ||
+      !!this.infoTarget ||
       !!this.renameTarget ||
       !!this.deleteTarget ||
       !!this.bulkDeleteEntries ||
