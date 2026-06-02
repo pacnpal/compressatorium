@@ -96,7 +96,7 @@
   // Sync status fields come from `_progress` on the backend (see
   // app/services/dat_sync.py): `{ status, files_total, files_imported,
   // current_file, file_index, error }`. Percent is files_imported /
-  // files_total — there is no top-level numeric progress field.
+  // files_total, there is no top-level numeric progress field.
   const syncProgress = $derived(syncStatus?.progress ?? null);
   const syncPercent = $derived.by(() => {
     const total = syncProgress?.files_total ?? 0;

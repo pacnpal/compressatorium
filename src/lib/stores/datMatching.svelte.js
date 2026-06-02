@@ -1,4 +1,4 @@
-// DAT matching store — wraps /api/dat endpoints. Caches per-path match
+// DAT matching store, wraps /api/dat endpoints. Caches per-path match
 // results so FileList rows can render badges without per-row fetches.
 
 import { SvelteMap } from 'svelte/reactivity';
@@ -82,14 +82,14 @@ class DATMatchingStore {
    * matched by any session would otherwise never get a DAT badge.
    * The startMatchJob handler de-dupes against the existing job queue
    * server-side, so re-firing for the same path during a page
-   * navigation is cheap. Skipped when no DATs are imported — the
+   * navigation is cheap. Skipped when no DATs are imported, the
    * match job would just no-op.
    */
   async hydrateAndMatch(paths) {
     if (!paths?.length) return;
     await this.hydrate(paths);
     if (!this.hasDats) return;
-    // Drop paths the backend already attempted this session — if they
+    // Drop paths the backend already attempted this session, if they
     // came back uncached after a completed dat_match job, they were
     // skipped (over MATCH_MAX_FILE_SIZE, unreadable, etc.) and
     // re-spawning would loop forever. Backend de-dupes against the
@@ -107,7 +107,7 @@ class DATMatchingStore {
       // them eligible for the next hydration to retry.
       for (const p of uncached) this._attemptedPaths[p] = true;
     } catch (_e) {
-      // non-fatal — the file list still renders without badges. The
+      // non-fatal, the file list still renders without badges. The
       // next hydration cycle will try these paths again once any
       // currently-active dat_match job has cleared.
     }
@@ -146,7 +146,7 @@ class DATMatchingStore {
     const result = await api.deleteDAT(datId);
     // The backend cascades DATMatch rows for the deleted DAT, so any
     // cached match entry that survives in the client map is now
-    // stale — files that were only matched by this DAT would keep
+    // stale, files that were only matched by this DAT would keep
     // showing the badge until next reload because hydrate() only adds
     // returned rows, never removes absent ones. Drop the whole cache
     // AND the session-scoped attempt set so the next FileList hydration
@@ -165,7 +165,7 @@ class DATMatchingStore {
       // The backend's _import_dat_sync wipes the DATMatch cache because
       // newly-imported hashes may flip match results for files the
       // user already has. Mirror that on the client so stale badges
-      // don't survive until the next visit — hydrate() only adds rows,
+      // don't survive until the next visit, hydrate() only adds rows,
       // it never removes absent ones. Reset attempted paths too so
       // files previously deemed "uncached" against the old DAT get
       // re-considered against the new one.
@@ -180,7 +180,7 @@ class DATMatchingStore {
 
   async syncMAMERedump(tag = null) {
     // /api/dat/sync only schedules a background task and returns
-    // immediately. Do NOT clear `syncing` in a finally — the sync is
+    // immediately. Do NOT clear `syncing` in a finally, the sync is
     // still running on the backend. The store stays in the syncing
     // state until pollSyncStatus() observes the backend reporting
     // syncing=false, or cancelSync() is called explicitly.
@@ -189,12 +189,12 @@ class DATMatchingStore {
       return await api.syncMAMERedump(tag);
     } catch (e) {
       // 409 means a MAMERedump sync is already running on the
-      // backend. The legacy UI treated that as "good — keep polling
+      // backend. The legacy UI treated that as "good, keep polling
       // and observe progress"; clearing `syncing` here would freeze
       // any consumer poll/progress UI even though the backend is
       // actively working. Stay in the syncing state.
       if (e?.status === 409) return null;
-      // Any other error means the start request itself failed —
+      // Any other error means the start request itself failed,
       // there is no background work to wait for, so clear the flag
       // and re-raise.
       this.syncing = false;
@@ -211,7 +211,7 @@ class DATMatchingStore {
       if (!stillSyncing && wasSyncing) {
         // Sync just finished (syncing → done transition). The backend
         // has persisted the new DAT set and may have dropped the old
-        // one, so reload the full list — not just hasDats — and clear
+        // one, so reload the full list, not just hasDats, and clear
         // the stale match cache (new hashes can flip prior matches).
         // Reset attempts so previously-uncached paths get tried
         // against the new DAT set. loadDATs() refreshes hasDats

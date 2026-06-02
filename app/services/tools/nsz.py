@@ -1,4 +1,4 @@
-"""NszTool — thin plugin wrapper delegating to ``nsz_service``.
+"""NszTool, thin plugin wrapper delegating to ``nsz_service``.
 
 Two modes: ``nsz_compress`` (NSP/XCI -> NSZ/XCZ) and ``nsz_decompress``
 (NSZ/XCZ -> NSP/XCI). ``nsz_service.info`` is synchronous; the async contract

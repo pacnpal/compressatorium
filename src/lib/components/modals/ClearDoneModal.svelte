@@ -6,7 +6,7 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
   const open = $derived(ui.showClearDone);
-  // /api/jobs/completed is a global op — it deletes every terminal
+  // /api/jobs/completed is a global op, it deletes every terminal
   // job server-side, including hidden metadata-scan and dat-match
   // history. Use the unfiltered total here (and call out hidden
   // counts in the description) so users aren't surprised when
@@ -28,7 +28,7 @@
     const pending = total;
     try {
       const r = await jobs.clearCompleted();
-      // Backend /api/jobs/completed returns { deleted, count } — not
+      // Backend /api/jobs/completed returns { deleted, count }, not
       // `removed_count`. Fall back to the pre-clear snapshot when the
       // count is missing for any reason.
       const removed = typeof r?.count === 'number' ? r.count : pending;

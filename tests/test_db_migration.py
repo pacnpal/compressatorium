@@ -2,13 +2,13 @@
 
 Covers the five no-data-loss invariants from the migration plan:
 
-* **I1** — Successful migration renames JSON to ``.migrated.bak``;
+* **I1**, Successful migration renames JSON to ``.migrated.bak``;
   the original is gone.
-* **I2** — Failed migration leaves the JSON source *untouched*.
-* **I3** — Row counts post-migration exactly equal JSON entry counts
+* **I2**, Failed migration leaves the JSON source *untouched*.
+* **I3**, Row counts post-migration exactly equal JSON entry counts
   (with payload round-trip spot-checks).
-* **I4** — Re-running migration is a no-op; partial installs finish.
-* **I5** — Corrupt JSON is renamed to ``.corrupt`` and does not block
+* **I4**, Re-running migration is a no-op; partial installs finish.
+* **I5**, Corrupt JSON is renamed to ``.corrupt`` and does not block
   other stores.
 """
 
@@ -31,7 +31,7 @@ from services import db
 @pytest.fixture
 def db_path(tmp_path: Path) -> str:
     """Fresh SQLite file per test (not :memory: because we want true
-    persistence behaviour — the migration writes to disk)."""
+    persistence behaviour, the migration writes to disk)."""
     return str(tmp_path / "compressatorium.db")
 
 
@@ -279,8 +279,8 @@ def test_partial_migration_finishes_missing_stores_on_rerun(
 
     db.init_and_migrate(
         db_path,
-        dat_store_json=dat_json,          # gone now — skipped
-        verification_json=ver_json,       # fresh — imported
+        dat_store_json=dat_json,          # gone now, skipped
+        verification_json=ver_json,       # fresh, imported
     )
 
     with db.get_session() as s:
@@ -385,7 +385,7 @@ def test_missing_json_is_a_clean_noop(tmp_path: Path, db_path: str):
 
 def test_orphan_hash_entries_are_dropped_with_warning(tmp_path: Path, db_path: str, caplog):
     """A hash row that references a dat_id not in `dats` must not crash
-    the migration — it's dropped and a warning is logged."""
+    the migration, it's dropped and a warning is logged."""
     payload = {
         "dats": {
             "keep0001": {"id": "keep0001", "name": "Keep", "file_count": 1},

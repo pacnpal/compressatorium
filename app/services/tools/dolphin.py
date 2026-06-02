@@ -1,4 +1,4 @@
-"""DolphinTool — thin plugin wrapper delegating to ``dolphin_tool_service``."""
+"""DolphinTool, thin plugin wrapper delegating to ``dolphin_tool_service``."""
 from __future__ import annotations
 
 import asyncio

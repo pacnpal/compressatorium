@@ -1,6 +1,6 @@
 <script>
   // Deep-link tile per tool from the registry. Adding a 4th tool
-  // automatically gets a tile here — no edits required.
+  // automatically gets a tile here, no edits required.
 
   import { registry } from '$lib/tools/registry.js';
   import { ui } from '$lib/stores/ui.svelte.js';

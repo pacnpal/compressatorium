@@ -70,8 +70,8 @@ def _resolve_color(mode: str, stream) -> bool:
 
 def configure_logging() -> None:
     # getLevelName() returns an int for known level names (DEBUG, INFO, WARNING,
-    # ERROR, CRITICAL — plus legacy aliases WARN=WARNING and FATAL=CRITICAL)
-    # and a "Level <name>" string for unknown values — unlike
+    # ERROR, CRITICAL, plus legacy aliases WARN=WARNING and FATAL=CRITICAL)
+    # and a "Level <name>" string for unknown values, unlike
     # getattr(logging, name, None) which can return non-integer logging
     # attributes (classes, format strings, etc.) for non-level names.
     level_str = settings.log_level.strip().upper()
@@ -105,19 +105,19 @@ def configure_logging() -> None:
         if log_dir:
             os.makedirs(log_dir, exist_ok=True)
         file_handler = logging.FileHandler(settings.log_path)
-        # File logs are never colored — keeps grep / log aggregators sane.
+        # File logs are never colored, keeps grep / log aggregators sane.
         file_handler.setFormatter(plain_formatter)
         logger.addHandler(file_handler)
 
     if invalid_level:
         logger.warning(
-            "Unknown LOGLEVEL %r — defaulting to INFO. "
+            "Unknown LOGLEVEL %r, defaulting to INFO. "
             "Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL",
             settings.log_level,
         )
     if invalid_color:
         logger.warning(
-            "Unknown LOG_COLOR %r — defaulting to auto. "
+            "Unknown LOG_COLOR %r, defaulting to auto. "
             "Valid values: auto, always, never",
             settings.log_color,
         )
@@ -137,7 +137,7 @@ async def lifespan(app: FastAPI):
     from services import db as _db
 
     db_path = _db.resolve_db_path(settings.db_path, data_dir=settings.data_dir)
-    # Initialise the engine *without* create_all — Alembic owns the
+    # Initialise the engine *without* create_all, Alembic owns the
     # schema on the production path.  apply_migrations then stamps
     # pre-Alembic DBs or upgrades the rest.  Only after the schema is
     # guaranteed at head do we run the JSON→SQLite importers.
@@ -251,7 +251,7 @@ async def lifespan(app: FastAPI):
     from services.dat_sync import dat_sync_service
 
     def _spawn_sync_task(reason: str) -> None:
-        logger.info("%s — starting background sync", reason)
+        logger.info("%s, starting background sync", reason)
 
         async def _run_sync():
             try:
@@ -270,7 +270,7 @@ async def lifespan(app: FastAPI):
         _spawn_sync_task("MAMEREDUMP_AUTO_SYNC enabled and no DATs loaded")
     elif has_any_dats and await run_in_threadpool(dat_store.has_stale_dats):
         _spawn_sync_task(
-            "DAT store contains stale rows (file_count=0) — self-healing",
+            "DAT store contains stale rows (file_count=0), self-healing",
         )
 
     yield

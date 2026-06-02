@@ -2,7 +2,7 @@
 
 WAL, ``foreign_keys=ON``, and ``busy_timeout=30000`` are load-bearing
 for the app's concurrency and referential-integrity guarantees.  These
-tests don't just read the configured value — they prove the PRAGMA is
+tests don't just read the configured value, they prove the PRAGMA is
 in force on *every* checked-out connection (SQLite PRAGMAs are
 per-connection) and that FK enforcement actually rejects invalid
 inserts.

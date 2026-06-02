@@ -38,7 +38,7 @@
       try {
         mainEl.focus({ preventScroll: false });
       } catch (_e) {
-        // ignore — focus may fail on disconnected nodes mid-route swap
+        // ignore, focus may fail on disconnected nodes mid-route swap
       }
     });
   });
@@ -47,7 +47,7 @@
     conversion.setPrimaryTool(ui.workspaceTool);
   });
 
-  // Refresh the file listing when terminal job events arrive — newly
+  // Refresh the file listing when terminal job events arrive, newly
   // written outputs need to appear, delete-on-verify removals need to
   // disappear, sibling badges flip.
   //
@@ -86,8 +86,8 @@
 
   // Surface a live toast for every RUNNING job and resolve it on
   // completion. Iterating the list (and touching status/progress/message)
-  // subscribes the effect at index granularity, so SSE progress frames —
-  // which replace a job slot via index assignment in jobs._applyJob —
+  // subscribes the effect at index granularity, so SSE progress frames,
+  // which replace a job slot via index assignment in jobs._applyJob,
   // re-run the reconcile. jobToasts keys each toast by job id, so this is
   // idempotent across re-runs.
   $effect(() => {
@@ -114,14 +114,14 @@
   onMount(() => {
     ui.loadVersion();
     // Ask the backend which tools to show. Switch (nsz) is hidden until
-    // prod.keys are configured. Fire and forget — on failure nothing is hidden.
+    // prod.keys are configured. Fire and forget, on failure nothing is hidden.
     api.getTools()
       .then((t) => ui.applyToolAvailability(t?.available))
       .catch(() => {});
     // Load remembered per-tool compression settings from the server.
     conversion.loadServerPrefs();
     // Rehydrate the verified set + DAT-library state so OK / DAT badges
-    // survive reloads. Fire and forget — failure leaves the cache empty.
+    // survive reloads. Fire and forget, failure leaves the cache empty.
     verification.loadVerified();
     datMatching.refreshHasDats();
     jobs.connect();
@@ -155,7 +155,7 @@
   position="bottom-right"
 />
 
-<!-- Modal portal — each component self-renders based on its ui store target. -->
+<!-- Modal portal, each component self-renders based on its ui store target. -->
 <BulkVerifyModal />
 <BulkDeleteModal />
 <DeleteModal />

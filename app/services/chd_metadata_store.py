@@ -72,7 +72,7 @@ class CHDMetadataStore:
             return self._session_factory()
         if _db.SessionLocal is None:
             raise RuntimeError(
-                "CHDMetadataStore: db.SessionLocal not initialized — call "
+                "CHDMetadataStore: db.SessionLocal not initialized, call "
                 "db.init_engine() before using the store.",
             )
         return _db.SessionLocal()
@@ -350,7 +350,7 @@ class CHDMetadataStore:
         self, chd_path: str, game_id: Optional[str], title: Optional[str],
         persist: bool = True,
     ) -> None:
-        """Store disc-ID info. ``persist`` is a no-op — kept for interface parity."""
+        """Store disc-ID info. ``persist`` is a no-op, kept for interface parity."""
         _ = persist
         await run_in_threadpool(self._update_disc_id_info_sync, chd_path, game_id, title)
 
@@ -458,7 +458,7 @@ class CHDMetadataStore:
     def flush(self) -> None:
         return None
 
-    async def _persist_async(self) -> None:  # pragma: no cover — kept for test compat
+    async def _persist_async(self) -> None:  # pragma: no cover, kept for test compat
         """Legacy hook some tests monkeypatch.  No-op under SQLite."""
         return None
 

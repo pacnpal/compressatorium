@@ -200,7 +200,7 @@ async def test_scan_metadata_cancellation_flips_to_cancelled(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_scan_metadata_cancellation_during_phase2(tmp_path, monkeypatch):
-    """Phase 2 (disc-id loop) has its own cancel check — verify it works
+    """Phase 2 (disc-id loop) has its own cancel check, verify it works
     when Phase 1 was a no-op (everything cache-fresh)."""
     from services.job_manager import job_manager
 
@@ -210,7 +210,7 @@ async def test_scan_metadata_cancellation_during_phase2(tmp_path, monkeypatch):
     monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
     monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
 
-    # Phase 1 is skipped entirely — nothing is stale.
+    # Phase 1 is skipped entirely, nothing is stale.
     async def never_stale(_):
         return False
     monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
@@ -285,7 +285,7 @@ def test_db_path_resolution_falls_back_when_default_config_unwritable(monkeypatc
     monkeypatch.setattr(Path, "mkdir", guarded_mkdir)
     monkeypatch.setenv("TMPDIR", str(tmp_path))
 
-    # No explicit path, default data_dir=/config — should fall back to TMPDIR.
+    # No explicit path, default data_dir=/config, should fall back to TMPDIR.
     resolved = resolve_db_path(None, data_dir="/config")
     assert Path(resolved).parent == tmp_path / "compressatorium"
     assert Path(resolved).name == "compressatorium.db"
@@ -378,7 +378,7 @@ async def test_disc_id_checked_invalidated_on_mtime_change(metadata_store, tmp_p
     os.utime(chd, (stat.st_atime, stat.st_mtime + 2))
     chd.write_text("modified")
 
-    # Should be False — file changed since last check
+    # Should be False, file changed since last check
     assert not await metadata_store.is_disc_id_checked(path)
 
 
@@ -396,7 +396,7 @@ async def test_mark_disc_id_checked_creates_minimal_record(metadata_store, tmp_p
     chd.write_text("fake")
     path = str(chd)
 
-    # No set_metadata call — no existing record
+    # No set_metadata call, no existing record
     await metadata_store.mark_disc_id_checked(path)
 
     # Record should exist and report as checked
@@ -414,7 +414,7 @@ async def test_set_metadata_preserves_disc_id_checked(metadata_store, tmp_path):
     await metadata_store.mark_disc_id_checked(path)
     assert await metadata_store.is_disc_id_checked(path)
 
-    # Phase 1 refreshes CHD metadata — must not erase the disc-id-checked flag
+    # Phase 1 refreshes CHD metadata, must not erase the disc-id-checked flag
     await metadata_store.set_metadata(path, {"raw_data": "Tag: DVD-VIDEO"}, persist=False)
 
     # Flag must still be set after the metadata refresh
@@ -460,7 +460,7 @@ async def test_update_disc_id_info_creates_stub_record(metadata_store, tmp_path)
     chd.write_text("fake")
     path = str(chd)
 
-    # No set_metadata call prior — record doesn't exist
+    # No set_metadata call prior, record doesn't exist
     await metadata_store.update_disc_id_info(path, "ULES-00135", "Patapon")
     game_id, title = await metadata_store.get_disc_id_info(path)
     assert game_id == "ULES-00135"
@@ -480,7 +480,7 @@ async def test_set_metadata_preserves_game_id_and_title(metadata_store, tmp_path
     assert game_id == "SLUS-20312"
     assert title == "God of War"
 
-    # Phase 1 metadata refresh — must not erase the cached disc-ID fields
+    # Phase 1 metadata refresh, must not erase the cached disc-ID fields
     await metadata_store.set_metadata(path, {"raw_data": "Tag: DVD-VIDEO"}, persist=False)
 
     game_id, title = await metadata_store.get_disc_id_info(path)

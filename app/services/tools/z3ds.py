@@ -1,4 +1,4 @@
-"""Z3dsTool — thin plugin wrapper delegating to ``z3ds_compress_service``.
+"""Z3dsTool, thin plugin wrapper delegating to ``z3ds_compress_service``.
 
 ``z3ds_compress_service.info`` is synchronous; the async contract is satisfied
 by running it in a threadpool.

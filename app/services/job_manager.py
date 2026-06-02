@@ -31,7 +31,7 @@ from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
 logger = get_logger("job_manager")
 
-# Modes for externally-managed jobs that bypass the conversion queue —
+# Modes for externally-managed jobs that bypass the conversion queue,
 # they are driven by callers via create/update/finish_external_job and
 # must NOT count against max_queue_depth backpressure, stuck-detection,
 # or the cancel-all / queued-count surfaces that only apply to the
@@ -741,7 +741,7 @@ class JobManager:
             return False
 
         # Externally-managed jobs (metadata scan, DAT match) are always
-        # created in PROCESSING state — they never sit in the dispatcher
+        # created in PROCESSING state, they never sit in the dispatcher
         # queue. Signal via the cancel event; the owning task checks
         # job_manager.is_cancelled() inside its loop and finalizes via
         # finish_external_job_cancelled().
@@ -753,7 +753,7 @@ class JobManager:
             if cancel_event:
                 cancel_event.set()
             # ASCII ellipsis (matches the conversion-job branch below and
-            # the frontend's optimistic "Cancelling..." string — avoids a
+            # the frontend's optimistic "Cancelling..." string, avoids a
             # render flicker when the SSE status event lands).
             job.message = "Cancelling..."
             asyncio.create_task(
@@ -1522,7 +1522,7 @@ class JobManager:
 
                 # Embed game ID / title into CHD metadata after createcd/createdvd.
                 # Uses the source file (input_path) which is still available at this
-                # point — even when delete-on-verify is requested.
+                # point, even when delete-on-verify is requested.
                 # GAME tag = normalized serial (emulator DB lookup key).
                 # NAME tag = human-readable title when available, serial otherwise.
                 if job.mode.value in {"createcd", "createdvd"} and os.path.exists(job.output_path):

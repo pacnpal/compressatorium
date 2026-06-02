@@ -46,7 +46,7 @@
   });
 
   function handleCancelAll() {
-    // Delegate to the modal — it owns the confirmation dance + the
+    // Delegate to the modal, it owns the confirmation dance + the
     // toast on success. JobsPanel just opens the dialog.
     ui.showCancelAll = true;
   }

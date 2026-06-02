@@ -22,7 +22,7 @@ def _resolve_path(raw_path: str, *, strict: bool = False) -> Optional[Path]:
     instead returns the path unchanged from ``resolve()``, which would let a
     dangling loop slip past the volume-containment check as if it were a real
     file.  We restore the pre-3.13 semantics by probing the path with
-    ``os.stat`` (follows symlinks) — ELOOP surfaces as ``OSError`` and we
+    ``os.stat`` (follows symlinks), ELOOP surfaces as ``OSError`` and we
     return ``None`` so the caller rejects the path.
     """
     try:
@@ -38,7 +38,7 @@ def _resolve_path(raw_path: str, *, strict: bool = False) -> Optional[Path]:
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             return None
-        # ENOENT / EACCES / other — not necessarily a security issue; fall
+        # ENOENT / EACCES / other, not necessarily a security issue; fall
         # through and let the caller decide.  strict=False callers expect
         # non-existent paths to be resolvable (used for "would this output
         # path be valid?" checks).

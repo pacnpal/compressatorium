@@ -139,7 +139,7 @@ async def test_concurrent_writers_under_wal(
 ) -> None:
     """Two tasks hammering distinct paths must both land without a
     ``database is locked`` error.  WAL + busy_timeout=30s is the whole
-    point of the engine's PRAGMA hook — this test proves they take
+    point of the engine's PRAGMA hook, this test proves they take
     effect end-to-end through ``mark_verified``."""
     n = 200
 

@@ -2,8 +2,8 @@
   // Per-row file actions menu. Uses bits-ui DropdownMenu so we get a
   // keyboard-accessible, ARIA-correct popover for free; we only style.
   //
-  // The visible actions depend on the file's verify/source classification
-  // — the registry tells us which tool owns the path (for verify) and
+  // The visible actions depend on the file's verify/source classification,
+  // the registry tells us which tool owns the path (for verify) and
   // whether any tool can convert from it (gating Info/Verify on the
   // current row).
 
@@ -26,12 +26,12 @@
   const outputs = $derived(Array.isArray(entry?.outputs) ? entry.outputs : []);
 
   // Direct verify target for this row, if any (tool that owns the
-  // path as a verify-class output — .chd, .rvz, .z3ds, etc.).
+  // path as a verify-class output, .chd, .rvz, .z3ds, etc.).
   const directVerifyTool = $derived(path ? registry.toolForVerifyPath(path) : null);
 
   // Fallback: if the row itself isn't verifiable, look at any
   // declared outputs (`entry.outputs[].path`) for an existing
-  // verifiable product — e.g. a .cue source row whose sibling .chd
+  // verifiable product, e.g. a .cue source row whose sibling .chd
   // already exists. Lets the user verify the replacement directly
   // from the source row before cleanup.
   const outputVerifyTarget = $derived.by(() => {
@@ -58,7 +58,7 @@
     if (directVerifyTool) return directVerifyTool;
     if (path && typeof path === 'string') {
       const matches = registry.toolsForSourcePath(path);
-      // Prefer tools that actually expose Info for that source — for
+      // Prefer tools that actually expose Info for that source, for
       // the current registry, every tool exposes `getInfo`, so the
       // first match is fine. Future tools can opt out by leaving
       // getInfo undefined.
@@ -69,7 +69,7 @@
   });
   const canGetInfo = $derived(!!infoTool && !inArchive);
 
-  // Rename / Delete operate on the filesystem — archive members can't be
+  // Rename / Delete operate on the filesystem, archive members can't be
   // renamed or deleted in-place, so disable them inside archive views.
   const canRename = $derived(!inArchive);
   const canDelete = $derived(!inArchive);
@@ -124,8 +124,8 @@
   function handleInfo() {
     // CHDInfoModal looks up the tool via registry.toolForVerifyPath
     // on the target's path. For source rows (z3ds), the row's path
-    // isn't a verify path so we have to surface the tool another way
-    // — set the target with an inline `_infoTool` hint the modal can
+    // isn't a verify path so we have to surface the tool another way,
+    // set the target with an inline `_infoTool` hint the modal can
     // honor without changing every existing call site.
     if (!directVerifyTool && infoTool) {
       ui.chdInfoTarget = { ...entry, _infoTool: infoTool.id };

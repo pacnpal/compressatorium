@@ -24,7 +24,7 @@
 
   // Reset + fetch when the dialog opens with a new target. tool.getInfo
   // is the registry-provided binding (chdman: getCHDInfo, dolphin:
-  // getDolphinInfo, z3ds: getZ3DSInfo) — no per-tool branches here.
+  // getDolphinInfo, z3ds: getZ3DSInfo), no per-tool branches here.
   // Stale-request guard: an older getInfo() can still resolve after the
   // modal closes (or the target changes). The `active` closure captures
   // the current effect run; the cleanup function flips it false so a

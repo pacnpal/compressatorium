@@ -1,4 +1,4 @@
-"""Direct tests for ``SubprocessRunner`` — the shared subprocess loop that
+"""Direct tests for ``SubprocessRunner``, the shared subprocess loop that
 ``chdman`` and ``dolphin_tool`` now delegate their ``convert()`` to.
 
 These drive the highest-risk paths (cancel, stall timeout, non-zero exit) with

@@ -12,7 +12,7 @@
   const next = $derived(
     userPref === 'light' ? 'dark' : userPref === 'dark' ? 'system' : 'light',
   );
-  const label = $derived(`Theme: ${userPref} — switch to ${next}`);
+  const label = $derived(`Theme: ${userPref}, switch to ${next}`);
 
   // Pick the icon by the user's pick when explicit, otherwise show the
   // monitor icon to telegraph "following system".

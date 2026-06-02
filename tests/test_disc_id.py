@@ -209,11 +209,11 @@ def test_normalize_ps_serial_garbage():
 
 
 # ---------------------------------------------------------------------------
-# _parse_system_cnf — now returns normalized serials
+# _parse_system_cnf, now returns normalized serials
 # ---------------------------------------------------------------------------
 
 def test_parse_system_cnf_ps2():
-    # Realistic PS2 SYSTEM.CNF — serial includes the canonical dot
+    # Realistic PS2 SYSTEM.CNF, serial includes the canonical dot
     data = b"BOOT2 = cdrom0:\\SLUS_203.12;1\r\nVER = 1.00\r\n"
     result = _parse_system_cnf(data)
     assert result["game_id"] == "SLUS-20312"
@@ -802,7 +802,7 @@ def _make_chd_v5_mini(iso_bytes: bytes) -> bytes:
         # bytes 4-11: the 8-byte fill value stored inline (all zeros here)
         hunk_map.extend(entry)
 
-    # No data section — MINI hunks store their fill value in the map entry itself
+    # No data section, MINI hunks store their fill value in the map entry itself
     return bytes(header) + bytes(hunk_map)
 
 
@@ -1004,7 +1004,7 @@ async def test_ensure_disc_id_embedded_already_tagged(tmp_path):
     assert result is not None
     assert result["game_id"] == "SLUS_20312"
     assert result["title"] == "God of War"
-    # No addmeta calls — tag already existed
+    # No addmeta calls, tag already existed
     assert addmeta_calls == []
 
 

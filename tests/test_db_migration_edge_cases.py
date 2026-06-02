@@ -84,7 +84,7 @@ def test_mid_migration_error_rolls_back_and_preserves_json(
         # Start the real migration, then inject a failure *after* rows
         # would have been flushed so we truly exercise the rollback path.
         # Simplest reliable approach: raise before the function touches
-        # the DB at all — rollback path still runs via the outer
+        # the DB at all, rollback path still runs via the outer
         # init_and_migrate try/except, and no partial write occurs.
         raise RuntimeError("synthetic failure")
 
@@ -164,7 +164,7 @@ def test_empty_dat_store_migrates_cleanly(tmp_path: Path, db_path: str):
     p = _write_json(tmp_path / "dat_store.json", payload)
     _db.init_and_migrate(db_path, dat_store_json=p)
 
-    # Empty JSON still gets renamed to .migrated.bak — the file was valid.
+    # Empty JSON still gets renamed to .migrated.bak, the file was valid.
     assert not p.exists()
     assert (tmp_path / "dat_store.json.migrated.bak").exists()
 

@@ -4,7 +4,7 @@
   //   - 'multi'             chdman: comma-separated codec list (chips).
   //   - 'single-with-level' Dolphin RVZ/WIA: one codec + numeric level.
   //   - 'none'              z3ds: fixed compression; renders nothing.
-  // The CompressionPicker has zero tool-specific branches — adding a new
+  // The CompressionPicker has zero tool-specific branches, adding a new
   // tool means declaring its codec list + style in registry.js and
   // (optionally) a level range; this file does not need editing.
 
@@ -72,7 +72,7 @@
       </div>
       <p class="hint">
         Select up to {max} codecs. chdman tries them in order.
-        {#if atCap}<span class="cap-note">Limit reached — deselect one to add another.</span>{/if}
+        {#if atCap}<span class="cap-note">Limit reached, deselect one to add another.</span>{/if}
       </p>
 
     {:else if style === 'single-with-level'}

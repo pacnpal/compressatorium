@@ -51,7 +51,7 @@ class PreferencesStore:
             return self._session_factory()
         if _db.SessionLocal is None:
             raise RuntimeError(
-                "PreferencesStore: db.SessionLocal not initialized — call "
+                "PreferencesStore: db.SessionLocal not initialized, call "
                 "db.init_engine() before using the store.",
             )
         return _db.SessionLocal()

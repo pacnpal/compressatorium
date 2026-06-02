@@ -3,7 +3,7 @@
 The implementation lives in this top-level ``services`` module (rather than
 inside the ``services.tools`` package) so the service singletons can import it
 during their own module initialization without triggering ``services.tools``'s
-eager registry build — which imports the tool wrappers, which import back into
+eager registry build, which imports the tool wrappers, which import back into
 the still-initializing service modules.  ``services.tools.runner`` re-exports
 these names so the design's documented path keeps working.
 

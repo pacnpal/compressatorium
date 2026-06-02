@@ -105,7 +105,7 @@ def test_log_color_accepts_valid_modes(mode):
 
 
 def test_log_color_invalid_value_round_trips_for_warning():
-    # Invalid strings are still accepted at the Settings layer — the
+    # Invalid strings are still accepted at the Settings layer, the
     # warning is emitted by configure_logging(), which sees the raw value.
     assert Settings(LOG_COLOR="rainbow").log_color == "rainbow"
 

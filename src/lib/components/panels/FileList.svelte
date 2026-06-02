@@ -38,7 +38,7 @@
 
   // Resizable table columns, stored per tool. `cols` carries the
   // effective widths (defaults filled in); `nameSet` is the explicit
-  // Name width if the user has dragged it — when unset, Name has no fixed
+  // Name width if the user has dragged it, when unset, Name has no fixed
   // width so it absorbs the table's slack. The table min-width forces the
   // horizontal scrollbar once the fixed columns outgrow the container.
   const colTool = $derived(ui.workspaceTool);
@@ -53,7 +53,7 @@
   function startColDrag(col) {
     // Measure the actual rendered header width rather than trusting the
     // stored value. The Name column flexes when unset, so its real width
-    // is wider than the default — without this it would jump to the
+    // is wider than the default, without this it would jump to the
     // default on the first drag. Pin that measured width so Name keeps
     // its place and resizing continues smoothly from there.
     const th = tableEl?.querySelector(`th[data-col="${col}"]`);
@@ -71,7 +71,7 @@
   const autoRefresh = $derived(fileBrowser.autoRefresh);
   const jobsActive = $derived(jobs.hasActive);
 
-  // Extension filter options come from the registry — every tool's
+  // Extension filter options come from the registry, every tool's
   // source + verify extensions, deduped, in declaration order. Adding
   // a new tool surfaces its inputs/outputs in this dropdown automatically.
   const filterableExts = $derived(registry.allFilterableExts());
@@ -103,7 +103,7 @@
 
   // Count of terminated dat_match background jobs. Tracked as a
   // dep of the hydration effect so we re-pull the match cache when
-  // a backend dat_match job (kicked by hydrateAndMatch) finishes —
+  // a backend dat_match job (kicked by hydrateAndMatch) finishes,
   // without it, newly-browsed files keep an empty DAT badge until
   // some unrelated navigation re-runs the effect.
   const datMatchTerminalCount = $derived(
@@ -118,14 +118,14 @@
   );
 
   // Hydrate badge stores for the paths actually on screen. /api/files
-  // doesn't pre-populate DAT matches or CHD media_type — the legacy UI
+  // doesn't pre-populate DAT matches or CHD media_type, the legacy UI
   // ran these hydration calls after every listing change. We mirror
   // that here so badges show up without per-row fetches. Effect runs
   // again whenever the visible page changes (navigation, pagination,
   // search, filter) OR a dat_match background job completes.
   // hydrateAndMatch also kicks a background match job for uncached
   // visible paths, so newly browsed/converted files pick up a DAT
-  // badge after one round-trip — the cache lookup alone never hashes.
+  // badge after one round-trip, the cache lookup alone never hashes.
   $effect(() => {
     // Track explicitly so the effect re-runs on dat_match completion.
     datMatchTerminalCount;
@@ -134,7 +134,7 @@
     // chdMetadata.hydrate is cheap for any path (no jobs spawned), so
     // the full list is fine. DAT match jobs need filtering on two
     // axes:
-    //   1. Skip non-regular files (directories/archive containers) —
+    //   1. Skip non-regular files (directories/archive containers),
     //      the backend dat_match job skips them without caching, so
     //      re-firing the effect would re-pick them forever.
     //   2. Restrict to extensions the DAT matcher can plausibly
@@ -169,7 +169,7 @@
   }
 
   function openBulkDelete() {
-    // Same filter as Verify — /files/delete-batch fails on archive
+    // Same filter as Verify, /files/delete-batch fails on archive
     // members for the same treat_archives=false reason.
     ui.bulkDeleteEntries = Array.from(fileBrowser.selectedFiles.values())
       .filter((e) => e?.path && !e.path.includes('::'));

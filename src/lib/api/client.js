@@ -23,8 +23,8 @@ export const CONFIRM = Object.freeze({
 /**
  * fetch wrapper that resolves to JSON and throws a normalized Error on non-2xx,
  * preferring the backend `{detail}` envelope as the message and attaching the
- * HTTP status as `err.status`. Tolerates empty bodies (204 / 205 / empty 200)
- * — endpoints like cancelJob can legitimately return no payload.
+ * HTTP status as `err.status`. Tolerates empty bodies (204 / 205 / empty 200),
+ * endpoints like cancelJob can legitimately return no payload.
  */
 export async function fetchJson(url, opts = {}, fallbackMessage = 'Request failed') {
   const res = await fetch(url, opts);

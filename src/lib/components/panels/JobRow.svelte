@@ -64,7 +64,7 @@
     try {
       await jobs.cancel(job.id);
     } catch (_e) {
-      // jobs.cancel surfaces nothing to toast — the store applies
+      // jobs.cancel surfaces nothing to toast, the store applies
       // optimistic state; the SSE delivers the terminal frame.
     }
   }

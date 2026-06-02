@@ -68,7 +68,7 @@ class ConcurrencyManager:
             for idx, path in enumerate(self._slot_paths):
                 try:
                     # Binary mode avoids an "unspecified-encoding" lint warning; this
-                    # handle is used only for fcntl.flock() — no text is read or written.
+                    # handle is used only for fcntl.flock(), no text is read or written.
                     handle = open(path, "ab")
                 except OSError:
                     continue
@@ -194,7 +194,7 @@ class ConcurrencyManager:
             for path in self._slot_paths:
                 try:
                     # Binary mode avoids an "unspecified-encoding" lint warning; this
-                    # handle is used only for fcntl.flock() — no text is read or written.
+                    # handle is used only for fcntl.flock(), no text is read or written.
                     handle = open(path, "ab")
                 except OSError:
                     continue

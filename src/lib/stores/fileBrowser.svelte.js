@@ -1,4 +1,4 @@
-// File browser store — volumes, current path, listings, selection, sort,
+// File browser store, volumes, current path, listings, selection, sort,
 // pagination, archive nav. No SSE; manual + on-demand refresh only.
 
 import { SvelteMap } from 'svelte/reactivity';
@@ -58,7 +58,7 @@ class FileBrowserStore {
    * Entries to render. When in search mode, flattens the
    * /api/files/search response (files + archive members) into a single
    * list and applies the client-side `searchQuery` filter (the backend
-   * search endpoint takes no query — the query is purely client-side,
+   * search endpoint takes no query, the query is purely client-side,
    * matching the legacy UI's behavior). Otherwise returns the current
    * directory's `entries`.
    */
@@ -71,7 +71,7 @@ class FileBrowserStore {
     // each row at app/routes/files.py:357-379 with paths like
     // `archive.zip::dir/disc.cue` and `in_archive: true`). Both are
     // selectable file rows from the user's perspective, so stamp
-    // `type: 'file'` on both arrays — marking the archive-member rows
+    // `type: 'file'` on both arrays, marking the archive-member rows
     // as `type: 'archive'` would wrongly exclude them from Select All
     // (toggleSelectAll filters out archive containers) and break the
     // extension filter in filteredEntries (which only keeps files).
@@ -175,7 +175,7 @@ class FileBrowserStore {
     this.currentPath = volume.path;
     this.currentArchivePath = null;
     this.clearSelection();
-    this.page = 1;                       // reset paging — new listing
+    this.page = 1;                       // reset paging, new listing
     // Force so navigation isn't suppressed while jobs are running.
     await this.refresh({ force: true });
   }
@@ -226,7 +226,7 @@ class FileBrowserStore {
     if (!archivePath) return;
     try {
       const next = await this._loadArchiveEntries(archivePath);
-      // Success — commit atomically: clear stale parent-dir selections,
+      // Success, commit atomically: clear stale parent-dir selections,
       // reset paging, swap entries, then flip into archive mode.
       this.clearSelection();
       this.page = 1;
@@ -260,12 +260,12 @@ class FileBrowserStore {
     // directory. A vanilla refresh against currentPath would clobber
     // the user's search view. But modals (rename/delete) DO call
     // refresh({ force: true }) after a successful mutation expecting
-    // the listing to reflect the change — silently skipping in search
+    // the listing to reflect the change, silently skipping in search
     // mode leaves stale rows pointing at paths that no longer exist
     // and the user can re-act on them. When forced, re-run the
     // search instead of dropping the call entirely.
     if (this.searchMode) {
-      // Re-run the recursive scan, preserving the active filter — which
+      // Re-run the recursive scan, preserving the active filter, which
       // is an empty string for a one-click "Search all" view, so we
       // re-fetch on any forced refresh rather than gating on a non-empty
       // query (the legacy "Search All" behaviour).
@@ -315,7 +315,7 @@ class FileBrowserStore {
   }
 
   /**
-   * Clamp `page` into the new pageCount after entries shrink — a
+   * Clamp `page` into the new pageCount after entries shrink, a
    * background refresh that drops the visible row count could
    * otherwise strand the user on an empty page they can't see is
    * empty. Never moves the page if the current value is still valid.
@@ -328,19 +328,19 @@ class FileBrowserStore {
   /**
    * Run the recursive `/api/files/search` scan (subdirectories + inside
    * archives) and flip into search mode on success, applying `query` as
-   * the client-side filter. An empty `query` is valid — it surfaces every
+   * the client-side filter. An empty `query` is valid, it surfaces every
    * convertible file in the tree (the legacy "Search All" view); see
    * sourceEntries, which returns the full flattened set when searchQuery
    * is blank.
    */
   async _enterSearch(query) {
     if (!this.currentPath) return;
-    // Drop overlapping searches — a second in-flight call would clear the
+    // Drop overlapping searches, a second in-flight call would clear the
     // `searching` flag when it finishes and let the busy state lift while
     // an earlier request is still running.
     if (this.searching) return;
     this.searching = true;
-    // Clear any stale error from a prior failed search/load — symmetric
+    // Clear any stale error from a prior failed search/load, symmetric
     // with the directory load paths. Otherwise the error banner survives
     // through a retry and even past a later successful search.
     this.entriesError = null;
@@ -353,7 +353,7 @@ class FileBrowserStore {
       this.searchQuery = query;
       this.searchMode = true;
       this.page = 1;
-      // Drop the current directory's selection set — those paths
+      // Drop the current directory's selection set, those paths
       // aren't necessarily in the recursive search results, so
       // leaving them selected would let the bulk-action bar / Convert
       // panel act on rows the user can't see. Symmetric with the
@@ -373,7 +373,7 @@ class FileBrowserStore {
    * (the X / clear-search contract).
    */
   async search(query) {
-    // /api/files/search has no query parameter — it returns every
+    // /api/files/search has no query parameter, it returns every
     // convertible file under the current path. The `query` is used
     // client-side to filter the returned set (see sourceEntries).
     if (!query) {
@@ -384,7 +384,7 @@ class FileBrowserStore {
   }
 
   /**
-   * One-click "Search all" — recursively list every convertible file
+   * One-click "Search all", recursively list every convertible file
    * under the current path, including files inside archives, with no
    * text filter. Restores the legacy "🔍 Search All" action.
    */
@@ -399,7 +399,7 @@ class FileBrowserStore {
 
   // ─── Selection ────────────────────────────────────────────────────────
   /**
-   * Predicate for whether a row is checkable at all — directories and
+   * Predicate for whether a row is checkable at all, directories and
    * archive containers are out (the backend rejects archive paths as
    * conversion inputs; directories aren't files). Conversion-mode
    * eligibility is NOT enforced here because the same selection set
@@ -453,7 +453,7 @@ class FileBrowserStore {
   }
 
   toggleSelectAll() {
-    // Archive containers can't be submitted as conversion inputs — the
+    // Archive containers can't be submitted as conversion inputs, the
     // backend expects either a regular file path or `archive::member`
     // form. Same gate for mode-incompatible inputs (e.g. .rvz under
     // CHDMAN createcd). Filter to rows the active conversion mode

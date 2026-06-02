@@ -1,4 +1,4 @@
-// Job queue store — owns the single /api/jobs/events SSE connection (auto-
+// Job queue store, owns the single /api/jobs/events SSE connection (auto-
 // reconnecting). All job mutations come through here so components see a
 // single source of truth.
 
@@ -62,7 +62,7 @@ class JobsStore {
   }
 
   /**
-   * Counts scoped to the same predicate as `visibleJobs` — i.e. they
+   * Counts scoped to the same predicate as `visibleJobs`, i.e. they
    * exclude jobs the user has locally hidden and (when the metadata
    * toggle is off) external-scan modes. JobsPanel tab badges + the
    * Cancel-all / Clear-all gating use these so a hidden DAT-match or
@@ -157,7 +157,7 @@ class JobsStore {
       // Replace the slot via index assignment rather than Object.assign on
       // the existing reference. Svelte 5's deep-proxy tracks $state arrays
       // at index granularity, and consumers iterating `jobs` (via {#each})
-      // re-render on slot replacement — but Object.assign on an outside
+      // re-render on slot replacement, but Object.assign on an outside
       // reference may not propagate when the reference is also stored in
       // _byId, leading to stale progress/status until an unrelated change.
       const idx = this.jobs.findIndex((j) => j.id === job.id);
@@ -191,7 +191,7 @@ class JobsStore {
    * (`complete` / `error` / `cancelled`) delivered during snapshot fetch
    * are preserved. The `/api/jobs/events` backend stream only subscribes
    * to jobs that are QUEUED or PROCESSING at the time the loop sees
-   * them — a job that goes from PROCESSING to COMPLETED *before* the
+   * them, a job that goes from PROCESSING to COMPLETED *before* the
    * SSE subscribes would never emit its terminal event. Opening SSE
    * first reduces that race window to the snapshot's generation time
    * on the server.
@@ -201,7 +201,7 @@ class JobsStore {
    * completed/failed/cancelled jobs, so historical entries reach us
    * through the snapshot). Errors are absorbed so a transient
    * /api/jobs failure doesn't surface as an unhandled rejection on
-   * page load — the SSE is already connected and the user can recover
+   * page load, the SSE is already connected and the user can recover
    * by retrying any action.
    */
   async refresh() {
@@ -219,7 +219,7 @@ class JobsStore {
         remoteIds[job.id] = true;
         const existing = this._byId.get(job.id);
         if (!existing) {
-          // Unknown to us — definitely add. Most common case for
+          // Unknown to us, definitely add. Most common case for
           // historical jobs (completed before SSE opened).
           this.jobs.push(job);
           this._byId.set(job.id, job);
@@ -260,7 +260,7 @@ class JobsStore {
       }
       // Reconcile deletions. When another tab clears completed history
       // (or the backend prunes old terminal jobs on its own), /api/jobs
-      // stops returning those ids — and there is no SSE event to drop
+      // stops returning those ids, and there is no SSE event to drop
       // them client-side, so the local store would keep showing stale
       // rows indefinitely. Drop locally-known TERMINAL jobs that are
       // absent from the snapshot. Active jobs are left alone: SSE owns
@@ -339,7 +339,7 @@ class JobsStore {
     const result = await api.cancelJob(jobId);
     const existing = this._byId.get(jobId);
     if (existing) {
-      // Optimistically flip QUEUED jobs to cancelled — the backend
+      // Optimistically flip QUEUED jobs to cancelled, the backend
       // dequeues them immediately and there is no worker to wait for.
       //
       // For PROCESSING jobs, the backend only sets the cancel event
@@ -446,7 +446,7 @@ class JobsStore {
           ui.reportConnection('open');
           // Re-sync verified state on every SSE (re)connect. Terminal
           // job snapshots emitted at reconnect only carry the `job`
-          // payload — they drop the `verified` and `source_deleted`
+          // payload, they drop the `verified` and `source_deleted`
           // side-effect flags that the live `complete` event uses to
           // mutate verification.statuses, so the OK badge cache could
           // drift after a brief backend outage. Reloading from
@@ -457,14 +457,14 @@ class JobsStore {
       },
     );
     // Lightweight polling fallback for jobs queued by OTHER clients.
-    // The SSE feed does not emit anything for the QUEUED state — its
-    // first frame for a normal job is the PROCESSING transition — so
+    // The SSE feed does not emit anything for the QUEUED state, its
+    // first frame for a normal job is the PROCESSING transition, so
     // a second tab/user's job sitting in the queue behind a long-
     // running local conversion stays invisible without this poll.
     // We DON'T skip while hasActive is true: the queued job from the
     // other client is exactly the case this exists to surface, and
     // it's invisible precisely when we have an active conversion of
-    // our own. refresh() is idempotent — SSE-derived state always
+    // our own. refresh() is idempotent, SSE-derived state always
     // wins for jobs that overlap. Only skip while a modal is open so
     // background entry swaps don't race user-driven actions.
     if (!this._pollTimer) {

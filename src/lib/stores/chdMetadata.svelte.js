@@ -1,4 +1,4 @@
-// CHD metadata cache store — hydrates per-path media_type (cd/dvd/etc.) for
+// CHD metadata cache store, hydrates per-path media_type (cd/dvd/etc.) for
 // FileList badges, and orchestrates the background metadata scan job.
 
 import { SvelteMap } from 'svelte/reactivity';
