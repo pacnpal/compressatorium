@@ -78,7 +78,9 @@ class FileEntry(BaseModel):
     cso_ready: bool = False
     cso_path: str | None = None
     archive_items: int | None = None
-    archive_has_chd: int | None = None
+    # Count of archive members that already have an existing output from any
+    # registered tool (.chd/.rvz/.z3ds/.nsz/…), finished or mid-conversion.
+    archive_has_output: int | None = None
     archive_truncated: bool | None = None
     media_type: str | None = None  # "dvd", "cd", or None - for CHD files
     convertible_by: list[str] = []   # tool ids whose input_extensions accept this file
