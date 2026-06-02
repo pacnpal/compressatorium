@@ -159,16 +159,19 @@ class ChdmanTool(BaseTool):
         # unused.
         from services.chd_metadata_store import chd_metadata_store
 
-        # If the file changed since the metadata was cached, the stored hashes
+        metadata = await chd_metadata_store.get_metadata(path)
+        if not metadata:
+            # Never cached: no candidates. The caller falls back to a
+            # file-level SHA1 (``is_stale`` is also True here, so this check
+            # must come first to avoid misreporting an uncached CHD as a
+            # transient hash failure).
+            return []
+        # A cached row exists but the file changed since: the stored hashes
         # describe an older disc. Refuse them (rather than match/cache a stale
         # result) so the caller treats it as a non-cacheable miss until the
         # cache is refreshed.
         if await chd_metadata_store.is_stale(path):
             raise EmbeddedHashUnavailable(f"CHD metadata is stale for {path}")
-
-        metadata = await chd_metadata_store.get_metadata(path)
-        if not metadata:
-            return []
         out: list[tuple[str, str]] = []
         sha1 = (metadata.get("sha1") or "").strip().lower()
         if sha1:

@@ -33,7 +33,6 @@
 
 #### Internal
 
-- `ToolPlugin` gains an `embedded_hashes(path)` hook (default empty); `ToolRegistry` gains `output_extensions()` / `scannable_extensions()`. `media_type`, disc-ID embedding, and the `chd_metadata_store` cache remain CHD-only.
 - `tests/test_mode_parity_fixes.py` gained a regression test deleting a `.rvz` source on verify (asserting the tool-wide store is cleared but `chd_metadata_store` is not), and the existing z3ds test now asserts a non-verify-class `.3ds` source leaves both stores untouched.
 
 ## 4.0.0-beta-10 (2026-06-01)

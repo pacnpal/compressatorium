@@ -825,7 +825,7 @@ async def _match_single_file(
     tool = registry.tool_for_verify(file_path)
     if tool is not None:
         try:
-            match = await _try_embedded_hash_match(
+            match, had_candidates = await _try_embedded_hash_match(
                 file_path, tool, cancel_event=cancel_event,
             )
         except EmbeddedHashUnavailable as e:
@@ -837,6 +837,13 @@ async def _match_single_file(
             return {**base_result, "error": "embedded hash unavailable"}
         if match:
             return match
+        if had_candidates:
+            # The tool's content hash(es) are authoritative for DAT matching
+            # (CHD header SHA1, Dolphin disc SHA1 == the Redump hash). A miss
+            # is definitive — the container's file-level SHA1 can't match the
+            # DAT — so record a (cacheable) unmatched result without paying to
+            # re-read the whole file.
+            return base_result
 
     # Defense-in-depth: respect the operator-configured size cap so
     # browsing a folder of 8 GB Wii ISOs doesn't stampede the hasher.
@@ -883,13 +890,17 @@ async def _match_single_file(
 
 async def _try_embedded_hash_match(
     file_path: str, tool, *, cancel_event: asyncio.Event | None = None,
-) -> dict | None:
+) -> tuple[dict | None, bool]:
     """Try matching ``file_path`` using the hashes ``tool`` reports for it.
 
-    Iterates the tool's embedded/derivable ``(sha1, match_type)`` pairs (CHD
-    header & data SHA1, Dolphin disc SHA1, ...) and returns the first one that
-    hits the DAT index. ``None`` when the tool reports no hashes or none match,
-    in which case the caller falls back to a full file-level SHA1.
+    Returns ``(match, had_candidates)``. ``match`` is the DAT hit (or ``None``).
+    ``had_candidates`` is True when the tool produced at least one embedded
+    hash: those (CHD header / Dolphin disc SHA1) are the *authoritative*
+    content hash a DAT indexes, so when they all miss the result is a
+    definitive non-match and the caller must NOT fall back to a file-level
+    SHA1 of the container (which is meaningless against the DAT and would
+    re-read the whole file). When ``had_candidates`` is False the tool has no
+    embedded hash and the file-level fallback is the correct next step.
     """
     try:
         candidates = await tool.embedded_hashes(file_path, cancel_event=cancel_event)
@@ -899,12 +910,14 @@ async def _try_embedded_hash_match(
         raise
     except Exception:  # pragma: no cover - best-effort fast path
         logger.warning("embedded_hashes failed for %s", file_path, exc_info=True)
-        return None
+        return None, False
 
+    had_candidates = False
     for raw_hash, match_type in candidates:
         sha1 = (raw_hash or "").strip().lower()
         if not sha1:
             continue
+        had_candidates = True
         record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
         if record:
             dat_name = await run_in_threadpool(
@@ -919,6 +932,6 @@ async def _try_embedded_hash_match(
                 "rom_name": record.get("rom_name"),
                 "match_type": match_type,
                 "file_hash": sha1,
-            }
+            }, True
 
-    return None
+    return None, had_candidates

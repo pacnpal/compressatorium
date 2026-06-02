@@ -95,8 +95,16 @@ async def _scan_phase_dat_match(
     except Exception as e:
         # No DAT store available (e.g. DB not initialised); nothing to prime.
         logger.debug("Phase 3: DAT store unavailable, skipping match priming: %s", e)
-        return 0
+        has_dats = False
     if not has_dats:
+        # Advance through the Phase 3 band so the job doesn't appear stuck at
+        # the Phase 2 progress (and then jump straight to the flush) for
+        # libraries with no DATs imported / no CHDs.
+        await job_manager.update_external_job(
+            scan_job_id,
+            progress=97,
+            message="Phase 3: no DATs imported — skipping DAT match",
+        )
         return 0
 
     total = len(all_paths)
@@ -130,6 +138,11 @@ async def _scan_phase_dat_match(
                 # as the /dat/match-batch job).
                 if not result.get("reason") and not result.get("error"):
                     await dat_store.set_match(path, result)
+                else:
+                    # Non-cacheable recompute (size cap / hash unavailable):
+                    # drop any stale prior row so /dat/matches/lookup doesn't
+                    # keep showing an outdated match after a (forced) rescan.
+                    await dat_store.delete_match(path)
                 if result.get("matched"):
                     matched += 1
             except Exception as e:

@@ -427,6 +427,25 @@ class DATStore:
     async def set_match(self, file_path: str, match: dict) -> None:
         await run_in_threadpool(self._upsert_match_sync, file_path, match)
 
+    def _delete_match_sync(self, file_path: str) -> bool:
+        normalized = self._normalize(file_path)
+        with self._session() as session:
+            row = session.get(_db.DATMatch, normalized)
+            if row is None:
+                return False
+            session.delete(row)
+            session.commit()
+            return True
+
+    async def delete_match(self, file_path: str) -> bool:
+        """Remove the cached match row for ``file_path`` (no-op if absent).
+
+        Used when a forced recompute produces a non-cacheable result so a
+        stale prior match doesn't keep showing in ``/dat/matches/lookup``.
+        Returns True when a row was removed.
+        """
+        return await run_in_threadpool(self._delete_match_sync, file_path)
+
     def _set_matches_batch_sync(self, matches: dict[str, dict]) -> None:
         if not matches:
             return

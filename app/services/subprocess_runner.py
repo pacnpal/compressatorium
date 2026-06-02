@@ -183,6 +183,16 @@ class SubprocessRunner:
         folded into ``stdout`` when ``stderr_to_stdout`` is set (and the
         returned ``stderr`` is then empty).
         """
+        # Honour the shared process-priority policy, same as the streaming
+        # run(): renice via preexec and wrap with ionice. A captured command
+        # (e.g. dolphin-tool verify reconstructing a full disc for DAT hashing)
+        # is just as heavy as a conversion, so it must respect TOOL_NICE /
+        # TOOL_IOPRIO_* instead of running at normal priority.
+        cmd = ioprio_prefix(self._owner) + cmd
+
+        def _preexec():
+            apply_nice(self._owner)
+
         process = await asyncio.create_subprocess_exec(  # nosemgrep
             cmd[0], *cmd[1:],
             stdout=asyncio.subprocess.PIPE,
@@ -191,6 +201,7 @@ class SubprocessRunner:
                 if stderr_to_stdout
                 else asyncio.subprocess.PIPE
             ),
+            preexec_fn=_preexec if os.name == "posix" else None,
         )
         self.track_pid(process.pid)
         comm = asyncio.ensure_future(process.communicate())
