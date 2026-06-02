@@ -811,6 +811,29 @@ async def sync_cancel():
     raise HTTPException(status_code=409, detail="No sync in progress")
 
 
+async def _lookup_sha1_match(file_path: str, sha1: str, match_type: str) -> dict | None:
+    """Look ``sha1`` up in the imported DATs and build a match-result dict.
+
+    Shared by every match path (per-tool embedded hashes and the file-level
+    SHA1 fallback) so the DAT lookup + result-dict shape lives in one place.
+    Returns ``None`` when the hash isn't in any DAT.
+    """
+    record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
+    if not record:
+        return None
+    dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
+    return {
+        "path": file_path,
+        "matched": True,
+        "dat_id": record.get("dat_id"),
+        "dat_name": dat_name,
+        "game_name": record.get("game_name"),
+        "rom_name": record.get("rom_name"),
+        "match_type": match_type,
+        "file_hash": sha1,
+    }
+
+
 async def _match_single_file(
     file_path: str, *, cancel_event: asyncio.Event | None = None,
 ) -> dict:
@@ -881,21 +904,7 @@ async def _match_single_file(
         logger.warning("Failed to hash %s", file_path, exc_info=True)
         return {**base_result, "error": "Unable to process file"}
 
-    record = await run_in_threadpool(dat_store.lookup_sha1, file_sha1)
-    if record:
-        dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
-        return {
-            "path": file_path,
-            "matched": True,
-            "dat_id": record.get("dat_id"),
-            "dat_name": dat_name,
-            "game_name": record.get("game_name"),
-            "rom_name": record.get("rom_name"),
-            "match_type": "file_sha1",
-            "file_hash": file_sha1,
-        }
-
-    return base_result
+    return await _lookup_sha1_match(file_path, file_sha1, "file_sha1") or base_result
 
 
 async def _try_embedded_hash_match(
@@ -934,20 +943,8 @@ async def _try_embedded_hash_match(
         if not sha1:
             continue
         had_candidates = True
-        record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
-        if record:
-            dat_name = await run_in_threadpool(
-                dat_store.get_dat_name, record.get("dat_id", ""),
-            )
-            return {
-                "path": file_path,
-                "matched": True,
-                "dat_id": record.get("dat_id"),
-                "dat_name": dat_name,
-                "game_name": record.get("game_name"),
-                "rom_name": record.get("rom_name"),
-                "match_type": match_type,
-                "file_hash": sha1,
-            }, True
+        match = await _lookup_sha1_match(file_path, sha1, match_type)
+        if match:
+            return match, True
 
     return None, had_candidates
