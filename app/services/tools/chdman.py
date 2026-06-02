@@ -148,6 +148,25 @@ class ChdmanTool(BaseTool):
     async def info(self, path: str) -> dict:
         return await self._service.info(path)
 
+    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]:
+        # CHDs carry an overall SHA1 (header) and a data SHA1 (uncompressed
+        # content) in their metadata. Read them from the metadata store
+        # (primed by the library scan / a prior /info call) so matching a CHD
+        # against a DAT never has to re-hash the whole file.
+        from services.chd_metadata_store import chd_metadata_store
+
+        metadata = await chd_metadata_store.get_metadata(path)
+        if not metadata:
+            return []
+        out: list[tuple[str, str]] = []
+        sha1 = (metadata.get("sha1") or "").strip().lower()
+        if sha1:
+            out.append((sha1, "chd_sha1"))
+        data_sha1 = (metadata.get("data_sha1") or "").strip().lower()
+        if data_sha1:
+            out.append((data_sha1, "chd_data_sha1"))
+        return out
+
     def info_model(self, raw: dict, path: str) -> CHDInfo:
         return CHDInfo(
             file=path,

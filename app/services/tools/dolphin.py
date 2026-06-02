@@ -130,6 +130,20 @@ class DolphinTool(BaseTool):
     async def info(self, path: str) -> dict:
         return await self._service.header(path)
 
+    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]:
+        # A plain .iso is already the raw redump image, its file-level SHA1
+        # *is* the disc hash, so skip the expensive verify pass and let the
+        # caller fall back to cheap file hashing. The compressed/container
+        # formats (.rvz/.wia/.gcz/.wbfs) must be reconstructed by dolphin-tool
+        # before hashing, so only those go through verify.
+        if Path(path).suffix.lower() == ".iso":
+            return []
+        try:
+            hashes = await self._service.disc_hashes(path)
+        except Exception:
+            return []
+        return [(h, "dolphin_disc_sha1") for h in hashes]
+
     def info_model(self, raw: dict, path: str) -> DolphinDiscInfo:
         return DolphinDiscInfo(
             file=path,

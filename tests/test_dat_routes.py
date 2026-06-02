@@ -326,12 +326,14 @@ async def test_get_dat_name_unknown(isolated_dat_store):
 
 
 # ---------------------------------------------------------------------------
-# _try_chd_header_match  (CHD metadata-backed SHA1 matching)
+# _try_embedded_hash_match  (per-tool embedded-hash fast path)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
-    """CHD files are matched via their cached header SHA1."""
+    """CHD files are matched via their cached header SHA1 (chdman hook)."""
+    from services.tools import registry
+
     upload = _make_upload_file(SAMPLE_DAT_XML)
     await dat_routes.import_dat(file=upload)
 
@@ -339,16 +341,19 @@ async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
     chd.write_bytes(b"fake chd")
     chd_path = str(chd)
 
-    # Mock chd_metadata_store.get_metadata to return sha1 matching the DAT entry
+    # Mock chd_metadata_store.get_metadata to return sha1 matching the DAT entry.
+    # ChdmanTool.embedded_hashes imports chd_metadata_store at call time, so the
+    # patch on the module-level singleton applies.
     mock_metadata_store = MagicMock()
     mock_metadata_store.get_metadata = AsyncMock(
         return_value={"sha1": "aabbccddaabbccddaabbccddaabbccddaabbccdd", "data_sha1": ""}
     )
     monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
 
-    # Patch inside the function's module-level import
     with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
-        result = await dat_routes._try_chd_header_match(chd_path)
+        result = await dat_routes._try_embedded_hash_match(
+            chd_path, registry.get("chdman"),
+        )
 
     assert result is not None
     assert result["matched"] is True
@@ -358,7 +363,9 @@ async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_chd_header_match_no_metadata(tmp_path, isolated_dat_store):
-    """_try_chd_header_match returns None when no cached metadata exists."""
+    """_try_embedded_hash_match returns None when the tool reports no hashes."""
+    from services.tools import registry
+
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake chd")
 
@@ -366,9 +373,73 @@ async def test_chd_header_match_no_metadata(tmp_path, isolated_dat_store):
     mock_metadata_store.get_metadata = AsyncMock(return_value=None)
 
     with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
-        result = await dat_routes._try_chd_header_match(str(chd))
+        result = await dat_routes._try_embedded_hash_match(
+            str(chd), registry.get("chdman"),
+        )
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_dolphin_disc_hash_match_hit(tmp_path, isolated_dat_store, monkeypatch):
+    """Compressed Dolphin outputs match via the dolphin disc SHA1 hook."""
+    from services.tools import registry
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    rvz = tmp_path / "game.rvz"
+    rvz.write_bytes(b"fake rvz")
+
+    dolphin = registry.get("dolphin")
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(
+        dolphin._service, "disc_hashes", AsyncMock(return_value=[target_sha1]),
+    )
+
+    result = await dat_routes._try_embedded_hash_match(str(rvz), dolphin)
+
+    assert result is not None
+    assert result["matched"] is True
+    assert result["match_type"] == "dolphin_disc_sha1"
+    assert result["file_hash"] == target_sha1
+
+
+@pytest.mark.asyncio
+async def test_dolphin_iso_skips_disc_hash(tmp_path):
+    """A plain .iso reports no embedded hash (falls back to file-level SHA1)."""
+    from services.tools import registry
+
+    dolphin = registry.get("dolphin")
+    assert await dolphin.embedded_hashes(str(tmp_path / "game.iso")) == []
+
+
+@pytest.mark.asyncio
+async def test_match_single_file_uses_dolphin_hook(tmp_path, isolated_dat_store, monkeypatch):
+    """_match_single_file routes .rvz through the dolphin hook before file SHA1."""
+    from services.tools import registry
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    rvz = tmp_path / "game.rvz"
+    rvz.write_bytes(b"fake rvz")
+
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(
+        registry.get("dolphin")._service,
+        "disc_hashes",
+        AsyncMock(return_value=[target_sha1]),
+    )
+    # file-level SHA1 must NOT be reached when the disc hash already matches.
+    file_sha1_mock = AsyncMock(return_value="deadbeef" * 5)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", file_sha1_mock)
+
+    result = await dat_routes._match_single_file(str(rvz))
+
+    assert result["matched"] is True
+    assert result["match_type"] == "dolphin_disc_sha1"
+    file_sha1_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

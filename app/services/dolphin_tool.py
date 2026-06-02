@@ -153,6 +153,44 @@ class DolphinToolService:
 
         return self._parse_header(stdout.decode())
 
+    async def disc_hashes(self, path: str) -> list[str]:
+        """Return the disc image's content SHA1(s) via ``dolphin-tool verify``.
+
+        ``dolphin-tool verify -i <path> --algorithm sha1`` reconstructs the
+        full disc image and prints its SHA1 (the hash redump DATs index for
+        GameCube/Wii discs). For the compressed/container formats this is the
+        only hash that can match a DAT, file-level SHA1 of an ``.rvz``/``.wia``
+        is meaningless against redump.
+
+        Best-effort: returns the 40-char hex tokens parsed from the tool's
+        output, or an empty list on any failure / unsupported input.
+        """
+        process = await asyncio.create_subprocess_exec(
+            self.dolphin_tool_path,
+            "verify",
+            "-i", path,
+            "--algorithm", "sha1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        timeout = max(0, int(getattr(settings, "chdman_verify_timeout", 0) or 0))
+        try:
+            if timeout:
+                stdout, _ = await asyncio.wait_for(
+                    process.communicate(), timeout=timeout,
+                )
+            else:
+                stdout, _ = await process.communicate()
+        except asyncio.TimeoutError:
+            await self._terminate_process(process)
+            logger.warning("dolphin-tool verify (hash) timed out for %s", path)
+            return []
+        if process.returncode != 0:
+            return []
+        # The hash line is formatted as "SHA-1: <hex>" / "<hex>"; pull every
+        # standalone 40-char hex token so format tweaks don't break matching.
+        return [m.lower() for m in re.findall(r"\b[0-9a-fA-F]{40}\b", stdout.decode("utf-8", "replace"))]
+
     async def verify(self, path: str) -> dict:
         """Verify the integrity of a disc image."""
         final = {"valid": False, "message": "Disc verification failed"}

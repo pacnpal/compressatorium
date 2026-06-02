@@ -260,6 +260,112 @@ async def test_scan_metadata_cancellation_during_phase2(tmp_path, monkeypatch):
     assert len(ensure_calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_scan_discovers_non_chd_and_keeps_phases_chd_only(tmp_path, monkeypatch):
+    """Discovery is registry-driven: the scan walks non-CHD outputs too, but
+    Phase 1/2 (chdman info + disc-id) only ever touch the .chd files."""
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "game.chd").write_text("x")
+    (tmp_path / "disc.rvz").write_text("y")
+    (tmp_path / "rom.nsz").write_text("z")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    info_calls: list[str] = []
+
+    async def fake_info(path):
+        info_calls.append(path)
+        return {"raw_data": "Tag: CD-ROM"}
+
+    async def fake_set_metadata(path, info, persist=False):
+        return {"media_type": "cd"}
+
+    async def fake_flush_async():
+        return None
+
+    async def always_stale(_):
+        return True
+
+    async def already_checked(_):
+        return True  # skip Phase 2 work
+
+    monkeypatch.setattr(info_routes.chdman_service, "info", fake_info)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "set_metadata", fake_set_metadata)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", always_stale)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_disc_id_checked", already_checked)
+
+    # Phase 3: DATs present; capture which paths get matched + cached.
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+
+    set_match_paths: list[str] = []
+
+    async def fake_set_match(path, match):
+        set_match_paths.append(path)
+
+    monkeypatch.setattr(global_dat_store, "set_match", fake_set_match)
+
+    matched_paths: list[str] = []
+
+    async def fake_match_single(path):
+        matched_paths.append(path)
+        return {"path": path, "matched": True, "match_type": "file_sha1"}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    # Phase 1 (chdman info) only ran for the CHD, never the .rvz/.nsz.
+    assert info_calls == [str(tmp_path / "game.chd")]
+    # Phase 3 visited every discovered output regardless of format.
+    expected = {
+        str(tmp_path / "game.chd"),
+        str(tmp_path / "disc.rvz"),
+        str(tmp_path / "rom.nsz"),
+    }
+    assert set(matched_paths) == expected
+    # Cacheable results were persisted for all of them.
+    assert set(set_match_paths) == expected
+
+
+@pytest.mark.asyncio
+async def test_scan_phase3_skips_when_no_dats(tmp_path, monkeypatch):
+    """Phase 3 is a no-op (no hashing) when no DATs are imported."""
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "disc.rvz").write_text("y")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: False)
+
+    called = []
+
+    async def fake_match_single(path):
+        called.append(path)
+        return {"path": path, "matched": False}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    assert called == []
+
+
 @pytest.fixture
 def metadata_store_path(tmp_path):
     # SQLite file per test. Name kept as "chd_metadata.db" for clarity.

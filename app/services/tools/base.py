@@ -72,6 +72,17 @@ class ToolPlugin(Protocol):
     def info_model(self, raw: dict, path: str) -> BaseModel:
         """Map raw info into the typed API model."""
 
+    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]:
+        """Report verifiable hashes embedded in / derivable from ``path``.
+
+        Each entry is ``(sha1_hex, match_type)``: a content SHA1 the file
+        carries (CHD header / data SHA1, Dolphin disc SHA1, ...) plus a
+        label describing where it came from. The DAT-match fast path tries
+        these against the imported DATs before falling back to a full
+        file-level SHA1. Return an empty list when the tool has no cheap or
+        format-meaningful hash to offer.
+        """
+
     def active_pids(self) -> list[int]:
         """Return PIDs of in-flight subprocesses for this tool."""
 
@@ -107,6 +118,10 @@ class BaseTool:
 
     def detect_output(self, input_path: str) -> OutputStatus | None:
         return None
+
+    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]:
+        # Default: no embedded hash; callers fall back to file-level SHA1.
+        return []
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,

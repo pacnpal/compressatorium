@@ -69,6 +69,77 @@ async def _acquire_verify_lane_or_429() -> WorkloadToken:
     return token
 
 
+async def _scan_phase_dat_match(
+    scan_job_id: str,
+    all_paths: list[str],
+    *,
+    force: bool,
+) -> int:
+    """Prime the DAT-match cache for discovered outputs (scan Phase 3).
+
+    Runs every discovered path (any registered format) through the shared
+    per-file matcher and persists cacheable results, so RVZ/3DS/Switch
+    libraries are matched by the scan just like CHDs. Already-cached paths are
+    skipped unless ``force``. Non-cacheable outcomes (size-cap skips, transient
+    errors) are intentionally not written, mirroring the /dat/match-batch job.
+    Progress band: 65 % → 97 %. Returns the number of matched files.
+    """
+    # Lazy import keeps the routes modules import-order independent.
+    from routes.dat import _match_single_file
+    from services.dat_store import dat_store
+
+    if not all_paths:
+        return 0
+    try:
+        has_dats = await run_in_threadpool(dat_store.has_dats)
+    except Exception as e:
+        # No DAT store available (e.g. DB not initialised); nothing to prime.
+        logger.debug("Phase 3: DAT store unavailable, skipping match priming: %s", e)
+        return 0
+    if not has_dats:
+        return 0
+
+    total = len(all_paths)
+    logger.info("Phase 3: DAT-matching %d discovered file(s)...", total)
+    await job_manager.update_external_job(
+        scan_job_id,
+        progress=65,
+        message=f"Phase 3: DAT-matching {total} file(s)…",
+    )
+
+    # Skip paths already present in the match cache unless forced.
+    cached: dict[str, dict | None] = {}
+    if not force:
+        cached = await run_in_threadpool(dat_store.get_matches_batch, all_paths)
+
+    matched = 0
+    for idx, path in enumerate(all_paths, start=1):
+        if job_manager.is_cancelled(scan_job_id):
+            raise ExternalJobCancelled()
+        if not force and cached.get(path) is not None:
+            if cached[path].get("matched"):
+                matched += 1
+        else:
+            try:
+                result = await _match_single_file(path)
+                # Don't cache size-cap skips or transient errors (same policy
+                # as the /dat/match-batch job).
+                if not result.get("reason") and not result.get("error"):
+                    await dat_store.set_match(path, result)
+                if result.get("matched"):
+                    matched += 1
+            except Exception as e:
+                logger.warning("Phase 3: DAT match failed for %s: %s", path, e)
+        await job_manager.update_external_job(
+            scan_job_id,
+            progress=65 + int(32 * idx / total),
+            message=f"Phase 3 [{idx}/{total}]: {os.path.basename(path)}",
+        )
+
+    logger.info("Phase 3 complete: %d/%d file(s) matched a DAT", matched, total)
+    return matched
+
+
 async def scan_metadata_task(
     force: bool = False,
     lane_token: WorkloadToken | None = None,
@@ -100,8 +171,13 @@ async def scan_metadata_task(
     )
     scan_job_id = scan_job.id
 
-    def collect_all_chd_paths():
-        """Collect ALL CHD paths from volumes (runs in thread pool)."""
+    # Discovery is registry-driven: walk every extension any registered tool
+    # produces or can verify (issue #131) so Dolphin/3DS/Switch outputs are
+    # eligible for the scan, not just CHDs.
+    scan_extensions = tuple(registry.scannable_extensions())
+
+    def collect_scannable_paths():
+        """Collect all scannable output paths from volumes (runs in thread pool)."""
         paths = []
         for volume in volumes:
             if not os.path.exists(volume):
@@ -109,7 +185,7 @@ async def scan_metadata_task(
                 continue
             for root, _, files in os.walk(volume):
                 for file in files:
-                    if file.lower().endswith(".chd"):
+                    if file.lower().endswith(scan_extensions):
                         paths.append(os.path.join(root, file))
         return paths
 
@@ -119,22 +195,26 @@ async def scan_metadata_task(
     try:
         # Run blocking filesystem traversal in thread pool
         loop = asyncio.get_running_loop()
-        all_paths = await loop.run_in_executor(None, collect_all_chd_paths)
+        all_paths = await loop.run_in_executor(None, collect_scannable_paths)
         total_files = len(all_paths)
+        # The chdman-specific phases (info cache + disc ID) stay CHD-only; the
+        # rest of the discovered outputs participate in DAT matching (Phase 3).
+        chd_all_paths = [p for p in all_paths if p.lower().endswith(".chd")]
         logger.info(
-            "Discovery complete: found %d CHD file(s) across %d volume(s)",
+            "Discovery complete: found %d output file(s) (%d CHD) across %d volume(s)",
             total_files,
+            len(chd_all_paths),
             len(volumes),
         )
         await job_manager.update_external_job(
             scan_job_id,
             progress=5,
-            message=f"Found {total_files} CHD file(s) \u2014 starting metadata refresh\u2026",
+            message=f"Found {total_files} file(s) \u2014 starting metadata refresh\u2026",
         )
 
-        # Filter stales asynchronously
+        # Filter stales asynchronously (CHD metadata cache is CHD-only)
         chd_paths = []
-        for path in all_paths:
+        for path in chd_all_paths:
             if force or await chd_metadata_store.is_stale(path):
                 chd_paths.append(path)
 
@@ -152,7 +232,7 @@ async def scan_metadata_task(
             )
 
         # Phase 1: Update chdman info cache for stale / forced CHDs.
-        # Progress band: 5 % → 60 %.
+        # Progress band: 5 % → 45 %.
         phase1_total = len(chd_paths)
         for idx, path in enumerate(chd_paths, start=1):
             if job_manager.is_cancelled(scan_job_id):
@@ -193,7 +273,7 @@ async def scan_metadata_task(
             if phase1_total > 0:
                 await job_manager.update_external_job(
                     scan_job_id,
-                    progress=5 + int(55 * idx / phase1_total),
+                    progress=5 + int(40 * idx / phase1_total),
                     message=f"Phase 1 [{idx}/{phase1_total}]: {os.path.basename(path)}",
                 )
 
@@ -207,8 +287,9 @@ async def scan_metadata_task(
         # them.  Covers CHDs created before conversion-time tagging was added.
         # Skip CHDs where disc ID has already been checked and the file has not
         # changed since, avoids spawning a chdman subprocess on every scan.
-        # Progress band: 60 % → 97 %.
-        phase2_total = len(all_paths)
+        # CHD-only by design (disc-ID embedding is a CHDMAN feature).
+        # Progress band: 45 % → 65 %.
+        phase2_total = len(chd_all_paths)
         already_checked = 0
         newly_checked = 0
         logger.info(
@@ -217,20 +298,20 @@ async def scan_metadata_task(
         )
         await job_manager.update_external_job(
             scan_job_id,
-            progress=60,
+            progress=45,
             message=f"Phase 2: Checking disc ID tags for {phase2_total} CHD file(s)\u2026",
         )
-        for idx2, path in enumerate(all_paths, start=1):
+        for idx2, path in enumerate(chd_all_paths, start=1):
             if job_manager.is_cancelled(scan_job_id):
                 raise ExternalJobCancelled()
             try:
                 if await chd_metadata_store.is_disc_id_checked(path):
                     already_checked += 1
-                    # Still update progress so the scan doesn't appear stuck at 60%
+                    # Still update progress so the scan doesn't appear stuck at 45%
                     if phase2_total > 0:
                         await job_manager.update_external_job(
                             scan_job_id,
-                            progress=60 + int(37 * idx2 / phase2_total),
+                            progress=45 + int(20 * idx2 / phase2_total),
                             message=(
                                 f"Phase 2 [{idx2}/{phase2_total}]: "
                                 f"{os.path.basename(path)} (already checked)"
@@ -262,7 +343,7 @@ async def scan_metadata_task(
             if phase2_total > 0:
                 await job_manager.update_external_job(
                     scan_job_id,
-                    progress=60 + int(37 * idx2 / phase2_total),
+                    progress=45 + int(20 * idx2 / phase2_total),
                     message=f"Phase 2 [{idx2}/{phase2_total}]: {os.path.basename(path)}",
                 )
 
@@ -272,6 +353,14 @@ async def scan_metadata_task(
             newly_checked,
             embed_count,
         )
+
+        # Phase 3: Prime the DAT-match cache for every discovered output
+        # (registry-driven, all formats). This is what lets non-CHD libraries
+        # participate in the scan-driven DAT-matching workflow: each file goes
+        # through the per-tool embedded-hash fast path (CHD header SHA1, Dolphin
+        # disc SHA1, ...) and falls back to a file-level SHA1. CHD metadata and
+        # disc IDs are untouched here. Progress band: 65 % → 97 %.
+        await _scan_phase_dat_match(scan_job_id, all_paths, force=force)
 
         # Flush all accumulated changes once at the end (async, non-blocking)
         logger.info("Flushing metadata store to disk...")

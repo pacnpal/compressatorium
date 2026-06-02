@@ -16,6 +16,7 @@ from models import ConversionMode
 from services.dat_store import dat_store
 from services.file_hasher import compute_file_sha1
 from services.job_manager import ExternalJobCancelled, job_manager
+from services.tools import registry
 from services.workload_limiter import workload_limiter
 from utils.path_utils import is_within_configured_volumes
 
@@ -791,18 +792,21 @@ async def sync_cancel():
 async def _match_single_file(file_path: str) -> dict:
     """Match a file against all imported DATs.
 
-    For CHD files: tries header SHA1 and data_SHA1 from metadata store.
-    For all files: falls back to file-level SHA1.
+    Fast path: ask the tool that owns this file type for any embedded /
+    derivable content hashes (CHD header & data SHA1, Dolphin disc SHA1,
+    ...) and try those against the DAT index first. Falls back to a
+    full file-level SHA1 (format-agnostic) when no tool hash matches.
     """
-    ext = os.path.splitext(file_path)[1].lower()
     base_result = {"path": file_path, "matched": False}
 
     if not await run_in_threadpool(dat_store.has_dats):
         return base_result
 
-    # For CHD files, try the header hashes first (fast, already cached)
-    if ext == ".chd":
-        match = await _try_chd_header_match(file_path)
+    # Per-tool embedded-hash fast path (already cached / cheap where the tool
+    # can manage it, e.g. CHD header hashes from the metadata store).
+    tool = registry.tool_for_verify(file_path)
+    if tool is not None:
+        match = await _try_embedded_hash_match(file_path, tool)
         if match:
             return match
 
@@ -849,19 +853,29 @@ async def _match_single_file(file_path: str) -> dict:
     return base_result
 
 
-async def _try_chd_header_match(file_path: str) -> dict | None:
-    """Try matching CHD file using header SHA1 and data_SHA1 from metadata store."""
-    from services.chd_metadata_store import chd_metadata_store
-    metadata = await chd_metadata_store.get_metadata(file_path)
-    if not metadata:
+async def _try_embedded_hash_match(file_path: str, tool) -> dict | None:
+    """Try matching ``file_path`` using the hashes ``tool`` reports for it.
+
+    Iterates the tool's embedded/derivable ``(sha1, match_type)`` pairs (CHD
+    header & data SHA1, Dolphin disc SHA1, ...) and returns the first one that
+    hits the DAT index. ``None`` when the tool reports no hashes or none match,
+    in which case the caller falls back to a full file-level SHA1.
+    """
+    try:
+        candidates = await tool.embedded_hashes(file_path)
+    except Exception:  # pragma: no cover - best-effort fast path
+        logger.warning("embedded_hashes failed for %s", file_path, exc_info=True)
         return None
 
-    # Try overall SHA1 from CHD header
-    sha1 = metadata.get("sha1", "").strip().lower()
-    if sha1:
+    for raw_hash, match_type in candidates:
+        sha1 = (raw_hash or "").strip().lower()
+        if not sha1:
+            continue
         record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
         if record:
-            dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
+            dat_name = await run_in_threadpool(
+                dat_store.get_dat_name, record.get("dat_id", ""),
+            )
             return {
                 "path": file_path,
                 "matched": True,
@@ -869,25 +883,8 @@ async def _try_chd_header_match(file_path: str) -> dict | None:
                 "dat_name": dat_name,
                 "game_name": record.get("game_name"),
                 "rom_name": record.get("rom_name"),
-                "match_type": "chd_sha1",
+                "match_type": match_type,
                 "file_hash": sha1,
-            }
-
-    # Try data SHA1 (uncompressed content hash)
-    data_sha1 = metadata.get("data_sha1", "").strip().lower()
-    if data_sha1:
-        record = await run_in_threadpool(dat_store.lookup_sha1, data_sha1)
-        if record:
-            dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
-            return {
-                "path": file_path,
-                "matched": True,
-                "dat_id": record.get("dat_id"),
-                "dat_name": dat_name,
-                "game_name": record.get("game_name"),
-                "rom_name": record.get("rom_name"),
-                "match_type": "chd_data_sha1",
-                "file_hash": data_sha1,
             }
 
     return None
