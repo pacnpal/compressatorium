@@ -2,11 +2,11 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A disc image converter that wraps four tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), and **nsz** (Nintendo Switch). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A disc image converter that wraps five tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), and **maxcso** (PSP/PS2 CSO/ZSO). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
-* **Four tools in one.** CHDMAN, Dolphin, 3DS, or Switch compression, chosen per job.
+* **Five tools in one.** CHDMAN, Dolphin, 3DS, Switch, or CSO/ZSO compression, chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -24,6 +24,7 @@ A disc image converter that wraps four tools: **CHDMAN** (MAME), **dolphin-tool*
 | **Dolphin** | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
 | **Switch** | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Nintendo Switch compress/decompress (needs your own prod.keys) |
+| **CSO** | .iso, .cso, .zso, .dax | .cso, .zso, .iso | PSP/PS2 ISO compress (CSO/ZSO) and decompress, via maxcso |
 
 > **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
 
@@ -381,6 +382,7 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
+| `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/ZSO) |
 | `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo for DAT sync |
 | `MAMEREDUMP_AUTO_SYNC` | `false` | Auto-sync DATs on startup if none loaded |
 | `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub PAT that raises the API rate limit from 60 to 5,000 req/hr for DAT sync |
@@ -516,6 +518,61 @@ keys, firmware, or copyrighted game data.
 
 ---
 
+## PSP / PS2 Support (CSO / ZSO)
+
+CSO/ZSO compression and decompression use [maxcso](https://github.com/unknownbrackets/maxcso),
+the standard PSP/PS2 ISO compressor. It shrinks `.iso` disc images into `.cso` or
+`.zso` (and reverses the process). PPSSPP (PSP) and PCSX2 (PS2) read CSO and ZSO
+directly, so the compressed file plays without a separate decompress step. No keys
+are required.
+
+### How to Use
+
+1. **Select Primary Tool:** Choose **CSO** in the Web UI.
+2. **Pick a mode:**
+   - *Compress ISO → CSO* (`.iso` → `.cso`, the default, deflate-based), or
+   - *Compress ISO → ZSO* (`.iso` → `.zso`, lz4-based, faster to decode), or
+   - *Decompress CSO/ZSO → ISO* (`.cso`/`.zso`/`.dax` → `.iso`).
+3. **Browse and select** your files, then convert. Progress streams live.
+4. **Done:** Output lands alongside the source (or in your chosen output dir).
+
+### Supported File Formats
+
+* **`.iso`** - Raw PSP/PS2 disc image (compress source)
+* **`.cso`** - Compressed ISO (CISO, deflate)
+* **`.zso`** - Compressed ISO (lz4, faster decompression)
+* **`.dax`** - Legacy compressed ISO (accepted as a decompress source)
+
+### Technical Details
+
+* maxcso is built from source into the image and runs as a subprocess (no shell).
+* Compression is lossless and fully reversible; the round trip reproduces the
+  original `.iso` byte-for-byte.
+* Verification runs maxcso's `--crc` over the compressed container: it decompresses
+  the whole file and logs its CRC32, so a clean run proves the file decodes intact.
+* Delete-on-verify is offered for the compress modes only (verify validates the
+  compressed `.cso`/`.zso` output).
+* The compression format is chosen by the mode (CSO vs ZSO); there are no extra codec
+  controls. `.iso` rows can be handled by CHDMAN, Dolphin, or CSO; the primary-tool
+  picker decides which one acts on them.
+* CSO/ZSO sources can be converted from inside ZIP/7z/RAR archives.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to the maxcso binary |
+
+### REST API Endpoints
+
+* `POST /api/jobs` or `POST /api/jobs/batch` - Queue CSO jobs (use `mode: "cso_compress"`, `"zso_compress"`, or `"cso_decompress"`)
+* `GET /api/cso-info?path=/path/to/game.cso` - Get file information (size, format, compression status)
+* `GET /api/cso-verify?path=/path/to/game.cso` - Verify a compressed CSO/ZSO output
+* `GET /api/cso-verify/events?path=/path/to/game.cso` - SSE stream for CSO verify progress
+* `POST /api/cso-verify-batch/events` - SSE stream for batch CSO verification
+
+---
+
 ## CLI Mode (Batch Processing)
 
 For automated/headless conversion, use CLI mode. CLI mode runs CHDMAN only and processes
@@ -604,6 +661,9 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 
 **Nintendo 3DS**
 - `z3ds_compress` (.cci → .zcci, .cia → .zcia, .3ds → .z3ds)
+
+**PSP / PS2 (CSO)**
+- `cso_compress` (.iso → .cso), `zso_compress` (.iso → .zso), `cso_decompress` (.cso/.zso/.dax → .iso)
 
 Notes:
 - Compression applies to **create**/**copy** and Dolphin RVZ/WIA operations only.
@@ -704,6 +764,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
+| `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/ZSO) |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (`1` = serial queue processing) |
 | `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
 | `MAX_VERIFY_CONCURRENCY` | `1` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |
@@ -866,6 +927,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.cue` / `.bin` - CD images with cue sheets
 - `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii disc images (Dolphin)
 - `.cci`, `.cia`, `.3ds` - Nintendo 3DS ROM images (3DS compression)
+- `.cso`, `.zso`, `.dax` - PSP/PS2 compressed ISO images (CSO decompression)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives
@@ -876,6 +938,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.chd` - Compressed Hunks of Data (MAME/CHDMAN)
 - `.rvz`, `.wia`, `.gcz`, `.iso` - Dolphin output formats
 - `.zcci`, `.zcia`, `.z3ds` - Compressed Nintendo 3DS ROMs
+- `.cso`, `.zso` - Compressed PSP/PS2 ISO images (maxcso)
 
 ---
 

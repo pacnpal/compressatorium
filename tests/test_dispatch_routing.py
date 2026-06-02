@@ -30,6 +30,8 @@ def _legacy_dispatch_id(mode: str) -> str:
         return "z3ds"
     if mode.startswith("nsz_"):
         return "nsz"
+    if mode.startswith(("cso_", "zso_")):
+        return "cso"
     return "chdman"
 
 
@@ -44,7 +46,7 @@ def test_verify_dispatch_matches_legacy_ladder(mode, monkeypatch):
 
         return _verify
 
-    for tool_id in ("chdman", "dolphin", "z3ds", "nsz"):
+    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso"):
         monkeypatch.setattr(
             registry.get(tool_id)._service, "verify", _record(tool_id)
         )
@@ -71,7 +73,7 @@ def test_convert_dispatch_matches_legacy_ladder(mode, monkeypatch):
 
         return _convert
 
-    for tool_id in ("chdman", "dolphin", "z3ds", "nsz"):
+    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso"):
         monkeypatch.setattr(
             registry.get(tool_id)._service, "convert", _record(tool_id)
         )

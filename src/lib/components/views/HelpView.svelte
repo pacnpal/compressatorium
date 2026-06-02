@@ -81,6 +81,14 @@
         ['nsz_decompress', 'Decompress back to the original NSP/XCI.', '.nsp / .xci'],
       ],
     },
+    {
+      tool: 'CSO',
+      rows: [
+        ['cso_compress', 'Compress a PSP/PS2 ISO to CSO. No settings.', '.cso'],
+        ['zso_compress', 'Compress a PSP/PS2 ISO to ZSO (lz4, faster to decode).', '.zso'],
+        ['cso_decompress', 'Decompress CSO/ZSO/DAX back to a plain ISO.', '.iso'],
+      ],
+    },
   ];
 </script>
 
@@ -170,7 +178,7 @@
     <p class="lead">
       CHD create and copy modes take a list of codecs. Dolphin RVZ/WIA take one codec plus a
       level, and Switch compress takes a layout plus a level. GCZ, the decompress/extract
-      modes, and 3DS have no settings at all.
+      modes, 3DS, and CSO/ZSO have no settings at all.
     </p>
     <p>
       Smaller is not always better. Some emulators only read certain codecs, and a file
@@ -258,8 +266,8 @@
       <code>.bin</code>, and the whole archive if the source came from one.
     </p>
     <p>
-      Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, and Switch
-      files. Verification status sticks around between sessions, so a file you verified last
+      Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and
+      CSO files. Verification status sticks around between sessions, so a file you verified last
       week still shows verified today. Long verifies can be given a timeout so a stalled one
       doesn't sit forever.
     </p>

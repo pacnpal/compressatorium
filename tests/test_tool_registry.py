@@ -20,6 +20,11 @@ from app.services.dolphin_tool import (
 from app.services.tools import registry
 from app.services.tools.registry import ToolRegistry
 from app.services.tools.spec import ModeKind, ModeSpec
+from app.services.maxcso import (
+    MAXCSO_COMPRESS_EXTENSIONS,
+    MAXCSO_DECOMPRESS_EXTENSIONS,
+    maxcso_service,
+)
 from app.services.nsz import (
     NSZ_COMPRESS_EXTENSIONS,
     NSZ_DECOMPRESS_EXTENSIONS,
@@ -44,12 +49,14 @@ def _legacy_tool_for_mode(mode: str) -> str:
         return "z3ds"
     if mode.startswith("nsz_"):
         return "nsz"
+    if mode.startswith(("cso_", "zso_")):
+        return "cso"
     return "chdman"
 
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 18
+    assert len(resolved) == 21
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -85,6 +92,10 @@ def test_kind_classification():
     # nsz compress vs decompress
     assert spec("nsz_compress").kind is ModeKind.COMPRESS
     assert spec("nsz_decompress").kind is ModeKind.EXTRACT
+    # cso/zso compress vs decompress
+    assert spec("cso_compress").kind is ModeKind.COMPRESS
+    assert spec("zso_compress").kind is ModeKind.COMPRESS
+    assert spec("cso_decompress").kind is ModeKind.EXTRACT
 
 
 @pytest.mark.parametrize(
@@ -112,7 +123,7 @@ def test_compression_level_only_for_dolphin_rvz_wia():
     for mode in ("dolphin_rvz", "dolphin_wia", "nsz_compress"):
         assert registry.spec(mode).supports_compression_level is True
     for mode in ("createcd", "copy", "dolphin_gcz", "dolphin_iso", "z3ds_compress",
-                 "nsz_decompress"):
+                 "nsz_decompress", "cso_compress", "zso_compress", "cso_decompress"):
         assert registry.spec(mode).supports_compression_level is False
 
 
@@ -123,6 +134,8 @@ def test_convertible_extensions_match_service_constants():
         | set(Z3DS_CONVERTIBLE_EXTENSIONS)
         | set(NSZ_COMPRESS_EXTENSIONS)
         | set(NSZ_DECOMPRESS_EXTENSIONS)
+        | set(MAXCSO_COMPRESS_EXTENSIONS)
+        | set(MAXCSO_DECOMPRESS_EXTENSIONS)
     )
     assert set(registry.convertible_extensions()) == expected
 
@@ -130,12 +143,16 @@ def test_convertible_extensions_match_service_constants():
 def test_tools_for_input_representative():
     assert sorted(t.id for t in registry.tools_for_input("game.iso")) == [
         "chdman",
+        "cso",
         "dolphin",
     ]
     assert [t.id for t in registry.tools_for_input("rom.3ds")] == ["z3ds"]
     assert [t.id for t in registry.tools_for_input("game.nsp")] == ["nsz"]
     assert [t.id for t in registry.tools_for_input("game.nsz")] == ["nsz"]
     assert [t.id for t in registry.tools_for_input("disc.gdi")] == ["chdman"]
+    # .cso/.zso are convertible-from sources for the decompress mode.
+    assert [t.id for t in registry.tools_for_input("game.cso")] == ["cso"]
+    assert [t.id for t in registry.tools_for_input("game.zso")] == ["cso"]
     # A finished .chd is not a "convertible-from" source in the listing.
     assert registry.tools_for_input("out.chd") == []
 
@@ -146,6 +163,8 @@ def test_tool_for_verify_representative():
     assert registry.tool_for_verify("disc.rvz").id == "dolphin"
     assert registry.tool_for_verify("game.nsz").id == "nsz"
     assert registry.tool_for_verify("game.xcz").id == "nsz"
+    assert registry.tool_for_verify("game.cso").id == "cso"
+    assert registry.tool_for_verify("game.zso").id == "cso"
     assert registry.tool_for_verify("nope.txt") is None
 
 
@@ -166,6 +185,10 @@ def test_tool_for_verify_representative():
         ("nsz_compress", nsz_service, "/data/game.xci"),
         ("nsz_decompress", nsz_service, "/data/game.nsz"),
         ("nsz_decompress", nsz_service, "/data/game.xcz"),
+        ("cso_compress", maxcso_service, "/data/game.iso"),
+        ("zso_compress", maxcso_service, "/data/game.iso"),
+        ("cso_decompress", maxcso_service, "/data/game.cso"),
+        ("cso_decompress", maxcso_service, "/data/game.zso"),
     ],
 )
 def test_output_path_delegation_matches_service(
@@ -238,7 +261,7 @@ def test_mode_spec_tool_id_must_match_owner():
         ToolRegistry().register(_StubTool())
 
 
-@pytest.mark.parametrize("tool_id", ["chdman", "dolphin", "z3ds", "nsz"])
+@pytest.mark.parametrize("tool_id", ["chdman", "dolphin", "z3ds", "nsz", "cso"])
 def test_output_extensions_cover_mode_output_exts(tool_id):
     tool = registry.get(tool_id)
     declared = {m.output_ext for m in tool.modes if m.output_ext is not None}

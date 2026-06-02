@@ -42,6 +42,12 @@ const NSZ_OUT_MAP = {
   '.nsp': '.nsz', '.xci': '.xcz', '.nsz': '.nsp', '.xcz': '.xci',
 };
 
+// CSO (maxcso). Compress takes a raw .iso; decompress takes any maxcso
+// container (.cso/.zso/.dax). Both directions are "sources" by mode.
+const CSO_COMPRESS_EXTS = ['.iso'];
+const CSO_VERIFY_EXTS = ['.cso', '.zso', '.dax'];
+const CSO_SOURCE_EXTS = [...CSO_COMPRESS_EXTS, ...CSO_VERIFY_EXTS];
+
 /**
  * @typedef {Object} ModeEntry
  * @property {string} mode
@@ -288,6 +294,46 @@ export const TOOLS = [
       if (!m) return path;
       const ext = `.${m[1].toLowerCase()}`;
       return swapExt(path, NSZ_OUT_MAP[ext] ?? ext);
+    },
+  },
+  {
+    id: 'cso',
+    label: 'CSO',
+    hint: 'Compress PSP / PS2 ISO images to CSO / ZSO (and back).',
+    verifyPrefix: 'cso',
+    sourceExts: CSO_SOURCE_EXTS,
+    verifyExts: CSO_VERIFY_EXTS,
+    modeGroups: ['cso'],
+    groups: { cso: 'CSO / ZSO' },
+    defaultMode: 'cso_compress',
+    glyph: 'CSO',
+    accent: 'var(--badge-cso)',
+    // maxcso picks the format per mode (CSO vs ZSO), so there are no codec
+    // controls; the output extension is fixed by the chosen mode.
+    compressionCodecs: [],
+    compressionStyle: 'none',
+    modes: [
+      { mode: 'cso_compress', kind: 'compress', label: 'Compress ISO → CSO', group: 'cso',
+        outputExt: '.cso', inputExtensions: CSO_COMPRESS_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'zso_compress', kind: 'compress', label: 'Compress ISO → ZSO', group: 'cso',
+        outputExt: '.zso', inputExtensions: CSO_COMPRESS_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'cso_decompress', kind: 'extract', label: 'Decompress CSO/ZSO → ISO',
+        group: 'cso',
+        outputExt: '.iso', inputExtensions: CSO_VERIFY_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: true },
+    ],
+    getInfo: (path) => api.getCsoInfo(path),
+    verify: (path, opts) => api.verifyCso(path, opts),
+    verifyBatch: (paths, opts) => api.verifyBatchCso(paths, opts),
+    productPath: (path) => {
+      if (/\.iso$/i.test(path)) return swapExt(path, '.cso');
+      if (/\.(cso|zso|dax)$/i.test(path)) return swapExt(path, '.iso');
+      return path;
     },
   },
 ];

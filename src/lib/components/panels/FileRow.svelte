@@ -38,6 +38,7 @@
     if (entry?.dolphin_convertible) legacy.push('dolphin');
     if (entry?.z3ds_convertible) legacy.push('z3ds');
     if (entry?.nsz_convertible) legacy.push('nsz');
+    if (entry?.cso_convertible) legacy.push('cso');
     return legacy;
   });
 
@@ -62,7 +63,7 @@
     const ext = entry?.extension?.toLowerCase() ?? '';
     if (ext === '.chd') return Disc3;
     if (['.rvz', '.wia', '.gcz', '.wbfs', '.3ds', '.cci', '.cia', '.z3ds', '.zcci', '.zcia'].includes(ext)) return Gamepad2;
-    if (['.iso', '.gdi', '.cue', '.bin'].includes(ext)) return Disc;
+    if (['.iso', '.gdi', '.cue', '.bin', '.cso', '.zso', '.dax'].includes(ext)) return Disc;
     return File;
   }
 

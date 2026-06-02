@@ -120,6 +120,12 @@ class Settings(BaseSettings):
         default="/usr/local/bin/z3ds_compressor", alias="Z3DS_COMPRESSOR_PATH",
     )
 
+    # maxcso binary path (PSP/PS2 ISO <-> CSO/ZSO). Built from source into the
+    # image at /usr/local/bin/maxcso; set MAXCSO_PATH to relocate/override.
+    maxcso_path: str = Field(
+        default="/usr/local/bin/maxcso", alias="MAXCSO_PATH",
+    )
+
     # nsz (Nintendo Switch NSP/XCI <-> NSZ/XCZ). Installed via pip into the
     # venv, so the console script lives on PATH (/opt/venv/bin in Docker, .venv
     # locally). A bare name resolves in both; set NSZ_PATH to pin an absolute

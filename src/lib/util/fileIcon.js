@@ -20,7 +20,7 @@ const GAME_EXTS = new Set([
   '.3ds', '.cci', '.cia',
   '.z3ds', '.zcci', '.zcia',
 ]);
-const DISC_EXTS = new Set(['.iso', '.gdi', '.cue', '.bin']);
+const DISC_EXTS = new Set(['.iso', '.gdi', '.cue', '.bin', '.cso', '.zso', '.dax']);
 
 /**
  * @param {{ type?: string, extension?: string } | null | undefined} entry

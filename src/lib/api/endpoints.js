@@ -268,6 +268,11 @@ export const api = {
     return fetchJson(buildApiUrl('/nsz-info', params), undefined, 'Failed to get Switch file info');
   },
 
+  getCsoInfo(path) {
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/cso-info', params), undefined, 'Failed to get CSO info');
+  },
+
   // Which tools the UI should show. Switch is reported unavailable when no
   // prod.keys are configured, so the sidebar can hide it entirely.
   getTools() {
@@ -319,6 +324,17 @@ export const api = {
     return fetchJson(buildApiUrl('/nsz-verify', params), undefined, 'Failed to verify Switch file');
   },
 
+  verifyCso(path, { onProgress } = {}) {
+    if (onProgress) {
+      const params = new URLSearchParams({ path });
+      return verifyEventSource(buildApiUrl('/cso-verify/events', params), onProgress, {
+        failureFallback: 'CSO verification failed',
+      });
+    }
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/cso-verify', params), undefined, 'Failed to verify CSO file');
+  },
+
   getVerifiedCHDs: () =>
     fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch verified CHDs'),
 
@@ -337,6 +353,10 @@ export const api = {
 
   verifyBatchNsz(paths, opts) {
     return runBatchVerify(`${API_BASE}/nsz-verify-batch/events`, paths, opts);
+  },
+
+  verifyBatchCso(paths, opts) {
+    return runBatchVerify(`${API_BASE}/cso-verify-batch/events`, paths, opts);
   },
 
   // ─── CHD metadata cache ───────────────────────────────────────────────

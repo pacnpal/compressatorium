@@ -156,10 +156,12 @@ async def list_files(
                         is_dolphin_convertible = "dolphin" in convertible_by
                         is_z3ds_convertible = "z3ds" in convertible_by
                         is_nsz_convertible = "nsz" in convertible_by
+                        is_cso_convertible = "cso" in convertible_by
                         chd_status = by_tool.get("chdman")
                         dolphin_status = by_tool.get("dolphin")
                         z3ds_status = by_tool.get("z3ds")
                         nsz_status = by_tool.get("nsz")
+                        cso_status = by_tool.get("cso")
                         has_chd = chd_status is not None
                         chd_ready = chd_status.exists if chd_status else False
                         has_rvz = dolphin_status is not None
@@ -171,6 +173,9 @@ async def list_files(
                         has_nsz = nsz_status is not None
                         nsz_ready = nsz_status.exists if nsz_status else False
                         nsz_path = nsz_status.path if nsz_status else None
+                        has_cso = cso_status is not None
+                        cso_ready = cso_status.exists if cso_status else False
+                        cso_path = cso_status.path if cso_status else None
 
                         archive_items = None
                         archive_has_chd = None
@@ -219,6 +224,10 @@ async def list_files(
                             has_nsz=has_nsz,
                             nsz_ready=nsz_ready,
                             nsz_path=nsz_path,
+                            cso_convertible=is_cso_convertible,
+                            has_cso=has_cso,
+                            cso_ready=cso_ready,
+                            cso_path=cso_path,
                             archive_items=archive_items,
                             archive_has_chd=archive_has_chd,
                             archive_truncated=archive_truncated
@@ -299,10 +308,12 @@ async def search_files(
                                 is_dolphin_convertible = "dolphin" in convertible_by
                                 is_z3ds_convertible = "z3ds" in convertible_by
                                 is_nsz_convertible = "nsz" in convertible_by
+                                is_cso_convertible = "cso" in convertible_by
                                 chd_status = by_tool.get("chdman")
                                 dolphin_status = by_tool.get("dolphin")
                                 z3ds_status = by_tool.get("z3ds")
                                 nsz_status = by_tool.get("nsz")
+                                cso_status = by_tool.get("cso")
                                 chd_path = (
                                     str(Path(item_path).with_suffix(".chd"))
                                     if is_chd_convertible
@@ -323,6 +334,9 @@ async def search_files(
                                 has_nsz = nsz_status is not None
                                 nsz_ready = nsz_status.exists if nsz_status else False
                                 nsz_path = nsz_status.path if nsz_status else None
+                                has_cso = cso_status is not None
+                                cso_ready = cso_status.exists if cso_status else False
+                                cso_path = cso_status.path if cso_status else None
                                 files.append(
                                     {
                                         "name": item,
@@ -345,6 +359,10 @@ async def search_files(
                                         "has_nsz": has_nsz,
                                         "nsz_ready": nsz_ready,
                                         "nsz_path": nsz_path,
+                                        "cso_convertible": is_cso_convertible,
+                                        "has_cso": has_cso,
+                                        "cso_ready": cso_ready,
+                                        "cso_path": cso_path,
                                         "in_archive": False,
                                         "convertible_by": convertible_by,
                                         "outputs": outputs,

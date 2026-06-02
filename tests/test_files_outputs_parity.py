@@ -22,6 +22,7 @@ LEGACY_FILEENTRY_KEYS = {
     "has_rvz", "dolphin_ready", "dolphin_path", "chd_ready",
     "dolphin_convertible", "z3ds_convertible", "has_z3ds", "z3ds_ready",
     "z3ds_path", "nsz_convertible", "has_nsz", "nsz_ready", "nsz_path",
+    "cso_convertible", "has_cso", "cso_ready", "cso_path",
     "archive_items", "archive_has_chd", "archive_truncated",
     "media_type",
 }
@@ -30,6 +31,7 @@ LEGACY_SEARCH_KEYS = {
     "dolphin_ready", "dolphin_path", "chd_ready", "convertible",
     "dolphin_convertible", "z3ds_convertible", "has_z3ds", "z3ds_ready",
     "z3ds_path", "nsz_convertible", "has_nsz", "nsz_ready", "nsz_path",
+    "cso_convertible", "has_cso", "cso_ready", "cso_path",
     "in_archive",
 }
 NEW_KEYS = {"convertible_by", "outputs"}

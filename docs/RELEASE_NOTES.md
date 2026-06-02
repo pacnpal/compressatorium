@@ -1,5 +1,18 @@
 # Release Notes
 
+## Unreleased
+
+### PSP / PS2 support (CSO / ZSO via maxcso)
+
+#### New
+
+- **A fifth tool: CSO.** Compress PSP/PS2 `.iso` disc images to `.cso` or `.zso` and back, using [maxcso](https://github.com/unknownbrackets/maxcso). Three modes: `cso_compress` (ISO → CSO), `zso_compress` (ISO → ZSO, lz4, faster to decode), and `cso_decompress` (CSO/ZSO/DAX → ISO). PPSSPP and PCSX2 read CSO/ZSO directly, so no separate decompress step is needed to play. Available in the Web UI and REST API, with live progress, single + batch verify, and file-info. No keys required.
+- **Lossless and verifiable.** The compress/decompress round trip reproduces the original `.iso` byte-for-byte. Verify runs maxcso's `--crc` over the compressed container, and delete-on-verify is offered for the compress modes. CSO/ZSO sources can also be converted from inside ZIP/7z/RAR archives.
+
+#### Internal
+
+- maxcso is built from source in a dedicated Dockerfile builder stage (deps: `liblz4`, `libuv`, `libdeflate`, `zlib`) and added to the tool registry as `cso`; no job-pipeline edits were needed. New `MAXCSO_PATH` env var (defaults to `/usr/local/bin/maxcso`).
+
 ## 4.0.0-beta-10 (2026-06-01)
 
 ### Switch key discovery + logging cleanup

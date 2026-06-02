@@ -14,6 +14,7 @@ from models import (
     BulkVerifyRequest,
     CHDInfo,
     ConversionMode,
+    CsoInfo,
     DolphinDiscInfo,
     MetadataBatchRequest,
     NszInfo,
@@ -33,6 +34,11 @@ from services.tools import registry
 from services.tools.base import ToolPlugin
 from services.workload_limiter import WorkloadToken, workload_limiter
 from services.job_manager import ExternalJobCancelled, job_manager
+from services.maxcso import (
+    MAXCSO_COMPRESS_EXTENSIONS,
+    MAXCSO_DECOMPRESS_EXTENSIONS,
+    maxcso_service,
+)
 from services.nsz import (
     NSZ_COMPRESS_EXTENSIONS,
     NSZ_DECOMPRESS_EXTENSIONS,
@@ -365,6 +371,14 @@ def _is_nsz_info_file(path: str) -> bool:
     return ext in NSZ_INFO_EXTENSIONS
 
 
+CSO_INFO_EXTENSIONS = MAXCSO_COMPRESS_EXTENSIONS | MAXCSO_DECOMPRESS_EXTENSIONS
+
+
+def _is_cso_info_file(path: str) -> bool:
+    ext = os.path.splitext(path)[1].lower()
+    return ext in CSO_INFO_EXTENSIONS
+
+
 @router.get("/info", response_model=CHDInfo)
 async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     """Get information about a CHD file (cached with mtime-based invalidation)."""
@@ -650,6 +664,44 @@ async def get_z3ds_info(
         ) from None
 
 
+@router.get("/cso-info", response_model=CsoInfo)
+async def get_cso_info(
+    path: str = Query(..., description="Path to PSP/PS2 ISO/CSO/ZSO/DAX file"),
+):
+    """Get basic information about a PSP/PS2 ISO/CSO/ZSO/DAX file."""
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: path outside configured volumes",
+        )
+    if not await run_in_threadpool(os.path.isfile, path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_cso_info_file(path):
+        raise HTTPException(
+            status_code=400,
+            detail="Not a supported CSO format (.iso, .cso, .zso, .dax)",
+        )
+
+    try:
+        info = await run_in_threadpool(maxcso_service.info, path)
+        return CsoInfo(
+            file=info["file"],
+            size=info["size"],
+            size_display=info["size_display"],
+            format=info.get("format"),
+            extension=info["extension"],
+            compressed=info["compressed"],
+            compression_type=info.get("compression_type"),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read CSO info: {e!s}",
+        ) from None
+
+
 @router.get("/tools")
 async def list_tools():
     """Which tools the frontend should show.
@@ -768,6 +820,15 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         batch_name="verify_nsz_batch_events",
         bad_ext_detail="Not a supported compressed Switch format (.nsz, .xcz)",
         verify_error_prefix="Failed to verify Switch file",
+    ),
+    "cso": _VerifyRouteConfig(
+        url_prefix="cso-",
+        service=lambda: maxcso_service,
+        sync_name="verify_cso",
+        events_name="verify_cso_events",
+        batch_name="verify_cso_batch_events",
+        bad_ext_detail="Not a supported compressed CSO format (.cso, .zso, .dax)",
+        verify_error_prefix="Failed to verify CSO file",
     ),
 }
 
@@ -1091,4 +1152,7 @@ verify_z3ds, verify_z3ds_events, verify_z3ds_batch_events = register_verify_rout
 )
 verify_nsz, verify_nsz_events, verify_nsz_batch_events = register_verify_routes(
     router, registry.get("nsz"),
+)
+verify_cso, verify_cso_events, verify_cso_batch_events = register_verify_routes(
+    router, registry.get("cso"),
 )

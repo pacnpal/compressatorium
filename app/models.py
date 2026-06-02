@@ -23,6 +23,9 @@ class ConversionMode(str, Enum):
     Z3DS_COMPRESS = "z3ds_compress"
     NSZ_COMPRESS = "nsz_compress"
     NSZ_DECOMPRESS = "nsz_decompress"
+    CSO_COMPRESS = "cso_compress"
+    ZSO_COMPRESS = "zso_compress"
+    CSO_DECOMPRESS = "cso_decompress"
     METADATA_SCAN = "metadata_scan"
     DAT_MATCH = "dat_match"
 
@@ -70,6 +73,10 @@ class FileEntry(BaseModel):
     has_nsz: bool = False
     nsz_ready: bool = False
     nsz_path: str | None = None
+    cso_convertible: bool = False
+    has_cso: bool = False
+    cso_ready: bool = False
+    cso_path: str | None = None
     archive_items: int | None = None
     archive_has_chd: int | None = None
     archive_truncated: bool | None = None
@@ -219,6 +226,17 @@ class Z3DSInfo(BaseModel):
 
 class NszInfo(BaseModel):
     """Information about a Nintendo Switch NSP/XCI/NSZ/XCZ file."""
+    file: str
+    size: int
+    size_display: str
+    format: str | None = None
+    extension: str
+    compressed: bool
+    compression_type: str | None = None
+
+
+class CsoInfo(BaseModel):
+    """Information about a PSP/PS2 ISO/CSO/ZSO/DAX file."""
     file: str
     size: int
     size_display: str

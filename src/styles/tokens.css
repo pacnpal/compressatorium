@@ -95,6 +95,7 @@
   --badge-dat-match: #7c3aed;
   --badge-cd: #0ea5e9;
   --badge-dvd: #d97706;
+  --badge-cso: #0d9488;
   --badge-archive: #64748b;
   --badge-converting: #f59e0b;
   --badge-bg: rgba(15, 23, 42, 0.06);
@@ -141,6 +142,7 @@
   --badge-dat-match: #c084fc;
   --badge-cd: #38bdf8;
   --badge-dvd: #fbbf24;
+  --badge-cso: #2dd4bf;
   --badge-archive: #cbd5e1;
   --badge-converting: #fbbf24;
   --badge-bg: rgba(248, 250, 252, 0.06);

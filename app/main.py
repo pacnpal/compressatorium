@@ -280,7 +280,7 @@ app = FastAPI(
     title="Compressatorium",
     description=(
         "Web UI for converting game files with chdman, dolphin-tool, "
-        "z3ds_compressor, and nsz"
+        "z3ds_compressor, nsz, and maxcso"
     ),
     version=get_version(),
     lifespan=lifespan,
