@@ -14,6 +14,7 @@ import aiofiles
 from config import settings
 from fastapi.concurrency import run_in_threadpool
 from services.chdman import ConversionCancelled
+from services.subprocess_runner import apply_nice, ioprio_prefix
 from services.timeout_policy import compute_progress_stall_timeout
 
 Z3DS_CONVERTIBLE_EXTENSIONS = {".cci", ".cia", ".3ds"}
@@ -51,17 +52,9 @@ class Z3DSCompressService:
             output_path,
         ]
 
-        if (
-            settings.chdman_ioprio_class is not None
-            and settings.chdman_ioprio_level is not None
-        ):
-            ionice = shutil.which("ionice")
-            if ionice:
-                cmd = [
-                    ionice,
-                    "-c", str(settings.chdman_ioprio_class),
-                    "-n", str(settings.chdman_ioprio_level),
-                ] + cmd
+        prefix = ioprio_prefix("z3ds")
+        if prefix:
+            cmd = prefix + cmd
 
         return cmd
 
@@ -155,11 +148,7 @@ class Z3DSCompressService:
             cmd = self._build_command(input_path, output_path)
 
             def _preexec():
-                if settings.chdman_nice is not None:
-                    try:
-                        os.nice(settings.chdman_nice)
-                    except OSError:
-                        pass
+                apply_nice("z3ds")
 
             # cmd is built from validated settings paths (no shell interpretation);
             # create_subprocess_exec passes args directly without shell expansion.

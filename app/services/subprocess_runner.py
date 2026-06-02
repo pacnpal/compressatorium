@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -36,6 +37,89 @@ from services.timeout_policy import compute_progress_stall_timeout
 
 class ConversionCancelled(Exception):
     """Raised when a conversion is cancelled before completion."""
+
+
+# --- Shared process-priority / timeout policy -----------------------------
+#
+# These knobs (nice level, I/O priority, info/verify timeouts) govern *every*
+# conversion tool's subprocess, not just chdman. They live here -- read once in
+# one place -- rather than being re-read with a chdman-flavoured name in each
+# service. The shared default comes from the tool-neutral ``tool_*`` settings;
+# an optional per-tool override (``<owner>_*``, e.g. ``dolphin_tool_nice``)
+# takes precedence when set. ``owner`` matches the ``SubprocessRunner`` owner
+# string each service constructs (``chdman``, ``dolphin_tool``, ``nsz``,
+# ``z3ds``).
+
+
+def _resolve_policy(key: str, owner: str | None):
+    """Return the per-owner override for ``key`` if set, else the shared default.
+
+    ``key`` is the bare setting suffix (``nice``, ``ioprio_class``,
+    ``ioprio_level``, ``info_timeout``, ``verify_timeout``); the shared value is
+    ``settings.tool_<key>`` and the optional override ``settings.<owner>_<key>``.
+    """
+    if owner is not None:
+        override = getattr(settings, f"{owner}_{key}", None)
+        if override is not None:
+            return override
+    return getattr(settings, f"tool_{key}")
+
+
+def nice_value(owner: str | None = None) -> int | None:
+    """Effective ``nice`` increment for ``owner`` (None disables renicing)."""
+    return _resolve_policy("nice", owner)
+
+
+def ioprio_prefix(owner: str | None = None) -> list[str]:
+    """Return the ``ionice`` command prefix per the shared priority policy.
+
+    Empty when I/O priority is unset for ``owner`` or ``ionice`` is unavailable.
+    """
+    ioprio_class = _resolve_policy("ioprio_class", owner)
+    ioprio_level = _resolve_policy("ioprio_level", owner)
+    if ioprio_class is None or ioprio_level is None:
+        return []
+    ionice = shutil.which("ionice")
+    if not ionice:
+        return []
+    return [ionice, "-c", str(ioprio_class), "-n", str(ioprio_level)]
+
+
+def nice_prefix(owner: str | None = None) -> list[str]:
+    """Return the ``nice`` command prefix for ``owner``.
+
+    Used by services that apply nice via a command wrapper instead of a
+    ``preexec_fn`` (e.g. nsz, where forking a Python callable in a
+    multithreaded process can deadlock the child before exec).
+    """
+    value = nice_value(owner)
+    if value is None:
+        return []
+    nice = shutil.which("nice")
+    if not nice:
+        return []
+    return [nice, "-n", str(value)]
+
+
+def apply_nice(owner: str | None = None) -> None:
+    """Renice the current process per the shared policy (for ``preexec_fn``)."""
+    value = nice_value(owner)
+    if value is None:
+        return
+    try:
+        os.nice(value)
+    except OSError:
+        pass
+
+
+def info_timeout(owner: str | None = None) -> int:
+    """Effective ``info`` subprocess timeout in seconds (0 disables)."""
+    return max(0, int(_resolve_policy("info_timeout", owner) or 0))
+
+
+def verify_timeout(owner: str | None = None) -> int:
+    """Effective ``verify`` subprocess timeout in seconds (0 disables)."""
+    return max(0, int(_resolve_policy("verify_timeout", owner) or 0))
 
 
 class SubprocessRunner:
@@ -51,6 +135,11 @@ class SubprocessRunner:
         self._active_pids: set[int] = set()
         self._pid_lock = threading.Lock()
         self._logger = logging.getLogger(f"chd.{owner}")
+
+    @property
+    def owner(self) -> str:
+        """Tool identifier used to resolve per-tool priority/timeout overrides."""
+        return self._owner
 
     def track_pid(self, pid: int) -> None:
         with self._pid_lock:
@@ -91,11 +180,7 @@ class SubprocessRunner:
             await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
 
         def _preexec():
-            if settings.chdman_nice is not None:
-                try:
-                    os.nice(settings.chdman_nice)
-                except OSError:
-                    pass
+            apply_nice(self._owner)
 
         # cmd is built from validated settings paths (no shell interpretation);
         # create_subprocess_exec passes the arg list directly (shell=False), so

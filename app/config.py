@@ -145,17 +145,103 @@ class Settings(BaseSettings):
         default=False, alias="MAMEREDUMP_AUTO_SYNC",
         description="Auto-sync DATs from MAMERedump on startup if none loaded",
     )
-    chdman_nice: int | None = Field(default=10, alias="CHD_CHDMAN_NICE")
-    chdman_ioprio_class: int | None = Field(
+    # Process-priority and timeout policy shared by EVERY conversion tool's
+    # subprocess (chdman, Dolphin, 3DS, Switch) and the shared SubprocessRunner.
+    # These began life as chdman-only knobs; prefer the tool-neutral
+    # COMPRESSATORIUM_* names. The chdman-era CHD_*/CHDMAN_* names remain
+    # supported as backwards-compatible validation aliases (the same pattern as
+    # chd_volumes -> COMPRESSATORIUM_VOLUMES).
+    #
+    # Optional per-tool overrides (the *_nice / *_ioprio_* / *_info_timeout /
+    # *_verify_timeout fields below) default to None and fall back to these
+    # shared defaults; see services.subprocess_runner for the resolution policy.
+    tool_nice: int | None = Field(
+        default=10,
+        alias="COMPRESSATORIUM_TOOL_NICE",
+        validation_alias=AliasChoices("COMPRESSATORIUM_TOOL_NICE", "CHD_CHDMAN_NICE"),
+    )
+    tool_ioprio_class: int | None = Field(
         default=2,
-        alias="CHD_CHDMAN_IOPRIO_CLASS",
+        alias="COMPRESSATORIUM_TOOL_IOPRIO_CLASS",
+        validation_alias=AliasChoices(
+            "COMPRESSATORIUM_TOOL_IOPRIO_CLASS", "CHD_CHDMAN_IOPRIO_CLASS",
+        ),
+    )
+    tool_ioprio_level: int | None = Field(
+        default=6,
+        alias="COMPRESSATORIUM_TOOL_IOPRIO_LEVEL",
+        validation_alias=AliasChoices(
+            "COMPRESSATORIUM_TOOL_IOPRIO_LEVEL", "CHD_CHDMAN_IOPRIO_LEVEL",
+        ),
+    )
+    tool_info_timeout: int = Field(
+        default=60,
+        alias="COMPRESSATORIUM_TOOL_INFO_TIMEOUT",
+        validation_alias=AliasChoices(
+            "COMPRESSATORIUM_TOOL_INFO_TIMEOUT", "CHD_INFO_TIMEOUT",
+        ),
+    )
+    tool_verify_timeout: int = Field(
+        default=0,
+        alias="COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT",
+        validation_alias=AliasChoices(
+            "COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT", "CHD_VERIFY_TIMEOUT",
+        ),
+    )
+
+    # Optional per-tool overrides. Each defaults to None, meaning "use the
+    # shared tool_* default above". Tool keys match the SubprocessRunner owner
+    # names (chdman, dolphin_tool, nsz, z3ds) so per-tool resolution is a plain
+    # getattr lookup. Set e.g. COMPRESSATORIUM_DOLPHIN_TOOL_NICE to give Dolphin
+    # a different nice level than chdman.
+    chdman_nice: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_CHDMAN_NICE",
+    )
+    chdman_ioprio_class: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_CHDMAN_IOPRIO_CLASS",
     )
     chdman_ioprio_level: int | None = Field(
-        default=6,
-        alias="CHD_CHDMAN_IOPRIO_LEVEL",
+        default=None, alias="COMPRESSATORIUM_CHDMAN_IOPRIO_LEVEL",
     )
-    chdman_info_timeout: int = Field(default=60, alias="CHD_INFO_TIMEOUT")
-    chdman_verify_timeout: int = Field(default=0, alias="CHD_VERIFY_TIMEOUT")
+    chdman_info_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_CHDMAN_INFO_TIMEOUT",
+    )
+    chdman_verify_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_CHDMAN_VERIFY_TIMEOUT",
+    )
+    dolphin_tool_nice: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_NICE",
+    )
+    dolphin_tool_ioprio_class: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_IOPRIO_CLASS",
+    )
+    dolphin_tool_ioprio_level: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_IOPRIO_LEVEL",
+    )
+    dolphin_tool_info_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_INFO_TIMEOUT",
+    )
+    dolphin_tool_verify_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_DOLPHIN_TOOL_VERIFY_TIMEOUT",
+    )
+    nsz_nice: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_NSZ_NICE",
+    )
+    nsz_ioprio_class: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_NSZ_IOPRIO_CLASS",
+    )
+    nsz_ioprio_level: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_NSZ_IOPRIO_LEVEL",
+    )
+    z3ds_nice: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_Z3DS_NICE",
+    )
+    z3ds_ioprio_class: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_Z3DS_IOPRIO_CLASS",
+    )
+    z3ds_ioprio_level: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_Z3DS_IOPRIO_LEVEL",
+    )
     verify_progress_timeout: int = Field(
         default=0,
         alias="CHD_VERIFY_PROGRESS_TIMEOUT",

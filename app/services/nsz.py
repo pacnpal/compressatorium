@@ -33,6 +33,7 @@ from pathlib import Path
 
 from config import settings
 from services.chdman import ConversionCancelled
+from services.subprocess_runner import ioprio_prefix, nice_prefix
 from services.timeout_policy import compute_progress_stall_timeout
 from utils.junk import is_junk_entry
 
@@ -254,22 +255,7 @@ class NszService:
         # Apply nice/ionice via command wrappers, NOT preexec_fn: forking a
         # Python callable in a multithreaded app (this one uses threadpools) can
         # deadlock the child before exec. `nice`/`ionice` are exec-only.
-        prefix: list[str] = []
-        if settings.chdman_nice is not None:
-            nice = shutil.which("nice")
-            if nice:
-                prefix += [nice, "-n", str(settings.chdman_nice)]
-        if (
-            settings.chdman_ioprio_class is not None
-            and settings.chdman_ioprio_level is not None
-        ):
-            ionice = shutil.which("ionice")
-            if ionice:
-                prefix += [
-                    ionice,
-                    "-c", str(settings.chdman_ioprio_class),
-                    "-n", str(settings.chdman_ioprio_level),
-                ]
+        prefix = nice_prefix("nsz") + ioprio_prefix("nsz")
         return prefix + cmd
 
     def _track_pid(self, pid: int):
