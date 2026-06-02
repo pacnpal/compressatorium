@@ -244,8 +244,8 @@ class DeleteSnapshotError(Exception):
 _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
     SkipReason.ARCHIVE_INPUT_NOT_ALLOWED: (
         400,
-        "Archive inputs are not supported for"
-        " extract/copy/dolphin/z3ds_compress modes",
+        "Archive inputs are not supported for CHDMAN extract/copy modes "
+        "(the source must be a finished .chd on disk)",
     ),
     SkipReason.ARCHIVE_NOT_FOUND: (404, "Archive not found"),
     SkipReason.OUTPUT_EXISTS: (409, "Output file already exists"),

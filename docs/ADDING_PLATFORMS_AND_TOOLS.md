@@ -130,7 +130,7 @@ class ModeSpec:
     supports_compression: bool = False
     supports_compression_level: bool = False  # dolphin rvz/wia only
     supports_delete_on_verify: bool = False
-    allows_archive_input: bool = False        # chdman create modes today
+    allows_archive_input: bool = False        # True for convertible-source modes; see §17
 ```
 
 A plugin subclasses `BaseTool` and provides:
@@ -805,6 +805,7 @@ PLUGIN (app/services/tools/<tool>.py)
     output_extensions, verify_extensions
 [ ] delegate convert/verify/verify_stream/info/info_model/output_path/active_pids
 [ ] optional: detect_output() for "output exists" badges
+[ ] optional: allows_archive_input=True on source modes (both registries) — see §17
 
 REGISTER (app/services/tools/__init__.py)
 [ ] registry.register(<Tool>(settings.<tool>_path))
@@ -1027,7 +1028,8 @@ matter when your *platform* is a disc image processed by chdman.
   (single-file inputs like `.3ds`/`.rvz` need nothing extra). Output paths for
   archive members flow through `archive_service._output_name_for_member`, which
   preserves the original extension so input-derived outputs (for example z3ds
-  `.3ds` to `.z3ds`) map correctly.
+  `.3ds` to `.z3ds`) map correctly. **§17** walks the whole archive-input path
+  end to end.
 - **DAT / MAMERedump** (`app/services/dat_*.py`, `app/routes/dat.py`,
   `app/services/file_hasher.py`) is for hash-matching dumps against DAT
   databases. Touch only if your platform participates in DAT verification.
@@ -1101,10 +1103,13 @@ DEPLOYMENT.md / DOCKER-COMPOSE.md    new env var, if any
   flat config in `eslint.config.js`) and keep the style consistent.
 - **The image runs as uid 999 (`converter`).** Binaries must be executable by a
   non-root user; install them to a world-readable path like `/usr/local/bin`.
-- **chdman is the only archive-aware tool today.** If your tool can't decompress
-  its inputs straight out of `.zip/.7z/.rar`, leave `allows_archive_input=False`
-  on its `ModeSpec` (the default) and the single guard in `plan_job` blocks
-  archive (`::`) members automatically.
+- **Most convertible-source modes are archive-aware.** chdman *create*, Dolphin,
+  3DS, and Switch (nsz) all accept members straight out of `.zip/.7z/.rar`; only
+  chdman *extract/copy* stay opted out, because they act on a finished `.chd`
+  (an output, not a convertible source). See **§17** for how to wire archive
+  input into a new tool. If your tool genuinely can't read its inputs from inside
+  an archive, leave `allows_archive_input=False` on its `ModeSpec` (the default)
+  and the single guard in `plan_job` blocks archive (`::`) members automatically.
 - **Binary path is config, not hardcoded.** Always read `settings.<tool>_path`
   (passed into the plugin, stored on the service in `__init__`) so deployments
   can relocate/override via env.
@@ -1220,4 +1225,137 @@ preserves the original protection measures.
   aren't present, so CI stays green. Inputs live in a git-ignored
   `testdata/<platform>/` scratch dir (only its README is tracked); the operator
   drops their keys and a sample dump there or points env vars at them.
+
+---
+
+## 17. Tools that read inputs from archives (ZIP/7z/RAR)
+
+Users keep dumps inside `.zip`/`.7z`/`.rar` archives, so every tool that takes a
+*convertible source* can convert a member straight out of the archive without a
+manual unzip first. Today chdman *create*, Dolphin, 3DS, and Switch (nsz) all
+support this; only chdman *extract/copy* opt out, because their input is a
+finished `.chd` (an output, not a source).
+
+The pipeline is **tool-agnostic and registry-driven**: a member arrives as a
+`"<archive>::<member>"` pseudo-path, the job layer extracts it to a real temp
+file before your `convert()` ever runs, and a single flag decides whether your
+mode participates. You almost never write archive-specific code; you set one
+flag and (for multi-file formats only) declare your sidecars. nsz is the
+reference: enabling it was literally two flag flips plus tests (see
+`app/services/tools/nsz.py` and the §17.7 test matrix).
+
+### 17.1 Opt in: one flag, in both registries
+
+Set `allows_archive_input=True` on each `ModeSpec` whose input is a convertible
+*source*, in **both** the Python spec and the JS registry (they have no automated
+cross-language parity test, so keep them in sync by hand):
+
+```python
+# app/services/tools/<tool>.py
+ModeSpec(mode="nszip_compress", tool_id="nszip", kind=ModeKind.COMPRESS,
+         ..., allows_archive_input=True),
+```
+
+```js
+// src/lib/tools/registry.js, in your tool's modes[]
+{ mode: 'nszip_compress', kind: 'compress', ..., allowsArchiveInput: true },
+```
+
+That is the entire opt-in for a single-file format. Everything below is either
+free or only applies to multi-file (CD) inputs.
+
+### 17.2 What you get for free
+
+Once the flag is `True`, the registry and job pipeline do the rest:
+
+- **Listing.** `ArchiveService` surfaces convertible members by reading
+  `registry.archive_input_extensions()` (the union of `input_extensions` over
+  every mode with `allows_archive_input=True`). Your extensions appear in archive
+  browse results automatically; there is nothing to register in `archive.py`.
+- **Validation.** The single guard in `plan_job` (`convert.py`) rejects `::`
+  members for any mode whose `spec.allows_archive_input` is `False`, and accepts
+  them otherwise. Per-tool extension checks use `_input_extension(file_path)`,
+  which is archive-aware (it reads the member's extension, not `.zip`), so your
+  existing validation block needs no change.
+- **Extraction + cleanup.** `job_manager._process_job` splits the pseudo-path,
+  calls `archive_service.extract_file(archive, member)` to drop the member into a
+  private temp dir, hands the **real on-disk path** to your `convert()`, and
+  removes the temp dir when the job ends. Your service sees an ordinary file
+  path; it never needs to know it came from an archive.
+
+### 17.3 Output paths for archive members
+
+The output is computed *before* extraction, from the member name, via
+`archive_service._output_name_for_member(member)`. That helper flattens
+subdirectories but **preserves the original extension** (`games/cart.nsp` ->
+`games_cart.nsp`), then passes it to your plugin's
+`output_path(mode, name, dir, treat_as_stem=True)`.
+
+Because the flattened name keeps its real extension, your existing
+`get_output_path_for_mode` maps it exactly like an on-disk file — there is no
+separate archive branch to write. z3ds and nsz both ignore `treat_as_stem` for
+this reason; they just look up `suffix` in their `*_OUTPUT_FORMATS` map. Accept
+the `treat_as_stem` kwarg for interface parity and move on. (`_output_stem_for_member`,
+which *drops* the extension, exists only for chdman's always-`.chd` existing-output
+badging — don't route input-derived outputs through it.)
+
+### 17.4 Multi-file (CD) inputs: declare your sidecars
+
+Single-file formats (`.nsp`, `.xci`, `.3ds`, `.rvz`, `.iso`, …) need nothing
+beyond the flag. A format whose "file" is really several files — a `.cue`/`.gdi`
+that references `.bin`/track files — must extract its siblings too, or the
+converter sees a dangling reference. `job_manager` handles this by calling
+`archive_service.extract_related_files(archive, member, temp_dir)`, which
+early-returns for everything except `.cue`/`.gdi` today. If you add a new
+multi-file source, extend that helper (parse the manifest, extract referenced
+members into the same temp dir). Switch/3DS/Dolphin are all single-file, so this
+does not apply to them.
+
+### 17.5 When *not* to opt in
+
+Leave `allows_archive_input=False` (the default) when the mode's input is an
+**output class**, not a convertible source — e.g. chdman `extract`/`copy`, which
+operate on a finished `.chd`. Re-reading a `.chd` from an archive is a recompress
+target, not a conversion source, so the guard rejects it (and
+`tests/test_archive_conversion_e2e.py::test_archive_chd_member_rejected_for_recompress`
+locks that in). Same logic for any "decompress an already-final artifact" mode.
+
+### 17.6 Delete-on-verify from an archive
+
+If your mode also sets `supports_delete_on_verify=True`, the source-deletion
+snapshot is archive-aware: `build_delete_plan` calls
+`utils.path_utils.strip_archive_path`, so the plan targets the archive container
+on disk, never a (non-deletable) member inside it. chdman *create* and z3ds
+already pair both flags; nsz *compress* now does too. No extra work — just don't
+assume the source is a plain file in your own code.
+
+### 17.7 Testing
+
+Two registry-driven suites cover the whole path; extend both:
+
+- **`tests/test_archive_conversion_e2e.py`** — add a row per direction to the
+  `MATRIX` (input ext, mode, expected output ext). The fixture stubs every
+  tool's `convert`, then drives the real route -> `plan_job` -> real extraction
+  from a real on-disk `.zip` -> stubbed convert -> output-naming -> temp cleanup.
+  This proves the member was genuinely extracted to a temp file and that the
+  output lands next to the archive with the input-derived extension. Because
+  `convert` is stubbed, no real binary (or keys, for nsz) is needed.
+- **`tests/test_archive_preference.py`** — assert your source extensions are in
+  `registry.archive_input_extensions()` (and that output-only extensions like
+  `.chd` are *not*).
+
+```python
+# tests/test_archive_conversion_e2e.py — MATRIX rows for a Switch-shaped tool
+(".nsp", ConversionMode.NSZ_COMPRESS,   ".nsz"),
+(".xci", ConversionMode.NSZ_COMPRESS,   ".xcz"),
+(".nsz", ConversionMode.NSZ_DECOMPRESS, ".nsp"),
+(".xcz", ConversionMode.NSZ_DECOMPRESS, ".xci"),
+```
+
+Run them:
+
+```bash
+# from the repo root
+pytest -q tests/test_archive_conversion_e2e.py tests/test_archive_preference.py
+```
 

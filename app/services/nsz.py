@@ -305,8 +305,15 @@ class NszService:
         treat_as_stem: bool = False,
     ) -> str:
         """Output path for an nsz mode. Both modes map purely on the input
-        extension. ``treat_as_stem`` is unused (nsz modes do not accept archive
-        members) but kept for interface parity with z3ds."""
+        extension via ``NSZ_OUTPUT_FORMATS``.
+
+        ``treat_as_stem`` is accepted for interface parity with z3ds and needs
+        no separate branch: archive members arrive as flattened filenames that
+        preserve their original extension (see
+        ``ArchiveService._output_name_for_member``), so the suffix lookup maps
+        them the same way as an on-disk file (.nsp -> .nsz, .xci -> .xcz, and
+        back). Every accepted input extension is a known key, so an unknown
+        extension is a genuine error rather than a fallback case."""
         input_p = Path(input_path)
         ext = input_p.suffix.lower()
         output_ext = NSZ_OUTPUT_FORMATS.get(ext)
