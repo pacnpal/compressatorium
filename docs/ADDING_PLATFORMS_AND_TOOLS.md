@@ -242,9 +242,9 @@ the non-obvious rows is in §8 to §14.
 | 20 | `src/lib/api/endpoints.js` | `get<Tool>Info`, `verify<Tool>`, `verifyBatch<Tool>` client methods alongside the existing ones. | New tool |
 | 21 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array. Everything downstream (sidebar, workspace, badges, modals, verify dispatch, SSE URL building) looks up this registry. | New mode and/or tool |
 | 22 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. Add it under **both** `:root` and `:root.dark`. | If new visual identity |
-| 22a | `src/lib/util/fileIcon.js` **and** `src/lib/components/panels/FileRow.svelte` | Two ext→icon maps (`DISC_EXTS`/`GAME_EXTS` in the util, plus an inline copy in `FileRow.iconComponent()`). Add your new file extensions to the right bucket in **both** so rows get a sensible icon. | New extensions |
+| 22a | `src/lib/util/fileIcon.js` | Single ext→icon map (`DISC_EXTS`/`GAME_EXTS`). Add your new file extensions to the right bucket so rows get a sensible icon. `FileRow.svelte` delegates to `iconForEntry()`, so this is the only place to edit. | New extensions |
 | 22b | `src/lib/components/panels/FileRow.svelte` | The `convertibleBy` derived value has a **legacy fallback** that rebuilds the tool list from per-tool booleans (`entry.<tool>_convertible`). Add your `<tool>_convertible` line. | New tool |
-| 22c | `src/lib/stores/conversion.svelte.js` | `defaultCompressionFor(toolId)` seeds a default codec per tool. Add a branch for your tool (return `[]` for a fixed/no-codec compressor like CSO/3DS). | New tool |
+| 22c | `src/lib/stores/conversion.svelte.js` | `defaultCompressionFor(toolId)` seeds the initial compression value per tool. Return `[]` for a tool with no compression UI (3DS); for a preset/codec dropdown, seed the default option (e.g. CSO returns `['default']`). | New tool |
 | 22d | `src/lib/components/views/HelpView.svelte` | The in-app Help page hard-codes the tool blurbs and the per-tool mode reference table. Add your tool + modes. | New tool (docs) |
 
 ### 3.4 Tests

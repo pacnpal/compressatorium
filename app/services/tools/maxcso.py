@@ -61,7 +61,7 @@ class MaxcsoTool(BaseTool):
             mode="cso_decompress",
             tool_id="cso",
             kind=ModeKind.EXTRACT,
-            label="Decompress CSO/ZSO → ISO",
+            label="Decompress CSO/ZSO/DAX → ISO",
             group="cso",
             output_ext=".iso",
             input_extensions=frozenset(MAXCSO_DECOMPRESS_EXTENSIONS),

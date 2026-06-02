@@ -90,8 +90,8 @@
     {
       tool: 'CSO',
       rows: [
-        ['cso_compress', 'Compress a PSP/PS2 ISO to CSO. No settings.', '.cso'],
-        ['zso_compress', 'Compress a PSP/PS2 ISO to ZSO (lz4, faster to decode).', '.zso'],
+        ['cso_compress', 'Compress a PSP/PS2 ISO to CSO. Pick an effort preset (Fast/Default/Max).', '.cso'],
+        ['zso_compress', 'Compress a PSP/PS2 ISO to ZSO (lz4, faster to decode). Same effort presets.', '.zso'],
         ['cso_decompress', 'Decompress CSO/ZSO/DAX back to a plain ISO.', '.iso'],
       ],
     },
