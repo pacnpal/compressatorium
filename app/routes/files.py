@@ -427,17 +427,23 @@ async def list_archive(
 
     # Registry-driven convertibility + sibling-output detection for each
     # member, mirroring the on-disk file scan so every archive-aware tool
-    # (chdman, dolphin, z3ds, nsz, …) gets badged — not just CHDMAN.
+    # (chdman, dolphin, z3ds, nsz, …) gets badged — not just CHDMAN. Each
+    # member probes every tool's sibling output via lock_manager (blocking
+    # disk I/O), so run the whole loop off the event loop.
     archive_dir = os.path.dirname(path)
-    for file_entry in contents:
-        output_stem, convertible_by, outputs, by_tool = (
-            _detect_archive_member_outputs(file_entry, archive_dir)
-        )
-        file_entry.update(_legacy_output_fields(convertible_by, by_tool))
-        file_entry["output_stem"] = output_stem
-        file_entry["chd_path"] = os.path.join(archive_dir, f"{output_stem}.chd")
-        file_entry["convertible_by"] = convertible_by
-        file_entry["outputs"] = outputs
+
+    def _annotate_members() -> None:
+        for file_entry in contents:
+            output_stem, convertible_by, outputs, by_tool = (
+                _detect_archive_member_outputs(file_entry, archive_dir)
+            )
+            file_entry.update(_legacy_output_fields(convertible_by, by_tool))
+            file_entry["output_stem"] = output_stem
+            file_entry["chd_path"] = os.path.join(archive_dir, f"{output_stem}.chd")
+            file_entry["convertible_by"] = convertible_by
+            file_entry["outputs"] = outputs
+
+    await run_in_threadpool(_annotate_members)
 
     return {
         "archive": path,
