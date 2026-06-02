@@ -1,5 +1,18 @@
 # Release Notes
 
+## 4.0.0-beta-10 (2026-06-01)
+
+### Switch key discovery + logging cleanup
+
+#### New
+
+- **Switch keys are found recursively.** When `SWITCH_KEYS` isn't set, the app checks the standard locations and then recursively walks your mounted game volumes (and the data dir) for `prod.keys`/`keys.txt` — skipping junk dirs and bounded so it can't stall startup. Set `SWITCH_KEYS` to point straight at the keys dir if they live very deep.
+
+#### Internal
+
+- **Log prefix renamed `chd` → `compressatorium`** (a leftover from the chdman-only days), centralized in `logging_setup` so the root name lives in one place.
+- The OS/NAS junk-file filter is now shared (`utils/junk`) between the file browser and the key search — a single source of truth.
+
 ## 4.0.0-beta-9 (2026-06-01)
 
 ### File browser polish + Switch key visibility
