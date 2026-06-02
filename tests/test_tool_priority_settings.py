@@ -26,6 +26,7 @@ def test_neutral_defaults_match_chdman_era_values():
     assert s.dolphin_tool_nice is None
     assert s.nsz_nice is None
     assert s.z3ds_nice is None
+    assert s.maxcso_nice is None
 
 
 def test_legacy_chd_env_names_still_populate_shared_settings():
@@ -95,8 +96,8 @@ def test_per_tool_override_takes_precedence_when_set():
     assert s.dolphin_tool_nice == 15
 
 
-def test_nsz_z3ds_expose_verify_timeout_override_only():
-    """nsz/z3ds run a verify subprocess but no info subprocess.
+def test_nsz_z3ds_maxcso_expose_verify_timeout_override_only():
+    """nsz/z3ds/maxcso run a verify subprocess but no info subprocess.
 
     They take a per-tool ``*_verify_timeout`` override but, unlike chdman and
     dolphin, have no ``*_info_timeout`` field (their ``info()`` is a filesystem
@@ -105,15 +106,19 @@ def test_nsz_z3ds_expose_verify_timeout_override_only():
     s = Settings()
     assert s.nsz_verify_timeout is None
     assert s.z3ds_verify_timeout is None
+    assert s.maxcso_verify_timeout is None
     assert not hasattr(s, "nsz_info_timeout")
     assert not hasattr(s, "z3ds_info_timeout")
+    assert not hasattr(s, "maxcso_info_timeout")
 
     s = Settings(
         COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=30,
         COMPRESSATORIUM_Z3DS_VERIFY_TIMEOUT=45,
+        COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT=50,
     )
     assert s.nsz_verify_timeout == 30
     assert s.z3ds_verify_timeout == 45
+    assert s.maxcso_verify_timeout == 50
 
 
 class _StubSettings:
@@ -165,6 +170,20 @@ def test_resolver_prefers_per_tool_override(monkeypatch):
     assert sr.nice_value("chdman") == 10
     assert sr.info_timeout("dolphin_tool") == 120
     assert sr.info_timeout("chdman") == 60
+
+
+def test_resolver_prefers_maxcso_verify_timeout_override(monkeypatch):
+    """The runtime path maxcso uses (verify_timeout("maxcso")) honors the
+    per-tool COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT override, not just Settings
+    parsing."""
+    sr = _patch_settings(
+        monkeypatch,
+        tool_verify_timeout=0,
+        maxcso_verify_timeout=50,
+    )
+    assert sr.verify_timeout("maxcso") == 50
+    # Owners without an override still fall back to the shared default.
+    assert sr.verify_timeout("chdman") == 0
 
 
 def test_resolver_none_override_falls_back(monkeypatch):

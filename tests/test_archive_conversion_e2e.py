@@ -50,6 +50,13 @@ MATRIX = [
     (".xci", ConversionMode.NSZ_COMPRESS, ".xcz"),
     (".nsz", ConversionMode.NSZ_DECOMPRESS, ".nsp"),
     (".xcz", ConversionMode.NSZ_DECOMPRESS, ".xci"),
+    (".iso", ConversionMode.CSO_COMPRESS, ".cso"),
+    (".iso", ConversionMode.CSO2_COMPRESS, ".cso"),
+    (".iso", ConversionMode.ZSO_COMPRESS, ".zso"),
+    (".iso", ConversionMode.DAX_COMPRESS, ".dax"),
+    (".cso", ConversionMode.CSO_DECOMPRESS, ".iso"),
+    (".zso", ConversionMode.CSO_DECOMPRESS, ".iso"),
+    (".dax", ConversionMode.CSO_DECOMPRESS, ".iso"),
 ]
 
 
@@ -99,7 +106,10 @@ def _e2e_env(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("ext", "mode", "out_ext"), MATRIX, ids=[m[0] for m in MATRIX])
+@pytest.mark.parametrize(
+    ("ext", "mode", "out_ext"), MATRIX,
+    ids=[f"{m[0]}-{m[1].value}" for m in MATRIX],
+)
 async def test_archive_member_converts_end_to_end(e2e_env, ext, mode, out_ext):
     tmp_path: Path = e2e_env["tmp_path"]
 

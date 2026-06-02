@@ -35,6 +35,12 @@
       blurb: 'Nintendo Switch dumps to NSZ/XCZ and back, using nsz, the format Tinfoil and DBI read. Usually 40 to 80 percent smaller, fully reversible. Switch content is encrypted, so this needs your own prod.keys, dumped from a console you own. Without keys the Switch tool is hidden entirely. Set SWITCH_KEYS to the folder holding them, or drop them under a mounted volume and the app finds them.',
       io: '.nsp / .xci  ↔  .nsz / .xcz',
     },
+    {
+      glyph: 'CSO',
+      name: 'CSO',
+      blurb: 'PSP and PS2 disc images to CSO, CSO v2, ZSO, or DAX, the compressed ISO formats PPSSPP and PCSX2 read directly, so the compressed file plays without a separate decompress step. Lossless and fully reversible, using maxcso. CSO v1 is the deflate-based, universally-supported default; CSO v2 improves block alignment for recent emulators; ZSO uses lz4 for faster decoding; DAX is a legacy PSP format. No keys needed. An ISO can also go to CHDMAN or Dolphin instead; the tool picker decides.',
+      io: '.iso  ↔  .cso / .zso / .dax',
+    },
   ];
 
   // Per-tool mode reference. Each row: [mode, what it does, output].
@@ -79,6 +85,16 @@
       rows: [
         ['nsz_compress', 'Compress to NSZ/XCZ. Pick a layout (Solid or Block) and a level.', '.nsz / .xcz'],
         ['nsz_decompress', 'Decompress back to the original NSP/XCI.', '.nsp / .xci'],
+      ],
+    },
+    {
+      tool: 'CSO',
+      rows: [
+        ['cso_compress', 'Compress a PSP/PS2 ISO to CSO v1, the universally-supported default. Pick an effort preset (Fast/Default/Max).', '.cso'],
+        ['cso2_compress', 'Compress to CSO v2 (better block alignment; needs a recent PPSSPP/PCSX2). Same effort presets.', '.cso'],
+        ['zso_compress', 'Compress a PSP/PS2 ISO to ZSO (lz4, faster to decode). Same effort presets.', '.zso'],
+        ['dax_compress', 'Compress to DAX, the legacy PSP format some older tools expect. Same effort presets.', '.dax'],
+        ['cso_decompress', 'Decompress CSO/ZSO/DAX back to a plain ISO.', '.iso'],
       ],
     },
   ];
@@ -169,8 +185,9 @@
     <h2 class="panel-title">Compression</h2>
     <p class="lead">
       CHD create and copy modes take a list of codecs. Dolphin RVZ/WIA take one codec plus a
-      level, and Switch compress takes a layout plus a level. GCZ, the decompress/extract
-      modes, and 3DS have no settings at all.
+      level, Switch compress takes a layout plus a level, and CSO/CSO v2/ZSO/DAX compress
+      take an effort preset (Fast / Default / Max). GCZ, the decompress/extract modes, and
+      3DS have no settings at all.
     </p>
     <p>
       Smaller is not always better. Some emulators only read certain codecs, and a file
@@ -210,6 +227,31 @@
       fully decompressed before it runs; Block is a little larger but stays installable and
       playable without unpacking first. Level runs 1 to 22; the default 18 is a good balance.
       Your choice is remembered per tool between sessions.
+    </p>
+    <p>
+      CSO works differently: you don't pick a codec, you pick a <strong>format</strong> (which
+      <em>is</em> the mode) and an <strong>effort</strong> preset. The format decides which
+      container you get — <strong>CSO</strong> (v1, deflate, the universally-supported default
+      that every PPSSPP/PCSX2 reads), <strong>CSO v2</strong> (better block alignment, needs a
+      recent PPSSPP/PCSX2), <strong>ZSO</strong> (lz4, decodes the fastest), or
+      <strong>DAX</strong> (legacy PSP format some older tools expect). When in doubt, use plain
+      CSO. CSO v1 and CSO v2 both produce a <code>.cso</code> file; the version differs inside.
+    </p>
+    <p>
+      The effort preset trades speed for size: <strong>Fast</strong> for the quickest result,
+      <strong>Default</strong> for a balanced trade-off, or <strong>Max</strong> for the
+      smallest file at the cost of speed (extra Zopfli + libdeflate trials for CSO/CSO v2/DAX,
+      brute-forced lz4 for ZSO). There is no numeric level — maxcso has no level concept, so the
+      preset is the only knob. Every preset is lossless, so the decompressed ISO comes back
+      byte-for-byte identical; only the compressed file's size and the time to make it change.
+      CSO ships a strong default — the <strong>Max</strong> preset — for the smallest files out
+      of the box. Your choice is remembered per tool between sessions.
+    </p>
+    <p>
+      Every tool that takes compression settings (CHD, Dolphin, Switch, CSO) has a
+      <strong>Reset to default</strong> button under its picker: one click puts that tool's
+      codec / layout / level / effort back to its default and confirms with a toast. It's
+      greyed out when you're already on the defaults.
     </p>
   </article>
 
@@ -258,10 +300,18 @@
       <code>.bin</code>, and the whole archive if the source came from one.
     </p>
     <p>
-      Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, and Switch
-      files. Verification status sticks around between sessions, so a file you verified last
+      Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and
+      CSO files. Verification status sticks around between sessions, so a file you verified last
       week still shows verified today. Long verifies can be given a timeout so a stalled one
       doesn't sit forever.
+    </p>
+    <p>
+      CSO verifies a little differently: it decompresses the whole <code>.cso</code>,
+      <code>.zso</code>, or <code>.dax</code> container and logs its CRC32, so a clean run
+      proves the file decodes end to end. Because the proof is on the <em>compressed</em>
+      output, delete-on-verify is offered on the CSO compress modes (CSO, CSO v2, ZSO, DAX) but
+      not on decompress, where the plain <code>.iso</code> output has nothing to check it
+      against.
     </p>
     <p>
       Deleting from the file list is a separate action. A file or an empty folder takes one
@@ -298,10 +348,13 @@
       matches feed tools like Hasheous and RomM, so a verified set carries over.
     </p>
     <p>
-      CHDs match on the header SHA1, which is codec-independent, so any compression setting
-      still matches. RVZ only matches when the bytes are identical to the DAT's recorded
-      hash, and Dolphin's RVZs often aren't byte-for-byte the same as the Redump sets. So a
-      perfectly good RVZ can show no badge. That's expected, not a problem with your file.
+      CHDs match on the header SHA1, which is codec-independent. Dolphin RVZ/WIA/GCZ match on
+      the disc image's content SHA1, reconstructed on the fly by
+      <code>dolphin-tool verify --algorithm sha1</code> — the same hash Redump records — so any
+      compression setting still matches for both. A missing badge usually means the DATs aren't
+      synced, the title isn't in the DAT, or the file is over <code>MATCH_MAX_FILE_SIZE</code>
+      (which skips the expensive full-disc reconstruction). It's about hash matching, not file
+      health, so verify is the real proof your file is good.
     </p>
   </article>
 
@@ -313,10 +366,11 @@
     </p>
     <p>
       The archive is unpacked to a temp directory for the conversion and cleaned up after.
-      Any convertible source works this way, including 3DS ROMs and Dolphin discs. Two
-      exceptions: CHDMAN extract and copy act on a finished <code>.chd</code> (an output, not
-      a source), and Switch (nsz) reads from disk only, so convert
-      <code>.nsp</code>/<code>.xci</code> files in place, not from inside an archive.
+      Any convertible source works this way — 3DS ROMs, Dolphin discs, Switch dumps
+      (<code>.nsp</code>/<code>.xci</code>, your own <code>prod.keys</code> still required), and PSP/PS2
+      images (both the <code>.iso</code> you compress and the <code>.cso</code>/<code>.zso</code>/<code>.dax</code>
+      you decompress). The one exception is CHDMAN extract and copy, which act on a finished
+      <code>.chd</code> (an output, not a source).
     </p>
     <p>
       When a <code>.cue</code> or <code>.gdi</code> sits next to its <code>.bin</code>
@@ -402,7 +456,7 @@
       <dd>Yes. That's exactly what copy mode is for. Point it at the existing CHD, pick new codecs, and it recompresses without needing the original disc.</dd>
 
       <dt>The DAT badge didn't appear on a file I'm sure is good.</dt>
-      <dd>For RVZ this is normal: Dolphin's output often isn't byte-identical to the Redump set, and RVZ only matches on identical bytes. For CHD, make sure the matching DATs are actually synced. A missing badge is about hash matching, not file health, so verify is the real proof your file is good.</dd>
+      <dd>RVZ/WIA/GCZ and CHD both match on the reconstructed disc / header hash (not the container bytes), so recompressing doesn't break matching. A missing badge usually means the DATs aren't synced, the title isn't in the DAT, or the file is over <code>MATCH_MAX_FILE_SIZE</code> (which skips the full-disc reconstruction). It's about hash matching, not file health, so verify is the real proof your file is good.</dd>
     </dl>
   </article>
 

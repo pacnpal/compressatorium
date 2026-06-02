@@ -86,6 +86,7 @@ def _legacy_output_fields(
         ("dolphin", "has_rvz", "dolphin_ready", "dolphin_path"),
         ("z3ds", "has_z3ds", "z3ds_ready", "z3ds_path"),
         ("nsz", "has_nsz", "nsz_ready", "nsz_path"),
+        ("cso", "has_cso", "cso_ready", "cso_path"),
     ):
         status = by_tool.get(tool_id)
         fields[has_key] = status is not None
@@ -96,6 +97,7 @@ def _legacy_output_fields(
     fields["dolphin_convertible"] = "dolphin" in convertible_by
     fields["z3ds_convertible"] = "z3ds" in convertible_by
     fields["nsz_convertible"] = "nsz" in convertible_by
+    fields["cso_convertible"] = "cso" in convertible_by
     return fields
 
 

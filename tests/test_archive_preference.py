@@ -38,6 +38,7 @@ def test_archive_input_extensions_cover_all_source_tools():
     assert {".rvz", ".gcz", ".wia", ".wbfs"} <= exts  # Dolphin
     assert {".gdi", ".iso", ".cue", ".bin"} <= exts   # chdman create
     assert {".nsp", ".xci", ".nsz", ".xcz"} <= exts   # Switch (nsz)
+    assert {".cso", ".zso", ".dax"} <= exts           # CSO (maxcso decompress)
     assert ".chd" not in exts
 
 

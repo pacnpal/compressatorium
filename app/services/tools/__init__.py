@@ -10,6 +10,7 @@ from config import settings
 from .base import BaseTool, ToolPlugin
 from .chdman import ChdmanTool
 from .dolphin import DolphinTool
+from .maxcso import MaxcsoTool
 from .nsz import NszTool
 from .registry import ToolRegistry
 from .spec import ModeKind, ModeSpec
@@ -20,6 +21,7 @@ registry.register(ChdmanTool(settings.chdman_path))
 registry.register(DolphinTool(settings.dolphin_tool_path))
 registry.register(Z3dsTool(settings.z3ds_compressor_path))
 registry.register(NszTool(settings.nsz_path))
+registry.register(MaxcsoTool(settings.maxcso_path))
 
 __all__ = [
     "BaseTool",

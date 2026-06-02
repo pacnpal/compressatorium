@@ -50,8 +50,8 @@
 
   // Walk the candidate tools and keep the first getInfo() that returns.
   // getInfo is the registry binding (chdman: getCHDInfo, dolphin:
-  // getDolphinInfo, z3ds: getZ3DSInfo, nsz: getNszInfo), no per-tool
-  // branches here. If none can parse the file, fall back to the basics
+  // getDolphinInfo, z3ds: getZ3DSInfo, nsz: getNszInfo, cso: getCsoInfo),
+  // no per-tool branches here. If none can parse the file, fall back to the basics
   // the listing already knew; `fellBack` flags that for the UI.
   async function loadInfo(tools, path, entry) {
     for (const t of tools) {

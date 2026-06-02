@@ -2,11 +2,11 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A disc image converter that wraps four tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), and **nsz** (Nintendo Switch). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A disc image converter that wraps five tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), and **maxcso** (PSP/PS2 CSO/ZSO). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
-* **Four tools in one.** CHDMAN, Dolphin, 3DS, or Switch compression, chosen per job.
+* **Five tools in one.** CHDMAN, Dolphin, 3DS, Switch, or CSO/ZSO compression, chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -24,6 +24,7 @@ A disc image converter that wraps four tools: **CHDMAN** (MAME), **dolphin-tool*
 | **Dolphin** | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
 | **Switch** | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Nintendo Switch compress/decompress (needs your own prod.keys) |
+| **CSO** | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | PSP/PS2 ISO compress (CSO v1/v2, ZSO, DAX) and decompress, via maxcso |
 
 > **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
 
@@ -35,8 +36,8 @@ Compressatorium can sync [MAME Redump](https://github.com/MetalSlug/MAMERedump) 
 - **Auto-sync**: Set `MAMEREDUMP_AUTO_SYNC=true` to sync DATs on container startup when none are loaded
 - **CHD files**: Matched via the embedded header / data SHA1 (codec-independent, works with any compression setting on chdman 0.285)
 - **Dolphin RVZ/WIA/GCZ**: Matched via the disc image's content SHA1 reconstructed by `dolphin-tool verify` — the same hash MAME Redump records for GameCube/Wii discs — so compressed Dolphin outputs match without the container bytes having to be identical
-- **Everything else** (3DS/Switch/`.iso`/`.bin`): Matched via file-level SHA1
-- **Library scan**: The background scan discovers and DAT-matches every registered tool's output (CHD, Dolphin RVZ/WIA/GCZ, 3DS, Switch, `.iso`, and the `.bin` data track from CHDMAN extract), not just CHDs, so non-CHD libraries get cached match results too. Heavy Dolphin disc-hashing during the scan honors `MATCH_MAX_FILE_SIZE` and stops promptly if you cancel the scan.
+- **Everything else** (3DS/Switch/CSO·ZSO·DAX/`.iso`/`.bin`): Matched via file-level SHA1
+- **Library scan**: The background scan discovers and DAT-matches every registered tool's output (CHD, Dolphin RVZ/WIA/GCZ, 3DS, Switch, CSO/ZSO, `.iso`, and the `.bin` data track from CHDMAN extract), not just CHDs, so non-CHD libraries get cached match results too. Heavy Dolphin disc-hashing during the scan honors `MATCH_MAX_FILE_SIZE` and stops promptly if you cancel the scan.
 - **DAT management**: Import, list, and delete DATs via the web UI "DAT Files" button
 - **Match badges**: Files matching a DAT entry show a blue "DAT" badge in the file list
 
@@ -104,6 +105,7 @@ When you open the Web UI, you'll see the tool options at the top:
 * **Dolphin** - For GameCube/Wii disc image conversions
 * **3DS** - For compressing Nintendo 3DS ROMs
 * **Switch** - For compressing/decompressing Nintendo Switch dumps (needs your own prod.keys)
+* **CSO** - For compressing/decompressing PSP/PS2 ISO images to CSO/ZSO
 
 **Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
 
@@ -117,9 +119,128 @@ When you open the Web UI, you'll see the tool options at the top:
 ### 3. Configure and Convert
 
 * Select the appropriate conversion mode from the dropdown
-* Adjust compression settings if available
+* Adjust compression settings if available (see [Compression Settings](#compression-settings))
 * Click the action button (Create/Convert/Compress depending on mode)
 * Monitor progress in the job queue panel
+
+---
+
+## Usage Guide
+
+This is the global guide to the workflow and the features shared by **every**
+tool — browsing, modes, compression, verifying/deleting, archives, DAT matching,
+and troubleshooting. The per-tool sections further down only document what's
+specific to each tool (its formats, modes, env vars, and quirks). The same
+material is available in-app under **Help**.
+
+### Browsing and finding files
+
+Your mounted volumes appear in the left panel — click a folder to enter, a
+breadcrumb to go back. **Search All** walks the whole volume and lists every
+convertible file at once; the **filter dropdown** narrows by extension. Both
+update automatically as tools are added. System clutter (`.DS_Store`, AppleDouble
+`._*` files, `Thumbs.db`, `desktop.ini`, `@eaDir`, `#recycle`, `lost+found`, …) is
+hidden so listings stay clean.
+
+### Modes
+
+Create makes a compressed file, extract/decompress gives the original back, copy
+recompresses in place. Pick the create mode that matches the media — compressing a
+PSP/PS2 image with `createcd` instead of `createdvd` won't come out right. The
+full mode list per tool is in [Supported Operations](#supported-operations).
+
+### Compression settings
+
+Every tool that compresses (CHD, Dolphin, Switch, CSO) shares one compression
+picker in the convert panel:
+
+* **Controls differ per tool.** chdman takes a codec list, Dolphin and Switch take
+  a single codec/layout plus a numeric level, and CSO takes a Fast/Default/Max
+  effort preset (no numeric level). Decompress/extract modes and 3DS have no
+  compression settings, so the picker is hidden for them.
+* **Your choice is remembered** server-side per tool, so it follows you across
+  sessions and browsers.
+* **Reset to default.** A button under the picker restores that tool's
+  codec/layout/level/effort to its default and confirms with a toast. It's
+  disabled when you're already on the defaults.
+* **Strong defaults where it helps.** CSO defaults to the **Max** preset (smallest
+  output); the other tools default to broadly-compatible settings (chdman `zlib`,
+  Dolphin `zstd:19`, Switch `solid:18`). See also
+  [Compression Compatibility Tips](#compression-compatibility-tips).
+
+### Output location and duplicates
+
+By default the output lands next to its source; set a custom output directory
+instead and it's created for you as long as it's inside a mounted volume. If a
+matching output already exists the app stops and asks rather than clobbering it:
+**skip** keeps the existing file, **rename** writes under a new name, **overwrite**
+replaces it.
+
+### The job queue
+
+Every conversion and verify runs through one FIFO queue — one job at a time by
+default, which keeps the host responsive during big batches. Progress streams
+live, and jobs run on the server, so closing the browser (or rebooting your
+laptop) doesn't stop them; reopen the page and it reconnects. The queue has
+active / completed / failed tabs, plus **Cancel All** and **Clear Done** (both
+confirm first).
+
+### Verifying and deleting safely
+
+Converting never deletes anything on its own — the safe order is convert, verify,
+then delete the source. Verify reads the whole output back and checks it against
+the file's own hashes/CRC; with **delete-on-verify** the source is removed only
+after the output passes, and never if it fails. You get a confirmation list of
+everything to be deleted first, including the `.cue`/`.gdi` track files that ride
+with a `.bin`, and the whole archive if the source came from one. **Bulk Verify**
+checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and CSO;
+verification status persists between sessions, and a long verify can be given a
+timeout so a stalled one doesn't block the queue.
+
+### File info
+
+Click a file to open the inspector — it shows the format/version, compression,
+size, and hashes, plus the raw tool output. For PS1/PS2/PSP/Dreamcast discs it
+also digs the game serial out of the sector data and shows a human title when it
+recognizes one. A background scan caches this so the list badges don't recompute
+on every folder open.
+
+### DAT matching
+
+Sync the MAMERedump DATs from the DAT Library (or import your own `.dat`/`.xml`
+from No-Intro/Redump) and converted files are checked against known-good hashes —
+a blue DAT badge means the file matches. CHDs match on the codec-independent header
+SHA1, and Dolphin RVZ/WIA/GCZ match on the disc image's content SHA1 reconstructed by
+`dolphin-tool verify --algorithm sha1` (the same hash Redump records), so **any
+compression setting still matches** for both. A missing badge usually means the DATs
+aren't synced, the title isn't in the DAT, or the file is larger than
+`MATCH_MAX_FILE_SIZE` (which skips the expensive full-disc reconstruction) — not that
+the file is bad.
+
+### Archives
+
+Browse straight into a ZIP, 7z, or RAR and convert a file from inside it — no need
+to extract first. The member is unpacked to a temp dir for the conversion and
+cleaned up afterwards. Any convertible **source** works this way (CHD create,
+Dolphin, 3DS, Switch, and CSO — Switch still needs your own `prod.keys`). The
+exception is CHDMAN extract/copy, which act on a finished `.chd` output rather than
+a source.
+
+### Troubleshooting
+
+* **An emulator won't read the CHD** — almost always the codec; recompress with
+  `zlib` only using copy mode (see [Compression Compatibility Tips](#compression-compatibility-tips)).
+* **"Output already exists"** — pick skip / rename / overwrite; nothing is
+  replaced unless you choose overwrite.
+* **A conversion stalls** — big files are slow; an adaptive stall timeout scales
+  with input size, and the queue has a recovery action. Check temp-dir space/speed.
+* **A file didn't show up** — make sure the right tool is selected (the list filters
+  to it); try Search All or clear the extension filter.
+* **An ISO went to the wrong tool** — ISOs can belong to CHDMAN or Dolphin; set the
+  ISO Handling toggle to match the disc.
+* **The Switch tool is missing or jobs ask for prod.keys** — it needs your own
+  keys; see [Nintendo Switch Support](#nintendo-switch-support). Without keys the
+  tool is hidden.
 
 ---
 
@@ -319,14 +440,11 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 **Supported inputs:** `.iso`, `.gcz`, `.wia`, `.rvz`, `.wbfs`  
 **Output modes:** `dolphin_rvz` (recommended), `dolphin_wia`, `dolphin_gcz`, `dolphin_iso`
 
-**Notes**
+**Notes** (shared workflow — compression, verify, archives — is in the [Usage Guide](#usage-guide))
 - Requires the Docker image with Dolphin installed (default image includes `dolphin-emu` + wrapper).
 - Dolphin conversions use `dolphin-tool` (configurable via `DOLPHIN_TOOL_PATH`).
-- Compression is a single codec with an optional level (`zstd:5`, `bzip2:5`, `lzma:5`, `lzma2:5`).
-- `dolphin_gcz` uses fixed compression and ignores codec selection.
-- `dolphin_iso` outputs an uncompressed ISO image.
-- Dolphin sources can be converted from inside ZIP/7z/RAR archives; the member is extracted to a temp dir for the conversion and cleaned up afterwards.
-- ISO info/verify and conversions follow the ISO Handling toggle in the UI (no default - user must choose).
+- Compression is a single codec plus an optional level (`zstd:5`, `bzip2:5`, `lzma:5`, `lzma2:5`); `zstd:19` is the default. `dolphin_gcz` uses fixed compression (ignores the codec), and `dolphin_iso` outputs an uncompressed ISO.
+- ISO info/verify and conversions follow the **ISO Handling** toggle in the UI (no default — you must choose, since an ISO can belong to CHDMAN or Dolphin).
 
 ---
 
@@ -334,14 +452,9 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 
 3DS ROM compression is available in the Web UI and REST API using [z3ds_compress](https://github.com/energeticokay/z3ds_compress).
 
-### How to Use
-
-1. **Select Primary Tool:** Choose **3DS** from the three main options at the top of the Web UI
-2. **Browse Files:** Navigate to your 3DS ROM directory
-3. **Select ROMs:** Check the boxes next to `.cci`, `.cia`, or `.3ds` files you want to compress
-4. **Compress:** Click the "Compress" button to start the conversion
-5. **Monitor Progress:** Watch the job queue for real-time progress
-6. **Done:** Compressed `.zcci`, `.zcia`, or `.z3ds` files will be created alongside the originals
+Select **3DS** as the primary tool, pick `.cci`/`.cia`/`.3ds` ROMs, and compress.
+The general workflow (queue, verify, delete-on-verify, archives) is in the
+[Usage Guide](#usage-guide); the 3DS-specific bits are below.
 
 ### Supported File Formats
 
@@ -370,39 +483,28 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 - **`.cia` files:** Supported but considered experimental
 - **`.3ds` files:** Same as .cci - fully supported (they're the same format)
 
-**Technical Limitations:**
-- z3ds_compressor binary is included in the Docker image (`Z3DS_COMPRESSOR_PATH=/usr/local/bin/z3ds_compressor`)
-- Compression settings are fixed - no user configuration needed or available
-- 3DS ROMs can be compressed directly from inside ZIP/7z/RAR archives (e.g. a `.zip` of `.3ds` files); the member is extracted to a temp dir for the conversion and cleaned up afterwards
-- ROMs must be decrypted before compression (encrypted ROMs will not work)
-- Progress tracking is based on output file size estimation
-- Delete-on-verify is supported for automatic source file cleanup after successful compression
+**3DS-specific notes:**
+- z3ds_compressor binary ships in the Docker image (`Z3DS_COMPRESSOR_PATH=/usr/local/bin/z3ds_compressor`).
+- Compression settings are **fixed** — 3DS is the one tool with no compression picker.
+- ROMs must be **decrypted** before compression (encrypted ROMs will not work).
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
-| `MAMEREDUMP_REPO` | `MetalSlug/MAMERedump` | GitHub repo for DAT sync |
-| `MAMEREDUMP_AUTO_SYNC` | `false` | Auto-sync DATs on startup if none loaded |
-| `MAMEREDUMP_GITHUB_TOKEN` | *(unset)* | Optional GitHub PAT that raises the API rate limit from 60 to 5,000 req/hr for DAT sync |
+
+(Global vars — DAT sync, tool paths, priority — are in [Environment Variables](#environment-variables).)
 
 ### REST API Endpoints
 
 - `POST /api/jobs` or `POST /api/jobs/batch` - Queue 3DS compression jobs (use `mode: "z3ds_compress"`)
-- `POST /api/dat/sync` - Sync all DATs from MAME Redump GitHub (one-click)
-- `GET /api/dat/sync/status` - Check sync progress
-- `POST /api/dat/sync/cancel` - Cancel an in-progress DAT sync
-- `POST /api/dat/import` - Import a MAME Redump DAT file (multipart upload)
-- `GET /api/dat/list` - List imported DATs
-- `DELETE /api/dat/{dat_id}` - Delete an imported DAT
-- `POST /api/dat/match` - Match a single file against DATs
-- `POST /api/dat/match-batch` - Batch match files against DATs
-- `GET /api/dat/stats` - DAT store statistics
 - `GET /api/z3ds-info?path=/path/to/rom.cci` - Get file information (size, format, compression status)
 - `GET /api/z3ds-verify?path=/path/to/rom.zcci` - Verify compressed 3DS output integrity
 - `GET /api/z3ds-verify/events?path=/path/to/rom.zcci` - SSE stream for 3DS verify progress
 - `POST /api/z3ds-verify-batch/events` - SSE stream for batch 3DS verification
+
+(DAT sync/import/match endpoints are shared — see [API Endpoints](#api-endpoints).)
 
 ---
 
@@ -424,15 +526,10 @@ in Tinfoil and DBI.
 
 ### How to Use
 
-1. **Provide keys:** Mount the directory holding your `prod.keys` into the
-   container (read-only) and set `SWITCH_KEYS` to it (see below). Or place the
-   file at `~/.switch/prod.keys` for the `converter` user. The Switch tool only
-   appears once keys are found.
-2. **Select Primary Tool:** Choose **Switch** in the Web UI.
-3. **Pick a mode:** *Compress* (`.nsp`/`.xci` → `.nsz`/`.xcz`) or *Decompress*
-   (`.nsz`/`.xcz` → `.nsp`/`.xci`).
-4. **Browse and select** your files, then convert. Progress streams live.
-5. **Done:** Output lands alongside the source (or in your chosen output dir).
+**Provide keys first** (see [Keys: setup and security](#keys-setup-and-security)) —
+the Switch tool only appears once `prod.keys` are found. Then select **Switch**,
+choose *Compress* (`.nsp`/`.xci` → `.nsz`/`.xcz`) or *Decompress*, and convert. The
+general workflow is in the [Usage Guide](#usage-guide).
 
 ### Supported File Formats
 
@@ -443,7 +540,7 @@ in Tinfoil and DBI.
 
 Compress maps `.nsp` → `.nsz` and `.xci` → `.xcz`; decompress reverses it.
 
-### Compression settings
+### Compression (layout and level)
 
 The Compress mode exposes two controls in the convert panel, per job:
 
@@ -453,7 +550,8 @@ The Compress mode exposes two controls in the convert panel, per job:
 
 Your choice is remembered server-side (per tool), so it persists across
 sessions and browsers. `NSZ_COMPRESSION_LEVEL` is the fallback default when no
-per-job level is set.
+per-job level is set. (See [Compression Settings](#compression-settings) for the
+shared picker behavior, including the Reset-to-default button.)
 
 ### Technical Details
 
@@ -463,11 +561,8 @@ per-job level is set.
   measures in place (the first 0x4000 bytes of each NCZ stay encrypted, and the
   NCZ header records how to re-encrypt), so decompression reproduces the
   original byte-for-byte.
-* Delete-on-verify is offered for compress only, since verify validates the
-  compressed `.nsz`/`.xcz` output.
-* Archive (ZIP/7z/RAR) inputs are supported for Switch: browse into the archive,
-  pick the `.nsp`/`.xci`/`.nsz`/`.xcz` member, and convert. Your own `prod.keys`
-  are still required, exactly as for on-disk files.
+* Archive inputs work, but your own `prod.keys` are still required exactly as for
+  on-disk files.
 
 ### Keys: setup and security
 
@@ -515,6 +610,68 @@ per-job level is set.
 Compress only games you own, using keys you dumped from your own console. You
 are responsible for how you use this tool. The project distributes no Nintendo
 keys, firmware, or copyrighted game data.
+
+---
+
+## PSP / PS2 Support (CSO / ZSO / DAX)
+
+CSO/ZSO/DAX compression and decompression use [maxcso](https://github.com/unknownbrackets/maxcso),
+the standard PSP/PS2 ISO compressor. It shrinks `.iso` disc images into `.cso`,
+`.zso`, or `.dax` (and reverses the process). PPSSPP (PSP) and PCSX2 (PS2) read these
+compressed formats directly, so the compressed file plays without a separate
+decompress step. No keys are required.
+
+### How to Use
+
+Select **CSO** as the primary tool and pick a mode (the general workflow is in the
+[Usage Guide](#usage-guide)):
+
+- *Compress ISO → CSO* (`.iso` → `.cso`, CSO v1, the universally-supported default, deflate-based)
+- *Compress ISO → CSO v2* (`.iso` → `.cso`, CSO v2, better block alignment; needs a recent PPSSPP/PCSX2)
+- *Compress ISO → ZSO* (`.iso` → `.zso`, lz4-based, faster to decode)
+- *Compress ISO → DAX* (`.iso` → `.dax`, legacy PSP format)
+- *Decompress CSO/ZSO/DAX → ISO* (`.cso`/`.zso`/`.dax` → `.iso`)
+
+### Supported File Formats
+
+* **`.iso`** - Raw PSP/PS2 disc image (compress source)
+* **`.cso`** - Compressed ISO (CISO, deflate); CSO v1 and v2 share this extension
+* **`.zso`** - Compressed ISO (lz4, faster decompression)
+* **`.dax`** - Legacy compressed ISO (compress target and decompress source)
+
+### Technical Details
+
+* maxcso is built from source into the image and runs as a subprocess (no shell).
+  Compression is lossless and fully reversible; the round trip reproduces the
+  original `.iso` byte-for-byte. Verify runs maxcso's `--crc` over the compressed
+  container (it decompresses the whole file and checks its CRC32).
+* The output **format is chosen by the mode** (CSO v1 `--format` default, CSO v2
+  `--format=cso2`, ZSO `--format=zso`, DAX `--format=dax`). Compress modes also take
+  an **effort** preset — there is no numeric level (maxcso has none):
+  * **Fast** - `--fast` (basic zlib/lz4): fastest, largest output.
+  * **Default** - maxcso's default trials (zlib + 7zdeflate for the deflate-based
+    CSO/CSO2/DAX formats, lz4hc for ZSO).
+  * **Max** - smallest output, slowest: `--use-zopfli --use-libdeflate` for
+    CSO/CSO2/DAX, `--use-lz4brute` for ZSO. **CSO defaults to Max.**
+* **Which format?** Use plain **CSO** (v1) when in doubt — every PPSSPP/PCSX2 reads
+  it. Pick **ZSO** for fastest decode (lz4), **CSO v2** for the best size on recent
+  emulators, and **DAX** only for legacy tools that require it.
+* An `.iso` row can be handled by CHDMAN, Dolphin, or CSO; the primary-tool picker
+  decides which one acts on it.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to the maxcso binary |
+
+### REST API Endpoints
+
+* `POST /api/jobs` or `POST /api/jobs/batch` - Queue CSO jobs (use `mode: "cso_compress"`, `"cso2_compress"`, `"zso_compress"`, `"dax_compress"`, or `"cso_decompress"`)
+* `GET /api/cso-info?path=/path/to/game.cso` - Get file information (size, format, compression status)
+* `GET /api/cso-verify?path=/path/to/game.cso` - Verify a compressed CSO/ZSO/DAX output
+* `GET /api/cso-verify/events?path=/path/to/game.cso` - SSE stream for CSO verify progress
+* `POST /api/cso-verify-batch/events` - SSE stream for batch CSO verification
 
 ---
 
@@ -607,13 +764,16 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 **Nintendo 3DS**
 - `z3ds_compress` (.cci → .zcci, .cia → .zcia, .3ds → .z3ds)
 
+**PSP / PS2 (CSO)**
+- `cso_compress` (.iso → .cso, CSO v1), `cso2_compress` (.iso → .cso, CSO v2), `zso_compress` (.iso → .zso), `dax_compress` (.iso → .dax), `cso_decompress` (.cso/.zso/.dax → .iso)
+
 Notes:
-- Compression applies to **create**/**copy** and Dolphin RVZ/WIA operations only.
-- Extract operations ignore compression settings.
+- Compression settings apply to CHD **create**/**copy**, Dolphin RVZ/WIA, Switch (`nsz_compress`), and the CSO/CSO v2/ZSO/DAX compress modes (the latter take an effort preset). Other modes ignore them.
+- Extract/decompress operations ignore compression settings.
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
 - 3DS compression uses fixed settings (no user configuration needed).
-- Archive inputs are supported for every convertible source (CHD create, Dolphin, 3DS, and Switch), except CHDMAN extract/copy modes, which act on a finished `.chd` output.
+- Archive inputs are supported for every convertible source (CHD create, Dolphin, 3DS, Switch, and CSO), except CHDMAN extract/copy modes, which act on a finished `.chd` output.
 
 ---
 
@@ -683,6 +843,33 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | GET | `/api/dolphin-verify/events` | SSE stream for Dolphin verification progress |
 | POST | `/api/dolphin-verify-batch/events` | SSE stream for batch Dolphin verification |
 
+### 3DS Info & Verification
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/z3ds-info` | Get 3DS ROM metadata |
+| GET | `/api/z3ds-verify` | Verify a compressed 3DS file's integrity |
+| GET | `/api/z3ds-verify/events` | SSE stream for 3DS verification progress |
+| POST | `/api/z3ds-verify-batch/events` | SSE stream for batch 3DS verification |
+
+### Switch Info & Verification
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/nsz-info` | Get Switch file metadata |
+| GET | `/api/nsz-verify` | Verify a compressed Switch file's integrity |
+| GET | `/api/nsz-verify/events` | SSE stream for Switch verification progress |
+| POST | `/api/nsz-verify-batch/events` | SSE stream for batch Switch verification |
+
+### CSO Info & Verification
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/cso-info` | Get CSO/ISO file metadata |
+| GET | `/api/cso-verify` | Verify a compressed CSO/ZSO/DAX file's integrity |
+| GET | `/api/cso-verify/events` | SSE stream for CSO verification progress |
+| POST | `/api/cso-verify-batch/events` | SSE stream for batch CSO verification |
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -706,6 +893,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary (for custom builds) |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
+| `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/CSO v2/ZSO/DAX) |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (`1` = serial queue processing) |
 | `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
 | `MAX_VERIFY_CONCURRENCY` | `1` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |
@@ -718,7 +906,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `6` | I/O priority level for every tool (`0` highest, `7` lowest). Legacy alias: `CHD_CHDMAN_IOPRIO_LEVEL`. |
 | `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` | `60` | Timeout in seconds for `info`/`header` subprocesses, used by chdman and Dolphin (nsz/3DS read info from the filesystem, so it doesn't apply to them). 0 disables. Legacy alias: `CHD_INFO_TIMEOUT`. |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` | `0` | Timeout in seconds for verify runs across all tools (0 disables). Legacy alias: `CHD_VERIFY_TIMEOUT`. |
-| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, or `Z3DS` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`). |
+| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, or `MAXCSO` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`, `COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT=300`). |
 | `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | (shared default) | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN` or `DOLPHIN_TOOL` (the only tools whose `info` runs a subprocess); falls back to the shared `COMPRESSATORIUM_TOOL_INFO_TIMEOUT`. |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
@@ -870,6 +1058,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.cue` / `.bin` - CD images with cue sheets
 - `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii disc images (Dolphin)
 - `.cci`, `.cia`, `.3ds` - Nintendo 3DS ROM images (3DS compression)
+- `.cso`, `.zso`, `.dax` - PSP/PS2 compressed ISO images (CSO decompression)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives
@@ -880,6 +1069,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.chd` - Compressed Hunks of Data (MAME/CHDMAN)
 - `.rvz`, `.wia`, `.gcz`, `.iso` - Dolphin output formats
 - `.zcci`, `.zcia`, `.z3ds` - Compressed Nintendo 3DS ROMs
+- `.cso`, `.zso`, `.dax` - Compressed PSP/PS2 ISO images (maxcso; `.cso` covers CSO v1 and v2)
 
 ---
 

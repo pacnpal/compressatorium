@@ -2,6 +2,19 @@
 
 ## 4.0.1 (2026-06-02)
 
+### PSP / PS2 support: CSO / ZSO / DAX via maxcso (#127)
+
+#### New
+
+- **A fifth tool: CSO.** Compress PSP/PS2 `.iso` disc images to every format [maxcso](https://github.com/unknownbrackets/maxcso) writes, and back. Five modes: `cso_compress` (ISO → CSO v1, the universally-supported default), `cso2_compress` (ISO → CSO v2, better block alignment for recent emulators), `zso_compress` (ISO → ZSO, lz4, faster to decode), `dax_compress` (ISO → DAX, legacy PSP format), and `cso_decompress` (CSO/ZSO/DAX → ISO). PPSSPP and PCSX2 read these formats directly, so no separate decompress step is needed to play. Available in the Web UI and REST API, with live progress, single + batch verify, and file-info. No keys required.
+- **Compression-effort presets.** The compress modes expose a Fast / Default / Max effort preset (mapped to maxcso's `--fast`, default trials, and extra `--use-zopfli`/`--use-libdeflate` / `--use-lz4brute` trials), reusing the same compression picker the other tools use and remembered per tool between sessions. CSO ships a strong default (the Max preset, smallest output).
+- **Reset to default.** Every compression-capable tool (CHD, Dolphin, Switch, CSO) gains a "Reset to default" button under its compression picker that restores that tool's codec/layout/level/effort to its default and confirms with a toast (disabled when already at the default).
+- **Lossless and verifiable.** The compress/decompress round trip reproduces the original `.iso` byte-for-byte. Verify runs maxcso's `--crc` over the compressed container, and delete-on-verify is offered for the compress modes. CSO/ZSO/DAX sources can also be converted from inside ZIP/7z/RAR archives.
+
+#### Internal
+
+- maxcso is built from source in a dedicated Dockerfile builder stage (deps: `liblz4`, `libuv`, `libdeflate`, `zlib`) and added to the tool registry as `cso`; no job-pipeline edits were needed. New `MAXCSO_PATH` env var (defaults to `/usr/local/bin/maxcso`). CSO outputs are picked up automatically by the registry-driven library scan / DAT-match (`scannable_extensions()`) and the shared tool-neutral priority/timeout policy (`COMPRESSATORIUM_MAXCSO_*` overrides).
+
 ### Library scan + DAT matching now cover every format (not just CHD)
 
 #### New

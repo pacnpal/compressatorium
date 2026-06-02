@@ -42,6 +42,12 @@ const NSZ_OUT_MAP = {
   '.nsp': '.nsz', '.xci': '.xcz', '.nsz': '.nsp', '.xcz': '.xci',
 };
 
+// CSO (maxcso). Compress takes a raw .iso; decompress takes any maxcso
+// container (.cso/.zso/.dax). Both directions are "sources" by mode.
+const CSO_COMPRESS_EXTS = ['.iso'];
+const CSO_VERIFY_EXTS = ['.cso', '.zso', '.dax'];
+const CSO_SOURCE_EXTS = [...CSO_COMPRESS_EXTS, ...CSO_VERIFY_EXTS];
+
 /**
  * @typedef {Object} ModeEntry
  * @property {string} mode
@@ -288,6 +294,68 @@ export const TOOLS = [
       if (!m) return path;
       const ext = `.${m[1].toLowerCase()}`;
       return swapExt(path, NSZ_OUT_MAP[ext] ?? ext);
+    },
+  },
+  {
+    id: 'cso',
+    label: 'CSO',
+    hint: 'Compress PSP / PS2 ISO images to CSO / CSO v2 / ZSO / DAX (and back).',
+    verifyPrefix: 'cso',
+    sourceExts: CSO_SOURCE_EXTS,
+    verifyExts: CSO_VERIFY_EXTS,
+    modeGroups: ['cso'],
+    groups: { cso: 'CSO / ZSO / DAX' },
+    defaultMode: 'cso_compress',
+    glyph: 'CSO',
+    accent: 'var(--badge-cso)',
+    // The output format is fixed by the mode (CSO vs ZSO); the codec dropdown
+    // picks a compression *effort* preset (no numeric level). 'single-with-level'
+    // shows just the dropdown because the compress modes set
+    // supportsCompressionLevel:false (the picker hides the slider then).
+    compressionCodecs: [
+      { value: 'default', label: 'Default', hint: 'Balanced (maxcso default trials)' },
+      { value: 'fast', label: 'Fast', hint: 'Fastest, larger output (--fast)' },
+      { value: 'max', label: 'Max', hint: 'Smallest, slowest (extra deflate/lz4 trials)' },
+    ],
+    compressionStyle: 'single-with-level',
+    modes: [
+      { mode: 'cso_compress', kind: 'compress', label: 'Compress ISO → CSO', group: 'cso',
+        outputExt: '.cso', inputExtensions: CSO_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'cso2_compress', kind: 'compress', label: 'Compress ISO → CSO v2', group: 'cso',
+        outputExt: '.cso', inputExtensions: CSO_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'zso_compress', kind: 'compress', label: 'Compress ISO → ZSO', group: 'cso',
+        outputExt: '.zso', inputExtensions: CSO_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'dax_compress', kind: 'compress', label: 'Compress ISO → DAX', group: 'cso',
+        outputExt: '.dax', inputExtensions: CSO_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'cso_decompress', kind: 'extract', label: 'Decompress CSO/ZSO/DAX → ISO',
+        group: 'cso',
+        outputExt: '.iso', inputExtensions: CSO_VERIFY_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: true },
+    ],
+    getInfo: (path) => api.getCsoInfo(path),
+    verify: (path, opts) => api.verifyCso(path, opts),
+    verifyBatch: (paths, opts) => api.verifyBatchCso(paths, opts),
+    // mode lets ISO sources resolve to the right target (.cso vs .zso); it
+    // defaults to the primary CSO product when the caller has no mode in hand.
+    productPath: (path, mode = 'cso_compress') => {
+      if (/\.iso$/i.test(path)) {
+        // cso_compress and cso2_compress both produce the .cso container.
+        const ext = mode === 'zso_compress' ? '.zso'
+          : mode === 'dax_compress' ? '.dax'
+          : '.cso';
+        return swapExt(path, ext);
+      }
+      if (/\.(cso|zso|dax)$/i.test(path)) return swapExt(path, '.iso');
+      return path;
     },
   },
 ];

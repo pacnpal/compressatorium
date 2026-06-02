@@ -22,6 +22,7 @@ LEGACY_FILEENTRY_KEYS = {
     "has_rvz", "dolphin_ready", "dolphin_path", "chd_ready",
     "dolphin_convertible", "z3ds_convertible", "has_z3ds", "z3ds_ready",
     "z3ds_path", "nsz_convertible", "has_nsz", "nsz_ready", "nsz_path",
+    "cso_convertible", "has_cso", "cso_ready", "cso_path",
     "archive_items", "archive_has_output", "archive_truncated",
     "media_type",
 }
@@ -30,6 +31,7 @@ LEGACY_SEARCH_KEYS = {
     "dolphin_ready", "dolphin_path", "chd_ready", "convertible",
     "dolphin_convertible", "z3ds_convertible", "has_z3ds", "z3ds_ready",
     "z3ds_path", "nsz_convertible", "has_nsz", "nsz_ready", "nsz_path",
+    "cso_convertible", "has_cso", "cso_ready", "cso_path",
     "in_archive",
 }
 # Archive members carry the same registry-driven flags as on-disk search hits
@@ -230,3 +232,9 @@ async def test_search_files_json_keys_are_additive(parity_env):
     assert "chdman" in inner["convertible_by"]
     assert inner["dolphin_convertible"] is True
     assert inner["has_rvz"] is False
+    # ...and as CSO-convertible (.iso -> .cso/.zso via maxcso), surfaced through
+    # the same registry-driven archive-member detection (#128). No .cso sibling
+    # exists in the fixture, so the output flags stay False.
+    assert inner["cso_convertible"] is True
+    assert "cso" in inner["convertible_by"]
+    assert inner["has_cso"] is False and inner["cso_ready"] is False

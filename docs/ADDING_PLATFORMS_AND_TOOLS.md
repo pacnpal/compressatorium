@@ -7,7 +7,7 @@ vertical slice, from the binary in the Docker image, through the Python service
 and tool plugin, the job pipeline, the FastAPI routes, and finally the Svelte
 web UI, and shows how to add a tool and a platform in tandem.
 
-It is written against the codebase as it stands today, with four tools already
+It is written against the codebase as it stands today, with five tools already
 wired up:
 
 | Tool | Binary | Service module | Plugin | Handles |
@@ -16,6 +16,7 @@ wired up:
 | **dolphin-tool** | `dolphin-emu` (`/usr/local/bin/dolphin-tool`) | `app/services/dolphin_tool.py` | `app/services/tools/dolphin.py` | GameCube/Wii images to/from `.rvz/.wia/.gcz/.iso` |
 | **z3ds_compressor** | built from source (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | `app/services/tools/z3ds.py` | Nintendo 3DS ROMs to `.zcci/.zcia/.z3ds` |
 | **nsz** | `nsz` pip package (on PATH) | `app/services/nsz.py` | `app/services/tools/nsz.py` | Nintendo Switch `.nsp`/`.xci` to/from `.nsz`/`.xcz` |
+| **maxcso** | built from source (`/usr/local/bin/maxcso`) | `app/services/maxcso.py` | `app/services/tools/maxcso.py` | PSP/PS2 `.iso` to/from `.cso` (CSO v1/v2) / `.zso` / `.dax` (tool id `cso`) |
 
 `z3ds` is the cleanest, most self-contained example of "a new tool that handles
 a new platform," so this guide uses it as the reference implementation
@@ -109,10 +110,10 @@ Two supporting layers:
   `archive_input_extensions()`, `verify_extensions()`, `output_extensions()`,
   `scannable_extensions()` (which drives the library scan / DAT-match
   discovery), and friends.
-- **`chdman.py` / `dolphin.py` / `z3ds.py`** are the three plugins. Each is a
-  thin `BaseTool` subclass that holds `ModeSpec` rows and delegates the real
-  work to the underlying service singleton.
-- **`__init__.py`** builds the `registry` singleton and registers the three
+- **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py`** are the five
+  plugins. Each is a thin `BaseTool` subclass that holds `ModeSpec` rows and
+  delegates the real work to the underlying service singleton.
+- **`__init__.py`** builds the `registry` singleton and registers all five
   tools. This is the single wiring point.
 
 ### The plugin contract: `ModeSpec` and `BaseTool`
@@ -249,7 +250,11 @@ the non-obvious rows is in §8 to §14.
 |---|------|-------------|------|
 | 20 | `src/lib/api/endpoints.js` | `get<Tool>Info`, `verify<Tool>`, `verifyBatch<Tool>` client methods alongside the existing ones. | New tool |
 | 21 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array. Everything downstream (sidebar, workspace, badges, modals, verify dispatch, SSE URL building) looks up this registry. | New mode and/or tool |
-| 22 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. | If new visual identity |
+| 22 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. Add it under **both** `:root` and `:root.dark`. | If new visual identity |
+| 22a | `src/lib/util/fileIcon.js` | Single ext→icon map (`DISC_EXTS`/`GAME_EXTS`). Add your new file extensions to the right bucket so rows get a sensible icon. `FileRow.svelte` delegates to `iconForEntry()`, so this is the only place to edit. | New extensions |
+| 22b | `src/lib/components/panels/FileRow.svelte` | The `convertibleBy` derived value has a **legacy fallback** that rebuilds the tool list from per-tool booleans (`entry.<tool>_convertible`). Add your `<tool>_convertible` line. | New tool |
+| 22c | `src/lib/stores/conversion.svelte.js` | `defaultCompressionFor(toolId)` seeds the initial compression value per tool. Return `[]` for a tool with no compression UI (3DS); for a preset/codec dropdown, seed the default option (e.g. CSO returns `['max']`). This is also what the shared **Reset to default** button restores — declare it once here and the button works for your tool for free (it lives in `CompressionPicker.svelte`, gated on the tool having codecs, and calls `conversion.resetCompression()` / `isCompressionDefault`; no per-tool wiring). | New tool |
+| 22d | `src/lib/components/views/HelpView.svelte` | The in-app Help page hard-codes the tool blurbs and the per-tool mode reference table. Add your tool + modes. | New tool (docs) |
 
 ### 3.4 Tests
 
@@ -257,9 +262,12 @@ the non-obvious rows is in §8 to §14.
 |---|------|-------------|------|
 | 23 | `tests/test_<tool>_routes.py` | Info + verify endpoint tests (copy `test_z3ds_routes.py`). | New tool |
 | 24 | `tests/test_<tool>_service.py` | `convert`/`verify`/cancel/bad-extension tests (copy `test_z3ds_verification_service.py`). | New tool |
-| 25 | `tests/test_tool_registry.py` | Assert your modes resolve to your tool and the spec flags are right. | New tool/mode |
-| 26 | `tests/test_mode_parity_fixes.py` | Add the mode so single-vs-batch validation parity is enforced. | New mode |
-| 27 | `tests/conftest.py` | Add a binary stub/fixture if the service needs the binary present. | New tool |
+| 25 | `tests/test_tool_registry.py` | Assert your modes resolve to your tool and the spec flags are right. Bump the mode count, extend the legacy `_legacy_tool_for_mode` ladder, the `convertible_extensions` union, `tools_for_input`/`tool_for_verify` cases, and the `output_path` + `output_extensions` parametrize lists. | New tool/mode |
+| 26 | `tests/test_mode_parity_fixes.py` | Add the mode so single-vs-batch validation parity is enforced; update the delete-on-verify error-message assertions if your compress mode supports it. | New mode |
+| 26a | `tests/test_dispatch_routing.py` | Extend the legacy convert/verify dispatch ladder (`_legacy_dispatch_id`) and the patched-tool tuple so your modes route to your service. | New tool |
+| 26b | `tests/test_files_outputs_parity.py` | Add your `<tool>_convertible/has_<tool>/<tool>_ready/<tool>_path` keys to `LEGACY_FILEENTRY_KEYS` **and** `LEGACY_SEARCH_KEYS` (they assert the exact legacy key surface). | New tool |
+| 26c | `tests/test_archive_conversion_e2e.py` + `tests/test_archive_preference.py` | Add `MATRIX` rows per direction and assert your source exts are in `registry.archive_input_extensions()` (see §17.7). Make parametrize `ids` unique if an extension repeats across modes. | New archive-aware tool |
+| 27 | `tests/conftest.py` | **No change for a tool binary.** `conftest.py` is DB-only; it does *not* stub tool binaries. Per-tool route/service tests define their own mocks (monkeypatch `info_routes.<service>` or `app.services.<tool>.asyncio.create_subprocess_exec`). | Rare |
 
 ### 3.5 CI / quality gates (must stay green)
 
@@ -429,6 +437,19 @@ nszip_path: str = Field(
 
 This lets ops override the path/env without code changes, and is what the plugin
 passes to its service in `__init__`.
+
+Optionally, add per-tool priority/timeout override fields so ops can diverge from
+the shared `COMPRESSATORIUM_TOOL_*` policy for just your tool. They default to
+`None` (fall back to the shared `tool_*` setting), and the `subprocess_runner`
+helpers resolve them by `<owner>_<key>` (see §5.3). Mirror `nsz`/`z3ds`/`maxcso`:
+
+```python
+nszip_nice: int | None = Field(default=None, alias="COMPRESSATORIUM_NSZIP_NICE")
+nszip_ioprio_class: int | None = Field(default=None, alias="COMPRESSATORIUM_NSZIP_IOPRIO_CLASS")
+nszip_ioprio_level: int | None = Field(default=None, alias="COMPRESSATORIUM_NSZIP_IOPRIO_LEVEL")
+nszip_verify_timeout: int | None = Field(default=None, alias="COMPRESSATORIUM_NSZIP_VERIFY_TIMEOUT")
+# add nszip_info_timeout only if the tool's info() runs a subprocess (chdman/Dolphin do; nsz/z3ds/maxcso don't)
+```
 
 ### 5.3 Write the service + the plugin
 
@@ -668,16 +689,27 @@ gate selection. It imports the registry and computes per-tool flags (today
 
 ### 5.9 Info + verify endpoints: `app/routes/info.py`
 
-Verify endpoints are **factory-generated**. You don't hand-write them. Add one
-call alongside the existing tool registrations:
+Verify endpoints are **factory-generated**. You don't hand-write them, but there
+are **two** edits, not one:
+
+1. **Add a `_VERIFY_CONFIG["<tool>"]` entry** (a `_VerifyRouteConfig` dataclass) near
+   the top of `info.py`. It carries the per-tool facts the factory has no other way
+   to know: `url_prefix` (e.g. `"cso-"` → `/api/cso-verify`; `""` for chdman),
+   `service=lambda: <service_singleton>` (resolved at call time so tests can rebind
+   it), the three FastAPI route names (`verify_<tool>` / `_events` / `_batch_events`),
+   `bad_ext_detail` (the 400 message), and `verify_error_prefix` (the 500 message).
+   The factory reads accepted extensions off `tool.verify_extensions`, so there's no
+   per-tool extension constant here.
+2. **Add the (2-arg) register call** alongside the existing tool registrations. The
+   config is looked up from `_VERIFY_CONFIG` by `tool.id`; it is **not** passed in:
 
 ```python
-verify_nszip, verify_nszip_events, verify_nszip_batch_events = register_verify_routes(
-    router, registry.get("nszip"),
+verify_cso, verify_cso_events, verify_cso_batch_events = register_verify_routes(
+    router, registry.get("cso"),
 )
 ```
 
-`register_verify_routes(router, tool)` generates the trio (`/api/nszip-verify`,
+`register_verify_routes(router, tool)` generates the trio (`/api/<tool>-verify`,
 `/api/nszip-verify/events`, `/api/nszip-verify-batch/events`) from the plugin's
 `verify_extensions`, acquires the global verify lane
 (`_acquire_verify_lane_or_429`, bounded by `workload_limiter`), and calls
@@ -685,8 +717,12 @@ verify_nszip, verify_nszip_events, verify_nszip_batch_events = register_verify_r
 constants are needed; the factory reads them off the plugin.
 
 Info is hand-written per tool. Add a `GET /api/nszip-info` endpoint modeled on
-`get_z3ds_info`, returning your `NszipInfo` model. No router registration is
-needed; `info.router` is already mounted under `/api` in `app/main.py`.
+`get_z3ds_info`, returning your `NszipInfo` model, plus its small
+`_is_<tool>_info_file(path)` guard and `<TOOL>_INFO_EXTENSIONS` constant (mirror
+the z3ds/nsz pair just above the endpoints). No router registration is needed;
+`info.router` is already mounted under `/api` in `app/main.py`. Also import your
+service singleton at the top of `info.py` so the `_VERIFY_CONFIG` lambda can
+resolve it by module global.
 
 ### 5.10 Frontend: `src/lib/api/endpoints.js`
 
@@ -831,9 +867,11 @@ MODE + MODELS (app/models.py)
 [ ] FileEntry: <tool>_convertible / has_<tool> / <tool>_ready / <tool>_path
 
 ROUTES
-[ ] convert.py: extension-validation block in plan_job (only if needed)
+[ ] convert.py: SkipReason.<TOOL>_BAD_EXTENSION + _SKIP_HTTP entry + is_<tool>
+    flag + extension-validation block in plan_job
 [ ] files.py: compute flags in the directory scan + search_files
-[ ] info.py: register_verify_routes(router, registry.get("<tool>")) + /<tool>-info
+[ ] info.py: _VERIFY_CONFIG["<tool>"] entry + register_verify_routes(...) +
+    /<tool>-info + _is_<tool>_info_file + service import
 
 PIPELINE (app/services/job_manager.py)
 [ ] usually nothing (registry dispatches convert + verify)
@@ -842,6 +880,10 @@ PIPELINE (app/services/job_manager.py)
 FRONTEND
 [ ] src/lib/api/endpoints.js: get<Tool>Info, verify<Tool>, verifyBatch<Tool>
 [ ] src/lib/tools/registry.js: one new entry in the TOOLS array
+[ ] src/lib/util/fileIcon.js + FileRow.svelte: ext→icon + convertibleBy legacy line
+[ ] src/lib/stores/conversion.svelte.js: defaultCompressionFor branch
+[ ] src/lib/components/views/HelpView.svelte: tool blurb + mode table rows
+[ ] src/styles/tokens.css: --badge-<tool> (only if new accent), both :root + .dark
 
 TESTS + DOCS
 [ ] tests/test_<tool>_routes.py, tests/test_<tool>_service.py, registry, mode-parity
@@ -1069,16 +1111,24 @@ app/services/tools/__init__.py      registry.register(NszipTool(settings.nszip_p
 app/models.py                       ConversionMode.NSZIP_COMPRESS; NszipInfo; FileEntry flags
 app/routes/convert.py               extension-validation block in plan_job (if needed)
 app/routes/files.py                 flags in the directory scan + search_files
-app/routes/info.py                  register_verify_routes(registry.get("nszip")); /nszip-info
+app/routes/info.py                  _VERIFY_CONFIG entry + register_verify_routes(get("nszip")) + /nszip-info + _is_nszip_info_file + service import
+app/routes/convert.py               SkipReason + _SKIP_HTTP + is_<tool> flag + plan_job validation
 app/services/job_manager.py         usually nothing (registry dispatches)
 src/lib/api/endpoints.js            getNszipInfo, verifyNszip, verifyBatchNszip
 src/lib/tools/registry.js           one new entry in TOOLS
-src/styles/tokens.css               (only if new badge classes)
+src/lib/util/fileIcon.js            add new exts to DISC_EXTS/GAME_EXTS
+src/lib/components/panels/FileRow.svelte   icon ext list + convertibleBy legacy line
+src/lib/stores/conversion.svelte.js defaultCompressionFor branch (return [] for no-codec)
+src/lib/components/views/HelpView.svelte   tool blurb + mode reference rows
+src/styles/tokens.css               (only if new badge classes; both :root + .dark)
 tests/test_nszip_routes.py          info+verify endpoint tests
 tests/test_nszip_service.py         convert/verify/cancel/bad-ext tests
-tests/test_tool_registry.py         mode resolves to nszip with the right flags
+tests/test_tool_registry.py         mode resolves to nszip; counts + ext unions + matrices
+tests/test_dispatch_routing.py      extend convert/verify legacy dispatch ladder
+tests/test_files_outputs_parity.py  add <tool>_* keys to LEGACY_*_KEYS sets
 tests/test_mode_parity_fixes.py     add nszip_compress to the parity matrix
-tests/conftest.py                   binary stub fixture
+tests/test_archive_conversion_e2e.py + test_archive_preference.py  archive matrix (if archive-aware)
+tests/conftest.py                   DB-only; no tool-binary stub (mocks live per-test-file)
 docker-compose*.yml                 (optional) NSZIP_PATH / CLI env docs
 package.json                        version bump (release)
 app/main.py                         add the tool to the FastAPI description= (shown at /docs)

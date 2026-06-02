@@ -29,6 +29,10 @@ function defaultModeFor(toolId) {
 function defaultCompressionFor(toolId) {
   if (toolId === 'dolphin') return ['zstd'];
   if (toolId === 'nsz') return ['solid'];
+  // CSO ships a strong default: the 'max' effort preset (extra Zopfli/libdeflate
+  // trials for CSO/CSO2/DAX, brute-forced lz4 for ZSO) for the smallest output.
+  // It's lossless either way, and the Reset-to-default button brings it back.
+  if (toolId === 'cso') return ['max'];
   return ['zlib'];
 }
 
@@ -292,6 +296,41 @@ class ConversionStore {
   setSingleCodec(codec) {
     this.compressionSelection = codec ? [codec] : [];
     this.#persistCompression();
+  }
+
+  /**
+   * Reset the current tool's compression settings to its registry defaults.
+   * Works for every compression-capable tool (chdman codec list, Dolphin/Switch
+   * codec+level, CSO effort preset) with no tool-specific branching, and
+   * persists the reset like any other change so it sticks across sessions.
+   */
+  resetCompression() {
+    const toolId = this.primaryTool;
+    const tool = registry.forTool(toolId);
+    this.compressionSelection = defaultCompressionFor(toolId);
+    if ((tool?.compressionStyle ?? 'none') === 'single-with-level') {
+      this.dolphinCompressionLevel = String(tool?.compressionLevelRange?.default ?? 19);
+    }
+    this.#persistCompression();
+  }
+
+  /**
+   * True when the current tool's compression selection (and level, for modes
+   * that expose one) already equals its defaults. Drives the disabled state of
+   * the Reset-to-default button so it only lights up when there's something to
+   * undo.
+   */
+  get isCompressionDefault() {
+    const toolId = this.primaryTool;
+    const def = defaultCompressionFor(toolId);
+    const sel = this.compressionSelection;
+    if (sel.length !== def.length || !sel.every((v, i) => v === def[i])) return false;
+    if (this.currentSpec?.supportsCompressionLevel) {
+      const tool = registry.forTool(toolId);
+      const defLevel = String(tool?.compressionLevelRange?.default ?? 19);
+      return String(this.dolphinCompressionLevel) === defLevel;
+    }
+    return true;
   }
 
   // ─── Preflight ────────────────────────────────────────────────────────

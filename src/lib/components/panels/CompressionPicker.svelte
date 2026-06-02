@@ -2,14 +2,18 @@
   // Compression configuration. Three "styles" supported, picked off the
   // tool descriptor:
   //   - 'multi'             chdman: comma-separated codec list (chips).
-  //   - 'single-with-level' Dolphin RVZ/WIA: one codec + numeric level.
+  //   - 'single-with-level' Dolphin RVZ/WIA / CSO: one codec, plus a numeric
+  //                         level only when the mode sets supportsCompressionLevel
+  //                         (CSO's effort presets show the dropdown alone).
   //   - 'none'              z3ds: fixed compression; renders nothing.
   // The CompressionPicker has zero tool-specific branches, adding a new
   // tool means declaring its codec list + style in registry.js and
   // (optionally) a level range; this file does not need editing.
 
   import { conversion } from '$lib/stores/conversion.svelte.js';
+  import { toast } from 'svelte-sonner';
   import Check from '@lucide/svelte/icons/check';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
   const tool = $derived(conversion.currentTool);
   const spec = $derived(conversion.currentSpec);
@@ -26,9 +30,17 @@
   const singleCodec = $derived(
     selection.find((c) => c && c !== 'none') ?? 'none',
   );
+  // True when the current tool's settings already match its defaults; used to
+  // disable the Reset button so it's not a silent no-op.
+  const atDefault = $derived(conversion.isCompressionDefault);
 
   function isSelected(value) {
     return selection.includes(value);
+  }
+
+  function resetToDefault() {
+    conversion.resetCompression();
+    toast.success(`${tool?.label ?? 'Compression'} reset to default`, { duration: 2500 });
   }
 </script>
 
@@ -89,7 +101,7 @@
         </select>
       </label>
 
-      {#if singleCodec && singleCodec !== 'none'}
+      {#if spec?.supportsCompressionLevel && singleCodec && singleCodec !== 'none'}
         <label class="level">
           <span class="sublabel">Level (compression effort)</span>
           <div class="level-row">
@@ -119,6 +131,20 @@
         </label>
       {/if}
     {/if}
+
+    <div class="picker-footer">
+      <button
+        type="button"
+        class="reset-btn"
+        onclick={resetToDefault}
+        disabled={atDefault}
+        title={atDefault
+          ? 'Compression is already at this tool’s default'
+          : 'Reset this tool’s compression settings to the default'}
+      >
+        <RotateCcw size={12} aria-hidden="true" /> Reset to default
+      </button>
+    </div>
   </fieldset>
 {/if}
 
@@ -222,6 +248,39 @@
   }
   .cap-note { color: var(--warning); margin-left: var(--space-1); }
   .chip:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .picker-footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: var(--space-1);
+  }
+  .reset-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-1);
+    color: var(--text-2);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    font-size: var(--text-xs);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out);
+  }
+  .reset-btn:hover:not(:disabled) {
+    background: var(--surface-3);
+    color: var(--text-1);
+  }
+  .reset-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+  .reset-btn:disabled {
     opacity: 0.45;
     cursor: not-allowed;
   }

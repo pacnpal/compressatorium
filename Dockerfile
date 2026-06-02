@@ -30,6 +30,43 @@ RUN g++ -O3 src/*.cpp -o z3ds_compressor -lzstd && \
     chmod +x z3ds_compressor
 
 # ---------------------------------------------------------------------------
+# maxcso builder stage: compile maxcso (PSP/PS2 ISO <-> CSO/ZSO) from source.
+#
+# maxcso is a plain `make` C++ build linking system liblz4 / libuv / libdeflate
+# (plus zlib). Compiles per-arch automatically, so multi-arch buildx works.
+# Cloning master mirrors the z3ds stage; pin --branch <tag> for reproducibility.
+# DL3008 ignored for the same reason as the z3ds builder (generic build deps).
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8 AS maxcso-builder
+ENV DEBIAN_FRONTEND=noninteractive
+# Pinned to an immutable maxcso commit so release images are reproducible
+# (the build workflow passes only APP_VERSION). This is master @ 2024-01-26,
+# which has the ZSO and --crc support this app relies on; the latest *tag*
+# (v1.13.0) predates them, so a commit SHA is used rather than a tag. Override
+# with --build-arg MAXCSO_REF=<tag|sha> to update maxcso intentionally.
+ARG MAXCSO_REF=961f232cf99d546b2b7e704c0ecf3fc5bea52221
+# hadolint ignore=DL3008
+RUN apt-get update -o Acquire::Retries=3 && \
+    apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    pkgconf \
+    zlib1g-dev \
+    liblz4-dev \
+    libuv1-dev \
+    libdeflate-dev \
+    ca-certificates && \
+    git clone https://github.com/unknownbrackets/maxcso.git /tmp/maxcso && \
+    git -C /tmp/maxcso checkout "${MAXCSO_REF}" && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/maxcso
+
+RUN make && \
+    if [ ! -f maxcso ] && [ -f bin/maxcso ]; then cp bin/maxcso maxcso; fi && \
+    chmod +x maxcso
+
+# ---------------------------------------------------------------------------
 # Frontend builder stage: compile the Svelte 5 SPA with Vite.
 #
 # Output is emitted to /build/static via vite.config.js (build.outDir),
@@ -88,6 +125,10 @@ RUN apt-get update -o Acquire::Retries=3 && \
       zstd \
       bash \
       gosu \
+      liblz4-1 \
+      libuv1t64 \
+      libdeflate0 \
+      zlib1g \
       ca-certificates && \
     # Install dolphin-emu only where available/practical (non-fatal)
     if [ "$TARGETARCH" = "amd64" ]; then \
@@ -131,6 +172,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Install z3ds_compressor from builder stage
 COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
+
+# Install maxcso from its builder stage (PSP/PS2 ISO <-> CSO/ZSO)
+COPY --from=maxcso-builder /tmp/maxcso/maxcso /usr/local/bin/maxcso
 
 # Copy application
 COPY app/ /app/

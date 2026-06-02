@@ -110,7 +110,7 @@ async def test_delete_on_verify_error_messages_include_dolphin_and_3ds():
     with pytest.raises(HTTPException) as exc_info:
         await convert_routes.delete_plan(request)
     assert exc_info.value.status_code == 400
-    assert "create/copy/Dolphin/3DS/Switch-compress" in str(exc_info.value.detail)
+    assert "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress" in str(exc_info.value.detail)
 
     create_request = JobCreateRequest(
         file_path="/tmp/any.chd",
@@ -120,7 +120,7 @@ async def test_delete_on_verify_error_messages_include_dolphin_and_3ds():
     with pytest.raises(HTTPException) as create_exc:
         await convert_routes.create_job(create_request)
     assert create_exc.value.status_code == 400
-    assert "create/copy/Dolphin/3DS/Switch-compress" in str(create_exc.value.detail)
+    assert "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress" in str(create_exc.value.detail)
 
 
 @pytest.mark.asyncio
@@ -134,7 +134,7 @@ async def test_delete_plan_rejects_external_modes_without_crashing(mode):
     with pytest.raises(HTTPException) as exc_info:
         await convert_routes.delete_plan(request)
     assert exc_info.value.status_code == 400
-    assert "create/copy/Dolphin/3DS/Switch-compress" in str(exc_info.value.detail)
+    assert "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio

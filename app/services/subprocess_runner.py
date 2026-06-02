@@ -56,7 +56,7 @@ class ConversionCancelled(Exception):
 # an optional per-tool override (``<owner>_*``, e.g. ``dolphin_tool_nice``)
 # takes precedence when set. ``owner`` matches the ``SubprocessRunner`` owner
 # string each service constructs (``chdman``, ``dolphin_tool``, ``nsz``,
-# ``z3ds``).
+# ``z3ds``, ``maxcso``).
 
 
 def _resolve_policy(key: str, owner: str | None):

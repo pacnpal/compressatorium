@@ -120,6 +120,12 @@ class Settings(BaseSettings):
         default="/usr/local/bin/z3ds_compressor", alias="Z3DS_COMPRESSOR_PATH",
     )
 
+    # maxcso binary path (PSP/PS2 ISO <-> CSO/ZSO). Built from source into the
+    # image at /usr/local/bin/maxcso; set MAXCSO_PATH to relocate/override.
+    maxcso_path: str = Field(
+        default="/usr/local/bin/maxcso", alias="MAXCSO_PATH",
+    )
+
     # nsz (Nintendo Switch NSP/XCI <-> NSZ/XCZ). Installed via pip into the
     # venv, so the console script lives on PATH (/opt/venv/bin in Docker, .venv
     # locally). A bare name resolves in both; set NSZ_PATH to pin an absolute
@@ -250,6 +256,20 @@ class Settings(BaseSettings):
     )
     z3ds_verify_timeout: int | None = Field(
         default=None, alias="COMPRESSATORIUM_Z3DS_VERIFY_TIMEOUT",
+    )
+    # maxcso (CSO/ZSO): like nsz/z3ds, info() is a filesystem read so only a
+    # verify-timeout override is exposed, no info-timeout.
+    maxcso_nice: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_MAXCSO_NICE",
+    )
+    maxcso_ioprio_class: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_MAXCSO_IOPRIO_CLASS",
+    )
+    maxcso_ioprio_level: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_MAXCSO_IOPRIO_LEVEL",
+    )
+    maxcso_verify_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT",
     )
     verify_progress_timeout: int = Field(
         default=0,
