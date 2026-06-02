@@ -108,14 +108,16 @@
       } else {
         toast.error(name, {
           id: toastId,
-          description: result?.message ?? 'Verification failed',
+          // `||` not `??`: an empty-string message should still fall back
+          // to a real description, not render a blank toast.
+          description: result?.message || 'Verification failed',
           duration: 6000,
         });
       }
     } catch (e) {
       toast.error(name, {
         id: toastId,
-        description: e?.message ?? 'Verify failed',
+        description: e?.message || 'Verify failed',
         duration: 6000,
       });
     }
