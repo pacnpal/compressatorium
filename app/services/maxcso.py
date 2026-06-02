@@ -391,9 +391,18 @@ class MaxcsoService:
             yield {"type": "error", "valid": False, "message": f"Invalid extension: {ext}"}
             return
 
+        # Throttle verify the same way conversions are: `maxcso --crc` fully
+        # decompresses the container and is just as disk/CPU-heavy as a convert,
+        # so it must honor the same nice/ionice policy (incl. the optional
+        # COMPRESSATORIUM_MAXCSO_* overrides) via command wrappers.
+        verify_cmd = (
+            nice_prefix(_OWNER)
+            + ioprio_prefix(_OWNER)
+            + [self.maxcso_path, "--crc", file_path]
+        )
         try:
             process = await asyncio.create_subprocess_exec(  # nosemgrep
-                self.maxcso_path, "--crc", file_path,
+                *verify_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
