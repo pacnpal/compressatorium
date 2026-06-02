@@ -1,4 +1,11 @@
-FROM debian:trixie-slim AS builder
+# Base images pinned to their multi-arch index digests (not just the moving
+# tags) so the FROM layer is stable across builds — moving tags get new digests
+# upstream every few days, which busts the entire layer cache and forces a full
+# rebuild. Pinning keeps the registry build cache effective and the build
+# reproducible. apt-get update inside the stages still pulls security patches;
+# bump these digests periodically (docker buildx imagetools inspect <img>).
+#   debian:trixie-slim and node:lts-slim digests captured 2026-06-02.
+FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8 AS builder
 
 # Install build dependencies
 #
@@ -30,7 +37,7 @@ RUN g++ -O3 src/*.cpp -o z3ds_compressor -lzstd && \
 # node:lts-slim ships linux/amd64 and linux/arm64 manifests, and the SPA
 # has no native dependencies so QEMU emulation under buildx works.
 # ---------------------------------------------------------------------------
-FROM node:lts-slim AS frontend-builder
+FROM node:lts-slim@sha256:242549cd46785b480c832479a730f4f2a20865d61ea2e404fdb2a5c3d3b73ecf AS frontend-builder
 WORKDIR /build
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -40,7 +47,7 @@ ARG APP_VERSION=dev
 ENV VITE_APP_VERSION=${APP_VERSION}
 RUN npm run build
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8
 
 # ---------------------------------------------------------------------------
 # Immutable pin: mame-tools 0.285+dfsg1-1 from snapshot.debian.org
