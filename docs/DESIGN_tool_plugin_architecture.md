@@ -174,7 +174,13 @@ class ToolPlugin(Protocol):
     # DAT-match fast path: (sha1, match_type) pairs the tool can report
     # cheaply (chdman header/data SHA1 from the metadata cache, dolphin disc
     # SHA1 via verify). Default empty -> caller falls back to file-level SHA1.
-    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]: ...
+    # Raise EmbeddedHashUnavailable when the tool *should* yield a hash but the
+    # attempt failed / the cache is stale, so the caller skips the meaningless
+    # file-level fallback and does NOT cache a false negative. cancel_event lets
+    # a background scan/match job abort an expensive derivation promptly.
+    async def embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[tuple[str, str]]: ...
 
     def active_pids(self) -> list[int]: ...
 
@@ -253,12 +259,27 @@ class SubprocessRunner:
         exit -> RuntimeError(tail), final 100%.
         `parse_progress(line) -> int|None` is the only per-tool knob.
         """
+
+    async def run_capture(self, cmd: list[str], *, timeout=None,
+                          cancel_event=None, stderr_to_stdout=False
+                          ) -> tuple[int | None, bytes, bytes]:
+        """One-shot counterpart to run(): buffered (returncode, stdout, stderr)
+        for tools that need a result rather than streamed lines (info / header /
+        embedded-hash extraction). Same PID tracking; races communicate()
+        against cancel_event + timeout and terminates (TERM->KILL) on either,
+        reporting returncode None to signal the abort. Used by
+        `dolphin_tool.disc_hashes` so `dolphin-tool verify --algorithm sha1`
+        (the Dolphin disc-hash source for `embedded_hashes`) aborts promptly
+        when a scan/match job is cancelled.
+        """
 ```
 
 Per-tool `convert()` becomes ~15 lines: build argv, then
 `async for u in self._runner.run(cmd, ..., parse_progress=self._parse_progress): yield u`.
 The dolphin/z3ds output-size heuristic and dolphin's heartbeat become opt-in
-flags on `run()`.
+flags on `run()`. One-shot subprocess work (info / header / embedded-hash
+extraction) shares `run_capture()` rather than re-implementing the
+spawn / cancel / timeout / terminate dance per tool.
 
 ### 3.4 `registry.py`
 

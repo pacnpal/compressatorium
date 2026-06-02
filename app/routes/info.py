@@ -107,6 +107,10 @@ async def _scan_phase_dat_match(
         message=f"Phase 3: DAT-matching {total} file(s)…",
     )
 
+    # Forwarded into expensive embedded-hash hooks (e.g. dolphin-tool verify)
+    # so cancelling the scan aborts the in-flight file promptly.
+    cancel_event = job_manager.get_cancel_event(scan_job_id)
+
     # Skip paths already present in the match cache unless forced.
     cached: dict[str, dict | None] = {}
     if not force:
@@ -121,7 +125,7 @@ async def _scan_phase_dat_match(
                 matched += 1
         else:
             try:
-                result = await _match_single_file(path)
+                result = await _match_single_file(path, cancel_event=cancel_event)
                 # Don't cache size-cap skips or transient errors (same policy
                 # as the /dat/match-batch job).
                 if not result.get("reason") and not result.get("error"):
@@ -180,7 +184,7 @@ async def scan_metadata_task(
     # Discovery is registry-driven: walk every extension any registered tool
     # produces or can verify (issue #131) so Dolphin/3DS/Switch outputs are
     # eligible for the scan, not just CHDs.
-    scan_extensions = tuple(registry.scannable_extensions())
+    scan_extensions = registry.scannable_extensions()
 
     def collect_scannable_paths():
         """Collect all scannable output paths from volumes (runs in thread pool)."""
@@ -192,7 +196,9 @@ async def scan_metadata_task(
                 continue
             for root, _, files in os.walk(volume):
                 for file in files:
-                    if file.lower().endswith(scan_extensions):
+                    # Compare the real suffix, not a string ending: a ".ciso"
+                    # must not be admitted just because it ends with ".iso".
+                    if os.path.splitext(file)[1].lower() in scan_extensions:
                         # Resolve symlinks so discovered paths share the cache
                         # key space of the on-demand DAT-match endpoints (which
                         # realpath before caching) and the CHD metadata store,

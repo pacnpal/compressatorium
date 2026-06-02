@@ -141,3 +141,55 @@ def test_stall_timeout_raises_runtimeerror(tmp_path, monkeypatch):
 
     assert "Conversion stalled" in str(excinfo.value)
     assert not runner.active_pids()
+
+
+# ---------------------------------------------------------------------------
+# run_capture  (shared one-shot capture with cancel + timeout)
+# ---------------------------------------------------------------------------
+
+
+def test_run_capture_returns_output_and_returncode():
+    runner = SubprocessRunner(owner="test")
+    rc, stdout, stderr = asyncio.run(
+        runner.run_capture(_py_cmd("import sys; sys.stdout.write('hello')")),
+    )
+    assert rc == 0
+    assert stdout == b"hello"
+    assert stderr == b""
+    assert not runner.active_pids()
+
+
+def test_run_capture_nonzero_returncode():
+    runner = SubprocessRunner(owner="test")
+    rc, _stdout, _stderr = asyncio.run(
+        runner.run_capture(_py_cmd("import sys; sys.exit(3)")),
+    )
+    assert rc == 3
+    assert not runner.active_pids()
+
+
+def test_run_capture_cancel_returns_none_and_terminates():
+    runner = SubprocessRunner(owner="test")
+
+    async def go():
+        cancel = asyncio.Event()
+        cancel.set()  # already cancelled: must abort before the sleep elapses
+        return await runner.run_capture(
+            _py_cmd("import time; time.sleep(30)"), cancel_event=cancel,
+        )
+
+    rc, _stdout, _stderr = asyncio.run(go())
+    # None signals the abort; the child was terminated, not waited out.
+    assert rc is None
+    assert not runner.active_pids()
+
+
+def test_run_capture_timeout_returns_none_and_terminates():
+    runner = SubprocessRunner(owner="test")
+    rc, _stdout, _stderr = asyncio.run(
+        runner.run_capture(
+            _py_cmd("import time; time.sleep(30)"), timeout=0.2,
+        ),
+    )
+    assert rc is None
+    assert not runner.active_pids()

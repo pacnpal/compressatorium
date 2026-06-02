@@ -313,7 +313,7 @@ async def test_scan_discovers_non_chd_and_keeps_phases_chd_only(tmp_path, monkey
 
     matched_paths: list[str] = []
 
-    async def fake_match_single(path):
+    async def fake_match_single(path, *, cancel_event=None):
         matched_paths.append(path)
         return {"path": path, "matched": True, "match_type": "file_sha1"}
 
@@ -358,7 +358,7 @@ async def test_scan_phase3_skips_when_no_dats(tmp_path, monkeypatch):
 
     called = []
 
-    async def fake_match_single(path):
+    async def fake_match_single(path, *, cancel_event=None):
         called.append(path)
         return {"path": path, "matched": False}
 
@@ -404,7 +404,7 @@ async def test_scan_skips_symlink_escaping_volume(tmp_path, monkeypatch):
 
     matched: list[str] = []
 
-    async def fake_match_single(path):
+    async def fake_match_single(path, *, cancel_event=None):
         matched.append(path)
         return {"path": path, "matched": False}
 
@@ -415,6 +415,47 @@ async def test_scan_skips_symlink_escaping_volume(tmp_path, monkeypatch):
     assert os.path.realpath(str(vol / "good.rvz")) in matched
     # The symlink's out-of-volume target must never reach Phase 3.
     assert os.path.realpath(str(outside / "evil.rvz")) not in matched
+
+
+@pytest.mark.asyncio
+async def test_scan_excludes_lookalike_suffix(tmp_path, monkeypatch):
+    """Discovery matches the real suffix: a `.ciso` is not admitted as `.iso`."""
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "good.iso").write_text("y")
+    (tmp_path / "lookalike.ciso").write_text("z")  # ends with 'iso' but != .iso
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(global_dat_store, "set_match", AsyncMock())
+
+    matched: list[str] = []
+
+    async def fake_match_single(path, *, cancel_event=None):
+        matched.append(path)
+        return {"path": path, "matched": False}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    assert os.path.realpath(str(tmp_path / "good.iso")) in matched
+    assert os.path.realpath(str(tmp_path / "lookalike.ciso")) not in matched
 
 
 @pytest.fixture

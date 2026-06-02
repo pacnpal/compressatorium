@@ -153,7 +153,9 @@ class DolphinToolService:
 
         return self._parse_header(stdout.decode())
 
-    async def disc_hashes(self, path: str) -> list[str]:
+    async def disc_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[str]:
         """Return the disc image's content SHA1(s) via ``dolphin-tool verify``.
 
         ``dolphin-tool verify -i <path> --algorithm sha1`` reconstructs the
@@ -163,29 +165,26 @@ class DolphinToolService:
         is meaningless against redump.
 
         Best-effort: returns the 40-char hex tokens parsed from the tool's
-        output, or an empty list on any failure / unsupported input.
+        output, or an empty list on any failure / unsupported input. When
+        ``cancel_event`` fires (a background scan/match job was cancelled) the
+        verify subprocess is terminated promptly and an empty list returned,
+        rather than blocking until the disc finishes reconstructing. The
+        cancel/timeout/terminate handling lives in the shared
+        ``SubprocessRunner.run_capture``.
         """
-        process = await asyncio.create_subprocess_exec(
-            self.dolphin_tool_path,
-            "verify",
-            "-i", path,
-            "--algorithm", "sha1",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        cmd = [
+            self.dolphin_tool_path, "verify", "-i", path, "--algorithm", "sha1",
+        ]
         timeout = max(0, int(getattr(settings, "chdman_verify_timeout", 0) or 0))
-        try:
-            if timeout:
-                stdout, _ = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout,
-                )
-            else:
-                stdout, _ = await process.communicate()
-        except asyncio.TimeoutError:
-            await self._terminate_process(process)
-            logger.warning("dolphin-tool verify (hash) timed out for %s", path)
+        returncode, stdout, _ = await self._runner.run_capture(
+            cmd, timeout=timeout or None, cancel_event=cancel_event,
+        )
+        if returncode is None:
+            logger.warning(
+                "dolphin-tool verify (hash) aborted (cancel/timeout) for %s", path,
+            )
             return []
-        if process.returncode != 0:
+        if returncode != 0:
             return []
         # The hash line is formatted as "SHA-1: <hex>" / "<hex>"; pull every
         # standalone 40-char hex token so format tweaks don't break matching.

@@ -345,6 +345,7 @@ async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
     # ChdmanTool.embedded_hashes imports chd_metadata_store at call time, so the
     # patch on the module-level singleton applies.
     mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=False)
     mock_metadata_store.get_metadata = AsyncMock(
         return_value={"sha1": "aabbccddaabbccddaabbccddaabbccddaabbccdd", "data_sha1": ""}
     )
@@ -362,6 +363,26 @@ async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chd_hook_raises_on_stale_metadata(tmp_path):
+    """A changed CHD (stale cache) refuses its outdated hashes, non-cacheably."""
+    from services.tools import registry
+    from services.tools.base import EmbeddedHashUnavailable
+
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake chd")
+
+    mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=True)
+    mock_metadata_store.get_metadata = AsyncMock(
+        return_value={"sha1": "a" * 40, "data_sha1": ""}
+    )
+
+    with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
+        with pytest.raises(EmbeddedHashUnavailable):
+            await registry.get("chdman").embedded_hashes(str(chd))
+
+
+@pytest.mark.asyncio
 async def test_chd_header_match_no_metadata(tmp_path, isolated_dat_store):
     """_try_embedded_hash_match returns None when the tool reports no hashes."""
     from services.tools import registry
@@ -370,6 +391,7 @@ async def test_chd_header_match_no_metadata(tmp_path, isolated_dat_store):
     chd.write_bytes(b"fake chd")
 
     mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=False)
     mock_metadata_store.get_metadata = AsyncMock(return_value=None)
 
     with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
@@ -447,7 +469,7 @@ async def test_dolphin_hook_runs_under_match_lane(tmp_path, monkeypatch):
 
     seen = {}
 
-    async def fake_disc_hashes(path):
+    async def fake_disc_hashes(path, *, cancel_event=None):
         seen["in_use"] = workload_limiter.in_use("match")
         return ["a" * 40]
 
@@ -1133,7 +1155,7 @@ async def test_run_match_job_reports_errors_in_final_message(
         ({"path": "/c", "matched": False, "error": "boom"}, False),
     ]
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         return hash_outcomes.pop(0)
 
     monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
@@ -1162,7 +1184,7 @@ async def test_run_match_job_marks_failure_when_all_files_error(
     )
     monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
 
-    async def always_error(path):
+    async def always_error(path, *, cancel_event=None):
         return {"path": path, "matched": False, "error": "mount offline"}, False
 
     monkeypatch.setattr(dat_routes, "_hash_one_for_job", always_error)
@@ -1198,7 +1220,7 @@ async def test_run_match_job_outer_exception_includes_counter_context(
     # update_external_job raises, tripping the outer except.
     hash_calls = 0
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         nonlocal hash_calls
         hash_calls += 1
         if hash_calls == 1:
@@ -1255,7 +1277,7 @@ async def test_run_match_job_skip_count_does_not_trip_failure(
         ({"path": "/c", "matched": False}, False),  # non-regular file shape
     ]
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         return hash_outcomes.pop(0)
 
     monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
@@ -1284,7 +1306,7 @@ async def test_run_match_job_cache_write_failure_counts_as_error(
     )
     monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         return {"path": path, "matched": True}, True
 
     monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
@@ -1323,7 +1345,7 @@ async def test_run_match_job_cancellation_ends_in_cancelled_status(
     # cancel-check at the top of the loop then fires ExternalJobCancelled.
     hash_calls = 0
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         nonlocal hash_calls
         hash_calls += 1
         if hash_calls == 2:
@@ -1361,7 +1383,7 @@ async def test_run_match_job_cancellation_keeps_partial_cache(
 
     hash_calls = 0
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         nonlocal hash_calls
         hash_calls += 1
         if hash_calls == 2:
@@ -1389,7 +1411,7 @@ async def test_hash_one_for_job_logs_match_error_with_traceback(
     iso = tmp_path / "a.iso"
     iso.write_bytes(b"x")
 
-    async def raise_keyerror(_path):
+    async def raise_keyerror(_path, *, cancel_event=None):
         raise KeyError("missing_column")
 
     monkeypatch.setattr(dat_routes, "_match_single_file", raise_keyerror)

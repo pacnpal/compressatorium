@@ -14,7 +14,7 @@ from models import CHDInfo, OutputStatus
 from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
 from services.lock_manager import lock_manager
 
-from .base import BaseTool
+from .base import BaseTool, EmbeddedHashUnavailable
 from .spec import ModeKind, ModeSpec
 
 _CREATE_MODES = {
@@ -148,12 +148,23 @@ class ChdmanTool(BaseTool):
     async def info(self, path: str) -> dict:
         return await self._service.info(path)
 
-    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]:
+    async def embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[tuple[str, str]]:
         # CHDs carry an overall SHA1 (header) and a data SHA1 (uncompressed
         # content) in their metadata. Read them from the metadata store
         # (primed by the library scan / a prior /info call) so matching a CHD
-        # against a DAT never has to re-hash the whole file.
+        # against a DAT never has to re-hash the whole file. The read is
+        # instant, so ``cancel_event`` is accepted for contract parity but
+        # unused.
         from services.chd_metadata_store import chd_metadata_store
+
+        # If the file changed since the metadata was cached, the stored hashes
+        # describe an older disc. Refuse them (rather than match/cache a stale
+        # result) so the caller treats it as a non-cacheable miss until the
+        # cache is refreshed.
+        if await chd_metadata_store.is_stale(path):
+            raise EmbeddedHashUnavailable(f"CHD metadata is stale for {path}")
 
         metadata = await chd_metadata_store.get_metadata(path)
         if not metadata:

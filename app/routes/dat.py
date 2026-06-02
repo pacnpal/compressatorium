@@ -521,7 +521,9 @@ async def schedule_match_job(
     return scan_job.id
 
 
-async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
+async def _hash_one_for_job(
+    normalized_path: str, *, cancel_event: asyncio.Event | None = None,
+) -> tuple[dict, bool]:
     """Compute a match result for one path inside the background job loop.
 
     Returns ``(result, cacheable)``.  ``cacheable`` is ``False`` for
@@ -530,6 +532,9 @@ async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
     persisted to ``dat_matches`` because they would stick around after
     the underlying condition changes (file appears, cap is raised,
     transient OSError clears).
+
+    ``cancel_event`` is forwarded so an expensive embedded-hash derivation
+    (e.g. ``dolphin-tool verify``) aborts promptly when the job is cancelled.
     """
     try:
         st = await run_in_threadpool(os.stat, normalized_path)
@@ -543,7 +548,7 @@ async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
         return {"path": normalized_path, "matched": False}, False
 
     try:
-        result = await _match_single_file(normalized_path)
+        result = await _match_single_file(normalized_path, cancel_event=cancel_event)
     except Exception as exc:  # pragma: no cover, isolated per-path
         # logger.exception rather than logger.warning: a KeyError /
         # AttributeError from a refactor bug should surface with a full
@@ -587,6 +592,11 @@ async def _run_match_job(
     job_success: bool | None = False
     job_error: str | None = None
 
+    # Set when the job is cancelled; forwarded into expensive embedded-hash
+    # hooks (e.g. dolphin-tool verify) so the in-flight file aborts promptly
+    # rather than after it finishes.
+    cancel_event = job_manager.get_cancel_event(job_id)
+
     try:
         for idx, normalized_path in enumerate(paths_to_compute, start=1):
             if job_manager.is_cancelled(job_id):
@@ -598,7 +608,9 @@ async def _run_match_job(
                 message=f"[{idx}/{total}] {display_name}",
             )
 
-            result, cacheable = await _hash_one_for_job(normalized_path)
+            result, cacheable = await _hash_one_for_job(
+                normalized_path, cancel_event=cancel_event,
+            )
             if cacheable:
                 hashed += 1
                 # Per-file writes are intentional: persist each completed
@@ -790,13 +802,18 @@ async def sync_cancel():
     raise HTTPException(status_code=409, detail="No sync in progress")
 
 
-async def _match_single_file(file_path: str) -> dict:
+async def _match_single_file(
+    file_path: str, *, cancel_event: asyncio.Event | None = None,
+) -> dict:
     """Match a file against all imported DATs.
 
     Fast path: ask the tool that owns this file type for any embedded /
     derivable content hashes (CHD header & data SHA1, Dolphin disc SHA1,
     ...) and try those against the DAT index first. Falls back to a
     full file-level SHA1 (format-agnostic) when no tool hash matches.
+
+    ``cancel_event`` is forwarded to the tool's (potentially expensive)
+    embedded-hash hook so a background scan/match job can abort it promptly.
     """
     base_result = {"path": file_path, "matched": False}
 
@@ -808,7 +825,9 @@ async def _match_single_file(file_path: str) -> dict:
     tool = registry.tool_for_verify(file_path)
     if tool is not None:
         try:
-            match = await _try_embedded_hash_match(file_path, tool)
+            match = await _try_embedded_hash_match(
+                file_path, tool, cancel_event=cancel_event,
+            )
         except EmbeddedHashUnavailable as e:
             # The tool couldn't derive its content hash (e.g. dolphin-tool
             # verify failed). For these formats the file-level SHA1 of the
@@ -862,7 +881,9 @@ async def _match_single_file(file_path: str) -> dict:
     return base_result
 
 
-async def _try_embedded_hash_match(file_path: str, tool) -> dict | None:
+async def _try_embedded_hash_match(
+    file_path: str, tool, *, cancel_event: asyncio.Event | None = None,
+) -> dict | None:
     """Try matching ``file_path`` using the hashes ``tool`` reports for it.
 
     Iterates the tool's embedded/derivable ``(sha1, match_type)`` pairs (CHD
@@ -871,7 +892,7 @@ async def _try_embedded_hash_match(file_path: str, tool) -> dict | None:
     in which case the caller falls back to a full file-level SHA1.
     """
     try:
-        candidates = await tool.embedded_hashes(file_path)
+        candidates = await tool.embedded_hashes(file_path, cancel_event=cancel_event)
     except EmbeddedHashUnavailable:
         # Transient "couldn't derive the hash" — let the caller decide it's a
         # non-cacheable error rather than falling back to a file-level hash.

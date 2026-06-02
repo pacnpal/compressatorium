@@ -135,7 +135,9 @@ class DolphinTool(BaseTool):
     async def info(self, path: str) -> dict:
         return await self._service.header(path)
 
-    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]:
+    async def embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[tuple[str, str]]:
         # A plain .iso is already the raw redump image, its file-level SHA1
         # *is* the disc hash, so skip the expensive verify pass and let the
         # caller fall back to cheap file hashing. The compressed/container
@@ -161,7 +163,9 @@ class DolphinTool(BaseTool):
         # metadata scan and concurrent /dat/match requests.
         try:
             async with await workload_limiter.acquire("match"):
-                hashes = await self._service.disc_hashes(path)
+                hashes = await self._service.disc_hashes(
+                    path, cancel_event=cancel_event,
+                )
         except Exception as e:
             # Spawn failure (e.g. binary missing) or unexpected error: treat as
             # a transient inability to derive the hash, not "no hash exists".

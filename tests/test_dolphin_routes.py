@@ -389,3 +389,34 @@ async def test_disc_hashes_empty_on_nonzero_exit(monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     assert await dolphin_tool_service.disc_hashes("/data/bad.rvz") == []
+
+
+@pytest.mark.asyncio
+async def test_disc_hashes_empty_on_abort(monkeypatch):
+    """When run_capture reports an abort (returncode None), disc_hashes is empty."""
+    from app.services.dolphin_tool import dolphin_tool_service
+
+    async def fake_run_capture(cmd, *, timeout=None, cancel_event=None, stderr_to_stdout=False):
+        return None, b"", b""
+
+    monkeypatch.setattr(dolphin_tool_service._runner, "run_capture", fake_run_capture)
+    assert await dolphin_tool_service.disc_hashes("/data/x.rvz") == []
+
+
+@pytest.mark.asyncio
+async def test_disc_hashes_forwards_cancel_event(monkeypatch):
+    """disc_hashes threads its cancel_event into the shared run_capture call."""
+    from app.services.dolphin_tool import dolphin_tool_service
+
+    seen = {}
+    event = asyncio.Event()
+
+    async def fake_run_capture(cmd, *, timeout=None, cancel_event=None, stderr_to_stdout=False):
+        seen["cancel_event"] = cancel_event
+        return 0, b"SHA-1: " + b"a" * 40, b""
+
+    monkeypatch.setattr(dolphin_tool_service._runner, "run_capture", fake_run_capture)
+    result = await dolphin_tool_service.disc_hashes("/data/x.rvz", cancel_event=event)
+
+    assert result == ["a" * 40]
+    assert seen["cancel_event"] is event

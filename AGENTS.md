@@ -6,9 +6,27 @@ A quick execution guide for agents working in this repo. Treat it as an operatio
 
 - `README.md`
 - `docs/RELEASE_NOTES.md`
+- `docs/DESIGN_tool_plugin_architecture.md`
 - `docs/DOCKER-COMPOSE.md`
 - `docs/DEPLOYMENT.md`
 - `.github/workflows/docker-image.yml`
+
+## Design principles
+
+- **Modularity is key.** If logic can be shared between tools, it must be — put
+  it on the `ToolPlugin`/`BaseTool` contract or in shared infrastructure
+  (`services/subprocess_runner.py`, `services/tools/registry.py`), never
+  copy-pasted per tool. Prefer registry-driven behavior over branching on tool
+  identity or hard-coded extensions. Examples of the shared seams to extend
+  before reaching for per-tool code: `SubprocessRunner.run` (streaming) and
+  `SubprocessRunner.run_capture` (one-shot capture with cancel/timeout),
+  `ToolPlugin.embedded_hashes` (DAT-match content hashes), and the
+  `ToolRegistry` extension helpers (`output_extensions` / `verify_extensions` /
+  `scannable_extensions`).
+- **Document shared machinery in the proper doc.** When you add or change a
+  shared seam, update `docs/DESIGN_tool_plugin_architecture.md` (the plugin
+  contract + shared infrastructure) and note user-facing effects in
+  `docs/RELEASE_NOTES.md`.
 
 ## Current workflows
 

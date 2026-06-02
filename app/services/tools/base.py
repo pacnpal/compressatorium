@@ -85,7 +85,9 @@ class ToolPlugin(Protocol):
     def info_model(self, raw: dict, path: str) -> BaseModel:
         """Map raw info into the typed API model."""
 
-    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]:
+    async def embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[tuple[str, str]]:
         """Report verifiable hashes embedded in / derivable from ``path``.
 
         Each entry is ``(sha1_hex, match_type)``: a content SHA1 the file
@@ -99,6 +101,10 @@ class ToolPlugin(Protocol):
         hash for this file type but the attempt failed transiently, so the
         caller skips the (meaningless) file-level fallback and does not cache
         a false negative.
+
+        ``cancel_event`` lets a background job (metadata scan / DAT match)
+        abort an expensive derivation (e.g. ``dolphin-tool verify``) promptly
+        instead of blocking until the current file finishes.
         """
 
     def active_pids(self) -> list[int]:
@@ -137,7 +143,9 @@ class BaseTool:
     def detect_output(self, input_path: str) -> OutputStatus | None:
         return None
 
-    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]:
+    async def embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[tuple[str, str]]:
         # Default: no embedded hash; callers fall back to file-level SHA1.
         return []
 
