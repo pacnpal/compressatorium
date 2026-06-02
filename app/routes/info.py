@@ -144,7 +144,13 @@ async def scan_metadata_task(
     force: bool = False,
     lane_token: WorkloadToken | None = None,
 ):
-    """Background task to scan all volumes for missing CHD metadata."""
+    """Background task to scan all volumes for library metadata.
+
+    Discovery is registry-driven (every registered tool's output / verify
+    extensions). Phase 1 refreshes the chdman info cache and Phase 2 embeds
+    disc-ID tags, both CHD-only by design; Phase 3 primes the DAT-match cache
+    for every discovered output (all formats).
+    """
     global _is_scanning
     # Note: _is_scanning is already set to True by the trigger endpoint
     scan_start = time.monotonic()
@@ -179,6 +185,7 @@ async def scan_metadata_task(
     def collect_scannable_paths():
         """Collect all scannable output paths from volumes (runs in thread pool)."""
         paths = []
+        seen: set[str] = set()
         for volume in volumes:
             if not os.path.exists(volume):
                 logger.warning("Volume not found, skipping: %s", volume)
@@ -186,7 +193,14 @@ async def scan_metadata_task(
             for root, _, files in os.walk(volume):
                 for file in files:
                     if file.lower().endswith(scan_extensions):
-                        paths.append(os.path.join(root, file))
+                        # Resolve symlinks so discovered paths share the cache
+                        # key space of the on-demand DAT-match endpoints (which
+                        # realpath before caching) and the CHD metadata store,
+                        # and so symlink aliases are de-duplicated.
+                        real = os.path.realpath(os.path.join(root, file))
+                        if real not in seen:
+                            seen.add(real)
+                            paths.append(real)
         return paths
 
     # Tri-state: True = success, False = failure, None = cancelled.
@@ -224,7 +238,7 @@ async def scan_metadata_task(
                 len(chd_paths),
             )
         else:
-            cached_count = len(all_paths) - len(chd_paths)
+            cached_count = len(chd_all_paths) - len(chd_paths)
             logger.info(
                 "Phase 1: %d CHD file(s) need metadata refresh, %d already up-to-date",
                 len(chd_paths),

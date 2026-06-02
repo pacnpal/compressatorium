@@ -74,7 +74,9 @@ def scan_env(tmp_path, monkeypatch):
     monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_embedded)
 
     return {
-        "chd_path": str(chd_path),
+        # Discovery realpath-normalizes paths, so the values the scan passes
+        # downstream are the resolved form; assert against that.
+        "chd_path": os.path.realpath(str(chd_path)),
         "calls": calls,
         "ensure_calls": ensure_calls,
         "disc_id_checked_paths": disc_id_checked_paths,
@@ -320,12 +322,13 @@ async def test_scan_discovers_non_chd_and_keeps_phases_chd_only(tmp_path, monkey
     await info_routes.scan_metadata_task(force=True)
 
     # Phase 1 (chdman info) only ran for the CHD, never the .rvz/.nsz.
-    assert info_calls == [str(tmp_path / "game.chd")]
+    # Discovery realpath-normalizes, so compare against the resolved forms.
+    assert info_calls == [os.path.realpath(str(tmp_path / "game.chd"))]
     # Phase 3 visited every discovered output regardless of format.
     expected = {
-        str(tmp_path / "game.chd"),
-        str(tmp_path / "disc.rvz"),
-        str(tmp_path / "rom.nsz"),
+        os.path.realpath(str(tmp_path / "game.chd")),
+        os.path.realpath(str(tmp_path / "disc.rvz")),
+        os.path.realpath(str(tmp_path / "rom.nsz")),
     }
     assert set(matched_paths) == expected
     # Cacheable results were persisted for all of them.

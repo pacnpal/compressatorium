@@ -189,7 +189,8 @@ class DolphinToolService:
             return []
         # The hash line is formatted as "SHA-1: <hex>" / "<hex>"; pull every
         # standalone 40-char hex token so format tweaks don't break matching.
-        return [m.lower() for m in re.findall(r"\b[0-9a-fA-F]{40}\b", stdout.decode("utf-8", "replace"))]
+        text = stdout.decode("utf-8", "replace")
+        return [m.lower() for m in re.findall(r"\b[0-9a-fA-F]{40}\b", text)]
 
     async def verify(self, path: str) -> dict:
         """Verify the integrity of a disc image."""

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from fastapi.concurrency import run_in_threadpool
+
+from config import settings
 from models import DolphinDiscInfo, OutputStatus
 from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
@@ -138,6 +142,19 @@ class DolphinTool(BaseTool):
         # before hashing, so only those go through verify.
         if Path(path).suffix.lower() == ".iso":
             return []
+        # Respect the operator-configured match size cap: dolphin-tool verify
+        # reconstructs and hashes the entire disc, which is exactly the
+        # expensive work MATCH_MAX_FILE_SIZE exists to bound. Over-cap files
+        # report no hash so the caller's size-cap handling (file-level path)
+        # short-circuits instead of paying for a full verify. CHD's hook reads
+        # cached hashes and is intentionally not capped.
+        size_cap = max(0, int(getattr(settings, "match_max_file_size", 0) or 0))
+        if size_cap > 0:
+            try:
+                if await run_in_threadpool(os.path.getsize, path) > size_cap:
+                    return []
+            except OSError:
+                return []
         try:
             hashes = await self._service.disc_hashes(path)
         except Exception:

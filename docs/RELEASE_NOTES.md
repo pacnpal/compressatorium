@@ -1,5 +1,18 @@
 # Release Notes
 
+## Unreleased
+
+### Library scan + DAT matching now cover every format (not just CHD)
+
+#### New
+
+- **The background library scan discovers all tool outputs, not just `.chd`.** Discovery is registry-driven (every registered tool's output / verify extensions), so Dolphin (`.rvz`/`.wia`/`.gcz`), 3DS (`.z3ds`/`.zcci`/`.zcia`), Switch (`.nsz`/`.xcz`), and plain `.iso` libraries are now visited. A new scan phase primes the DAT-match cache for every discovered file, so non-CHD libraries get cached match results just like CHDs.
+- **Compressed Dolphin images match Redump DATs.** Matching now uses each tool's embedded/derivable content hashes via a per-tool hook: chdman reports the CHD header/data SHA1, and Dolphin reports the reconstructed disc SHA1 from `dolphin-tool verify` — the hash MAME Redump records for GameCube/Wii discs — so `.rvz`/`.wia`/`.gcz` outputs match without the container bytes being identical. Formats with no embedded hash fall back to file-level SHA1 as before. The `MATCH_MAX_FILE_SIZE` cap is honored before the (expensive) Dolphin verify pass.
+
+#### Internal
+
+- `ToolPlugin` gains an `embedded_hashes(path)` hook (default empty); `ToolRegistry` gains `output_extensions()` / `scannable_extensions()`. `media_type`, disc-ID embedding, and the `chd_metadata_store` cache remain CHD-only.
+
 ## 4.0.0-beta-10 (2026-06-01)
 
 ### Switch key discovery + logging cleanup

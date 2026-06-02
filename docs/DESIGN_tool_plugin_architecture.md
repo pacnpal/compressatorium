@@ -171,6 +171,11 @@ class ToolPlugin(Protocol):
     async def info(self, path: str) -> dict: ...                    # raw dict
     def info_model(self, raw: dict, path: str) -> BaseModel: ...    # typed model for the API
 
+    # DAT-match fast path: (sha1, match_type) pairs the tool can report
+    # cheaply (chdman header/data SHA1 from the metadata cache, dolphin disc
+    # SHA1 via verify). Default empty -> caller falls back to file-level SHA1.
+    async def embedded_hashes(self, path: str) -> list[tuple[str, str]]: ...
+
     def active_pids(self) -> list[int]: ...
 
     # Optional post-processing hook (chdman uses it to embed disc-ID GAME/NAME

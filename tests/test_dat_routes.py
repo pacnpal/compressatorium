@@ -415,6 +415,27 @@ async def test_dolphin_iso_skips_disc_hash(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_dolphin_disc_hash_respects_size_cap(tmp_path, monkeypatch):
+    """Over-cap containers skip the expensive verify and report no hash."""
+    from services.tools import dolphin as dolphin_module
+    from services.tools import registry
+
+    rvz = tmp_path / "big.rvz"
+    rvz.write_bytes(b"x" * 1000)
+
+    dolphin = registry.get("dolphin")
+    disc_hashes_mock = AsyncMock(return_value=["a" * 40])
+    monkeypatch.setattr(dolphin._service, "disc_hashes", disc_hashes_mock)
+    # Cap below the file size: the verify pass must be skipped entirely.
+    monkeypatch.setattr(dolphin_module.settings, "match_max_file_size", 100)
+
+    result = await dolphin.embedded_hashes(str(rvz))
+
+    assert result == []
+    disc_hashes_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_match_single_file_uses_dolphin_hook(tmp_path, isolated_dat_store, monkeypatch):
     """_match_single_file routes .rvz through the dolphin hook before file SHA1."""
     from services.tools import registry
