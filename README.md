@@ -716,7 +716,8 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `6` | I/O priority level for every tool (`0` highest, `7` lowest). Legacy alias: `CHD_CHDMAN_IOPRIO_LEVEL`. |
 | `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` | `60` | Timeout in seconds for `info`/`header` probes (0 disables). Legacy alias: `CHD_INFO_TIMEOUT`. |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` | `0` | Timeout in seconds for verify runs (0 disables). Legacy alias: `CHD_VERIFY_TIMEOUT`. |
-| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_INFO_TIMEOUT` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, or `Z3DS` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`). |
+| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` | (shared default) | Optional per-tool priority overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, or `Z3DS` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`). |
+| `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool timeout overrides, only for `<TOOL>` = `CHDMAN` or `DOLPHIN_TOOL` (the only tools that run info/verify subprocesses); fall back to the shared `COMPRESSATORIUM_TOOL_*` values. |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables limit) |
