@@ -1494,6 +1494,69 @@ async def test_run_match_job_cancellation_keeps_partial_cache(
 
 
 @pytest.mark.asyncio
+async def test_run_match_job_cancel_on_last_file_ends_cancelled(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A cancel observed only on the last/only path (via a non-raising
+    cancellable hook) still finalizes the job as cancelled, not complete."""
+    from services.job_manager import job_manager
+
+    scan_job = job_manager.create_external_job(
+        filename="DAT Match",
+        mode=dat_routes.ConversionMode.DAT_MATCH,
+        message="test",
+    )
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
+
+    async def fake_hash_one(path, *, cancel_event=None):
+        # Simulate an aborted cancellable hook on the only path: cancel is
+        # requested during the call and a non-cacheable error is returned.
+        await job_manager.cancel_job(scan_job.id)
+        return {"path": path, "matched": False, "error": "embedded hash unavailable"}, False
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
+
+    await dat_routes._run_match_job(job_id=scan_job.id, paths_to_compute=["/only"])
+
+    final = job_manager.jobs[scan_job.id]
+    assert final.status.value == "cancelled"
+    assert dat_routes._active_match_job_id is None
+
+
+@pytest.mark.asyncio
+async def test_try_embedded_hash_match_exhaustive_tool_raises_on_failure(tmp_path):
+    """An unexpected hook failure on an exhaustive tool surfaces as
+    EmbeddedHashUnavailable (no file-level fallback / false-negative cache)."""
+    from services.tools.base import EmbeddedHashUnavailable
+
+    class _ExhaustiveBoom:
+        embedded_hash_is_exhaustive = True
+
+        async def embedded_hashes(self, path, *, cancel_event=None):
+            raise RuntimeError("boom")
+
+    with pytest.raises(EmbeddedHashUnavailable):
+        await dat_routes._try_embedded_hash_match(str(tmp_path / "x.rvz"), _ExhaustiveBoom())
+
+
+@pytest.mark.asyncio
+async def test_try_embedded_hash_match_non_exhaustive_tool_falls_back(tmp_path):
+    """A non-exhaustive tool's unexpected failure falls back (no candidates)."""
+
+    class _NonExhaustiveBoom:
+        embedded_hash_is_exhaustive = False
+
+        async def embedded_hashes(self, path, *, cancel_event=None):
+            raise RuntimeError("boom")
+
+    result, had_candidates = await dat_routes._try_embedded_hash_match(
+        str(tmp_path / "x.chd"), _NonExhaustiveBoom(),
+    )
+    assert result is None
+    assert had_candidates is False
+
+
+@pytest.mark.asyncio
 async def test_hash_one_for_job_logs_match_error_with_traceback(
     tmp_path, isolated_dat_store, monkeypatch, caplog,
 ):

@@ -499,6 +499,66 @@ async def test_scan_excludes_symlink_to_unscannable_target(tmp_path, monkeypatch
     assert matched == []  # neither the alias nor its .ciso target is processed
 
 
+@pytest.mark.asyncio
+async def test_scan_phase3_cancel_midfile_does_not_delete_row(tmp_path, monkeypatch):
+    """Cancelling while a Phase 3 file is matching (aborted cancellable hook
+    returns an error) must not delete the existing cache row, and the scan
+    finishes as cancelled."""
+    from services.job_manager import job_manager
+
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "disc.rvz").write_text("y")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+
+    scan_job_ids: list[str] = []
+    original_create = info_routes.job_manager.create_external_job
+
+    def capture_create(*args, **kwargs):
+        job = original_create(*args, **kwargs)
+        scan_job_ids.append(job.id)
+        return job
+
+    monkeypatch.setattr(info_routes.job_manager, "create_external_job", capture_create)
+
+    delete_calls: list[str] = []
+
+    async def fake_delete_match(path):
+        delete_calls.append(path)
+
+    monkeypatch.setattr(global_dat_store, "delete_match", fake_delete_match)
+
+    async def fake_match_single(path, *, cancel_event=None):
+        # Simulate an aborted cancellable hook: request cancel and return a
+        # non-cacheable error.
+        if scan_job_ids:
+            await job_manager.cancel_job(scan_job_ids[0])
+        return {"path": path, "matched": False, "error": "embedded hash unavailable"}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    final = job_manager.jobs[scan_job_ids[0]]
+    assert final.status.value == "cancelled"
+    # The aborted file must NOT have triggered a delete of the cached row.
+    assert delete_calls == []
+
+
 @pytest.fixture
 def metadata_store_path(tmp_path):
     # SQLite file per test. Name kept as "chd_metadata.db" for clarity.

@@ -134,6 +134,12 @@ async def _scan_phase_dat_match(
         else:
             try:
                 result = await _match_single_file(path, cancel_event=cancel_event)
+                # A cancellable hook (dolphin verify) may have been aborted
+                # mid-file, returning a non-cacheable error. Treat that as
+                # cancellation rather than deleting/keeping a stale row or
+                # finishing "successfully" on the last/only file.
+                if job_manager.is_cancelled(scan_job_id):
+                    raise ExternalJobCancelled()
                 # Don't cache size-cap skips or transient errors (same policy
                 # as the /dat/match-batch job).
                 if not result.get("reason") and not result.get("error"):
@@ -145,8 +151,16 @@ async def _scan_phase_dat_match(
                     await dat_store.delete_match(path)
                 if result.get("matched"):
                     matched += 1
-            except Exception as e:
-                logger.warning("Phase 3: DAT match failed for %s: %s", path, e)
+            except ExternalJobCancelled:
+                raise
+            except Exception:
+                # _match_single_file turns expected file-level problems into
+                # result dicts, so reaching here means an unexpected failure
+                # (matcher bug, cache write/delete error). Surface it with a
+                # full trace and fail the scan rather than silently "succeed"
+                # with an un-primed cache.
+                logger.exception("Phase 3: DAT match failed for %s", path)
+                raise
         await job_manager.update_external_job(
             scan_job_id,
             progress=65 + int(32 * idx / total),

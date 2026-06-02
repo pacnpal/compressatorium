@@ -637,6 +637,15 @@ async def _run_match_job(
             if result.get("matched"):
                 matched += 1
 
+            # A cancellable embedded-hash hook (e.g. dolphin run_capture) may
+            # have been aborted mid-file, returning a non-cacheable error
+            # rather than raising. Re-check after the per-file work (the
+            # completed result is already persisted, the cache is durable
+            # across cancellation by design) so a cancel during the last/only
+            # path finalizes the job as cancelled instead of failed/complete.
+            if job_manager.is_cancelled(job_id):
+                raise ExternalJobCancelled()
+
         # If every single file errored, something structural is wrong
         # (volume unmounted, DB down, etc.).  Flip the job to failure so
         # the user sees a red signal rather than a misleading "complete,
@@ -910,8 +919,13 @@ async def _try_embedded_hash_match(
         # Transient "couldn't derive the hash" — let the caller decide it's a
         # non-cacheable error rather than falling back to a file-level hash.
         raise
-    except Exception:  # pragma: no cover - best-effort fast path
+    except Exception as exc:  # pragma: no cover - unexpected tool failure
         logger.warning("embedded_hashes failed for %s", file_path, exc_info=True)
+        if tool.embedded_hash_is_exhaustive:
+            # For exhaustive tools (e.g. Dolphin) the container's file-level
+            # SHA1 can never match the DAT, so falling back would cache a false
+            # negative. Surface it as non-cacheable instead.
+            raise EmbeddedHashUnavailable("embedded hash derivation failed") from exc
         return None, False
 
     had_candidates = False
