@@ -39,7 +39,7 @@ class ToolPlugin(Protocol):
     binary_path: str
     modes: Sequence[ModeSpec]
     input_extensions: frozenset[str]    # convertible-from
-    output_extensions: frozenset[str]   # produced (for "output exists" badges)
+    output_extensions: frozenset[str]   # produced ("output exists" badges + scan discovery)
     verify_extensions: frozenset[str]   # accepted by verify()
     # When the tool's embedded_hashes are *exhaustive*: a miss of every
     # reported content hash means the file definitively isn't in the DAT, so

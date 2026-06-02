@@ -896,12 +896,13 @@ async def _try_embedded_hash_match(
 
     Returns ``(match, had_candidates)``. ``match`` is the DAT hit (or ``None``).
     ``had_candidates`` is True when the tool produced at least one embedded
-    hash: those (CHD header / Dolphin disc SHA1) are the *authoritative*
-    content hash a DAT indexes, so when they all miss the result is a
-    definitive non-match and the caller must NOT fall back to a file-level
-    SHA1 of the container (which is meaningless against the DAT and would
-    re-read the whole file). When ``had_candidates`` is False the tool has no
-    embedded hash and the file-level fallback is the correct next step.
+    hash. It is only an *input* to the caller's fallback decision, not the
+    decision itself: the caller skips the file-level SHA1 fallback after a miss
+    only when ``had_candidates`` AND ``tool.embedded_hash_is_exhaustive`` (the
+    container bytes can never be DAT-indexed, e.g. Dolphin RVZ/WIA/GCZ). Tools
+    whose own file SHA1 may be indexed (e.g. CHD) still fall back even though
+    they reported candidates. When ``had_candidates`` is False the tool has no
+    embedded hash and the file-level fallback is always the correct next step.
     """
     try:
         candidates = await tool.embedded_hashes(file_path, cancel_event=cancel_event)
