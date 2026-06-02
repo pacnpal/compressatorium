@@ -5,6 +5,8 @@ paths) into tests before later phases move dispatch logic onto the registry.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.models import ConversionMode
@@ -301,3 +303,34 @@ async def test_embedded_hashes_default_empty_for_no_source_tools(tool_id, tmp_pa
     ext = next(iter(tool.output_extensions))
     result = await tool.embedded_hashes(str(tmp_path / f"sample{ext}"))
     assert result == []
+
+
+def _mode_output_exts(tool, mode) -> set[str]:
+    """Every output extension a mode can produce, derived from its declared
+    inputs (covers tools like nsz/z3ds whose output ext is input-dependent)."""
+    return {
+        Path(
+            tool.output_path(mode.mode, f"/data/sample{in_ext}", None, treat_as_stem=False),
+        ).suffix.lower()
+        for in_ext in mode.input_extensions
+    }
+
+
+def test_delete_on_verify_iff_output_is_verifiable():
+    """Any platform/file that supports verify should support verify-and-delete.
+
+    Delete-on-verify removes the source only after the produced output passes
+    verification, so it is safe exactly when *every* output a mode can produce
+    is itself verifiable (its extension is in the tool's verify set). This locks
+    that invariant in registry-wide, so a future tool can't add a verifiable
+    output without also enabling delete-on-verify (or vice versa).
+    """
+    for tool in registry.all():
+        vexts = tool.verify_extensions
+        for mode in tool.modes:
+            outs = _mode_output_exts(tool, mode)
+            verifiable = bool(outs) and outs <= vexts
+            assert mode.supports_delete_on_verify == verifiable, (
+                f"{mode.mode}: supports_delete_on_verify={mode.supports_delete_on_verify} "
+                f"but outputs {sorted(outs)} verifiable against {sorted(vexts)} = {verifiable}"
+            )
