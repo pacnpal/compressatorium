@@ -210,9 +210,12 @@ on every folder open.
 Sync the MAMERedump DATs from the DAT Library (or import your own `.dat`/`.xml`
 from No-Intro/Redump) and converted files are checked against known-good hashes —
 a blue DAT badge means the file matches. CHDs match on the codec-independent header
-SHA1, so any compression setting still matches; RVZ only matches when the bytes are
-identical to the DAT's recorded hash, so a perfectly good RVZ can legitimately show
-no badge.
+SHA1, and Dolphin RVZ/WIA/GCZ match on the disc image's content SHA1 reconstructed by
+`dolphin-tool verify --algorithm sha1` (the same hash Redump records), so **any
+compression setting still matches** for both. A missing badge usually means the DATs
+aren't synced, the title isn't in the DAT, or the file is larger than
+`MATCH_MAX_FILE_SIZE` (which skips the expensive full-disc reconstruction) — not that
+the file is bad.
 
 ### Archives
 

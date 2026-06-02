@@ -348,10 +348,13 @@
       matches feed tools like Hasheous and RomM, so a verified set carries over.
     </p>
     <p>
-      CHDs match on the header SHA1, which is codec-independent, so any compression setting
-      still matches. RVZ only matches when the bytes are identical to the DAT's recorded
-      hash, and Dolphin's RVZs often aren't byte-for-byte the same as the Redump sets. So a
-      perfectly good RVZ can show no badge. That's expected, not a problem with your file.
+      CHDs match on the header SHA1, which is codec-independent. Dolphin RVZ/WIA/GCZ match on
+      the disc image's content SHA1, reconstructed on the fly by
+      <code>dolphin-tool verify --algorithm sha1</code> — the same hash Redump records — so any
+      compression setting still matches for both. A missing badge usually means the DATs aren't
+      synced, the title isn't in the DAT, or the file is over <code>MATCH_MAX_FILE_SIZE</code>
+      (which skips the expensive full-disc reconstruction). It's about hash matching, not file
+      health, so verify is the real proof your file is good.
     </p>
   </article>
 
@@ -453,7 +456,7 @@
       <dd>Yes. That's exactly what copy mode is for. Point it at the existing CHD, pick new codecs, and it recompresses without needing the original disc.</dd>
 
       <dt>The DAT badge didn't appear on a file I'm sure is good.</dt>
-      <dd>For RVZ this is normal: Dolphin's output often isn't byte-identical to the Redump set, and RVZ only matches on identical bytes. For CHD, make sure the matching DATs are actually synced. A missing badge is about hash matching, not file health, so verify is the real proof your file is good.</dd>
+      <dd>RVZ/WIA/GCZ and CHD both match on the reconstructed disc / header hash (not the container bytes), so recompressing doesn't break matching. A missing badge usually means the DATs aren't synced, the title isn't in the DAT, or the file is over <code>MATCH_MAX_FILE_SIZE</code> (which skips the full-disc reconstruction). It's about hash matching, not file health, so verify is the real proof your file is good.</dd>
     </dl>
   </article>
 
