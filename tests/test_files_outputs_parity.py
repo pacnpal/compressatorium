@@ -232,3 +232,9 @@ async def test_search_files_json_keys_are_additive(parity_env):
     assert "chdman" in inner["convertible_by"]
     assert inner["dolphin_convertible"] is True
     assert inner["has_rvz"] is False
+    # ...and as CSO-convertible (.iso -> .cso/.zso via maxcso), surfaced through
+    # the same registry-driven archive-member detection (#128). No .cso sibling
+    # exists in the fixture, so the output flags stay False.
+    assert inner["cso_convertible"] is True
+    assert "cso" in inner["convertible_by"]
+    assert inner["has_cso"] is False and inner["cso_ready"] is False
