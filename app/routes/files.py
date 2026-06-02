@@ -208,7 +208,7 @@ async def list_files(
                         tool_fields = _legacy_output_fields(convertible_by, by_tool)
 
                         archive_items = None
-                        archive_has_chd = None
+                        archive_has_output = None
                         if is_archive and summarize_archives_flag:
                             archive_result = archive_service.list_archive_contents(
                                 item_path, include_meta=True,
@@ -216,22 +216,21 @@ async def list_files(
                             contents = archive_result["entries"]
                             archive_items = len(contents)
                             archive_truncated = bool(archive_result["truncated"])
-                            archive_has_chd = 0
+                            archive_has_output = 0
                             archive_dir = os.path.dirname(item_path)
+                            member_has_chd = False
                             for entry in contents:
-                                output_stem = (
-                                    entry.get("output_stem")
-                                    or Path(entry["internal_path"]).stem
+                                _, _, _, member_by_tool = (
+                                    _detect_archive_member_outputs(entry, archive_dir)
                                 )
-                                chd_path = os.path.join(
-                                    archive_dir, f"{output_stem}.chd",
-                                )
-                                file_exists, is_converting = (
-                                    lock_manager.check_file_status(chd_path)
-                                )
-                                if file_exists or is_converting:
-                                    archive_has_chd += 1
-                            tool_fields["has_chd"] = archive_has_chd > 0
+                                # A member counts as "converted" once any tool
+                                # already has a sibling output for it, not just
+                                # CHDMAN.
+                                if member_by_tool:
+                                    archive_has_output += 1
+                                if "chdman" in member_by_tool:
+                                    member_has_chd = True
+                            tool_fields["has_chd"] = member_has_chd
 
                         entry = FileEntry(
                             name=item,
@@ -240,7 +239,7 @@ async def list_files(
                             size=size,
                             extension=ext,
                             archive_items=archive_items,
-                            archive_has_chd=archive_has_chd,
+                            archive_has_output=archive_has_output,
                             archive_truncated=archive_truncated
                             if is_archive and summarize_archives_flag
                             else None,

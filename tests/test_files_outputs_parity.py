@@ -22,7 +22,7 @@ LEGACY_FILEENTRY_KEYS = {
     "has_rvz", "dolphin_ready", "dolphin_path", "chd_ready",
     "dolphin_convertible", "z3ds_convertible", "has_z3ds", "z3ds_ready",
     "z3ds_path", "nsz_convertible", "has_nsz", "nsz_ready", "nsz_path",
-    "archive_items", "archive_has_chd", "archive_truncated",
+    "archive_items", "archive_has_output", "archive_truncated",
     "media_type",
 }
 LEGACY_SEARCH_KEYS = {
@@ -164,6 +164,10 @@ async def test_list_files_outputs_agree_with_legacy(parity_env):
     assert bundle.has_rvz is False and bundle.z3ds_ready is False
     assert bundle.convertible_by == []
     assert bundle.outputs == []
+    # The summary count is registry-driven: the single member with a sibling
+    # output (inner.iso -> inner.chd) is counted regardless of which tool
+    # produced it.
+    assert bundle.archive_has_output == 1
 
 
 @pytest.mark.asyncio
