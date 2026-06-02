@@ -63,16 +63,13 @@ class VerificationStore {
   async verifyOne(toolId, path, { onProgress } = {}) {
     const tool = registry.forTool(toolId);
     if (!tool) throw new Error(`Unknown tool: ${toolId}`);
-    const notify = (state) => {
-      try {
-        onProgress?.(state);
-      } catch (_e) {
-        // a broken progress callback shouldn't break verification
-      }
-    };
     const starting = { percent: 0, message: 'Starting…' };
     this.progress.set(path, starting);
-    notify(starting);
+    try {
+      onProgress?.(starting);
+    } catch (_e) {
+      // a broken progress callback shouldn't break verification
+    }
     try {
       const result = await tool.verify(path, {
         onProgress: (data) => {
@@ -81,7 +78,11 @@ class VerificationStore {
             message: data?.message ?? '',
           };
           this.progress.set(path, next);
-          notify(next);
+          try {
+            onProgress?.(next);
+          } catch (_e) {
+            // a broken progress callback shouldn't break verification
+          }
         },
       });
       this.progress.delete(path);
