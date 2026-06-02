@@ -74,7 +74,9 @@ def scan_env(tmp_path, monkeypatch):
     monkeypatch.setattr(info_routes, "disc_id_ensure_embedded", fake_ensure_embedded)
 
     return {
-        "chd_path": str(chd_path),
+        # Discovery realpath-normalizes paths, so the values the scan passes
+        # downstream are the resolved form; assert against that.
+        "chd_path": os.path.realpath(str(chd_path)),
         "calls": calls,
         "ensure_calls": ensure_calls,
         "disc_id_checked_paths": disc_id_checked_paths,
@@ -258,6 +260,303 @@ async def test_scan_metadata_cancellation_during_phase2(tmp_path, monkeypatch):
     assert final.status.value == "cancelled"
     assert "Cancelled" in final.message
     assert len(ensure_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_discovers_non_chd_and_keeps_phases_chd_only(tmp_path, monkeypatch):
+    """Discovery is registry-driven: the scan walks non-CHD outputs too, but
+    Phase 1/2 (chdman info + disc-id) only ever touch the .chd files."""
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "game.chd").write_text("x")
+    (tmp_path / "disc.rvz").write_text("y")
+    (tmp_path / "rom.nsz").write_text("z")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    info_calls: list[str] = []
+
+    async def fake_info(path):
+        info_calls.append(path)
+        return {"raw_data": "Tag: CD-ROM"}
+
+    async def fake_set_metadata(path, info, persist=False):
+        return {"media_type": "cd"}
+
+    async def fake_flush_async():
+        return None
+
+    async def always_stale(_):
+        return True
+
+    async def already_checked(_):
+        return True  # skip Phase 2 work
+
+    monkeypatch.setattr(info_routes.chdman_service, "info", fake_info)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "set_metadata", fake_set_metadata)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", always_stale)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_disc_id_checked", already_checked)
+
+    # Phase 3: DATs present; capture which paths get matched + cached.
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+
+    set_match_paths: list[str] = []
+
+    async def fake_set_match(path, match):
+        set_match_paths.append(path)
+
+    monkeypatch.setattr(global_dat_store, "set_match", fake_set_match)
+
+    matched_paths: list[str] = []
+
+    async def fake_match_single(path, *, cancel_event=None):
+        matched_paths.append(path)
+        return {"path": path, "matched": True, "match_type": "file_sha1"}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    # Phase 1 (chdman info) only ran for the CHD, never the .rvz/.nsz.
+    # Discovery realpath-normalizes, so compare against the resolved forms.
+    assert info_calls == [os.path.realpath(str(tmp_path / "game.chd"))]
+    # Phase 3 visited every discovered output regardless of format.
+    expected = {
+        os.path.realpath(str(tmp_path / "game.chd")),
+        os.path.realpath(str(tmp_path / "disc.rvz")),
+        os.path.realpath(str(tmp_path / "rom.nsz")),
+    }
+    assert set(matched_paths) == expected
+    # Cacheable results were persisted for all of them.
+    assert set(set_match_paths) == expected
+
+
+@pytest.mark.asyncio
+async def test_scan_phase3_skips_when_no_dats(tmp_path, monkeypatch):
+    """Phase 3 is a no-op (no hashing) when no DATs are imported."""
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "disc.rvz").write_text("y")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: False)
+
+    called = []
+
+    async def fake_match_single(path, *, cancel_event=None):
+        called.append(path)
+        return {"path": path, "matched": False}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_scan_skips_symlink_escaping_volume(tmp_path, monkeypatch):
+    """A scannable symlink resolving outside the volume is dropped in discovery
+    (not hashed/cached by Phase 3), while in-volume files are kept."""
+    from unittest.mock import AsyncMock
+
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    vol = tmp_path / "vol"
+    vol.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "evil.rvz").write_text("x")
+    (vol / "good.rvz").write_text("y")
+    # Symlink inside the volume whose target lives outside the configured volumes.
+    (vol / "link.rvz").symlink_to(outside / "evil.rvz")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(vol))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(vol))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+    monkeypatch.setattr(global_dat_store, "set_match", AsyncMock())
+
+    matched: list[str] = []
+
+    async def fake_match_single(path, *, cancel_event=None):
+        matched.append(path)
+        return {"path": path, "matched": False}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    assert os.path.realpath(str(vol / "good.rvz")) in matched
+    # The symlink's out-of-volume target must never reach Phase 3.
+    assert os.path.realpath(str(outside / "evil.rvz")) not in matched
+
+
+@pytest.mark.asyncio
+async def test_scan_excludes_lookalike_suffix(tmp_path, monkeypatch):
+    """Discovery matches the real suffix: a `.ciso` is not admitted as `.iso`."""
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "good.iso").write_text("y")
+    (tmp_path / "lookalike.ciso").write_text("z")  # ends with 'iso' but != .iso
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(global_dat_store, "set_match", AsyncMock())
+
+    matched: list[str] = []
+
+    async def fake_match_single(path, *, cancel_event=None):
+        matched.append(path)
+        return {"path": path, "matched": False}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    assert os.path.realpath(str(tmp_path / "good.iso")) in matched
+    assert os.path.realpath(str(tmp_path / "lookalike.ciso")) not in matched
+
+
+@pytest.mark.asyncio
+async def test_scan_excludes_symlink_to_unscannable_target(tmp_path, monkeypatch):
+    """A scannable-named symlink resolving to an unscannable type is dropped."""
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "actual.ciso").write_text("z")  # not a scannable type
+    # Name passes the .iso filter, but the resolved target is .ciso.
+    (tmp_path / "alias.iso").symlink_to(tmp_path / "actual.ciso")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(global_dat_store, "set_match", AsyncMock())
+
+    matched: list[str] = []
+
+    async def fake_match_single(path, *, cancel_event=None):
+        matched.append(path)
+        return {"path": path, "matched": False}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    assert matched == []  # neither the alias nor its .ciso target is processed
+
+
+@pytest.mark.asyncio
+async def test_scan_phase3_cancel_midfile_does_not_delete_row(tmp_path, monkeypatch):
+    """Cancelling while a Phase 3 file is matching (aborted cancellable hook
+    returns an error) must not delete the existing cache row, and the scan
+    finishes as cancelled."""
+    from services.job_manager import job_manager
+
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "disc.rvz").write_text("y")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+
+    scan_job_ids: list[str] = []
+    original_create = info_routes.job_manager.create_external_job
+
+    def capture_create(*args, **kwargs):
+        job = original_create(*args, **kwargs)
+        scan_job_ids.append(job.id)
+        return job
+
+    monkeypatch.setattr(info_routes.job_manager, "create_external_job", capture_create)
+
+    delete_calls: list[str] = []
+
+    async def fake_delete_match(path):
+        delete_calls.append(path)
+
+    monkeypatch.setattr(global_dat_store, "delete_match", fake_delete_match)
+
+    async def fake_match_single(path, *, cancel_event=None):
+        # Simulate an aborted cancellable hook: request cancel and return a
+        # non-cacheable error.
+        if scan_job_ids:
+            await job_manager.cancel_job(scan_job_ids[0])
+        return {"path": path, "matched": False, "error": "embedded hash unavailable"}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    final = job_manager.jobs[scan_job_ids[0]]
+    assert final.status.value == "cancelled"
+    # The aborted file must NOT have triggered a delete of the cached row.
+    assert delete_calls == []
 
 
 @pytest.fixture

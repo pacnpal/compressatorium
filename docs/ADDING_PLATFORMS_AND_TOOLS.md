@@ -107,7 +107,9 @@ Two supporting layers:
   helper that supplies sensible defaults so concrete plugins stay tiny.
 - **`registry.py`** defines `ToolRegistry`, the lookup object. It indexes tools
   by id and by mode and answers `for_mode(mode)`, `spec(mode)`,
-  `archive_input_extensions()`, `verify_extensions()`, and friends.
+  `archive_input_extensions()`, `verify_extensions()`, `output_extensions()`,
+  `scannable_extensions()` (which drives the library scan / DAT-match
+  discovery), and friends.
 - **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py`** are the five
   plugins. Each is a thin `BaseTool` subclass that holds `ModeSpec` rows and
   delegates the real work to the underlying service singleton.
@@ -140,7 +142,7 @@ A plugin subclasses `BaseTool` and provides:
 |--------|---------|
 | `id`, `display_name`, `binary_path` | identity + binary path (from settings) |
 | `modes` | a tuple of `ModeSpec` rows |
-| `output_extensions`, `verify_extensions` | produced extensions (for "output exists" badges) and verify-accepted extensions |
+| `output_extensions`, `verify_extensions` | produced extensions and verify-accepted extensions. `output_extensions` drives the "output exists" badges **and** the registry-driven library scan / DAT-matching discovery (`registry.scannable_extensions()` = the union of output + verify), so list every extension your tool actually writes (including sidecars like CHDMAN's extractcd `.bin`). |
 | `convert(input_path, output_path, mode, *, compression=None, cancel_event=None)` | async generator yielding `{"progress": int, "message": str}`, raising `ConversionCancelled` when `cancel_event` fires |
 | `verify(path)` / `verify_stream(path)` | deep integrity check, one-shot and streaming |
 | `info(path)` / `info_model(raw, path)` | metadata dict + the Pydantic model it maps to |
@@ -148,11 +150,18 @@ A plugin subclasses `BaseTool` and provides:
 | `detect_output(input_path)` | optional, returns an `OutputStatus` so the file list can badge "output already exists" |
 | `active_pids()` | PIDs for the debug heartbeat |
 | `post_convert(input_path, output_path, mode)` | optional hook, default no-op |
+| `embedded_hashes(path, *, cancel_event=None)` | **optional** DAT-match fast path. Return `(sha1, match_type)` tuples your format already carries / can derive cheaply (so matching skips a full file hash); default `[]` → the caller falls back to a file-level SHA1, which is correct for raw formats. Raise `EmbeddedHashUnavailable` (from `services.tools.base`) when you *should* yield a hash but the attempt failed transiently, so it's recorded as a non-cacheable miss instead of a false negative. |
+| `embedded_hash_is_exhaustive` | optional flag (default `False`). Set `True` only when your container bytes can never appear in a DAT (e.g. a recompressed image), so a content-hash miss is definitive and the file-level fallback is skipped; leave `False` if your file's own SHA1 might be indexed. |
 
 `BaseTool` fills in `input_extensions` (the union of every mode's
-`input_extensions`), `spec(mode)`, and no-op `detect_output` / `post_convert`,
-so a real plugin only overrides what differs. See `app/services/tools/z3ds.py`
-for the smallest complete example (~120 lines, mostly delegation).
+`input_extensions`), `spec(mode)`, no-op `detect_output` / `post_convert`, and
+the `embedded_hashes` default (`[]`, `embedded_hash_is_exhaustive=False`), so a
+real plugin only overrides what differs. See `app/services/tools/z3ds.py` for the
+smallest complete example (~120 lines, mostly delegation). For one-shot
+subprocess work (info / header / hash extraction), reuse the shared
+`SubprocessRunner.run_capture()` (cancel/timeout-aware, applies the tool
+nice/ioprio policy) rather than re-implementing the spawn loop — see
+`app/services/dolphin_tool.py:disc_hashes` for the pattern.
 
 `ConversionCancelled` is defined once in `app/services/subprocess_runner.py` and
 re-exported through `services.chdman` and `services.tools.runner`. Import it,
@@ -223,7 +232,7 @@ the non-obvious rows is in §8 to §14.
 |---|------|-------------|------|
 | 7 | `app/config.py` | Add a `<tool>_path` `Field` with an env alias (`<TOOL>_PATH`). | New tool |
 | 8 | `app/services/<tool>.py` | The underlying service: `_build_command`, the subprocess spawn, progress parsing, cancel handling, the `*_CONVERTIBLE_EXTENSIONS` set, `*_OUTPUT_FORMATS`, and the module singleton. | New tool |
-| 9 | `app/services/tools/<tool>.py` | The plugin: a `BaseTool` subclass with `id`, `display_name`, `modes` (`ModeSpec` rows), `output_extensions`, `verify_extensions`, delegating `convert`/`verify`/`info`/`output_path`/`detect_output` to the service. | New tool |
+| 9 | `app/services/tools/<tool>.py` | The plugin: a `BaseTool` subclass with `id`, `display_name`, `modes` (`ModeSpec` rows), `output_extensions`, `verify_extensions`, delegating `convert`/`verify`/`info`/`output_path`/`detect_output` to the service. Optionally override `embedded_hashes` (DAT-match fast path) / `embedded_hash_is_exhaustive`; the default falls back to file-level SHA1. | New tool |
 | 10 | `app/services/tools/__init__.py` | One line: `registry.register(<Tool>(settings.<tool>_path))` (plus the import). This is the only dispatch wiring. | New tool |
 | 11 | `app/models.py` | Add `ConversionMode` value(s); add a `<Tool>Info` model; add `FileEntry` flags (`<tool>_convertible`, `has_<tool>`, `<tool>_ready`, `<tool>_path`). | New mode and/or tool |
 | 12 | `app/routes/convert.py` | Usually nothing for output paths or dispatch (the registry handles both). Add an extension-validation block in `plan_job` if your inputs need a specific check, mirroring the z3ds one. | New tool, sometimes |
@@ -845,6 +854,8 @@ PLUGIN (app/services/tools/<tool>.py)
     output_extensions, verify_extensions
 [ ] delegate convert/verify/verify_stream/info/info_model/output_path/active_pids
 [ ] optional: detect_output() for "output exists" badges
+[ ] optional: embedded_hashes()/embedded_hash_is_exhaustive for the DAT-match
+    fast path (default falls back to file-level SHA1)
 [ ] optional: allows_archive_input=True on source modes (both registries) — see §17
 
 REGISTER (app/services/tools/__init__.py)

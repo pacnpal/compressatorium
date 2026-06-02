@@ -270,3 +270,34 @@ def test_output_extensions_cover_mode_output_exts(tool_id):
     tool = registry.get(tool_id)
     declared = {m.output_ext for m in tool.modes if m.output_ext is not None}
     assert declared <= tool.output_extensions
+
+
+def test_output_extensions_union_covers_every_tool():
+    """registry.output_extensions() is the union of all tools' outputs."""
+    union = registry.output_extensions()
+    for tool in registry.all():
+        assert tool.output_extensions <= union
+    # Representative outputs from each tool.
+    assert {".chd", ".rvz", ".nsz"} <= union
+
+
+def test_scannable_extensions_are_output_plus_verify():
+    """Discovery walks produced outputs *and* verifiable inputs (issue #131)."""
+    scannable = registry.scannable_extensions()
+    assert scannable == registry.output_extensions() | registry.verify_extensions()
+    # Non-CHD outputs that historically were never scanned are now eligible.
+    assert {".chd", ".rvz", ".wia", ".gcz", ".nsz", ".xcz"} <= scannable
+    # The extractcd .bin data-track sidecar (what Redump DATs index) is in too.
+    assert ".bin" in scannable
+
+
+# z3ds/nsz have no embedded-hash source, so they use the BaseTool default.
+# (chdman's hook is exercised in tests/test_dat_routes.py with a mocked
+# metadata store; dolphin's would otherwise spawn dolphin-tool.)
+@pytest.mark.parametrize("tool_id", ["z3ds", "nsz"])
+@pytest.mark.asyncio
+async def test_embedded_hashes_default_empty_for_no_source_tools(tool_id, tmp_path):
+    tool = registry.get(tool_id)
+    ext = next(iter(tool.output_extensions))
+    result = await tool.embedded_hashes(str(tmp_path / f"sample{ext}"))
+    assert result == []

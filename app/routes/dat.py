@@ -16,6 +16,8 @@ from models import ConversionMode
 from services.dat_store import dat_store
 from services.file_hasher import compute_file_sha1
 from services.job_manager import ExternalJobCancelled, job_manager
+from services.tools import registry
+from services.tools.base import EmbeddedHashUnavailable
 from services.workload_limiter import workload_limiter
 from utils.path_utils import is_within_configured_volumes
 
@@ -519,7 +521,9 @@ async def schedule_match_job(
     return scan_job.id
 
 
-async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
+async def _hash_one_for_job(
+    normalized_path: str, *, cancel_event: asyncio.Event | None = None,
+) -> tuple[dict, bool]:
     """Compute a match result for one path inside the background job loop.
 
     Returns ``(result, cacheable)``.  ``cacheable`` is ``False`` for
@@ -528,6 +532,9 @@ async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
     persisted to ``dat_matches`` because they would stick around after
     the underlying condition changes (file appears, cap is raised,
     transient OSError clears).
+
+    ``cancel_event`` is forwarded so an expensive embedded-hash derivation
+    (e.g. ``dolphin-tool verify``) aborts promptly when the job is cancelled.
     """
     try:
         st = await run_in_threadpool(os.stat, normalized_path)
@@ -541,7 +548,7 @@ async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
         return {"path": normalized_path, "matched": False}, False
 
     try:
-        result = await _match_single_file(normalized_path)
+        result = await _match_single_file(normalized_path, cancel_event=cancel_event)
     except Exception as exc:  # pragma: no cover, isolated per-path
         # logger.exception rather than logger.warning: a KeyError /
         # AttributeError from a refactor bug should surface with a full
@@ -585,6 +592,11 @@ async def _run_match_job(
     job_success: bool | None = False
     job_error: str | None = None
 
+    # Set when the job is cancelled; forwarded into expensive embedded-hash
+    # hooks (e.g. dolphin-tool verify) so the in-flight file aborts promptly
+    # rather than after it finishes.
+    cancel_event = job_manager.get_cancel_event(job_id)
+
     try:
         for idx, normalized_path in enumerate(paths_to_compute, start=1):
             if job_manager.is_cancelled(job_id):
@@ -596,7 +608,9 @@ async def _run_match_job(
                 message=f"[{idx}/{total}] {display_name}",
             )
 
-            result, cacheable = await _hash_one_for_job(normalized_path)
+            result, cacheable = await _hash_one_for_job(
+                normalized_path, cancel_event=cancel_event,
+            )
             if cacheable:
                 hashed += 1
                 # Per-file writes are intentional: persist each completed
@@ -622,6 +636,15 @@ async def _run_match_job(
             processed += 1
             if result.get("matched"):
                 matched += 1
+
+            # A cancellable embedded-hash hook (e.g. dolphin run_capture) may
+            # have been aborted mid-file, returning a non-cacheable error
+            # rather than raising. Re-check after the per-file work (the
+            # completed result is already persisted, the cache is durable
+            # across cancellation by design) so a cancel during the last/only
+            # path finalizes the job as cancelled instead of failed/complete.
+            if job_manager.is_cancelled(job_id):
+                raise ExternalJobCancelled()
 
         # If every single file errored, something structural is wrong
         # (volume unmounted, DB down, etc.).  Flip the job to failure so
@@ -788,23 +811,72 @@ async def sync_cancel():
     raise HTTPException(status_code=409, detail="No sync in progress")
 
 
-async def _match_single_file(file_path: str) -> dict:
+async def _lookup_sha1_match(file_path: str, sha1: str, match_type: str) -> dict | None:
+    """Look ``sha1`` up in the imported DATs and build a match-result dict.
+
+    Shared by every match path (per-tool embedded hashes and the file-level
+    SHA1 fallback) so the DAT lookup + result-dict shape lives in one place.
+    Returns ``None`` when the hash isn't in any DAT.
+    """
+    record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
+    if not record:
+        return None
+    dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
+    return {
+        "path": file_path,
+        "matched": True,
+        "dat_id": record.get("dat_id"),
+        "dat_name": dat_name,
+        "game_name": record.get("game_name"),
+        "rom_name": record.get("rom_name"),
+        "match_type": match_type,
+        "file_hash": sha1,
+    }
+
+
+async def _match_single_file(
+    file_path: str, *, cancel_event: asyncio.Event | None = None,
+) -> dict:
     """Match a file against all imported DATs.
 
-    For CHD files: tries header SHA1 and data_SHA1 from metadata store.
-    For all files: falls back to file-level SHA1.
+    Fast path: ask the tool that owns this file type for any embedded /
+    derivable content hashes (CHD header & data SHA1, Dolphin disc SHA1,
+    ...) and try those against the DAT index first. Falls back to a
+    full file-level SHA1 (format-agnostic) when no tool hash matches.
+
+    ``cancel_event`` is forwarded to the tool's (potentially expensive)
+    embedded-hash hook so a background scan/match job can abort it promptly.
     """
-    ext = os.path.splitext(file_path)[1].lower()
     base_result = {"path": file_path, "matched": False}
 
     if not await run_in_threadpool(dat_store.has_dats):
         return base_result
 
-    # For CHD files, try the header hashes first (fast, already cached)
-    if ext == ".chd":
-        match = await _try_chd_header_match(file_path)
+    # Per-tool embedded-hash fast path (already cached / cheap where the tool
+    # can manage it, e.g. CHD header hashes from the metadata store).
+    tool = registry.tool_for_verify(file_path)
+    if tool is not None:
+        try:
+            match, had_candidates = await _try_embedded_hash_match(
+                file_path, tool, cancel_event=cancel_event,
+            )
+        except EmbeddedHashUnavailable as e:
+            # The tool couldn't derive its content hash (e.g. dolphin-tool
+            # verify failed). For these formats the file-level SHA1 of the
+            # container is meaningless against a DAT, so return a
+            # non-cacheable error instead of a false "unmatched".
+            logger.info("Embedded hash unavailable for %s: %s", file_path, e)
+            return {**base_result, "error": "embedded hash unavailable"}
         if match:
             return match
+        if had_candidates and tool.embedded_hash_is_exhaustive:
+            # The tool's content hashes are exhaustive (e.g. Dolphin's disc
+            # SHA1): a miss is definitive and the container's file-level SHA1
+            # can never match the DAT, so record a (cacheable) unmatched result
+            # without re-reading the whole file. Tools whose own container
+            # bytes may be DAT-indexed (e.g. CHD) deliberately fall through to
+            # the file-level SHA1 below.
+            return base_result
 
     # Defense-in-depth: respect the operator-configured size cap so
     # browsing a folder of 8 GB Wii ISOs doesn't stampede the hasher.
@@ -832,62 +904,47 @@ async def _match_single_file(file_path: str) -> dict:
         logger.warning("Failed to hash %s", file_path, exc_info=True)
         return {**base_result, "error": "Unable to process file"}
 
-    record = await run_in_threadpool(dat_store.lookup_sha1, file_sha1)
-    if record:
-        dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
-        return {
-            "path": file_path,
-            "matched": True,
-            "dat_id": record.get("dat_id"),
-            "dat_name": dat_name,
-            "game_name": record.get("game_name"),
-            "rom_name": record.get("rom_name"),
-            "match_type": "file_sha1",
-            "file_hash": file_sha1,
-        }
-
-    return base_result
+    return await _lookup_sha1_match(file_path, file_sha1, "file_sha1") or base_result
 
 
-async def _try_chd_header_match(file_path: str) -> dict | None:
-    """Try matching CHD file using header SHA1 and data_SHA1 from metadata store."""
-    from services.chd_metadata_store import chd_metadata_store
-    metadata = await chd_metadata_store.get_metadata(file_path)
-    if not metadata:
-        return None
+async def _try_embedded_hash_match(
+    file_path: str, tool, *, cancel_event: asyncio.Event | None = None,
+) -> tuple[dict | None, bool]:
+    """Try matching ``file_path`` using the hashes ``tool`` reports for it.
 
-    # Try overall SHA1 from CHD header
-    sha1 = metadata.get("sha1", "").strip().lower()
-    if sha1:
-        record = await run_in_threadpool(dat_store.lookup_sha1, sha1)
-        if record:
-            dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
-            return {
-                "path": file_path,
-                "matched": True,
-                "dat_id": record.get("dat_id"),
-                "dat_name": dat_name,
-                "game_name": record.get("game_name"),
-                "rom_name": record.get("rom_name"),
-                "match_type": "chd_sha1",
-                "file_hash": sha1,
-            }
+    Returns ``(match, had_candidates)``. ``match`` is the DAT hit (or ``None``).
+    ``had_candidates`` is True when the tool produced at least one embedded
+    hash. It is only an *input* to the caller's fallback decision, not the
+    decision itself: the caller skips the file-level SHA1 fallback after a miss
+    only when ``had_candidates`` AND ``tool.embedded_hash_is_exhaustive`` (the
+    container bytes can never be DAT-indexed, e.g. Dolphin RVZ/WIA/GCZ). Tools
+    whose own file SHA1 may be indexed (e.g. CHD) still fall back even though
+    they reported candidates. When ``had_candidates`` is False the tool has no
+    embedded hash and the file-level fallback is always the correct next step.
+    """
+    try:
+        candidates = await tool.embedded_hashes(file_path, cancel_event=cancel_event)
+    except EmbeddedHashUnavailable:
+        # Transient "couldn't derive the hash" — let the caller decide it's a
+        # non-cacheable error rather than falling back to a file-level hash.
+        raise
+    except Exception as exc:  # pragma: no cover - unexpected tool failure
+        logger.warning("embedded_hashes failed for %s", file_path, exc_info=True)
+        if tool.embedded_hash_is_exhaustive:
+            # For exhaustive tools (e.g. Dolphin) the container's file-level
+            # SHA1 can never match the DAT, so falling back would cache a false
+            # negative. Surface it as non-cacheable instead.
+            raise EmbeddedHashUnavailable("embedded hash derivation failed") from exc
+        return None, False
 
-    # Try data SHA1 (uncompressed content hash)
-    data_sha1 = metadata.get("data_sha1", "").strip().lower()
-    if data_sha1:
-        record = await run_in_threadpool(dat_store.lookup_sha1, data_sha1)
-        if record:
-            dat_name = await run_in_threadpool(dat_store.get_dat_name, record.get("dat_id", ""))
-            return {
-                "path": file_path,
-                "matched": True,
-                "dat_id": record.get("dat_id"),
-                "dat_name": dat_name,
-                "game_name": record.get("game_name"),
-                "rom_name": record.get("rom_name"),
-                "match_type": "chd_data_sha1",
-                "file_hash": data_sha1,
-            }
+    had_candidates = False
+    for raw_hash, match_type in candidates:
+        sha1 = (raw_hash or "").strip().lower()
+        if not sha1:
+            continue
+        had_candidates = True
+        match = await _lookup_sha1_match(file_path, sha1, match_type)
+        if match:
+            return match, True
 
-    return None
+    return None, had_candidates

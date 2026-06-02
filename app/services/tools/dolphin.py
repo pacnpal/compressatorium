@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from fastapi.concurrency import run_in_threadpool
+
+from config import settings
 from models import DolphinDiscInfo, OutputStatus
 from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
@@ -12,8 +16,9 @@ from services.dolphin_tool import (
     dolphin_tool_service,
 )
 from services.lock_manager import lock_manager
+from services.workload_limiter import workload_limiter
 
-from .base import BaseTool
+from .base import BaseTool, EmbeddedHashUnavailable
 from .spec import ModeKind, ModeSpec
 
 # mode -> (label, output_ext, kind, supports_compression, supports_level)
@@ -57,6 +62,11 @@ class DolphinTool(BaseTool):
     modes = _build_modes()
     output_extensions = frozenset({".rvz", ".wia", ".gcz", ".iso"})
     verify_extensions = frozenset(DOLPHIN_CONVERTIBLE_EXTENSIONS)
+    # The compressed/container formats (.rvz/.wia/.gcz/.wbfs) are recompressed
+    # by dolphin-tool, so their on-disk bytes never appear in a DAT — only the
+    # reconstructed disc SHA1 does. A disc-hash miss is therefore definitive;
+    # don't fall back to a (meaningless) file-level hash of the container.
+    embedded_hash_is_exhaustive = True
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
@@ -129,6 +139,63 @@ class DolphinTool(BaseTool):
 
     async def info(self, path: str) -> dict:
         return await self._service.header(path)
+
+    async def embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[tuple[str, str]]:
+        # A plain .iso is already the raw redump image, its file-level SHA1
+        # *is* the disc hash, so skip the expensive verify pass and let the
+        # caller fall back to cheap file hashing. The compressed/container
+        # formats (.rvz/.wia/.gcz/.wbfs) must be reconstructed by dolphin-tool
+        # before hashing, so only those go through verify.
+        if Path(path).suffix.lower() == ".iso":
+            return []
+        # Respect the operator-configured match size cap: dolphin-tool verify
+        # reconstructs and hashes the entire disc, which is exactly the
+        # expensive work MATCH_MAX_FILE_SIZE exists to bound. Over-cap files
+        # report no hash so the caller's size-cap handling (file-level path)
+        # short-circuits instead of paying for a full verify. CHD's hook reads
+        # cached hashes and is intentionally not capped.
+        size_cap = max(0, int(getattr(settings, "match_max_file_size", 0) or 0))
+        if size_cap > 0:
+            try:
+                size_bytes = await run_in_threadpool(os.path.getsize, path)
+            except OSError as e:
+                # Couldn't stat the file: for an exhaustive tool this is an
+                # inability to derive the disc hash, not "no embedded hash".
+                # Surface it as non-cacheable so the caller doesn't fall back
+                # to a (meaningless) container SHA1 and cache a false negative.
+                raise EmbeddedHashUnavailable(
+                    f"could not stat {path}: {e}",
+                ) from e
+            if size_bytes > size_cap:
+                # Over the cap: report no embedded hash and let the caller's
+                # own size-cap handling return a non-cacheable "file too large"
+                # rather than paying for a full-disc verify.
+                return []
+        # Gate the verify under the "match" workload lane so MAX_MATCH_CONCURRENCY
+        # bounds how many full-disc reconstructions run at once, even across a
+        # metadata scan and concurrent /dat/match requests.
+        try:
+            async with await workload_limiter.acquire("match"):
+                hashes = await self._service.disc_hashes(
+                    path, cancel_event=cancel_event,
+                )
+        except Exception as e:
+            # Spawn failure (e.g. binary missing) or unexpected error: treat as
+            # a transient inability to derive the hash, not "no hash exists".
+            raise EmbeddedHashUnavailable(
+                f"dolphin-tool verify failed for {path}: {e}",
+            ) from e
+        if not hashes:
+            # A compressed Dolphin container must yield a disc hash; an empty
+            # result means verify failed / produced nothing. Signal a
+            # non-cacheable miss rather than collapsing to the container's
+            # (meaningless-against-Redump) file SHA1 and caching it.
+            raise EmbeddedHashUnavailable(
+                f"dolphin-tool verify produced no hash for {path}",
+            )
+        return [(h, "dolphin_disc_sha1") for h in hashes]
 
     def info_model(self, raw: dict, path: str) -> DolphinDiscInfo:
         return DolphinDiscInfo(
