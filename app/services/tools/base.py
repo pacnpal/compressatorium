@@ -19,6 +19,19 @@ from models import OutputStatus
 from .spec import ModeSpec
 
 
+class EmbeddedHashUnavailable(Exception):
+    """A tool could not derive its embedded content hash for a file.
+
+    Raised by ``embedded_hashes`` when the tool *should* be able to report a
+    content hash for this file type but the attempt failed transiently (e.g.
+    ``dolphin-tool verify`` timed out / exited non-zero / the binary is
+    missing). The DAT-match path treats this as a non-cacheable error rather
+    than collapsing to a meaningless file-level hash and caching a false
+    "unmatched" result. Tools that legitimately have no embedded hash for a
+    file (so a file-level SHA1 fallback is correct) return ``[]`` instead.
+    """
+
+
 @runtime_checkable
 class ToolPlugin(Protocol):
     id: str
@@ -26,8 +39,16 @@ class ToolPlugin(Protocol):
     binary_path: str
     modes: Sequence[ModeSpec]
     input_extensions: frozenset[str]    # convertible-from
-    output_extensions: frozenset[str]   # produced (for "output exists" badges)
+    output_extensions: frozenset[str]   # produced ("output exists" badges + scan discovery)
     verify_extensions: frozenset[str]   # accepted by verify()
+    # When the tool's embedded_hashes are *exhaustive*: a miss of every
+    # reported content hash means the file definitively isn't in the DAT, so
+    # the DAT matcher must NOT fall back to a file-level SHA1 of the container
+    # (which can't be indexed anyway and would re-read the whole file). True
+    # only for formats whose container bytes never appear in a DAT, e.g.
+    # Dolphin's recompressed RVZ/WIA/GCZ. False (default) for formats whose own
+    # file SHA1 may legitimately be indexed (e.g. a CHD-container DAT).
+    embedded_hash_is_exhaustive: bool
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
@@ -72,6 +93,28 @@ class ToolPlugin(Protocol):
     def info_model(self, raw: dict, path: str) -> BaseModel:
         """Map raw info into the typed API model."""
 
+    async def embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[tuple[str, str]]:
+        """Report verifiable hashes embedded in / derivable from ``path``.
+
+        Each entry is ``(sha1_hex, match_type)``: a content SHA1 the file
+        carries (CHD header / data SHA1, Dolphin disc SHA1, ...) plus a
+        label describing where it came from. The DAT-match fast path tries
+        these against the imported DATs before falling back to a full
+        file-level SHA1. Return an empty list when the tool has no cheap or
+        format-meaningful hash to offer (file-level SHA1 fallback is correct).
+
+        Raise :class:`EmbeddedHashUnavailable` when the tool *should* yield a
+        hash for this file type but the attempt failed transiently, so the
+        caller skips the (meaningless) file-level fallback and does not cache
+        a false negative.
+
+        ``cancel_event`` lets a background job (metadata scan / DAT match)
+        abort an expensive derivation (e.g. ``dolphin-tool verify``) promptly
+        instead of blocking until the current file finishes.
+        """
+
     def active_pids(self) -> list[int]:
         """Return PIDs of in-flight subprocesses for this tool."""
 
@@ -89,6 +132,9 @@ class BaseTool:
     modes: Sequence[ModeSpec] = ()
     output_extensions: frozenset[str] = frozenset()
     verify_extensions: frozenset[str] = frozenset()
+    # Default False: a tool whose container file SHA1 might be DAT-indexed
+    # still falls back to a file-level hash after an embedded-hash miss.
+    embedded_hash_is_exhaustive: bool = False
 
     def __init__(self, binary_path: str) -> None:
         self.binary_path = binary_path
@@ -107,6 +153,12 @@ class BaseTool:
 
     def detect_output(self, input_path: str) -> OutputStatus | None:
         return None
+
+    async def embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[tuple[str, str]]:
+        # Default: no embedded hash; callers fall back to file-level SHA1.
+        return []
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,

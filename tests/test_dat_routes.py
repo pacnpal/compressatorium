@@ -326,12 +326,14 @@ async def test_get_dat_name_unknown(isolated_dat_store):
 
 
 # ---------------------------------------------------------------------------
-# _try_chd_header_match  (CHD metadata-backed SHA1 matching)
+# _try_embedded_hash_match  (per-tool embedded-hash fast path)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
-    """CHD files are matched via their cached header SHA1."""
+    """CHD files are matched via their cached header SHA1 (chdman hook)."""
+    from services.tools import registry
+
     upload = _make_upload_file(SAMPLE_DAT_XML)
     await dat_routes.import_dat(file=upload)
 
@@ -339,36 +341,348 @@ async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
     chd.write_bytes(b"fake chd")
     chd_path = str(chd)
 
-    # Mock chd_metadata_store.get_metadata to return sha1 matching the DAT entry
+    # Mock chd_metadata_store.get_metadata to return sha1 matching the DAT entry.
+    # ChdmanTool.embedded_hashes imports chd_metadata_store at call time, so the
+    # patch on the module-level singleton applies.
     mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=False)
     mock_metadata_store.get_metadata = AsyncMock(
         return_value={"sha1": "aabbccddaabbccddaabbccddaabbccddaabbccdd", "data_sha1": ""}
     )
     monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
 
-    # Patch inside the function's module-level import
     with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
-        result = await dat_routes._try_chd_header_match(chd_path)
+        result, had_candidates = await dat_routes._try_embedded_hash_match(
+            chd_path, registry.get("chdman"),
+        )
 
     assert result is not None
+    assert had_candidates is True
     assert result["matched"] is True
     assert result["match_type"] == "chd_sha1"
     assert result["game_name"] == "Test Game"
 
 
 @pytest.mark.asyncio
-async def test_chd_header_match_no_metadata(tmp_path, isolated_dat_store):
-    """_try_chd_header_match returns None when no cached metadata exists."""
+async def test_chd_hook_stale_metadata_suppresses_embedded_hashes(tmp_path):
+    """A changed CHD (stale cache) reports no embedded candidates so its
+    outdated header/data SHA1 aren't matched, but the file-level SHA1 fallback
+    is preserved (chdman is non-exhaustive)."""
+    from services.tools import registry
+
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake chd")
 
     mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=True)
+    mock_metadata_store.get_metadata = AsyncMock(
+        return_value={"sha1": "a" * 40, "data_sha1": ""}
+    )
+
+    with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
+        result = await registry.get("chdman").embedded_hashes(str(chd))
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_match_single_file_stale_chd_falls_back_to_file_sha1(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A stale CHD still matches via the file-level SHA1 fallback (the stale
+    embedded disc hash is suppressed, the current container hash is used)."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake chd")
+
+    mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=True)
+    mock_metadata_store.get_metadata = AsyncMock(
+        return_value={"sha1": "9" * 40, "data_sha1": "8" * 40}
+    )
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value=target_sha1))
+
+    with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
+        result = await dat_routes._match_single_file(str(chd))
+
+    assert result["matched"] is True
+    assert result["match_type"] == "file_sha1"
+
+
+@pytest.mark.asyncio
+async def test_chd_header_match_no_metadata(tmp_path, isolated_dat_store):
+    """Uncached CHD reports no candidates (and does not raise as 'stale')."""
+    from services.tools import registry
+
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake chd")
+
+    mock_metadata_store = MagicMock()
+    # is_stale is True for an uncached CHD (no row); get_metadata None must be
+    # checked first so this is treated as "no candidates", not a hash failure.
+    mock_metadata_store.is_stale = AsyncMock(return_value=True)
     mock_metadata_store.get_metadata = AsyncMock(return_value=None)
 
     with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
-        result = await dat_routes._try_chd_header_match(str(chd))
+        result, had_candidates = await dat_routes._try_embedded_hash_match(
+            str(chd), registry.get("chdman"),
+        )
 
     assert result is None
+    assert had_candidates is False  # -> caller falls back to file-level SHA1
+
+
+@pytest.mark.asyncio
+async def test_dolphin_disc_hash_match_hit(tmp_path, isolated_dat_store, monkeypatch):
+    """Compressed Dolphin outputs match via the dolphin disc SHA1 hook."""
+    from services.tools import registry
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    rvz = tmp_path / "game.rvz"
+    rvz.write_bytes(b"fake rvz")
+
+    dolphin = registry.get("dolphin")
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(
+        dolphin._service, "disc_hashes", AsyncMock(return_value=[target_sha1]),
+    )
+
+    result, had_candidates = await dat_routes._try_embedded_hash_match(str(rvz), dolphin)
+
+    assert result is not None
+    assert had_candidates is True
+    assert result["matched"] is True
+    assert result["match_type"] == "dolphin_disc_sha1"
+    assert result["file_hash"] == target_sha1
+
+
+@pytest.mark.asyncio
+async def test_dolphin_iso_skips_disc_hash(tmp_path):
+    """A plain .iso reports no embedded hash (falls back to file-level SHA1)."""
+    from services.tools import registry
+
+    dolphin = registry.get("dolphin")
+    assert await dolphin.embedded_hashes(str(tmp_path / "game.iso")) == []
+
+
+@pytest.mark.asyncio
+async def test_dolphin_disc_hash_respects_size_cap(tmp_path, monkeypatch):
+    """Over-cap containers skip the expensive verify and report no hash."""
+    from services.tools import dolphin as dolphin_module
+    from services.tools import registry
+
+    rvz = tmp_path / "big.rvz"
+    rvz.write_bytes(b"x" * 1000)
+
+    dolphin = registry.get("dolphin")
+    disc_hashes_mock = AsyncMock(return_value=["a" * 40])
+    monkeypatch.setattr(dolphin._service, "disc_hashes", disc_hashes_mock)
+    # Cap below the file size: the verify pass must be skipped entirely.
+    monkeypatch.setattr(dolphin_module.settings, "match_max_file_size", 100)
+
+    result = await dolphin.embedded_hashes(str(rvz))
+
+    assert result == []
+    disc_hashes_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dolphin_hook_stat_failure_raises(tmp_path, monkeypatch):
+    """A stat failure under the size cap is non-cacheable (EmbeddedHashUnavailable),
+    not a silent fall-through to the container SHA1, for the exhaustive tool."""
+    from services.tools import dolphin as dolphin_module
+    from services.tools import registry
+    from services.tools.base import EmbeddedHashUnavailable
+
+    dolphin = registry.get("dolphin")
+    # Cap must be enabled for the getsize() path to run.
+    monkeypatch.setattr(dolphin_module.settings, "match_max_file_size", 100)
+    # Missing file -> getsize() raises (FileNotFoundError is an OSError).
+    with pytest.raises(EmbeddedHashUnavailable):
+        await dolphin.embedded_hashes(str(tmp_path / "gone.rvz"))
+
+
+@pytest.mark.asyncio
+async def test_dolphin_hook_runs_under_match_lane(tmp_path, monkeypatch):
+    """The Dolphin verify pass holds the 'match' workload lane while running."""
+    from services.tools import registry
+    from services.workload_limiter import workload_limiter
+
+    rvz = tmp_path / "g.rvz"
+    rvz.write_bytes(b"x")
+    dolphin = registry.get("dolphin")
+
+    seen = {}
+
+    async def fake_disc_hashes(path, *, cancel_event=None):
+        seen["in_use"] = workload_limiter.in_use("match")
+        return ["a" * 40]
+
+    monkeypatch.setattr(dolphin._service, "disc_hashes", fake_disc_hashes)
+
+    await dolphin.embedded_hashes(str(rvz))
+
+    # The lane was held (>=1 in use) during the expensive verify.
+    assert seen["in_use"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_dolphin_hook_raises_on_verify_failure(tmp_path, monkeypatch):
+    """A failed verify (empty hash output) raises EmbeddedHashUnavailable."""
+    from services.tools import registry
+    from services.tools.base import EmbeddedHashUnavailable
+
+    rvz = tmp_path / "bad.rvz"
+    rvz.write_bytes(b"x")
+    dolphin = registry.get("dolphin")
+    monkeypatch.setattr(dolphin._service, "disc_hashes", AsyncMock(return_value=[]))
+
+    with pytest.raises(EmbeddedHashUnavailable):
+        await dolphin.embedded_hashes(str(rvz))
+
+
+@pytest.mark.asyncio
+async def test_match_single_file_non_cacheable_on_dolphin_failure(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A Dolphin verify failure yields a non-cacheable error, not a false miss."""
+    from services.tools import registry
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    rvz = tmp_path / "bad.rvz"
+    rvz.write_bytes(b"x")
+    monkeypatch.setattr(
+        registry.get("dolphin")._service, "disc_hashes", AsyncMock(return_value=[]),
+    )
+    # The container's file SHA1 must NOT be used as a fallback here.
+    file_sha1_mock = AsyncMock(return_value="deadbeef" * 5)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", file_sha1_mock)
+
+    result = await dat_routes._match_single_file(str(rvz))
+
+    assert result["matched"] is False
+    assert result.get("error") == "embedded hash unavailable"
+    file_sha1_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_match_single_file_uses_dolphin_hook(tmp_path, isolated_dat_store, monkeypatch):
+    """_match_single_file routes .rvz through the dolphin hook before file SHA1."""
+    from services.tools import registry
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    rvz = tmp_path / "game.rvz"
+    rvz.write_bytes(b"fake rvz")
+
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(
+        registry.get("dolphin")._service,
+        "disc_hashes",
+        AsyncMock(return_value=[target_sha1]),
+    )
+    # file-level SHA1 must NOT be reached when the disc hash already matches.
+    file_sha1_mock = AsyncMock(return_value="deadbeef" * 5)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", file_sha1_mock)
+
+    result = await dat_routes._match_single_file(str(rvz))
+
+    assert result["matched"] is True
+    assert result["match_type"] == "dolphin_disc_sha1"
+    file_sha1_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_match_single_file_dolphin_miss_skips_container_hash(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A Dolphin disc-hash that misses the DAT is a definitive non-match; the
+    meaningless container file-SHA1 fallback must be skipped."""
+    from services.tools import registry
+
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    rvz = tmp_path / "absent.rvz"
+    rvz.write_bytes(b"fake rvz")
+
+    # Disc hash computed fine but not present in the DAT.
+    monkeypatch.setattr(
+        registry.get("dolphin")._service,
+        "disc_hashes",
+        AsyncMock(return_value=["dead" * 10]),
+    )
+    file_sha1_mock = AsyncMock(return_value="beef" * 10)
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", file_sha1_mock)
+
+    result = await dat_routes._match_single_file(str(rvz))
+
+    assert result["matched"] is False
+    assert "error" not in result and "reason" not in result  # cacheable
+    file_sha1_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_match_single_file_chd_hash_miss_falls_back_to_file_sha1(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A CHD whose cached header/data SHA1 miss the DAT still falls back to the
+    .chd file-level SHA1 (a CHD-container DAT may index it): chdman is not
+    'exhaustive', unlike Dolphin."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    chd = tmp_path / "game.chd"
+    chd.write_bytes(b"fake chd")
+
+    mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=False)
+    # Cached hashes that are NOT in the imported DAT.
+    mock_metadata_store.get_metadata = AsyncMock(
+        return_value={"sha1": "1" * 40, "data_sha1": "2" * 40}
+    )
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value=target_sha1))
+
+    with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
+        result = await dat_routes._match_single_file(str(chd))
+
+    assert result["matched"] is True
+    assert result["match_type"] == "file_sha1"
+
+
+@pytest.mark.asyncio
+async def test_match_single_file_uncached_chd_falls_back_to_file_sha1(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """An uncached CHD has no embedded candidates, so it uses the file-level
+    SHA1 fallback (rather than being reported hash-unavailable)."""
+    upload = _make_upload_file(SAMPLE_DAT_XML)
+    await dat_routes.import_dat(file=upload)
+
+    chd = tmp_path / "fresh.chd"
+    chd.write_bytes(b"fake chd")
+
+    mock_metadata_store = MagicMock()
+    mock_metadata_store.is_stale = AsyncMock(return_value=True)  # no row -> stale
+    mock_metadata_store.get_metadata = AsyncMock(return_value=None)
+
+    target_sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    monkeypatch.setattr(dat_routes, "compute_file_sha1", AsyncMock(return_value=target_sha1))
+
+    with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
+        result = await dat_routes._match_single_file(str(chd))
+
+    assert result["matched"] is True
+    assert result["match_type"] == "file_sha1"
 
 
 # ---------------------------------------------------------------------------
@@ -976,7 +1290,7 @@ async def test_run_match_job_reports_errors_in_final_message(
         ({"path": "/c", "matched": False, "error": "boom"}, False),
     ]
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         return hash_outcomes.pop(0)
 
     monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
@@ -1005,7 +1319,7 @@ async def test_run_match_job_marks_failure_when_all_files_error(
     )
     monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
 
-    async def always_error(path):
+    async def always_error(path, *, cancel_event=None):
         return {"path": path, "matched": False, "error": "mount offline"}, False
 
     monkeypatch.setattr(dat_routes, "_hash_one_for_job", always_error)
@@ -1041,7 +1355,7 @@ async def test_run_match_job_outer_exception_includes_counter_context(
     # update_external_job raises, tripping the outer except.
     hash_calls = 0
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         nonlocal hash_calls
         hash_calls += 1
         if hash_calls == 1:
@@ -1098,7 +1412,7 @@ async def test_run_match_job_skip_count_does_not_trip_failure(
         ({"path": "/c", "matched": False}, False),  # non-regular file shape
     ]
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         return hash_outcomes.pop(0)
 
     monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
@@ -1127,7 +1441,7 @@ async def test_run_match_job_cache_write_failure_counts_as_error(
     )
     monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         return {"path": path, "matched": True}, True
 
     monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
@@ -1166,7 +1480,7 @@ async def test_run_match_job_cancellation_ends_in_cancelled_status(
     # cancel-check at the top of the loop then fires ExternalJobCancelled.
     hash_calls = 0
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         nonlocal hash_calls
         hash_calls += 1
         if hash_calls == 2:
@@ -1204,7 +1518,7 @@ async def test_run_match_job_cancellation_keeps_partial_cache(
 
     hash_calls = 0
 
-    async def fake_hash_one(path):
+    async def fake_hash_one(path, *, cancel_event=None):
         nonlocal hash_calls
         hash_calls += 1
         if hash_calls == 2:
@@ -1225,6 +1539,69 @@ async def test_run_match_job_cancellation_keeps_partial_cache(
 
 
 @pytest.mark.asyncio
+async def test_run_match_job_cancel_on_last_file_ends_cancelled(
+    tmp_path, isolated_dat_store, monkeypatch,
+):
+    """A cancel observed only on the last/only path (via a non-raising
+    cancellable hook) still finalizes the job as cancelled, not complete."""
+    from services.job_manager import job_manager
+
+    scan_job = job_manager.create_external_job(
+        filename="DAT Match",
+        mode=dat_routes.ConversionMode.DAT_MATCH,
+        message="test",
+    )
+    monkeypatch.setattr(dat_routes, "_active_match_job_id", scan_job.id)
+
+    async def fake_hash_one(path, *, cancel_event=None):
+        # Simulate an aborted cancellable hook on the only path: cancel is
+        # requested during the call and a non-cacheable error is returned.
+        await job_manager.cancel_job(scan_job.id)
+        return {"path": path, "matched": False, "error": "embedded hash unavailable"}, False
+
+    monkeypatch.setattr(dat_routes, "_hash_one_for_job", fake_hash_one)
+
+    await dat_routes._run_match_job(job_id=scan_job.id, paths_to_compute=["/only"])
+
+    final = job_manager.jobs[scan_job.id]
+    assert final.status.value == "cancelled"
+    assert dat_routes._active_match_job_id is None
+
+
+@pytest.mark.asyncio
+async def test_try_embedded_hash_match_exhaustive_tool_raises_on_failure(tmp_path):
+    """An unexpected hook failure on an exhaustive tool surfaces as
+    EmbeddedHashUnavailable (no file-level fallback / false-negative cache)."""
+    from services.tools.base import EmbeddedHashUnavailable
+
+    class _ExhaustiveBoom:
+        embedded_hash_is_exhaustive = True
+
+        async def embedded_hashes(self, path, *, cancel_event=None):
+            raise RuntimeError("boom")
+
+    with pytest.raises(EmbeddedHashUnavailable):
+        await dat_routes._try_embedded_hash_match(str(tmp_path / "x.rvz"), _ExhaustiveBoom())
+
+
+@pytest.mark.asyncio
+async def test_try_embedded_hash_match_non_exhaustive_tool_falls_back(tmp_path):
+    """A non-exhaustive tool's unexpected failure falls back (no candidates)."""
+
+    class _NonExhaustiveBoom:
+        embedded_hash_is_exhaustive = False
+
+        async def embedded_hashes(self, path, *, cancel_event=None):
+            raise RuntimeError("boom")
+
+    result, had_candidates = await dat_routes._try_embedded_hash_match(
+        str(tmp_path / "x.chd"), _NonExhaustiveBoom(),
+    )
+    assert result is None
+    assert had_candidates is False
+
+
+@pytest.mark.asyncio
 async def test_hash_one_for_job_logs_match_error_with_traceback(
     tmp_path, isolated_dat_store, monkeypatch, caplog,
 ):
@@ -1232,7 +1609,7 @@ async def test_hash_one_for_job_logs_match_error_with_traceback(
     iso = tmp_path / "a.iso"
     iso.write_bytes(b"x")
 
-    async def raise_keyerror(_path):
+    async def raise_keyerror(_path, *, cancel_event=None):
         raise KeyError("missing_column")
 
     monkeypatch.setattr(dat_routes, "_match_single_file", raise_keyerror)

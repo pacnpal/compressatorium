@@ -14,6 +14,13 @@ stall timeout, cancel watcher, non-zero-exit error tail, final 100% emit).
 dolphin's only addition over chdman is a periodic heartbeat, which is an opt-in
 flag here.
 
+``SubprocessRunner.run_capture`` is the one-shot counterpart for tools that
+need a buffered ``(returncode, stdout, stderr)`` rather than streamed lines
+(info / header / embedded-hash extraction). It shares the same PID tracking
+and adds cancel-event + timeout handling (terminate -> kill), so an expensive
+capture such as ``dolphin-tool verify --algorithm sha1`` aborts promptly when
+a background scan/match job is cancelled instead of running to completion.
+
 ``ConversionCancelled`` is defined here (rather than in ``services.chdman``) so
 the runner can raise it without importing back into the service that uses the
 runner.  ``services.chdman`` re-exports it from this module, so its identity and
@@ -23,6 +30,7 @@ are preserved.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
@@ -152,6 +160,92 @@ class SubprocessRunner:
     def active_pids(self) -> list[int]:
         with self._pid_lock:
             return list(self._active_pids)
+
+    async def run_capture(
+        self,
+        cmd: list[str],
+        *,
+        timeout: float | None = None,
+        cancel_event: asyncio.Event | None = None,
+        stderr_to_stdout: bool = False,
+    ) -> tuple[int | None, bytes, bytes]:
+        """Run ``cmd`` to completion and capture ``(returncode, stdout, stderr)``.
+
+        Shared one-shot counterpart to :meth:`run` for tools that need a
+        buffered result rather than the streaming line loop (info / header /
+        hash extraction). PID-tracked like :meth:`run`, so ``active_pids``
+        and cancellation see these subprocesses too.
+
+        The call races ``communicate()`` against an optional ``cancel_event``
+        and ``timeout`` (seconds). If either fires before the process exits,
+        the subprocess is terminated (TERM, then KILL after 5s) and the
+        returncode is reported as ``None`` to signal the abort. ``stderr`` is
+        folded into ``stdout`` when ``stderr_to_stdout`` is set (and the
+        returned ``stderr`` is then empty).
+        """
+        # Honour the shared process-priority policy, same as the streaming
+        # run(): renice via preexec and wrap with ionice. A captured command
+        # (e.g. dolphin-tool verify reconstructing a full disc for DAT hashing)
+        # is just as heavy as a conversion, so it must respect TOOL_NICE /
+        # TOOL_IOPRIO_* instead of running at normal priority.
+        cmd = ioprio_prefix(self._owner) + cmd
+
+        def _preexec():
+            apply_nice(self._owner)
+
+        process = await asyncio.create_subprocess_exec(  # nosemgrep
+            cmd[0], *cmd[1:],
+            stdout=asyncio.subprocess.PIPE,
+            stderr=(
+                asyncio.subprocess.STDOUT
+                if stderr_to_stdout
+                else asyncio.subprocess.PIPE
+            ),
+            preexec_fn=_preexec if os.name == "posix" else None,
+        )
+        self.track_pid(process.pid)
+        comm = asyncio.ensure_future(process.communicate())
+        cancel_wait = (
+            asyncio.ensure_future(cancel_event.wait())
+            if cancel_event is not None
+            else None
+        )
+        try:
+            waiters = [comm] + ([cancel_wait] if cancel_wait is not None else [])
+            done, _pending = await asyncio.wait(
+                waiters,
+                timeout=timeout or None,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if comm in done:
+                stdout, stderr = comm.result()
+                return process.returncode, stdout or b"", stderr or b""
+            # Cancelled or timed out before the process exited; the finally
+            # block below terminates it and drains ``comm``.
+            return None, b"", b""
+        finally:
+            if cancel_wait is not None and not cancel_wait.done():
+                cancel_wait.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await cancel_wait
+            if process.returncode is None:
+                try:
+                    process.terminate()
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+                except ProcessLookupError:
+                    pass
+            if not comm.done():
+                comm.cancel()
+            # CancelledError is a BaseException, so it is NOT covered by
+            # suppress(Exception); list it explicitly so a cancelled/timed-out
+            # capture still returns (None, b"", b"") instead of propagating the
+            # cancellation out of run_capture.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await comm
+            self.untrack_pid(process.pid)
 
     async def run(
         self,

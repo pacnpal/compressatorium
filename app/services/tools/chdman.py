@@ -83,8 +83,11 @@ class ChdmanTool(BaseTool):
     display_name = "CHDMAN"
     modes = _build_modes()
     # All extensions chdman produces: .chd from create/copy, plus the extract
-    # targets (.cue/.iso/.raw/.avi). verify only applies to finished CHDs.
-    output_extensions = frozenset({".chd", ".cue", ".iso", ".raw", ".avi"})
+    # targets (.cue/.iso/.raw/.avi) and the .bin data-track sidecar that
+    # extractcd writes alongside the .cue. The .bin is what Redump-style DATs
+    # index (the tiny .cue isn't), so it must be discoverable by the scan.
+    # verify only applies to finished CHDs.
+    output_extensions = frozenset({".chd", ".cue", ".bin", ".iso", ".raw", ".avi"})
     verify_extensions = frozenset({".chd"})
 
     def __init__(self, binary_path: str) -> None:
@@ -147,6 +150,36 @@ class ChdmanTool(BaseTool):
 
     async def info(self, path: str) -> dict:
         return await self._service.info(path)
+
+    async def embedded_hashes(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> list[tuple[str, str]]:
+        # CHDs carry an overall SHA1 (header) and a data SHA1 (uncompressed
+        # content) in their metadata. Read them from the metadata store
+        # (primed by the library scan / a prior /info call) so matching a CHD
+        # against a DAT never has to re-hash the whole file. The read is
+        # instant, so ``cancel_event`` is accepted for contract parity but
+        # unused.
+        from services.chd_metadata_store import chd_metadata_store
+
+        metadata = await chd_metadata_store.get_metadata(path)
+        if not metadata or await chd_metadata_store.is_stale(path):
+            # No cached metadata, or the file changed since it was cached so the
+            # stored header/data SHA1 describe an older disc. Either way report
+            # *no embedded candidates* (rather than raise): chdman is
+            # non-exhaustive, so the caller still falls back to a file-level
+            # SHA1 of the current .chd, which is valid for any DAT that indexes
+            # the container bytes. Only the stale embedded hashes are
+            # suppressed, not the whole match.
+            return []
+        out: list[tuple[str, str]] = []
+        sha1 = (metadata.get("sha1") or "").strip().lower()
+        if sha1:
+            out.append((sha1, "chd_sha1"))
+        data_sha1 = (metadata.get("data_sha1") or "").strip().lower()
+        if data_sha1:
+            out.append((data_sha1, "chd_data_sha1"))
+        return out
 
     def info_model(self, raw: dict, path: str) -> CHDInfo:
         return CHDInfo(

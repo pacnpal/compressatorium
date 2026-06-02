@@ -343,3 +343,80 @@ async def test_dolphin_verify_service_error(
 
     assert exc_info.value.status_code == 500
     assert "Failed to verify disc image" in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
+# disc_hashes  (redump-style content SHA1 via `dolphin-tool verify`)
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    """Minimal asyncio subprocess stand-in for disc_hashes()."""
+
+    def __init__(self, stdout: bytes, returncode: int = 0):
+        self._stdout = stdout
+        self.returncode = returncode
+        self.pid = 4321
+
+    async def communicate(self):
+        return self._stdout, b""
+
+
+@pytest.mark.asyncio
+async def test_disc_hashes_parses_sha1(monkeypatch):
+    """disc_hashes extracts the 40-char hex SHA1 from verify output."""
+    from app.services.dolphin_tool import dolphin_tool_service
+
+    sha1 = "aabbccddaabbccddaabbccddaabbccddaabbccdd"
+    out = f"Problems Found: No\nSHA-1: {sha1}\n".encode()
+
+    async def fake_exec(*args, **kwargs):
+        assert "--algorithm" in args and "sha1" in args
+        return _FakeProc(out)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    result = await dolphin_tool_service.disc_hashes("/data/game.rvz")
+    assert result == [sha1]
+
+
+@pytest.mark.asyncio
+async def test_disc_hashes_empty_on_nonzero_exit(monkeypatch):
+    """A failed verify yields no hashes (caller falls back to file SHA1)."""
+    from app.services.dolphin_tool import dolphin_tool_service
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProc(b"error: bad image\n", returncode=1)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    assert await dolphin_tool_service.disc_hashes("/data/bad.rvz") == []
+
+
+@pytest.mark.asyncio
+async def test_disc_hashes_empty_on_abort(monkeypatch):
+    """When run_capture reports an abort (returncode None), disc_hashes is empty."""
+    from app.services.dolphin_tool import dolphin_tool_service
+
+    async def fake_run_capture(cmd, *, timeout=None, cancel_event=None, stderr_to_stdout=False):
+        return None, b"", b""
+
+    monkeypatch.setattr(dolphin_tool_service._runner, "run_capture", fake_run_capture)
+    assert await dolphin_tool_service.disc_hashes("/data/x.rvz") == []
+
+
+@pytest.mark.asyncio
+async def test_disc_hashes_forwards_cancel_event(monkeypatch):
+    """disc_hashes threads its cancel_event into the shared run_capture call."""
+    from app.services.dolphin_tool import dolphin_tool_service
+
+    seen = {}
+    event = asyncio.Event()
+
+    async def fake_run_capture(cmd, *, timeout=None, cancel_event=None, stderr_to_stdout=False):
+        seen["cancel_event"] = cancel_event
+        return 0, b"SHA-1: " + b"a" * 40, b""
+
+    monkeypatch.setattr(dolphin_tool_service._runner, "run_capture", fake_run_capture)
+    result = await dolphin_tool_service.disc_hashes("/data/x.rvz", cancel_event=event)
+
+    assert result == ["a" * 40]
+    assert seen["cancel_event"] is event

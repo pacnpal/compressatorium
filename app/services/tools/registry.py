@@ -100,3 +100,21 @@ class ToolRegistry:
         return frozenset().union(
             *(t.verify_extensions for t in self._tools.values())
         )
+
+    def output_extensions(self) -> frozenset[str]:
+        """Union of every registered tool's output_extensions.
+
+        These are the file types the tools *produce* (.chd, .rvz, .nsz, ...).
+        """
+        return frozenset().union(
+            *(t.output_extensions for t in self._tools.values())
+        )
+
+    def scannable_extensions(self) -> frozenset[str]:
+        """Extensions the library metadata scan should walk for.
+
+        The union of produced outputs and verifiable inputs, so every
+        registered tool's outputs are eligible for discovery rather than
+        the historical hard-coded ``.chd`` walk (issue #131).
+        """
+        return self.output_extensions() | self.verify_extensions()
