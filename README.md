@@ -747,6 +747,33 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | GET | `/api/dolphin-verify/events` | SSE stream for Dolphin verification progress |
 | POST | `/api/dolphin-verify-batch/events` | SSE stream for batch Dolphin verification |
 
+### 3DS Info & Verification
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/z3ds-info` | Get 3DS ROM metadata |
+| GET | `/api/z3ds-verify` | Verify a compressed 3DS file's integrity |
+| GET | `/api/z3ds-verify/events` | SSE stream for 3DS verification progress |
+| POST | `/api/z3ds-verify-batch/events` | SSE stream for batch 3DS verification |
+
+### Switch Info & Verification
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/nsz-info` | Get Switch file metadata |
+| GET | `/api/nsz-verify` | Verify a compressed Switch file's integrity |
+| GET | `/api/nsz-verify/events` | SSE stream for Switch verification progress |
+| POST | `/api/nsz-verify-batch/events` | SSE stream for batch Switch verification |
+
+### CSO Info & Verification
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/cso-info` | Get CSO/ISO file metadata |
+| GET | `/api/cso-verify` | Verify a compressed CSO/ZSO file's integrity |
+| GET | `/api/cso-verify/events` | SSE stream for CSO verification progress |
+| POST | `/api/cso-verify-batch/events` | SSE stream for batch CSO verification |
+
 ## Environment Variables
 
 | Variable | Default | Description |

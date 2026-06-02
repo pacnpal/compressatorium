@@ -39,11 +39,12 @@ RUN g++ -O3 src/*.cpp -o z3ds_compressor -lzstd && \
 # ---------------------------------------------------------------------------
 FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8 AS maxcso-builder
 ENV DEBIAN_FRONTEND=noninteractive
-# Source ref for reproducible release builds. Defaults to the moving default
-# branch (like the z3ds builder above); set --build-arg MAXCSO_REF=<tag|sha> to
-# pin an immutable revision. Note: the latest tag (v1.13.0) predates the ZSO and
-# --crc support this app uses, so pin a recent commit rather than that tag.
-ARG MAXCSO_REF=master
+# Pinned to an immutable maxcso commit so release images are reproducible
+# (the build workflow passes only APP_VERSION). This is master @ 2024-01-26,
+# which has the ZSO and --crc support this app relies on; the latest *tag*
+# (v1.13.0) predates them, so a commit SHA is used rather than a tag. Override
+# with --build-arg MAXCSO_REF=<tag|sha> to update maxcso intentionally.
+ARG MAXCSO_REF=961f232cf99d546b2b7e704c0ecf3fc5bea52221
 # hadolint ignore=DL3008
 RUN apt-get update -o Acquire::Retries=3 && \
     apt-get install -y --no-install-recommends \
