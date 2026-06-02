@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from logging_setup import get_logger
 import os
 import resource
 import shutil
@@ -28,7 +29,7 @@ from services.z3ds_compress import Z3DS_OUTPUT_FORMATS
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
-logger = logging.getLogger("chd.job_manager")
+logger = get_logger("job_manager")
 
 # Modes for externally-managed jobs that bypass the conversion queue —
 # they are driven by callers via create/update/finish_external_job and

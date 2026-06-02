@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+from logging_setup import get_logger
 import re
 import shutil
 import time
@@ -20,7 +21,7 @@ __all__ = ["ConversionCancelled", "ChdmanService", "chdman_service"]
 CHDMAN_CONVERTIBLE_EXTENSIONS = {".gdi", ".iso", ".cue", ".bin"}
 CONVERTIBLE_EXTENSIONS = CHDMAN_CONVERTIBLE_EXTENSIONS
 
-logger = logging.getLogger("chd.chdman")
+logger = get_logger("chdman")
 
 
 class ChdmanService:

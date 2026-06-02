@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from logging_setup import get_logger
 import re
 import shutil
 import time
@@ -19,7 +20,7 @@ DOLPHIN_OUTPUT_FORMATS = {
 }
 DEFAULT_DOLPHIN_COMPRESSION_LEVEL = "19"
 
-logger = logging.getLogger("chd.dolphin_tool")
+logger = get_logger("dolphin_tool")
 
 
 class DolphinToolService:

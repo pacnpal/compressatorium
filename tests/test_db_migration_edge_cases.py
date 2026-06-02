@@ -51,7 +51,7 @@ def test_existing_migrated_bak_preserves_fresh_json(tmp_path: Path, db_path: str
     existing_backup = tmp_path / "dat_store.json.migrated.bak"
     existing_backup.write_text("stale-backup-contents", encoding="utf-8")
 
-    with caplog.at_level("WARNING", logger="chd.db"):
+    with caplog.at_level("WARNING", logger="compressatorium.db"):
         _db.init_and_migrate(db_path, dat_store_json=dat_json)
 
     # Source JSON untouched; backup unchanged; DB got the import (the

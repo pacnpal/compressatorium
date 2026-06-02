@@ -6,7 +6,7 @@ verified.  Public API matches the legacy JSON store 1:1.
 
 from __future__ import annotations
 
-import logging
+from logging_setup import get_logger
 import os
 from datetime import datetime, timezone
 
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from services import db as _db
 
-logger = logging.getLogger("chd.verification_store")
+logger = get_logger("verification_store")
 
 
 def _utcnow_iso() -> str:

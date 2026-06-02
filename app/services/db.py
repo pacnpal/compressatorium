@@ -24,7 +24,7 @@ Design notes
 from __future__ import annotations
 
 import json
-import logging
+from logging_setup import get_logger
 import os
 import tempfile
 from pathlib import Path
@@ -47,7 +47,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import NullPool, StaticPool
 
-logger = logging.getLogger("chd.db")
+logger = get_logger("db")
 
 
 # ---------------------------------------------------------------------------

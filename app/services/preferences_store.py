@@ -7,7 +7,7 @@ pattern of the other stores so it drops into the same engine lifecycle.
 
 from __future__ import annotations
 
-import logging
+from logging_setup import get_logger
 from datetime import datetime, timezone
 
 from fastapi.concurrency import run_in_threadpool
@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from services import db as _db
 
-logger = logging.getLogger("chd.preferences_store")
+logger = get_logger("preferences_store")
 
 
 def _utcnow_iso() -> str:

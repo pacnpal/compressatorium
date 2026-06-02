@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+from logging_setup import get_logger
 import os
 import shutil
 import struct
@@ -23,7 +24,7 @@ Z3DS_OUTPUT_FORMATS = {
     ".3ds": ".z3ds",
 }
 
-logger = logging.getLogger("chd.z3ds_compress")
+logger = get_logger("z3ds_compress")
 
 
 class Z3DSCompressService:

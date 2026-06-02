@@ -8,7 +8,7 @@ thread pool (matches the existing ``run_in_threadpool`` pattern).
 
 from __future__ import annotations
 
-import logging
+from logging_setup import get_logger
 import os
 import threading
 import uuid
@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from services import db as _db
 from services.dat_parser import parse_dat
 
-logger = logging.getLogger("chd.dat_store")
+logger = get_logger("dat_store")
 
 
 def _utcnow_iso() -> str:

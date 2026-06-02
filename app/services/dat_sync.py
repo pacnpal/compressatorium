@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import logging
+from logging_setup import get_logger
 import os
 import tempfile
 import threading
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from services import db as _db
 
-logger = logging.getLogger("chd.dat_sync")
+logger = get_logger("dat_sync")
 
 # GitHub API paths for DAT files within the MAMERedump repo.
 _DAT_DIRS = ["MAME Redump", "MAME Redump/MAME"]

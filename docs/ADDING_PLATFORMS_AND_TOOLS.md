@@ -1150,17 +1150,18 @@ The service resolves the actual file with a `resolved_keys_file()` /
 - When the env var **is set**, it is authoritative: look only inside that
   directory; if the key isn't there, report unavailable (don't silently fall
   back, or the operator can't tell their config is wrong).
-- When it is **unset**, do a *cheap, non-blocking, best-effort* search of a
-  fixed candidate list: the tool's standard locations (`~/.switch`,
-  `~/.config/...`), the app data dir, and the **roots of the configured game
-  volumes** (`settings.volumes`) plus a `.switch` subdir. Wrap volume access in
-  `try/except` so key discovery can never break a job.
+- When it is **unset**, do a best-effort search: first the tool's standard
+  locations (`~/.switch`, `~/.config/...`) as cheap `os.path.isfile` checks, then
+  a **bounded recursive walk** of the configured game volumes (`settings.volumes`)
+  and the data dir. Wrap volume access in `try/except` so key discovery can never
+  break a job.
 
-**Do not recurse into game libraries.** A full walk of multi-TB volumes can't be
-both exhaustive and non-blocking; check roots only and tell the operator to set
-the env var if their keys live deeper. Keep the whole check to a bounded set of
-`os.path.isfile`/`os.access` calls so it stays microsecond-cheap and can run on
-every availability check and at startup without blocking the event loop.
+**Bound the recursive walk.** A full unbounded walk of multi-TB volumes could
+stall startup, so cap the directories visited (`_MAX_KEY_SEARCH_DIRS`), prune
+junk dirs with the shared `utils.junk.is_junk_entry`, stop at the first hit, and
+log a warning if the cap is reached telling the operator to set the env var. The
+walk only runs as a fallback — when keys sit in a standard location or
+`SWITCH_KEYS` is set, the cheap path returns first.
 
 ### 16.3 Supplying the secret to the binary
 

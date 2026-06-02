@@ -195,7 +195,7 @@ async def test_sync_auto_forces_when_any_dat_has_zero_entries(sync_service, tmp_
     mock_dat_store.persist = AsyncMock()
     mock_dat_store.list_match_paths = MagicMock(return_value=[])
 
-    with caplog.at_level("WARNING", logger="chd.dat_sync"), \
+    with caplog.at_level("WARNING", logger="compressatorium.dat_sync"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
              [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
              [],
@@ -640,7 +640,7 @@ async def test_do_sync_logs_when_rematch_is_skipped_due_to_active_job(sync_servi
 
     mock_schedule = AsyncMock(return_value=None)
 
-    with caplog.at_level("INFO", logger="chd.dat_sync"), \
+    with caplog.at_level("INFO", logger="compressatorium.dat_sync"), \
          patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
              [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
@@ -773,7 +773,7 @@ async def test_do_sync_list_match_paths_failure_is_best_effort(sync_service, tmp
 
     mock_schedule = AsyncMock()
 
-    with caplog.at_level("ERROR", logger="chd.dat_sync"), \
+    with caplog.at_level("ERROR", logger="compressatorium.dat_sync"), \
          patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
              [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],
@@ -812,7 +812,7 @@ async def test_do_sync_rematch_schedule_exception_does_not_poison_sync(sync_serv
 
     mock_schedule = AsyncMock(side_effect=RuntimeError("job manager explosion"))
 
-    with caplog.at_level("ERROR", logger="chd.dat_sync"), \
+    with caplog.at_level("ERROR", logger="compressatorium.dat_sync"), \
          patch.object(sync_service, "_fetch_latest_tag", return_value="0.285"), \
          patch.object(sync_service, "_list_dat_files", side_effect=[
              [{"name": "test.dat", "path": "MAME Redump/test.dat", "size": 100}],

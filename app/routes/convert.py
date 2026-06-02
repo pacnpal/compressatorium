@@ -1,5 +1,5 @@
 import asyncio
-import logging
+from logging_setup import get_logger
 import os
 import re
 from dataclasses import dataclass
@@ -29,7 +29,7 @@ from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
-logger = logging.getLogger("chd")
+logger = get_logger()
 
 
 def normalize_output_dir(value: str | None) -> str | None:

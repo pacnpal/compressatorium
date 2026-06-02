@@ -406,7 +406,7 @@ def test_orphan_hash_entries_are_dropped_with_warning(tmp_path: Path, db_path: s
         "matches": {},
     }
     p = _write(tmp_path / "dat_store.json", payload)
-    with caplog.at_level("WARNING", logger="chd.db"):
+    with caplog.at_level("WARNING", logger="compressatorium.db"):
         db.init_and_migrate(db_path, dat_store_json=p)
 
     with db.get_session() as s:

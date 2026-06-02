@@ -5,13 +5,13 @@ table column widths) lives under the ``layout`` preference key so it
 survives a browser/cache wipe.
 """
 
-import logging
+from logging_setup import get_logger
 
 from fastapi import APIRouter
 from models import ConversionPreferences, LayoutPreferences
 from services.preferences_store import preferences_store
 
-logger = logging.getLogger("chd.routes.preferences")
+logger = get_logger("routes.preferences")
 
 router = APIRouter()
 

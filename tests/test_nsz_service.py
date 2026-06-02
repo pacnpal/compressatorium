@@ -308,11 +308,29 @@ def test_keys_available_reads_configured_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(nsz_module.settings, "switch_keys_dir", str(keys_dir))
     assert nsz_module.nsz_service.keys_available() is True
 
-    # SWITCH_KEYS set but empty -> unavailable (no fallback to defaults).
+    # SWITCH_KEYS set but empty -> unavailable.
     empty = tmp_path / "empty"
     empty.mkdir()
     monkeypatch.setattr(nsz_module.settings, "switch_keys_dir", str(empty))
     assert nsz_module.nsz_service.keys_available() is False
+
+
+def test_resolved_keys_searches_recursively(tmp_path, monkeypatch):
+    # Keys live a couple levels below the configured SWITCH_KEYS directory.
+    deep = tmp_path / "switch" / "firmware" / "keys"
+    deep.mkdir(parents=True)
+    (deep / "prod.keys").write_text("dummy = 00")
+    monkeypatch.setattr(nsz_module.settings, "switch_keys_dir", str(tmp_path / "switch"))
+    assert nsz_module.nsz_service.resolved_keys_file() == str(deep / "prod.keys")
+
+
+def test_recursive_search_skips_junk_dirs(tmp_path, monkeypatch):
+    # A key hidden only inside a junk dir (@eaDir) must NOT be discovered.
+    junk = tmp_path / "switch" / "@eaDir"
+    junk.mkdir(parents=True)
+    (junk / "prod.keys").write_text("dummy = 00")
+    monkeypatch.setattr(nsz_module.settings, "switch_keys_dir", str(tmp_path / "switch"))
+    assert nsz_module.nsz_service.resolved_keys_file() is None
 
 
 def test_info_reports_compression_state(tmp_path):

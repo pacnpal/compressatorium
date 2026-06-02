@@ -481,10 +481,12 @@ per-job level is set.
         - /host/path/to/switch-keys:/keys:ro
   ```
 
-* `SWITCH_KEYS` is the source of truth when set. When unset, the app does a
-  cheap, non-blocking best-effort search at runtime: `~/.switch`, the nsz config
-  dirs, and the roots of your mounted game volumes (it does not recurse into
-  large game trees).
+* `SWITCH_KEYS` is the source of truth when set (its directory is checked
+  directly, then searched recursively). When unset, the app best-effort searches
+  the standard locations (`~/.switch`, the nsz config dirs) and then recursively
+  walks your mounted game volumes for a `prod.keys`/`keys.txt`, skipping junk
+  dirs and bounded by a directory cap so a huge library can't stall startup. Set
+  `SWITCH_KEYS` if your keys live very deep.
 * Keys are never baked into the image and are git-ignored, so a stray copy can't
   be committed. The file only needs to be readable by uid 999 (`converter`).
 * Keys are never logged.

@@ -22,6 +22,7 @@ keeps duplicate handling in the job layer where it belongs.
 import asyncio
 import contextlib
 import logging
+from logging_setup import get_logger
 import os
 import shutil
 import tempfile
@@ -33,6 +34,7 @@ from pathlib import Path
 from config import settings
 from services.chdman import ConversionCancelled
 from services.timeout_policy import compute_progress_stall_timeout
+from utils.junk import is_junk_entry
 
 # Input -> output extension, both directions. The four extensions are distinct,
 # so this one map covers compress and decompress without ambiguity.
@@ -49,7 +51,13 @@ NSZ_OUTPUT_FORMATS = {
 _COMPRESS_RATIO = 0.6   # compressed output is ~60% of the source
 _DECOMPRESS_RATIO = 1.7  # decompressed output is ~1.7x the source
 
-logger = logging.getLogger("chd.nsz")
+# Key filenames nsz/homebrew tools use.
+_KEY_FILENAMES = ("prod.keys", "keys.txt")
+# Cap the recursive volume walk so a huge library can't stall startup or a
+# request. If keys live deeper than this, set SWITCH_KEYS directly.
+_MAX_KEY_SEARCH_DIRS = 5000
+
+logger = get_logger("nsz")
 
 
 class NszService:
@@ -65,33 +73,33 @@ class NszService:
     def resolved_keys_file(self) -> str | None:
         """Path to a readable key file, or None.
 
-        ``SWITCH_KEYS`` is the source of truth when set: it names a directory
-        holding ``prod.keys`` (or ``keys.txt``). When unset, best-effort search
-        the locations nsz itself uses, so a deployment that mounts keys at
-        ``~/.switch`` works without setting anything.
+        ``SWITCH_KEYS`` is the source of truth when set: its directory is checked
+        directly and then searched recursively. When unset, check the standard
+        nsz/homebrew locations, then recursively search the game volumes and the
+        data dir. The recursive walk skips junk dirs and is bounded by
+        ``_MAX_KEY_SEARCH_DIRS`` so a huge library can't stall things.
         """
-        configured_dir = settings.switch_keys_dir
-        if configured_dir:
-            for name in ("prod.keys", "keys.txt"):
-                candidate = os.path.join(configured_dir, name)
-                if self._readable(candidate):
-                    return candidate
-            return None
-        for candidate in self._default_keys_candidates():
+        configured = settings.switch_keys_dir
+        if configured:
+            return self._first_key_in_dir(configured) or self._recursive_find_keys(
+                [configured],
+            )
+        for candidate in self._standard_key_files():
             if self._readable(candidate):
                 return candidate
-        return None
+        return self._recursive_find_keys(self._search_roots())
 
     def keys_available(self) -> bool:
         return self.resolved_keys_file() is not None
 
     def key_search_dirs(self) -> list[str]:
-        """Directories checked when SWITCH_KEYS is unset (for startup logging)."""
+        """Locations checked when SWITCH_KEYS is unset (for startup logging)."""
         seen: list[str] = []
-        for candidate in self._default_keys_candidates():
-            directory = os.path.dirname(candidate)
-            if directory not in seen:
-                seen.append(directory)
+        candidates = [os.path.dirname(p) for p in self._standard_key_files()]
+        candidates += [f"{root} (recursive)" for root in self._search_roots()]
+        for entry in candidates:
+            if entry not in seen:
+                seen.append(entry)
         return seen
 
     def log_startup_status(self) -> None:
@@ -102,7 +110,8 @@ class NszService:
             logger.info("Switch (nsz) enabled: prod.keys found at %s", keys_file)
         elif settings.switch_keys_dir:
             logger.warning(
-                "Switch (nsz) disabled: SWITCH_KEYS=%s has no prod.keys/keys.txt",
+                "Switch (nsz) disabled: SWITCH_KEYS=%s has no prod.keys/keys.txt "
+                "(searched recursively)",
                 settings.switch_keys_dir,
             )
         else:
@@ -117,35 +126,58 @@ class NszService:
         return os.path.isfile(path) and os.access(path, os.R_OK)
 
     @staticmethod
-    def _default_keys_candidates() -> list[str]:
-        """A bounded, non-blocking set of likely key locations.
-
-        Standard nsz/homebrew locations first, then a shallow look at each
-        configured game volume (its root and a ``.switch`` subdir) and the app
-        data dir. This deliberately does NOT recurse into game libraries: a full
-        walk of multi-GB trees can't be both exhaustive and non-blocking. Set
-        SWITCH_KEYS to point directly at the keys dir if they live deeper.
-        """
+    def _standard_key_files() -> list[str]:
+        """Standard nsz/homebrew key locations (explicit files, cheap to stat)."""
         home = os.path.expanduser("~")
         xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
-        # Standard nsz/homebrew key locations (explicit files).
-        candidates = [
+        return [
             os.path.join(home, ".switch", "prod.keys"),
             os.path.join(xdg, "nsz", "prod.keys"),
             os.path.join(home, ".config", "nsz", "prod.keys"),
         ]
-        # Game volumes + the data dir: a user may just drop prod.keys at a
-        # volume root (or its .switch subdir). Never let discovery break a job.
+
+    @staticmethod
+    def _search_roots() -> list[str]:
+        """Roots walked recursively for keys: the game volumes + the data dir."""
         roots: list[str] = []
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(Exception):  # never let discovery break a job
             roots.extend(settings.volumes)
         with contextlib.suppress(Exception):
             roots.append(str(settings.data_dir))
+        return roots
+
+    @classmethod
+    def _first_key_in_dir(cls, directory: str) -> str | None:
+        for name in _KEY_FILENAMES:
+            candidate = os.path.join(directory, name)
+            if cls._readable(candidate):
+                return candidate
+        return None
+
+    def _recursive_find_keys(self, roots: list[str]) -> str | None:
+        """Walk ``roots`` for a key file, skipping junk dirs, bounded by the
+        directory cap. Returns the first readable prod.keys/keys.txt found."""
+        visited = 0
         for root in roots:
-            candidates.append(os.path.join(root, "prod.keys"))
-            candidates.append(os.path.join(root, "keys.txt"))
-            candidates.append(os.path.join(root, ".switch", "prod.keys"))
-        return candidates
+            if not os.path.isdir(root):
+                continue
+            for dirpath, dirnames, filenames in os.walk(root):
+                # Prune junk dirs in place so os.walk won't descend into them.
+                dirnames[:] = [d for d in dirnames if not is_junk_entry(d)]
+                visited += 1
+                if visited > _MAX_KEY_SEARCH_DIRS:
+                    logger.warning(
+                        "Switch key search hit the %d-directory cap under %s; set "
+                        "SWITCH_KEYS to point directly at your prod.keys.",
+                        _MAX_KEY_SEARCH_DIRS, root,
+                    )
+                    break
+                for name in _KEY_FILENAMES:
+                    if name in filenames:
+                        candidate = os.path.join(dirpath, name)
+                        if self._readable(candidate):
+                            return candidate
+        return None
 
     @contextlib.contextmanager
     def _keys_home(self):

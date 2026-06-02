@@ -4,6 +4,7 @@ import tempfile
 import zipfile
 import time
 import logging
+from logging_setup import get_logger
 from pathlib import Path, PurePosixPath
 from typing import List, Tuple, Optional, Union, Dict
 
@@ -36,7 +37,7 @@ CONVERTIBLE_EXTENSIONS = {
     ".cci", ".cia", ".3ds",                  # 3DS (z3ds compress)
 }
 
-logger = logging.getLogger("chd.archive")
+logger = get_logger("archive")
 
 
 class ArchiveService:

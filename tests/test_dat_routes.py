@@ -1237,7 +1237,7 @@ async def test_hash_one_for_job_logs_match_error_with_traceback(
 
     monkeypatch.setattr(dat_routes, "_match_single_file", raise_keyerror)
 
-    with caplog.at_level("ERROR", logger="chd.dat"):
+    with caplog.at_level("ERROR", logger="compressatorium.dat"):
         result, cacheable = await dat_routes._hash_one_for_job(str(iso))
 
     assert result["matched"] is False
@@ -1290,7 +1290,7 @@ async def test_schedule_match_job_returns_none_when_all_paths_denied(monkeypatch
     monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: False)
 
     before = set(job_manager.jobs.keys())
-    with caplog.at_level("WARNING", logger="chd.dat"):
+    with caplog.at_level("WARNING", logger="compressatorium.dat"):
         result = await dat_routes.schedule_match_job(["/x", "/y", "/z"])
     after = set(job_manager.jobs.keys())
 
@@ -1326,7 +1326,7 @@ async def test_schedule_match_job_filters_denied_paths_but_schedules_remainder(
         lambda coro: captured.append(real_create_task(coro)) or captured[-1],
     )
 
-    with caplog.at_level("WARNING", logger="chd.dat"):
+    with caplog.at_level("WARNING", logger="compressatorium.dat"):
         job_id = await dat_routes.schedule_match_job(
             [allowed_path, "/tmp/denied-a", "/tmp/denied-b"],
         )

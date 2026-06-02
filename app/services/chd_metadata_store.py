@@ -7,7 +7,7 @@ previous JSON implementation; internals now dispatch to SQLAlchemy.
 
 from __future__ import annotations
 
-import logging
+from logging_setup import get_logger
 import os
 import re
 from typing import Dict, List, Optional
@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from services import db as _db
 
-logger = logging.getLogger("chd.chd_metadata_store")
+logger = get_logger("chd_metadata_store")
 
 
 # =============================================================================

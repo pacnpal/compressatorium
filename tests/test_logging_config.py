@@ -152,7 +152,7 @@ def test_color_formatter_wraps_levelname_only():
 
     fmt = ColorFormatter(_LOG_FORMAT)
     record = logging.LogRecord(
-        name="chd.test", level=logging.WARNING, pathname="x", lineno=1,
+        name="compressatorium.test", level=logging.WARNING, pathname="x", lineno=1,
         msg="plain message body", args=(), exc_info=None,
     )
     out = fmt.format(record)
@@ -167,7 +167,7 @@ def test_color_formatter_wraps_levelname_only():
 @pytest.fixture
 def _reset_chd_logger():
     """Detach handlers and reset the 'chd' logger between tests."""
-    logger = logging.getLogger("chd")
+    logger = logging.getLogger("compressatorium")
     saved_handlers = list(logger.handlers)
     saved_level = logger.level
     saved_propagate = logger.propagate

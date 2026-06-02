@@ -8,13 +8,14 @@ import contextlib
 import fcntl
 import hashlib
 import logging
+from logging_setup import get_logger
 import os
 import threading
 from pathlib import Path
 
 from config import settings
 
-logger = logging.getLogger("chd.lock_manager")
+logger = get_logger("lock_manager")
 
 
 class LockManager:

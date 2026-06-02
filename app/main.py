@@ -1,4 +1,5 @@
 import logging
+from logging_setup import get_logger
 import os
 from contextlib import asynccontextmanager
 
@@ -82,7 +83,7 @@ def configure_logging() -> None:
     color_mode = settings.log_color.strip().lower()
     invalid_color = color_mode not in {"auto", "always", "never"}
 
-    logger = logging.getLogger("chd")
+    logger = get_logger()
     # Always update the level so re-calls (e.g. test isolation or reloads)
     # respect the current LOGLEVEL setting, even when handlers already exist.
     logger.setLevel(level)
@@ -128,7 +129,7 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     configure_logging()
-    logger = logging.getLogger("chd")
+    logger = get_logger()
 
     # Initialise the SQLite DB and run any pending JSON → SQLite migrations
     # BEFORE any store is touched (dat_store.has_dats() below needs it).

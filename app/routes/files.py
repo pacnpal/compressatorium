@@ -1,4 +1,4 @@
-import logging
+from logging_setup import get_logger
 import os
 import shutil
 from pathlib import Path
@@ -13,6 +13,7 @@ from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.tools import registry
 from services.verification_store import verification_store
+from utils.junk import is_junk_entry
 from utils.path_utils import (
     ensure_path_within_volumes,
     get_volume_name_for_path,
@@ -20,36 +21,7 @@ from utils.path_utils import (
 )
 
 router = APIRouter()
-logger = logging.getLogger("chd.files")
-
-
-# Known OS / NAS / filesystem junk to hide from listings (best-effort). Matched
-# case-insensitively against the entry name (file or directory).
-_JUNK_EXACT = frozenset({
-    # macOS
-    ".ds_store", "__macosx", ".appledouble", ".lsoverride", "icon\r",
-    ".documentrevisions-v100", ".fseventsd", ".spotlight-v100",
-    ".temporaryitems", ".trashes", ".volumeicon.icns",
-    ".com.apple.timemachine.donotpresent", ".appledb", ".appledesktop",
-    "network trash folder", "temporary items", ".apdisk",
-    # Windows
-    "thumbs.db", "thumbs.db:encryptable", "ehthumbs.db", "ehthumbs_vista.db",
-    "desktop.ini", "$recycle.bin", "recycler", "system volume information",
-    # Synology / QNAP / NAS
-    "@eadir", "@tmp", "#recycle", "@recycle", ".@__thumb", "#snapshot",
-    # Linux / *nix
-    "lost+found", ".directory", ".trash",
-})
-# Prefix patterns for families with variable suffixes.
-_JUNK_PREFIXES = ("._", ".trash-", ".nfs", ".fuse_hidden", ".smbdelete")
-
-
-def _is_junk_entry(name: str) -> bool:
-    """True for known OS/NAS metadata and trash entries that shouldn't show."""
-    lower = name.lower()
-    if lower in _JUNK_EXACT:
-        return True
-    return any(lower.startswith(prefix) for prefix in _JUNK_PREFIXES)
+logger = get_logger("files")
 
 
 def _detect_file_outputs(
@@ -152,7 +124,7 @@ async def list_files(
         try:
             # This outer try-except catches errors from os.listdir() itself
             for item in sorted(os.listdir(target_path)):
-                if _is_junk_entry(item):
+                if is_junk_entry(item):
                     continue
                 item_path = os.path.join(target_path, item)
                 ext = Path(item).suffix.lower()
@@ -305,7 +277,7 @@ async def search_files(
             visited_dirs.add(real_dir)
             try:
                 for item in os.listdir(dir_path):
-                    if _is_junk_entry(item):
+                    if is_junk_entry(item):
                         continue
                     item_path = os.path.join(dir_path, item)
                     ext = Path(item).suffix.lower()

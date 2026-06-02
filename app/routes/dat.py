@@ -1,7 +1,7 @@
 """API routes for MAME Redump DAT file management and hash matching."""
 
 import asyncio
-import logging
+from logging_setup import get_logger
 import os
 import stat
 import tempfile
@@ -20,7 +20,7 @@ from services.workload_limiter import workload_limiter
 from utils.path_utils import is_within_configured_volumes
 
 router = APIRouter()
-logger = logging.getLogger("chd.dat")
+logger = get_logger("dat")
 
 
 # Guards concurrent bulk match jobs. Only one DAT-match background job runs

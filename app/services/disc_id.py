@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import lzma as _lzma
 import logging
+from logging_setup import get_logger
 import os
 import re
 import struct
@@ -48,7 +49,7 @@ import zlib as _zlib
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger("chd.disc_id")
+logger = get_logger("disc_id")
 
 # ---------------------------------------------------------------------------
 # CHD addmeta / dumpmeta tag names used by this application

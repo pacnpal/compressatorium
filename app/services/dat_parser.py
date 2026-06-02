@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import io
-import logging
+from logging_setup import get_logger
 import os
 import re
 
 import defusedxml.ElementTree as ET  # noqa: N817
 from defusedxml.common import DefusedXmlException
 
-logger = logging.getLogger("chd.dat_parser")
+logger = get_logger("dat_parser")
 
 _SHA1_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _MD5_RE = re.compile(r"^[0-9a-fA-F]{32}$")

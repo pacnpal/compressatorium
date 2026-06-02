@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import json
-import logging
+from logging_setup import get_logger
 import os
 import time
 from collections.abc import Callable
@@ -45,7 +45,7 @@ from utils.path_utils import is_within_configured_volumes
 
 DOLPHIN_INFO_EXTENSIONS = DOLPHIN_CONVERTIBLE_EXTENSIONS
 
-logger = logging.getLogger("chd")
+logger = get_logger()
 router = APIRouter()
 
 # Lock for scanning to prevent concurrent scans

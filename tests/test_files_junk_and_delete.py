@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.routes import files as files_routes
+from app.utils.junk import is_junk_entry
 
 
 @pytest.fixture(name="vol")
@@ -21,12 +22,12 @@ def _vol(tmp_path: Path, monkeypatch):
     [".DS_Store", "Thumbs.db", "thumbs.db", "._game.nsp", "desktop.ini", ".nfs0001"],
 )
 def test_is_junk_entry(junk):
-    assert files_routes._is_junk_entry(junk) is True
+    assert is_junk_entry(junk) is True
 
 
 @pytest.mark.parametrize("keep", ["game.nsp", "disc.cue", ".switch", "Game (USA).iso"])
 def test_is_not_junk(keep):
-    assert files_routes._is_junk_entry(keep) is False
+    assert is_junk_entry(keep) is False
 
 
 @pytest.mark.asyncio
