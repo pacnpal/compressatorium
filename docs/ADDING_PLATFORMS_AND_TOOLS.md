@@ -455,12 +455,10 @@ class NszipService:
     def _build_command(self, input_path: str, output_path: str) -> list[str]:
         cmd = [self.nszip_path, input_path, output_path]
         # I/O priority: mirror the other services so heavy jobs stay nice.
-        if (settings.chdman_ioprio_class is not None
-                and settings.chdman_ioprio_level is not None):
-            ionice = shutil.which("ionice")
-            if ionice:
-                cmd = [ionice, "-c", str(settings.chdman_ioprio_class),
-                       "-n", str(settings.chdman_ioprio_level)] + cmd
+        # The shared SubprocessRunner owns the priority policy; pass your tool's
+        # owner id so a per-tool override (COMPRESSATORIUM_NSZIP_IOPRIO_*) can
+        # diverge from the shared COMPRESSATORIUM_TOOL_IOPRIO_* default.
+        cmd = ioprio_prefix("nszip") + cmd
         return cmd
 
     def active_pids(self):
@@ -471,7 +469,9 @@ class NszipService:
                       *, compression=None, cancel_event=None) -> AsyncGenerator[dict, None]:
         # 1. mkdir -p output dir
         # 2. build cmd, spawn with asyncio.create_subprocess_exec (NEVER shell=True)
-        # 3. apply settings.chdman_nice via preexec_fn (posix only)
+        # 3. apply the shared nice level via preexec_fn (posix only):
+        #    `from services.subprocess_runner import apply_nice` then
+        #    `apply_nice("nszip")` inside the preexec callback
         # 4. stream stdout, parse progress, yield {"progress": int, "message": str}
         # 5. honor cancel_event -> terminate/kill, clean partial output,
         #    raise ConversionCancelled
@@ -551,8 +551,12 @@ class NszipTool(BaseTool):
 - **Progress** is a 0 to 100 int. If the binary doesn't report percentages,
   estimate from output-file growth like z3ds does, or emit an elapsed-seconds
   heartbeat via the shared `SubprocessRunner` like dolphin does.
-- Respect `settings.chdman_nice` / `chdman_ioprio_*`. These knobs are shared
-  across all tools; they aren't chdman-specific despite the name.
+- Respect the shared priority policy via the `services.subprocess_runner`
+  helpers (`ioprio_prefix(owner)`, `nice_prefix(owner)`, `apply_nice(owner)`,
+  `info_timeout(owner)`, `verify_timeout(owner)`). These read the tool-neutral
+  `COMPRESSATORIUM_TOOL_*` settings (with optional per-tool
+  `COMPRESSATORIUM_<TOOL>_*` overrides) in one place, so you never re-read a
+  chdman-named setting in your service.
 - Track PIDs so the debug heartbeat can report them.
 
 ### 5.4 Register the plugin: `app/services/tools/__init__.py`

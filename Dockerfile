@@ -155,9 +155,11 @@ ENV COMPRESSATORIUM_MOUNT_ROOT="/data"
 ENV CHD_MODE="webui"
 ENV CHDMAN_MODE="createcd"
 ENV MAX_CONCURRENT_JOBS=1
-ENV CHD_CHDMAN_NICE=10
-ENV CHD_CHDMAN_IOPRIO_CLASS=2
-ENV CHD_CHDMAN_IOPRIO_LEVEL=6
+# Process-priority defaults (nice 10, ioprio best-effort/6) come from the
+# application config, NOT baked image ENV. Baking COMPRESSATORIUM_TOOL_* here
+# would shadow the legacy CHD_CHDMAN_* aliases (which have lower precedence),
+# so `docker run -e CHD_CHDMAN_NICE=5` would be silently ignored. Leaving them
+# unset lets either the new or legacy env override take effect.
 ENV PYTHONUNBUFFERED=1
 
 # Default volume mount point

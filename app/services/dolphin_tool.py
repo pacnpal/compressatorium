@@ -8,7 +8,12 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from config import settings
-from services.subprocess_runner import SubprocessRunner
+from services.subprocess_runner import (
+    SubprocessRunner,
+    info_timeout,
+    ioprio_prefix,
+    verify_timeout,
+)
 
 DOLPHIN_CONVERTIBLE_EXTENSIONS = {".iso", ".gcz", ".wia", ".rvz", ".wbfs"}
 
@@ -67,17 +72,9 @@ class DolphinToolService:
             if level:
                 cmd.extend(["-l", level])
 
-        if (
-            settings.chdman_ioprio_class is not None
-            and settings.chdman_ioprio_level is not None
-        ):
-            ionice = shutil.which("ionice")
-            if ionice:
-                cmd = [
-                    ionice,
-                    "-c", str(settings.chdman_ioprio_class),
-                    "-n", str(settings.chdman_ioprio_level),
-                ] + cmd
+        prefix = ioprio_prefix(self._runner.owner)
+        if prefix:
+            cmd = prefix + cmd
 
         return cmd
 
@@ -129,9 +126,7 @@ class DolphinToolService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        timeout = max(
-            0, int(getattr(settings, "chdman_info_timeout", 0) or 0),
-        )
+        timeout = info_timeout(self._runner.owner)
         try:
             if timeout:
                 stdout, stderr = await asyncio.wait_for(
@@ -193,9 +188,7 @@ class DolphinToolService:
         stall_timeout = max(
             0, int(getattr(settings, "verify_progress_timeout", 0) or 0),
         )
-        overall_timeout = max(
-            0, int(getattr(settings, "chdman_verify_timeout", 0) or 0),
-        )
+        overall_timeout = verify_timeout(self._runner.owner)
         timeout_error = None
 
         async def _check_timeouts(now: float) -> bool:

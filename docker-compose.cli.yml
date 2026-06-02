@@ -20,10 +20,10 @@ services:
       # Optional: remap container runtime UID/GID (Unraid-friendly)
       # - PUID=99
       # - PGID=100
-      # Reduce CPU/IO impact of chdman
-      - CHD_CHDMAN_NICE=10
-      - CHD_CHDMAN_IOPRIO_CLASS=2
-      - CHD_CHDMAN_IOPRIO_LEVEL=6
+      # Reduce CPU/IO impact of conversions (applies to all tools)
+      - COMPRESSATORIUM_TOOL_NICE=10
+      - COMPRESSATORIUM_TOOL_IOPRIO_CLASS=2
+      - COMPRESSATORIUM_TOOL_IOPRIO_LEVEL=6
     volumes:
       # Required: Persistent config storage
       - ./config:/config

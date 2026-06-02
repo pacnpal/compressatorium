@@ -20,9 +20,9 @@ services:
       # - PGID=100
       - CHDMAN_MODE=createcd
       - MAX_CONCURRENT_JOBS=1
-      - CHD_CHDMAN_NICE=10
-      - CHD_CHDMAN_IOPRIO_CLASS=2
-      - CHD_CHDMAN_IOPRIO_LEVEL=6
+      - COMPRESSATORIUM_TOOL_NICE=10
+      - COMPRESSATORIUM_TOOL_IOPRIO_CLASS=2
+      - COMPRESSATORIUM_TOOL_IOPRIO_LEVEL=6
     volumes:
       # Required: Persistent config storage
       - ./config:/config
