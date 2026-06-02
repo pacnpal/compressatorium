@@ -229,8 +229,9 @@
     <p>
       For CSO/ZSO, pick an effort preset instead of a codec: <strong>Fast</strong> for the
       quickest result, <strong>Default</strong> for a balanced trade-off, or
-      <strong>Max</strong> for the smallest file at the cost of speed. The output is identical
-      either way; only size and time change.
+      <strong>Max</strong> for the smallest file at the cost of speed. All presets are lossless,
+      so the decompressed ISO is identical either way; only the compressed file's size and the
+      time to make it change.
     </p>
   </article>
 
