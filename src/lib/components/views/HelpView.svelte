@@ -29,12 +29,18 @@
       blurb: 'Nintendo 3DS ROMs to a seekable-Zstandard file that Azahar reads directly (release 2123 and up). Roughly half the size with no compatibility loss. The .cci and .3ds dumps are solid; .cia works but treat it as experimental. The ROM has to be decrypted first.',
       io: '.cci / .cia / .3ds  →  .zcci / .zcia / .z3ds',
     },
+    {
+      glyph: 'NSW',
+      name: 'Switch',
+      blurb: 'Nintendo Switch dumps to NSZ/XCZ and back, using nsz, the format Tinfoil and DBI read. Usually 40 to 80 percent smaller, fully reversible. Switch content is encrypted, so this needs your own prod.keys, dumped from a console you own. Without keys the Switch tool is hidden entirely. Set SWITCH_KEYS to the folder holding them, or drop them under a mounted volume and the app finds them.',
+      io: '.nsp / .xci  ↔  .nsz / .xcz',
+    },
   ];
 
   // Per-tool mode reference. Each row: [mode, what it does, output].
   const modeGroups = [
     {
-      tool: 'CHDMAN — Create',
+      tool: 'CHDMAN: Create',
       rows: [
         ['createcd', 'CD images. The default for most disc consoles.', '.chd'],
         ['createdvd', 'DVD-sized media. This is the one for PSP and PS2.', '.chd'],
@@ -44,7 +50,7 @@
       ],
     },
     {
-      tool: 'CHDMAN — Extract and Copy',
+      tool: 'CHDMAN: Extract and Copy',
       rows: [
         ['extractcd', 'Pull the CD back out of a CHD. Gives you a cue/bin pair.', '.cue + .bin'],
         ['extractdvd', 'Pull a DVD image back out.', '.iso'],
@@ -66,6 +72,13 @@
       tool: '3DS',
       rows: [
         ['z3ds_compress', 'One mode, no settings. Fixed Seekable Zstandard.', '.zcci / .zcia / .z3ds'],
+      ],
+    },
+    {
+      tool: 'Switch',
+      rows: [
+        ['nsz_compress', 'Compress to NSZ/XCZ. Pick a layout (Solid or Block) and a level.', '.nsz / .xcz'],
+        ['nsz_decompress', 'Decompress back to the original NSP/XCI.', '.nsp / .xci'],
       ],
     },
   ];
@@ -115,6 +128,13 @@
       Archives (ZIP, 7z, RAR) are browsable like folders. Click one and you're inside it.
       More on that below.
     </p>
+    <p>
+      System clutter is hidden automatically, so listings stay clean:
+      <code>.DS_Store</code>, AppleDouble (<code>._*</code>) files,
+      <code>Thumbs.db</code>, <code>desktop.ini</code>, <code>@eaDir</code>,
+      <code>#recycle</code>, <code>lost+found</code>, and the like across macOS,
+      Windows, and NAS systems.
+    </p>
   </article>
 
   <article class="panel">
@@ -148,8 +168,9 @@
   <article class="panel">
     <h2 class="panel-title">Compression</h2>
     <p class="lead">
-      CHD create and copy modes take a list of codecs. Dolphin RVZ and WIA take one codec
-      plus a level. GCZ, the Dolphin ISO mode, and 3DS have no settings at all.
+      CHD create and copy modes take a list of codecs. Dolphin RVZ/WIA take one codec plus a
+      level, and Switch compress takes a layout plus a level. GCZ, the decompress/extract
+      modes, and 3DS have no settings at all.
     </p>
     <p>
       Smaller is not always better. Some emulators only read certain codecs, and a file
@@ -183,6 +204,12 @@
     <p>
       For Dolphin, zstd at level 19 is the sweet spot and matches what MAME Redump uses.
       Levels run to 22 but the gains taper off fast and the time cost doesn't.
+    </p>
+    <p>
+      For Switch, the layout is Solid or Block. Solid packs tightest but the file must be
+      fully decompressed before it runs; Block is a little larger but stays installable and
+      playable without unpacking first. Level runs 1 to 22; the default 18 is a good balance.
+      Your choice is remembered per tool between sessions.
     </p>
   </article>
 
@@ -231,10 +258,16 @@
       <code>.bin</code>, and the whole archive if the source came from one.
     </p>
     <p>
-      Bulk Verify checks a whole selection at once across CHD and Dolphin files.
-      Verification status sticks around between sessions, so a file you verified last week
-      still shows verified today. Long verifies can be given a timeout so a stalled one
+      Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, and Switch
+      files. Verification status sticks around between sessions, so a file you verified last
+      week still shows verified today. Long verifies can be given a timeout so a stalled one
       doesn't sit forever.
+    </p>
+    <p>
+      Deleting from the file list is a separate action. A file or an empty folder takes one
+      confirmation. A <strong>non-empty folder</strong> takes two: the second spells out
+      that it removes everything inside, permanently. Either way the app refuses the
+      delete if a conversion is using anything under it.
     </p>
   </article>
 
@@ -280,9 +313,10 @@
     </p>
     <p>
       The archive is unpacked to a temp directory for the conversion and cleaned up after.
-      Any convertible source works this way, including 3DS ROMs and Dolphin discs. The one
-      exception is CHDMAN extract and copy, which act on a finished <code>.chd</code>.
-      That's an output, not a source, so there's nothing in an archive for them to do.
+      Any convertible source works this way, including 3DS ROMs and Dolphin discs. Two
+      exceptions: CHDMAN extract and copy act on a finished <code>.chd</code> (an output, not
+      a source), and Switch (nsz) reads from disk only, so convert
+      <code>.nsp</code>/<code>.xci</code> files in place, not from inside an archive.
     </p>
     <p>
       When a <code>.cue</code> or <code>.gdi</code> sits next to its <code>.bin</code>
@@ -318,6 +352,9 @@
 
       <dt>A 3DS ROM failed to compress</dt>
       <dd>The ROM has to be decrypted first. Encrypted dumps won't work.</dd>
+
+      <dt>The Switch tool isn't there, or jobs fail asking for prod.keys</dt>
+      <dd>Switch needs your own <code>prod.keys</code>. Set <code>SWITCH_KEYS</code> to the folder that holds them, or drop <code>prod.keys</code> under a mounted volume and the app finds it. Without keys the Switch tool is hidden. The keys come from a console you own; none ship with the app.</dd>
 
       <dt>The host got sluggish during a batch</dt>
       <dd>
@@ -395,7 +432,7 @@
     </p>
     <p>
       This is a fork of MarcTV's original CHD Converter with a web UI bolted on, plus
-      Dolphin and 3DS support. It's maintained in spare time, so be patient and be kind.
+      Dolphin, 3DS, and Switch support. It's maintained in spare time, so be patient and be kind.
       A clear, reproducible report gets fixed a lot faster than a vague one.
     </p>
   </article>

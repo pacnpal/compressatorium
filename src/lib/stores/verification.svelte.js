@@ -55,17 +55,34 @@ class VerificationStore {
   }
 
   // ─── Single-file verify ───────────────────────────────────────────────
-  async verifyOne(toolId, path) {
+  // `onProgress` (optional) is forwarded the same { percent, message }
+  // shape stored in the progress map, so a caller can drive a live toast
+  // without subscribing to the store. Progress reporting is best-effort:
+  // a callback that throws must not fail the verify or strand the
+  // progress entry, so every forward is swallowed.
+  async verifyOne(toolId, path, { onProgress } = {}) {
     const tool = registry.forTool(toolId);
     if (!tool) throw new Error(`Unknown tool: ${toolId}`);
-    this.progress.set(path, { percent: 0, message: 'Starting…' });
+    const starting = { percent: 0, message: 'Starting…' };
+    this.progress.set(path, starting);
+    try {
+      onProgress?.(starting);
+    } catch (_e) {
+      // a broken progress callback shouldn't break verification
+    }
     try {
       const result = await tool.verify(path, {
         onProgress: (data) => {
-          this.progress.set(path, {
+          const next = {
             percent: typeof data?.progress === 'number' ? data.progress : null,
             message: data?.message ?? '',
-          });
+          };
+          this.progress.set(path, next);
+          try {
+            onProgress?.(next);
+          } catch (_e) {
+            // a broken progress callback shouldn't break verification
+          }
         },
       });
       this.progress.delete(path);

@@ -76,15 +76,50 @@
 
   async function handleVerify() {
     if (!verifyTool || !verifyPath) return;
+    // Surface a live spinner toast for the run, matching how a running
+    // job is toasted (loading toast that updates in place, then resolves
+    // to success/error). Verify can take a while on big files, so the
+    // user gets the same feedback they'd get from a conversion.
+    const name = verifyPath.split(/[/\\]/).pop() ?? verifyPath;
+    const toastId = toast.loading(name, {
+      description: 'Verifying…',
+      duration: Number.POSITIVE_INFINITY,
+    });
     try {
-      const result = await verification.verifyOne(verifyTool.id, verifyPath);
+      const result = await verification.verifyOne(verifyTool.id, verifyPath, {
+        onProgress: ({ percent, message }) => {
+          const pct =
+            typeof percent === 'number' && percent > 0
+              ? `${Math.round(percent)}%`
+              : null;
+          const lead = message || 'Verifying…';
+          toast.loading(name, {
+            id: toastId,
+            description: pct ? `${lead} · ${pct}` : lead,
+          });
+        },
+      });
       if (result?.valid) {
-        toast.success(`Verified: ${verifyPath}`);
+        toast.success(name, {
+          id: toastId,
+          description: 'Verified',
+          duration: 4000,
+        });
       } else {
-        toast.error(`Verification failed: ${result?.message ?? verifyPath}`);
+        toast.error(name, {
+          id: toastId,
+          // `||` not `??`: an empty-string message should still fall back
+          // to a real description, not render a blank toast.
+          description: result?.message || 'Verification failed',
+          duration: 6000,
+        });
       }
     } catch (e) {
-      toast.error(e?.message ?? 'Verify failed');
+      toast.error(name, {
+        id: toastId,
+        description: e?.message || 'Verify failed',
+        duration: 6000,
+      });
     }
   }
 

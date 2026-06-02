@@ -6,11 +6,11 @@ committed.
 
 ## What goes where
 
-- `keys/prod.keys` — your own `prod.keys`, dumped from a console you own (e.g.
+- `keys/prod.keys`: your own `prod.keys`, dumped from a console you own (e.g.
   with Lockpick_RCM). A placeholder ships here; replace it with the real file.
-- `dumps/` — drop one real `.nsp` or `.xci` you own. The test uses the first one
+- `dumps/`: drop one real `.nsp` or `.xci` you own. The test uses the first one
   it finds. The `.txt` placeholder is ignored.
-- `out/` — the test writes the compressed and round-tripped files here.
+- `out/`: the test writes the compressed and round-tripped files here.
 
 ## Run it
 

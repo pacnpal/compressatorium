@@ -1160,19 +1160,19 @@ The service resolves the actual file with a `resolved_keys_file()` /
 stall startup, so cap the directories visited (`_MAX_KEY_SEARCH_DIRS`), prune
 junk dirs with the shared `utils.junk.is_junk_entry`, stop at the first hit, and
 log a warning if the cap is reached telling the operator to set the env var. The
-walk only runs as a fallback — when keys sit in a standard location or
+walk only runs as a fallback: when keys sit in a standard location or
 `SWITCH_KEYS` is set, the cheap path returns first.
 
 ### 16.3 Supplying the secret to the binary
 
-Check how the binary actually consumes keys before wiring this up — it is easy
+Check how the binary actually consumes keys before wiring this up; it is easy
 to get wrong, and unit tests that mock the subprocess won't catch it. **Run the
 real `--help`.** Two cases:
 
 - **The binary takes a flag** (e.g. `--keys /path`): just append it in
   `_build_command`.
 - **The binary loads keys at import/startup from a fixed location** (nsz reads
-  `~/.switch/prod.keys` via `$HOME` and has *no* `--keys` flag — it even
+  `~/.switch/prod.keys` via `$HOME` and has *no* `--keys` flag. It even
   `input()`-prompts and exits if none is found, which hangs under a pipe): you
   cannot pass a flag. Instead run the child with a throwaway `$HOME` whose
   `.switch/prod.keys` is a symlink to the resolved key file. See
@@ -1205,7 +1205,7 @@ exposes availability and the frontend hides unavailable tools entirely:
 
 State it plainly in the docs (README has a "Legal note"): the project ships no
 keys, firmware, or copyrighted content; the operator provides their own for
-hardware and content they own. Keep dual-use framing honest — this compresses
+hardware and content they own. Keep dual-use framing honest: this compresses
 backups the user already owns; it is not a circumvention tool, and the format
 preserves the original protection measures.
 

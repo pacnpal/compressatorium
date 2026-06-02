@@ -1,4 +1,4 @@
-"""Known OS / NAS / filesystem junk names — the single source of truth.
+"""Known OS / NAS / filesystem junk names: the single source of truth.
 
 Shared by the file browser (to hide clutter from listings) and the Switch key
 search (to skip these dirs when walking volumes). Matched case-insensitively

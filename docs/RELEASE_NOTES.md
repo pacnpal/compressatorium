@@ -6,12 +6,12 @@
 
 #### New
 
-- **Switch keys are found recursively.** When `SWITCH_KEYS` isn't set, the app checks the standard locations and then recursively walks your mounted game volumes (and the data dir) for `prod.keys`/`keys.txt` — skipping junk dirs and bounded so it can't stall startup. Set `SWITCH_KEYS` to point straight at the keys dir if they live very deep.
+- **Switch keys are found recursively.** When `SWITCH_KEYS` isn't set, the app checks the standard locations and then recursively walks your mounted game volumes (and the data dir) for `prod.keys`/`keys.txt`, skipping junk dirs and bounded so it can't stall startup. Set `SWITCH_KEYS` to point straight at the keys dir if they live very deep.
 
 #### Internal
 
 - **Log prefix renamed `chd` → `compressatorium`** (a leftover from the chdman-only days), centralized in `logging_setup` so the root name lives in one place.
-- The OS/NAS junk-file filter is now shared (`utils/junk`) between the file browser and the key search — a single source of truth.
+- The OS/NAS junk-file filter is now shared (`utils/junk`) between the file browser and the key search, a single source of truth.
 
 ## 4.0.0-beta-9 (2026-06-01)
 
@@ -20,7 +20,7 @@
 #### New
 
 - **The file browser hides OS/NAS junk.** Clutter like `.DS_Store`, AppleDouble (`._*`), `Thumbs.db`, `desktop.ini`, `$RECYCLE.BIN`, `System Volume Information`, `@eaDir`, `#recycle`/`@Recycle`, `lost+found`, `.Trash-*`, and `.nfs*`/`.fuse_hidden*` no longer show up in listings or search (matched case-insensitively).
-- **Delete non-empty folders, with a guardrail.** You can now delete a directory and everything inside it. It takes two explicit confirmations — the second spells out that it's recursive and permanent. Files and empty folders are unchanged (one confirm), and deletion is still blocked while a conversion is using anything under the folder.
+- **Delete non-empty folders, with a guardrail.** You can now delete a directory and everything inside it. It takes two explicit confirmations; the second spells out that it's recursive and permanent. Files and empty folders are unchanged (one confirm), and deletion is still blocked while a conversion is using anything under the folder.
 
 #### Internal
 
@@ -35,7 +35,7 @@
 
 - **A fourth tool: Switch.** Compress `.nsp`/`.xci` dumps to `.nsz`/`.xcz` and back, using [nsz](https://github.com/nicoboss/nsz) (the Tinfoil/DBI-compatible standard). Two modes: `nsz_compress` and `nsz_decompress`. Available in the Web UI and the REST API, with live progress, single + batch verify, and file-info.
 - **Bring your own keys.** Switch content is encrypted, so nsz decrypts it (losslessly, reversibly) before compressing. The app ships no keys: mount your own `prod.keys` and set `SWITCH_KEYS` to the directory holding it (or let the app best-effort find it in `~/.switch` or your volumes). Missing keys fail the job with a clear message instead of crashing, and hide the Switch tool from the UI entirely. Key file names are git-ignored and never baked into the image or logged.
-- **Per-job compression, remembered.** Switch Compress exposes a layout choice (Solid = smaller, Block = random access) and a zstandard level (1-22) per job, threaded through to nsz. Your choice is saved server-side per tool (new `GET`/`PUT /api/preferences/conversion`) so it persists across sessions and browsers — and the same mechanism now remembers chdman and Dolphin compression settings too.
+- **Per-job compression, remembered.** Switch Compress exposes a layout choice (Solid = smaller, Block = random access) and a zstandard level (1-22) per job, threaded through to nsz. Your choice is saved server-side per tool (new `GET`/`PUT /api/preferences/conversion`) so it persists across sessions and browsers, and the same mechanism now remembers chdman and Dolphin compression settings too.
 
 #### Internal
 
