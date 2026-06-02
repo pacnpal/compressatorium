@@ -1751,8 +1751,10 @@ class JobManager:
 
                         source_deleted = True
 
-                        if job.file_path.lower().endswith(".chd"):
+                        ext = os.path.splitext(job.file_path)[1].lower()
+                        if ext in registry.verify_extensions():
                             await verification_store.clear(job.file_path)
+                        if ext == ".chd":
                             await chd_metadata_store.clear(job.file_path)
 
                 job.status = JobStatus.COMPLETED

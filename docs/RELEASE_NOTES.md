@@ -1,5 +1,17 @@
 # Release Notes
 
+## 4.0.0-beta-11 (2026-06-02)
+
+### Delete-on-verify no longer leaks verification records (#130)
+
+#### Fixed
+
+- **Non-CHD verify-class sources are cleared from the verification store on delete-on-verify.** When a conversion deleted its source after verifying, `job_manager` only cleared the persistent verification record if the source ended in `.chd`. But `verification_store` is tool-wide — it tracks verify-class outputs for every registered tool — so deleting a non-CHD verify-class source (`.rvz`/`.wia`/`.gcz`/`.z3ds`/`.zcci`/`.zcia`/`.nsz`/`.xcz`) left a stale record pointing at a file that no longer exists. The clear is now gated on `ext in registry.verify_extensions()` (tool-wide), mirroring the already-generalized file-browser delete/rename paths, while the CHD-specific `chd_metadata_store` clear stays gated on `.chd`.
+
+#### Internal
+
+- `tests/test_mode_parity_fixes.py` gained a regression test deleting a `.rvz` source on verify (asserting the tool-wide store is cleared but `chd_metadata_store` is not), and the existing z3ds test now asserts a non-verify-class `.3ds` source leaves both stores untouched.
+
 ## 4.0.0-beta-10 (2026-06-01)
 
 ### Switch key discovery + logging cleanup
