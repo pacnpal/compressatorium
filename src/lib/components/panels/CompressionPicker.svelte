@@ -30,8 +30,8 @@
   const singleCodec = $derived(
     selection.find((c) => c && c !== 'none') ?? 'none',
   );
-  // Lit only when the current tool's settings differ from its defaults, so the
-  // Reset button gives feedback rather than being a silent no-op.
+  // True when the current tool's settings already match its defaults; used to
+  // disable the Reset button so it's not a silent no-op.
   const atDefault = $derived(conversion.isCompressionDefault);
 
   function isSelected(value) {
