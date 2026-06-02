@@ -284,6 +284,13 @@ class MaxcsoService:
             logger.info("maxcso conversion cancelled: %s", e)
             raise
         except Exception as e:
+            # Any failure (nonzero exit, stall timeout, etc.) leaves a partial
+            # output on disk because maxcso writes straight to output_path.
+            # Remove it so a retry isn't blocked by, or silently trusts, a
+            # truncated file. (The cancel path above already cleans up.)
+            if os.path.exists(output_path):
+                with contextlib.suppress(OSError):
+                    os.remove(output_path)
             logger.exception("Error in maxcso.convert: %s", e)
             raise
 

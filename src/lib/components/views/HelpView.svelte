@@ -35,6 +35,12 @@
       blurb: 'Nintendo Switch dumps to NSZ/XCZ and back, using nsz, the format Tinfoil and DBI read. Usually 40 to 80 percent smaller, fully reversible. Switch content is encrypted, so this needs your own prod.keys, dumped from a console you own. Without keys the Switch tool is hidden entirely. Set SWITCH_KEYS to the folder holding them, or drop them under a mounted volume and the app finds them.',
       io: '.nsp / .xci  ↔  .nsz / .xcz',
     },
+    {
+      glyph: 'CSO',
+      name: 'CSO',
+      blurb: 'PSP and PS2 disc images to CSO or ZSO, the compressed ISO formats PPSSPP and PCSX2 read directly, so the compressed file plays without a separate decompress step. Lossless and fully reversible, using maxcso. CSO is the deflate-based default; ZSO uses lz4 for faster decoding. No keys needed. An ISO can also go to CHDMAN or Dolphin instead; the tool picker decides.',
+      io: '.iso  ↔  .cso / .zso',
+    },
   ];
 
   // Per-tool mode reference. Each row: [mode, what it does, output].
