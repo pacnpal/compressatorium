@@ -305,6 +305,15 @@ class ToolRegistry:
     def tool_for_verify(self, path: str) -> ToolPlugin | None:
         ext = Path(path).suffix.lower()
         return next((t for t in self._tools.values() if ext in t.verify_extensions), None)
+    # Discovery helpers (issue #131): the union of every tool's produced /
+    # verifiable extensions drives the registry-driven library scan, so a new
+    # tool's outputs become scannable for free.
+    def output_extensions(self) -> frozenset[str]:
+        return frozenset().union(*(t.output_extensions for t in self._tools.values()))
+    def verify_extensions(self) -> frozenset[str]:
+        return frozenset().union(*(t.verify_extensions for t in self._tools.values()))
+    def scannable_extensions(self) -> frozenset[str]:
+        return self.output_extensions() | self.verify_extensions()
 ```
 
 `__init__.py`:
