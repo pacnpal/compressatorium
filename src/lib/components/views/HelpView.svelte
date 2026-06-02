@@ -363,12 +363,11 @@
     </p>
     <p>
       The archive is unpacked to a temp directory for the conversion and cleaned up after.
-      Any convertible source works this way, including 3DS ROMs, Dolphin discs, and PSP/PS2
-      images — both the <code>.iso</code> you compress and the <code>.cso</code>/<code>.zso</code>/<code>.dax</code>
-      you decompress. Two
-      exceptions: CHDMAN extract and copy act on a finished <code>.chd</code> (an output, not
-      a source), and Switch (nsz) reads from disk only, so convert
-      <code>.nsp</code>/<code>.xci</code> files in place, not from inside an archive.
+      Any convertible source works this way — 3DS ROMs, Dolphin discs, Switch dumps
+      (<code>.nsp</code>/<code>.xci</code>, your own <code>prod.keys</code> still required), and PSP/PS2
+      images (both the <code>.iso</code> you compress and the <code>.cso</code>/<code>.zso</code>/<code>.dax</code>
+      you decompress). The one exception is CHDMAN extract and copy, which act on a finished
+      <code>.chd</code> (an output, not a source).
     </p>
     <p>
       When a <code>.cue</code> or <code>.gdi</code> sits next to its <code>.bin</code>
