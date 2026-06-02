@@ -458,6 +458,47 @@ async def test_scan_excludes_lookalike_suffix(tmp_path, monkeypatch):
     assert os.path.realpath(str(tmp_path / "lookalike.ciso")) not in matched
 
 
+@pytest.mark.asyncio
+async def test_scan_excludes_symlink_to_unscannable_target(tmp_path, monkeypatch):
+    """A scannable-named symlink resolving to an unscannable type is dropped."""
+    import routes.dat as dat_internal
+    from services.dat_store import dat_store as global_dat_store
+
+    (tmp_path / "actual.ciso").write_text("z")  # not a scannable type
+    # Name passes the .iso filter, but the resolved target is .ciso.
+    (tmp_path / "alias.iso").symlink_to(tmp_path / "actual.ciso")
+
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+
+    async def fake_flush_async():
+        return None
+
+    async def never_stale(_):
+        return False
+
+    monkeypatch.setattr(info_routes.chd_metadata_store, "flush_async", fake_flush_async)
+    monkeypatch.setattr(info_routes.chd_metadata_store, "is_stale", never_stale)
+    monkeypatch.setattr(global_dat_store, "has_dats", lambda: True)
+    monkeypatch.setattr(global_dat_store, "get_matches_batch", lambda paths: {})
+
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(global_dat_store, "set_match", AsyncMock())
+
+    matched: list[str] = []
+
+    async def fake_match_single(path, *, cancel_event=None):
+        matched.append(path)
+        return {"path": path, "matched": False}
+
+    monkeypatch.setattr(dat_internal, "_match_single_file", fake_match_single)
+
+    await info_routes.scan_metadata_task(force=True)
+
+    assert matched == []  # neither the alias nor its .ciso target is processed
+
+
 @pytest.fixture
 def metadata_store_path(tmp_path):
     # SQLite file per test. Name kept as "chd_metadata.db" for clarity.

@@ -196,25 +196,33 @@ async def scan_metadata_task(
                 continue
             for root, _, files in os.walk(volume):
                 for file in files:
-                    # Compare the real suffix, not a string ending: a ".ciso"
-                    # must not be admitted just because it ends with ".iso".
-                    if os.path.splitext(file)[1].lower() in scan_extensions:
-                        # Resolve symlinks so discovered paths share the cache
-                        # key space of the on-demand DAT-match endpoints (which
-                        # realpath before caching) and the CHD metadata store,
-                        # and so symlink aliases are de-duplicated.
-                        real = os.path.realpath(os.path.join(root, file))
-                        if real in seen:
-                            continue
-                        # A symlink can resolve outside the configured volumes;
-                        # Phase 3 would otherwise hash/cache that target without
-                        # the ACL gate the DAT endpoints apply. Drop it here.
-                        if not is_within_configured_volumes(
-                            real, treat_archives=False,
-                        ):
-                            continue
-                        seen.add(real)
-                        paths.append(real)
+                    # Cheap pre-filter on the (possibly symlink) name's suffix,
+                    # compared as a real suffix not a string ending so a ".ciso"
+                    # isn't admitted just because it ends with ".iso".
+                    if os.path.splitext(file)[1].lower() not in scan_extensions:
+                        continue
+                    # Resolve symlinks so discovered paths share the cache key
+                    # space of the on-demand DAT-match endpoints (which realpath
+                    # before caching) and the CHD metadata store, and so symlink
+                    # aliases are de-duplicated.
+                    real = os.path.realpath(os.path.join(root, file))
+                    if real in seen:
+                        continue
+                    # Re-check the suffix on the *resolved* path: a symlink like
+                    # ``alias.iso -> actual.ciso`` passes the name filter above
+                    # but resolves to a non-scannable type the later phases
+                    # shouldn't touch.
+                    if os.path.splitext(real)[1].lower() not in scan_extensions:
+                        continue
+                    # A symlink can resolve outside the configured volumes;
+                    # Phase 3 would otherwise hash/cache that target without the
+                    # ACL gate the DAT endpoints apply. Drop it here.
+                    if not is_within_configured_volumes(
+                        real, treat_archives=False,
+                    ):
+                        continue
+                    seen.add(real)
+                    paths.append(real)
         return paths
 
     # Tri-state: True = success, False = failure, None = cancelled.
