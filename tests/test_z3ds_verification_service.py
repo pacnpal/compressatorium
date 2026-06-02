@@ -1,5 +1,6 @@
 """Regression tests for z3ds verification safety checks."""
 
+import asyncio
 import struct
 from pathlib import Path
 
@@ -143,3 +144,37 @@ async def test_verify_cleans_tracked_pid_on_stream_failure(tmp_path: Path, monke
     assert process.wait_called is True
     assert process.pid not in after
     assert after == before
+
+
+class _HangingProcess(_FakeProcess):
+    """Streams normally, but ``communicate()`` never returns."""
+
+    async def communicate(self):
+        await asyncio.sleep(10)
+        return b"", b""
+
+
+@pytest.mark.asyncio
+async def test_verify_times_out_when_process_hangs(tmp_path: Path, monkeypatch):
+    """A hung zstd verify must trip the verify timeout and reap the child."""
+    payload = b"zstd-stream-bytes"
+    rom_path = tmp_path / "game.z3ds"
+    rom_path.write_bytes(_build_z3ds_container(metadata_size=0x10, payload=payload))
+
+    process = _HangingProcess(pid=30303)
+
+    async def _fake_exec(*_args, **_kwargs):
+        return process
+
+    monkeypatch.setattr(z3ds_module.shutil, "which", lambda _name: "/usr/bin/zstd")
+    monkeypatch.setattr(z3ds_module.asyncio, "create_subprocess_exec", _fake_exec)
+    # Bound the verify subprocess at a tiny timeout so the hang trips it fast.
+    monkeypatch.setattr(z3ds_module, "verify_timeout", lambda _owner=None: 0.05)
+
+    service = z3ds_module.z3ds_compress_service
+    result = await service.verify(str(rom_path))
+
+    assert result["valid"] is False
+    assert "timed out" in result["message"].lower()
+    assert process.killed is True
+    assert process.pid not in set(service.active_pids())

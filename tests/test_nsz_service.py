@@ -268,6 +268,50 @@ async def test_verify_rejects_uncompressed_extension(tmp_path, keys_present):
     assert "extension" in result["message"].lower()
 
 
+class _HangingProcess:
+    """``communicate()`` never returns, so the verify timeout must fire."""
+
+    def __init__(self, pid: int = 99):
+        self.pid = pid
+        self.returncode = None
+        self.killed = False
+
+    async def communicate(self):
+        await asyncio.sleep(10)
+        return b"", b""
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        if self.returncode is None:
+            self.returncode = -9 if self.killed else 0
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_verify_times_out_when_process_hangs(tmp_path, monkeypatch, keys_present):
+    nsz_path = tmp_path / "game.nsz"
+    nsz_path.write_bytes(b"data")
+
+    proc = _HangingProcess(pid=77)
+
+    async def fake_exec(*_args, **_kwargs):
+        return proc
+
+    monkeypatch.setattr(nsz_module.asyncio, "create_subprocess_exec", fake_exec)
+    # Bound the verify subprocess at a tiny timeout so the hang trips it fast.
+    monkeypatch.setattr(nsz_module, "verify_timeout", lambda _owner=None: 0.05)
+
+    result = await nsz_module.nsz_service.verify(str(nsz_path))
+    assert result["valid"] is False
+    assert "timed out" in result["message"].lower()
+    # The runner must reap the hung child rather than leak it.
+    assert proc.killed is True
+    assert proc.pid not in set(nsz_module.nsz_service.active_pids())
+
+
 def test_output_path_rejects_unknown_extension():
     with pytest.raises(ValueError, match="Unsupported file extension"):
         nsz_module.nsz_service.get_output_path_for_mode("nsz_compress", "/data/file.iso")

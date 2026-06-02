@@ -33,7 +33,7 @@ from pathlib import Path
 
 from config import settings
 from services.chdman import ConversionCancelled
-from services.subprocess_runner import ioprio_prefix, nice_prefix
+from services.subprocess_runner import ioprio_prefix, nice_prefix, verify_timeout
 from services.timeout_policy import compute_progress_stall_timeout
 from utils.junk import is_junk_entry
 
@@ -572,9 +572,24 @@ class NszService:
                     env=env,
                 )
                 self._track_pid(process.pid)
+                overall_timeout = verify_timeout("nsz")
                 try:
                     yield {"type": "progress", "progress": 0, "message": "Verifying integrity..."}
-                    stdout, _ = await process.communicate()
+                    try:
+                        if overall_timeout > 0:
+                            stdout, _ = await asyncio.wait_for(
+                                process.communicate(), timeout=overall_timeout,
+                            )
+                        else:
+                            stdout, _ = await process.communicate()
+                    except asyncio.TimeoutError:
+                        # Process is killed in the finally block below.
+                        yield {
+                            "type": "error",
+                            "valid": False,
+                            "message": f"Verification timed out after {overall_timeout}s",
+                        }
+                        return
                     output = (stdout or b"").decode("utf-8", errors="replace").strip()
                     if process.returncode == 0:
                         yield {

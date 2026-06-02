@@ -14,7 +14,7 @@ import aiofiles
 from config import settings
 from fastapi.concurrency import run_in_threadpool
 from services.chdman import ConversionCancelled
-from services.subprocess_runner import apply_nice, ioprio_prefix
+from services.subprocess_runner import apply_nice, ioprio_prefix, verify_timeout
 from services.timeout_policy import compute_progress_stall_timeout
 
 Z3DS_CONVERTIBLE_EXTENSIONS = {".cci", ".cia", ".3ds"}
@@ -512,46 +512,66 @@ class Z3DSCompressService:
                 stderr=asyncio.subprocess.PIPE,
             )
             self._track_pid(process.pid)
+            overall_timeout = verify_timeout("z3ds")
 
             try:
                 yield {"type": "progress", "progress": 0, "message": "Verifying integrity..."}
 
-                # Stream file to zstd process from the computed payload offset.
-                chunk_size = 1024 * 1024  # 1MB chunks
+                # Stream the payload to zstd and wait for it to finish. Wrapped
+                # in one coroutine so an overall verify timeout can bound the
+                # whole feed-and-test cycle, not just the final wait.
+                async def _stream_and_wait():
+                    chunk_size = 1024 * 1024  # 1MB chunks
+                    try:
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(
+                                "Starting z3ds verification stream for %s (offset=%d)",
+                                file_path,
+                                payload_offset,
+                            )
+
+                        async with aiofiles.open(file_path, "rb") as f:
+                            await f.seek(payload_offset)
+
+                            while True:
+                                chunk = await f.read(chunk_size)
+                                if not chunk:
+                                    break
+                                try:
+                                    if process.stdin is None:
+                                        raise RuntimeError("zstd stdin is unavailable")
+                                    process.stdin.write(chunk)
+                                    await process.stdin.drain()
+                                except BrokenPipeError:
+                                    # zstd closed stdin early due to integrity failure.
+                                    break
+
+                        if process.stdin is not None:
+                            process.stdin.close()
+                            await process.stdin.wait_closed()
+
+                    except Exception as stream_err:
+                        logger.error("Error streaming to zstd: %s", stream_err)
+                        raise
+
+                    # Wait for process to finish
+                    return await process.communicate()
+
                 try:
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(
-                            "Starting z3ds verification stream for %s (offset=%d)",
-                            file_path,
-                            payload_offset,
+                    if overall_timeout > 0:
+                        _stdout, stderr = await asyncio.wait_for(
+                            _stream_and_wait(), timeout=overall_timeout,
                         )
-
-                    async with aiofiles.open(file_path, "rb") as f:
-                        await f.seek(payload_offset)
-
-                        while True:
-                            chunk = await f.read(chunk_size)
-                            if not chunk:
-                                break
-                            try:
-                                if process.stdin is None:
-                                    raise RuntimeError("zstd stdin is unavailable")
-                                process.stdin.write(chunk)
-                                await process.stdin.drain()
-                            except BrokenPipeError:
-                                # zstd closed stdin early due to integrity failure.
-                                break
-
-                    if process.stdin is not None:
-                        process.stdin.close()
-                        await process.stdin.wait_closed()
-
-                except Exception as stream_err:
-                    logger.error("Error streaming to zstd: %s", stream_err)
-                    raise
-
-                # Wait for process to finish
-                _stdout, stderr = await process.communicate()
+                    else:
+                        _stdout, stderr = await _stream_and_wait()
+                except asyncio.TimeoutError:
+                    # Process is killed in the finally block below.
+                    yield {
+                        "type": "error",
+                        "valid": False,
+                        "message": f"Verification timed out after {overall_timeout}s",
+                    }
+                    return
 
                 if process.returncode == 0:
                     yield {"type": "progress", "progress": 100, "message": "Integrity check passed"}

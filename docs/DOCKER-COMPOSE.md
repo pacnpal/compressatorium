@@ -148,10 +148,10 @@ Volume behavior:
 | `COMPRESSATORIUM_TOOL_NICE` | `10` | Nice level for all tools (0-19). Legacy alias: `CHD_CHDMAN_NICE`. |
 | `COMPRESSATORIUM_TOOL_IOPRIO_CLASS` | `2` | I/O priority class for all tools (`1` realtime, `2` best-effort, `3` idle). Legacy alias: `CHD_CHDMAN_IOPRIO_CLASS`. |
 | `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `6` | I/O priority level for all tools (`0` highest, `7` lowest). Legacy alias: `CHD_CHDMAN_IOPRIO_LEVEL`. |
-| `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` | `60` | Timeout in seconds for `info`/`header` probes (0 disables). Legacy alias: `CHD_INFO_TIMEOUT`. |
-| `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` | `0` | Timeout in seconds for verify runs (0 disables). Legacy alias: `CHD_VERIFY_TIMEOUT`. |
-| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` | *(shared default)* | Optional per-tool priority overrides (`<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`) that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. |
-| `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` / `_VERIFY_TIMEOUT` | *(shared default)* | Optional per-tool timeout overrides, only for `<TOOL>` = `CHDMAN` or `DOLPHIN_TOOL` (the only tools that run info/verify subprocesses). |
+| `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` | `60` | Timeout in seconds for `info`/`header` subprocesses (chdman and Dolphin; nsz/3DS read info from the filesystem). 0 disables. Legacy alias: `CHD_INFO_TIMEOUT`. |
+| `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` | `0` | Timeout in seconds for verify runs across all tools (0 disables). Legacy alias: `CHD_VERIFY_TIMEOUT`. |
+| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | *(shared default)* | Optional per-tool overrides (`<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`) that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. |
+| `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | *(shared default)* | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN` or `DOLPHIN_TOOL` (the only tools whose `info` runs a subprocess). |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
 | `CHD_ARCHIVE_MAX_TOTAL_SIZE` | `0` | Max total size in bytes for archive listings/extractions (0 disables) |

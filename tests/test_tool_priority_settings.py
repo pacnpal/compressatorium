@@ -95,6 +95,27 @@ def test_per_tool_override_takes_precedence_when_set():
     assert s.dolphin_tool_nice == 15
 
 
+def test_nsz_z3ds_expose_verify_timeout_override_only():
+    """nsz/z3ds run a verify subprocess but no info subprocess.
+
+    They take a per-tool ``*_verify_timeout`` override but, unlike chdman and
+    dolphin, have no ``*_info_timeout`` field (their ``info()`` is a filesystem
+    read).
+    """
+    s = Settings()
+    assert s.nsz_verify_timeout is None
+    assert s.z3ds_verify_timeout is None
+    assert not hasattr(s, "nsz_info_timeout")
+    assert not hasattr(s, "z3ds_info_timeout")
+
+    s = Settings(
+        COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=30,
+        COMPRESSATORIUM_Z3DS_VERIFY_TIMEOUT=45,
+    )
+    assert s.nsz_verify_timeout == 30
+    assert s.z3ds_verify_timeout == 45
+
+
 class _StubSettings:
     """Minimal stand-in for ``config.settings`` used to exercise the resolver."""
 
@@ -150,6 +171,19 @@ def test_resolver_none_override_falls_back(monkeypatch):
     """An explicitly-None per-tool override defers to the shared default."""
     sr = _patch_settings(monkeypatch, tool_nice=10, chdman_nice=None)
     assert sr.nice_value("chdman") == 10
+
+
+def test_verify_timeout_resolves_per_tool_for_nsz_and_z3ds(monkeypatch):
+    sr = _patch_settings(
+        monkeypatch,
+        tool_verify_timeout=0,
+        nsz_verify_timeout=30,
+        z3ds_verify_timeout=45,
+    )
+    assert sr.verify_timeout("nsz") == 30
+    assert sr.verify_timeout("z3ds") == 45
+    # A tool without an override still falls back to the shared default.
+    assert sr.verify_timeout("chdman") == 0
 
 
 def test_timeout_helpers_clamp_negative_and_none(monkeypatch):

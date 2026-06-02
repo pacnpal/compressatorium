@@ -233,6 +233,12 @@ class Settings(BaseSettings):
     nsz_ioprio_level: int | None = Field(
         default=None, alias="COMPRESSATORIUM_NSZ_IOPRIO_LEVEL",
     )
+    # nsz/z3ds expose only a verify subprocess (their info() is a filesystem
+    # read with no child process), so they take a *_verify_timeout override but
+    # no *_info_timeout.
+    nsz_verify_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT",
+    )
     z3ds_nice: int | None = Field(
         default=None, alias="COMPRESSATORIUM_Z3DS_NICE",
     )
@@ -241,6 +247,9 @@ class Settings(BaseSettings):
     )
     z3ds_ioprio_level: int | None = Field(
         default=None, alias="COMPRESSATORIUM_Z3DS_IOPRIO_LEVEL",
+    )
+    z3ds_verify_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_Z3DS_VERIFY_TIMEOUT",
     )
     verify_progress_timeout: int = Field(
         default=0,
