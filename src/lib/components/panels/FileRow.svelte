@@ -94,9 +94,9 @@
 
   function archiveItemSummary(e) {
     const total = e?.archive_items;
-    const hasChd = e?.archive_has_chd;
+    const converted = e?.archive_has_output;
     if (typeof total !== 'number') return null;
-    if (typeof hasChd === 'number' && hasChd > 0) return `${total} items · ${hasChd} converted`;
+    if (typeof converted === 'number' && converted > 0) return `${total} items · ${converted} converted`;
     return `${total} items`;
   }
 </script>

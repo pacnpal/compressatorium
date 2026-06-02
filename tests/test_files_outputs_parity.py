@@ -22,7 +22,7 @@ LEGACY_FILEENTRY_KEYS = {
     "has_rvz", "dolphin_ready", "dolphin_path", "chd_ready",
     "dolphin_convertible", "z3ds_convertible", "has_z3ds", "z3ds_ready",
     "z3ds_path", "nsz_convertible", "has_nsz", "nsz_ready", "nsz_path",
-    "archive_items", "archive_has_chd", "archive_truncated",
+    "archive_items", "archive_has_output", "archive_truncated",
     "media_type",
 }
 LEGACY_SEARCH_KEYS = {
@@ -31,6 +31,11 @@ LEGACY_SEARCH_KEYS = {
     "dolphin_convertible", "z3ds_convertible", "has_z3ds", "z3ds_ready",
     "z3ds_path", "nsz_convertible", "has_nsz", "nsz_ready", "nsz_path",
     "in_archive",
+}
+# Archive members carry the same registry-driven flags as on-disk search hits
+# (issue #128) plus the archive-specific locator keys.
+LEGACY_ARCHIVE_KEYS = LEGACY_SEARCH_KEYS | {
+    "archive_path", "internal_path", "output_stem",
 }
 NEW_KEYS = {"convertible_by", "outputs"}
 
@@ -159,6 +164,10 @@ async def test_list_files_outputs_agree_with_legacy(parity_env):
     assert bundle.has_rvz is False and bundle.z3ds_ready is False
     assert bundle.convertible_by == []
     assert bundle.outputs == []
+    # The summary count is registry-driven: the single member with a sibling
+    # output (inner.iso -> inner.chd) is counted regardless of which tool
+    # produced it.
+    assert bundle.archive_has_output == 1
 
 
 @pytest.mark.asyncio
@@ -202,8 +211,22 @@ async def test_search_files_json_keys_are_additive(parity_env):
         assert LEGACY_SEARCH_KEYS <= keys
         assert keys - LEGACY_SEARCH_KEYS == NEW_KEYS
 
-    # Archive member dicts retain their distinct legacy shape unchanged.
+    # Archive members are now registry-driven too (issue #128): they expose the
+    # same per-tool flags as on-disk hits, plus archive locator keys, and their
+    # legacy booleans must be reconstructable from outputs/convertible_by.
     for item in results["archives"]:
+        keys = set(item.keys())
+        assert LEGACY_ARCHIVE_KEYS <= keys
+        assert keys - LEGACY_ARCHIVE_KEYS == NEW_KEYS
         assert item["in_archive"] is True
-        assert "convertible_by" not in item
-        assert item["has_rvz"] is False
+        _assert_agreement(item, item["outputs"], item["convertible_by"])
+
+    # bundle.zip::inner.iso has a sibling inner.chd, so the member surfaces as
+    # CHDMAN-convertible with a finished output — and as Dolphin-convertible
+    # (.iso is accepted by both) even though no .rvz sibling exists.
+    inner = next(i for i in results["archives"] if i["name"] == "inner.iso")
+    assert inner["convertible"] is True
+    assert inner["has_chd"] is True and inner["chd_ready"] is True
+    assert "chdman" in inner["convertible_by"]
+    assert inner["dolphin_convertible"] is True
+    assert inner["has_rvz"] is False
