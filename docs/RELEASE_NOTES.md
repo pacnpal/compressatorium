@@ -13,7 +13,9 @@
 
 #### Internal
 
-- maxcso is built from source in a dedicated Dockerfile builder stage (deps: `liblz4`, `libuv`, `libdeflate`, `zlib`) and added to the tool registry as `cso`; no job-pipeline edits were needed. New `MAXCSO_PATH` env var (defaults to `/usr/local/bin/maxcso`). CSO outputs are picked up automatically by the registry-driven library scan / DAT-match (`scannable_extensions()`) and the shared tool-neutral priority/timeout policy (`COMPRESSATORIUM_MAXCSO_*` overrides).
+- maxcso is built from source in a dedicated Dockerfile builder stage, pinned to a tagged release for reproducible images (build deps `liblz4`/`libuv`/`libdeflate`/`zlib`; the runtime stage ships their shared libs, including Debian trixie's time64 `libuv1t64`). The binary lands at `/usr/local/bin/maxcso`, exposed via the new `MAXCSO_PATH` env var.
+- The tool slots into the registry as `cso` with **zero job-pipeline edits** — `job_manager` / `convert` / `files` / `info` all dispatch through the registry. New `app/services/maxcso.py` service + `app/services/tools/maxcso.py` plugin, a `CsoInfo` model and `cso_*` `FileEntry` fields, the five `ConversionMode` entries (`CSO_COMPRESS` / `CSO2_COMPRESS` / `ZSO_COMPRESS` / `DAX_COMPRESS` / `CSO_DECOMPRESS`), and an `info.py` `_VERIFY_CONFIG` entry behind the shared verify-route factory. CSO outputs are picked up automatically by the registry-driven library scan / DAT-match (`scannable_extensions()`) and the tool-neutral priority/timeout policy (`COMPRESSATORIUM_MAXCSO_*`).
+- Tests: new `tests/test_cso_service.py` (convert / verify / cancel / output-path mapping) and `tests/test_cso_routes.py` (info + single/batch SSE verify), plus extended registry, dispatch-routing, mode-parity, outputs-parity, and archive-conversion suites. `docs/ADDING_PLATFORMS_AND_TOOLS.md` was corrected for the globals it had omitted — the `_VERIFY_CONFIG` step, the `fileIcon.js` / `FileRow.svelte` / `conversion.svelte.js` / `HelpView.svelte` frontend touch-points, and the inaccurate conftest "binary stub" note.
 
 ### Library scan + DAT matching now cover every format (not just CHD)
 
@@ -38,7 +40,7 @@
 #### New
 
 - **The process-priority and timeout knobs are no longer chdman-specific.** The nice level, I/O priority, and info/verify timeouts govern *every* conversion tool (chdman, Dolphin, 3DS, Switch), not just chdman, so they're now exposed under tool-neutral names: `COMPRESSATORIUM_TOOL_NICE`, `COMPRESSATORIUM_TOOL_IOPRIO_CLASS`, `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL`, `COMPRESSATORIUM_TOOL_INFO_TIMEOUT`, and `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT`. The old `CHD_CHDMAN_*` / `CHD_INFO_TIMEOUT` / `CHD_VERIFY_TIMEOUT` names keep working as aliases, so existing setups are unaffected.
-- **Per-tool overrides.** You can give a single tool a different priority or timeout with `COMPRESSATORIUM_<TOOL>_*` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`), falling back to the shared default when unset. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, or `Z3DS`; the info-timeout override applies only to the tools whose `info` runs a subprocess (chdman, Dolphin).
+- **Per-tool overrides.** You can give a single tool a different priority or timeout with `COMPRESSATORIUM_<TOOL>_*` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`), falling back to the shared default when unset. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, or `MAXCSO`; the info-timeout override applies only to the tools whose `info` runs a subprocess (chdman, Dolphin).
 - **Switch/3DS verification now honors the verify timeout.** Long or hung `nsz`/`z3ds` verify runs are bounded by `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` (or the per-tool override), matching chdman and Dolphin; previously these ran unbounded.
 
 #### Internal
