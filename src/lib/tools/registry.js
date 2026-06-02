@@ -342,17 +342,18 @@ export const registry = {
    */
   infoToolsForPath: (path) => {
     if (!path) return [];
+    // Verify-path owner first, then every source-claiming tool, in
+    // declared order. Dedup by reference (same TOOLS objects) and skip
+    // tools without a getInfo binding.
+    const ordered = [
+      TOOLS.find((t) => endsWithAny(path, t.verifyExts)),
+      ...TOOLS.filter((t) => endsWithAny(path, t.sourceExts)),
+    ];
     const out = [];
-    const seen = new Set();
-    const add = (t) => {
-      if (t && typeof t.getInfo === 'function' && !seen.has(t.id)) {
-        seen.add(t.id);
+    for (const t of ordered) {
+      if (t && typeof t.getInfo === 'function' && !out.includes(t)) {
         out.push(t);
       }
-    };
-    add(TOOLS.find((t) => endsWithAny(path, t.verifyExts)));
-    for (const t of TOOLS) {
-      if (endsWithAny(path, t.sourceExts)) add(t);
     }
     return out;
   },
