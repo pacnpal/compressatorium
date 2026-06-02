@@ -51,14 +51,14 @@ def _legacy_tool_for_mode(mode: str) -> str:
         return "z3ds"
     if mode.startswith("nsz_"):
         return "nsz"
-    if mode.startswith(("cso_", "zso_")):
+    if mode.startswith(("cso_", "cso2_", "zso_", "dax_")):
         return "cso"
     return "chdman"
 
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 21
+    assert len(resolved) == 23
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -94,9 +94,11 @@ def test_kind_classification():
     # nsz compress vs decompress
     assert spec("nsz_compress").kind is ModeKind.COMPRESS
     assert spec("nsz_decompress").kind is ModeKind.EXTRACT
-    # cso/zso compress vs decompress
+    # cso/cso2/zso/dax compress vs decompress
     assert spec("cso_compress").kind is ModeKind.COMPRESS
+    assert spec("cso2_compress").kind is ModeKind.COMPRESS
     assert spec("zso_compress").kind is ModeKind.COMPRESS
+    assert spec("dax_compress").kind is ModeKind.COMPRESS
     assert spec("cso_decompress").kind is ModeKind.EXTRACT
 
 
@@ -114,9 +116,11 @@ def test_kind_classification():
         ("dolphin_gcz", False),
         ("dolphin_iso", False),
         ("z3ds_compress", False),
-        # cso/zso compress expose an effort preset; decompress does not.
+        # cso/cso2/zso/dax compress expose an effort preset; decompress doesn't.
         ("cso_compress", True),
+        ("cso2_compress", True),
         ("zso_compress", True),
+        ("dax_compress", True),
         ("cso_decompress", False),
     ],
 )
@@ -129,7 +133,8 @@ def test_compression_level_only_for_dolphin_rvz_wia():
     for mode in ("dolphin_rvz", "dolphin_wia", "nsz_compress"):
         assert registry.spec(mode).supports_compression_level is True
     for mode in ("createcd", "copy", "dolphin_gcz", "dolphin_iso", "z3ds_compress",
-                 "nsz_decompress", "cso_compress", "zso_compress", "cso_decompress"):
+                 "nsz_decompress", "cso_compress", "cso2_compress", "zso_compress",
+                 "dax_compress", "cso_decompress"):
         assert registry.spec(mode).supports_compression_level is False
 
 
@@ -156,9 +161,10 @@ def test_tools_for_input_representative():
     assert [t.id for t in registry.tools_for_input("game.nsp")] == ["nsz"]
     assert [t.id for t in registry.tools_for_input("game.nsz")] == ["nsz"]
     assert [t.id for t in registry.tools_for_input("disc.gdi")] == ["chdman"]
-    # .cso/.zso are convertible-from sources for the decompress mode.
+    # .cso/.zso/.dax are convertible-from sources for the decompress mode.
     assert [t.id for t in registry.tools_for_input("game.cso")] == ["cso"]
     assert [t.id for t in registry.tools_for_input("game.zso")] == ["cso"]
+    assert [t.id for t in registry.tools_for_input("game.dax")] == ["cso"]
     # A finished .chd is not a "convertible-from" source in the listing.
     assert registry.tools_for_input("out.chd") == []
 
@@ -171,6 +177,7 @@ def test_tool_for_verify_representative():
     assert registry.tool_for_verify("game.xcz").id == "nsz"
     assert registry.tool_for_verify("game.cso").id == "cso"
     assert registry.tool_for_verify("game.zso").id == "cso"
+    assert registry.tool_for_verify("game.dax").id == "cso"
     assert registry.tool_for_verify("nope.txt") is None
 
 
@@ -192,9 +199,12 @@ def test_tool_for_verify_representative():
         ("nsz_decompress", nsz_service, "/data/game.nsz"),
         ("nsz_decompress", nsz_service, "/data/game.xcz"),
         ("cso_compress", maxcso_service, "/data/game.iso"),
+        ("cso2_compress", maxcso_service, "/data/game.iso"),
         ("zso_compress", maxcso_service, "/data/game.iso"),
+        ("dax_compress", maxcso_service, "/data/game.iso"),
         ("cso_decompress", maxcso_service, "/data/game.cso"),
         ("cso_decompress", maxcso_service, "/data/game.zso"),
+        ("cso_decompress", maxcso_service, "/data/game.dax"),
     ],
 )
 def test_output_path_delegation_matches_service(

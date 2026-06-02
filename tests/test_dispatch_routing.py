@@ -30,7 +30,7 @@ def _legacy_dispatch_id(mode: str) -> str:
         return "z3ds"
     if mode.startswith("nsz_"):
         return "nsz"
-    if mode.startswith(("cso_", "zso_")):
+    if mode.startswith(("cso_", "cso2_", "zso_", "dax_")):
         return "cso"
     return "chdman"
 

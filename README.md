@@ -24,7 +24,7 @@ A disc image converter that wraps five tools: **CHDMAN** (MAME), **dolphin-tool*
 | **Dolphin** | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
 | **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
 | **Switch** | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Nintendo Switch compress/decompress (needs your own prod.keys) |
-| **CSO** | .iso, .cso, .zso, .dax | .cso, .zso, .iso | PSP/PS2 ISO compress (CSO/ZSO) and decompress, via maxcso |
+| **CSO** | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | PSP/PS2 ISO compress (CSO v1/v2, ZSO, DAX) and decompress, via maxcso |
 
 > **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
 
@@ -521,30 +521,32 @@ keys, firmware, or copyrighted game data.
 
 ---
 
-## PSP / PS2 Support (CSO / ZSO)
+## PSP / PS2 Support (CSO / ZSO / DAX)
 
-CSO/ZSO compression and decompression use [maxcso](https://github.com/unknownbrackets/maxcso),
-the standard PSP/PS2 ISO compressor. It shrinks `.iso` disc images into `.cso` or
-`.zso` (and reverses the process). PPSSPP (PSP) and PCSX2 (PS2) read CSO and ZSO
-directly, so the compressed file plays without a separate decompress step. No keys
-are required.
+CSO/ZSO/DAX compression and decompression use [maxcso](https://github.com/unknownbrackets/maxcso),
+the standard PSP/PS2 ISO compressor. It shrinks `.iso` disc images into `.cso`,
+`.zso`, or `.dax` (and reverses the process). PPSSPP (PSP) and PCSX2 (PS2) read these
+compressed formats directly, so the compressed file plays without a separate
+decompress step. No keys are required.
 
 ### How to Use
 
 1. **Select Primary Tool:** Choose **CSO** in the Web UI.
 2. **Pick a mode:**
-   - *Compress ISO → CSO* (`.iso` → `.cso`, the default, deflate-based), or
+   - *Compress ISO → CSO* (`.iso` → `.cso`, CSO v1, the universally-supported default, deflate-based), or
+   - *Compress ISO → CSO v2* (`.iso` → `.cso`, CSO v2, better block alignment; needs a recent PPSSPP/PCSX2), or
    - *Compress ISO → ZSO* (`.iso` → `.zso`, lz4-based, faster to decode), or
-   - *Decompress CSO/ZSO → ISO* (`.cso`/`.zso`/`.dax` → `.iso`).
+   - *Compress ISO → DAX* (`.iso` → `.dax`, legacy PSP format), or
+   - *Decompress CSO/ZSO/DAX → ISO* (`.cso`/`.zso`/`.dax` → `.iso`).
 3. **Browse and select** your files, then convert. Progress streams live.
 4. **Done:** Output lands alongside the source (or in your chosen output dir).
 
 ### Supported File Formats
 
 * **`.iso`** - Raw PSP/PS2 disc image (compress source)
-* **`.cso`** - Compressed ISO (CISO, deflate)
+* **`.cso`** - Compressed ISO (CISO, deflate); CSO v1 and v2 share this extension
 * **`.zso`** - Compressed ISO (lz4, faster decompression)
-* **`.dax`** - Legacy compressed ISO (accepted as a decompress source)
+* **`.dax`** - Legacy compressed ISO (compress target and decompress source)
 
 ### Technical Details
 
@@ -554,16 +556,18 @@ are required.
 * Verification runs maxcso's `--crc` over the compressed container: it decompresses
   the whole file and logs its CRC32, so a clean run proves the file decodes intact.
 * Delete-on-verify is offered for the compress modes only (verify validates the
-  compressed `.cso`/`.zso` output).
-* The output format is chosen by the mode (CSO vs ZSO). The compress modes also
+  compressed `.cso`/`.zso`/`.dax` output).
+* The output format is chosen by the mode (CSO v1 `--format` default, CSO v2
+  `--format=cso2`, ZSO `--format=zso`, DAX `--format=dax`). The compress modes also
   expose a compression-**effort** preset:
   * **Fast** - `--fast` (basic zlib/lz4): fastest, largest output.
-  * **Default** - maxcso's default trials (zlib + 7zdeflate for CSO, lz4hc for ZSO).
+  * **Default** - maxcso's default trials (zlib + 7zdeflate for the deflate-based
+    CSO/CSO2/DAX formats, lz4hc for ZSO).
   * **Max** - extra trials for the smallest output, slowest: `--use-zopfli --use-libdeflate`
-    for CSO, `--use-lz4brute` for ZSO.
+    for CSO/CSO2/DAX, `--use-lz4brute` for ZSO.
 * `.iso` rows can be handled by CHDMAN, Dolphin, or CSO; the primary-tool picker
   decides which one acts on them.
-* CSO/ZSO sources can be converted from inside ZIP/7z/RAR archives.
+* CSO/ZSO/DAX sources can be converted from inside ZIP/7z/RAR archives.
 
 ### Environment Variables
 
@@ -573,7 +577,7 @@ are required.
 
 ### REST API Endpoints
 
-* `POST /api/jobs` or `POST /api/jobs/batch` - Queue CSO jobs (use `mode: "cso_compress"`, `"zso_compress"`, or `"cso_decompress"`)
+* `POST /api/jobs` or `POST /api/jobs/batch` - Queue CSO jobs (use `mode: "cso_compress"`, `"cso2_compress"`, `"zso_compress"`, `"dax_compress"`, or `"cso_decompress"`)
 * `GET /api/cso-info?path=/path/to/game.cso` - Get file information (size, format, compression status)
 * `GET /api/cso-verify?path=/path/to/game.cso` - Verify a compressed CSO/ZSO output
 * `GET /api/cso-verify/events?path=/path/to/game.cso` - SSE stream for CSO verify progress
@@ -671,11 +675,11 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 - `z3ds_compress` (.cci → .zcci, .cia → .zcia, .3ds → .z3ds)
 
 **PSP / PS2 (CSO)**
-- `cso_compress` (.iso → .cso), `zso_compress` (.iso → .zso), `cso_decompress` (.cso/.zso/.dax → .iso)
+- `cso_compress` (.iso → .cso, CSO v1), `cso2_compress` (.iso → .cso, CSO v2), `zso_compress` (.iso → .zso), `dax_compress` (.iso → .dax), `cso_decompress` (.cso/.zso/.dax → .iso)
 
 Notes:
-- Compression applies to **create**/**copy** and Dolphin RVZ/WIA operations only.
-- Extract operations ignore compression settings.
+- Compression settings apply to CHD **create**/**copy**, Dolphin RVZ/WIA, Switch (`nsz_compress`), and the CSO/CSO v2/ZSO/DAX compress modes (the latter take an effort preset). Other modes ignore them.
+- Extract/decompress operations ignore compression settings.
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
 - 3DS compression uses fixed settings (no user configuration needed).
@@ -975,7 +979,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.chd` - Compressed Hunks of Data (MAME/CHDMAN)
 - `.rvz`, `.wia`, `.gcz`, `.iso` - Dolphin output formats
 - `.zcci`, `.zcia`, `.z3ds` - Compressed Nintendo 3DS ROMs
-- `.cso`, `.zso` - Compressed PSP/PS2 ISO images (maxcso)
+- `.cso`, `.zso`, `.dax` - Compressed PSP/PS2 ISO images (maxcso; `.cso` covers CSO v1 and v2)
 
 ---
 

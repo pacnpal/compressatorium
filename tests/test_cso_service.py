@@ -65,9 +65,12 @@ async def _drain(agen) -> list[dict]:
     ("mode", "src", "out"),
     [
         ("cso_compress", "game.iso", "game.cso"),
+        ("cso2_compress", "game.iso", "game.cso"),
         ("zso_compress", "game.iso", "game.zso"),
+        ("dax_compress", "game.iso", "game.dax"),
         ("cso_decompress", "game.cso", "game.iso"),
         ("cso_decompress", "game.zso", "game.iso"),
+        ("cso_decompress", "game.dax", "game.iso"),
     ],
 )
 async def test_convert_happy_path(tmp_path, monkeypatch, mode, src, out):
@@ -235,7 +238,9 @@ async def test_verify_rejects_uncompressed_extension(tmp_path):
     ("mode", "inp", "expected_suffix"),
     [
         ("cso_compress", "/data/game.iso", ".cso"),
+        ("cso2_compress", "/data/game.iso", ".cso"),
         ("zso_compress", "/data/game.iso", ".zso"),
+        ("dax_compress", "/data/game.iso", ".dax"),
         ("cso_decompress", "/data/game.cso", ".iso"),
         ("cso_decompress", "/data/game.zso", ".iso"),
         ("cso_decompress", "/data/game.dax", ".iso"),
@@ -255,9 +260,17 @@ def test_build_command_flags():
     compress = service._build_command("/data/game.iso", "/data/game.cso", "cso_compress")
     assert "--decompress" not in compress
     assert "--format=zso" not in compress
+    # CSO v1 is the default format -> no --format flag at all.
+    assert not any(a.startswith("--format=") for a in compress)
+
+    cso2 = service._build_command("/data/game.iso", "/data/game.cso", "cso2_compress")
+    assert "--format=cso2" in cso2
 
     zso = service._build_command("/data/game.iso", "/data/game.zso", "zso_compress")
     assert "--format=zso" in zso
+
+    dax = service._build_command("/data/game.iso", "/data/game.dax", "dax_compress")
+    assert "--format=dax" in dax
 
     decompress = service._build_command("/data/game.cso", "/data/game.iso", "cso_decompress")
     assert "--decompress" in decompress
@@ -274,6 +287,10 @@ _ALL_EFFORT_FLAGS = ("--fast", "--use-zopfli", "--use-libdeflate", "--use-lz4bru
         ("cso_compress", "max", ["--use-zopfli", "--use-libdeflate"]),
         ("cso_compress", "default", []),
         ("cso_compress", None, []),
+        # CSO2/DAX are deflate-based -> same Zopfli+libdeflate "max" trials as CSO.
+        ("cso2_compress", "max", ["--use-zopfli", "--use-libdeflate"]),
+        ("dax_compress", "max", ["--use-zopfli", "--use-libdeflate"]),
+        ("dax_compress", "fast", ["--fast"]),
         ("zso_compress", "fast", ["--fast"]),
         ("zso_compress", "max", ["--use-lz4brute"]),       # lz4 format -> lz4 trials
         ("cso_decompress", "max", []),                      # effort ignored on decompress

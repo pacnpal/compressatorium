@@ -172,6 +172,20 @@ def test_resolver_prefers_per_tool_override(monkeypatch):
     assert sr.info_timeout("chdman") == 60
 
 
+def test_resolver_prefers_maxcso_verify_timeout_override(monkeypatch):
+    """The runtime path maxcso uses (verify_timeout("maxcso")) honors the
+    per-tool COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT override, not just Settings
+    parsing."""
+    sr = _patch_settings(
+        monkeypatch,
+        tool_verify_timeout=0,
+        maxcso_verify_timeout=50,
+    )
+    assert sr.verify_timeout("maxcso") == 50
+    # Owners without an override still fall back to the shared default.
+    assert sr.verify_timeout("chdman") == 0
+
+
 def test_resolver_none_override_falls_back(monkeypatch):
     """An explicitly-None per-tool override defers to the shared default."""
     sr = _patch_settings(monkeypatch, tool_nice=10, chdman_nice=None)

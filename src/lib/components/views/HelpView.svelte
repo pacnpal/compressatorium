@@ -38,8 +38,8 @@
     {
       glyph: 'CSO',
       name: 'CSO',
-      blurb: 'PSP and PS2 disc images to CSO or ZSO, the compressed ISO formats PPSSPP and PCSX2 read directly, so the compressed file plays without a separate decompress step. Lossless and fully reversible, using maxcso. CSO is the deflate-based default; ZSO uses lz4 for faster decoding. No keys needed. An ISO can also go to CHDMAN or Dolphin instead; the tool picker decides.',
-      io: '.iso  ↔  .cso / .zso',
+      blurb: 'PSP and PS2 disc images to CSO, CSO v2, ZSO, or DAX, the compressed ISO formats PPSSPP and PCSX2 read directly, so the compressed file plays without a separate decompress step. Lossless and fully reversible, using maxcso. CSO v1 is the deflate-based, universally-supported default; CSO v2 improves block alignment for recent emulators; ZSO uses lz4 for faster decoding; DAX is a legacy PSP format. No keys needed. An ISO can also go to CHDMAN or Dolphin instead; the tool picker decides.',
+      io: '.iso  ↔  .cso / .zso / .dax',
     },
   ];
 
@@ -90,8 +90,10 @@
     {
       tool: 'CSO',
       rows: [
-        ['cso_compress', 'Compress a PSP/PS2 ISO to CSO. Pick an effort preset (Fast/Default/Max).', '.cso'],
+        ['cso_compress', 'Compress a PSP/PS2 ISO to CSO v1, the universally-supported default. Pick an effort preset (Fast/Default/Max).', '.cso'],
+        ['cso2_compress', 'Compress to CSO v2 (better block alignment; needs a recent PPSSPP/PCSX2). Same effort presets.', '.cso'],
         ['zso_compress', 'Compress a PSP/PS2 ISO to ZSO (lz4, faster to decode). Same effort presets.', '.zso'],
+        ['dax_compress', 'Compress to DAX, the legacy PSP format some older tools expect. Same effort presets.', '.dax'],
         ['cso_decompress', 'Decompress CSO/ZSO/DAX back to a plain ISO.', '.iso'],
       ],
     },
@@ -183,9 +185,9 @@
     <h2 class="panel-title">Compression</h2>
     <p class="lead">
       CHD create and copy modes take a list of codecs. Dolphin RVZ/WIA take one codec plus a
-      level, Switch compress takes a layout plus a level, and CSO/ZSO compress takes an
-      effort preset (Fast / Default / Max). GCZ, the decompress/extract modes, and 3DS
-      have no settings at all.
+      level, Switch compress takes a layout plus a level, and CSO/CSO v2/ZSO/DAX compress
+      take an effort preset (Fast / Default / Max). GCZ, the decompress/extract modes, and
+      3DS have no settings at all.
     </p>
     <p>
       Smaller is not always better. Some emulators only read certain codecs, and a file

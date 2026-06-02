@@ -299,12 +299,12 @@ export const TOOLS = [
   {
     id: 'cso',
     label: 'CSO',
-    hint: 'Compress PSP / PS2 ISO images to CSO / ZSO (and back).',
+    hint: 'Compress PSP / PS2 ISO images to CSO / CSO v2 / ZSO / DAX (and back).',
     verifyPrefix: 'cso',
     sourceExts: CSO_SOURCE_EXTS,
     verifyExts: CSO_VERIFY_EXTS,
     modeGroups: ['cso'],
-    groups: { cso: 'CSO / ZSO' },
+    groups: { cso: 'CSO / ZSO / DAX' },
     defaultMode: 'cso_compress',
     glyph: 'CSO',
     accent: 'var(--badge-cso)',
@@ -323,8 +323,16 @@ export const TOOLS = [
         outputExt: '.cso', inputExtensions: CSO_COMPRESS_EXTS,
         supportsCompression: true, supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'cso2_compress', kind: 'compress', label: 'Compress ISO → CSO v2', group: 'cso',
+        outputExt: '.cso', inputExtensions: CSO_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
       { mode: 'zso_compress', kind: 'compress', label: 'Compress ISO → ZSO', group: 'cso',
         outputExt: '.zso', inputExtensions: CSO_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'dax_compress', kind: 'compress', label: 'Compress ISO → DAX', group: 'cso',
+        outputExt: '.dax', inputExtensions: CSO_COMPRESS_EXTS,
         supportsCompression: true, supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, allowsArchiveInput: true },
       { mode: 'cso_decompress', kind: 'extract', label: 'Decompress CSO/ZSO/DAX → ISO',
@@ -339,7 +347,13 @@ export const TOOLS = [
     // mode lets ISO sources resolve to the right target (.cso vs .zso); it
     // defaults to the primary CSO product when the caller has no mode in hand.
     productPath: (path, mode = 'cso_compress') => {
-      if (/\.iso$/i.test(path)) return swapExt(path, mode === 'zso_compress' ? '.zso' : '.cso');
+      if (/\.iso$/i.test(path)) {
+        // cso_compress and cso2_compress both produce the .cso container.
+        const ext = mode === 'zso_compress' ? '.zso'
+          : mode === 'dax_compress' ? '.dax'
+          : '.cso';
+        return swapExt(path, ext);
+      }
       if (/\.(cso|zso|dax)$/i.test(path)) return swapExt(path, '.iso');
       return path;
     },

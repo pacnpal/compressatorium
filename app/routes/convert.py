@@ -275,8 +275,8 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
     ),
     SkipReason.CSO_BAD_EXTENSION: (
         400,
-        "cso_compress/zso_compress require .iso; cso_decompress requires "
-        ".cso/.zso/.dax",
+        "cso_compress/cso2_compress/zso_compress/dax_compress require .iso; "
+        "cso_decompress requires .cso/.zso/.dax",
     ),
     SkipReason.DOLPHIN_SAME_PATH: (
         400,
@@ -509,7 +509,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
             status_code=400,
             detail=(
                 "Delete-on-verify is only supported for "
-                "create/copy/Dolphin/3DS/Switch-compress/CSO/ZSO-compress modes"
+                "create/copy/Dolphin/3DS/Switch-compress/CSO/ZSO/DAX-compress modes"
             ),
         )
 
@@ -595,7 +595,7 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail=(
                 "Delete-on-verify is only supported for "
-                "create/copy/Dolphin/3DS/Switch-compress/CSO/ZSO-compress modes"
+                "create/copy/Dolphin/3DS/Switch-compress/CSO/ZSO/DAX-compress modes"
             ),
         )
     if not is_within_configured_volumes(request.file_path):
@@ -701,7 +701,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             status_code=400,
             detail=(
                 "Delete-on-verify is only supported for "
-                "create/copy/Dolphin/3DS/Switch-compress/CSO/ZSO-compress modes"
+                "create/copy/Dolphin/3DS/Switch-compress/CSO/ZSO/DAX-compress modes"
             ),
         )
     if request.delete_on_verify:

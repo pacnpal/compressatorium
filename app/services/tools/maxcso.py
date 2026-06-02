@@ -1,7 +1,9 @@
 """MaxcsoTool, thin plugin wrapper delegating to ``maxcso_service``.
 
-Three modes: ``cso_compress`` (.iso -> .cso), ``zso_compress`` (.iso -> .zso),
-and ``cso_decompress`` (.cso/.zso/.dax -> .iso). ``maxcso_service.info`` is
+Five modes: ``cso_compress`` (.iso -> CSO v1), ``cso2_compress`` (.iso -> CSO v2),
+``zso_compress`` (.iso -> .zso), ``dax_compress`` (.iso -> .dax), and
+``cso_decompress`` (.cso/.zso/.dax -> .iso). CSO v1 and v2 share the .cso
+extension; the version differs internally. ``maxcso_service.info`` is
 synchronous; the async contract is satisfied by running it in a threadpool.
 """
 from __future__ import annotations
@@ -46,12 +48,36 @@ class MaxcsoTool(BaseTool):
             allows_archive_input=True,
         ),
         ModeSpec(
+            mode="cso2_compress",
+            tool_id="cso",
+            kind=ModeKind.COMPRESS,
+            label="Compress ISO → CSO v2",
+            group="cso",
+            output_ext=".cso",
+            input_extensions=frozenset(MAXCSO_COMPRESS_EXTENSIONS),
+            supports_compression=True,
+            supports_delete_on_verify=True,
+            allows_archive_input=True,
+        ),
+        ModeSpec(
             mode="zso_compress",
             tool_id="cso",
             kind=ModeKind.COMPRESS,
             label="Compress ISO → ZSO",
             group="cso",
             output_ext=".zso",
+            input_extensions=frozenset(MAXCSO_COMPRESS_EXTENSIONS),
+            supports_compression=True,
+            supports_delete_on_verify=True,
+            allows_archive_input=True,
+        ),
+        ModeSpec(
+            mode="dax_compress",
+            tool_id="cso",
+            kind=ModeKind.COMPRESS,
+            label="Compress ISO → DAX",
+            group="cso",
+            output_ext=".dax",
             input_extensions=frozenset(MAXCSO_COMPRESS_EXTENSIONS),
             supports_compression=True,
             supports_delete_on_verify=True,
@@ -73,7 +99,7 @@ class MaxcsoTool(BaseTool):
         ),
     )
     # Everything the tool can produce (both directions), for output badges.
-    output_extensions = frozenset({".cso", ".zso", ".iso"})
+    output_extensions = frozenset({".cso", ".zso", ".dax", ".iso"})
     # maxcso --crc validates the compressed containers.
     verify_extensions = frozenset(MAXCSO_DECOMPRESS_EXTENSIONS)
 

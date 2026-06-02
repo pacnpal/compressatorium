@@ -42,10 +42,14 @@ MAXCSO_COMPRESS_EXTENSIONS = {".iso"}
 MAXCSO_DECOMPRESS_EXTENSIONS = {".cso", ".zso", ".dax"}
 
 # Output extension is decided by the mode, not the input extension (an .iso can
-# become either .cso or .zso), so the map is keyed by mode rather than suffix.
+# become .cso/.zso/.dax), so the map is keyed by mode rather than suffix. CSO v1
+# and CSO v2 share the .cso container extension; the version differs internally
+# and is selected by the --format flag in _build_command.
 MAXCSO_OUTPUT_BY_MODE = {
     "cso_compress": ".cso",
+    "cso2_compress": ".cso",
     "zso_compress": ".zso",
+    "dax_compress": ".dax",
     "cso_decompress": ".iso",
 }
 
@@ -56,8 +60,9 @@ _DECOMPRESS_RATIO = 2.0  # decompressed .iso is ~2x the compressed source
 # Compression-effort presets. The UI sends one of these tokens (see the `cso`
 # entry in src/lib/tools/registry.js); each maps to the maxcso trial flags that
 # trade speed for ratio. "default" keeps maxcso's own default (zlib + 7zdeflate
-# for CSO, lz4hc for ZSO) and adds nothing. lz4-based ZSO can't use the deflate
-# trials, so "max" bruteforces lz4 there instead.
+# for the deflate-based CSO/CSO2/DAX formats, lz4hc for ZSO) and adds nothing.
+# lz4-based ZSO can't use the deflate trials, so "max" bruteforces lz4 there
+# instead; the deflate-based formats get Zopfli + libdeflate trials.
 _EFFORT_FAST = "fast"
 _EFFORT_MAX = "max"
 
@@ -98,8 +103,12 @@ class MaxcsoService:
         cmd = [self.maxcso_path]
         if mode == "cso_decompress":
             cmd.append("--decompress")
+        elif mode == "cso2_compress":
+            cmd += ["--format=cso2"]
         elif mode == "zso_compress":
             cmd += ["--format=zso"]
+        elif mode == "dax_compress":
+            cmd += ["--format=dax"]
         # cso_compress uses the default cso1 format (no flag).
         cmd += _effort_flags(mode, compression)
         cmd += [input_path, "-o", output_path]

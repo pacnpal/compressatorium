@@ -16,7 +16,7 @@ wired up:
 | **dolphin-tool** | `dolphin-emu` (`/usr/local/bin/dolphin-tool`) | `app/services/dolphin_tool.py` | `app/services/tools/dolphin.py` | GameCube/Wii images to/from `.rvz/.wia/.gcz/.iso` |
 | **z3ds_compressor** | built from source (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | `app/services/tools/z3ds.py` | Nintendo 3DS ROMs to `.zcci/.zcia/.z3ds` |
 | **nsz** | `nsz` pip package (on PATH) | `app/services/nsz.py` | `app/services/tools/nsz.py` | Nintendo Switch `.nsp`/`.xci` to/from `.nsz`/`.xcz` |
-| **maxcso** | built from source (`/usr/local/bin/maxcso`) | `app/services/maxcso.py` | `app/services/tools/maxcso.py` | PSP/PS2 `.iso` to/from `.cso`/`.zso` (tool id `cso`) |
+| **maxcso** | built from source (`/usr/local/bin/maxcso`) | `app/services/maxcso.py` | `app/services/tools/maxcso.py` | PSP/PS2 `.iso` to/from `.cso` (CSO v1/v2) / `.zso` / `.dax` (tool id `cso`) |
 
 `z3ds` is the cleanest, most self-contained example of "a new tool that handles
 a new platform," so this guide uses it as the reference implementation
