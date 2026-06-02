@@ -571,6 +571,79 @@ async def test_z3ds_delete_on_verify_marks_output_verified(tmp_path: Path, monke
     )
     assert not source_path.exists()
     assert output_path.exists()
+    # A non-verify-class source (.3ds) leaves the tool-wide verification_store
+    # untouched on delete.
+    clear_verified.assert_not_called()
+    clear_metadata.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_on_verify_clears_verification_store_for_non_chd_source(
+    tmp_path: Path, monkeypatch,
+):
+    """A non-CHD verify-class source (.rvz) must clear its tool-wide
+    verification_store record on delete-on-verify, while chd_metadata_store
+    (CHDMAN-specific) is left untouched."""
+    source_path = tmp_path / "game.rvz"
+    output_path = tmp_path / "game.wia"
+    source_path.write_bytes(b"source")
+
+    monkeypatch.setattr(job_manager_module.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(job_manager_module.settings, "data_mount_root", str(tmp_path))
+
+    async def fake_convert(
+        input_path: str,
+        destination_path: str,
+        mode: str = "dolphin_wia",
+        compression: str | None = None,
+        cancel_event=None,
+    ):
+        Path(destination_path).write_bytes(b"converted")
+        yield {"progress": 100, "message": "Done"}
+
+    async def fake_verify(path: str):
+        return {"valid": True, "message": "File verified successfully"}
+
+    mark_verified = AsyncMock()
+    clear_verified = AsyncMock()
+    clear_metadata = AsyncMock()
+
+    _dolphin_service = job_manager_module.registry.for_mode("dolphin_wia")._service
+    monkeypatch.setattr(_dolphin_service, "convert", fake_convert)
+    monkeypatch.setattr(_dolphin_service, "verify", fake_verify)
+    monkeypatch.setattr(job_manager_module.verification_store, "mark_verified", mark_verified)
+    monkeypatch.setattr(job_manager_module.verification_store, "clear", clear_verified)
+    monkeypatch.setattr(job_manager_module.chd_metadata_store, "clear", clear_metadata)
+    monkeypatch.setattr(
+        job_manager_module,
+        "build_delete_plan",
+        lambda path: {
+            "delete_paths": [os.path.realpath(str(source_path))],
+            "missing_paths": [],
+            "unsafe_paths": [],
+            "errors": [],
+        },
+    )
+
+    manager = JobManager(max_concurrent=1, max_job_history=5)
+    snapshot = build_delete_snapshot(str(source_path))
+    job = await manager.create_job(
+        str(source_path),
+        ConversionMode.DOLPHIN_WIA,
+        output_path=str(output_path),
+        delete_on_verify=True,
+        delete_snapshot=snapshot,
+    )
+
+    await manager._process_job(job.id)
+
+    assert job.status == JobStatus.COMPLETED
+    assert not source_path.exists()
+    assert output_path.exists()
+    # The .rvz source is verify-class, so its tool-wide record is cleared...
+    clear_verified.assert_called_once_with(str(source_path))
+    # ...but chd_metadata_store stays CHDMAN-only and is not touched.
+    clear_metadata.assert_not_called()
 
 
 @pytest.mark.asyncio
