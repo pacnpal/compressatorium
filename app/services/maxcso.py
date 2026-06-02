@@ -64,6 +64,8 @@ class MaxcsoService:
     def _build_command(
         self, input_path: str, output_path: str, mode: str,
     ) -> list[str]:
+        if mode not in MAXCSO_OUTPUT_BY_MODE:
+            raise ValueError(f"Unsupported maxcso mode: {mode}")
         cmd = [self.maxcso_path]
         if mode == "cso_decompress":
             cmd.append("--decompress")

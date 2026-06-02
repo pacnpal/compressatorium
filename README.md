@@ -103,6 +103,7 @@ When you open the Web UI, you'll see the tool options at the top:
 * **Dolphin** - For GameCube/Wii disc image conversions
 * **3DS** - For compressing Nintendo 3DS ROMs
 * **Switch** - For compressing/decompressing Nintendo Switch dumps (needs your own prod.keys)
+* **CSO** - For compressing/decompressing PSP/PS2 ISO images to CSO/ZSO
 
 **Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
 
@@ -671,7 +672,7 @@ Notes:
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
 - 3DS compression uses fixed settings (no user configuration needed).
-- Archive inputs are supported for every convertible source (CHD create, Dolphin, 3DS, and Switch), except CHDMAN extract/copy modes, which act on a finished `.chd` output.
+- Archive inputs are supported for every convertible source (CHD create, Dolphin, 3DS, Switch, and CSO), except CHDMAN extract/copy modes, which act on a finished `.chd` output.
 
 ---
 

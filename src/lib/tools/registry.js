@@ -321,7 +321,7 @@ export const TOOLS = [
         outputExt: '.zso', inputExtensions: CSO_COMPRESS_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, allowsArchiveInput: true },
-      { mode: 'cso_decompress', kind: 'extract', label: 'Decompress CSO/ZSO → ISO',
+      { mode: 'cso_decompress', kind: 'extract', label: 'Decompress CSO/ZSO/DAX → ISO',
         group: 'cso',
         outputExt: '.iso', inputExtensions: CSO_VERIFY_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,
@@ -330,8 +330,10 @@ export const TOOLS = [
     getInfo: (path) => api.getCsoInfo(path),
     verify: (path, opts) => api.verifyCso(path, opts),
     verifyBatch: (paths, opts) => api.verifyBatchCso(paths, opts),
-    productPath: (path) => {
-      if (/\.iso$/i.test(path)) return swapExt(path, '.cso');
+    // mode lets ISO sources resolve to the right target (.cso vs .zso); it
+    // defaults to the primary CSO product when the caller has no mode in hand.
+    productPath: (path, mode = 'cso_compress') => {
+      if (/\.iso$/i.test(path)) return swapExt(path, mode === 'zso_compress' ? '.zso' : '.cso');
       if (/\.(cso|zso|dax)$/i.test(path)) return swapExt(path, '.iso');
       return path;
     },

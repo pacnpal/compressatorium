@@ -108,10 +108,10 @@ Two supporting layers:
 - **`registry.py`** defines `ToolRegistry`, the lookup object. It indexes tools
   by id and by mode and answers `for_mode(mode)`, `spec(mode)`,
   `archive_input_extensions()`, `verify_extensions()`, and friends.
-- **`chdman.py` / `dolphin.py` / `z3ds.py`** are the three plugins. Each is a
-  thin `BaseTool` subclass that holds `ModeSpec` rows and delegates the real
-  work to the underlying service singleton.
-- **`__init__.py`** builds the `registry` singleton and registers the three
+- **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py`** are the five
+  plugins. Each is a thin `BaseTool` subclass that holds `ModeSpec` rows and
+  delegates the real work to the underlying service singleton.
+- **`__init__.py`** builds the `registry` singleton and registers all five
   tools. This is the single wiring point.
 
 ### The plugin contract: `ModeSpec` and `BaseTool`

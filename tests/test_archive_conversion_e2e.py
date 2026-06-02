@@ -54,6 +54,7 @@ MATRIX = [
     (".iso", ConversionMode.ZSO_COMPRESS, ".zso"),
     (".cso", ConversionMode.CSO_DECOMPRESS, ".iso"),
     (".zso", ConversionMode.CSO_DECOMPRESS, ".iso"),
+    (".dax", ConversionMode.CSO_DECOMPRESS, ".iso"),
 ]
 
 

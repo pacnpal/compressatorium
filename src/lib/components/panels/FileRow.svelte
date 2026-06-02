@@ -4,12 +4,7 @@
   import { datMatching } from '$lib/stores/datMatching.svelte.js';
   import { chdMetadata } from '$lib/stores/chdMetadata.svelte.js';
   import { formatSize } from '$lib/api/format.js';
-  import Folder from '@lucide/svelte/icons/folder';
-  import Archive from '@lucide/svelte/icons/archive';
-  import Disc3 from '@lucide/svelte/icons/disc-3';
-  import Disc from '@lucide/svelte/icons/disc';
-  import Gamepad2 from '@lucide/svelte/icons/gamepad-2';
-  import File from '@lucide/svelte/icons/file';
+  import { iconForEntry } from '$lib/util/fileIcon.js';
   import CircleCheck from '@lucide/svelte/icons/circle-check';
   import BadgeCheck from '@lucide/svelte/icons/badge-check';
   import Badge from '$lib/components/ui/Badge.svelte';
@@ -57,17 +52,9 @@
     return false;
   });
 
-  function iconComponent() {
-    if (isDirectory) return Folder;
-    if (isArchive) return Archive;
-    const ext = entry?.extension?.toLowerCase() ?? '';
-    if (ext === '.chd') return Disc3;
-    if (['.rvz', '.wia', '.gcz', '.wbfs', '.3ds', '.cci', '.cia', '.z3ds', '.zcci', '.zcia'].includes(ext)) return Gamepad2;
-    if (['.iso', '.gdi', '.cue', '.bin', '.cso', '.zso', '.dax'].includes(ext)) return Disc;
-    return File;
-  }
-
-  const Icon = $derived(iconComponent());
+  // Shared file-type icon map (src/lib/util/fileIcon.js) so new formats only
+  // need to be added in one place.
+  const Icon = $derived(iconForEntry(entry));
 
   function handleRowClick(e) {
     if (isDirectory) {
