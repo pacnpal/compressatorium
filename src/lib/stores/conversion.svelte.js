@@ -1,4 +1,4 @@
-// Conversion config store — selected tool, mode, compression, output dir,
+// Conversion config store, selected tool, mode, compression, output dir,
 // delete-on-verify, duplicate-check / delete-plan results. Drives the
 // ConversionConfig panel and the submission path into JobsStore.
 
@@ -39,7 +39,7 @@ const INITIAL_TOOL = loadPrimaryTool();
 
 class ConversionStore {
   primaryTool = $state(INITIAL_TOOL);
-  // Mode must initialize from the persisted tool — defaulting to a chdman
+  // Mode must initialize from the persisted tool, defaulting to a chdman
   // mode (createcd) when the persisted tool is dolphin/z3ds would submit
   // wrong duplicate checks and compression flags before setPrimaryTool runs.
   mode = $state(defaultModeFor(INITIAL_TOOL));
@@ -90,7 +90,7 @@ class ConversionStore {
   /**
    * True when the given path is a valid input for the currently
    * selected mode. Used by fileBrowser to gate selection so users
-   * can't queue jobs the worker would just reject — e.g. selecting a
+   * can't queue jobs the worker would just reject, e.g. selecting a
    * `.rvz` while in CHDMAN `createcd` mode.
    *
    * Paths inside archives (`archive.zip::dir/disc.cue`) are matched
@@ -139,7 +139,7 @@ class ConversionStore {
       // Dolphin RVZ/WIA: pick the first non-'none' codec and pair with level.
       const codec = selection[0];
       if (!codec) return 'none';
-      // Normalize the level — the picker's number input lets the user
+      // Normalize the level, the picker's number input lets the user
       // clear it temporarily (browsers allow empty string). If we
       // forwarded that we'd build "<codec>:" and the backend would
       // reject the token. Fall back to the registered default range
@@ -168,7 +168,7 @@ class ConversionStore {
     if (this.primaryTool === toolId) return;
     this.primaryTool = toolId;
     writeString(STORAGE_KEYS.PRIMARY_TOOL, toolId);
-    // Same default-mode logic as the initial load — chdman keeps createcd
+    // Same default-mode logic as the initial load, chdman keeps createcd
     // as its default, others use their first registered mode.
     this.mode = defaultModeFor(toolId);
     // Seed compression from the saved server preference for this tool, falling
@@ -223,7 +223,7 @@ class ConversionStore {
   #persistCompression() {
     this.#compressionTouched = true;
     const value = this.compressionValue;
-    if (value == null) return; // mode without compression — nothing to save
+    if (value == null) return; // mode without compression, nothing to save
     this.#compressionPrefs = { ...this.#compressionPrefs, [this.primaryTool]: value };
     if (!isBrowser) return;
     if (this.#saveTimer) clearTimeout(this.#saveTimer);
@@ -259,7 +259,7 @@ class ConversionStore {
    * rest; selecting any other codec removes "none" if present.
    *
    * chdman accepts up to 4 codecs in `-c` (per its CLI help and the
-   * legacy UI). Refuse to add a 5th — the conversion would queue and
+   * legacy UI). Refuse to add a 5th, the conversion would queue and
    * then fail at runtime. Removing a codec from an existing 4-long
    * selection still works.
    */
@@ -278,7 +278,7 @@ class ConversionStore {
       return;
     }
     if (current.length >= this.CHDMAN_MAX_CODECS) {
-      // Silently ignore — the picker chip is rendered with
+      // Silently ignore, the picker chip is rendered with
       // pointer-events still active for visual feedback; the cap
       // message lives in the picker UI (CompressionPicker reads
       // CHDMAN_MAX_CODECS for the disabled/limit hint).
@@ -340,7 +340,7 @@ class ConversionStore {
         outputDir: this.outputDir || null,
         duplicateAction,
         compression: this.compressionValue,
-        // Mask the flag at submit time too — defense in depth against
+        // Mask the flag at submit time too, defense in depth against
         // any code path that might set deleteOnVerify true without
         // going through setMode (the backend rejects the combination
         // for extract/raw modes).

@@ -30,7 +30,7 @@ from app.services.z3ds_compress import (
     z3ds_compress_service,
 )
 
-# ConversionMode values that are NOT conversion modes — handled by the
+# ConversionMode values that are NOT conversion modes, handled by the
 # external job API, not by any of the three conversion services.
 EXTERNAL_MODES = {ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH}
 CONVERSION_MODES = [m for m in ConversionMode if m not in EXTERNAL_MODES]

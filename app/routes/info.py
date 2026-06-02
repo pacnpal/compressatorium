@@ -206,7 +206,7 @@ async def scan_metadata_task(
         # Phase 2: Retroactively embed GAME / NAME tags in any CHD that lacks
         # them.  Covers CHDs created before conversion-time tagging was added.
         # Skip CHDs where disc ID has already been checked and the file has not
-        # changed since — avoids spawning a chdman subprocess on every scan.
+        # changed since, avoids spawning a chdman subprocess on every scan.
         # Progress band: 60 % → 97 %.
         phase2_total = len(all_paths)
         already_checked = 0
@@ -254,7 +254,7 @@ async def scan_metadata_task(
                     )
                 else:
                     logger.info(
-                        "Phase 2: No disc ID found for %s — file marked as checked",
+                        "Phase 2: No disc ID found for %s, file marked as checked",
                         os.path.basename(path),
                     )
             except Exception as e:
@@ -286,7 +286,7 @@ async def scan_metadata_task(
 
     except ExternalJobCancelled:
         # Clean cancellation path: partial metadata already written to the
-        # store is kept (by design — see chd_metadata_store callers above).
+        # store is kept (by design, see chd_metadata_store callers above).
         scan_success = None
     except Exception as e:
         logger.error("Metadata scan failed: %s", e)
@@ -421,7 +421,7 @@ async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
             if cached_title is not None:
                 disc_info["title"] = cached_title
         elif not await chd_metadata_store.is_disc_id_checked(path):
-            # Not yet attempted — run the extractor and cache the outcome (even
+            # Not yet attempted, run the extractor and cache the outcome (even
             # "nothing found") so subsequent /api/info calls skip the subprocess.
             try:
                 disc_info = await disc_id_extract_from_chd(path, settings.chdman_path) or {}

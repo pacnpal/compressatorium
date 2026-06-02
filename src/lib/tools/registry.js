@@ -1,10 +1,10 @@
-// Frontend tool registry — mirrors docs/DESIGN_tool_plugin_architecture.md §3.7
+// Frontend tool registry, mirrors docs/DESIGN_tool_plugin_architecture.md §3.7
 // field-for-field, extended with the ModeSpec metadata defined in
 // app/services/tools/spec.py.
 //
 // The registry is the single source of truth for tool identity. All
 // call sites (UI store, sidebar, SSE URL building, group labels, mode
-// metadata) look up via the helpers below — there is no hardcoded
+// metadata) look up via the helpers below, there is no hardcoded
 // `if (tool === 'chdman')` branching, and no map at the top of this
 // file that needs editing when adding a 4th tool. To add a tool:
 // declare one entry in TOOLS, register its plugin on the backend,
@@ -20,7 +20,7 @@ const DOLPHIN_SOURCE_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
 // though dolphin-tool itself can verify GC/Wii ISOs. Most ISOs in
 // any given directory are CHDMAN CD/DVD sources, and
 // `toolForVerifyPath()` returns the first tool whose verify list
-// matches — adding `.iso` here would route every CD ISO row's
+// matches, adding `.iso` here would route every CD ISO row's
 // Info/Verify action into /api/dolphin-verify (which fails for
 // non-Dolphin ISOs and confuses users). Users who want to verify a
 // GC/Wii ISO have two paths today: compress to `.rvz` first, then
@@ -314,7 +314,7 @@ export const registry = {
   /** All registered tools, in declared order. */
   all: () => TOOLS,
 
-  /** Set of registered tool ids — replaces hardcoded VALID_TOOLS in callers. */
+  /** Set of registered tool ids, replaces hardcoded VALID_TOOLS in callers. */
   ids: () => new Set(TOOLS.map((t) => t.id)),
 
   /** Lookup by tool id (`'chdman'`, `'dolphin'`, `'z3ds'`). */
@@ -332,7 +332,7 @@ export const registry = {
   /** Tools whose source extensions match the given path (convertible sources). */
   toolsForSourcePath: (path) => TOOLS.filter((t) => endsWithAny(path, t.sourceExts)),
 
-  /** Verify URL — single or batch — for a tool id. Derived from verifyPrefix. */
+  /** Verify URL, single or batch, for a tool id. Derived from verifyPrefix. */
   verifyUrl: (toolId, kind) => deriveVerifyUrl(byId.get(toolId), kind),
 
   /** Group a tool's modes by `group` for menu rendering. */
@@ -366,7 +366,7 @@ export const registry = {
     return group;
   },
 
-  /** Default wire-mode for a tool — used when the workspace switches tools. */
+  /** Default wire-mode for a tool, used when the workspace switches tools. */
   defaultMode: (toolId) => byId.get(toolId)?.defaultMode
     ?? byId.get(toolId)?.modes[0]?.mode
     ?? null,
@@ -374,7 +374,7 @@ export const registry = {
   /**
    * Distinct source extensions across all registered tools, in
    * declaration order. Used by FileList's filter dropdown so adding a
-   * new tool surfaces its inputs automatically — no hardcoded list.
+   * new tool surfaces its inputs automatically, no hardcoded list.
    */
   allSourceExts: () => {
     const seen = new Set();
@@ -400,7 +400,7 @@ export const registry = {
   },
 
   /**
-   * Union of source + verify extensions — every extension the user
+   * Union of source + verify extensions, every extension the user
    * might want to filter by in a directory listing. Adding a tool
    * automatically surfaces its inputs and outputs in the filter
    * dropdown; no UI edits required.

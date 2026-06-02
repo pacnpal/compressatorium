@@ -1,7 +1,7 @@
 <script>
   // Pre-submit confirmation for delete-on-verify. Backend
   // /api/jobs/delete-plan returns the exact files that would be
-  // removed after each conversion's output verifies — sources plus
+  // removed after each conversion's output verifies, sources plus
   // sidecar files (cue + bin set, gdi + raw tracks, etc.). Users
   // shouldn't trip the destructive flow without seeing the list.
   //
@@ -37,7 +37,7 @@
   });
 
   // Non-blocking warnings the backend wants the user to see before
-  // confirming — e.g. "Archive input detected; delete-on-verify will
+  // confirming, e.g. "Archive input detected; delete-on-verify will
   // remove the entire archive". These don't disable the Confirm
   // button but the user needs to read them.
   const planWarnings = $derived.by(() => {

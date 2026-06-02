@@ -101,7 +101,7 @@ def test_archive_stem_strips_extension():
 def test_archive_z3ds_member_maps_output_extension():
     # z3ds output extension is derived from the input; archive members keep
     # their original extension through treat_as_stem so the mapping holds
-    # (.3ds -> .z3ds, .cci -> .zcci) — regression guard for issue #113.
+    # (.3ds -> .z3ds, .cci -> .zcci), regression guard for issue #113.
     assert registry.for_mode("z3ds_compress").output_path(
         "z3ds_compress", "games_rom.3ds", None, treat_as_stem=True,
     ) == "games_rom.z3ds"

@@ -3,7 +3,7 @@
 The SQLAlchemy URL is resolved dynamically from the same settings the
 running app uses, so ``alembic upgrade`` always hits the same DB file
 as the FastAPI process.  Callers may override the URL by setting the
-``COMPRESSATORIUM_ALEMBIC_URL`` environment variable — primarily used
+``COMPRESSATORIUM_ALEMBIC_URL`` environment variable, primarily used
 by tests that want to point alembic at a throwaway file without
 clobbering the real ``COMPRESSATORIUM_DB_PATH``.
 """
@@ -38,7 +38,7 @@ if config.config_file_name is not None:
 
 # Resolve the DB URL.  Precedence:
 #   1. ``COMPRESSATORIUM_ALEMBIC_URL`` env var (tests, ad-hoc CLI ops).
-#   2. ``main_option("sqlalchemy.url")`` — explicitly set by the app via
+#   2. ``main_option("sqlalchemy.url")``, explicitly set by the app via
 #      ``_alembic_config()`` or in ``alembic.ini``.
 #   3. Runtime settings (``settings.db_path``).
 def _resolve_url() -> str:
@@ -52,7 +52,7 @@ def _resolve_url() -> str:
 
     try:
         from config import settings  # type: ignore[import-not-found]
-    except ImportError:  # pragma: no cover — only when settings aren't importable
+    except ImportError:  # pragma: no cover, only when settings aren't importable
         from app.config import settings  # type: ignore[no-redef]
     path = _db.resolve_db_path(settings.db_path, data_dir=settings.data_dir)
     return f"sqlite:///{path}"

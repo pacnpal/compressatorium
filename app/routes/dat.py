@@ -31,7 +31,7 @@ logger = get_logger("dat")
 # state is the authoritative source of truth across all requests hitting
 # this app.  If the deployment ever moves to multi-worker / multi-pod,
 # replace this with a distributed lock (Redis, SQLite advisory lock, or
-# a dedicated matches-scheduler process) — every worker would otherwise
+# a dedicated matches-scheduler process), every worker would otherwise
 # get its own independent lock and the 409 guard would no longer hold.
 #
 # Lazy-initialised: on Python 3.10+ ``asyncio.Lock()`` no longer binds a loop
@@ -75,7 +75,7 @@ def _get_match_job_lock() -> asyncio.Lock:
 
     Must be called from a running event loop so the Lock binds to it.
     """
-    global _match_job_lock  # noqa: PLW0603 — intentional module-level state
+    global _match_job_lock  # noqa: PLW0603, intentional module-level state
     if _match_job_lock is None:
         _match_job_lock = asyncio.Lock()
     return _match_job_lock
@@ -369,7 +369,7 @@ async def match_batch_job(request: MatchBatchRequest, background_tasks: Backgrou
                 results[original_path] = cached_entry
             continue
         # Existence check happens inside the job loop so a missing file
-        # doesn't fail the whole request — it just gets a matched=false
+        # doesn't fail the whole request, it just gets a matched=false
         # entry without being cached (same behaviour as sync /match-batch).
         to_compute.append(normalized_path)
 
@@ -398,7 +398,7 @@ def _filter_paths_within_volumes(paths: list[str]) -> tuple[list[str], int]:
     feed stored paths from ``DATMatch`` that were ACL-approved at write
     time, but a later ``CONFIGURED_VOLUMES`` tightening or a retargeted
     symlink can drift the admit set. Re-filter here so ``schedule_match_job``
-    is the single authoritative ACL gate — idempotent when called on
+    is the single authoritative ACL gate, idempotent when called on
     already-filtered paths.
     """
     allowed: list[str] = []
@@ -423,8 +423,8 @@ async def schedule_match_job(
     already active, *paths* is empty, or every path lies outside the
     configured volumes. When ``background_tasks`` is supplied (HTTP
     context) the task is registered with FastAPI so it runs after
-    response-send; otherwise it is scheduled via ``asyncio.create_task``
-    — used by non-HTTP callers such as the post-sync rematch hook in
+    response-send; otherwise it is scheduled via ``asyncio.create_task``,
+    used by non-HTTP callers such as the post-sync rematch hook in
     :mod:`services.dat_sync`.
 
     The ``_active_match_job_id`` + ``_match_job_lock`` guard is the
@@ -462,15 +462,15 @@ async def schedule_match_job(
     # authoritative "job in progress" signal is _active_match_job_id
     # (set inside the lock above), not the lock itself. A second caller
     # arriving in this window re-enters the lock, sees the id set, and
-    # returns None — no race.
+    # returns None, no race.
     #
     # If scheduling the actual task fails after we've claimed the slot,
     # roll back _active_match_job_id and mark the phantom external job
-    # as failed — otherwise the lock stays held forever and every future
+    # as failed, otherwise the lock stays held forever and every future
     # match request returns 409 until process restart.
     # except BaseException (not Exception): event-loop shutdown surfaces
     # as CancelledError / KeyboardInterrupt, and those must still roll
-    # the id back — leaving the process-level match lock held after a
+    # the id back, leaving the process-level match lock held after a
     # Ctrl-C would deadlock the next run.
     try:
         if background_tasks is not None:
@@ -481,11 +481,11 @@ async def schedule_match_job(
             # Invariant: _background_match_tasks holds at most one task
             # at a time because _active_match_job_id gates re-entry. If
             # this ever prints a warning, the concurrency guard above
-            # has been bypassed — investigate before shipping.
+            # has been bypassed, investigate before shipping.
             if _background_match_tasks:
                 logger.warning(
                     "schedule_match_job: _background_match_tasks was non-empty"
-                    " at schedule time (size=%d) — concurrency guard may be compromised",
+                    " at schedule time (size=%d), concurrency guard may be compromised",
                     len(_background_match_tasks),
                 )
             task = asyncio.create_task(
@@ -493,7 +493,7 @@ async def schedule_match_job(
             )
             _background_match_tasks.add(task)
             task.add_done_callback(_background_match_tasks.discard)
-            # If _run_match_job raises past its own try/finally (rare —
+            # If _run_match_job raises past its own try/finally (rare,
             # only if finish_external_job itself throws from the finally
             # block) the exception is stored on the Task and logged by
             # asyncio as "Task exception was never retrieved" on GC.
@@ -542,7 +542,7 @@ async def _hash_one_for_job(normalized_path: str) -> tuple[dict, bool]:
 
     try:
         result = await _match_single_file(normalized_path)
-    except Exception as exc:  # pragma: no cover — isolated per-path
+    except Exception as exc:  # pragma: no cover, isolated per-path
         # logger.exception rather than logger.warning: a KeyError /
         # AttributeError from a refactor bug should surface with a full
         # traceback at ERROR level, not be buried as a one-line warning.
@@ -568,7 +568,7 @@ async def _run_match_job(
     hashed = 0
     matched = 0
     # Per-file outcomes that are NOT "matched vs unmatched":
-    #   errors — real failures the caller should know about: anything
+    #   errors, real failures the caller should know about: anything
     #            _hash_one_for_job labels with result["error"] (stat
     #            OSError other than FileNotFoundError, hasher exception,
     #            _match_single_file exception) OR a cache-write exception.
@@ -576,7 +576,7 @@ async def _run_match_job(
     #            sees the volume-offline-style problem rather than a
     #            misleading "complete, 0 matched" that looks like a DAT
     #            coverage gap.
-    #   skips  — policy/classification non-errors: size cap hit,
+    #   skips , policy/classification non-errors: size cap hit,
     #            non-regular file, FileNotFoundError (result has no
     #            "error" key in these cases). Informational only.
     errors = 0
@@ -606,12 +606,12 @@ async def _run_match_job(
                 # work of the batch upsert path for a one-item write.
                 try:
                     await dat_store.set_match(normalized_path, result)
-                except Exception:  # pragma: no cover — best-effort cache write
+                except Exception:  # pragma: no cover, best-effort cache write
                     logger.exception("Failed to cache match for %s", normalized_path)
                     errors += 1
             else:
                 # Non-cacheable outcomes split into errors (something went
-                # wrong — see _hash_one_for_job) vs skips (policy: file
+                # wrong, see _hash_one_for_job) vs skips (policy: file
                 # too large, not a regular file). `result.get("error")`
                 # is the discriminator that _hash_one_for_job sets.
                 if result.get("error"):
@@ -630,7 +630,7 @@ async def _run_match_job(
         if total > 0 and errors == total:
             job_success = False
             job_error = (
-                f"all {errors} file(s) failed — check volume accessibility"
+                f"all {errors} file(s) failed, check volume accessibility"
             )
         else:
             job_success = True
@@ -750,7 +750,7 @@ async def sync_mameredump(http_request: Request, request: SyncRequest | None = N
     # Yield to the event loop so the background task has an opportunity to enter
     # svc.sync() and claim the syncing lock before we respond.  svc.sync()
     # acquires _syncing under a threading.Lock (no awaits before that point),
-    # so in practice a single yield is sufficient — but asyncio scheduling order
+    # so in practice a single yield is sufficient, but asyncio scheduling order
     # is not a documented guarantee, so this is a best-effort check rather than
     # a hard guarantee.  After asyncio.sleep(0), if the task is already done it
     # raised immediately (e.g. a near-simultaneous request already held the

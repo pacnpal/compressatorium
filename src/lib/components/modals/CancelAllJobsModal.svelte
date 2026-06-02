@@ -6,7 +6,7 @@
   import CircleX from '@lucide/svelte/icons/circle-x';
 
   const open = $derived(ui.showCancelAll);
-  // /api/jobs/cancel-all is a global op — it cancels every queued
+  // /api/jobs/cancel-all is a global op, it cancels every queued
   // and processing job server-side, including hidden metadata-scan
   // and dat-match background work. Use the unfiltered totals here
   // (and call out hidden ones in the description) so the user isn't
@@ -18,7 +18,7 @@
   function close() { ui.showCancelAll = false; }
 
   async function handleConfirm() {
-    // Snapshot the pre-cancel count for the toast fallback — the
+    // Snapshot the pre-cancel count for the toast fallback, the
     // SSE-driven jobs.queuedCount/processingCount can drop to 0
     // before the toast evaluates if the cancellation races through.
     const pending = totalQueued;

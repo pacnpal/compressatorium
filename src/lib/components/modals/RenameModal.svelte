@@ -52,7 +52,7 @@
         // badge because the new file is no longer the verifiable
         // product. Backend's verification_store only moves the
         // record for any verify-class extension AS LONG AS it stays
-        // in the same format — `.chd → .chd`, `.rvz → .rvz`, etc.
+        // in the same format, `.chd → .chd`, `.rvz → .rvz`, etc.
         // Cross-format renames (`.chd → .rvz`) clear the badge
         // because the file's actual content wasn't reverified under
         // its new format; carrying the OK would mislead the user.
@@ -81,7 +81,7 @@
       ui.renameTarget = null;
       toast.success(`Renamed to ${trimmed}`);
       // Refresh is a best-effort follow-up. A refresh failure here
-      // must not surface as "Failed to rename" — the rename already
+      // must not surface as "Failed to rename", the rename already
       // succeeded server-side.
       try {
         await fileBrowser.refresh({ force: true });

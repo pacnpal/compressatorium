@@ -167,7 +167,7 @@ async def test_finish_external_job_noop_for_unknown_id():
 async def test_cancel_job_signals_metadata_scan():
     """cancel_job() on a PROCESSING external job must set the cancel event
     and flip the message to 'Cancelling…'. The job is still PROCESSING at
-    this point — the owning task is responsible for flipping to CANCELLED
+    this point, the owning task is responsible for flipping to CANCELLED
     via finish_external_job_cancelled()."""
     mgr = _make_manager()
     job = mgr.create_external_job("Scan", ConversionMode.METADATA_SCAN)
@@ -180,7 +180,7 @@ async def test_cancel_job_signals_metadata_scan():
     cancel_event = mgr.get_cancel_event(job_id)
     assert cancel_event is not None
     assert cancel_event.is_set()
-    # Owning task hasn't finalized yet — status is still PROCESSING
+    # Owning task hasn't finalized yet, status is still PROCESSING
     assert mgr.jobs[job_id].status == JobStatus.PROCESSING
     assert mgr.jobs[job_id].message == "Cancelling..."
 
@@ -266,7 +266,7 @@ async def test_finish_external_job_cancelled_emits_cancelled_event():
 @pytest.mark.asyncio
 async def test_finish_external_job_cancelled_clears_cancel_state():
     """After a cancelled finalize, the _cancelled set and _cancel_events
-    dict must not retain the job id — otherwise a future job with the
+    dict must not retain the job id, otherwise a future job with the
     same id (unlikely but possible after uuid collisions) would start
     pre-cancelled."""
     mgr = _make_manager()

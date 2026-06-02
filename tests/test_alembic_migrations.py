@@ -2,17 +2,17 @@
 
 Five behaviours under test, all load-bearing for a safe upgrade:
 
-* **I1** — Fresh DB: ``apply_migrations`` runs ``upgrade head`` and
+* **I1**, Fresh DB: ``apply_migrations`` runs ``upgrade head`` and
   leaves ``alembic_version`` at ``0001``.
-* **I2** — Pre-Alembic DB (baseline schema exists, no
+* **I2**, Pre-Alembic DB (baseline schema exists, no
   ``alembic_version``): ``apply_migrations`` stamps the baseline
   revision and reaches head; Alembic may create ``alembic_version``,
   but the existing schema and rows must survive unchanged.
-* **I3** — Already-stamped DB: ``apply_migrations`` is a no-op.
-* **I4** — ORM drift guard: ``alembic.autogenerate.compare_metadata``
+* **I3**, Already-stamped DB: ``apply_migrations`` is a no-op.
+* **I4**, ORM drift guard: ``alembic.autogenerate.compare_metadata``
   against a just-upgraded DB must yield no diffs.  Catches future
   schema changes that land in ``Base.metadata`` without a migration.
-* **I5** — Called before engine init: ``apply_migrations`` fails fast
+* **I5**, Called before engine init: ``apply_migrations`` fails fast
   with the expected guard rather than running against an uninitialized
   engine/session setup.
 """
@@ -62,7 +62,7 @@ def _head_rev() -> str:
 
 
 # ---------------------------------------------------------------------------
-# I1 — fresh DB
+# I1, fresh DB
 # ---------------------------------------------------------------------------
 
 
@@ -80,7 +80,7 @@ def test_upgrade_head_on_fresh_db(fresh_db_path: str):
 
 
 # ---------------------------------------------------------------------------
-# I2 — pre-Alembic DB
+# I2, pre-Alembic DB
 # ---------------------------------------------------------------------------
 
 
@@ -115,7 +115,7 @@ def test_stamp_head_on_preexisting_schema(fresh_db_path: str):
 
 
 # ---------------------------------------------------------------------------
-# I3 — idempotency
+# I3, idempotency
 # ---------------------------------------------------------------------------
 
 
@@ -132,7 +132,7 @@ def test_apply_migrations_idempotent(fresh_db_path: str):
 
 
 # ---------------------------------------------------------------------------
-# I4 — autogenerate drift guard
+# I4, autogenerate drift guard
 # ---------------------------------------------------------------------------
 
 
@@ -140,7 +140,7 @@ def test_no_model_drift_after_upgrade(fresh_db_path: str):
     """compare_metadata against a just-upgraded DB must be empty.
 
     If this test fails, it means ``Base.metadata`` has drifted from the
-    migration chain — fix is to generate a new revision:
+    migration chain, fix is to generate a new revision:
 
         scripts/new_migration.sh "describe the change"
     """
@@ -154,7 +154,7 @@ def test_no_model_drift_after_upgrade(fresh_db_path: str):
         ctx = MigrationContext.configure(conn, opts={"compare_type": True})
         diffs = compare_metadata(ctx, _db.Base.metadata)
 
-    # Filter out the alembic_version table — it's not in Base.metadata
+    # Filter out the alembic_version table, it's not in Base.metadata
     # by design and shows as a spurious diff otherwise.
     relevant = [
         d for d in diffs

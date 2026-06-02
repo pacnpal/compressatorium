@@ -97,7 +97,7 @@ def test_dat_delete_sets_match_dat_id_to_null(ready_db):
         row = s.get(_db.DATMatch, "/data/x.chd")
         assert row is not None, "match row must survive DAT deletion"
         assert row.dat_id is None, "dat_id must be NULL'd via ON DELETE SET NULL"
-        # matched flag preserved — UI still shows the historical result.
+        # matched flag preserved, UI still shows the historical result.
         assert row.matched is True
         assert row.match_type == "file_sha1"
 
@@ -156,7 +156,7 @@ def test_verification_mark_sync_is_idempotent(ready_db):
 
 
 # ---------------------------------------------------------------------------
-# CHDMetadata upsert — arbitrary JSON payloads survive round-trip
+# CHDMetadata upsert, arbitrary JSON payloads survive round-trip
 # ---------------------------------------------------------------------------
 
 
@@ -195,7 +195,7 @@ def test_chd_metadata_upsert_preserves_arbitrary_json(ready_db):
 
 
 # ---------------------------------------------------------------------------
-# has_stale_dats — startup self-heal trigger (see main.py auto-sync branch)
+# has_stale_dats, startup self-heal trigger (see main.py auto-sync branch)
 # ---------------------------------------------------------------------------
 
 
@@ -248,7 +248,7 @@ def test_has_stale_dats_detects_zero_count(ready_db):
 
 
 # ---------------------------------------------------------------------------
-# list_match_paths — snapshot source for post-sync rematch hook
+# list_match_paths, snapshot source for post-sync rematch hook
 # ---------------------------------------------------------------------------
 
 

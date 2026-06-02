@@ -19,7 +19,7 @@ _MD5_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 def parse_dat(source: str) -> tuple[dict, list[dict]]:
     """Parse a Logiqx XML DAT file from a file path or XML string.
 
-    Accepts either a filesystem path (preferred — enables true iterparse
+    Accepts either a filesystem path (preferred, enables true iterparse
     streaming from disk) or a raw XML string.  Passing a path avoids loading
     the entire document into memory before parsing begins.
 
@@ -35,7 +35,7 @@ def parse_dat(source: str) -> tuple[dict, list[dict]]:
 
     try:
         if os.path.isfile(source):
-            # Stream directly from disk — no in-memory copy of the XML.
+            # Stream directly from disk, no in-memory copy of the XML.
             context = ET.iterparse(source, events=("end",))
         else:
             # Fallback: treat source as a raw XML string.

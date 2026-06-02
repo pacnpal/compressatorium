@@ -6,7 +6,7 @@ Drives the *real* pipeline for each supported input format:
         ->  job_manager.create_job  ->  _process_job
             ->  archive_service.extract_file   (REAL extraction from a
                                                  real on-disk .zip)
-            ->  registry.for_mode(mode).convert (the only stubbed piece —
+            ->  registry.for_mode(mode).convert (the only stubbed piece,
                                                  stands in for the external
                                                  chdman / dolphin-tool /
                                                  z3ds_compressor binary)
@@ -31,7 +31,7 @@ from app.routes import convert as convert_routes
 
 # (input extension, mode, expected output extension). Covers every member of
 # registry.archive_input_extensions(): chdman create sources, Dolphin sources,
-# and 3DS sources. z3ds is the interesting case — its output extension is
+# and 3DS sources. z3ds is the interesting case, its output extension is
 # derived from the input, so .cci/.cia/.3ds must each map distinctly.
 MATRIX = [
     (".gdi", ConversionMode.CREATECD, ".chd"),
@@ -71,7 +71,7 @@ def _e2e_env(tmp_path: Path, monkeypatch):
     async def fake_convert(input_path, output_path, mode, *, compression=None,
                            cancel_event=None):
         # The member must have been extracted to a real temp file before the
-        # tool is invoked — this is the core of the archive-conversion path.
+        # tool is invoked, this is the core of the archive-conversion path.
         assert os.path.isfile(input_path), f"member not extracted: {input_path}"
         # Capture the extracted bytes now: the temp dir is removed during the
         # job's cleanup, so it can't be re-read after _process_job returns.

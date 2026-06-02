@@ -1,4 +1,4 @@
-// Verification store — tracks verified output paths, per-file verify
+// Verification store, tracks verified output paths, per-file verify
 // progress, and the active batch-verify run. Single-file verify uses
 // EventSource (sse.js); batch verify uses POST + ReadableStream (sseFetch.js)
 // via the registry's verifyBatch binding.
@@ -28,7 +28,7 @@ class VerificationStore {
       const data = await api.getVerifiedCHDs();
       // Preserve mid-flight additions: paths added to `statuses` after
       // we snapshotted `baseline` but before the response landed.
-      // Plain object map for the membership check — same reason as
+      // Plain object map for the membership check, same reason as
       // jobs.refresh's remoteIds (svelte/prefer-svelte-reactivity
       // flags raw Set, and SvelteSet here would be pointless
       // overhead for a transient local).
@@ -40,7 +40,7 @@ class VerificationStore {
       for (const path of data?.verified ?? []) this.statuses.add(path);
       for (const path of Object.keys(addedSince)) this.statuses.add(path);
     } catch (_e) {
-      // non-fatal — leave whatever we had
+      // non-fatal, leave whatever we had
     } finally {
       if (this._loadBaseline === baseline) this._loadBaseline = null;
     }

@@ -1,6 +1,6 @@
 <script>
   // Generic dashboard tile. Title + (optional) icon, then body slot for
-  // anything — a big number, a list, a progress bar. Footer slot for an
+  // anything, a big number, a list, a progress bar. Footer slot for an
   // action or hint.
 
   /**

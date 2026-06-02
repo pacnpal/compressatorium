@@ -206,7 +206,7 @@ def _find_file(f, root_lba: int, root_size: int, path_parts: list[str]) -> Optio
             return None
         _name, lba, size, is_dir = hit
         if i == len(path_parts) - 1:
-            # Final component — read and return the file
+            # Final component, read and return the file
             try:
                 f.seek(lba * _SECTOR_SIZE)
                 return f.read(size)
@@ -238,7 +238,7 @@ def _normalize_ps_serial(raw: str) -> Optional[str]:
       cdrom0:\\SLUS_203.12;1  →  SLUS-20312
       SCES_503.08             →  SCES-50308
       SLPS_123.45;2           →  SLPS-12345
-      SLUS_20312              →  None  (no dot — non-standard, rejected)
+      SLUS_20312              →  None  (no dot, non-standard, rejected)
     """
     s = raw.strip().upper()
     # Strip path prefix (everything up to and including the last \\ or :)
@@ -403,7 +403,7 @@ def extract_from_source(path: str) -> Optional[dict]:
 
 
 def _extract_iso(path: str) -> Optional[dict]:
-    """ISO 9660 extraction (2048-byte sectors — PS2, PSP, PS1 DVD-based)."""
+    """ISO 9660 extraction (2048-byte sectors, PS2, PSP, PS1 DVD-based)."""
     try:
         with open(path, "rb") as f:
             pvd = _read_pvd(f)
@@ -411,14 +411,14 @@ def _extract_iso(path: str) -> Optional[dict]:
                 return None
             root_lba, root_size = _pvd_root_dir(pvd)
 
-            # PS2 / PS1 — SYSTEM.CNF in root
+            # PS2 / PS1, SYSTEM.CNF in root
             cnf = _find_file(f, root_lba, root_size, ["SYSTEM.CNF"])
             if cnf:
                 result = _parse_system_cnf(cnf)
                 if result.get("game_id"):
                     return result
 
-            # PSP — /PSP_GAME/PARAM.SFO
+            # PSP, /PSP_GAME/PARAM.SFO
             sfo = _find_file(f, root_lba, root_size, ["PSP_GAME", "PARAM.SFO"])
             if sfo:
                 result = _parse_param_sfo(sfo)
@@ -511,8 +511,8 @@ class _BinSectorStream:
 # ===========================================================================
 # CHD v5 direct disc-sector reader
 # ===========================================================================
-# Implements the same low-level sector reading as libchdr — the C library used
-# by PCSX2, AetherSX2, NetherSX2, and Argosy Launcher — so we can extract
+# Implements the same low-level sector reading as libchdr, the C library used
+# by PCSX2, AetherSX2, NetherSX2, and Argosy Launcher, so we can extract
 # SYSTEM.CNF from the CHD's own disc content without a full extraction pass.
 
 class _CHDReader:
@@ -523,8 +523,8 @@ class _CHDReader:
     lookup and decompression mechanism as libchdr.
 
     Supported compression codecs:
-      • ZLIB (0x7A6C6962) — common for older CHD files
-      • LZMA (0x6C7A6D61) — default for ``chdman createdvd`` on modern MAME
+      • ZLIB (0x7A6C6962), common for older CHD files
+      • LZMA (0x6C7A6D61), default for ``chdman createdvd`` on modern MAME
       • Uncompressed (hunk compression type 4)
 
     CHD v5 uses big-endian byte order for all multi-byte header and map fields.
@@ -571,7 +571,7 @@ class _CHDReader:
             hdr = self._f.read(self._HEADER_SIZE)
             if len(hdr) < self._HEADER_SIZE or hdr[:8] != self._MAGIC:
                 logger.debug(
-                    "disc_id: CHD open failed — bad magic or short header in %s",
+                    "disc_id: CHD open failed, bad magic or short header in %s",
                     self._path,
                 )
                 return False
@@ -580,7 +580,7 @@ class _CHDReader:
             version = struct.unpack_from(">I", hdr, 12)[0]
             if version != self._VERSION or hdr_len < self._HEADER_SIZE:
                 logger.debug(
-                    "disc_id: CHD open failed — version=%d hdr_len=%d in %s",
+                    "disc_id: CHD open failed, version=%d hdr_len=%d in %s",
                     version,
                     hdr_len,
                     self._path,
@@ -592,7 +592,7 @@ class _CHDReader:
             self._codecs = list(struct.unpack_from(">4I", hdr, 108))
             if not (self._hunk_bytes > 0 and self._unit_bytes > 0):
                 logger.debug(
-                    "disc_id: CHD open failed — hunk_bytes=%d unit_bytes=%d in %s",
+                    "disc_id: CHD open failed, hunk_bytes=%d unit_bytes=%d in %s",
                     self._hunk_bytes,
                     self._unit_bytes,
                     self._path,
@@ -673,7 +673,7 @@ class _CHDReader:
                     return None
                 return self._decompress(codec, compressed)
 
-            # COMP_SELF, COMP_PARENT — require CHD linkage; not needed here
+            # COMP_SELF, COMP_PARENT, require CHD linkage; not needed here
             return None
         except Exception:
             return None
@@ -720,13 +720,13 @@ class _CHDReader:
 class _CHDSectorStream:
     """
     Wraps a ``_CHDReader`` as a file-like object exposing 2048-byte logical
-    sectors — the same interface that ``_read_pvd`` and ``_find_file`` expect.
+    sectors, the same interface that ``_read_pvd`` and ``_find_file`` expect.
 
     ``data_offset`` is the byte offset within each raw CHD sector where the
     2048-byte user-data payload begins:
-      0  — DVD CHDs (unit_bytes=2048): pure ISO data, no framing
-      16 — Mode 1 CD sector (sync + header)
-      24 — Mode 2 Form 1 CD sector (sync + header + sub-header)
+      0 , DVD CHDs (unit_bytes=2048): pure ISO data, no framing
+      16, Mode 1 CD sector (sync + header)
+      24, Mode 2 Form 1 CD sector (sync + header + sub-header)
     """
 
     def __init__(self, reader: "_CHDReader", data_offset: int = 0) -> None:
@@ -795,14 +795,14 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
             elif reader.unit_bytes in (2352, 2448):
                 # CD CHDs: 2352- or 2448-byte physical sectors with a CD sector
                 # frame header preceding the 2048-byte user-data payload.
-                # Try Mode 2 Form 1 (24-byte header) first — the most common PS1
-                # format — then fall back to Mode 1 (16-byte header).
+                # Try Mode 2 Form 1 (24-byte header) first, the most common PS1
+                # format, then fall back to Mode 1 (16-byte header).
                 data_offsets = [
                     _RAW_SECTOR_HEADER_SIZE_MODE2,
                     _RAW_SECTOR_HEADER_SIZE_MODE1,
                 ]
                 logger.debug(
-                    "disc_id: %s detected as CD CHD (unit_bytes=%d) — probing"
+                    "disc_id: %s detected as CD CHD (unit_bytes=%d), probing"
                     " Mode 2 Form 1 (offset=%d) then Mode 1 (offset=%d)",
                     chd_path,
                     reader.unit_bytes,
@@ -811,7 +811,7 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
                 )
             else:
                 logger.debug(
-                    "disc_id: %s has unsupported unit_bytes=%d — skipping sector extraction",
+                    "disc_id: %s has unsupported unit_bytes=%d, skipping sector extraction",
                     chd_path,
                     reader.unit_bytes,
                 )
@@ -834,7 +834,7 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
                 )
                 root_lba, root_size = _pvd_root_dir(pvd)
 
-                # PS2 / PS1 — SYSTEM.CNF in root
+                # PS2 / PS1, SYSTEM.CNF in root
                 cnf = _find_file(stream, root_lba, root_size, ["SYSTEM.CNF"])
                 if cnf:
                     result = _parse_system_cnf(cnf)
@@ -851,7 +851,7 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
                         chd_path,
                     )
 
-                # PSP — /PSP_GAME/PARAM.SFO
+                # PSP, /PSP_GAME/PARAM.SFO
                 sfo = _find_file(stream, root_lba, root_size, ["PSP_GAME", "PARAM.SFO"])
                 if sfo:
                     result = _parse_param_sfo(sfo)
@@ -955,14 +955,14 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
          walks the ISO 9660 filesystem to find SYSTEM.CNF (PS2/PS1) or
          PSP_GAME/PARAM.SFO (PSP).  Handles both DVD CHDs (2048-byte sectors)
          and CD CHDs (2352/2448-byte sectors with Mode 1 or Mode 2 Form 1
-         framing) — the same approach used by libchdr-based emulators.
+         framing), the same approach used by libchdr-based emulators.
       3. Read the Dreamcast GDRO IP.BIN tag (standard CD CHD tag).
       4. Look for a companion source file (.iso / .gdi / .bin / .cue) beside
          the CHD and extract from that.
 
     Returns a dict containing at least ``game_id`` when successful. The dict
     may also include ``title`` and/or ``platform`` depending on the extraction
-    strategy — ``platform`` is only present when the result comes from disc
+    strategy, ``platform`` is only present when the result comes from disc
     sector / GDRO / source-file extraction (Strategies 2–4), not from the
     embedded GAME tag (Strategy 1). Returns None if no ID could be found.
     """
@@ -1033,7 +1033,7 @@ async def extract_from_chd(chd_path: str, chdman_path: str = "chdman") -> Option
                 return res
     logger.debug("disc_id: Strategy 4 (companion file) found no game_id for %s", chd_path)
 
-    logger.debug("disc_id: all strategies exhausted — no game_id found for %s", chd_path)
+    logger.debug("disc_id: all strategies exhausted, no game_id found for %s", chd_path)
     return None
 
 
@@ -1048,9 +1048,9 @@ async def embed_in_chd(
     ``chdman addmeta``.  Returns True on success, False on failure.
 
     Tags written:
-      GAME — the normalized disc serial (e.g. "SLUS-20312", "ULES-00135",
+      GAME, the normalized disc serial (e.g. "SLUS-20312", "ULES-00135",
              "MK-51034") in the form emulator frontends use for DB lookup
-      NAME — the human-readable game title (optional)
+      NAME, the human-readable game title (optional)
     """
     logger.debug(
         "disc_id: embed_in_chd game_id=%r title=%r in %s",
@@ -1075,7 +1075,7 @@ async def ensure_disc_id_embedded(
     Ensure a CHD file has GAME / NAME metadata tags embedded, back-filling
     existing CHDs that were created before conversion-time tagging was added.
 
-    Algorithm (standards-compliant — all tags follow the 4-char MAME CHD
+    Algorithm (standards-compliant, all tags follow the 4-char MAME CHD
     metadata format and are written via ``chdman addmeta``):
 
       1. Fast-path: read the GAME tag.  If it is already present, return the
@@ -1100,7 +1100,7 @@ async def ensure_disc_id_embedded(
     preserving real titles when possible.
 
     Returns a dict with at least ``game_id`` when disc identity information was
-    found — regardless of whether the GAME/NAME tags were successfully embedded
+    found, regardless of whether the GAME/NAME tags were successfully embedded
     into the CHD file.  When embedding fails (e.g. the file is read-only or
     ``chdman`` is unavailable), the disc ID is still returned so callers can
     cache it for display; a ``WARNING`` is logged in that case.
@@ -1141,7 +1141,7 @@ async def ensure_disc_id_embedded(
         if not ok:
             logger.warning(
                 "disc_id: failed to embed GAME/NAME tags in %s"
-                " — disc ID will be cached for display only",
+                ", disc ID will be cached for display only",
                 chd_path,
             )
         return disc_result
@@ -1168,7 +1168,7 @@ async def ensure_disc_id_embedded(
             if not ok:
                 logger.warning(
                     "disc_id: failed to embed GAME/NAME tags in %s"
-                    " — disc ID will be cached for display only",
+                    ", disc ID will be cached for display only",
                     chd_path,
                 )
             return parsed
@@ -1203,13 +1203,13 @@ async def ensure_disc_id_embedded(
                 if not ok:
                     logger.warning(
                         "disc_id: failed to embed GAME/NAME tags in %s"
-                        " — disc ID will be cached for display only",
+                        ", disc ID will be cached for display only",
                         chd_path,
                     )
                 return res
 
     logger.debug(
-        "disc_id: ensure_disc_id_embedded exhausted all strategies — no game_id found for %s",
+        "disc_id: ensure_disc_id_embedded exhausted all strategies, no game_id found for %s",
         chd_path,
     )
     return None

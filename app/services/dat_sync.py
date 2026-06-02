@@ -93,7 +93,7 @@ class DATSyncService:
             return self._session_factory()
         if _db.SessionLocal is None:
             raise RuntimeError(
-                "DATSyncService: db.SessionLocal not initialized — call "
+                "DATSyncService: db.SessionLocal not initialized, call "
                 "db.init_engine() before using the service.",
             )
         return _db.SessionLocal()
@@ -235,7 +235,7 @@ class DATSyncService:
         """Download a DAT file to a temp file and return the temp path."""
         url = self._raw_url(path, ref=ref)
         self._require_https(url)
-        # Do NOT send the GitHub token to raw.githubusercontent.com — the PAT
+        # Do NOT send the GitHub token to raw.githubusercontent.com, the PAT
         # is only needed for api.github.com rate-limiting, and sending it to
         # third-party CDN hosts needlessly widens the token exposure surface.
         headers = {"User-Agent": "compressatorium-dat-sync/1.0"}
@@ -322,7 +322,7 @@ class DATSyncService:
         # Check if already synced to this tag.  Three short-circuit reasons to
         # *not* fast-path: (1) the DAT store is empty (state says synced but
         # rows are gone), (2) any DAT has file_count=0 (imported before a
-        # parser upgrade widened what counts as a hash entry — re-import to
+        # parser upgrade widened what counts as a hash entry, re-import to
         # self-heal), or (3) the caller asked to force.
         existing_dats = await run_in_threadpool(dat_store.list_dats)
         if self._state.get("last_sync_tag") == tag:
@@ -336,11 +336,11 @@ class DATSyncService:
                     "message": f"Already synced to {tag}",
                 }
             if force and existing_dats:
-                logger.info("dat_sync: force=True — re-syncing tag %s", tag)
+                logger.info("dat_sync: force=True, re-syncing tag %s", tag)
             elif stale_count:
                 logger.warning(
                     "dat_sync: state reports tag %s already synced, but %d "
-                    "DAT(s) have file_count=0 — likely a pre-parser-upgrade "
+                    "DAT(s) have file_count=0, likely a pre-parser-upgrade "
                     "import; forcing re-sync",
                     tag, stale_count,
                 )
@@ -424,7 +424,7 @@ class DATSyncService:
                     except OSError:
                         pass
 
-        # Post-sync rematch status — populated on the success branch.
+        # Post-sync rematch status, populated on the success branch.
         # Stays None on the partial-failure branch so the progress/result
         # payload clearly signals "no rematch attempted".
         rematch_status: str | None = None
@@ -466,14 +466,14 @@ class DATSyncService:
                 # call-time keeps the module-load graph acyclic.  A true
                 # ImportError here indicates a broken deployment (routes
                 # package missing, syntax error in a transitive dep) and
-                # MUST propagate — letting it fall into the best-effort
+                # MUST propagate, letting it fall into the best-effort
                 # catch below would hide it behind a silent "complete"
                 # sync result.
                 from routes.dat import schedule_match_job
                 # Rematch scheduling itself is best-effort: the DAT
                 # import has already been committed. Runtime failures
                 # (job_manager queue full, loop already shutting down,
-                # etc.) must not mark the sync as errored — the DAT data
+                # etc.) must not mark the sync as errored, the DAT data
                 # is fine; the user can retry matching manually.
                 try:
                     rematch_job_id = await schedule_match_job(previous_match_paths)
@@ -496,7 +496,7 @@ class DATSyncService:
                         rematch_status = "scheduled"
                     else:
                         logger.info(
-                            "dat_sync: skipped rematch — another match job is already active",
+                            "dat_sync: skipped rematch, another match job is already active",
                         )
                         rematch_status = "deferred"
         else:
@@ -546,7 +546,7 @@ class DATSyncService:
             rematch_status=rematch_status,
             rematch_job_id=rematch_job_id,
         )
-        logger.info("dat_sync: %s — %d imported, %d errors", final_status, imported, len(errors))
+        logger.info("dat_sync: %s, %d imported, %d errors", final_status, imported, len(errors))
 
         return {
             "status": final_status,

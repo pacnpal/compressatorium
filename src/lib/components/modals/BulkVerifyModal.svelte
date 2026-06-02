@@ -25,7 +25,7 @@
   // Group selected paths by the tool that owns their verify extension.
   // When the row is a source file (`.cue`, `.iso`, `.3ds`, etc.) that
   // isn't itself a verify target, fall back to any existing generated
-  // output in `entry.outputs` — same idea as RowActionsMenu's
+  // output in `entry.outputs`, same idea as RowActionsMenu's
   // verify-from-output. Lets a selection of source rows still get
   // bulk-verified against their replacement outputs.
   const groups = $derived.by(() => {
@@ -89,8 +89,8 @@
     runResults = { verified: 0, failed: 0 };
     // Drop the completed-run summary from the store. verifyBatch leaves
     // batchRun populated after a successful run, and App.svelte treats
-    // a truthy batchRun as "a batch is active" to suppress auto-refresh
-    // — leaving it set would permanently block listing refreshes.
+    // a truthy batchRun as "a batch is active" to suppress auto-refresh,
+    // leaving it set would permanently block listing refreshes.
     verification.clearBatch();
   }
 
@@ -161,7 +161,7 @@
         {totalPaths} file{totalPaths === 1 ? '' : 's'} across
         {groups.groups.length} tool{groups.groups.length === 1 ? '' : 's'}.
         {#if groups.skipped.length > 0}
-          {groups.skipped.length} skipped — no matching verify tool.
+          {groups.skipped.length} skipped, no matching verify tool.
         {/if}
       </Dialog.Description>
 

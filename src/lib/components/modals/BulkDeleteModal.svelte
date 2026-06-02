@@ -23,7 +23,7 @@
   });
 
   // Sources with unverified replacement outputs. Each entry in the
-  // selection may carry an `outputs` array from /api/files — items
+  // selection may carry an `outputs` array from /api/files, items
   // with `exists: true` and a path NOT in verification.statuses are
   // the risk surface for permanently removing the original before the
   // new output has been confirmed correct.
@@ -98,7 +98,7 @@
   {open}
   onClose={close}
   title="Delete {paths.length} file{paths.length === 1 ? '' : 's'}?"
-  description="Permanent — files are removed from disk and not recoverable. Output files queued for conversion are not affected."
+  description="Permanent, files are removed from disk and not recoverable. Output files queued for conversion are not affected."
   size="md"
 >
   {#snippet titleIcon()}<Trash2 size={18} aria-hidden="true" />{/snippet}

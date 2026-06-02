@@ -5,7 +5,7 @@
 // Why a dedicated module rather than inlining in JobRow: a job row only
 // exists while the Jobs panel is mounted and the job is on the visible
 // page. Toasts must follow the job across navigation, pagination, and the
-// queue/completed tab split — so the lifecycle is driven by reconciling
+// queue/completed tab split, so the lifecycle is driven by reconciling
 // against the jobs store from a single long-lived $effect (wired in
 // App.svelte), keyed by job id so each running job owns exactly one toast.
 
@@ -41,7 +41,7 @@ function runningDescription(job) {
   // The backend message (e.g. "Cancelling…", "Verifying output") is the
   // most useful line when present; fall back to the descriptor + percent.
   // Use truthiness (not ??) for the fallbacks: `descriptorOf` returns ''
-  // for an unknown mode, and '' is not nullish — so `?? 'Processing…'`
+  // for an unknown mode, and '' is not nullish, so `?? 'Processing…'`
   // would surface a blank description instead of the fallback.
   const lead = job?.message || base;
   if (lead && pct) return `${lead} · ${pct}`;
@@ -57,7 +57,7 @@ class JobToastTracker {
   // own writes and loop (effect_update_depth_exceeded), while a plain Map
   // trips the svelte/prefer-svelte-reactivity lint rule. The object map is
   // the same non-reactive escape jobs.svelte.js uses for its transient
-  // id→state lookups — correct here and lint-clean.
+  // id→state lookups, correct here and lint-clean.
   _active = Object.create(null);
 
   /**
@@ -102,13 +102,13 @@ class JobToastTracker {
         this._resolve(job, rec.toastId);
         delete this._active[id];
       }
-      // queued / unknown: no toast yet — a job earns its toast when it
+      // queued / unknown: no toast yet, a job earns its toast when it
       // starts processing, and historical terminal jobs we never tracked
       // (rec === undefined) are skipped so a page reload doesn't replay
       // "completed" toasts for old history.
     }
 
-    // A running job can vanish from the list without a terminal frame —
+    // A running job can vanish from the list without a terminal frame,
     // another tab clears it, or the backend prunes it. Dismiss its stale
     // loading toast so it doesn't spin forever.
     for (const id of Object.keys(this._active)) {

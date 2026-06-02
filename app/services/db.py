@@ -6,7 +6,7 @@ single SQLite database (``compressatorium.db`` by default).
 
 Design notes
 ------------
-* Uses SQLAlchemy 2.0 **sync** sessions — every store call goes through
+* Uses SQLAlchemy 2.0 **sync** sessions, every store call goes through
   ``run_in_threadpool`` already, so sync sessions drop in without any
   async refactor of callers.
 * WAL journal mode, ``synchronous=NORMAL``, ``foreign_keys=ON``,
@@ -17,7 +17,7 @@ Design notes
   different engine in tests by assigning to their module-level
   ``SessionLocal`` attribute (see ``tests/conftest.py``).
 * JSON-to-SQLite migration runs at startup via :func:`init_and_migrate`.
-  The source JSON file is **never deleted** — on success it is renamed
+  The source JSON file is **never deleted**, on success it is renamed
   to ``<name>.migrated.bak`` so a user can always roll back.
 """
 
@@ -104,7 +104,7 @@ class DATMatch(Base):
 
 class DATSyncState(Base):
     __tablename__ = "dat_sync_state"
-    # Singleton row — always id=1.
+    # Singleton row, always id=1.
     id = Column(Integer, primary_key=True, default=1)
     last_sync_tag = Column(String, nullable=True)
     last_sync_at = Column(String, nullable=True)
@@ -228,7 +228,7 @@ def init_engine(db_path: str, *, create_schema: bool = True) -> Engine:
     ``store_path=...`` constructors default to ``True`` so they get a
     usable schema without needing an Alembic config.
     """
-    global engine, SessionLocal  # noqa: PLW0603 — intentional module-level state
+    global engine, SessionLocal  # noqa: PLW0603, intentional module-level state
     if engine is not None:
         # If the caller re-inits with a different URL, dispose the old.
         current_url = str(engine.url)
@@ -262,7 +262,7 @@ def _alembic_config(target: Engine):
     """Build an ``alembic.config.Config`` pointed at *target*.
 
     The sqlalchemy URL is injected here so it matches the already-open
-    engine exactly — there is no separate DB resolution path.
+    engine exactly, there is no separate DB resolution path.
 
     Alembic assets may live in different places depending on how the app
     is packaged (development repo vs. Docker image).  We therefore support
@@ -272,12 +272,12 @@ def _alembic_config(target: Engine):
     Search order:
     1. ``ALEMBIC_INI_PATH`` + ``ALEMBIC_SCRIPT_LOCATION`` env vars (explicit
        override, useful in containers or custom deployments).
-    2. ``<repo_root>/migrations/`` — resolved relative to this file (dev
+    2. ``<repo_root>/migrations/``, resolved relative to this file (dev
        environment where ``app/services/db.py`` sits three levels down from
        the repo root).
-    3. ``<cwd>/migrations/`` — works when the app is started from the repo
+    3. ``<cwd>/migrations/``, works when the app is started from the repo
        root or a directory that contains a ``migrations/`` sub-directory.
-    4. ``<db.py parent>/migrations/`` — last-resort sibling lookup.
+    4. ``<db.py parent>/migrations/``, last-resort sibling lookup.
     """
     from alembic.config import Config
 
@@ -341,7 +341,7 @@ def apply_migrations(target: Engine | None = None) -> None:
     A fresh DB is normally produced by :func:`init_engine` with
     ``create_schema=False``.  If the caller already ran
     ``ensure_schema`` / ``create_all`` before calling this, path 2
-    applies and we stamp — which is what we want.
+    applies and we stamp, which is what we want.
     """
     from alembic import command
     from alembic.migration import MigrationContext
@@ -350,13 +350,13 @@ def apply_migrations(target: Engine | None = None) -> None:
     eng = target if target is not None else engine
     if eng is None:
         raise RuntimeError(
-            "apply_migrations called before init_engine — no engine available.",
+            "apply_migrations called before init_engine, no engine available.",
         )
 
     cfg = _alembic_config(eng)
 
     with eng.connect() as conn:
-        # Direct MigrationContext read — not an Alembic command, so no
+        # Direct MigrationContext read, not an Alembic command, so no
         # cfg.attributes injection needed here.
         ctx = MigrationContext.configure(conn)
         current_rev = ctx.get_current_revision()
@@ -394,13 +394,13 @@ def apply_migrations(target: Engine | None = None) -> None:
 def get_session() -> Session:
     """Return a new session bound to the current engine.
 
-    Raises ``RuntimeError`` if ``init_engine`` has not been called yet —
+    Raises ``RuntimeError`` if ``init_engine`` has not been called yet,
     that would indicate a store was touched before startup wired up the
     DB, which is a programmer error we want to fail loud on.
     """
     if SessionLocal is None:
         raise RuntimeError(
-            "db.SessionLocal not initialized — call db.init_engine() or "
+            "db.SessionLocal not initialized, call db.init_engine() or "
             "db.init_and_migrate() before using any store."
         )
     return SessionLocal()
@@ -495,7 +495,7 @@ def _mark_migrated(path: Path) -> None:
 
     If a backup already exists (e.g., from a previous migration run), the
     source JSON is left untouched and a warning is logged so that the
-    operator can manually resolve the conflict — the source is **never**
+    operator can manually resolve the conflict, the source is **never**
     deleted automatically.
     """
     target = Path(str(path) + MIGRATED_SUFFIX)
@@ -504,7 +504,7 @@ def _mark_migrated(path: Path) -> None:
         # so no data is lost, and require manual resolution.
         logger.warning(
             "db.migrate: backup already exists at %s; preserving JSON source %s "
-            "unchanged — manual resolution required",
+            "unchanged, manual resolution required",
             target, path,
         )
         return
@@ -519,7 +519,7 @@ def _mark_migrated(path: Path) -> None:
     except OSError:
         logger.exception(
             "db.migrate: imported data from %s into SQLite but could not rename "
-            "the legacy JSON to %s; the source file was left in place — fix "
+            "the legacy JSON to %s; the source file was left in place, fix "
             "filesystem permissions and restart to retry the rename",
             path,
             target,
@@ -564,7 +564,7 @@ def _migrate_dat_store(engine: Engine, path: Path) -> None:
         if session.scalar(select(DAT).limit(1)) is not None:
             logger.info(
                 "db.migrate: dats table non-empty; skipping import from %s "
-                "(leaving JSON in place — manual cleanup may be required)",
+                "(leaving JSON in place, manual cleanup may be required)",
                 path,
             )
             return
@@ -628,7 +628,7 @@ def _migrate_dat_store(engine: Engine, path: Path) -> None:
                     continue
                 # dat_id may point at a DAT that no longer exists (e.g.,
                 # the DAT was deleted after the match was cached). Fall
-                # back to NULL rather than drop the match — UI still
+                # back to NULL rather than drop the match, UI still
                 # wants to show "not matched" style results.
                 dat_id = record.get("dat_id")
                 if dat_id is not None and dat_id not in valid_dat_ids:
@@ -650,7 +650,7 @@ def _migrate_dat_store(engine: Engine, path: Path) -> None:
 
             # Validate counts.  Hashes may legitimately be fewer than
             # expected if some pointed at nonexistent DATs (orphans
-            # dropped) — warn but don't abort.  DAT and match counts
+            # dropped), warn but don't abort.  DAT and match counts
             # must match exactly.
             dat_count = session.query(DAT).count()
             hash_count = session.query(DATHash).count()
@@ -681,7 +681,7 @@ def _migrate_dat_store(engine: Engine, path: Path) -> None:
 
     _mark_migrated(path)
     logger.info(
-        "db.migrate: dat_store imported — %d DATs, %d hashes, %d matches → %s.migrated.bak",
+        "db.migrate: dat_store imported, %d DATs, %d hashes, %d matches → %s.migrated.bak",
         expected_dats, expected_hashes, expected_matches, path.name,
     )
 
@@ -737,7 +737,7 @@ def _migrate_verification_store(engine: Engine, path: Path) -> None:
 
     _mark_migrated(path)
     logger.info(
-        "db.migrate: verification_store imported — %d entries → %s.migrated.bak",
+        "db.migrate: verification_store imported, %d entries → %s.migrated.bak",
         expected, path.name,
     )
 
@@ -797,7 +797,7 @@ def _migrate_chd_metadata_store(engine: Engine, path: Path) -> None:
 
     _mark_migrated(path)
     logger.info(
-        "db.migrate: chd_metadata imported — %d entries → %s.migrated.bak",
+        "db.migrate: chd_metadata imported, %d entries → %s.migrated.bak",
         expected, path.name,
     )
 
@@ -892,7 +892,7 @@ def init_and_migrate(
             continue
         try:
             fn(eng, src)
-        except Exception:  # noqa: BLE001 — each migration is isolated
+        except Exception:  # noqa: BLE001, each migration is isolated
             failures.append(name)
             # Exception already logged inside the migrator.
 

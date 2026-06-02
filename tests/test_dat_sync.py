@@ -352,7 +352,7 @@ async def test_sync_handles_download_error(sync_service, tmp_path):
     assert len(result["errors"]) == 2
     assert result["error"] is not None
     mock_dat_store.import_dat_no_persist.assert_not_called()
-    # All downloads failed — staged DATs are discarded (no DB writes).
+    # All downloads failed, staged DATs are discarded (no DB writes).
     mock_dat_store.discard_pending.assert_called_once()
     mock_dat_store.delete_dats_bulk.assert_not_called()
 
@@ -754,7 +754,7 @@ async def test_do_sync_surfaces_rematch_failed_status(sync_service, tmp_path):
 
 @pytest.mark.asyncio
 async def test_do_sync_list_match_paths_failure_is_best_effort(sync_service, tmp_path, caplog):
-    """If the snapshot SELECT raises, the sync must still commit — aborting
+    """If the snapshot SELECT raises, the sync must still commit, aborting
     here would leak the staged DATs from import_dat_no_persist into the next
     sync and corrupt the store."""
     dat_file = tmp_path / "sample.dat"
@@ -784,7 +784,7 @@ async def test_do_sync_list_match_paths_failure_is_best_effort(sync_service, tmp
          patch("routes.dat.schedule_match_job", mock_schedule):
         result = await sync_service.sync(tag="0.285")
 
-    # Sync succeeded — persist() still ran, DATs are committed.
+    # Sync succeeded, persist() still ran, DATs are committed.
     assert result["status"] == "complete"
     mock_dat_store.persist.assert_awaited_once()
     # Rematch was NOT scheduled because the snapshot failed.
@@ -795,7 +795,7 @@ async def test_do_sync_list_match_paths_failure_is_best_effort(sync_service, tmp
 
 @pytest.mark.asyncio
 async def test_do_sync_rematch_schedule_exception_does_not_poison_sync(sync_service, tmp_path, caplog):
-    """If schedule_match_job raises, the sync still reports complete — DAT
+    """If schedule_match_job raises, the sync still reports complete, DAT
     data was already committed, a rematch-scheduling failure must not mark
     an otherwise-successful sync as errored."""
     dat_file = tmp_path / "sample.dat"

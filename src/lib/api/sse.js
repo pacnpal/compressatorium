@@ -1,5 +1,5 @@
 /* exported sseConnectNamed, verifyEventSource */
-// SSE helpers — both auto-reconnecting (for the jobs stream) and
+// SSE helpers, both auto-reconnecting (for the jobs stream) and
 // single-shot (for per-file verify streams).
 //
 // JSON parsing is inlined at each call site (rather than via a helper)
@@ -11,13 +11,13 @@ const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
 
 /**
- * Auto-reconnecting EventSource wrapper. Used for /api/jobs/events — the
+ * Auto-reconnecting EventSource wrapper. Used for /api/jobs/events, the
  * connection MUST survive backend restarts. Native EventSource auto-retries
  * silently with no backoff, which floods. We force-close on error and
  * schedule a reconnect with exponential backoff (500ms → 30s, reset on open).
  *
  * Status callbacks let callers wire connection state into UI feedback
- * (e.g. "Lost connection — retrying…" toast):
+ * (e.g. "Lost connection, retrying…" toast):
  *   - onOpen():         called every time the EventSource opens
  *   - onReconnecting(): called when a reconnect is being scheduled
  *
@@ -57,7 +57,7 @@ export function sseConnectNamed(url, eventNames, onEvent, statusHandlers = {}) {
       try {
         statusHandlers.onOpen?.();
       } catch (_e) {
-        // ignore — status handlers must not break the stream
+        // ignore, status handlers must not break the stream
       }
     };
 
@@ -66,7 +66,7 @@ export function sseConnectNamed(url, eventNames, onEvent, statusHandlers = {}) {
       // The backend emits failed jobs as a server-sent `event: error`
       // (e.g. job_manager._notify_subscribers on conversion failure),
       // which fires this onerror handler too because `error` is also
-      // the spec'd transport-error event name — they share one
+      // the spec'd transport-error event name, they share one
       // dispatch slot. Without disambiguation, every failed job would
       // tear down the connection and trigger the reconnect/backoff
       // cycle, briefly missing live updates for other active jobs
@@ -75,7 +75,7 @@ export function sseConnectNamed(url, eventNames, onEvent, statusHandlers = {}) {
       // Distinguish via `readyState`: server-sent named events fire
       // while readyState === OPEN (1); real transport errors put the
       // connection into CONNECTING (0) or CLOSED (2). Bail out for
-      // OPEN — the matching addEventListener('error', …) on the line
+      // OPEN, the matching addEventListener('error', …) on the line
       // above has already routed the payload to the app handler.
       if (es && es.readyState === EventSource.OPEN) return;
       try {
@@ -116,9 +116,9 @@ export function sseConnectNamed(url, eventNames, onEvent, statusHandlers = {}) {
 }
 
 /**
- * Single-shot verify SSE — opens an EventSource, reports progress via callback,
+ * Single-shot verify SSE, opens an EventSource, reports progress via callback,
  * resolves on verify_complete, rejects on verify_error or connection error.
- * Auto-closes on resolve/reject (does NOT auto-reconnect — this is a one-shot
+ * Auto-closes on resolve/reject (does NOT auto-reconnect, this is a one-shot
  * operation; the user retries by re-clicking).
  *
  * @param {string} url - already-built URL with ?path=...

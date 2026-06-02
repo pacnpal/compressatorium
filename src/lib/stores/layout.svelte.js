@@ -54,7 +54,7 @@ function readLocal() {
 
 class LayoutStore {
   panels = $state({ ...DEFAULT_PANELS });
-  // { [toolId]: { name, size, ext, status } } — only the keys a user has
+  // { [toolId]: { name, size, ext, status } }, only the keys a user has
   // actually dragged are stored; columnsFor() merges over defaults.
   columns = $state({});
 
@@ -155,7 +155,7 @@ class LayoutStore {
   async #syncFromServer() {
     const local = readLocal();
     if (local?.dirty) {
-      // Local has an unsynced edit — it wins. Push it up rather than
+      // Local has an unsynced edit, it wins. Push it up rather than
       // overwriting it with whatever the server still holds.
       const before = this.#mutationVersion;
       try {
@@ -171,7 +171,7 @@ class LayoutStore {
     const before = this.#mutationVersion;
     try {
       const remote = await api.getPreferences();
-      // The user dragged something while the fetch was in flight — keep
+      // The user dragged something while the fetch was in flight, keep
       // their in-progress layout instead of snapping back to the server's.
       if (this.#mutationVersion !== before) return;
       if (remote && (remote.panels || remote.columns)) {
@@ -179,7 +179,7 @@ class LayoutStore {
         this.#writeLocal(false);
       }
     } catch {
-      // Offline or endpoint missing — keep local values.
+      // Offline or endpoint missing, keep local values.
     }
   }
 

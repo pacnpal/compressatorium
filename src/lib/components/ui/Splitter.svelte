@@ -64,7 +64,7 @@
     try {
       e.currentTarget.releasePointerCapture?.(e.pointerId);
     } catch {
-      // ignore — capture already gone
+      // ignore, capture already gone
     }
     onend?.();
   }
@@ -77,7 +77,7 @@
       e.preventDefault();
       onstep?.(step);
     } else if (e.key === 'Home' || e.key === 'Enter') {
-      // Enter/Home both reset to default — a discoverable keyboard path.
+      // Enter/Home both reset to default, a discoverable keyboard path.
       e.preventDefault();
       onreset?.();
     }

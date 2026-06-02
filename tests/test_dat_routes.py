@@ -264,7 +264,7 @@ async def test_match_batch_uses_cache(tmp_path, isolated_dat_store, monkeypatch)
     request = dat_routes.MatchBatchRequest(paths=[path])
     result = await dat_routes.match_batch(request)
 
-    # SHA1 computation should NOT have been called — result came from cache
+    # SHA1 computation should NOT have been called, result came from cache
     compute_mock.assert_not_called()
     assert result["results"][path]["matched"] is True
     assert result["results"][path]["game_name"] == "Cached Game"
@@ -286,7 +286,7 @@ async def test_match_batch_cache_cleared_after_new_import(
 
     assert isolated_dat_store.get_match(path) is not None
 
-    # Import a second DAT — this must clear the match cache
+    # Import a second DAT, this must clear the match cache
     upload2 = _make_upload_file(SECOND_DAT_XML)
     await dat_routes.import_dat(file=upload2)
 
@@ -757,7 +757,7 @@ async def test_match_batch_job_creates_external_job_with_progress(
         files.append(str(iso))
 
     monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
-    # Only one of three hashes returns a match — verifies counting.
+    # Only one of three hashes returns a match, verifies counting.
     monkeypatch.setattr(
         dat_routes, "compute_file_sha1",
         AsyncMock(side_effect=[target_sha1, "deadbeef" * 5, "cafebabe" * 5]),
@@ -848,7 +848,7 @@ async def test_match_batch_job_concurrent_rejected(
     )
     assert response1["status"] == "started"
     job_id = response1["job_id"]
-    # Do NOT run the background task yet — the job stays "processing",
+    # Do NOT run the background task yet, the job stays "processing",
     # so the second request should be rejected.
     assert job_manager.jobs[job_id].status.value == "processing"
 
@@ -897,7 +897,7 @@ async def test_match_cache_lookup_is_read_only(
 
     assert cached_path in response["results"]
     assert response["results"][cached_path]["game_name"] == "Hit"
-    # Uncached path is simply absent from the results map — the frontend
+    # Uncached path is simply absent from the results map, the frontend
     # leaves the pending sentinel in place until the job writes it.
     assert uncached_path not in response["results"]
 
@@ -958,7 +958,7 @@ async def test_match_file_oserror_returns_redacted_error(tmp_path, isolated_dat_
 async def test_run_match_job_reports_errors_in_final_message(
     tmp_path, isolated_dat_store, monkeypatch,
 ):
-    """Mix of (matched, unmatched, error) outcomes — final message surfaces the error count."""
+    """Mix of (matched, unmatched, error) outcomes, final message surfaces the error count."""
     from services.job_manager import job_manager
 
     monkeypatch.setattr(dat_routes, "_active_match_job_id", "manual-test-job")
@@ -1026,7 +1026,7 @@ async def test_run_match_job_outer_exception_includes_counter_context(
 ):
     """When the outer except fires mid-loop, the final error message must
     include the processed/errors/skips counts so operators know how far
-    the job got before the fault — not just the raw exception string.
+    the job got before the fault, not just the raw exception string.
     """
     from services.job_manager import job_manager
 
@@ -1081,7 +1081,7 @@ async def test_run_match_job_outer_exception_includes_counter_context(
 async def test_run_match_job_skip_count_does_not_trip_failure(
     tmp_path, isolated_dat_store, monkeypatch,
 ):
-    """Size-cap / non-regular skips are NOT errors — they don't flip job_success."""
+    """Size-cap / non-regular skips are NOT errors, they don't flip job_success."""
     from services.job_manager import job_manager
 
     scan_job = job_manager.create_external_job(
@@ -1093,7 +1093,7 @@ async def test_run_match_job_skip_count_does_not_trip_failure(
 
     hash_outcomes = [
         ({"path": "/a", "matched": True}, True),
-        # Size-cap skip: cacheable=False but no "error" key — pure policy outcome.
+        # Size-cap skip: cacheable=False but no "error" key, pure policy outcome.
         ({"path": "/b", "matched": False, "reason": "file too large"}, False),
         ({"path": "/c", "matched": False}, False),  # non-regular file shape
     ]
@@ -1192,7 +1192,7 @@ async def test_run_match_job_cancellation_keeps_partial_cache(
     tmp_path, isolated_dat_store, monkeypatch,
 ):
     """Per-file cache writes already made before cancel must remain in the
-    dat_store — the cache is intentionally durable across cancellation."""
+    dat_store, the cache is intentionally durable across cancellation."""
     from services.job_manager import job_manager
 
     scan_job = job_manager.create_external_job(
@@ -1249,7 +1249,7 @@ async def test_hash_one_for_job_logs_match_error_with_traceback(
 
 
 # ---------------------------------------------------------------------------
-# schedule_match_job — reusable entry-point for HTTP + post-sync rematch hook
+# schedule_match_job, reusable entry-point for HTTP + post-sync rematch hook
 # ---------------------------------------------------------------------------
 
 
@@ -1361,7 +1361,7 @@ async def test_schedule_match_job_rolls_back_active_id_on_scheduling_failure(
 
     def _explode(_coro):
         # Close the coroutine so Python doesn't warn about it being
-        # unawaited — we are deliberately short-circuiting before run.
+        # unawaited, we are deliberately short-circuiting before run.
         _coro.close()
         raise RuntimeError("no running loop")
 
@@ -1386,8 +1386,8 @@ async def test_schedule_match_job_rolls_back_active_id_on_scheduling_failure(
 async def test_schedule_match_job_uses_create_task_without_background_tasks(
     tmp_path, isolated_dat_store, monkeypatch,
 ):
-    """With no BackgroundTasks the helper schedules the job via asyncio.create_task
-    — verified by capturing the task and awaiting it to completion.
+    """With no BackgroundTasks the helper schedules the job via asyncio.create_task,
+    verified by capturing the task and awaiting it to completion.
     """
     from services.job_manager import job_manager
 
@@ -1423,7 +1423,7 @@ async def test_schedule_match_job_uses_create_task_without_background_tasks(
     assert isinstance(job_id, str) and job_id
     assert job_id in job_manager.jobs
     assert len(created) == 1  # helper took the asyncio.create_task branch
-    # While the task is live, the strong-ref set holds it exactly once —
+    # While the task is live, the strong-ref set holds it exactly once,
     # this is what prevents GC mid-run and is the whole point of the set.
     assert created[0] in dat_routes._background_match_tasks
     assert len(dat_routes._background_match_tasks) == 1

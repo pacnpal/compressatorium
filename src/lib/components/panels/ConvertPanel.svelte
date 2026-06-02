@@ -17,7 +17,7 @@
   // The full selection (drives the selection-count display) and the
   // subset that the active conversion mode would actually accept. The
   // two sets diverge when the user has e.g. verified `.chd` files
-  // selected — those rows are valid Verify / Delete targets, but
+  // selected, those rows are valid Verify / Delete targets, but
   // CHDMAN createcd would reject them as conversion inputs. We only
   // submit `convertibleSelection`.
   const selectedCount = $derived(fileBrowser.selectedFiles.size);
@@ -94,7 +94,7 @@
       }
       // Delete-on-verify destruction preview. We fetch the
       // backend's delete plan (cue+bin sets, gdi+raw tracks, etc.)
-      // and require explicit confirmation before queueing — users
+      // and require explicit confirmation before queueing, users
       // shouldn't trip the destructive flow without seeing what
       // disappears after each output verifies.
       //

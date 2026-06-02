@@ -3,7 +3,7 @@
 Exercise the exact sequence ``app/main.py:startup_event`` uses:
 ``init_engine(create_schema=False)`` → ``apply_migrations()`` →
 ``init_and_migrate(...)``.  These tests intentionally drive the public
-``db`` API — not the FastAPI lifespan — so they're fast and
+``db`` API, not the FastAPI lifespan, so they're fast and
 deterministic.
 """
 
@@ -176,10 +176,10 @@ def test_pre_alembic_plus_json_coexistence(tmp_path: Path, db_path: str, reset_d
     _run_startup(
         db_path,
         tmp_path,
-        dat_store=SAMPLE_DAT_STORE,        # skipped — dats non-empty
-        verification=SAMPLE_VERIFICATION,  # migrated — empty
-        chd_metadata=SAMPLE_CHD_METADATA,  # migrated — empty
-        dat_sync=SAMPLE_DAT_SYNC,          # migrated — singleton empty
+        dat_store=SAMPLE_DAT_STORE,        # skipped, dats non-empty
+        verification=SAMPLE_VERIFICATION,  # migrated, empty
+        chd_metadata=SAMPLE_CHD_METADATA,  # migrated, empty
+        dat_sync=SAMPLE_DAT_SYNC,          # migrated, singleton empty
     )
 
     # Alembic stamped the baseline and upgraded to head.
@@ -225,7 +225,7 @@ def test_startup_is_idempotent_across_restarts(
 
     # Simulate a second process start.
     reset_db_engine()
-    _run_startup(db_path, tmp_path)  # no JSON files left — nothing to migrate
+    _run_startup(db_path, tmp_path)  # no JSON files left, nothing to migrate
 
     with _db.get_session() as s:
         assert s.query(_db.DAT).count() == first_dats

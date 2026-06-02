@@ -1,4 +1,4 @@
-"""ChdmanTool — thin plugin wrapper delegating to ``chdman_service``.
+"""ChdmanTool, thin plugin wrapper delegating to ``chdman_service``.
 
 Phase 0 moves no logic: every call forwards to the existing singleton. The
 ``ModeSpec`` rows formalize the mode metadata that is currently scattered as
@@ -92,7 +92,7 @@ class ChdmanTool(BaseTool):
         self._service = chdman_service
 
     # chdman's extract/copy modes take .chd input, but a .chd is not a
-    # "convertible-from" source in the file listing — only the create sources
+    # "convertible-from" source in the file listing, only the create sources
     # are. Override the derived union so convertible_extensions() matches
     # CHDMAN_CONVERTIBLE_EXTENSIONS.
     @property

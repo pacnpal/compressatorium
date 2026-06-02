@@ -30,7 +30,7 @@ ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
 # tool registry can't be consulted. The authoritative list comes from
 # ``ArchiveService._convertible_extensions()`` (which unions every mode that
 # allows archive input). Historically this was hardcoded to CHDMAN's sources,
-# which silently hid 3DS members (.3ds/.cci/.cia) inside archives — issue #113.
+# which silently hid 3DS members (.3ds/.cci/.cia) inside archives, issue #113.
 CONVERTIBLE_EXTENSIONS = {
     ".gdi", ".iso", ".cue", ".bin",          # chdman create modes
     ".gcz", ".wia", ".rvz", ".wbfs",         # Dolphin (.iso shared above)
@@ -125,7 +125,7 @@ class ArchiveService:
         Sourced from the tool registry so archive listings surface the same
         inputs the conversion path can actually accept from an archive
         (chdman create + 3DS today). Falls back to the static set if the
-        registry can't be imported (defensive — it always loads in-app).
+        registry can't be imported (defensive, it always loads in-app).
         """
         try:
             from services.tools import registry
@@ -706,8 +706,8 @@ class ArchiveService:
         """Flattened *filename* (subdirectories collapsed) that preserves the
         member's original extension.
 
-        Tools whose output extension is derived from the input — z3ds maps
-        ``.3ds`` -> ``.z3ds``, ``.cci`` -> ``.zcci`` — need the original
+        Tools whose output extension is derived from the input, z3ds maps
+        ``.3ds`` -> ``.z3ds``, ``.cci`` -> ``.zcci``, need the original
         extension to pick the right output name. ``_output_stem_for_member``
         drops it (it exists only for chd existing-output detection, which is
         always ``<stem>.chd``), so archive conversions route the output path

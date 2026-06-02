@@ -12,7 +12,7 @@
   const target = $derived(ui.deleteTarget);
   let busy = $state(false);
   // Two-step confirmation when the source has unverified replacement
-  // outputs. Same shape as BulkDeleteModal — required to mirror the
+  // outputs. Same shape as BulkDeleteModal, required to mirror the
   // legacy single-delete verification gate. Reset on open.
   let acknowledged = $state(false);
   // Escalation step for deleting a NON-EMPTY directory: the first confirm
@@ -42,7 +42,7 @@
   const confirmLabel = $derived(confirmingRecursiveDir ? 'Delete everything' : 'Delete');
 
   // entry.outputs entries with `exists: true` and a path that isn't
-  // in verification.statuses — i.e. a generated product whose
+  // in verification.statuses, i.e. a generated product whose
   // correctness hasn't been confirmed. Deleting the source before the
   // output is verified is the risk we want to surface.
   const unverifiedOutputs = $derived.by(() => {
@@ -62,8 +62,8 @@
     if (!target?.path) return;
     busy = true;
     const deletedPath = target.path;
-    // Snapshot the display name before clearing ui.deleteTarget below
-    // — that assignment invalidates the $derived `target`, so reading
+    // Snapshot the display name before clearing ui.deleteTarget below,
+    // that assignment invalidates the $derived `target`, so reading
     // `target.name` afterwards would throw and get caught as a delete
     // failure even though the backend has already removed the file.
     const deletedName = target.name ?? deletedPath;
@@ -92,8 +92,8 @@
       }
     } catch (e) {
       // Non-empty directory on the first attempt: escalate to a second
-      // confirmation rather than surfacing it as an error. (Other 409s —
-      // locked / in-use by a job — fall through to the toast.)
+      // confirmation rather than surfacing it as an error. (Other 409s,
+      // locked / in-use by a job, fall through to the toast.)
       if (step === 1 && e?.status === 409 && /not empty/i.test(e?.message ?? '')) {
         step = 2;
         return;

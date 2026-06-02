@@ -88,5 +88,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Downgrade migrations are not supported in this project — forward-only.
+    # Downgrade migrations are not supported in this project, forward-only.
     raise NotImplementedError("downgrade not supported")

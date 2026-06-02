@@ -15,7 +15,7 @@ import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
 
 const VIEWS = Object.freeze(['dashboard', 'workspace', 'dat', 'help']);
-// Tool ids come from the registry — single source of truth, no
+// Tool ids come from the registry, single source of truth, no
 // hardcoded set to keep in sync when a 4th tool is added.
 const VALID_TOOLS = registry.ids();
 const DEFAULT_VIEW = 'workspace';
@@ -41,7 +41,7 @@ class UIStore {
   appVersion = $state(null);
   searchAutoReturnToFileList = $state(true);
 
-  // Modal targets — one at a time
+  // Modal targets, one at a time
   chdInfoTarget = $state(null);
   renameTarget = $state(null);
   deleteTarget = $state(null);
@@ -59,7 +59,7 @@ class UIStore {
   // Same idea for the delete-on-verify plan confirmation.
   deletePlanPromptOpen = $state(false);
 
-  // Focus signal — bumped on view change so App.svelte can move focus to
+  // Focus signal, bumped on view change so App.svelte can move focus to
   // the main landmark without screen readers losing context.
   focusBump = $state(0);
 
@@ -85,7 +85,7 @@ class UIStore {
     );
   }
 
-  // SSE connection-state tracking. Internal — only reportConnection() touches.
+  // SSE connection-state tracking. Internal, only reportConnection() touches.
   _connectionToastId = null;
   _disconnectTimer = null;
 
@@ -184,7 +184,7 @@ class UIStore {
       if (this._connectionToastId != null || this._disconnectTimer) return;
       this._disconnectTimer = setTimeout(() => {
         this._disconnectTimer = null;
-        this._connectionToastId = toast.warning('Lost connection — retrying…', {
+        this._connectionToastId = toast.warning('Lost connection, retrying…', {
           duration: Number.POSITIVE_INFINITY,
         });
       }, 1500);

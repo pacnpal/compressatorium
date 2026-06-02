@@ -93,7 +93,7 @@ class ToolRegistry:
         """Union of every registered tool's verify_extensions.
 
         Used by file rename/delete handlers to decide whether the path
-        carries a verification record worth clearing — historically the
+        carries a verification record worth clearing, historically the
         check hard-coded `.chd`, which left .rvz / .z3ds / etc. records
         orphaned in the persistent store when the file was removed.
         """

@@ -42,16 +42,16 @@ class DATStore:
     ) -> None:
         """Construct a store.
 
-        * ``session_factory`` — if provided, use this ``sessionmaker``
+        * ``session_factory``, if provided, use this ``sessionmaker``
           directly.  Preferred in tests that build an isolated engine.
-        * ``store_path`` — legacy constructor argument.  If given,
+        * ``store_path``, legacy constructor argument.  If given,
           treat it as a SQLite database file and build a private
           engine for this store (isolated from the module-level DB).
           This preserves the test fixture pattern
-          ``DATStore(store_path=tmp_path / "dat_store.json")`` — the
+          ``DATStore(store_path=tmp_path / "dat_store.json")``, the
           path is still unique-per-test, it just happens to be a
           SQLite file now.
-        * Neither — use the process-wide ``db.SessionLocal``.
+        * Neither, use the process-wide ``db.SessionLocal``.
         """
         if session_factory is not None:
             self._session_factory = session_factory
@@ -65,7 +65,7 @@ class DATStore:
         else:
             self._own_engine = None
             self._session_factory = None  # resolved lazily from db.SessionLocal
-        # Staging area for import_dat_no_persist() — committed atomically by persist().
+        # Staging area for import_dat_no_persist(), committed atomically by persist().
         self._pending_imports: list[tuple[dict, list[dict[str, Any]]]] = []
         # Lock serialises concurrent append (import_dat_no_persist) / read+clear
         # (_persist_sync) / clear (discard_pending) calls from different threads.
@@ -80,7 +80,7 @@ class DATStore:
             return self._session_factory()
         if _db.SessionLocal is None:
             raise RuntimeError(
-                "DATStore: db.SessionLocal not initialized — call "
+                "DATStore: db.SessionLocal not initialized, call "
                 "db.init_engine() before using the store.",
             )
         return _db.SessionLocal()
@@ -295,7 +295,7 @@ class DATStore:
             row = session.get(_db.DAT, dat_id)
             if row is None:
                 return False
-            # Matches don't cascade (FK is SET NULL) — drop them
+            # Matches don't cascade (FK is SET NULL), drop them
             # explicitly so the behaviour matches the legacy store.
             session.execute(delete(_db.DATMatch).where(_db.DATMatch.dat_id == dat_id))
             # Hashes cascade via FK ON DELETE CASCADE.
@@ -534,7 +534,7 @@ class DATStore:
 
         Flags pre-parser-upgrade imports that wrote rows with zero entries
         (see PR #49 / self-heal in dat_sync._do_sync). Cheap enough for
-        startup — single-row existence check.
+        startup, single-row existence check.
         """
         with self._session() as session:
             return session.execute(
@@ -572,7 +572,7 @@ class DATStore:
 
 
 # ---------------------------------------------------------------------------
-# Module-level singleton.  Lazy — only resolves ``db.SessionLocal`` on first
+# Module-level singleton.  Lazy, only resolves ``db.SessionLocal`` on first
 # method call, so import order is irrelevant.
 # ---------------------------------------------------------------------------
 
