@@ -32,7 +32,7 @@ The full environment variable reference lives in [README.md](../README.md#enviro
 | `PUID` / `PGID` | `999` | Remap the `converter` user/group to match host ownership |
 | `CHD_DATA_DIR` | `/config` | Persistent data; the SQLite DB lives here |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
-| `CHD_CHDMAN_NICE` / `CHD_CHDMAN_IOPRIO_CLASS` / `CHD_CHDMAN_IOPRIO_LEVEL` | `10` / `2` / `6` | CPU and I/O priority for chdman |
+| `COMPRESSATORIUM_TOOL_NICE` / `COMPRESSATORIUM_TOOL_IOPRIO_CLASS` / `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `10` / `2` / `6` | CPU and I/O priority for **all** tools (chdman, Dolphin, 3DS, Switch). Legacy aliases `CHD_CHDMAN_NICE` / `CHD_CHDMAN_IOPRIO_CLASS` / `CHD_CHDMAN_IOPRIO_LEVEL` still work. Also `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` (chdman/Dolphin info subprocess) and `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` (verify across all tools). Per-tool overrides: `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` for `<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`; `_INFO_TIMEOUT` only for `CHDMAN` and `DOLPHIN_TOOL`. |
 | `SWITCH_KEYS` | (unset) | Directory holding your own Switch `prod.keys`. Source of truth for the Switch (nsz) tool; mount it read-only. When unset, the app best-effort checks `~/.switch` and your mounted volumes. No keys ship with the image. |
 | `STATIC_DIR` | `/static` | Static web assets |
 
@@ -53,9 +53,9 @@ Volume precedence:
 **Where to change it.** Set environment variables in your runtime (Compose, Unraid, or `docker run`) and apply CPU/memory limits at the container level.
 
 **Starting points**
-- **Low to medium hosts (≤16 GB RAM, HDD or parity-backed arrays):** keep `MAX_CONCURRENT_JOBS=1`, `CHD_CHDMAN_NICE=10`, `CHD_CHDMAN_IOPRIO_CLASS=2`, `CHD_CHDMAN_IOPRIO_LEVEL=6`. Set a memory limit of 8 to 12 GB.
+- **Low to medium hosts (≤16 GB RAM, HDD or parity-backed arrays):** keep `MAX_CONCURRENT_JOBS=1`, `COMPRESSATORIUM_TOOL_NICE=10`, `COMPRESSATORIUM_TOOL_IOPRIO_CLASS=2`, `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL=6`. Set a memory limit of 8 to 12 GB.
 - **Faster hosts (32+ GB RAM, SSD cache):** try `MAX_CONCURRENT_JOBS=2` and 16 to 24 GB. Raise I/O priority only if the host stays responsive.
-- **If the host gets sluggish:** lower `MAX_CONCURRENT_JOBS`, raise `CHD_CHDMAN_NICE`, or set `CHD_CHDMAN_IOPRIO_CLASS=3` (idle) with `CHD_CHDMAN_IOPRIO_LEVEL=7`.
+- **If the host gets sluggish:** lower `MAX_CONCURRENT_JOBS`, raise `COMPRESSATORIUM_TOOL_NICE`, or set `COMPRESSATORIUM_TOOL_IOPRIO_CLASS=3` (idle) with `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL=7`.
 
 **Host tips**
 - Put `CHD_TEMP_DIR` and CHD output on SSD or cache to cut array contention.

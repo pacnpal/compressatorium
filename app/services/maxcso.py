@@ -21,7 +21,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import shutil
 import threading
 import time
 from collections.abc import AsyncGenerator
@@ -30,7 +29,13 @@ from pathlib import Path
 from config import settings
 from logging_setup import get_logger
 from services.chdman import ConversionCancelled
+from services.subprocess_runner import ioprio_prefix, nice_prefix, verify_timeout
 from services.timeout_policy import compute_progress_stall_timeout
+
+# SubprocessRunner "owner" for the shared priority/timeout policy. An optional
+# COMPRESSATORIUM_MAXCSO_* override takes precedence over the tool-neutral
+# COMPRESSATORIUM_TOOL_* default (see services/subprocess_runner.py).
+_OWNER = "maxcso"
 
 # Compress takes a raw .iso; decompress takes any maxcso-produced container.
 MAXCSO_COMPRESS_EXTENSIONS = {".iso"}
@@ -101,23 +106,10 @@ class MaxcsoService:
 
         # Apply nice/ionice via command wrappers, NOT preexec_fn: forking a
         # Python callable in a multithreaded app (this one uses threadpools) can
-        # deadlock the child before exec. `nice`/`ionice` are exec-only.
-        prefix: list[str] = []
-        if settings.chdman_nice is not None:
-            nice = shutil.which("nice")
-            if nice:
-                prefix += [nice, "-n", str(settings.chdman_nice)]
-        if (
-            settings.chdman_ioprio_class is not None
-            and settings.chdman_ioprio_level is not None
-        ):
-            ionice = shutil.which("ionice")
-            if ionice:
-                prefix += [
-                    ionice,
-                    "-c", str(settings.chdman_ioprio_class),
-                    "-n", str(settings.chdman_ioprio_level),
-                ]
+        # deadlock the child before exec. `nice`/`ionice` are exec-only. The
+        # priority policy is the shared tool-neutral one (with optional
+        # COMPRESSATORIUM_MAXCSO_* overrides), resolved in subprocess_runner.
+        prefix = nice_prefix(_OWNER) + ioprio_prefix(_OWNER)
         return prefix + cmd
 
     def _track_pid(self, pid: int):
@@ -408,7 +400,27 @@ class MaxcsoService:
             self._track_pid(process.pid)
             try:
                 yield {"type": "progress", "progress": 0, "message": "Verifying integrity..."}
-                stdout, _ = await process.communicate()
+                # Bound a hung/very-slow --crc by the shared verify timeout
+                # (COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT, or the MAXCSO override).
+                overall_timeout = verify_timeout(_OWNER)
+                try:
+                    if overall_timeout > 0:
+                        stdout, _ = await asyncio.wait_for(
+                            process.communicate(), timeout=overall_timeout,
+                        )
+                    else:
+                        stdout, _ = await process.communicate()
+                except asyncio.TimeoutError:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                    with contextlib.suppress(Exception):
+                        await process.wait()
+                    yield {
+                        "type": "error",
+                        "valid": False,
+                        "message": f"Verification timed out after {overall_timeout}s",
+                    }
+                    return
                 output = (stdout or b"").decode("utf-8", errors="replace").strip()
                 if process.returncode == 0:
                     yield {

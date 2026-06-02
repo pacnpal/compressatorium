@@ -14,7 +14,19 @@
 
 - maxcso is built from source in a dedicated Dockerfile builder stage (deps: `liblz4`, `libuv`, `libdeflate`, `zlib`) and added to the tool registry as `cso`; no job-pipeline edits were needed. New `MAXCSO_PATH` env var (defaults to `/usr/local/bin/maxcso`).
 
-## 4.0.0-beta-11 (2026-06-02)
+## 4.0.1 (2026-06-02)
+
+### Tool-neutral process priority and timeout settings (#132)
+
+#### New
+
+- **The process-priority and timeout knobs are no longer chdman-specific.** The nice level, I/O priority, and info/verify timeouts govern *every* conversion tool (chdman, Dolphin, 3DS, Switch), not just chdman, so they're now exposed under tool-neutral names: `COMPRESSATORIUM_TOOL_NICE`, `COMPRESSATORIUM_TOOL_IOPRIO_CLASS`, `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL`, `COMPRESSATORIUM_TOOL_INFO_TIMEOUT`, and `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT`. The old `CHD_CHDMAN_*` / `CHD_INFO_TIMEOUT` / `CHD_VERIFY_TIMEOUT` names keep working as aliases, so existing setups are unaffected.
+- **Per-tool overrides.** You can give a single tool a different priority or timeout with `COMPRESSATORIUM_<TOOL>_*` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`), falling back to the shared default when unset. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, or `Z3DS`; the info-timeout override applies only to the tools whose `info` runs a subprocess (chdman, Dolphin).
+- **Switch/3DS verification now honors the verify timeout.** Long or hung `nsz`/`z3ds` verify runs are bounded by `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` (or the per-tool override), matching chdman and Dolphin; previously these ran unbounded.
+
+#### Internal
+
+- The priority/timeout policy is resolved once in the shared `SubprocessRunner` (`nice_value` / `ioprio_prefix` / `nice_prefix` / `apply_nice` / `info_timeout` / `verify_timeout`) instead of each service re-reading a chdman-named setting. The Docker image no longer bakes the priority defaults as `ENV` (which would have shadowed the lower-precedence legacy aliases); the 10/2/6 defaults come from app config.
 
 ### Delete-on-verify no longer leaks verification records (#130)
 
