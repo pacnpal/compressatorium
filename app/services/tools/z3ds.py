@@ -69,6 +69,10 @@ class Z3dsTool(BaseTool):
         self._service = z3ds_compress_service
 
     def detect_output(self, input_path: str) -> OutputStatus | None:
+        # Compress direction only: badge "the .zcci/.z3ds/... already exists"
+        # next to a raw ROM source. Decompress-direction badging is out of scope
+        # (mirrors maxcso); the job pipeline's check_output_conflicts still
+        # guards against overwriting an existing restored ROM.
         source = Path(input_path)
         expected_ext = Z3DS_OUTPUT_FORMATS.get(source.suffix.lower())
         if not expected_ext:

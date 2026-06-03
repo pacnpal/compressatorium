@@ -1103,7 +1103,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 **Output formats:**
 - `.chd` - Compressed Hunks of Data (MAME/CHDMAN)
 - `.rvz`, `.wia`, `.gcz`, `.iso` - Dolphin output formats
-- `.zcci`, `.zcia`, `.z3ds` - Compressed Nintendo 3DS ROMs
+- `.zcci`, `.zcia`, `.z3ds`, `.zcxi`, `.z3dsx` - Compressed Nintendo 3DS ROMs (z3ds_decompress restores the original ROM)
 - `.cso`, `.zso`, `.dax` - Compressed PSP/PS2 ISO images (maxcso; `.cso` covers CSO v1 and v2)
 - `.7z`, `.zip` - Handheld ROM archives (7z; `romz_extract` restores the original `.gb`/`.gbc`/`.gba`/`.nds`)
 

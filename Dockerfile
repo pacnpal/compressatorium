@@ -24,7 +24,8 @@ RUN apt-get update -o Acquire::Retries=3 && \
     pkg-config \
     libzstd-dev \
     ca-certificates && \
-    git clone https://github.com/pacnpal/z3ds_compress.git /tmp/z3ds
+    git clone https://github.com/pacnpal/z3ds_compress.git /tmp/z3ds && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/z3ds
 

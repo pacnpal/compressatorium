@@ -165,6 +165,15 @@ class Z3DSCompressService:
         compression: str | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
+        """Run z3ds_compressor on ``input_path``, yielding progress dicts.
+
+        ``mode`` selects the direction (``z3ds_compress`` packs a raw ROM into a
+        Z3DS container; ``z3ds_decompress`` restores the original ROM). The
+        explicit ``-c``/``-d`` flag is passed so the job's mode, not the file's
+        magic header, decides direction. Honors ``cancel_event`` (terminate +
+        clean partial output, raising ``ConversionCancelled``) and a stall
+        timeout. Yields ``{"progress": int, "message": str}`` and a final 100%.
+        """
         decompress = mode == "z3ds_decompress"
         verb = "decompression" if decompress else "compression"
         verb_ing = "Decompressing" if decompress else "Compressing"
@@ -320,7 +329,7 @@ class Z3DSCompressService:
                             except ProcessLookupError:
                                 pass
                             raise TimeoutError(
-                                f"Compression stalled (no progress for {stall_timeout}s)",
+                                f"{verb.capitalize()} stalled (no progress for {stall_timeout}s)",
                             )
 
                 await process.wait()
@@ -349,7 +358,7 @@ class Z3DSCompressService:
                         os.remove(output_path)
                     except OSError:
                         pass
-                raise ConversionCancelled("Compression cancelled by user")
+                raise ConversionCancelled(f"{verb.capitalize()} cancelled by user")
 
             if process.returncode != 0:
                 error_msg = "\n".join(output_lines[-10:]) if output_lines else "Unknown error"
