@@ -40,6 +40,7 @@ from app.services.romz import (
 )
 from app.services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
+    Z3DS_DECOMPRESS_EXTENSIONS,
     z3ds_compress_service,
 )
 
@@ -53,7 +54,7 @@ def _legacy_tool_for_mode(mode: str) -> str:
     """Replicates the dispatch ladder at job_manager.py:1444."""
     if mode.startswith("dolphin_"):
         return "dolphin"
-    if mode == ConversionMode.Z3DS_COMPRESS.value:
+    if mode.startswith("z3ds_"):
         return "z3ds"
     if mode.startswith("nsz_"):
         return "nsz"
@@ -66,7 +67,7 @@ def _legacy_tool_for_mode(mode: str) -> str:
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 26
+    assert len(resolved) == 27
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -96,6 +97,7 @@ def test_kind_classification():
     assert spec("extractcd").kind is ModeKind.EXTRACT
     assert spec("copy").kind is ModeKind.COPY
     assert spec("z3ds_compress").kind is ModeKind.COMPRESS
+    assert spec("z3ds_decompress").kind is ModeKind.EXTRACT
     # dolphin compress vs extract
     assert spec("dolphin_rvz").kind is ModeKind.COMPRESS
     assert spec("dolphin_iso").kind is ModeKind.EXTRACT
@@ -160,6 +162,7 @@ def test_convertible_extensions_match_service_constants():
         set(CHDMAN_CONVERTIBLE_EXTENSIONS)
         | set(DOLPHIN_CONVERTIBLE_EXTENSIONS)
         | set(Z3DS_CONVERTIBLE_EXTENSIONS)
+        | set(Z3DS_DECOMPRESS_EXTENSIONS)
         | set(NSZ_COMPRESS_EXTENSIONS)
         | set(NSZ_DECOMPRESS_EXTENSIONS)
         | set(MAXCSO_COMPRESS_EXTENSIONS)

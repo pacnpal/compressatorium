@@ -36,6 +36,7 @@ ROUTE_MATRIX = [
     ("dolphin_wia", dolphin_tool_service, "/data/game.iso"),
     ("dolphin_gcz", dolphin_tool_service, "/data/game.iso"),
     ("z3ds_compress", z3ds_compress_service, "/data/rom.3ds"),
+    ("z3ds_decompress", z3ds_compress_service, "/data/rom.zcci"),
 ]
 
 
@@ -110,6 +111,17 @@ def test_archive_z3ds_member_maps_output_extension():
     ) == "/out/games_rom.zcci"
 
 
+def test_archive_z3ds_decompress_member_reverses_output_extension():
+    # Decompress reverses the compress map (.z3ds -> .3ds, .zcci -> .cci),
+    # both for on-disk and archive-member (treat_as_stem) inputs.
+    assert registry.for_mode("z3ds_decompress").output_path(
+        "z3ds_decompress", "games_rom.z3ds", None, treat_as_stem=True,
+    ) == "games_rom.3ds"
+    assert registry.for_mode("z3ds_decompress").output_path(
+        "z3ds_decompress", "games_rom.zcxi", "/out", treat_as_stem=True,
+    ) == "/out/games_rom.cxi"
+
+
 # Guards on the _queue_job_locked output_path fallback for direct service
 # callers (the HTTP routes always pass an explicit output_path). These
 # preserve rejections the legacy per-tool fallback enforced.
@@ -127,6 +139,20 @@ async def test_z3ds_fallback_accepts_supported_extension():
     manager = JobManager()
     job = await manager.create_job("/data/rom.cci", ConversionMode.Z3DS_COMPRESS)
     assert job.output_path == "/data/rom.zcci"
+
+
+@pytest.mark.asyncio
+async def test_z3ds_decompress_fallback_accepts_supported_extension():
+    manager = JobManager()
+    job = await manager.create_job("/data/rom.zcci", ConversionMode.Z3DS_DECOMPRESS)
+    assert job.output_path == "/data/rom.cci"
+
+
+@pytest.mark.asyncio
+async def test_z3ds_decompress_fallback_rejects_unsupported_extension():
+    manager = JobManager()
+    with pytest.raises(ValueError, match="Unsupported file extension"):
+        await manager.create_job("/data/rom.cci", ConversionMode.Z3DS_DECOMPRESS)
 
 
 @pytest.mark.asyncio

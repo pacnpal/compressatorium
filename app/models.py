@@ -21,6 +21,7 @@ class ConversionMode(str, Enum):
     DOLPHIN_GCZ = "dolphin_gcz"
     DOLPHIN_ISO = "dolphin_iso"
     Z3DS_COMPRESS = "z3ds_compress"
+    Z3DS_DECOMPRESS = "z3ds_decompress"
     NSZ_COMPRESS = "nsz_compress"
     NSZ_DECOMPRESS = "nsz_decompress"
     CSO_COMPRESS = "cso_compress"

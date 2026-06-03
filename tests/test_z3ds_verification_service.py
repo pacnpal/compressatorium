@@ -178,3 +178,45 @@ async def test_verify_times_out_when_process_hangs(tmp_path: Path, monkeypatch):
     assert "timed out" in result["message"].lower()
     assert process.killed is True
     assert process.pid not in set(service.active_pids())
+
+
+def test_build_command_passes_direction_flag():
+    """compress -> -c, decompress -> -d, both before the positional paths."""
+    service = z3ds_module.z3ds_compress_service
+    compress = service._build_command("in.cci", "out.zcci", "z3ds_compress")
+    decompress = service._build_command("in.zcci", "out.cci", "z3ds_decompress")
+    # ioprio_prefix may prepend a wrapper; assert on the tail (the real argv).
+    assert compress[-3:] == ["-c", "in.cci", "out.zcci"]
+    assert decompress[-3:] == ["-d", "in.zcci", "out.cci"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "inp", "expected"),
+    [
+        ("z3ds_compress", "rom.cci", "rom.zcci"),
+        ("z3ds_compress", "rom.cia", "rom.zcia"),
+        ("z3ds_compress", "rom.3ds", "rom.z3ds"),
+        ("z3ds_compress", "rom.cxi", "rom.zcxi"),
+        ("z3ds_compress", "rom.3dsx", "rom.z3dsx"),
+        ("z3ds_decompress", "rom.zcci", "rom.cci"),
+        ("z3ds_decompress", "rom.zcia", "rom.cia"),
+        ("z3ds_decompress", "rom.z3ds", "rom.3ds"),
+        ("z3ds_decompress", "rom.zcxi", "rom.cxi"),
+        ("z3ds_decompress", "rom.z3dsx", "rom.3dsx"),
+    ],
+)
+def test_output_path_extension_maps(mode, inp, expected):
+    service = z3ds_module.z3ds_compress_service
+    assert service.get_output_path_for_mode(mode, inp).endswith(expected)
+
+
+@pytest.mark.parametrize(
+    ("name", "compressed"),
+    [("a.zcxi", True), ("b.z3dsx", True), ("c.cxi", False), ("d.3dsx", False)],
+)
+def test_info_flags_new_compressed_extensions(tmp_path, name, compressed):
+    """The .zcxi/.z3dsx containers report as compressed; raw .cxi/.3dsx don't."""
+    service = z3ds_module.z3ds_compress_service
+    rom = tmp_path / name
+    rom.write_bytes(b"\0" * 4096)
+    assert service.info(str(rom))["compressed"] is compressed

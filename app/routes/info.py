@@ -51,7 +51,11 @@ from services.romz import (
     ROMZ_COMPRESS_EXTENSIONS,
     romz_service,
 )
-from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
+from services.z3ds_compress import (
+    Z3DS_CONVERTIBLE_EXTENSIONS,
+    Z3DS_DECOMPRESS_EXTENSIONS,
+    z3ds_compress_service,
+)
 from services.verification_store import verification_store
 from sse_starlette.sse import EventSourceResponse
 from utils.path_utils import is_within_configured_volumes
@@ -517,7 +521,8 @@ async def get_app_version() -> dict:
 # ============ Z3DS endpoints ============
 
 
-Z3DS_VERIFY_EXTENSIONS = {".z3ds", ".zcci", ".zcia"}
+# The verify-class files are the compressed containers (== decompress inputs).
+Z3DS_VERIFY_EXTENSIONS = set(Z3DS_DECOMPRESS_EXTENSIONS)
 Z3DS_INFO_EXTENSIONS = Z3DS_CONVERTIBLE_EXTENSIONS | Z3DS_VERIFY_EXTENSIONS
 
 
@@ -814,7 +819,10 @@ async def get_z3ds_info(
     if not _is_z3ds_info_file(path):
         raise HTTPException(
             status_code=400,
-            detail="Not a supported 3DS ROM format (.3ds, .cci, .cia, .z3ds, .zcci, .zcia)",
+            detail=(
+                "Not a supported 3DS ROM format "
+                "(.3ds, .cci, .cia, .cxi, .3dsx, .z3ds, .zcci, .zcia, .zcxi, .z3dsx)"
+            ),
         )
 
     try:
@@ -1021,7 +1029,10 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         sync_name="verify_z3ds",
         events_name="verify_z3ds_events",
         batch_name="verify_z3ds_batch_events",
-        bad_ext_detail="Not a supported compressed 3DS format (.z3ds, .zcci, .zcia)",
+        bad_ext_detail=(
+            "Not a supported compressed 3DS format "
+            "(.z3ds, .zcci, .zcia, .zcxi, .z3dsx)"
+        ),
         verify_error_prefix="Failed to verify 3DS ROM",
     ),
     "nsz": _VerifyRouteConfig(

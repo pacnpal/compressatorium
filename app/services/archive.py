@@ -35,7 +35,8 @@ ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
 CONVERTIBLE_EXTENSIONS = {
     ".gdi", ".iso", ".cue", ".bin",          # chdman create modes
     ".gcz", ".wia", ".rvz", ".wbfs",         # Dolphin (.iso shared above)
-    ".cci", ".cia", ".3ds",                  # 3DS (z3ds compress)
+    ".cci", ".cia", ".3ds", ".cxi", ".3dsx", # 3DS (z3ds compress)
+    ".zcci", ".zcia", ".z3ds", ".zcxi", ".z3dsx",  # 3DS (z3ds decompress)
 }
 
 logger = get_logger("archive")
