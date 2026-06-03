@@ -389,6 +389,13 @@ class RomzService:
             ):
                 yield update
             if mode == ROMZ_EXTRACT_MODE:
+                # Defense in depth: never publish a symlink as the ROM. Symlink
+                # members are already rejected at listing time, but re-check the
+                # actual extracted path so a crafted archive whose metadata hid
+                # the link type can't slip a link into the library. The except
+                # below cleans up the link.
+                if await asyncio.to_thread(os.path.islink, runner_output):
+                    raise ValueError("Extracted member is a symlink, not a ROM")
                 # Move the extracted ROM to the planned (possibly renamed)
                 # destination. os.replace is atomic within the same filesystem.
                 await asyncio.to_thread(os.replace, runner_output, output_path)
