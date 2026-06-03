@@ -136,6 +136,25 @@ def test_single_rom_member_rejects_multifile(tmp_path):
         RomzService._single_rom_member(str(archive))
 
 
+def test_single_rom_member_rejects_traversal_rom(tmp_path):
+    """A ROM member with a `..`/absolute path is rejected before `7z x` runs,
+    so extraction can't write outside the temp dir."""
+    archive = _make_zip(tmp_path / "evil.zip", {"../evil.gba": b"ROM"})
+    with pytest.raises(ValueError):
+        RomzService._single_rom_member(str(archive))
+
+
+def test_single_rom_member_rejects_traversal_junk(tmp_path):
+    """A junk member with a traversal path is rejected too: `7z x` extracts
+    every member, so an unsafe sidecar can't be silently ignored."""
+    archive = _make_zip(
+        tmp_path / "g.zip",
+        {"Game.gba": b"ROM", "__MACOSX/../../victim": b"junk"},
+    )
+    with pytest.raises(ValueError):
+        RomzService._single_rom_member(str(archive))
+
+
 def test_extract_output_path_uses_archived_member_basename(tmp_path):
     archive = _make_zip(tmp_path / "Game.zip", {"Real Name.gba": b"ROM"})
     out = RomzService.get_output_path_for_mode(
@@ -322,8 +341,12 @@ def test_convert_extract_moves_member_from_preserved_relpath(tmp_path, stub_runn
     asyncio.run(_drain())
     cmd = calls["run_cmd"]
     assert "x" in cmd and "e" not in cmd
-    # The runner writes (and we move) the member at its preserved relative path.
-    assert calls["output_path"].endswith(os.path.join("roms", "Game.gba"))
+    # `-o` is the temp ROOT; `7z x` recreates the member's relative path under
+    # it, so the ROM lands at <root>/roms/Game.gba (== runner_output). If `-o`
+    # were <root>/roms the file would land at <root>/roms/roms/Game.gba and the
+    # later os.replace would miss it.
+    out_root = next(c[2:] for c in cmd if c.startswith("-o"))
+    assert calls["output_path"] == os.path.join(out_root, "roms", "Game.gba")
     assert ".romz-extract-" in calls["output_path"]
     assert out.read_bytes() == b"OUT"
 

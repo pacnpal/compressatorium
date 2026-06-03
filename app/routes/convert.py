@@ -22,6 +22,7 @@ from models import (
 )
 from services.archive import archive_service
 from services.job_manager import QueueBackpressureError, job_manager
+from services.romz import romz_service
 from services.lock_manager import lock_manager
 from services.tools import ModeKind, registry
 from sse_starlette.sse import EventSourceResponse
@@ -217,6 +218,7 @@ class SkipReason(Enum):
     NSZ_BAD_EXTENSION = "nsz_bad_extension"
     CSO_BAD_EXTENSION = "cso_bad_extension"
     ROMZ_BAD_EXTENSION = "romz_bad_extension"
+    ROMZ_INVALID_ARCHIVE = "romz_invalid_archive"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
 
 
@@ -283,6 +285,11 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         400,
         "romz_7z/romz_zip require .gb/.gbc/.gba/.nds; "
         "romz_extract requires .7z/.zip",
+    ),
+    SkipReason.ROMZ_INVALID_ARCHIVE: (
+        422,
+        "Archive is not a single handheld-ROM archive produced by this tool "
+        "(corrupt, multi-file, or holds no ROM)",
     ),
     SkipReason.DOLPHIN_SAME_PATH: (
         400,
@@ -405,6 +412,19 @@ async def plan_job(
         ext = _input_extension(file_path)
         if ext not in spec.input_extensions:
             raise SkipFile(SkipReason.ROMZ_BAD_EXTENSION)
+        if mode == "romz_extract":
+            # Validate the archive is a real single-ROM archive BEFORE planning
+            # an output / allowing overwrite. get_output_path_for_mode falls
+            # back to the suffix-stripped stem for unreadable/invalid archives,
+            # so without this an ordinary/corrupt/multi-ROM archive next to an
+            # existing same-stem file could drive duplicate_action=overwrite to
+            # delete that unrelated file before convert() ever validates.
+            try:
+                await run_in_threadpool(
+                    romz_service._single_rom_member, file_path,
+                )
+            except Exception:
+                raise SkipFile(SkipReason.ROMZ_INVALID_ARCHIVE) from None
 
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive

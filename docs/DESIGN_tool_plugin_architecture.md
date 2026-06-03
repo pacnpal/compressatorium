@@ -297,6 +297,16 @@ against the entry/size budget. New archive-backed tools should route through
 this helper rather than re-checking limits per tool; do not duplicate the size
 arithmetic.
 
+Tools that extract with **preserved member paths** (e.g. `romz` running
+`7z x`) MUST also reject unsafe member paths up front by calling
+`ArchiveService._validate_member(name)` on **every** raw member before
+shelling out — not just the member they intend to keep. A CLI extractor
+recreates the full archive tree, so an absolute or `..`-escaping path on any
+member (including ignored junk sidecars like `__MACOSX/../../victim`) could
+write outside the temp dir. `_validate_member` is the same path-traversal guard
+`ArchiveService`'s own extraction uses; reuse it rather than re-implementing
+the check.
+
 ### 3.4 `registry.py`
 
 ```python

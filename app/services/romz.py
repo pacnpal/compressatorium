@@ -188,6 +188,14 @@ class RomzService:
         # archive service applies, before extracting via 7z. Counts/sizes use
         # the raw listing (junk entries still consume space and inode budget).
         archive_service.enforce_archive_limits(raw_members)
+        # Extraction runs `7z x` (preserve paths) over EVERY member, so any
+        # member — the ROM or an ignored junk entry like
+        # ``__MACOSX/../../victim.gba`` — with an absolute or ``..`` path could
+        # write outside the temp dir. Reject such archives up front using the
+        # archive service's shared member-path validator (also gates verify,
+        # which reuses this method).
+        for name, _ in raw_members:
+            archive_service._validate_member(name)
         resolved = cls._resolve_single_rom(raw_members)
         if resolved is not None:
             return resolved[0]
@@ -209,29 +217,35 @@ class RomzService:
     # ----- command ----------------------------------------------------------
 
     def _build_command(
-        self, input_path: str, output_path: str, mode: str,
+        self, input_path: str, output_target: str, mode: str,
         compression: str | None,
     ) -> list[str]:
         # All switches go before a literal ``--`` so positional names that begin
         # with ``-`` (an archive/member/ROM whose filename starts with a dash)
-        # are treated as filenames, not 7-Zip switches.
+        # are treated as filenames, not 7-Zip switches. For compress
+        # ``output_target`` is the archive file; for extract it's the extraction
+        # ROOT directory.
         if mode in ROMZ_COMPRESS_MODES:
             switches = _compress_flags(mode, compression) + ["-bsp1", "-y"]
-            cmd = [self.sevenzip_path, "a", *switches, "--", output_path, input_path]
+            cmd = [self.sevenzip_path, "a", *switches, "--", output_target, input_path]
         elif mode == ROMZ_EXTRACT_MODE:
-            out_dir = os.path.dirname(output_path) or "."
-            switches = [f"-o{out_dir}", "-bsp1", "-y"]
+            # `-o` is the extraction ROOT: `7z x` recreates each member's own
+            # relative path under it, so the validated member lands at
+            # ``<root>/<member>`` (the caller's runner_output) — including ROMs
+            # stored under a top-level folder.
+            switches = [f"-o{output_target}", "-bsp1", "-y"]
             # Extract the whole archive (no positional member selector) with
-            # `x`, which PRESERVES member paths, into the isolated temp dir.
-            # Two reasons we don't name the member or use `e` (flatten):
+            # `x`, which PRESERVES member paths. Two reasons we don't name the
+            # member or use `e` (flatten):
             #  * 7-Zip reads a leading ``@`` as a list-file reference even after
             #    ``--``, so a ROM named e.g. ``@Game.gba`` would be misread.
             #  * `e` flattens every member to its basename, so an ignored junk
             #    member sharing the ROM's basename (``__MACOSX/Game.gba``,
             #    ``@eaDir/Game.gba``) would, under ``-y``, overwrite the real
             #    ROM at the same temp path before we move it.
-            # `x` keeps the ROM at its own relative path; the caller moves that
-            # one validated member out and discards the rest with the temp dir.
+            # Member paths are validated safe in `_single_rom_member`, so `x`
+            # cannot write outside the temp root. The caller moves the one
+            # validated member out and discards the rest with the temp dir.
             cmd = [self.sevenzip_path, "x", *switches, "--", input_path]
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
@@ -298,6 +312,9 @@ class RomzService:
         # For compress this is output_path; for extract it's a temp file we then
         # move to output_path.
         runner_output = output_path
+        # What `_build_command` targets: the archive file for compress, the
+        # extraction ROOT dir for extract.
+        cmd_target = output_path
         extract_tmp_dir: str | None = None
         if mode in ROMZ_COMPRESS_MODES:
             complete_message = "Compression complete"
@@ -320,12 +337,15 @@ class RomzService:
             extract_tmp_dir = await asyncio.to_thread(
                 tempfile.mkdtemp, prefix=".romz-extract-", dir=final_dir,
             )
+            # `-o` is the temp ROOT; `7z x` recreates the member's relative path
+            # under it, so the ROM lands exactly at runner_output.
+            cmd_target = extract_tmp_dir
             runner_output = os.path.join(extract_tmp_dir, member)
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
 
         cmd = self._build_command(
-            input_path, runner_output, mode, compression,
+            input_path, cmd_target, mode, compression,
         )
 
         try:
@@ -461,9 +481,11 @@ class RomzService:
         # Verify only certifies this tool's own single-ROM archives. Routing is
         # extension-based, so without this an arbitrary multi-file/source zip
         # would pass `7z t` and persist a misleading "Verified" state. This also
-        # applies the shared archive size/entry limits before testing.
+        # applies the shared archive size/entry/path limits before testing.
+        # Off the event loop: listing a large/NAS-backed archive must not stall
+        # the sync, SSE, and batch verify routes that consume this on the loop.
         try:
-            self._single_rom_member(file_path)
+            await asyncio.to_thread(self._single_rom_member, file_path)
         except ValueError as exc:
             yield {"type": "error", "valid": False, "message": str(exc)}
             return
