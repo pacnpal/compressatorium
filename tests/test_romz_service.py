@@ -9,6 +9,7 @@ real ``zipfile`` archives created with the stdlib.
 from __future__ import annotations
 
 import asyncio
+import os
 import zipfile
 from pathlib import Path
 
@@ -179,6 +180,23 @@ def test_info_for_loose_rom(tmp_path):
     assert info["contained_name"] is None
 
 
+def test_info_non_rom_archive_falls_back_to_basic(tmp_path):
+    """An ordinary archive (no single ROM payload) must not report ROM fields.
+
+    Routing is extension-based, so File Info is asked about every .zip/.7z; a
+    readme + artwork archive should fall back to basic archive info instead of
+    mislabelling its first member as the contained ROM.
+    """
+    archive = _make_zip(
+        tmp_path / "stuff.zip", {"readme.txt": b"hi", "art.png": b"x" * 50},
+    )
+    info = romz_mod.romz_service.info(str(archive))
+    assert info["compressed"] is True
+    assert info["contained_name"] is None
+    assert info["original_size"] is None
+    assert info["ratio"] is None
+
+
 @pytest.mark.skipif(not romz_mod.HAS_7Z, reason="py7zr not installed")
 def test_single_rom_member_reads_real_7z(tmp_path):
     """Exercise the py7zr listing branch with a genuine .7z archive."""
@@ -243,7 +261,7 @@ def test_convert_compress_builds_7z_command_and_clears_stale_output(
     assert out.read_bytes() == b"OUT"
 
 
-def test_convert_extract_resolves_member_and_runs_7z_e(tmp_path, stub_runner):
+def test_convert_extract_resolves_member_and_runs_7z_x(tmp_path, stub_runner):
     svc, calls = stub_runner
     archive = _make_zip(tmp_path / "Game.zip", {"Game.gba": b"ROM"})
     out = tmp_path / "out" / "Game.gba"
@@ -253,10 +271,12 @@ def test_convert_extract_resolves_member_and_runs_7z_e(tmp_path, stub_runner):
 
     asyncio.run(_drain())
     cmd = calls["run_cmd"]
-    assert "e" in cmd
-    # The member name is NOT passed as a positional selector: a leading "@"
-    # would be read as a 7-Zip list-file even after "--". We extract the whole
-    # (already validated single-ROM) archive into an isolated temp dir instead.
+    # `x` (preserve paths), not `e` (flatten): the member name is NOT passed as
+    # a positional selector (a leading "@" would be read as a 7-Zip list-file
+    # even after "--"), and preserving paths stops a same-basename junk member
+    # from overwriting the ROM at the temp path. We extract the whole (already
+    # validated single-ROM) archive into an isolated temp dir.
+    assert "x" in cmd and "e" not in cmd
     assert "Game.gba" not in cmd
     assert str(archive) in cmd          # the archive is the only positional
     assert any(c.startswith("-o") for c in cmd)
@@ -285,6 +305,27 @@ def test_convert_extract_renamed_output_does_not_clobber(tmp_path, stub_runner):
     assert renamed.read_bytes() == b"OUT"    # extracted content moved here
     # No leftover temp dirs in the output directory.
     assert not any(p.name.startswith(".romz-extract-") for p in tmp_path.iterdir())
+
+
+def test_convert_extract_moves_member_from_preserved_relpath(tmp_path, stub_runner):
+    """`7z x` preserves member paths and we move from that relpath, so a
+    same-basename junk member can't overwrite the ROM at a flattened temp path.
+    """
+    svc, calls = stub_runner
+    # ROM nested under a directory; the move source must keep that relative path.
+    archive = _make_zip(tmp_path / "Game.zip", {"roms/Game.gba": b"ROM"})
+    out = tmp_path / "out" / "Game.gba"
+
+    async def _drain():
+        return [u async for u in svc.convert(str(archive), str(out), "romz_extract")]
+
+    asyncio.run(_drain())
+    cmd = calls["run_cmd"]
+    assert "x" in cmd and "e" not in cmd
+    # The runner writes (and we move) the member at its preserved relative path.
+    assert calls["output_path"].endswith(os.path.join("roms", "Game.gba"))
+    assert ".romz-extract-" in calls["output_path"]
+    assert out.read_bytes() == b"OUT"
 
 
 def test_convert_cleans_partial_output_on_failure(tmp_path, monkeypatch):

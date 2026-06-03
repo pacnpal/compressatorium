@@ -150,33 +150,54 @@ class RomzService:
             raise ValueError(f"Unsupported archive extension: {ext}")
         return members
 
+    @staticmethod
+    def _resolve_single_rom(
+        raw_members: list[tuple[str, int]],
+    ) -> tuple[str, int] | None:
+        """Return ``(name, size)`` of the sole handheld-ROM payload, or ``None``.
+
+        Applies the shared junk filter then enforces the single-ROM invariant:
+        exactly one non-junk member and it is a ROM. Pure (no I/O, no limit
+        enforcement) so extract validation, member naming, and ``info()`` all
+        agree on what counts as a single-ROM archive. OS/NAS clutter that zip
+        tools tuck alongside the ROM (``__MACOSX/._Game.gba``, ``.DS_Store``,
+        ``@eaDir/…``, …) is ignored via the shared junk filter.
+        """
+        members = [
+            (name, size) for name, size in raw_members
+            if not is_junk_path(name)
+        ]
+        roms = [
+            (name, size) for name, size in members
+            if Path(name).suffix.lower() in ROMZ_COMPRESS_EXTENSIONS
+        ]
+        if len(roms) == 1 and len(members) == 1:
+            return roms[0]
+        return None
+
     @classmethod
     def _single_rom_member(cls, archive_path: str) -> str:
         """Return the sole ROM member of ``archive_path`` or raise a clear error.
 
         The extract mode reverts this tool's own single-ROM archives, so anything
         but exactly one handheld-ROM payload is a hard error rather than a silent
-        partial extract. OS/NAS clutter that zip tools tuck alongside the ROM
-        (``__MACOSX/._Game.gba``, ``.DS_Store``, ``Thumbs.db``, …) is ignored via
-        the shared junk filter so a single ROM zipped on macOS/Windows still
-        counts as one member.
+        partial extract.
         """
         raw_members = cls._list_members(archive_path)
         # Guard against oversized archives / zip bombs with the same limits the
         # archive service applies, before extracting via 7z. Counts/sizes use
         # the raw listing (junk entries still consume space and inode budget).
         archive_service.enforce_archive_limits(raw_members)
-        members = [
-            (name, size) for name, size in raw_members
+        resolved = cls._resolve_single_rom(raw_members)
+        if resolved is not None:
+            return resolved[0]
+        # Distinguish "no ROM" from "more than one payload" for a clear message.
+        has_rom = any(
+            Path(name).suffix.lower() in ROMZ_COMPRESS_EXTENSIONS
+            for name, _ in raw_members
             if not is_junk_path(name)
-        ]
-        roms = [
-            name for name, _ in members
-            if Path(name).suffix.lower() in ROMZ_COMPRESS_EXTENSIONS
-        ]
-        if len(roms) == 1 and len(members) == 1:
-            return roms[0]
-        if not roms:
+        )
+        if not has_rom:
             raise ValueError(
                 "Archive holds no Game Boy / GBA / DS ROM to extract",
             )
@@ -200,15 +221,18 @@ class RomzService:
         elif mode == ROMZ_EXTRACT_MODE:
             out_dir = os.path.dirname(output_path) or "."
             switches = [f"-o{out_dir}", "-bsp1", "-y"]
-            # Extract the whole archive into the isolated temp dir rather than
-            # naming the member as a positional selector: 7-Zip reads a leading
-            # ``@`` as a list-file reference even after ``--``, so a ROM named
-            # e.g. ``@Game.gba`` would be misread (or 7z would slurp selectors
-            # from a same-named file in the cwd). We've already validated the
-            # archive holds exactly one ROM (plus ignorable junk); the caller
-            # moves that one validated member out by its known basename and
-            # discards the rest with the temp dir.
-            cmd = [self.sevenzip_path, "e", *switches, "--", input_path]
+            # Extract the whole archive (no positional member selector) with
+            # `x`, which PRESERVES member paths, into the isolated temp dir.
+            # Two reasons we don't name the member or use `e` (flatten):
+            #  * 7-Zip reads a leading ``@`` as a list-file reference even after
+            #    ``--``, so a ROM named e.g. ``@Game.gba`` would be misread.
+            #  * `e` flattens every member to its basename, so an ignored junk
+            #    member sharing the ROM's basename (``__MACOSX/Game.gba``,
+            #    ``@eaDir/Game.gba``) would, under ``-y``, overwrite the real
+            #    ROM at the same temp path before we move it.
+            # `x` keeps the ROM at its own relative path; the caller moves that
+            # one validated member out and discards the rest with the temp dir.
+            cmd = [self.sevenzip_path, "x", *switches, "--", input_path]
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
         # Apply ionice via a command wrapper (the shared nice level is applied by
@@ -286,19 +310,17 @@ class RomzService:
         elif mode == ROMZ_EXTRACT_MODE:
             complete_message = "Extraction complete"
             member = await asyncio.to_thread(self._single_rom_member, input_path)
-            # `7z e` always writes the member's own basename into the output
+            # `7z x` writes each member at its own relative path under the output
             # dir, so it can't honor a renamed target (duplicate_action=rename
-            # -> Game_1.gba) and would clobber an existing sibling. Extract into
-            # an isolated temp dir on the same filesystem, then atomically move
-            # to the planned output_path.
+            # -> Game_1.gba) and could collide with a sibling. Extract into an
+            # isolated temp dir on the same filesystem, then atomically move the
+            # validated member (at its preserved relative path) to output_path.
             final_dir = os.path.dirname(output_path) or "."
             await asyncio.to_thread(os.makedirs, final_dir, exist_ok=True)
             extract_tmp_dir = await asyncio.to_thread(
                 tempfile.mkdtemp, prefix=".romz-extract-", dir=final_dir,
             )
-            runner_output = os.path.join(
-                extract_tmp_dir, os.path.basename(member),
-            )
+            runner_output = os.path.join(extract_tmp_dir, member)
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
 
@@ -361,15 +383,17 @@ class RomzService:
             except Exception as exc:  # unreadable/corrupt archive
                 logger.debug("romz info: failed to list %s: %s", file_path, exc)
                 members = []
-            # Drop OS/NAS sidecars so the reported ROM name and ratio reflect
-            # only the real payload (same filter as single-ROM validation).
-            members = [(name, size) for name, size in members if not is_junk_path(name)]
-            if members:
-                contained_name = os.path.basename(members[0][0])
-                total = sum(size for _, size in members)
-                if total > 0:
-                    original_size = total
-                    ratio = f"{file_size / total * 100:.1f}%"
+            # Only surface ROM-specific fields when this is actually a single-ROM
+            # archive (same invariant as extract/verify). An ordinary archive
+            # (readme.txt + artwork, multi-file dumps) falls back to basic
+            # archive info rather than mislabelling its first member as a ROM.
+            rom = self._resolve_single_rom(members)
+            if rom is not None:
+                name, rom_size = rom
+                contained_name = os.path.basename(name)
+                if rom_size > 0:
+                    original_size = rom_size
+                    ratio = f"{file_size / rom_size * 100:.1f}%"
 
         size_mb = file_size / (1024 * 1024)
         size_display = (
