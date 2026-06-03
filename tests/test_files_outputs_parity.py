@@ -184,7 +184,12 @@ async def test_search_files_outputs_agree_with_legacy(parity_env):
     )
     by_name = {Path(item["path"]).name: item for item in results["files"]}
 
+    # Archives are a documented exception (mirrors the list_files counterpart):
+    # has_chd can come from archive-member scanning, not registry outputs, so
+    # the agreement invariant applies only to plain on-disk files.
     for item in results["files"]:
+        if item.get("type") == "archive":
+            continue
         _assert_agreement(item, item["outputs"], item["convertible_by"])
 
     assert by_name["lonely.cue"]["outputs"] == []
