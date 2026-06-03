@@ -2,6 +2,13 @@
 
 ## 4.1.0 (2026-06-03)
 
+This release rolls up everything since 4.0 into one version: PSP / PS2
+CSO·ZSO·DAX support (maxcso), Handheld ROM archiving (GB / GBC / GBA / NDS ↔
+`.7z`/`.zip`), full Nintendo 3DS reversibility on a new upstream fork
+(decompression + `.cxi`/`.3dsx`), registry-driven library-scan / DAT-match
+across every format, tool-neutral process-priority and timeout settings, and the
+related fixes below. Sections are newest-first.
+
 ### Nintendo 3DS: decompression + new upstream (.cxi/.3dsx)
 
 #### New
@@ -17,8 +24,6 @@
 
 - `z3ds` slots the second mode in with no job-pipeline edits — the registry dispatches it like every other tool. `app/services/z3ds_compress.py` gained `Z3DS_DECOMPRESS_EXTENSIONS` / `Z3DS_DECOMPRESS_FORMATS` and direction-aware `_build_command` (`-c`/`-d`), `convert` (progress verb + ratio), `get_output_path_for_mode`, `info`, and `verify_stream`; the plugin adds a `ModeKind.EXTRACT` `ModeSpec`, splits `output_extensions` (compressed + restored ROMs) from `verify_extensions` (compressed containers only), and the `ConversionMode.Z3DS_DECOMPRESS` enum value, route messages, and `info.py` extension sets follow. Tests: extended registry / dispatch-routing / output-path suites plus new `z3ds_decompress` command-flag, extension-map, and info coverage.
 
-## 4.0.3 (2026-06-03)
-
 ### Handheld ROM: Verify/Info only on single-ROM archives
 
 #### Changed
@@ -29,8 +34,6 @@
 
 - New per-file `ToolPlugin.verifies_path(path)` seam: the refinement of `verify_extensions` from a coarse extension claim to a per-file decision. `BaseTool` defaults it to the extension match (every other tool is unaffected); `RomzTool` overrides it via the new `RomzService.is_single_rom_archive` member probe. The registry exposes `tools_verifying_path(path)`, and `routes/files.py` materializes it into a tool-neutral `FileEntry.verifiable_by` list (on-disk files + archive containers, in both the directory listing and recursive search) that the frontend gates Verify/Info on. The narrowing rule is centralized in `registry.verifyToolForPath` and shared by the row menu (`RowActionsMenu`), the "Verify selected" gate (`FileList`), and the bulk target picker (`BulkVerifyModal`). The registry's extension match stays the source of truth so deliberate frontend exclusions hold (e.g. `.iso` is still not routed to Dolphin verify); `verifiable_by` only narrows it. `RomzTool.detect_output` likewise validates the candidate so a non-single-ROM `.7z`/`.zip` is never badged as a romz output (keeping the verify-from-output flow consistent). Documented in `docs/DESIGN_tool_plugin_architecture.md` §3.6 and `docs/ADDING_PLATFORMS_AND_TOOLS.md`.
 - Tests: `tests/test_romz_files_integration.py` gains listing- and search-level regressions (a multi-file / no-ROM / corrupt archive does not surface romz actions; a single-ROM archive does; a coincidentally-named multi-file sibling is not badged as a romz output); `tests/test_romz_service.py` covers `is_single_rom_archive`; `tests/test_tool_registry.py` covers `tools_verifying_path`; and the `FileEntry` JSON-key parity suite is extended for `verifiable_by`.
-
-## 4.0.2 (2026-06-03)
 
 ### Handheld ROM support: GB / GBC / GBA / NDS → .7z / .zip
 
@@ -49,8 +52,6 @@
 - Recursive **Search All** now emits `.7z`/`.zip` containers as top-level results (not just their members), so the `romz_extract` batch workflow is reachable from search too; the container row mirrors the on-disk file schema and is browse-only unless an archive-direct mode is active.
 - Extract and verify are hardened: both honor the shared `CHD_ARCHIVE_MAX_ENTRIES` / `CHD_ARCHIVE_MAX_MEMBER_SIZE` / `CHD_ARCHIVE_MAX_TOTAL_SIZE` limits via the new `ArchiveService.enforce_archive_limits` (zip-bomb / oversized-archive guard, previously bypassed because romz shells out to `7z`); verify now requires a single-ROM payload before running `7z t`, so an unrelated multi-file/source archive can't be marked "Verified"; and the `7z t` test, like the extract command, passes member/archive names after `--` so a name beginning with `-` is treated as a filename.
 - Tests: new `tests/test_romz_service.py` (compress / extract round-trip / verify / single-member validation / cancel cleanup, plus a real `zipfile`/`py7zr` listing exercise), `tests/test_romz_routes.py` (info + single/batch SSE verify), and `tests/test_romz_files_integration.py` (the archive-classification regression), plus extended registry, dispatch-routing, mode-parity, and outputs-parity suites.
-
-## 4.0.1 (2026-06-02)
 
 ### PSP / PS2 support: CSO / ZSO / DAX via maxcso (#127)
 
