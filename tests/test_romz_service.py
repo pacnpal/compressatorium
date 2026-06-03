@@ -192,6 +192,15 @@ def test_single_rom_member_rejects_traversal_junk(tmp_path):
         RomzService._single_rom_member(str(archive))
 
 
+def test_single_rom_member_allows_posix_special_chars(tmp_path):
+    """Legal POSIX filename characters (`:`/`\\`) are not traversal escapes, so
+    a ROM named with them must still resolve — otherwise an archive this tool
+    produced from such a source could never be verified/extracted."""
+    for name in ("Game:1.gba", "Game\\x.gba"):
+        archive = _make_zip(tmp_path / "weird.zip", {name: b"ROM"})
+        assert RomzService._single_rom_member(str(archive)) == name
+
+
 def test_extract_output_path_uses_archived_member_basename(tmp_path):
     archive = _make_zip(tmp_path / "Game.zip", {"Real Name.gba": b"ROM"})
     out = RomzService.get_output_path_for_mode(
@@ -276,9 +285,11 @@ def stub_runner(monkeypatch):
     calls: dict[str, object] = {}
 
     async def fake_run(cmd, *, input_path, output_path, parse_progress,
-                       cancel_event=None, fail_label="", complete_message=""):
+                       cancel_event=None, cwd=None, fail_label="",
+                       complete_message=""):
         calls["run_cmd"] = cmd
         calls["output_path"] = output_path
+        calls["cwd"] = cwd
         # Simulate the binary producing the output file.
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"OUT")
@@ -311,7 +322,11 @@ def test_convert_compress_builds_7z_command_and_clears_stale_output(
     updates = asyncio.run(_drain())
     assert updates[-1]["progress"] == 100
     cmd = calls["run_cmd"]
-    assert "a" in cmd and str(out) in cmd and str(rom) in cmd
+    assert "a" in cmd and str(out) in cmd
+    # 7z runs from the ROM's directory and adds only the basename, so the
+    # archive stores a root-level `Game.gba`, not the absolute volume path.
+    assert calls["cwd"] == str(tmp_path)
+    assert "Game.gba" in cmd and str(rom) not in cmd
     assert "-mx=9" in cmd and "-mfb=273" in cmd
     # The stale archive was replaced (not appended to).
     assert out.read_bytes() == b"OUT"
@@ -395,7 +410,8 @@ def test_convert_cleans_partial_output_on_failure(tmp_path, monkeypatch):
     out = tmp_path / "Game.gba.7z"
 
     async def boom(cmd, *, input_path, output_path, parse_progress,
-                   cancel_event=None, fail_label="", complete_message=""):
+                   cancel_event=None, cwd=None, fail_label="",
+                   complete_message=""):
         Path(output_path).write_bytes(b"PARTIAL")
         raise RuntimeError("7z failed")
         yield  # pragma: no cover - makes this an async generator

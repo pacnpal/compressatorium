@@ -251,7 +251,7 @@ class SubprocessRunner:
     def active_pids(self) -> list[int]: ...
 
     async def run(self, cmd: list[str], *, input_path: str, output_path: str,
-                  parse_progress, cancel_event=None,
+                  parse_progress, cancel_event=None, cwd=None,
                   start_message="Starting...") -> AsyncGenerator[dict, None]:
         """Spawn cmd, stream stdout, yield {"progress","message"}.
         Handles: nice/ionice wrap, stdbuf, PID tracking, \\r/\\n line buffering,
@@ -259,6 +259,9 @@ class SubprocessRunner:
         (terminate->kill, clean partial output), ConversionCancelled, non-zero
         exit -> RuntimeError(tail), final 100%.
         `parse_progress(line) -> int|None` is the only per-tool knob.
+        `cwd` (optional) sets the subprocess working directory — used by `romz`
+        to run `7z a` from the ROM's directory so the archive stores just the
+        basename, not the absolute volume path.
         """
 
     async def run_capture(self, cmd: list[str], *, timeout=None,
@@ -298,14 +301,19 @@ this helper rather than re-checking limits per tool; do not duplicate the size
 arithmetic.
 
 Tools that extract with **preserved member paths** (e.g. `romz` running
-`7z x`) MUST also reject unsafe member paths up front by calling
-`ArchiveService._validate_member(name)` on **every** raw member before
+`7z x`) MUST reject unsafe member paths up front on **every** member before
 shelling out — not just the member they intend to keep. A CLI extractor
 recreates the full archive tree, so an absolute or `..`-escaping path on any
 member (including ignored junk sidecars like `__MACOSX/../../victim`) could
-write outside the temp dir. `_validate_member` is the same path-traversal guard
-`ArchiveService`'s own extraction uses; reuse it rather than re-implementing
-the check.
+write outside the temp dir. `ArchiveService._validate_member` is the strict,
+Windows-portable guard, but it also bans `:` and `\\` — characters a loose ROM
+on a POSIX volume may legally contain — so a tool that must **round-trip** the
+archive it produced (verify/extract its own output) should instead block only
+the actual escape vectors (absolute path, `..` component) via a local check
+like `RomzService._reject_traversal`, which `os.path.normpath`s the member and
+rejects only absolute / `..`-leading results. Such tools must also forbid
+symlink members (zip `external_attr` `S_ISLNK` / py7zr `FileInfo.is_symlink`),
+since `7z x` restores symlinks as links.
 
 ### 3.4 `registry.py`
 

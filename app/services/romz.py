@@ -201,6 +201,22 @@ class RomzService:
             return roms[0]
         return None
 
+    @staticmethod
+    def _reject_traversal(name: str) -> None:
+        """Reject a member that could escape the temp extraction dir.
+
+        Deliberately narrower than ``ArchiveService._validate_member`` (which
+        also bans ``:`` and ``\\`` for Windows portability): on a POSIX volume a
+        loose ROM may legally be named e.g. ``Game:1.gba`` or ``Game\\x.gba``,
+        and this tool must be able to round-trip the archive it produced
+        (verify / extract reuse this gate). ``7z x`` on POSIX treats those as
+        ordinary filename characters, so only an absolute path or a ``..``
+        component can actually write outside the extraction root.
+        """
+        norm = os.path.normpath(name.rstrip("/"))
+        if os.path.isabs(norm) or norm == ".." or norm.startswith(".." + os.sep):
+            raise ValueError(f"Unsafe archive member path: {name}")
+
     @classmethod
     def _single_rom_member(cls, archive_path: str) -> str:
         """Return the sole ROM member of ``archive_path`` or raise a clear error.
@@ -218,12 +234,10 @@ class RomzService:
         # Extraction runs `7z x` (preserve paths) over EVERY member, so any
         # member — the ROM or an ignored junk entry like
         # ``__MACOSX/../../victim.gba`` — with an absolute or ``..`` path could
-        # write outside the temp dir. Reject such archives up front using the
-        # archive service's shared member-path validator (also gates verify,
-        # which reuses this method). Directory names carry a trailing slash; the
-        # validator works on path components, so strip it first.
+        # write outside the temp dir. Reject such archives up front (this also
+        # gates verify, which reuses this method).
         for name, _s, _d in entries:
-            archive_service._validate_member(name.rstrip("/") or name)
+            cls._reject_traversal(name)
         file_members = [(n, s) for n, s, is_dir in entries if not is_dir]
         resolved = cls._resolve_single_rom(file_members)
         if resolved is not None:
@@ -246,17 +260,20 @@ class RomzService:
     # ----- command ----------------------------------------------------------
 
     def _build_command(
-        self, input_path: str, output_target: str, mode: str,
+        self, input_arg: str, output_target: str, mode: str,
         compression: str | None,
     ) -> list[str]:
         # All switches go before a literal ``--`` so positional names that begin
         # with ``-`` (an archive/member/ROM whose filename starts with a dash)
         # are treated as filenames, not 7-Zip switches. For compress
-        # ``output_target`` is the archive file; for extract it's the extraction
-        # ROOT directory.
+        # ``output_target`` is the archive file and ``input_arg`` is the ROM's
+        # basename (the caller runs 7z with cwd set to the ROM's directory so the
+        # archive stores just ``Game.gba``, not the absolute volume path); for
+        # extract ``output_target`` is the extraction ROOT directory and
+        # ``input_arg`` is the archive path.
         if mode in ROMZ_COMPRESS_MODES:
             switches = _compress_flags(mode, compression) + ["-bsp1", "-y"]
-            cmd = [self.sevenzip_path, "a", *switches, "--", output_target, input_path]
+            cmd = [self.sevenzip_path, "a", *switches, "--", output_target, input_arg]
         elif mode == ROMZ_EXTRACT_MODE:
             # `-o` is the extraction ROOT: `7z x` recreates each member's own
             # relative path under it, so the validated member lands at
@@ -275,7 +292,7 @@ class RomzService:
             # Member paths are validated safe in `_single_rom_member`, so `x`
             # cannot write outside the temp root. The caller moves the one
             # validated member out and discards the rest with the temp dir.
-            cmd = [self.sevenzip_path, "x", *switches, "--", input_path]
+            cmd = [self.sevenzip_path, "x", *switches, "--", input_arg]
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
         # Apply ionice via a command wrapper (the shared nice level is applied by
@@ -344,6 +361,9 @@ class RomzService:
         # What `_build_command` targets: the archive file for compress, the
         # extraction ROOT dir for extract.
         cmd_target = output_path
+        # The positional name 7z adds/reads, and the cwd it runs from.
+        cmd_input = input_path
+        run_cwd: str | None = None
         extract_tmp_dir: str | None = None
         if mode in ROMZ_COMPRESS_MODES:
             complete_message = "Compression complete"
@@ -353,6 +373,13 @@ class RomzService:
             # separate stat on the event loop.
             with contextlib.suppress(OSError):
                 await asyncio.to_thread(os.remove, output_path)
+            # 7z stores the path *as given on the command line* (minus the
+            # root). Run it from the ROM's directory and add only the basename so
+            # the archive holds a single root-level ``Game.gba`` instead of the
+            # absolute volume layout (``games/gba/Game.gba``). output_path stays
+            # absolute, so the archive is still written where planned.
+            run_cwd = os.path.dirname(input_path) or "."
+            cmd_input = os.path.basename(input_path)
         elif mode == ROMZ_EXTRACT_MODE:
             complete_message = "Extraction complete"
             member = await asyncio.to_thread(self._single_rom_member, input_path)
@@ -374,7 +401,7 @@ class RomzService:
             raise ValueError(f"Unsupported romz mode: {mode}")
 
         cmd = self._build_command(
-            input_path, cmd_target, mode, compression,
+            cmd_input, cmd_target, mode, compression,
         )
 
         try:
@@ -384,6 +411,7 @@ class RomzService:
                 output_path=runner_output,
                 parse_progress=_parse_progress,
                 cancel_event=cancel_event,
+                cwd=run_cwd,
                 fail_label="7z",
                 complete_message=complete_message,
             ):

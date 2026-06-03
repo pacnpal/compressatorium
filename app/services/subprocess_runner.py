@@ -258,6 +258,7 @@ class SubprocessRunner:
         heartbeat: bool = False,
         fail_label: str = "process",
         complete_message: str = "Conversion complete",
+        cwd: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Spawn ``cmd``, stream stdout, and yield ``{"progress", "message"}``.
 
@@ -286,6 +287,7 @@ class SubprocessRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             preexec_fn=_preexec if os.name == "posix" else None,
+            cwd=cwd,
         )
         self.track_pid(process.pid)
         # Everything below runs under try/finally so that if the caller stops
