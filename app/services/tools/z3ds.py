@@ -15,6 +15,8 @@ from models import OutputStatus, Z3DSInfo
 from services.lock_manager import lock_manager
 from services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
+    Z3DS_DECOMPRESS_EXTENSIONS,
+    Z3DS_DECOMPRESS_FORMATS,
     Z3DS_OUTPUT_FORMATS,
     z3ds_compress_service,
 )
@@ -22,7 +24,11 @@ from services.z3ds_compress import (
 from .base import BaseTool
 from .spec import ModeKind, ModeSpec
 
-_Z3DS_OUTPUTS = frozenset(Z3DS_OUTPUT_FORMATS.values())
+# Compressed containers: the compress outputs == the decompress inputs == the
+# verify-class files. The raw ROMs the decompress direction produces are tracked
+# as outputs too (for "output exists" badges / library-scan discovery).
+_Z3DS_COMPRESSED = frozenset(Z3DS_OUTPUT_FORMATS.values())
+_Z3DS_DECOMPRESSED = frozenset(Z3DS_DECOMPRESS_FORMATS.values())
 
 
 class Z3dsTool(BaseTool):
@@ -40,9 +46,23 @@ class Z3dsTool(BaseTool):
             supports_delete_on_verify=True,
             allows_archive_input=True,
         ),
+        ModeSpec(
+            mode="z3ds_decompress",
+            tool_id="z3ds",
+            kind=ModeKind.EXTRACT,
+            label="Decompress 3DS",
+            group="z3ds",
+            output_ext=None,  # mapped (reversed) from the input extension
+            input_extensions=frozenset(Z3DS_DECOMPRESS_EXTENSIONS),
+            # No delete-on-verify: the output is a raw ROM, which is not in
+            # verify_extensions (we only verify the compressed containers), so we
+            # can't confirm the output before deleting the source.
+            supports_delete_on_verify=False,
+            allows_archive_input=True,
+        ),
     )
-    output_extensions = _Z3DS_OUTPUTS
-    verify_extensions = _Z3DS_OUTPUTS
+    output_extensions = _Z3DS_COMPRESSED | _Z3DS_DECOMPRESSED
+    verify_extensions = _Z3DS_COMPRESSED
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

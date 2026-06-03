@@ -26,7 +26,7 @@ def _legacy_dispatch_id(mode: str) -> str:
     the same tool selection, differing only in the progress message."""
     if mode.startswith("dolphin_"):
         return "dolphin"
-    if mode == ConversionMode.Z3DS_COMPRESS.value:
+    if mode.startswith("z3ds_"):
         return "z3ds"
     if mode.startswith("nsz_"):
         return "nsz"

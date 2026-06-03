@@ -30,9 +30,17 @@ const DOLPHIN_SOURCE_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
 // in RowActionsMenu would let the user disambiguate directly.
 const DOLPHIN_VERIFY_EXTS = ['.gcz', '.wia', '.rvz', '.wbfs'];
 
-const Z3DS_SOURCE_EXTS = ['.cci', '.cia', '.3ds'];
-const Z3DS_VERIFY_EXTS = ['.zcci', '.zcia', '.z3ds'];
-const Z3DS_OUT_MAP = { '.cci': '.zcci', '.cia': '.zcia', '.3ds': '.z3ds' };
+// 3DS (z3ds). Compress takes a raw ROM; decompress takes a compressed Z3DS
+// container. Both directions are "sources" depending on the chosen mode.
+const Z3DS_COMPRESS_EXTS = ['.cci', '.cia', '.3ds', '.cxi', '.3dsx'];
+const Z3DS_VERIFY_EXTS = ['.zcci', '.zcia', '.z3ds', '.zcxi', '.z3dsx'];
+const Z3DS_SOURCE_EXTS = [...Z3DS_COMPRESS_EXTS, ...Z3DS_VERIFY_EXTS];
+const Z3DS_OUT_MAP = {
+  '.cci': '.zcci', '.cia': '.zcia', '.3ds': '.z3ds',
+  '.cxi': '.zcxi', '.3dsx': '.z3dsx',
+  '.zcci': '.cci', '.zcia': '.cia', '.z3ds': '.3ds',
+  '.zcxi': '.cxi', '.z3dsx': '.3dsx',
+};
 
 // Switch (nsz). Both directions are "sources" depending on the chosen mode.
 const NSZ_COMPRESS_EXTS = ['.nsp', '.xci'];
@@ -230,7 +238,7 @@ export const TOOLS = [
   {
     id: 'z3ds',
     label: '3DS',
-    hint: 'Compress Nintendo 3DS ROMs (.3ds, .cci, .cia).',
+    hint: 'Compress and decompress Nintendo 3DS ROMs (.3ds/.cci/.cia/.cxi/.3dsx ↔ Z3DS).',
     verifyPrefix: 'z3ds',
     sourceExts: Z3DS_SOURCE_EXTS,
     verifyExts: Z3DS_VERIFY_EXTS,
@@ -244,15 +252,19 @@ export const TOOLS = [
     compressionStyle: 'none',
     modes: [
       { mode: 'z3ds_compress', kind: 'compress', label: 'Compress 3DS', group: 'z3ds',
-        outputExt: null, inputExtensions: Z3DS_SOURCE_EXTS,
+        outputExt: null, inputExtensions: Z3DS_COMPRESS_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'z3ds_decompress', kind: 'extract', label: 'Decompress 3DS', group: 'z3ds',
+        outputExt: null, inputExtensions: Z3DS_VERIFY_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: true },
     ],
     getInfo: (path) => api.getZ3DSInfo(path),
     verify: (path, opts) => api.verify3DS(path, opts),
     verifyBatch: (paths, opts) => api.verifyBatchZ3DS(paths, opts),
     productPath: (path) => {
-      const m = /\.(3ds|cci|cia)$/i.exec(path);
+      const m = /\.(3ds|cci|cia|cxi|3dsx|zcci|zcia|z3ds|zcxi|z3dsx)$/i.exec(path);
       if (!m) return path;
       const ext = `.${m[1].toLowerCase()}`;
       return swapExt(path, Z3DS_OUT_MAP[ext] ?? ext);

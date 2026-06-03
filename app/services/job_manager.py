@@ -25,7 +25,7 @@ from services.disc_id import extract_from_source as disc_id_from_source
 from services.lock_manager import lock_manager
 from services.tools import registry
 from services.verification_store import verification_store
-from services.z3ds_compress import Z3DS_OUTPUT_FORMATS
+from services.z3ds_compress import Z3DS_DECOMPRESS_FORMATS, Z3DS_OUTPUT_FORMATS
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
@@ -154,6 +154,10 @@ class JobManager:
             if mode == ConversionMode.Z3DS_COMPRESS:
                 ext = Path(file_path).suffix.lower()
                 if ext not in Z3DS_OUTPUT_FORMATS:
+                    raise ValueError(f"Unsupported file extension: {ext}")
+            elif mode == ConversionMode.Z3DS_DECOMPRESS:
+                ext = Path(file_path).suffix.lower()
+                if ext not in Z3DS_DECOMPRESS_FORMATS:
                     raise ValueError(f"Unsupported file extension: {ext}")
             elif mode.value.startswith("dolphin_") and _paths_collide(
                 output_path, file_path,

@@ -17,12 +17,31 @@ from services.chdman import ConversionCancelled
 from services.subprocess_runner import apply_nice, ioprio_prefix, verify_timeout
 from services.timeout_policy import compute_progress_stall_timeout
 
-Z3DS_CONVERTIBLE_EXTENSIONS = {".cci", ".cia", ".3ds"}
+# Compress inputs (raw 3DS ROMs). The upstream fork
+# (https://github.com/pacnpal/z3ds_compress) added .cxi/.3dsx alongside the
+# original .cci/.cia/.3ds.
+Z3DS_CONVERTIBLE_EXTENSIONS = {".cci", ".cia", ".3ds", ".cxi", ".3dsx"}
 
+# Compress map: raw ROM extension -> compressed (Z3DS) extension.
 Z3DS_OUTPUT_FORMATS = {
     ".cci": ".zcci",
     ".cia": ".zcia",
     ".3ds": ".z3ds",
+    ".cxi": ".zcxi",
+    ".3dsx": ".z3dsx",
+}
+
+# Decompress inputs (compressed Z3DS containers) and the reverse extension map.
+# The fork made 3DS round-trippable: it auto-detects direction from the "Z3DS"
+# magic header and exposes -c/-d to force it (we always pass the explicit flag).
+Z3DS_DECOMPRESS_EXTENSIONS = {".zcci", ".zcia", ".z3ds", ".zcxi", ".z3dsx"}
+
+Z3DS_DECOMPRESS_FORMATS = {
+    ".zcci": ".cci",
+    ".zcia": ".cia",
+    ".z3ds": ".3ds",
+    ".zcxi": ".cxi",
+    ".z3dsx": ".3dsx",
 }
 
 logger = get_logger("z3ds_compress")
@@ -40,14 +59,20 @@ class Z3DSCompressService:
         self,
         input_path: str,
         output_path: str,
+        mode: str = "z3ds_compress",
     ) -> list[str]:
         """Build command for z3ds_compressor.
 
-        The tool takes input and output paths as arguments.
-        Format: z3ds_compressor <input> <output>
+        The fork auto-detects direction from the "Z3DS" magic header, but we
+        always pass an explicit ``-c`` (compress) / ``-d`` (decompress) flag so
+        the job's mode, not the file contents, decides the direction. The tool
+        takes input and output paths as positional arguments.
+        Format: ``z3ds_compressor <-c|-d> <input> <output>``
         """
+        flag = "-d" if mode == "z3ds_decompress" else "-c"
         cmd = [
             self.z3ds_compressor_path,
+            flag,
             input_path,
             output_path,
         ]
@@ -132,20 +157,28 @@ class Z3DSCompressService:
         self,
         input_path: str,
         output_path: str,
-        # `mode` and `compression` are unused here but required for interface
-        # consistency with chdman/dolphin services.
+        # `compression` is unused (3DS has no codec/level picker) but kept for
+        # interface consistency with chdman/dolphin services. `mode` selects the
+        # direction: "z3ds_compress" (default) or "z3ds_decompress".
         mode: str = "z3ds_compress",
         *,
         compression: str | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
+        decompress = mode == "z3ds_decompress"
+        verb = "decompression" if decompress else "compression"
+        verb_ing = "Decompressing" if decompress else "Compressing"
+        # Rough output:input size ratio, used only to smooth the progress bar:
+        # compressed output is ~50% of the source, a decompressed ROM ~2x the
+        # compressed container.
+        expected_ratio = 2.0 if decompress else 0.5
         try:
             # Ensure output directory exists
             output_dir = os.path.dirname(output_path)
             if output_dir:
                 await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
 
-            cmd = self._build_command(input_path, output_path)
+            cmd = self._build_command(input_path, output_path, mode)
 
             def _preexec():
                 apply_nice("z3ds")
@@ -196,7 +229,7 @@ class Z3DSCompressService:
 
                 cancel_task = asyncio.create_task(_cancel_watcher())
 
-            yield {"progress": 5, "message": "Starting 3DS compression..."}
+            yield {"progress": 5, "message": f"Starting 3DS {verb}..."}
 
             output_lines: list[str] = []
             buffer = ""
@@ -244,23 +277,19 @@ class Z3DSCompressService:
                             if last_output_size is None or current_size != last_output_size:
                                 last_output_size = current_size
                                 last_activity_at = time.monotonic()
-                                # Estimate progress based on typical 50% compression ratio
-                                # The 0.5 factor below is a heuristic based on typical compression
-                                # ratios (~50% of original size) observed for supported 3DS/CCI/CIA
-                                # ROMs when using this tool. It is used *only* for progress
-                                # estimation; the actual compression ratio can be higher or lower
-                                # depending on the specific ROM and compression settings. If you
-                                # consistently see progress jump from a low value directly to 100%,
-                                # or stay high for too long, consider adjusting this factor (e.g.
-                                # to 0.3 for stronger compression or 0.7 for weaker compression),
-                                # or making it configurable. Deviations from the assumed ratio
-                                # affect only the perceived smoothness/accuracy of the progress
-                                # bar, not the correctness of the compression itself.
+                                # Estimate progress from the growing output file
+                                # against an expected output size (input * the
+                                # direction's `expected_ratio`: ~0.5 for compress,
+                                # ~2.0 for decompress). This is *only* for the
+                                # progress bar; the real ratio varies per ROM and
+                                # settings, so deviations affect perceived
+                                # smoothness, not correctness. If progress
+                                # consistently jumps to 100% early or lingers high,
+                                # tune `expected_ratio` (set in `convert`).
                                 if os.path.exists(input_path):
                                     input_size = os.path.getsize(input_path)
                                     if input_size > 0:
-                                        # Expect output to be ~50% of input
-                                        expected_output_size = input_size * 0.5
+                                        expected_output_size = input_size * expected_ratio
                                         progress = min(
                                             95,
                                             int((current_size / expected_output_size) * 90 + 5),
@@ -268,7 +297,8 @@ class Z3DSCompressService:
                                         yield {
                                             "progress": progress,
                                             "message": (
-                                                f"Compressing... ({current_size // (1024*1024)} MB)"
+                                                f"{verb_ing}... "
+                                                f"({current_size // (1024*1024)} MB)"
                                             ),
                                         }
                         except OSError:
@@ -327,7 +357,7 @@ class Z3DSCompressService:
                     f"z3ds_compressor failed with exit code {process.returncode}: {error_msg}",
                 )
 
-            yield {"progress": 100, "message": "3DS compression complete"}
+            yield {"progress": 100, "message": f"3DS {verb} complete"}
 
         except ConversionCancelled as e:
             logger.info("z3ds_compress conversion cancelled: %s", e)
@@ -346,7 +376,8 @@ class Z3DSCompressService:
         if calling from async context.
 
         Args:
-            file_path: Path to .cci, .cia, .3ds, .zcci, .zcia, or .z3ds file
+            file_path: Path to a raw ROM (.cci/.cia/.3ds/.cxi/.3dsx) or a
+                compressed container (.zcci/.zcia/.z3ds/.zcxi/.z3dsx)
 
         Returns:
             dict with file info (file, size, format, compressed, etc.)
@@ -358,7 +389,7 @@ class Z3DSCompressService:
         ext = Path(file_path).suffix.lower()
 
         # Determine format and compression status
-        is_compressed = ext in {".zcci", ".zcia", ".z3ds"}
+        is_compressed = ext in Z3DS_DECOMPRESS_EXTENSIONS
         base_format = None
         if ext in {".cci", ".zcci"}:
             base_format = "CCI (Cart Image)"
@@ -366,6 +397,10 @@ class Z3DSCompressService:
             base_format = "CIA (Installable Archive)"
         elif ext in {".3ds", ".z3ds"}:
             base_format = "3DS (Cart Image)"
+        elif ext in {".cxi", ".zcxi"}:
+            base_format = "CXI (Executable Image)"
+        elif ext in {".3dsx", ".z3dsx"}:
+            base_format = "3DSX (Homebrew)"
 
         # Format size for display
         size_mb = file_size / (1024 * 1024)
@@ -402,10 +437,10 @@ class Z3DSCompressService:
         *,
         treat_as_stem: bool = False,
     ) -> str:
-        """Get the output path for z3ds_compress mode.
+        """Get the output path for a z3ds mode.
 
         Args:
-            mode: Conversion mode (should be "z3ds_compress")
+            mode: Conversion mode ("z3ds_compress" or "z3ds_decompress")
             input_path: Path to input file or stem
             output_dir: Optional output directory
             treat_as_stem: If True, treat input_path as stem without extension
@@ -417,9 +452,10 @@ class Z3DSCompressService:
             ``treat_as_stem=True`` is used for archive members. The member's
             original extension is preserved in the synthetic filename (see
             ``ArchiveService._output_name_for_member``), so it maps the same
-            way as an on-disk file (.3ds -> .z3ds, .cci -> .zcci, .cia ->
-            .zcia). It only falls back to .zcci when the extension is missing
-            or unrecognised.
+            way as an on-disk file: compress maps .3ds -> .z3ds, .cci -> .zcci,
+            etc.; decompress reverses it (.z3ds -> .3ds, .zcci -> .cci). It only
+            falls back to a default extension when the input extension is
+            missing or unrecognised.
         """
         input_p = Path(input_path)
 
@@ -428,7 +464,10 @@ class Z3DSCompressService:
         # output mapping is identical to the on-disk case.
         stem = input_p.stem
         ext = input_p.suffix.lower()
-        output_ext = Z3DS_OUTPUT_FORMATS.get(ext, ".zcci")
+        if mode == "z3ds_decompress":
+            output_ext = Z3DS_DECOMPRESS_FORMATS.get(ext, ".3ds")
+        else:
+            output_ext = Z3DS_OUTPUT_FORMATS.get(ext, ".zcci")
 
         filename = f"{stem}{output_ext}"
 
@@ -479,7 +518,7 @@ class Z3DSCompressService:
             return
 
         ext = Path(file_path).suffix.lower()
-        if ext not in {".zcci", ".zcia", ".z3ds"}:
+        if ext not in Z3DS_DECOMPRESS_EXTENSIONS:
             yield {
                 "type": "error",
                 "valid": False,

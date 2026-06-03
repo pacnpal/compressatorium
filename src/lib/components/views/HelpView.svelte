@@ -26,8 +26,8 @@
     {
       glyph: '3DS',
       name: '3DS',
-      blurb: 'Nintendo 3DS ROMs to a seekable-Zstandard file that Azahar reads directly (release 2123 and up). Roughly half the size with no compatibility loss. The .cci and .3ds dumps are solid; .cia works but treat it as experimental. The ROM has to be decrypted first.',
-      io: '.cci / .cia / .3ds  →  .zcci / .zcia / .z3ds',
+      blurb: 'Nintendo 3DS ROMs to a seekable-Zstandard file that Azahar reads directly (release 2123 and up). Roughly half the size with no compatibility loss, and now fully reversible — decompress back to the original ROM any time. The .cci and .3ds dumps are solid; .cia, .cxi and .3dsx work but treat them as experimental. The ROM has to be decrypted first.',
+      io: '.cci / .cia / .3ds / .cxi / .3dsx  ↔  .zcci / .zcia / .z3ds / .zcxi / .z3dsx',
     },
     {
       glyph: 'NSW',
@@ -83,7 +83,8 @@
     {
       tool: '3DS',
       rows: [
-        ['z3ds_compress', 'One mode, no settings. Fixed Seekable Zstandard.', '.zcci / .zcia / .z3ds'],
+        ['z3ds_compress', 'No settings. Fixed Seekable Zstandard.', '.zcci / .zcia / .z3ds / .zcxi / .z3dsx'],
+        ['z3ds_decompress', 'Restore the original ROM from a Z3DS file.', '.cci / .cia / .3ds / .cxi / .3dsx'],
       ],
     },
     {

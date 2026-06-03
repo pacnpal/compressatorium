@@ -270,7 +270,9 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
     ),
     SkipReason.Z3DS_BAD_EXTENSION: (
         400,
-        "z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia, .3ds)",
+        "z3ds_compress requires Nintendo 3DS ROMs (.cci, .cia, .3ds, .cxi, .3dsx); "
+        "z3ds_decompress requires compressed 3DS files "
+        "(.zcci, .zcia, .z3ds, .zcxi, .z3dsx)",
     ),
     SkipReason.NSZ_BAD_EXTENSION: (
         400,

@@ -1,5 +1,22 @@
 # Release Notes
 
+## 4.1.0 (2026-06-03)
+
+### Nintendo 3DS: decompression + new upstream (.cxi/.3dsx)
+
+#### New
+
+- **3DS is now fully reversible.** A new `z3ds_decompress` mode restores the original ROM from a compressed Z3DS container (`.zcci → .cci`, `.zcia → .cia`, `.z3ds → .3ds`, `.zcxi → .cxi`, `.z3dsx → .3dsx`), in the Web UI ("Decompress 3DS") and the REST API. The compress/decompress round trip is byte-identical. The old "compress-only, keep your sources" caveat is gone — though delete-on-verify is offered for compress only (the restored ROM is not itself a verify-class file, so the compressed source can't be confirmed before deletion).
+- **Two new 3DS input formats.** `.cxi` (CTR Executable Image) and `.3dsx` (homebrew) join `.cci`/`.cia`/`.3ds` as compressible inputs, mapping to `.zcxi`/`.z3dsx` (and back). Treated as experimental, like `.cia`.
+
+#### Changed
+
+- **New upstream: [`pacnpal/z3ds_compress`](https://github.com/pacnpal/z3ds_compress).** The `z3ds_compressor` binary is now built from this fork (which adds the decompression mode and `.cxi`/`.3dsx` support) instead of `energeticokay/z3ds_compress`. The fork builds with **CMake** (static libzstd via pkg-config), so the Docker builder stage gained `cmake`/`pkg-config` and the bundled `.local-bin/z3ds_compressor` was rebuilt. Direction is always forced with the tool's explicit `-c`/`-d` flag, so it never depends on magic-header auto-detection.
+
+#### Internal
+
+- `z3ds` slots the second mode in with no job-pipeline edits — the registry dispatches it like every other tool. `app/services/z3ds_compress.py` gained `Z3DS_DECOMPRESS_EXTENSIONS` / `Z3DS_DECOMPRESS_FORMATS` and direction-aware `_build_command` (`-c`/`-d`), `convert` (progress verb + ratio), `get_output_path_for_mode`, `info`, and `verify_stream`; the plugin adds a `ModeKind.EXTRACT` `ModeSpec`, splits `output_extensions` (compressed + restored ROMs) from `verify_extensions` (compressed containers only), and the `ConversionMode.Z3DS_DECOMPRESS` enum value, route messages, and `info.py` extension sets follow. Tests: extended registry / dispatch-routing / output-path suites plus new `z3ds_decompress` command-flag, extension-map, and info coverage.
+
 ## 4.0.3 (2026-06-03)
 
 ### Handheld ROM: Verify/Info only on single-ROM archives
