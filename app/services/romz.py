@@ -366,13 +366,14 @@ class RomzService:
         except BaseException:
             # Any failure/cancel can leave a partial archive or ROM on disk; the
             # runner doesn't own output_path, so clean it up here so a retry
-            # isn't blocked by (or silently trusts) a truncated file.
+            # isn't blocked by (or silently trusts) a truncated file. Off the
+            # event loop like the rest of this method's filesystem ops.
             # suppress(OSError) covers the already-absent case.
             with contextlib.suppress(OSError):
-                os.remove(runner_output)
+                await asyncio.to_thread(os.remove, runner_output)
             if runner_output != output_path:
                 with contextlib.suppress(OSError):
-                    os.remove(output_path)
+                    await asyncio.to_thread(os.remove, output_path)
             raise
         finally:
             if extract_tmp_dir is not None:

@@ -423,7 +423,13 @@ async def plan_job(
                 await run_in_threadpool(
                     romz_service._single_rom_member, file_path,
                 )
-            except Exception:
+            except Exception as exc:
+                # Broad by design: corrupt/multi-ROM archives surface as
+                # ValueError, zipfile.BadZipFile, py7zr errors, OSError, … and
+                # all map to the same skip. Log the cause for troubleshooting.
+                logger.debug(
+                    "romz_extract validation failed for %s: %s", file_path, exc,
+                )
                 raise SkipFile(SkipReason.ROMZ_INVALID_ARCHIVE) from None
 
     # Calculate output path and handle duplicates
