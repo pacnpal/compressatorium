@@ -142,6 +142,7 @@ Volume behavior:
 | `CHDMAN_PATH` | `/usr/bin/chdman` | Path to chdman binary |
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/CSO v2/ZSO/DAX) |
+| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` ↔ `.7z`/`.zip`). Ships via `p7zip-full`; set to `7zz` on distros that provide the newer `7zip` package |
 | `SWITCH_KEYS` | *(unset)* | Directory holding your own Switch `prod.keys`. Source of truth for Switch (nsz); mount it read-only. When unset, the app best-effort checks `~/.switch` and your mounted volumes. No keys ship with the image. |
 | `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for Switch compression (1-22) |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |

@@ -216,6 +216,7 @@ class SkipReason(Enum):
     Z3DS_BAD_EXTENSION = "z3ds_bad_extension"
     NSZ_BAD_EXTENSION = "nsz_bad_extension"
     CSO_BAD_EXTENSION = "cso_bad_extension"
+    ROMZ_BAD_EXTENSION = "romz_bad_extension"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
 
 
@@ -278,6 +279,11 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         "cso_compress/cso2_compress/zso_compress/dax_compress require .iso; "
         "cso_decompress requires .cso/.zso/.dax",
     ),
+    SkipReason.ROMZ_BAD_EXTENSION: (
+        400,
+        "romz_7z/romz_zip require .gb/.gbc/.gba/.nds; "
+        "romz_extract requires .7z/.zip",
+    ),
     SkipReason.DOLPHIN_SAME_PATH: (
         400,
         "Output path matches input; overwriting would delete the source file",
@@ -309,6 +315,7 @@ async def plan_job(
     is_z3ds = spec.tool_id == "z3ds"
     is_nsz = spec.tool_id == "nsz"
     is_cso = spec.tool_id == "cso"
+    is_romz = spec.tool_id == "romz"
 
     archive_source_dir = None  # Directory where the archive is located (for output)
     output_path = None
@@ -388,6 +395,13 @@ async def plan_job(
         ext = _input_extension(file_path)
         if ext not in spec.input_extensions:
             raise SkipFile(SkipReason.CSO_BAD_EXTENSION)
+
+    if is_romz:
+        # spec.input_extensions is per-mode: compress (.gb/.gbc/.gba/.nds) vs
+        # extract (.7z/.zip).
+        ext = _input_extension(file_path)
+        if ext not in spec.input_extensions:
+            raise SkipFile(SkipReason.ROMZ_BAD_EXTENSION)
 
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive

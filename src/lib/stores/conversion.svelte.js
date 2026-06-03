@@ -33,6 +33,9 @@ function defaultCompressionFor(toolId) {
   // trials for CSO/CSO2/DAX, brute-forced lz4 for ZSO) for the smallest output.
   // It's lossless either way, and the Reset-to-default button brings it back.
   if (toolId === 'cso') return ['max'];
+  // Handheld ROM packer defaults to 'max' (the -mx9 -md=256m -mfb=273 LZMA2
+  // profile) for the smallest archive; lossless either way.
+  if (toolId === 'romz') return ['max'];
   return ['zlib'];
 }
 

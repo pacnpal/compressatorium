@@ -1,5 +1,22 @@
 # Release Notes
 
+## 4.0.2 (2026-06-03)
+
+### Handheld ROM support: GB / GBC / GBA / NDS → .7z / .zip
+
+#### New
+
+- **A sixth tool: Handheld ROM.** Compress Game Boy, Game Boy Color, Game Boy Advance, and Nintendo DS ROM dumps (`.gb` / `.gbc` / `.gba` / `.nds`) to a standard `.7z` or `.zip` archive, and extract them back. Three modes: `romz_7z` (ROM → `.7z`, LZMA2, smallest output), `romz_zip` (ROM → `.zip`, deflate, broadest compatibility), and `romz_extract` (`.7z`/`.zip` → the original ROM). Available in the Web UI and REST API, with live progress, single + batch verify, and file-info. No keys required.
+- **Archive-quality lossless compression.** The compress/extract round trip reproduces the original ROM byte-for-byte (verified by SHA-1 on real homebrew dumps). On the sample set GBA dumps shrank by roughly half and GB/GBC by around two thirds. Output names preserve the ROM extension in front of the archive suffix (`Game.gba` → `Game.gba.7z`), so the extract direction is deterministic and same-stem ROMs of different platforms never collide.
+- **Compression-effort presets.** The compress modes expose a Fast / Default / Max preset, reusing the same compression picker (and the shared "Reset to default" button) as the other tools and remembered per tool between sessions. Max is the `-mx9 -md=256m -mfb=273 -m0=lzma2` profile; the tool ships with Max as the default. Verify runs `7z t` over the archive, and delete-on-verify is offered for the compress modes.
+
+#### Internal
+
+- The tool reuses the `7z` binary already in the image (`p7zip-full`, exposed via the new `SEVENZIP_PATH` env var, default `7z`) — no new build stage. The write/extract/test paths shell out through the shared `SubprocessRunner`; the read side (member listing, info, single-member validation) reuses `zipfile` / `py7zr` directly.
+- Slots into the registry as `romz` with **zero job-pipeline edits** — `job_manager` / `convert` / `files` / `info` all dispatch through the registry. New `app/services/romz.py` service + `app/services/tools/romz.py` plugin, a `RomzInfo` model (with the contained-ROM name, original size, and ratio) and `romz_*` `FileEntry` fields, the three `ConversionMode` entries (`ROMZ_7Z` / `ROMZ_ZIP` / `ROMZ_EXTRACT`), and an `info.py` `_VERIFY_CONFIG` entry behind the shared verify-route factory. ROM outputs are picked up automatically by the registry-driven library scan / DAT-match (`scannable_extensions()`) and the tool-neutral priority/timeout policy (`COMPRESSATORIUM_ROMZ_*`).
+- `.7z`/`.zip` stay classified as browseable archives (`type="archive"`): the compress/extract modes set `allows_archive_input=false`, so ROM extensions never enter the archive-member surface and the existing archive guard keeps archive browsing undisturbed. The extract mode validates that an archive holds exactly one handheld-ROM member, deferring multi-file archives to the file browser.
+- Tests: new `tests/test_romz_service.py` (compress / extract round-trip / verify / single-member validation / cancel cleanup, plus a real `zipfile`/`py7zr` listing exercise), `tests/test_romz_routes.py` (info + single/batch SSE verify), and `tests/test_romz_files_integration.py` (the archive-classification regression), plus extended registry, dispatch-routing, mode-parity, and outputs-parity suites.
+
 ## 4.0.1 (2026-06-02)
 
 ### PSP / PS2 support: CSO / ZSO / DAX via maxcso (#127)

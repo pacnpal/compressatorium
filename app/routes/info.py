@@ -18,6 +18,7 @@ from models import (
     DolphinDiscInfo,
     MetadataBatchRequest,
     NszInfo,
+    RomzInfo,
     Z3DSInfo,
 )
 from services.chd_metadata_store import chd_metadata_store
@@ -43,6 +44,11 @@ from services.nsz import (
     NSZ_COMPRESS_EXTENSIONS,
     NSZ_DECOMPRESS_EXTENSIONS,
     nsz_service,
+)
+from services.romz import (
+    ROMZ_ARCHIVE_EXTENSIONS,
+    ROMZ_COMPRESS_EXTENSIONS,
+    romz_service,
 )
 from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
 from services.verification_store import verification_store
@@ -531,6 +537,14 @@ def _is_cso_info_file(path: str) -> bool:
     return ext in CSO_INFO_EXTENSIONS
 
 
+ROMZ_INFO_EXTENSIONS = ROMZ_COMPRESS_EXTENSIONS | ROMZ_ARCHIVE_EXTENSIONS
+
+
+def _is_romz_info_file(path: str) -> bool:
+    ext = os.path.splitext(path)[1].lower()
+    return ext in ROMZ_INFO_EXTENSIONS
+
+
 @router.get("/info", response_model=CHDInfo)
 async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     """Get information about a CHD file (cached with mtime-based invalidation)."""
@@ -854,6 +868,47 @@ async def get_cso_info(
         ) from None
 
 
+@router.get("/romz-info", response_model=RomzInfo)
+async def get_romz_info(
+    path: str = Query(..., description="Path to a ROM (.gb/.gbc/.gba/.nds) or .7z/.zip"),
+):
+    """Get basic information about a handheld ROM or its .7z/.zip archive."""
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: path outside configured volumes",
+        )
+    if not await run_in_threadpool(os.path.isfile, path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_romz_info_file(path):
+        raise HTTPException(
+            status_code=400,
+            detail="Not a supported ROM format (.gb, .gbc, .gba, .nds, .7z, .zip)",
+        )
+
+    try:
+        info = await run_in_threadpool(romz_service.info, path)
+        return RomzInfo(
+            file=info["file"],
+            size=info["size"],
+            size_display=info["size_display"],
+            format=info.get("format"),
+            extension=info["extension"],
+            compressed=info["compressed"],
+            compression_type=info.get("compression_type"),
+            contained_name=info.get("contained_name"),
+            original_size=info.get("original_size"),
+            ratio=info.get("ratio"),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read ROM info: {e!s}",
+        ) from None
+
+
 @router.get("/tools")
 async def list_tools():
     """Which tools the frontend should show.
@@ -981,6 +1036,15 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         batch_name="verify_cso_batch_events",
         bad_ext_detail="Not a supported compressed CSO format (.cso, .zso, .dax)",
         verify_error_prefix="Failed to verify CSO file",
+    ),
+    "romz": _VerifyRouteConfig(
+        url_prefix="romz-",
+        service=lambda: romz_service,
+        sync_name="verify_romz",
+        events_name="verify_romz_events",
+        batch_name="verify_romz_batch_events",
+        bad_ext_detail="Not a supported ROM archive (.7z, .zip)",
+        verify_error_prefix="Failed to verify ROM archive",
     ),
 }
 
@@ -1307,4 +1371,7 @@ verify_nsz, verify_nsz_events, verify_nsz_batch_events = register_verify_routes(
 )
 verify_cso, verify_cso_events, verify_cso_batch_events = register_verify_routes(
     router, registry.get("cso"),
+)
+verify_romz, verify_romz_events, verify_romz_batch_events = register_verify_routes(
+    router, registry.get("romz"),
 )

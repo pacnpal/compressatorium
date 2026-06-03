@@ -34,6 +34,7 @@
     if (entry?.z3ds_convertible) legacy.push('z3ds');
     if (entry?.nsz_convertible) legacy.push('nsz');
     if (entry?.cso_convertible) legacy.push('cso');
+    if (entry?.romz_convertible) legacy.push('romz');
     return legacy;
   });
 

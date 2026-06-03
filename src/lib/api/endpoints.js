@@ -273,6 +273,11 @@ export const api = {
     return fetchJson(buildApiUrl('/cso-info', params), undefined, 'Failed to get CSO info');
   },
 
+  getRomzInfo(path) {
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/romz-info', params), undefined, 'Failed to get ROM info');
+  },
+
   // Which tools the UI should show. Switch is reported unavailable when no
   // prod.keys are configured, so the sidebar can hide it entirely.
   getTools() {
@@ -335,6 +340,17 @@ export const api = {
     return fetchJson(buildApiUrl('/cso-verify', params), undefined, 'Failed to verify CSO file');
   },
 
+  verifyRomz(path, { onProgress } = {}) {
+    if (onProgress) {
+      const params = new URLSearchParams({ path });
+      return verifyEventSource(buildApiUrl('/romz-verify/events', params), onProgress, {
+        failureFallback: 'ROM archive verification failed',
+      });
+    }
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/romz-verify', params), undefined, 'Failed to verify ROM archive');
+  },
+
   getVerifiedCHDs: () =>
     fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch verified CHDs'),
 
@@ -357,6 +373,10 @@ export const api = {
 
   verifyBatchCso(paths, opts) {
     return runBatchVerify(`${API_BASE}/cso-verify-batch/events`, paths, opts);
+  },
+
+  verifyBatchRomz(paths, opts) {
+    return runBatchVerify(`${API_BASE}/romz-verify-batch/events`, paths, opts);
   },
 
   // ─── CHD metadata cache ───────────────────────────────────────────────

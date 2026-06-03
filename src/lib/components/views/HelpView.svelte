@@ -41,6 +41,12 @@
       blurb: 'PSP and PS2 disc images to CSO, CSO v2, ZSO, or DAX, the compressed ISO formats PPSSPP and PCSX2 read directly, so the compressed file plays without a separate decompress step. Lossless and fully reversible, using maxcso. CSO v1 is the deflate-based, universally-supported default; CSO v2 improves block alignment for recent emulators; ZSO uses lz4 for faster decoding; DAX is a legacy PSP format. No keys needed. An ISO can also go to CHDMAN or Dolphin instead; the tool picker decides.',
       io: '.iso  ↔  .cso / .zso / .dax',
     },
+    {
+      glyph: 'ROM',
+      name: 'Handheld ROM',
+      blurb: 'Game Boy, Game Boy Color, Game Boy Advance, and Nintendo DS ROM dumps to a standard .7z or .zip archive, and back. Archive-quality lossless compression with the 7z tool: GBA dumps shrink by roughly half, GB/GBC by around two thirds. Reverting is just extraction. .7z gives the smallest file (LZMA2); .zip trades some size for the broadest compatibility. No keys needed.',
+      io: '.gb / .gbc / .gba / .nds  ↔  .7z / .zip',
+    },
   ];
 
   // Per-tool mode reference. Each row: [mode, what it does, output].
@@ -95,6 +101,14 @@
         ['zso_compress', 'Compress a PSP/PS2 ISO to ZSO (lz4, faster to decode). Same effort presets.', '.zso'],
         ['dax_compress', 'Compress to DAX, the legacy PSP format some older tools expect. Same effort presets.', '.dax'],
         ['cso_decompress', 'Decompress CSO/ZSO/DAX back to a plain ISO.', '.iso'],
+      ],
+    },
+    {
+      tool: 'Handheld ROM',
+      rows: [
+        ['romz_7z', 'Compress a GB/GBC/GBA/DS ROM to a .7z archive (smallest). Pick an effort preset (Fast/Default/Max).', '.7z'],
+        ['romz_zip', 'Compress to a .zip archive (broadest compatibility). Same effort presets.', '.zip'],
+        ['romz_extract', 'Extract the ROM back out of a .7z/.zip archive.', '.gb / .gbc / .gba / .nds'],
       ],
     },
   ];

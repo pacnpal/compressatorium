@@ -48,6 +48,13 @@ const CSO_COMPRESS_EXTS = ['.iso'];
 const CSO_VERIFY_EXTS = ['.cso', '.zso', '.dax'];
 const CSO_SOURCE_EXTS = [...CSO_COMPRESS_EXTS, ...CSO_VERIFY_EXTS];
 
+// Handheld ROM packer (7z). Compress takes a loose GB/GBC/GBA/NDS ROM;
+// extract takes one of the .7z/.zip archives it writes. Both directions are
+// "sources" by mode. Output names preserve the ROM extension (Game.gba.7z).
+const ROMZ_COMPRESS_EXTS = ['.gb', '.gbc', '.gba', '.nds'];
+const ROMZ_VERIFY_EXTS = ['.7z', '.zip'];
+const ROMZ_SOURCE_EXTS = [...ROMZ_COMPRESS_EXTS, ...ROMZ_VERIFY_EXTS];
+
 /**
  * @typedef {Object} ModeEntry
  * @property {string} mode
@@ -355,6 +362,53 @@ export const TOOLS = [
         return swapExt(path, ext);
       }
       if (/\.(cso|zso|dax)$/i.test(path)) return swapExt(path, '.iso');
+      return path;
+    },
+  },
+  {
+    id: 'romz',
+    label: 'Handheld ROM',
+    hint: 'Compress Game Boy / GBC / GBA / DS ROM dumps to .7z / .zip (and back).',
+    verifyPrefix: 'romz',
+    sourceExts: ROMZ_SOURCE_EXTS,
+    verifyExts: ROMZ_VERIFY_EXTS,
+    modeGroups: ['romz'],
+    groups: { romz: 'GB / GBC / GBA / DS' },
+    defaultMode: 'romz_7z',
+    glyph: 'ROM',
+    accent: 'var(--badge-romz)',
+    // The output container is fixed by the mode (.7z vs .zip); the dropdown
+    // picks a compression *effort* preset (no numeric level), like CSO.
+    compressionCodecs: [
+      { value: 'max', label: 'Max', hint: 'Smallest (-mx9 -md=256m -mfb=273)' },
+      { value: 'default', label: 'Default', hint: 'Balanced (-mx7)' },
+      { value: 'fast', label: 'Fast', hint: 'Fastest, larger output (-mx1)' },
+    ],
+    compressionStyle: 'single-with-level',
+    modes: [
+      { mode: 'romz_7z', kind: 'compress', label: 'Compress ROM → 7z', group: 'romz',
+        outputExt: '.7z', inputExtensions: ROMZ_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
+      { mode: 'romz_zip', kind: 'compress', label: 'Compress ROM → zip', group: 'romz',
+        outputExt: '.zip', inputExtensions: ROMZ_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
+      { mode: 'romz_extract', kind: 'extract', label: 'Extract ROM ← 7z/zip', group: 'romz',
+        outputExt: null, inputExtensions: ROMZ_VERIFY_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+    ],
+    getInfo: (path) => api.getRomzInfo(path),
+    verify: (path, opts) => api.verifyRomz(path, opts),
+    verifyBatch: (paths, opts) => api.verifyBatchRomz(paths, opts),
+    // Compress preserves the ROM extension in front of the archive suffix
+    // (Game.gba -> Game.gba.7z); extract strips the archive suffix back off.
+    productPath: (path, mode = 'romz_7z') => {
+      if (/\.(gb|gbc|gba|nds)$/i.test(path)) {
+        return path + (mode === 'romz_zip' ? '.zip' : '.7z');
+      }
+      if (/\.(7z|zip)$/i.test(path)) return path.replace(/\.(7z|zip)$/i, '');
       return path;
     },
   },

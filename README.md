@@ -2,11 +2,11 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A disc image converter that wraps five tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), and **maxcso** (PSP/PS2 CSO/ZSO). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A disc image converter that wraps six tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), and **7z** (handheld ROM archives). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
-* **Five tools in one.** CHDMAN, Dolphin, 3DS, Switch, or CSO/ZSO compression, chosen per job.
+* **Six tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, or handheld ROM (GB/GBC/GBA/DS) compression, chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -14,17 +14,23 @@ A disc image converter that wraps five tools: **CHDMAN** (MAME), **dolphin-tool*
 * **Existing-output detection** with skip, rename, or overwrite.
 * **Delete-on-verify.** Optionally remove the source after a conversion verifies. Off by default.
 * **Progress tracking** through a live job queue.
-* **File info** for CHD, Dolphin, 3DS, and Switch files.
+* **File info** for CHD, Dolphin, 3DS, Switch, CSO, and handheld ROM files.
 
 ### Supported Conversions
 
-| Tool | Input Formats | Output Formats | Use Case |
-|------|--------------|----------------|----------|
-| **CHDMAN** | .gdi, .cue, .bin, .iso | .chd | CD/DVD/LaserDisc to CHD |
-| **Dolphin** | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
-| **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
-| **Switch** | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Nintendo Switch compress/decompress (needs your own prod.keys) |
-| **CSO** | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | PSP/PS2 ISO compress (CSO v1/v2, ZSO, DAX) and decompress, via maxcso |
+| Tool | Platform / Use | Input Formats | Output Formats | Compression Control | External Keys | Binary |
+|------|----------------|---------------|----------------|---------------------|---------------|--------|
+| **CHDMAN** | CD / DVD / HD / LaserDisc discs | .gdi, .cue, .bin, .iso, .chd | .chd, .cue, .bin, .iso, .raw, .avi | Codec list (zstd, zlib, …) | None | `mame-tools` |
+| **Dolphin** | GameCube / Wii discs | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | Codec + numeric level | None | `dolphin-emu` |
+| **3DS** | Nintendo 3DS ROMs | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | None (fixed) | None | `z3ds_compressor` |
+| **Switch** | Nintendo Switch dumps | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Layout + level | **Yes** (`prod.keys`) | `nsz` |
+| **CSO** | PSP / PS2 disc images | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | Effort preset (Fast/Default/Max) | None | `maxcso` |
+| **Handheld ROM** | Game Boy / GBC / GBA / DS ROMs | .gb, .gbc, .gba, .nds, .7z, .zip | .7z, .zip, .gb, .gbc, .gba, .nds | Effort preset (Fast/Default/Max) | None | `7z` (p7zip-full) |
+
+Every conversion above is lossless and fully reversible. Each tool's full mode
+list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's `cso2_compress`, the ROM
+packer's `romz_7z`/`romz_zip`/`romz_extract`) is in
+[Supported Operations](#supported-operations).
 
 > **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
 
@@ -106,6 +112,7 @@ When you open the Web UI, you'll see the tool options at the top:
 * **3DS** - For compressing Nintendo 3DS ROMs
 * **Switch** - For compressing/decompressing Nintendo Switch dumps (needs your own prod.keys)
 * **CSO** - For compressing/decompressing PSP/PS2 ISO images to CSO/ZSO
+* **Handheld ROM** - For compressing/extracting GB/GBC/GBA/DS ROM dumps to .7z/.zip archives
 
 **Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
 

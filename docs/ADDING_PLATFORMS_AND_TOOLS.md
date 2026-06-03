@@ -7,7 +7,7 @@ vertical slice, from the binary in the Docker image, through the Python service
 and tool plugin, the job pipeline, the FastAPI routes, and finally the Svelte
 web UI, and shows how to add a tool and a platform in tandem.
 
-It is written against the codebase as it stands today, with five tools already
+It is written against the codebase as it stands today, with six tools already
 wired up:
 
 | Tool | Binary | Service module | Plugin | Handles |
@@ -17,6 +17,17 @@ wired up:
 | **z3ds_compressor** | built from source (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | `app/services/tools/z3ds.py` | Nintendo 3DS ROMs to `.zcci/.zcia/.z3ds` |
 | **nsz** | `nsz` pip package (on PATH) | `app/services/nsz.py` | `app/services/tools/nsz.py` | Nintendo Switch `.nsp`/`.xci` to/from `.nsz`/`.xcz` |
 | **maxcso** | built from source (`/usr/local/bin/maxcso`) | `app/services/maxcso.py` | `app/services/tools/maxcso.py` | PSP/PS2 `.iso` to/from `.cso` (CSO v1/v2) / `.zso` / `.dax` (tool id `cso`) |
+| **7z** | `p7zip-full` (`7z` on PATH) | `app/services/romz.py` | `app/services/tools/romz.py` | Handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` to/from `.7z`/`.zip` (tool id `romz`) |
+
+> **`romz` is the "produces archives / reuses an existing binary" example.** It
+> needs no Dockerfile build step (the `7z` CLI already ships via `p7zip-full`)
+> and reuses `app/services/archive.py`'s `zipfile`/`py7zr` for the read side
+> (member listing, info, single-member validation), shelling `7z` only for the
+> write/extract/test paths via the shared `SubprocessRunner`. Its `.7z`/`.zip`
+> inputs overlap the archive-browse extensions, so its modes set
+> `allows_archive_input=False` and `routes/files.py`'s existing `is_archive`
+> guard keeps those files classified as browseable archives, not convertible
+> sources.
 
 `z3ds` is the cleanest, most self-contained example of "a new tool that handles
 a new platform," so this guide uses it as the reference implementation
