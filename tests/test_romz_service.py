@@ -116,6 +116,16 @@ def test_extract_output_path_falls_back_when_unreadable(tmp_path):
     assert Path(out).name == "Game.gba"
 
 
+def test_extract_output_path_falls_back_on_corrupt_archive(tmp_path):
+    # A corrupt archive raises zipfile.BadZipFile / py7zr errors, which do NOT
+    # derive from OSError/ValueError/RuntimeError; the broad fallback must still
+    # produce a path (stripped suffix) instead of crashing.
+    corrupt = tmp_path / "Game.gba.zip"
+    corrupt.write_bytes(b"not a real zip file at all")
+    out = RomzService.get_output_path_for_mode("romz_extract", str(corrupt))
+    assert Path(out).name == "Game.gba"
+
+
 def test_info_for_archive_reports_contained_rom_and_ratio(tmp_path):
     archive = _make_zip(tmp_path / "Game.zip", {"Game.gba": b"X" * 1000})
     info = romz_mod.romz_service.info(str(archive))

@@ -22,14 +22,19 @@ A disc image converter that wraps six tools: **CHDMAN** (MAME), **dolphin-tool**
 |------|----------------|---------------|----------------|---------------------|---------------|--------|
 | **CHDMAN** | CD / DVD / HD / LaserDisc discs | .gdi, .cue, .bin, .iso, .chd | .chd, .cue, .bin, .iso, .raw, .avi | Codec list (zstd, zlib, …) | None | `mame-tools` |
 | **Dolphin** | GameCube / Wii discs | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | Codec + numeric level | None | `dolphin-emu` |
-| **3DS** | Nintendo 3DS ROMs | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | None (fixed) | None | `z3ds_compressor` |
+| **3DS** † | Nintendo 3DS ROMs | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | None (fixed) | None | `z3ds_compressor` |
 | **Switch** | Nintendo Switch dumps | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Layout + level | **Yes** (`prod.keys`) | `nsz` |
 | **CSO** | PSP / PS2 disc images | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | Effort preset (Fast/Default/Max) | None | `maxcso` |
 | **Handheld ROM** | Game Boy / GBC / GBA / DS ROMs | .gb, .gbc, .gba, .nds, .7z, .zip | .7z, .zip, .gb, .gbc, .gba, .nds | Effort preset (Fast/Default/Max) | None | `7z` (p7zip-full) |
 
-Every conversion above is lossless and fully reversible. Each tool's full mode
-list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's `cso2_compress`, the ROM
-packer's `romz_7z`/`romz_zip`/`romz_extract`) is in
+Every conversion above is lossless. All are fully reversible **except 3DS (†)**,
+which is **one-way (compress only)**: upstream
+[`z3ds_compress`](https://github.com/energeticokay/z3ds_compress) is a
+compression-only tool with no decompression mode, so there is no path back to the
+original `.cci`/`.cia`/`.3ds` — keep the source if you need it. (The compressed
+`.z3ds` is meant to be read directly; see [Nintendo 3DS Support](#nintendo-3ds-support).)
+Each tool's full mode list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's
+`cso2_compress`, the ROM packer's `romz_7z`/`romz_zip`/`romz_extract`) is in
 [Supported Operations](#supported-operations).
 
 > **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
@@ -463,6 +468,13 @@ Select **3DS** as the primary tool, pick `.cci`/`.cia`/`.3ds` ROMs, and compress
 The general workflow (queue, verify, delete-on-verify, archives) is in the
 [Usage Guide](#usage-guide); the 3DS-specific bits are below.
 
+> **Caveat — 3DS compression is one-way.** Unlike every other tool here, the 3DS
+> tool only compresses; it cannot decompress. Upstream `z3ds_compress` ships no
+> decompression mode (the seekable-Zstandard `.z3ds`/`.zcci`/`.zcia` is designed
+> to be read directly), so there is no path back to the original
+> `.cci`/`.cia`/`.3ds`. **Keep your source ROMs** if you might need them — and be
+> aware that delete-on-verify here removes a source you cannot reconstruct.
+
 ### Supported File Formats
 
 **Input Formats:**
@@ -485,7 +497,6 @@ The general workflow (queue, verify, delete-on-verify, archives) is in the
 
 **Compatibility:**
 - Compressed ROMs are **natively supported** by [Azahar emulator](https://azahar-emu.org/) (release 2123+)
-- Can be decompressed back to original format using the same tool if needed
 - **`.cci` files:** Thoroughly tested and production-ready
 - **`.cia` files:** Supported but considered experimental
 - **`.3ds` files:** Same as .cci - fully supported (they're the same format)

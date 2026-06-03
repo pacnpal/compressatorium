@@ -220,9 +220,12 @@ class RomzService:
         elif mode == ROMZ_EXTRACT_MODE:
             try:
                 filename = os.path.basename(cls._single_rom_member(input_path))
-            except (OSError, ValueError, RuntimeError):
+            except Exception:
                 # Fall back to stripping the archive suffix (matches this tool's
-                # own naming convention) when the archive can't be read yet.
+                # own naming convention) when the archive can't be read or is
+                # corrupt. Broad by design: zipfile.BadZipFile / py7zr errors
+                # don't derive from OSError, and this is a best-effort path
+                # computation, not the place to surface a read failure.
                 filename = input_p.stem
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
@@ -245,10 +248,11 @@ class RomzService:
         if mode in ROMZ_COMPRESS_MODES:
             complete_message = "Compression complete"
             # `7z a` APPENDS to an existing archive, so clear any stale/partial
-            # output first to avoid silently merging into it.
-            if os.path.exists(output_path):
-                with contextlib.suppress(OSError):
-                    await asyncio.to_thread(os.remove, output_path)
+            # output first to avoid silently merging into it. suppress(OSError)
+            # covers the already-absent case (FileNotFoundError) without a
+            # separate stat on the event loop.
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(os.remove, output_path)
         elif mode == ROMZ_EXTRACT_MODE:
             member = await asyncio.to_thread(self._single_rom_member, input_path)
             complete_message = "Extraction complete"
@@ -272,9 +276,9 @@ class RomzService:
             # Any failure/cancel can leave a partial archive or ROM on disk; the
             # runner doesn't own output_path, so clean it up here so a retry
             # isn't blocked by (or silently trusts) a truncated file.
-            if os.path.exists(output_path):
-                with contextlib.suppress(OSError):
-                    os.remove(output_path)
+            # suppress(OSError) covers the already-absent case.
+            with contextlib.suppress(OSError):
+                os.remove(output_path)
             raise
 
     # ----- info -------------------------------------------------------------
