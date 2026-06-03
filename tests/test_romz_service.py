@@ -192,6 +192,18 @@ def test_single_rom_member_rejects_traversal_junk(tmp_path):
         RomzService._single_rom_member(str(archive))
 
 
+def test_single_rom_member_rejects_interior_dotdot(tmp_path):
+    """A `..` component is rejected even when it normalizes back inside the root
+    (`__MACOSX/../Game.gba` -> `Game.gba`): `7z x` recreates the literal path,
+    which would resolve onto the validated ROM and overwrite it."""
+    archive = _make_zip(
+        tmp_path / "g.zip",
+        {"Game.gba": b"ROM", "__MACOSX/../Game.gba": b"evil"},
+    )
+    with pytest.raises(ValueError):
+        RomzService._single_rom_member(str(archive))
+
+
 def test_single_rom_member_allows_posix_special_chars(tmp_path):
     """Legal POSIX filename characters (`:`/`\\`) are not traversal escapes, so
     a ROM named with them must still resolve — otherwise an archive this tool
@@ -326,10 +338,30 @@ def test_convert_compress_builds_7z_command_and_clears_stale_output(
     # 7z runs from the ROM's directory and adds only the basename, so the
     # archive stores a root-level `Game.gba`, not the absolute volume path.
     assert calls["cwd"] == str(tmp_path)
-    assert "Game.gba" in cmd and str(rom) not in cmd
+    # The basename is added with a `./` prefix (literal-safe vs 7z's `@`
+    # list-file syntax) and never the absolute path.
+    assert os.path.join(".", "Game.gba") in cmd and str(rom) not in cmd
     assert "-mx=9" in cmd and "-mfb=273" in cmd
     # The stale archive was replaced (not appended to).
     assert out.read_bytes() == b"OUT"
+
+
+def test_convert_compress_at_prefixed_rom_is_literal_safe(tmp_path, stub_runner):
+    """A ROM literally named `@Game.gba` is added as `./@Game.gba`, so 7z can't
+    mistake it for a `@list-file` argument."""
+    svc, calls = stub_runner
+    rom = tmp_path / "@Game.gba"
+    rom.write_bytes(b"ROM")
+    out = tmp_path / "@Game.gba.7z"
+
+    async def _drain():
+        return [u async for u in svc.convert(str(rom), str(out), "romz_7z")]
+
+    asyncio.run(_drain())
+    cmd = calls["run_cmd"]
+    assert os.path.join(".", "@Game.gba") in cmd
+    # No bare positional begins with `@` (which 7z reads as a list-file).
+    assert not any(isinstance(a, str) and a.startswith("@") for a in cmd)
 
 
 def test_convert_extract_resolves_member_and_runs_7z_x(tmp_path, stub_runner):

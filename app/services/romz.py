@@ -203,18 +203,25 @@ class RomzService:
 
     @staticmethod
     def _reject_traversal(name: str) -> None:
-        """Reject a member that could escape the temp extraction dir.
+        """Reject a member that could escape or collide inside the temp dir.
 
         Deliberately narrower than ``ArchiveService._validate_member`` (which
         also bans ``:`` and ``\\`` for Windows portability): on a POSIX volume a
         loose ROM may legally be named e.g. ``Game:1.gba`` or ``Game\\x.gba``,
         and this tool must be able to round-trip the archive it produced
         (verify / extract reuse this gate). ``7z x`` on POSIX treats those as
-        ordinary filename characters, so only an absolute path or a ``..``
-        component can actually write outside the extraction root.
+        ordinary filename characters.
+
+        Reject an absolute path or **any** ``..`` component — not just paths
+        whose normalized form still escapes the root. ``7z x -y`` recreates the
+        literal path, so a sidecar like ``__MACOSX/../Game.gba`` (which
+        normalizes to ``Game.gba``) would resolve onto the validated ROM's temp
+        path and overwrite it before it is published.
         """
-        norm = os.path.normpath(name.rstrip("/"))
-        if os.path.isabs(norm) or norm == ".." or norm.startswith(".." + os.sep):
+        stripped = name.rstrip("/")
+        # POSIX separator only: `\\` is a legal filename character here, not a
+        # path component boundary.
+        if stripped.startswith("/") or ".." in stripped.split("/"):
             raise ValueError(f"Unsafe archive member path: {name}")
 
     @classmethod
@@ -377,9 +384,12 @@ class RomzService:
             # root). Run it from the ROM's directory and add only the basename so
             # the archive holds a single root-level ``Game.gba`` instead of the
             # absolute volume layout (``games/gba/Game.gba``). output_path stays
-            # absolute, so the archive is still written where planned.
+            # absolute, so the archive is still written where planned. Prefix the
+            # basename with ``./``: 7z reads an argument starting with ``@`` as a
+            # list-file (even after ``--``), so a ROM literally named ``@Game.gba``
+            # would otherwise be misread; ``./`` keeps it a plain path.
             run_cwd = os.path.dirname(input_path) or "."
-            cmd_input = os.path.basename(input_path)
+            cmd_input = os.path.join(".", os.path.basename(input_path))
         elif mode == ROMZ_EXTRACT_MODE:
             complete_message = "Extraction complete"
             member = await asyncio.to_thread(self._single_rom_member, input_path)
