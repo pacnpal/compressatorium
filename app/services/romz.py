@@ -137,7 +137,10 @@ class RomzService:
                 for entry in zf.list():
                     if entry.is_directory:
                         continue
-                    size = getattr(entry, "uncompressed", 0) or 0
+                    # py7zr >=1.1.0 FileInfo.uncompressed is a required int
+                    # (archive.py reads it the same way); `or 0` just guards a
+                    # 0-byte/None edge without the redundant getattr default.
+                    size = entry.uncompressed or 0
                     members.append((entry.filename, int(size)))
         else:
             raise ValueError(f"Unsupported archive extension: {ext}")

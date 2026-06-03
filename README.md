@@ -785,8 +785,11 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 **PSP / PS2 (CSO)**
 - `cso_compress` (.iso → .cso, CSO v1), `cso2_compress` (.iso → .cso, CSO v2), `zso_compress` (.iso → .zso), `dax_compress` (.iso → .dax), `cso_decompress` (.cso/.zso/.dax → .iso)
 
+**Handheld ROM (GB/GBC/GBA/NDS)**
+- `romz_7z` (.gb/.gbc/.gba/.nds → .7z), `romz_zip` (.gb/.gbc/.gba/.nds → .zip), `romz_extract` (.7z/.zip → original ROM)
+
 Notes:
-- Compression settings apply to CHD **create**/**copy**, Dolphin RVZ/WIA, Switch (`nsz_compress`), and the CSO/CSO v2/ZSO/DAX compress modes (the latter take an effort preset). Other modes ignore them.
+- Compression settings apply to CHD **create**/**copy**, Dolphin RVZ/WIA, Switch (`nsz_compress`), the CSO/CSO v2/ZSO/DAX compress modes, and the handheld ROM compress modes (`romz_7z`/`romz_zip`) — the last two take an effort preset. Other modes ignore them.
 - Extract/decompress operations ignore compression settings.
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
@@ -1077,6 +1080,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii disc images (Dolphin)
 - `.cci`, `.cia`, `.3ds` - Nintendo 3DS ROM images (3DS compression)
 - `.cso`, `.zso`, `.dax` - PSP/PS2 compressed ISO images (CSO decompression)
+- `.gb`, `.gbc`, `.gba`, `.nds` - Game Boy / GBC / GBA / DS ROMs (handheld ROM compression)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives
@@ -1088,6 +1092,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.rvz`, `.wia`, `.gcz`, `.iso` - Dolphin output formats
 - `.zcci`, `.zcia`, `.z3ds` - Compressed Nintendo 3DS ROMs
 - `.cso`, `.zso`, `.dax` - Compressed PSP/PS2 ISO images (maxcso; `.cso` covers CSO v1 and v2)
+- `.7z`, `.zip` - Handheld ROM archives (7z; `romz_extract` restores the original `.gb`/`.gbc`/`.gba`/`.nds`)
 
 ---
 
