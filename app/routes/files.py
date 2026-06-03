@@ -341,6 +341,30 @@ async def search_files(
                                     },
                                 )
                             elif include_archive_scan and is_archive:
+                                # Emit the archive container itself so modes that
+                                # take an archive directly (e.g. romz_extract on
+                                # .7z/.zip) can select it from recursive search;
+                                # the frontend gates selectability on the active
+                                # mode, so it stays browse-only for member-input
+                                # tools. Members are still flattened below for
+                                # archive-member modes. The dict mirrors the
+                                # on-disk file shape (so the JSON contract stays
+                                # uniform) plus a ``type`` marker; archives never
+                                # emit tool outputs, so every flag is empty/false.
+                                files.append(
+                                    {
+                                        "name": item,
+                                        "path": item_path,
+                                        "type": "archive",
+                                        "size": os.path.getsize(item_path),
+                                        "extension": ext,
+                                        "chd_path": None,
+                                        "in_archive": False,
+                                        "convertible_by": [],
+                                        "outputs": [],
+                                        **_legacy_output_fields([], {}),
+                                    },
+                                )
                                 # List archive contents
                                 archive_result = archive_service.list_archive_contents(
                                     item_path, include_meta=True,

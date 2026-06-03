@@ -192,6 +192,10 @@ async def test_search_files_outputs_agree_with_legacy(parity_env):
     assert by_name["disc.wbfs"]["dolphin_path"].endswith("disc.rvz")
     assert by_name["movie.rvz"]["dolphin_ready"] is True
     assert by_name["rom.3ds"]["z3ds_ready"] is True
+    # The archive container surfaces as a top-level result (browse-only unless an
+    # archive-direct mode like romz_extract is active) alongside its members.
+    assert by_name["bundle.zip"]["type"] == "archive"
+    assert by_name["bundle.zip"]["convertible_by"] == []
 
 
 @pytest.mark.asyncio
@@ -213,7 +217,12 @@ async def test_search_files_json_keys_are_additive(parity_env):
     for item in results["files"]:
         keys = set(item.keys())
         assert LEGACY_SEARCH_KEYS <= keys
-        assert keys - LEGACY_SEARCH_KEYS == NEW_KEYS
+        # Archive containers (issue: romz_extract reachable from search) carry
+        # the same file schema plus a ``type`` marker; on-disk hits stay as-is.
+        if item.get("type") == "archive":
+            assert keys - LEGACY_SEARCH_KEYS == NEW_KEYS | {"type"}
+        else:
+            assert keys - LEGACY_SEARCH_KEYS == NEW_KEYS
 
     # Archive members are now registry-driven too (issue #128): they expose the
     # same per-tool flags as on-disk hits, plus archive locator keys, and their

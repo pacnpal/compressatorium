@@ -31,6 +31,7 @@ from pathlib import Path
 
 from config import settings
 from logging_setup import get_logger
+from services.archive import archive_service
 from services.subprocess_runner import (
     ConversionCancelled,
     SubprocessRunner,
@@ -160,8 +161,13 @@ class RomzService:
         the shared junk filter so a single ROM zipped on macOS/Windows still
         counts as one member.
         """
+        raw_members = cls._list_members(archive_path)
+        # Guard against oversized archives / zip bombs with the same limits the
+        # archive service applies, before extracting via 7z. Counts/sizes use
+        # the raw listing (junk entries still consume space and inode budget).
+        archive_service.enforce_archive_limits(raw_members)
         members = [
-            (name, size) for name, size in cls._list_members(archive_path)
+            (name, size) for name, size in raw_members
             if not is_junk_path(name)
         ]
         roms = [
@@ -347,6 +353,9 @@ class RomzService:
             except Exception as exc:  # unreadable/corrupt archive
                 logger.debug("romz info: failed to list %s: %s", file_path, exc)
                 members = []
+            # Drop OS/NAS sidecars so the reported ROM name and ratio reflect
+            # only the real payload (same filter as single-ROM validation).
+            members = [(name, size) for name, size in members if not is_junk_path(name)]
             if members:
                 contained_name = os.path.basename(members[0][0])
                 total = sum(size for _, size in members)
@@ -417,12 +426,26 @@ class RomzService:
             yield {"type": "error", "valid": False, "message": f"Invalid extension: {ext}"}
             return
 
+        # Verify only certifies this tool's own single-ROM archives. Routing is
+        # extension-based, so without this an arbitrary multi-file/source zip
+        # would pass `7z t` and persist a misleading "Verified" state. This also
+        # applies the shared archive size/entry limits before testing.
+        try:
+            self._single_rom_member(file_path)
+        except ValueError as exc:
+            yield {"type": "error", "valid": False, "message": str(exc)}
+            return
+        except Exception as exc:  # unreadable/corrupt archive
+            yield {"type": "error", "valid": False, "message": f"Cannot read archive: {exc}"}
+            return
+
         yield {"type": "progress", "progress": 0, "message": "Verifying integrity..."}
         # run_capture applies the shared nice/ionice policy and honors the
         # verify timeout (0 disables); a heavy `7z t` is throttled like a convert.
+        # `--` keeps an archive name beginning with `-` a positional filename.
         timeout = verify_timeout(_OWNER)
         returncode, stdout, _ = await self._runner.run_capture(
-            [self.sevenzip_path, "t", file_path],
+            [self.sevenzip_path, "t", "--", file_path],
             timeout=timeout or None,
             stderr_to_stdout=True,
         )

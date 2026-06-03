@@ -92,6 +92,26 @@ class ArchiveService:
         _, max_member_size, max_total_size = self._archive_limits()
         return max_member_size > 0 or max_total_size > 0
 
+    def enforce_archive_limits(self, members: list[Tuple[str, int]]) -> None:
+        """Apply the configured archive entry/size limits to a member listing.
+
+        Shared with romz, which reads archives via its own member listing and
+        runs ``7z`` directly rather than going through this service's extract
+        path. Without this, deployments that set ``CHD_ARCHIVE_MAX_ENTRIES`` /
+        ``CHD_ARCHIVE_MAX_MEMBER_SIZE`` / ``CHD_ARCHIVE_MAX_TOTAL_SIZE`` to guard
+        against oversized archives / zip bombs would not have those limits
+        applied to romz extract or verify. ``members`` is ``(name, size)`` with
+        uncompressed sizes.
+        """
+        max_entries, _, _ = self._archive_limits()
+        if max_entries > 0 and len(members) > max_entries:
+            raise ValueError(f"Archive exceeds max entries ({max_entries})")
+        total = 0
+        for name, size in members:
+            self._check_member_size(size, member=name)
+            total += size
+        self._check_total_size(total)
+
     def _create_temp_dir(self) -> str:
         base_dir = settings.temp_dir
         if base_dir is None:

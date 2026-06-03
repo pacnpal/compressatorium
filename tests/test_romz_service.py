@@ -102,6 +102,25 @@ def test_single_rom_member_ignores_os_sidecars(tmp_path):
     assert RomzService._single_rom_member(str(archive)) == "Game.gba"
 
 
+def test_single_rom_member_enforces_archive_limits(tmp_path, monkeypatch):
+    # Deployments that cap archive entries (zip-bomb guard) must apply to romz
+    # extraction even though it shells out to 7z instead of the archive service.
+    from app.services.archive import settings as arch_settings
+    monkeypatch.setattr(arch_settings, "archive_max_entries", 1, raising=False)
+    archive = _make_zip(tmp_path / "many.zip", {"Game.gba": b"ROM", "extra.dat": b"x"})
+    with pytest.raises(ValueError, match="max entries"):
+        RomzService._single_rom_member(str(archive))
+
+
+def test_info_ignores_sidecars(tmp_path):
+    archive = _make_zip(
+        tmp_path / "mac.zip",
+        {"__MACOSX/._Game.gba": b"meta", "Game.gba": b"ROMDATA"},
+    )
+    info = romz_mod.romz_service.info(str(archive))
+    assert info["contained_name"] == "Game.gba"
+
+
 def test_single_rom_member_rejects_no_rom(tmp_path):
     archive = _make_zip(tmp_path / "doc.zip", {"readme.txt": b"hi"})
     with pytest.raises(ValueError, match="no Game Boy"):
@@ -309,3 +328,20 @@ def test_verify_rejects_non_archive(tmp_path, stub_runner):
     result = asyncio.run(svc.verify(str(rom)))
     assert result["valid"] is False
     assert "extension" in result["message"].lower()
+
+
+def test_verify_rejects_multifile_archive(tmp_path, stub_runner):
+    # Routing is extension-based, so an arbitrary multi-file/source zip must not
+    # be marked "Verified": reject before `7z t` runs.
+    svc, calls = stub_runner
+    archive = _make_zip(tmp_path / "two.zip", {"a.gba": b"a", "b.txt": b"b"})
+    result = asyncio.run(svc.verify(str(archive)))
+    assert result["valid"] is False
+    assert "capture_cmd" not in calls  # 7z t never invoked
+
+
+def test_verify_passes_dash_safe_separator(tmp_path, stub_runner):
+    svc, calls = stub_runner
+    archive = _make_zip(tmp_path / "Game.zip", {"Game.gba": b"ROM"})
+    asyncio.run(svc.verify(str(archive)))
+    assert calls["capture_cmd"][:3] == [svc.sevenzip_path, "t", "--"]
