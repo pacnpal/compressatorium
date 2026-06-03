@@ -71,6 +71,19 @@ def _detect_archive_member_outputs(
     return output_stem, convertible_by, outputs, by_tool
 
 
+def _verifiable_by(path: str) -> list[str]:
+    """Tool ids whose Verify/Info apply to this concrete on-disk path.
+
+    Registry-driven per-file refinement of ``verify_extensions``: romz inspects
+    an archive's members so only single-ROM ``.7z``/``.zip`` claim it, not every
+    archive. The frontend gates the Verify/Info row-actions on this flag instead
+    of an extension match, so the affordance is only offered where a tool can
+    actually handle the file. Called inside the threadpool scan because
+    ``verifies_path`` may list an archive's members (blocking I/O).
+    """
+    return [t.id for t in registry.tools_verifying_path(path)]
+
+
 def _legacy_output_fields(
     convertible_by: list[str], by_tool: dict[str, OutputStatus],
 ) -> dict:
@@ -249,6 +262,7 @@ async def list_files(
                             else None,
                             convertible_by=convertible_by,
                             outputs=outputs,
+                            verifiable_by=_verifiable_by(item_path),
                             **tool_fields,
                         )
                         entries.append(entry)
@@ -337,6 +351,7 @@ async def search_files(
                                         "in_archive": False,
                                         "convertible_by": convertible_by,
                                         "outputs": outputs,
+                                        "verifiable_by": _verifiable_by(item_path),
                                         **tool_fields,
                                     },
                                 )
@@ -362,6 +377,10 @@ async def search_files(
                                         "in_archive": False,
                                         "convertible_by": [],
                                         "outputs": [],
+                                        # Per-archive gate: romz Verify/Info only
+                                        # surface on single-ROM .7z/.zip, not on
+                                        # every archive container.
+                                        "verifiable_by": _verifiable_by(item_path),
                                         **_legacy_output_fields([], {}),
                                     },
                                 )

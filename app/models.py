@@ -94,6 +94,11 @@ class FileEntry(BaseModel):
     media_type: str | None = None  # "dvd", "cd", or None - for CHD files
     convertible_by: list[str] = []   # tool ids whose input_extensions accept this file
     outputs: list[OutputStatus] = []  # detected sibling outputs, one per producing tool
+    # Tool ids whose Verify/Info apply to THIS concrete path (per-file refinement
+    # of verify_extensions). Mostly an extension match, but romz inspects an
+    # archive's members so only single-ROM .7z/.zip surface its row-actions —
+    # not every archive. Empty when no tool can verify/info the path.
+    verifiable_by: list[str] = []
 
 
 class DirectoryListing(BaseModel):

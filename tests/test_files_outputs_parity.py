@@ -42,6 +42,9 @@ LEGACY_ARCHIVE_KEYS = LEGACY_SEARCH_KEYS | {
     "archive_path", "internal_path", "output_stem",
 }
 NEW_KEYS = {"convertible_by", "outputs"}
+# On-disk entries and archive containers also carry the per-file verify gate
+# (issue #146); archive *members* don't (they can't be verified in place).
+NEW_KEYS_WITH_VERIFY = NEW_KEYS | {"verifiable_by"}
 
 
 @pytest.fixture(name="parity_env")
@@ -181,7 +184,12 @@ async def test_search_files_outputs_agree_with_legacy(parity_env):
     )
     by_name = {Path(item["path"]).name: item for item in results["files"]}
 
+    # Archives are a documented exception (mirrors the list_files counterpart):
+    # has_chd can come from archive-member scanning, not registry outputs, so
+    # the agreement invariant applies only to plain on-disk files.
     for item in results["files"]:
+        if item.get("type") == "archive":
+            continue
         _assert_agreement(item, item["outputs"], item["convertible_by"])
 
     assert by_name["lonely.cue"]["outputs"] == []
@@ -205,7 +213,7 @@ async def test_list_files_json_keys_are_additive(parity_env):
     for entry in listing.entries:
         keys = set(entry.model_dump().keys())
         assert LEGACY_FILEENTRY_KEYS <= keys
-        assert keys - LEGACY_FILEENTRY_KEYS == NEW_KEYS
+        assert keys - LEGACY_FILEENTRY_KEYS == NEW_KEYS_WITH_VERIFY
 
 
 @pytest.mark.asyncio
@@ -220,9 +228,9 @@ async def test_search_files_json_keys_are_additive(parity_env):
         # Archive containers (issue: romz_extract reachable from search) carry
         # the same file schema plus a ``type`` marker; on-disk hits stay as-is.
         if item.get("type") == "archive":
-            assert keys - LEGACY_SEARCH_KEYS == NEW_KEYS | {"type"}
+            assert keys - LEGACY_SEARCH_KEYS == NEW_KEYS_WITH_VERIFY | {"type"}
         else:
-            assert keys - LEGACY_SEARCH_KEYS == NEW_KEYS
+            assert keys - LEGACY_SEARCH_KEYS == NEW_KEYS_WITH_VERIFY
 
     # Archive members are now registry-driven too (issue #128): they expose the
     # same per-tool flags as on-disk hits, plus archive locator keys, and their

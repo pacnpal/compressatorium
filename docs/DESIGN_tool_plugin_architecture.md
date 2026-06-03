@@ -407,12 +407,62 @@ class FileEntry(BaseModel):
     ...
     convertible_by: list[str] = []           # tool ids that accept this input
     outputs: list[OutputStatus] = []         # detected sibling outputs
+    verifiable_by: list[str] = []            # tool ids whose Verify/Info apply here
     # legacy fields kept during migration (see Phase 7), removed at the end
 ```
 
 `files.py` `scan_directory`/`search_files` stop hardcoding three flag blocks
 and instead loop `for tool in registry.all()` calling a tool-provided
 `detect_output(item_path)`.
+
+#### Per-file verify gate (`verifies_path` / `verifiable_by`)
+
+`verify_extensions` is a coarse, extension-level claim. Most tools verify
+every file with a matching extension, but a tool can claim a **broad container
+extension while only handling a narrow subset** of it — `romz` claims `.7z`/
+`.zip` (its extract-mode inputs) yet its Verify/Info only apply to the
+single-ROM archives it produced, not to an arbitrary multi-file `.zip` the user
+happens to have. Gating the frontend's Verify/Info row-actions on the
+extension alone would offer the affordance where the tool can't actually use it
+(issue #146).
+
+The plugin contract closes that gap with `ToolPlugin.verifies_path(path) ->
+bool`: the per-file refinement of `verify_extensions`. `BaseTool` defaults it to
+the plain extension match, so existing tools are unaffected; `RomzTool`
+overrides it to inspect the archive's members (exactly one handheld-ROM member —
+the same invariant verify/extract enforce, via
+`RomzService.is_single_rom_archive`). The registry exposes
+`tools_verifying_path(path)` (the per-file companion to `tool_for_verify`), and
+`routes/files.py` materializes the result into the tool-neutral
+`FileEntry.verifiable_by` list for on-disk files and archive containers. The
+frontend (`RowActionsMenu`) gates Verify/Info on `verifiable_by` when present,
+falling back to the registry's extension match for rows the listing doesn't
+annotate (e.g. archive members, which can't be verified in place). `verifies_path`
+may do disk I/O (archive inspection), so call it off the event loop — the
+`files.py` scans already run in a threadpool.
+
+Two consumer-side notes keep the gate airtight:
+
+- **Frontend precedence.** The registry's extension match (`toolForVerifyPath`)
+  stays the source of truth, because it encodes deliberate UX exclusions the
+  backend's broader `verify_extensions` don't — e.g. Dolphin's
+  `verify_extensions` include `.iso`, but the frontend intentionally omits
+  `.iso` from `DOLPHIN_VERIFY_EXTS` so CD/DVD ISOs aren't routed to a Dolphin
+  verify that fails. `verifiable_by` may therefore only **narrow** that match,
+  never broaden it. This rule lives in one place — `registry.verifyToolForPath`
+  (resolve the extension match, then drop it when a present `verifiable_by`
+  excludes it) — and every verify entry point uses it: the per-row menu
+  (`RowActionsMenu`), the "Verify selected" gate (`FileList`), and the bulk
+  target picker (`BulkVerifyModal`), so a non-single-ROM archive can't slip a
+  romz Verify through the batch path either.
+- **Output targets.** A source row can verify *from* an existing sibling output
+  (`entry.outputs[].path`), so that path needs the same gate. Rather than
+  re-listing the output inside the row, the producing tool's `detect_output`
+  validates the candidate before claiming it: `RomzTool.detect_output` only
+  reports a finished `.7z`/`.zip` as a romz output when it is a genuine
+  single-ROM archive (a mid-conversion placeholder still badges as
+  in-progress). A coincidental multi-file `Game.gba.7z` thus never enters
+  `outputs`, so the verify-from-output flow can't offer romz Verify on it.
 
 ### 3.7 Frontend descriptor (`src/lib/tools/registry.js`)
 

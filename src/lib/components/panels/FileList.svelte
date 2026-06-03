@@ -86,7 +86,14 @@
   const selectedHasVerifiable = $derived.by(() => {
     const sel = Array.from(fileBrowser.selectedFiles.values());
     return sel.some(
-      (e) => e?.path && !e.path.includes('::') && registry.toolForVerifyPath(e.path),
+      (e) =>
+        e?.path &&
+        !e.path.includes('::') &&
+        // Honor the backend's per-file gate (romz: single-ROM .7z/.zip only),
+        // matching the row menu and the bulk-verify modal, so a non-single-ROM
+        // archive selection doesn't surface a "Verify selected" that the batch
+        // endpoint would then reject.
+        registry.verifyToolForPath(e.path, e?.verifiable_by),
     );
   });
 

@@ -1,5 +1,18 @@
 # Release Notes
 
+## 4.0.3 (2026-06-03)
+
+### Handheld ROM: Verify/Info only on single-ROM archives
+
+#### Changed
+
+- **The romz Verify/Info row-actions now appear only on single-ROM `.7z`/`.zip` archives**, not on every archive in a directory. The Handheld ROM tool claims `.7z`/`.zip` so it can offer Verify/Info on the archives it produces, but it previously surfaced those actions on *any* archive purely by extension — including an unrelated multi-file `.zip` you happened to have. The file listing now inspects each archive's members and only offers romz Verify/Info when it holds exactly one Game Boy / GBC / GBA / DS ROM (the same single-ROM invariant verify/extract already enforce; OS/NAS clutter like `__MACOSX/…` / `.DS_Store` is ignored). The same gate covers the verify-*from-output* flow (a loose ROM row only offers Verify against a sibling `Game.gba.7z` when that archive is a genuine romz output) and the bulk **Verify selected** path (a non-single-ROM archive selected in extract mode no longer surfaces the button or gets submitted to the romz batch verify). Non-romz archives are unchanged — they stay browseable archives (`type="archive"`) with their extract behavior intact (issue #146).
+
+#### Internal
+
+- New per-file `ToolPlugin.verifies_path(path)` seam: the refinement of `verify_extensions` from a coarse extension claim to a per-file decision. `BaseTool` defaults it to the extension match (every other tool is unaffected); `RomzTool` overrides it via the new `RomzService.is_single_rom_archive` member probe. The registry exposes `tools_verifying_path(path)`, and `routes/files.py` materializes it into a tool-neutral `FileEntry.verifiable_by` list (on-disk files + archive containers, in both the directory listing and recursive search) that the frontend gates Verify/Info on. The narrowing rule is centralized in `registry.verifyToolForPath` and shared by the row menu (`RowActionsMenu`), the "Verify selected" gate (`FileList`), and the bulk target picker (`BulkVerifyModal`). The registry's extension match stays the source of truth so deliberate frontend exclusions hold (e.g. `.iso` is still not routed to Dolphin verify); `verifiable_by` only narrows it. `RomzTool.detect_output` likewise validates the candidate so a non-single-ROM `.7z`/`.zip` is never badged as a romz output (keeping the verify-from-output flow consistent). Documented in `docs/DESIGN_tool_plugin_architecture.md` §3.6 and `docs/ADDING_PLATFORMS_AND_TOOLS.md`.
+- Tests: `tests/test_romz_files_integration.py` gains listing- and search-level regressions (a multi-file / no-ROM / corrupt archive does not surface romz actions; a single-ROM archive does; a coincidentally-named multi-file sibling is not badged as a romz output); `tests/test_romz_service.py` covers `is_single_rom_archive`; `tests/test_tool_registry.py` covers `tools_verifying_path`; and the `FileEntry` JSON-key parity suite is extended for `verifiable_by`.
+
 ## 4.0.2 (2026-06-03)
 
 ### Handheld ROM support: GB / GBC / GBA / NDS → .7z / .zip

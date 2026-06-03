@@ -97,14 +97,33 @@ class RomzTool(BaseTool):
         for ext in (_PRIMARY_OUTPUT_EXT, ".zip"):
             candidate = f"{input_path}{ext}"
             file_exists, is_converting = lock_manager.check_file_status(candidate)
-            if file_exists or is_converting:
+            if is_converting:
+                # Mid-conversion: badge the in-progress output without inspecting
+                # the (still-incomplete) archive.
                 return OutputStatus(
-                    tool_id=self.id,
-                    exists=file_exists,
-                    ready=file_exists and not is_converting,
-                    path=candidate,
+                    tool_id=self.id, exists=file_exists, ready=False, path=candidate,
+                )
+            # A *finished* sibling only counts as a romz output when it's actually
+            # one of the single-ROM archives romz produces — not an unrelated
+            # multi-file/corrupt archive that merely matches the Game.gba.7z
+            # naming convention. Without this the source row's verify-from-output
+            # flow (RowActionsMenu) would offer a romz Verify on a non-romz
+            # archive whose own listing reports verifiable_by == [] (issue #146).
+            if file_exists and self._service.is_single_rom_archive(candidate):
+                return OutputStatus(
+                    tool_id=self.id, exists=True, ready=True, path=candidate,
                 )
         return None
+
+    def verifies_path(self, path: str) -> bool:
+        # romz claims .7z/.zip broadly (extract-mode inputs), but verify/info
+        # only apply to the single-ROM archives it produces. Confirm exactly
+        # one handheld-ROM member instead of trusting the extension, so the
+        # Verify/Info row-actions aren't offered on unrelated multi-file
+        # archives the user happens to have.
+        if Path(path).suffix.lower() not in self.verify_extensions:
+            return False
+        return self._service.is_single_rom_archive(path)
 
     def output_path(
         self,
