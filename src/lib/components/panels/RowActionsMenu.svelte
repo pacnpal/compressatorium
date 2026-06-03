@@ -26,30 +26,13 @@
   const isArchive = $derived(entry?.type === 'archive');
   const outputs = $derived(Array.isArray(entry?.outputs) ? entry.outputs : []);
 
-  // Direct verify target for this row, if any (tool that owns the
-  // path as a verify-class output, .chd, .rvz, .z3ds, etc.).
-  //
-  // The frontend registry's extension match is the source of truth for verify
-  // routing: it encodes deliberate UX exclusions the backend's broader
-  // verify_extensions don't (e.g. `.iso` is intentionally NOT routed to
-  // Dolphin verify — see DOLPHIN_VERIFY_EXTS in registry.js). The backend's
-  // per-file `verifiable_by` can only NARROW that match, never broaden it:
-  // romz claims `.7z`/`.zip` by extension but only single-ROM archives are
-  // actually verifiable, so drop the action when the listing says this
-  // concrete file isn't one. Absent `verifiable_by` (e.g. archive members) the
-  // extension match stands alone.
-  const directVerifyTool = $derived.by(() => {
-    if (!path) return null;
-    const tool = registry.toolForVerifyPath(path);
-    if (!tool) return null;
-    if (
-      Array.isArray(entry?.verifiable_by) &&
-      !entry.verifiable_by.includes(tool.id)
-    ) {
-      return null;
-    }
-    return tool;
-  });
+  // Direct verify target for this row, if any (tool that owns the path as a
+  // verify-class output, .chd, .rvz, .z3ds, etc.), narrowed by the backend's
+  // per-file `verifiable_by` (romz only claims single-ROM .7z/.zip archives).
+  // See registry.verifyToolForPath for the precedence rule.
+  const directVerifyTool = $derived(
+    registry.verifyToolForPath(path, entry?.verifiable_by),
+  );
 
   // Fallback: if the row itself isn't verifiable, look at any
   // declared outputs (`entry.outputs[].path`) for an existing

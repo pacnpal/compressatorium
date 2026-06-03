@@ -449,8 +449,12 @@ Two consumer-side notes keep the gate airtight:
   `verify_extensions` include `.iso`, but the frontend intentionally omits
   `.iso` from `DOLPHIN_VERIFY_EXTS` so CD/DVD ISOs aren't routed to a Dolphin
   verify that fails. `verifiable_by` may therefore only **narrow** that match,
-  never broaden it: `RowActionsMenu` resolves the registry tool first and drops
-  it when a present `verifiable_by` excludes it.
+  never broaden it. This rule lives in one place — `registry.verifyToolForPath`
+  (resolve the extension match, then drop it when a present `verifiable_by`
+  excludes it) — and every verify entry point uses it: the per-row menu
+  (`RowActionsMenu`), the "Verify selected" gate (`FileList`), and the bulk
+  target picker (`BulkVerifyModal`), so a non-single-ROM archive can't slip a
+  romz Verify through the batch path either.
 - **Output targets.** A source row can verify *from* an existing sibling output
   (`entry.outputs[].path`), so that path needs the same gate. Rather than
   re-listing the output inside the row, the producing tool's `detect_output`

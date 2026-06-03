@@ -425,6 +425,12 @@ function endsWithAny(path, exts) {
   return exts.some((ext) => lower.endsWith(ext));
 }
 
+/** Verify-class tool whose verifyExts match the path (extension only). */
+function matchVerifyTool(path) {
+  if (!path) return null;
+  return TOOLS.find((t) => endsWithAny(path, t.verifyExts)) ?? null;
+}
+
 /** Build the single/batch verify URL from the tool's verifyPrefix. */
 function deriveVerifyUrl(tool, kind) {
   if (!tool) return null;
@@ -448,8 +454,31 @@ export const registry = {
   /** The owning tool for a wire-mode value. */
   toolForMode: (mode) => byMode.get(mode)?.tool,
 
-  /** Pick the tool whose verify_extensions match a given file path, or null. */
-  toolForVerifyPath: (path) => TOOLS.find((t) => endsWithAny(path, t.verifyExts)) ?? null,
+  /** Pick the tool whose verify_extensions match a given file path, or null.
+   *  Pure extension match — use `verifyToolForPath` when an entry's backend
+   *  `verifiable_by` refinement should also apply (e.g. romz archive rows). */
+  toolForVerifyPath: (path) => matchVerifyTool(path),
+
+  /**
+   * Verify tool for a concrete file, narrowed by the backend's per-file
+   * `verifiable_by` refinement when provided. The extension match stays the
+   * source of truth — it encodes deliberate UX exclusions the backend's
+   * broader verify_extensions don't (e.g. `.iso` is intentionally NOT routed
+   * to Dolphin verify) — and `verifiable_by` may only NARROW it, never broaden
+   * it (romz claims `.7z`/`.zip` by extension but only single-ROM archives are
+   * actually verifiable). Pass the listing's `entry.verifiable_by`; omit it
+   * (undefined) for paths the listing doesn't annotate, leaving the plain
+   * extension match. Shared by the row menu and the bulk-verify paths so they
+   * gate identically.
+   */
+  verifyToolForPath: (path, verifiableBy) => {
+    const tool = matchVerifyTool(path);
+    if (!tool) return null;
+    if (Array.isArray(verifiableBy) && !verifiableBy.includes(tool.id)) {
+      return null;
+    }
+    return tool;
+  },
 
   /** Tools whose source extensions match the given path (convertible sources). */
   toolsForSourcePath: (path) => TOOLS.filter((t) => endsWithAny(path, t.sourceExts)),
