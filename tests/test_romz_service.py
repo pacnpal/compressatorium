@@ -144,6 +144,43 @@ def test_single_rom_member_rejects_traversal_rom(tmp_path):
         RomzService._single_rom_member(str(archive))
 
 
+def test_single_rom_member_rejects_symlink(tmp_path):
+    """A symlink member masquerading as the ROM is rejected before `7z x`, so a
+    crafted archive can't produce a link to an arbitrary path as the output."""
+    archive = tmp_path / "link.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("Game.gba")
+        info.external_attr = 0o120777 << 16  # S_IFLNK
+        zf.writestr(info, "/etc/passwd")
+    with pytest.raises(ValueError, match="symlink"):
+        RomzService._single_rom_member(str(archive))
+
+
+def test_single_rom_member_counts_directory_entries(tmp_path, monkeypatch):
+    """Directory entries count toward the archive-entry limit: `7z x`
+    materializes the whole tree, so a single-ROM archive padded with many
+    directories must not slip past CHD_ARCHIVE_MAX_ENTRIES."""
+    from app.services.archive import settings as arch_settings
+    monkeypatch.setattr(arch_settings, "archive_max_entries", 2, raising=False)
+    archive = tmp_path / "dirs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("Game.gba", b"ROM")
+        for d in ("a/", "b/", "c/"):  # 1 file + 3 dirs = 4 entries > limit 2
+            zf.writestr(d, b"")
+    with pytest.raises(ValueError, match="max entries"):
+        RomzService._single_rom_member(str(archive))
+
+
+def test_single_rom_member_resolves_with_directory_entries(tmp_path):
+    """A ROM stored under a directory still resolves (directories are not
+    payloads); the nested path is returned for `7z x` to recreate."""
+    archive = tmp_path / "nested.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("roms/", b"")
+        zf.writestr("roms/Game.gba", b"ROM")
+    assert RomzService._single_rom_member(str(archive)) == "roms/Game.gba"
+
+
 def test_single_rom_member_rejects_traversal_junk(tmp_path):
     """A junk member with a traversal path is rejected too: `7z x` extracts
     every member, so an unsafe sidecar can't be silently ignored."""

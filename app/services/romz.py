@@ -25,6 +25,7 @@ import contextlib
 import os
 import re
 import shutil
+import stat
 import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -124,31 +125,56 @@ class RomzService:
     # ----- archive member listing (read side; reuses zipfile / py7zr) -------
 
     @staticmethod
-    def _list_members(archive_path: str) -> list[tuple[str, int]]:
-        """Return ``(internal_path, uncompressed_size)`` for every file member."""
+    def _list_entries(archive_path: str) -> list[tuple[str, int, bool]]:
+        """Return ``(internal_path, uncompressed_size, is_dir)`` for every member.
+
+        Rejects archives containing a **symlink** member up front. This tool only
+        ever packs a single loose ROM file, so a symlink masquerading as the ROM
+        (e.g. ``Game.gba -> /etc/passwd``) is malicious: ``7z x`` would restore it
+        as a link and the later move / ``7z t`` would treat the link as the ROM.
+
+        Directory entries are returned (``is_dir=True``) so callers can count them
+        against the archive-entry limits — ``7z x`` materializes every directory
+        under the temp root, so they must count toward CHD_ARCHIVE_MAX_ENTRIES.
+        """
         ext = Path(archive_path).suffix.lower()
-        members: list[tuple[str, int]] = []
+        entries: list[tuple[str, int, bool]] = []
         if ext == ".zip":
             with zipfile.ZipFile(archive_path, "r") as zf:
                 for info in zf.infolist():
-                    if info.is_dir():
-                        continue
-                    members.append((info.filename, int(info.file_size)))
+                    if stat.S_ISLNK(info.external_attr >> 16):
+                        raise ValueError("Archive contains a symlink member")
+                    entries.append(
+                        (info.filename, int(info.file_size), info.is_dir()),
+                    )
         elif ext == ".7z":
             if not HAS_7Z:
                 raise RuntimeError("py7zr is required to read .7z archives")
             with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
                 for entry in zf.list():
-                    if entry.is_directory:
-                        continue
+                    if entry.is_symlink:
+                        raise ValueError("Archive contains a symlink member")
                     # py7zr >=1.1.0 FileInfo.uncompressed is a required int
                     # (archive.py reads it the same way); `or 0` just guards a
                     # 0-byte/None edge without the redundant getattr default.
                     size = entry.uncompressed or 0
-                    members.append((entry.filename, int(size)))
+                    entries.append((entry.filename, int(size), entry.is_directory))
         else:
             raise ValueError(f"Unsupported archive extension: {ext}")
-        return members
+        return entries
+
+    @classmethod
+    def _list_members(cls, archive_path: str) -> list[tuple[str, int]]:
+        """File members ``(internal_path, uncompressed_size)``.
+
+        Directories are dropped and symlink members are rejected (see
+        :meth:`_list_entries`); the ROM payload is always a regular file.
+        """
+        return [
+            (name, size)
+            for name, size, is_dir in cls._list_entries(archive_path)
+            if not is_dir
+        ]
 
     @staticmethod
     def _resolve_single_rom(
@@ -183,26 +209,29 @@ class RomzService:
         but exactly one handheld-ROM payload is a hard error rather than a silent
         partial extract.
         """
-        raw_members = cls._list_members(archive_path)
+        entries = cls._list_entries(archive_path)  # raises on a symlink member
         # Guard against oversized archives / zip bombs with the same limits the
-        # archive service applies, before extracting via 7z. Counts/sizes use
-        # the raw listing (junk entries still consume space and inode budget).
-        archive_service.enforce_archive_limits(raw_members)
+        # archive service applies, before extracting via 7z. Count EVERY entry
+        # (junk and directories included): `7z x` materializes the whole tree
+        # under the temp root, so directory entries consume the inode budget too.
+        archive_service.enforce_archive_limits([(n, s) for n, s, _ in entries])
         # Extraction runs `7z x` (preserve paths) over EVERY member, so any
         # member — the ROM or an ignored junk entry like
         # ``__MACOSX/../../victim.gba`` — with an absolute or ``..`` path could
         # write outside the temp dir. Reject such archives up front using the
         # archive service's shared member-path validator (also gates verify,
-        # which reuses this method).
-        for name, _ in raw_members:
-            archive_service._validate_member(name)
-        resolved = cls._resolve_single_rom(raw_members)
+        # which reuses this method). Directory names carry a trailing slash; the
+        # validator works on path components, so strip it first.
+        for name, _s, _d in entries:
+            archive_service._validate_member(name.rstrip("/") or name)
+        file_members = [(n, s) for n, s, is_dir in entries if not is_dir]
+        resolved = cls._resolve_single_rom(file_members)
         if resolved is not None:
             return resolved[0]
         # Distinguish "no ROM" from "more than one payload" for a clear message.
         has_rom = any(
             Path(name).suffix.lower() in ROMZ_COMPRESS_EXTENSIONS
-            for name, _ in raw_members
+            for name, _ in file_members
             if not is_junk_path(name)
         )
         if not has_rom:
