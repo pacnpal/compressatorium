@@ -21,6 +21,7 @@ from models import (
     RomzInfo,
     Z3DSInfo,
 )
+from services.archive import ARCHIVE_EXTENSIONS
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
 from services.disc_id import (
@@ -222,8 +223,12 @@ async def scan_metadata_task(
 
     # Discovery is registry-driven: walk every extension any registered tool
     # produces or can verify (issue #131) so Dolphin/3DS/Switch outputs are
-    # eligible for the scan, not just CHDs.
-    scan_extensions = registry.scannable_extensions()
+    # eligible for the scan, not just CHDs. Archive containers (.zip/.7z/.rar)
+    # are excluded: they're browse-into containers handled by the archive
+    # subsystem, never DAT-matchable as a whole, so the romz tool advertising
+    # .7z/.zip outputs must not make the scan enumerate and hash every unrelated
+    # archive under the configured volumes.
+    scan_extensions = registry.scannable_extensions() - ARCHIVE_EXTENSIONS
 
     def collect_scannable_paths():
         """Collect all scannable output paths from volumes (runs in thread pool)."""

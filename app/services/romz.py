@@ -24,6 +24,8 @@ import asyncio
 import contextlib
 import os
 import re
+import shutil
+import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -177,16 +179,16 @@ class RomzService:
         self, input_path: str, output_path: str, mode: str,
         compression: str | None, member: str | None,
     ) -> list[str]:
+        # All switches go before a literal ``--`` so positional names that begin
+        # with ``-`` (an archive/member/ROM whose filename starts with a dash)
+        # are treated as filenames, not 7-Zip switches.
         if mode in ROMZ_COMPRESS_MODES:
-            cmd = [self.sevenzip_path, "a", output_path, input_path]
-            cmd += _compress_flags(mode, compression)
-            cmd += ["-bsp1", "-y"]
+            switches = _compress_flags(mode, compression) + ["-bsp1", "-y"]
+            cmd = [self.sevenzip_path, "a", *switches, "--", output_path, input_path]
         elif mode == ROMZ_EXTRACT_MODE:
             out_dir = os.path.dirname(output_path) or "."
-            cmd = [
-                self.sevenzip_path, "e", input_path, member or "",
-                f"-o{out_dir}", "-bsp1", "-y",
-            ]
+            switches = [f"-o{out_dir}", "-bsp1", "-y"]
+            cmd = [self.sevenzip_path, "e", *switches, "--", input_path, member or ""]
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
         # Apply ionice via a command wrapper (the shared nice level is applied by
@@ -248,6 +250,11 @@ class RomzService:
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         member: str | None = None
+        # Where the 7z subprocess actually writes (and what the runner watches).
+        # For compress this is output_path; for extract it's a temp file we then
+        # move to output_path.
+        runner_output = output_path
+        extract_tmp_dir: str | None = None
         if mode in ROMZ_COMPRESS_MODES:
             complete_message = "Compression complete"
             # `7z a` APPENDS to an existing archive, so clear any stale/partial
@@ -257,32 +264,59 @@ class RomzService:
             with contextlib.suppress(OSError):
                 await asyncio.to_thread(os.remove, output_path)
         elif mode == ROMZ_EXTRACT_MODE:
-            member = await asyncio.to_thread(self._single_rom_member, input_path)
             complete_message = "Extraction complete"
+            member = await asyncio.to_thread(self._single_rom_member, input_path)
+            # `7z e` always writes the member's own basename into the output
+            # dir, so it can't honor a renamed target (duplicate_action=rename
+            # -> Game_1.gba) and would clobber an existing sibling. Extract into
+            # an isolated temp dir on the same filesystem, then atomically move
+            # to the planned output_path.
+            final_dir = os.path.dirname(output_path) or "."
+            await asyncio.to_thread(os.makedirs, final_dir, exist_ok=True)
+            extract_tmp_dir = await asyncio.to_thread(
+                tempfile.mkdtemp, prefix=".romz-extract-", dir=final_dir,
+            )
+            runner_output = os.path.join(
+                extract_tmp_dir, os.path.basename(member),
+            )
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
 
-        cmd = self._build_command(input_path, output_path, mode, compression, member)
+        cmd = self._build_command(
+            input_path, runner_output, mode, compression, member,
+        )
 
         try:
             async for update in self._runner.run(
                 cmd,
                 input_path=input_path,
-                output_path=output_path,
+                output_path=runner_output,
                 parse_progress=_parse_progress,
                 cancel_event=cancel_event,
                 fail_label="7z",
                 complete_message=complete_message,
             ):
                 yield update
+            if mode == ROMZ_EXTRACT_MODE:
+                # Move the extracted ROM to the planned (possibly renamed)
+                # destination. os.replace is atomic within the same filesystem.
+                await asyncio.to_thread(os.replace, runner_output, output_path)
         except BaseException:
             # Any failure/cancel can leave a partial archive or ROM on disk; the
             # runner doesn't own output_path, so clean it up here so a retry
             # isn't blocked by (or silently trusts) a truncated file.
             # suppress(OSError) covers the already-absent case.
             with contextlib.suppress(OSError):
-                os.remove(output_path)
+                os.remove(runner_output)
+            if runner_output != output_path:
+                with contextlib.suppress(OSError):
+                    os.remove(output_path)
             raise
+        finally:
+            if extract_tmp_dir is not None:
+                await asyncio.to_thread(
+                    shutil.rmtree, extract_tmp_dir, ignore_errors=True,
+                )
 
     # ----- info -------------------------------------------------------------
 

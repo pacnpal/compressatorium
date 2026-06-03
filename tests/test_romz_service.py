@@ -222,6 +222,29 @@ def test_convert_extract_resolves_member_and_runs_7z_e(tmp_path, stub_runner):
     assert "e" in cmd
     assert "Game.gba" in cmd            # the resolved single member
     assert any(c.startswith("-o") for c in cmd)
+    # Switches are separated from positional names by a literal "--".
+    assert "--" in cmd
+    assert cmd.index("--") < cmd.index("Game.gba")
+    # The extracted ROM ends up at the requested output path.
+    assert out.read_bytes() == b"OUT"
+
+
+def test_convert_extract_renamed_output_does_not_clobber(tmp_path, stub_runner):
+    """duplicate_action=rename: extract to the renamed path, never the sibling."""
+    svc, _ = stub_runner
+    archive = _make_zip(tmp_path / "Game.zip", {"Game.gba": b"NEW"})
+    existing = tmp_path / "Game.gba"
+    existing.write_bytes(b"OLD")          # pre-existing sibling must survive
+    renamed = tmp_path / "Game_1.gba"     # the planned (deduped) output
+
+    async def _drain():
+        return [u async for u in svc.convert(str(archive), str(renamed), "romz_extract")]
+
+    asyncio.run(_drain())
+    assert existing.read_bytes() == b"OLD"   # untouched, not clobbered
+    assert renamed.read_bytes() == b"OUT"    # extracted content moved here
+    # No leftover temp dirs in the output directory.
+    assert not any(p.name.startswith(".romz-extract-") for p in tmp_path.iterdir())
 
 
 def test_convert_cleans_partial_output_on_failure(tmp_path, monkeypatch):
