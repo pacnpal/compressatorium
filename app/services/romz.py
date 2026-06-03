@@ -203,23 +203,24 @@ class RomzService:
 
     @classmethod
     def is_single_rom_archive(cls, archive_path: str) -> bool:
-        """True when ``archive_path`` holds exactly one handheld-ROM member.
+        """True when ``archive_path`` is one romz can actually verify/extract.
 
         The quiet, boolean form of the single-ROM invariant verify/extract
-        enforce (:meth:`_single_rom_member`), used by the file listing to gate
-        the romz Verify/Info row-actions to archives this tool can actually
-        handle — instead of offering them on *every* ``.7z``/``.zip`` purely on
-        extension. Never raises: an unreadable, corrupt, symlink-bearing, or
-        non-single-ROM archive is simply not romz-ready (returns ``False``).
-        Skips the archive-limit / traversal enforcement that the actual
-        verify/extract paths apply before shelling out to ``7z``; this is a
-        read-only membership probe, not an extraction.
+        enforce, used by the file listing to gate the romz Verify/Info
+        row-actions to archives this tool can actually handle — instead of
+        offering them on *every* ``.7z``/``.zip`` purely on extension. It
+        delegates to :meth:`_single_rom_member` so the gate applies the **same**
+        acceptance criteria as the verify/extract paths: exactly one handheld-ROM
+        payload, no symlink member, no traversal/absolute member path, and within
+        the shared archive entry/size limits. Anything those paths would reject
+        (and any unreadable/corrupt archive) is simply not romz-ready — never
+        raises, returns ``False``.
         """
         try:
-            members = cls._list_members(archive_path)
-        except Exception:  # unreadable/corrupt/symlink archive
+            cls._single_rom_member(archive_path)
+        except Exception:  # unreadable/corrupt, multi-file, unsafe, over-limit
             return False
-        return cls._resolve_single_rom(members) is not None
+        return True
 
     @staticmethod
     def _reject_traversal(name: str) -> None:

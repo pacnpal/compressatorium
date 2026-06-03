@@ -145,6 +145,26 @@ def test_is_single_rom_archive_false_for_corrupt(tmp_path):
     assert RomzService.is_single_rom_archive(str(bogus)) is False
 
 
+def test_is_single_rom_archive_false_for_traversal_member(tmp_path):
+    # A single ROM member, but with a `..` path verify/extract would reject:
+    # the gate must agree (mustn't offer Verify on an archive verify rejects).
+    archive = _make_zip(tmp_path / "evil.zip", {"../Game.gba": b"ROM"})
+    assert RomzService.is_single_rom_archive(str(archive)) is False
+
+
+def test_is_single_rom_archive_false_when_over_limit(tmp_path, monkeypatch):
+    # One ROM member (junk ignored by the single-ROM resolve) but the archive
+    # trips the shared entry limit. verify/extract enforce the limit before
+    # running 7z, so the listing gate must too.
+    from app.services.archive import settings as arch_settings
+    monkeypatch.setattr(arch_settings, "archive_max_entries", 1, raising=False)
+    archive = _make_zip(
+        tmp_path / "limited.zip",
+        {"Game.gba": b"ROM", "__MACOSX/._Game.gba": b"meta"},
+    )
+    assert RomzService.is_single_rom_archive(str(archive)) is False
+
+
 def test_info_ignores_sidecars(tmp_path):
     archive = _make_zip(
         tmp_path / "mac.zip",
