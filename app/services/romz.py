@@ -37,6 +37,7 @@ from services.subprocess_runner import (
     ioprio_prefix,
     verify_timeout,
 )
+from utils.junk import is_junk_path
 
 try:
     import py7zr
@@ -152,12 +153,17 @@ class RomzService:
     def _single_rom_member(cls, archive_path: str) -> str:
         """Return the sole ROM member of ``archive_path`` or raise a clear error.
 
-        The extract mode is for reverting this tool's own single-ROM archives,
-        not for unpacking arbitrary multi-file archives (the file browser already
-        handles those), so anything but exactly one handheld-ROM member is a hard
-        error rather than a silent partial extract.
+        The extract mode reverts this tool's own single-ROM archives, so anything
+        but exactly one handheld-ROM payload is a hard error rather than a silent
+        partial extract. OS/NAS clutter that zip tools tuck alongside the ROM
+        (``__MACOSX/._Game.gba``, ``.DS_Store``, ``Thumbs.db``, …) is ignored via
+        the shared junk filter so a single ROM zipped on macOS/Windows still
+        counts as one member.
         """
-        members = cls._list_members(archive_path)
+        members = [
+            (name, size) for name, size in cls._list_members(archive_path)
+            if not is_junk_path(name)
+        ]
         roms = [
             name for name, _ in members
             if Path(name).suffix.lower() in ROMZ_COMPRESS_EXTENSIONS
@@ -169,8 +175,8 @@ class RomzService:
                 "Archive holds no Game Boy / GBA / DS ROM to extract",
             )
         raise ValueError(
-            "Archive holds more than one file; open it in the file browser "
-            "to extract a specific member",
+            "Archive holds more than one file; the extract mode only reverts "
+            "single-ROM archives produced by this tool",
         )
 
     # ----- command ----------------------------------------------------------

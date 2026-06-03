@@ -87,6 +87,21 @@ def test_single_rom_member_ok(tmp_path):
     assert RomzService._single_rom_member(str(archive)) == "Game.gba"
 
 
+def test_single_rom_member_ignores_os_sidecars(tmp_path):
+    # A ROM zipped on macOS/Windows carries junk alongside the payload; the
+    # shared junk filter means a single ROM still counts as one member.
+    archive = _make_zip(
+        tmp_path / "mac.zip",
+        {
+            "Game.gba": b"ROMDATA",
+            "__MACOSX/._Game.gba": b"meta",
+            ".DS_Store": b"x",
+            "Thumbs.db": b"x",
+        },
+    )
+    assert RomzService._single_rom_member(str(archive)) == "Game.gba"
+
+
 def test_single_rom_member_rejects_no_rom(tmp_path):
     archive = _make_zip(tmp_path / "doc.zip", {"readme.txt": b"hi"})
     with pytest.raises(ValueError, match="no Game Boy"):
