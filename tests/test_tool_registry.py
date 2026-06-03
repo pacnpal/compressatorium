@@ -5,6 +5,7 @@ paths) into tests before later phases move dispatch logic onto the registry.
 """
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -205,6 +206,26 @@ def test_tool_for_verify_representative():
     assert registry.tool_for_verify("Game.7z").id == "romz"
     assert registry.tool_for_verify("Game.zip").id == "romz"
     assert registry.tool_for_verify("nope.txt") is None
+
+
+def test_tools_verifying_path_refines_extension_match(tmp_path):
+    # Non-archive verify targets fall back to the plain extension match, so
+    # tools_verifying_path agrees with tool_for_verify there.
+    assert [t.id for t in registry.tools_verifying_path("out.chd")] == ["chdman"]
+    assert [t.id for t in registry.tools_verifying_path("disc.rvz")] == ["dolphin"]
+    assert registry.tools_verifying_path("nope.txt") == []
+
+    # romz refines the .7z/.zip claim: only single-ROM archives surface it.
+    single = tmp_path / "Game.gba.zip"
+    with zipfile.ZipFile(single, "w") as zf:
+        zf.writestr("Game.gba", b"ROMDATA")
+    assert [t.id for t in registry.tools_verifying_path(str(single))] == ["romz"]
+
+    multi = tmp_path / "Bundle.zip"
+    with zipfile.ZipFile(multi, "w") as zf:
+        zf.writestr("a.gba", b"a")
+        zf.writestr("readme.txt", b"b")
+    assert registry.tools_verifying_path(str(multi)) == []
 
 
 @pytest.mark.parametrize("output_dir", [None, "/data/out"])

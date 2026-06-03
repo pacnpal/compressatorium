@@ -201,6 +201,26 @@ class RomzService:
             return roms[0]
         return None
 
+    @classmethod
+    def is_single_rom_archive(cls, archive_path: str) -> bool:
+        """True when ``archive_path`` holds exactly one handheld-ROM member.
+
+        The quiet, boolean form of the single-ROM invariant verify/extract
+        enforce (:meth:`_single_rom_member`), used by the file listing to gate
+        the romz Verify/Info row-actions to archives this tool can actually
+        handle — instead of offering them on *every* ``.7z``/``.zip`` purely on
+        extension. Never raises: an unreadable, corrupt, symlink-bearing, or
+        non-single-ROM archive is simply not romz-ready (returns ``False``).
+        Skips the archive-limit / traversal enforcement that the actual
+        verify/extract paths apply before shelling out to ``7z``; this is a
+        read-only membership probe, not an extraction.
+        """
+        try:
+            members = cls._list_members(archive_path)
+        except Exception:  # unreadable/corrupt/symlink archive
+            return False
+        return cls._resolve_single_rom(members) is not None
+
     @staticmethod
     def _reject_traversal(name: str) -> None:
         """Reject a member that could escape or collide inside the temp dir.

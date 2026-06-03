@@ -23,11 +23,29 @@
 
   const path = $derived(entry?.path ?? '');
   const inArchive = $derived(typeof path === 'string' && path.includes('::'));
+  const isArchive = $derived(entry?.type === 'archive');
   const outputs = $derived(Array.isArray(entry?.outputs) ? entry.outputs : []);
 
   // Direct verify target for this row, if any (tool that owns the
   // path as a verify-class output, .chd, .rvz, .z3ds, etc.).
-  const directVerifyTool = $derived(path ? registry.toolForVerifyPath(path) : null);
+  //
+  // Prefer the backend's per-file `verifiable_by` when present: it's the
+  // refined form of the registry's extension match (romz only claims
+  // single-ROM .7z/.zip archives, not every archive), computed where the
+  // archive services live. Fall back to the extension match for rows the
+  // listing doesn't annotate (e.g. archive members). First id wins; the
+  // backend builds the list in registry order, matching toolForVerifyPath.
+  const directVerifyTool = $derived.by(() => {
+    if (!path) return null;
+    if (Array.isArray(entry?.verifiable_by)) {
+      for (const id of entry.verifiable_by) {
+        const t = registry.forTool(id);
+        if (t) return t;
+      }
+      return null;
+    }
+    return registry.toolForVerifyPath(path);
+  });
 
   // Fallback: if the row itself isn't verifiable, look at any
   // declared outputs (`entry.outputs[].path`) for an existing
@@ -56,7 +74,12 @@
   // Info action targets the row's own path.
   const infoTool = $derived.by(() => {
     if (directVerifyTool) return directVerifyTool;
-    if (path && typeof path === 'string') {
+    // Source-row Info (z3ds .3ds/.cci, etc.). Skip the source fallback on
+    // archive rows: romz lists .7z/.zip as a source extension, so without
+    // this a non-single-ROM archive (directVerifyTool already null via
+    // verifiable_by) would re-acquire romz Info here. Archive Info is
+    // owned solely by the backend-gated directVerifyTool above.
+    if (!isArchive && path && typeof path === 'string') {
       const matches = registry.toolsForSourcePath(path);
       // Prefer tools that actually expose Info for that source, for
       // the current registry, every tool exposes `getInfo`, so the

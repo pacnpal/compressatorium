@@ -407,12 +407,39 @@ class FileEntry(BaseModel):
     ...
     convertible_by: list[str] = []           # tool ids that accept this input
     outputs: list[OutputStatus] = []         # detected sibling outputs
+    verifiable_by: list[str] = []            # tool ids whose Verify/Info apply here
     # legacy fields kept during migration (see Phase 7), removed at the end
 ```
 
 `files.py` `scan_directory`/`search_files` stop hardcoding three flag blocks
 and instead loop `for tool in registry.all()` calling a tool-provided
 `detect_output(item_path)`.
+
+#### Per-file verify gate (`verifies_path` / `verifiable_by`)
+
+`verify_extensions` is a coarse, extension-level claim. Most tools verify
+every file with a matching extension, but a tool can claim a **broad container
+extension while only handling a narrow subset** of it — `romz` claims `.7z`/
+`.zip` (its extract-mode inputs) yet its Verify/Info only apply to the
+single-ROM archives it produced, not to an arbitrary multi-file `.zip` the user
+happens to have. Gating the frontend's Verify/Info row-actions on the
+extension alone would offer the affordance where the tool can't actually use it
+(issue #146).
+
+The plugin contract closes that gap with `ToolPlugin.verifies_path(path) ->
+bool`: the per-file refinement of `verify_extensions`. `BaseTool` defaults it to
+the plain extension match, so existing tools are unaffected; `RomzTool`
+overrides it to inspect the archive's members (exactly one handheld-ROM member —
+the same invariant verify/extract enforce, via
+`RomzService.is_single_rom_archive`). The registry exposes
+`tools_verifying_path(path)` (the per-file companion to `tool_for_verify`), and
+`routes/files.py` materializes the result into the tool-neutral
+`FileEntry.verifiable_by` list for on-disk files and archive containers. The
+frontend (`RowActionsMenu`) gates Verify/Info on `verifiable_by` when present,
+falling back to the registry's extension match for rows the listing doesn't
+annotate (e.g. archive members, which can't be verified in place). `verifies_path`
+may do disk I/O (archive inspection), so call it off the event loop — the
+`files.py` scans already run in a threadpool.
 
 ### 3.7 Frontend descriptor (`src/lib/tools/registry.js`)
 

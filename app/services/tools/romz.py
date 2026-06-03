@@ -106,6 +106,16 @@ class RomzTool(BaseTool):
                 )
         return None
 
+    def verifies_path(self, path: str) -> bool:
+        # romz claims .7z/.zip broadly (extract-mode inputs), but verify/info
+        # only apply to the single-ROM archives it produces. Confirm exactly
+        # one handheld-ROM member instead of trusting the extension, so the
+        # Verify/Info row-actions aren't offered on unrelated multi-file
+        # archives the user happens to have.
+        if Path(path).suffix.lower() not in self.verify_extensions:
+            return False
+        return self._service.is_single_rom_archive(path)
+
     def output_path(
         self,
         mode: str,
