@@ -441,6 +441,25 @@ annotate (e.g. archive members, which can't be verified in place). `verifies_pat
 may do disk I/O (archive inspection), so call it off the event loop — the
 `files.py` scans already run in a threadpool.
 
+Two consumer-side notes keep the gate airtight:
+
+- **Frontend precedence.** The registry's extension match (`toolForVerifyPath`)
+  stays the source of truth, because it encodes deliberate UX exclusions the
+  backend's broader `verify_extensions` don't — e.g. Dolphin's
+  `verify_extensions` include `.iso`, but the frontend intentionally omits
+  `.iso` from `DOLPHIN_VERIFY_EXTS` so CD/DVD ISOs aren't routed to a Dolphin
+  verify that fails. `verifiable_by` may therefore only **narrow** that match,
+  never broaden it: `RowActionsMenu` resolves the registry tool first and drops
+  it when a present `verifiable_by` excludes it.
+- **Output targets.** A source row can verify *from* an existing sibling output
+  (`entry.outputs[].path`), so that path needs the same gate. Rather than
+  re-listing the output inside the row, the producing tool's `detect_output`
+  validates the candidate before claiming it: `RomzTool.detect_output` only
+  reports a finished `.7z`/`.zip` as a romz output when it is a genuine
+  single-ROM archive (a mid-conversion placeholder still badges as
+  in-progress). A coincidental multi-file `Game.gba.7z` thus never enters
+  `outputs`, so the verify-from-output flow can't offer romz Verify on it.
+
 ### 3.7 Frontend descriptor (`src/lib/tools/registry.js`)
 
 > **Status: implemented and extended.** The original §3.7 sketched a minimal

@@ -24,9 +24,19 @@ from app.routes import files as files_routes
 def _romz_env(tmp_path, monkeypatch):
     # Loose ROM source with no output yet.
     (tmp_path / "Solo.gba").write_bytes(b"rom")
-    # ROM source with a finished .7z sibling (name preserves the ROM ext).
+    # ROM source with a finished, genuine single-ROM sibling archive (name
+    # preserves the ROM ext). detect_output now validates the archive, so this
+    # must be a real single-ROM archive to badge as a romz output.
     (tmp_path / "Done.gb").write_bytes(b"rom")
-    (tmp_path / "Done.gb.7z").write_bytes(b"7z")
+    with zipfile.ZipFile(tmp_path / "Done.gb.zip", "w") as zf:
+        zf.writestr("Done.gb", b"rom")
+    # ROM source next to a coincidentally-named *multi-file* archive: it matches
+    # the Game.gba.7z/.zip naming but isn't something romz produced, so it must
+    # NOT be badged as a romz output (issue #146).
+    (tmp_path / "Junky.gba").write_bytes(b"rom")
+    with zipfile.ZipFile(tmp_path / "Junky.gba.zip", "w") as zf:
+        zf.writestr("Junky.gba", b"rom")
+        zf.writestr("extra.txt", b"x")
     # A standalone archive that should remain a browseable archive.
     archive = tmp_path / "Pack.7z"
     archive.write_bytes(b"7z")
@@ -125,5 +135,13 @@ async def test_loose_rom_is_romz_convertible_and_badges_output(romz_env):
     done = by_name["Done.gb"]
     assert done.romz_convertible is True
     assert done.has_romz is True and done.romz_ready is True
-    assert done.romz_path == str(Path(root) / "Done.gb.7z")
+    assert done.romz_path == str(Path(root) / "Done.gb.zip")
     assert any(o.tool_id == "romz" for o in done.outputs)
+
+    # The multi-file sibling is NOT a romz output: the source row stays a
+    # compress source but surfaces no romz output badge or verify-from-output.
+    junky = by_name["Junky.gba"]
+    assert junky.romz_convertible is True
+    assert junky.has_romz is False and junky.romz_ready is False
+    assert junky.romz_path is None
+    assert not any(o.tool_id == "romz" for o in junky.outputs)
