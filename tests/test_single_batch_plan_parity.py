@@ -402,3 +402,32 @@ async def test_delete_on_verify_snapshot_success_agrees(parity_env, monkeypatch)
     snap = {"snap": str(source)}
     assert parity_env["single_mock"].call_args.kwargs["delete_snapshot"] == snap
     assert parity_env["captured"]["job_specs"][0]["delete_snapshot"] == snap
+
+
+@pytest.mark.asyncio
+async def test_romz_extract_invalid_archive_rejected_before_overwrite(parity_env):
+    """An invalid romz_extract archive is rejected during planning, so the job
+    is never created and a same-stem sibling can't be overwritten/deleted.
+
+    Regression: get_output_path_for_mode falls back to the suffix-stripped stem
+    for unreadable/invalid archives; with duplicate_action=overwrite that would
+    otherwise plan deletion of an unrelated ``Game`` next to ``Game.zip``.
+    """
+    tmp_path = parity_env["tmp_path"]
+    # Archive holds only a placeholder (no ROM) -> not a single-ROM archive.
+    archive = _make_zip(tmp_path, "Game.zip")
+    sibling = tmp_path / "Game"  # the suffix-stripped fallback output path
+    sibling.write_bytes(b"PRECIOUS")
+
+    result = await _run_single(
+        parity_env,
+        file_path=archive,
+        mode=ConversionMode.ROMZ_EXTRACT,
+        duplicate_action=DuplicateAction.OVERWRITE,
+        delete_on_verify=False,
+    )
+
+    assert result["status"] == 422
+    parity_env["single_mock"].assert_not_called()
+    # The unrelated sibling was never planned for overwrite/deletion.
+    assert sibling.read_bytes() == b"PRECIOUS"

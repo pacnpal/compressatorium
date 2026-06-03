@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import List, Tuple, Optional, Union, Dict
 
 from config import settings
+from utils.junk import is_junk_path
 
 try:
     import py7zr
@@ -91,15 +92,25 @@ class ArchiveService:
         _, max_member_size, max_total_size = self._archive_limits()
         return max_member_size > 0 or max_total_size > 0
 
-    @staticmethod
-    def _is_macos_metadata_member(member: str) -> bool:
-        parts = PurePosixPath(member).parts
-        if not parts:
-            return False
-        name = parts[-1]
-        if name == ".DS_Store" or name.startswith("._"):
-            return True
-        return "__MACOSX" in parts
+    def enforce_archive_limits(self, members: list[Tuple[str, int]]) -> None:
+        """Apply the configured archive entry/size limits to a member listing.
+
+        Shared with romz, which reads archives via its own member listing and
+        runs ``7z`` directly rather than going through this service's extract
+        path. Without this, deployments that set ``CHD_ARCHIVE_MAX_ENTRIES`` /
+        ``CHD_ARCHIVE_MAX_MEMBER_SIZE`` / ``CHD_ARCHIVE_MAX_TOTAL_SIZE`` to guard
+        against oversized archives / zip bombs would not have those limits
+        applied to romz extract or verify. ``members`` is ``(name, size)`` with
+        uncompressed sizes.
+        """
+        max_entries, _, _ = self._archive_limits()
+        if max_entries > 0 and len(members) > max_entries:
+            raise ValueError(f"Archive exceeds max entries ({max_entries})")
+        total = 0
+        for name, size in members:
+            self._check_member_size(size, member=name)
+            total += size
+        self._check_total_size(total)
 
     def _create_temp_dir(self) -> str:
         base_dir = settings.temp_dir
@@ -208,7 +219,7 @@ class ArchiveService:
             for info in zf.infolist():
                 if info.is_dir():
                     continue
-                if self._is_macos_metadata_member(info.filename):
+                if is_junk_path(info.filename):
                     continue
                 try:
                     self._validate_member(info.filename)
@@ -264,7 +275,7 @@ class ArchiveService:
             archive_info = zf.archiveinfo()
             if hasattr(archive_info, "files"):
                 for name, info in archive_info.files.items():
-                    if self._is_macos_metadata_member(name):
+                    if is_junk_path(name):
                         continue
                     try:
                         self._validate_member(name)
@@ -323,7 +334,7 @@ class ArchiveService:
                 for entry in zf.list():
                     if entry.is_directory:
                         continue
-                    if self._is_macos_metadata_member(entry.filename):
+                    if is_junk_path(entry.filename):
                         continue
                     try:
                         self._validate_member(entry.filename)
@@ -389,7 +400,7 @@ class ArchiveService:
             for info in rf.infolist():
                 if info.is_dir():
                     continue
-                if self._is_macos_metadata_member(info.filename):
+                if is_junk_path(info.filename):
                     continue
                 try:
                     self._validate_member(info.filename)
@@ -596,7 +607,7 @@ class ArchiveService:
             for info in zf.infolist():
                 if info.is_dir():
                     continue
-                if self._is_macos_metadata_member(info.filename):
+                if is_junk_path(info.filename):
                     continue
                 try:
                     self._validate_member(info.filename)
@@ -630,7 +641,7 @@ class ArchiveService:
                 if entry.is_directory:
                     continue
                 name = entry.filename
-                if self._is_macos_metadata_member(name):
+                if is_junk_path(name):
                     continue
                 try:
                     self._validate_member(name)
@@ -667,7 +678,7 @@ class ArchiveService:
             for info in rf.infolist():
                 if info.is_dir():
                     continue
-                if self._is_macos_metadata_member(info.filename):
+                if is_junk_path(info.filename):
                     continue
                 try:
                     self._validate_member(info.filename)

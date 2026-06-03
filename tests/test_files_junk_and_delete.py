@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.routes import files as files_routes
-from app.utils.junk import is_junk_entry
+from app.utils.junk import is_junk_entry, is_junk_path
 
 
 @pytest.fixture(name="vol")
@@ -28,6 +28,19 @@ def test_is_junk_entry(junk):
 @pytest.mark.parametrize("keep", ["game.nsp", "disc.cue", ".switch", "Game (USA).iso"])
 def test_is_not_junk(keep):
     assert is_junk_entry(keep) is False
+
+
+@pytest.mark.parametrize(
+    "junk_path",
+    ["__MACOSX/._Game.gba", "sub/.DS_Store", "Thumbs.db", "._Game.gba"],
+)
+def test_is_junk_path_flags_junk_in_any_component(junk_path):
+    assert is_junk_path(junk_path) is True
+
+
+@pytest.mark.parametrize("keep", ["Game.gba", "roms/Game (USA).gba", "sub/disc.cue"])
+def test_is_junk_path_keeps_real_members(keep):
+    assert is_junk_path(keep) is False
 
 
 @pytest.mark.asyncio

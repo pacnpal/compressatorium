@@ -28,6 +28,9 @@ class ConversionMode(str, Enum):
     ZSO_COMPRESS = "zso_compress"
     DAX_COMPRESS = "dax_compress"
     CSO_DECOMPRESS = "cso_decompress"
+    ROMZ_7Z = "romz_7z"
+    ROMZ_ZIP = "romz_zip"
+    ROMZ_EXTRACT = "romz_extract"
     METADATA_SCAN = "metadata_scan"
     DAT_MATCH = "dat_match"
 
@@ -79,6 +82,10 @@ class FileEntry(BaseModel):
     has_cso: bool = False
     cso_ready: bool = False
     cso_path: str | None = None
+    romz_convertible: bool = False
+    has_romz: bool = False
+    romz_ready: bool = False
+    romz_path: str | None = None
     archive_items: int | None = None
     # Count of archive members that already have an existing output from any
     # registered tool (.chd/.rvz/.z3ds/.nsz/…), finished or mid-conversion.
@@ -248,6 +255,22 @@ class CsoInfo(BaseModel):
     extension: str
     compressed: bool
     compression_type: str | None = None
+
+
+class RomzInfo(BaseModel):
+    """Information about a handheld ROM (GB/GBC/GBA/NDS) or its .7z/.zip archive."""
+    file: str
+    size: int
+    size_display: str
+    format: str | None = None
+    extension: str
+    compressed: bool
+    compression_type: str | None = None
+    # Archive-only extras: the single ROM inside, its uncompressed size, and the
+    # archive-to-original size ratio (None for a loose ROM source).
+    contained_name: str | None = None
+    original_size: int | None = None
+    ratio: str | None = None
 
 
 class LayoutPreferences(BaseModel):

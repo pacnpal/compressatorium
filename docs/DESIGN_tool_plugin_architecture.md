@@ -251,7 +251,7 @@ class SubprocessRunner:
     def active_pids(self) -> list[int]: ...
 
     async def run(self, cmd: list[str], *, input_path: str, output_path: str,
-                  parse_progress, cancel_event=None,
+                  parse_progress, cancel_event=None, cwd=None,
                   start_message="Starting...") -> AsyncGenerator[dict, None]:
         """Spawn cmd, stream stdout, yield {"progress","message"}.
         Handles: nice/ionice wrap, stdbuf, PID tracking, \\r/\\n line buffering,
@@ -259,6 +259,9 @@ class SubprocessRunner:
         (terminate->kill, clean partial output), ConversionCancelled, non-zero
         exit -> RuntimeError(tail), final 100%.
         `parse_progress(line) -> int|None` is the only per-tool knob.
+        `cwd` (optional) sets the subprocess working directory — used by `romz`
+        to run `7z a` from the ROM's directory so the archive stores just the
+        basename, not the absolute volume path.
         """
 
     async def run_capture(self, cmd: list[str], *, timeout=None,
@@ -281,6 +284,36 @@ The dolphin/z3ds output-size heuristic and dolphin's heartbeat become opt-in
 flags on `run()`. One-shot subprocess work (info / header / embedded-hash
 extraction) shares `run_capture()` rather than re-implementing the
 spawn / cancel / timeout / terminate dance per tool.
+
+### 3.3.1 Shared archive-limit enforcement (`services/archive.py`)
+
+`ArchiveService.enforce_archive_limits(members)` is the shared seam any
+archive-backed tool MUST call before shelling out to its own extractor.
+`ArchiveService`'s own extract path already applies the configured
+`CHD_ARCHIVE_MAX_ENTRIES` / `CHD_ARCHIVE_MAX_MEMBER_SIZE` /
+`CHD_ARCHIVE_MAX_TOTAL_SIZE` guards (zip-bomb / oversized-archive protection),
+but tools that read archives via their own member listing and run a CLI
+directly (e.g. `romz` shelling out to `7z` for extract/verify) would otherwise
+bypass those limits. `members` is a list of `(name, uncompressed_size)` from the
+tool's raw listing — pass the *unfiltered* listing so junk entries still count
+against the entry/size budget. New archive-backed tools should route through
+this helper rather than re-checking limits per tool; do not duplicate the size
+arithmetic.
+
+Tools that extract with **preserved member paths** (e.g. `romz` running
+`7z x`) MUST reject unsafe member paths up front on **every** member before
+shelling out — not just the member they intend to keep. A CLI extractor
+recreates the full archive tree, so an absolute or `..`-escaping path on any
+member (including ignored junk sidecars like `__MACOSX/../../victim`) could
+write outside the temp dir. `ArchiveService._validate_member` is the strict,
+Windows-portable guard, but it also bans `:` and `\\` — characters a loose ROM
+on a POSIX volume may legally contain — so a tool that must **round-trip** the
+archive it produced (verify/extract its own output) should instead block only
+the actual escape vectors (absolute path, `..` component) via a local check
+like `RomzService._reject_traversal`, which `os.path.normpath`s the member and
+rejects only absolute / `..`-leading results. Such tools must also forbid
+symlink members (zip `external_attr` `S_ISLNK` / py7zr `FileInfo.is_symlink`),
+since `7z x` restores symlinks as links.
 
 ### 3.4 `registry.py`
 

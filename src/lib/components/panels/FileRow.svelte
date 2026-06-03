@@ -19,6 +19,9 @@
   const isFile = $derived(!isDirectory && !isArchive);
 
   const selected = $derived(fileBrowser.selectedFiles.has(path));
+  // Files are always selectable; archives only when the active mode takes the
+  // archive directly (e.g. romz_extract on .7z/.zip). Drives the checkbox.
+  const selectable = $derived(fileBrowser.isSelectable(entry));
   const datMatch = $derived(datMatching.matchFor(path));
   const chdMeta = $derived(chdMetadata.metadataFor(path));
 
@@ -34,6 +37,7 @@
     if (entry?.z3ds_convertible) legacy.push('z3ds');
     if (entry?.nsz_convertible) legacy.push('nsz');
     if (entry?.cso_convertible) legacy.push('cso');
+    if (entry?.romz_convertible) legacy.push('romz');
     return legacy;
   });
 
@@ -96,7 +100,7 @@
   class:archive={isArchive}
 >
   <td class="sel">
-    {#if isFile}
+    {#if selectable}
       <input
         type="checkbox"
         checked={selected}

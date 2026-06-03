@@ -411,7 +411,21 @@ class FileBrowserStore {
    */
   _isSelectable(entry) {
     if (!entry) return false;
-    return entry.type !== 'directory' && entry.type !== 'archive';
+    if (entry.type === 'directory') return false;
+    if (entry.type === 'archive') {
+      // Archives are normally browse-into containers, not selectable rows.
+      // They become selectable only when the active mode takes the archive
+      // itself as direct input (e.g. romz_extract on a .7z/.zip), in which
+      // case the worker extracts the contained ROM. Name-click still browses
+      // into the archive; the checkbox handles selection.
+      return conversion.allowsInput(entry.path);
+    }
+    return true;
+  }
+
+  /** Public predicate: may this row be selected under the active mode? */
+  isSelectable(entry) {
+    return this._isSelectable(entry);
   }
 
   /**

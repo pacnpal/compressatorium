@@ -19,6 +19,7 @@ const GAME_EXTS = new Set([
   '.rvz', '.wia', '.gcz', '.wbfs',
   '.3ds', '.cci', '.cia',
   '.z3ds', '.zcci', '.zcia',
+  '.gb', '.gbc', '.gba', '.nds',
 ]);
 const DISC_EXTS = new Set(['.iso', '.gdi', '.cue', '.bin', '.cso', '.zso', '.dax']);
 
