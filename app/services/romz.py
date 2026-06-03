@@ -189,7 +189,7 @@ class RomzService:
 
     def _build_command(
         self, input_path: str, output_path: str, mode: str,
-        compression: str | None, member: str | None,
+        compression: str | None,
     ) -> list[str]:
         # All switches go before a literal ``--`` so positional names that begin
         # with ``-`` (an archive/member/ROM whose filename starts with a dash)
@@ -200,7 +200,15 @@ class RomzService:
         elif mode == ROMZ_EXTRACT_MODE:
             out_dir = os.path.dirname(output_path) or "."
             switches = [f"-o{out_dir}", "-bsp1", "-y"]
-            cmd = [self.sevenzip_path, "e", *switches, "--", input_path, member or ""]
+            # Extract the whole archive into the isolated temp dir rather than
+            # naming the member as a positional selector: 7-Zip reads a leading
+            # ``@`` as a list-file reference even after ``--``, so a ROM named
+            # e.g. ``@Game.gba`` would be misread (or 7z would slurp selectors
+            # from a same-named file in the cwd). We've already validated the
+            # archive holds exactly one ROM (plus ignorable junk); the caller
+            # moves that one validated member out by its known basename and
+            # discards the rest with the temp dir.
+            cmd = [self.sevenzip_path, "e", *switches, "--", input_path]
         else:
             raise ValueError(f"Unsupported romz mode: {mode}")
         # Apply ionice via a command wrapper (the shared nice level is applied by
@@ -295,7 +303,7 @@ class RomzService:
             raise ValueError(f"Unsupported romz mode: {mode}")
 
         cmd = self._build_command(
-            input_path, runner_output, mode, compression, member,
+            input_path, runner_output, mode, compression,
         )
 
         try:

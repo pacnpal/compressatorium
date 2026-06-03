@@ -254,12 +254,18 @@ def test_convert_extract_resolves_member_and_runs_7z_e(tmp_path, stub_runner):
     asyncio.run(_drain())
     cmd = calls["run_cmd"]
     assert "e" in cmd
-    assert "Game.gba" in cmd            # the resolved single member
+    # The member name is NOT passed as a positional selector: a leading "@"
+    # would be read as a 7-Zip list-file even after "--". We extract the whole
+    # (already validated single-ROM) archive into an isolated temp dir instead.
+    assert "Game.gba" not in cmd
+    assert str(archive) in cmd          # the archive is the only positional
     assert any(c.startswith("-o") for c in cmd)
     # Switches are separated from positional names by a literal "--".
     assert "--" in cmd
-    assert cmd.index("--") < cmd.index("Game.gba")
-    # The extracted ROM ends up at the requested output path.
+    assert cmd.index("--") < cmd.index(str(archive))
+    # The runner writes the member into a temp extract dir, not the final path.
+    assert ".romz-extract-" in calls["output_path"]
+    # The extracted ROM still ends up at the requested output path.
     assert out.read_bytes() == b"OUT"
 
 

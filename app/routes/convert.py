@@ -341,8 +341,11 @@ async def plan_job(
         # correctly; chdman/dolphin strip it back off via Path.stem.
         effective_output_dir = output_dir or archive_source_dir
         output_name = archive_service._output_name_for_member(internal_path)
-        output_path = _get_output_path(
-            mode, output_name, effective_output_dir, treat_as_stem=True,
+        # Off the event loop: output_path() is pure string work for most tools,
+        # but romz extract peeks inside the archive to derive the ROM's name.
+        output_path = await run_in_threadpool(
+            _get_output_path, mode, output_name, effective_output_dir,
+            treat_as_stem=True,
         )
         base_output_path = output_path
 
@@ -407,8 +410,9 @@ async def plan_job(
     # For archive files: use output_dir if specified, otherwise save next to archive
     if output_path is None:
         effective_output_dir = output_dir or archive_source_dir
-        output_path = _get_output_path(
-            mode, file_path, effective_output_dir,
+        # Off the event loop: romz extract reads the archive to name its output.
+        output_path = await run_in_threadpool(
+            _get_output_path, mode, file_path, effective_output_dir,
         )
         base_output_path = output_path
 
@@ -493,14 +497,16 @@ async def check_duplicates(request: CheckDuplicatesRequest):
             if not effective_output_dir:
                 effective_output_dir = os.path.dirname(archive_path)
 
+        # Off the event loop: romz extract reads the archive to name its output.
         if "::" in file_path:
             output_name = archive_service._output_name_for_member(actual_filename)
-            output_path = _get_output_path(
-                mode, output_name, effective_output_dir, treat_as_stem=True,
+            output_path = await run_in_threadpool(
+                _get_output_path, mode, output_name, effective_output_dir,
+                treat_as_stem=True,
             )
         else:
-            output_path = _get_output_path(
-                mode, actual_filename, effective_output_dir,
+            output_path = await run_in_threadpool(
+                _get_output_path, mode, actual_filename, effective_output_dir,
             )
         exists, _ = check_output_conflicts(mode, output_path)
 

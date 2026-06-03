@@ -282,6 +282,21 @@ flags on `run()`. One-shot subprocess work (info / header / embedded-hash
 extraction) shares `run_capture()` rather than re-implementing the
 spawn / cancel / timeout / terminate dance per tool.
 
+### 3.3.1 Shared archive-limit enforcement (`services/archive.py`)
+
+`ArchiveService.enforce_archive_limits(members)` is the shared seam any
+archive-backed tool MUST call before shelling out to its own extractor.
+`ArchiveService`'s own extract path already applies the configured
+`CHD_ARCHIVE_MAX_ENTRIES` / `CHD_ARCHIVE_MAX_MEMBER_SIZE` /
+`CHD_ARCHIVE_MAX_TOTAL_SIZE` guards (zip-bomb / oversized-archive protection),
+but tools that read archives via their own member listing and run a CLI
+directly (e.g. `romz` shelling out to `7z` for extract/verify) would otherwise
+bypass those limits. `members` is a list of `(name, uncompressed_size)` from the
+tool's raw listing — pass the *unfiltered* listing so junk entries still count
+against the entry/size budget. New archive-backed tools should route through
+this helper rather than re-checking limits per tool; do not duplicate the size
+arithmetic.
+
 ### 3.4 `registry.py`
 
 ```python
