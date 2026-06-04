@@ -27,6 +27,11 @@ class FileBrowserStore {
   // Path of the directory listing currently in flight, used to collapse a
   // duplicate refresh of the same directory (non-reactive control state).
   _inflightListingPath = null;
+  // Monotonic per-request token. Each proceeding refresh takes the next value;
+  // only the request whose token is still the latest may apply results or clear
+  // the spinner. This makes rapid A→B→A navigation safe even though A's path
+  // repeats: the stale first A (older token) can't overwrite the newer A.
+  _listingRequestSeq = 0;
   // Path of the last successfully-applied listing; lets a forced post-mutation
   // refresh tell itself apart from a duplicate (pre-load) navigation.
   _loadedPath = null;
@@ -329,13 +334,22 @@ class FileBrowserStore {
       return;
     }
     this._inflightListingPath = requested;
+    // Token for this specific request. Compared against the latest token (not
+    // the path) so an A→B→A sequence — where the older and newer A share a path
+    // — can't let the stale older A apply results or clear the spinner.
+    const myReq = (this._listingRequestSeq += 1);
+    const isLatest = () => this._listingRequestSeq === myReq;
     this.loading = true;
     this.entriesError = null;
     try {
       const data = await api.listFiles(requested, true);
-      // Drop a stale response if the user navigated away (into another dir, an
-      // archive, or search) while it was in flight.
-      if (this.currentPath !== requested || this.currentArchivePath || this.searchMode) {
+      // Drop a stale response if this request was superseded, or the user
+      // navigated away (into another dir, an archive, or search) while it was
+      // in flight.
+      if (
+        !isLatest() || this.currentPath !== requested
+        || this.currentArchivePath || this.searchMode
+      ) {
         return;
       }
       this.entries = data?.entries ?? [];
@@ -346,22 +360,21 @@ class FileBrowserStore {
       // pagination/sort/filter) — the listing itself renders without waiting.
       this._listingGeneration += 1;
     } catch (e) {
-      if (this.currentPath !== requested) return;
+      if (!isLatest() || this.currentPath !== requested) return;
       this.entriesError = e?.message ?? 'Failed to load files';
       this.entries = [];
     } finally {
-      // Only the active request clears the spinner. A stale request finishing
-      // after the user navigated away (a newer load is now in flight under a
-      // different _inflightListingPath) must not hide the new request's spinner.
-      const isActive = this._inflightListingPath === requested;
-      if (isActive) {
+      // Only the latest request clears the spinner / in-flight path. A stale
+      // request finishing later must not hide a newer request's spinner.
+      const active = isLatest();
+      if (active) {
         this._inflightListingPath = null;
         this.loading = false;
       }
       this._clampPage();
       // A forced refresh arrived for this dir while it was loading; run it now
       // against fresh server state.
-      if (isActive && this._pendingForcedReload === requested) {
+      if (active && this._pendingForcedReload === requested) {
         this._pendingForcedReload = null;
         if (this.currentPath === requested && !this.searchMode && !this.currentArchivePath) {
           this.refresh({ force: true });

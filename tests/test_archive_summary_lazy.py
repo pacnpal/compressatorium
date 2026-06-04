@@ -21,6 +21,7 @@ import pytest
 
 from app.routes import files as files_routes
 from app.services import archive_members
+from app.services.archive import archive_service
 from models import MetadataBatchRequest
 
 
@@ -135,6 +136,20 @@ def test_oversized_listings_are_not_cached(tmp_path, monkeypatch):
     archive_members.read_archive_members(archive_path)
     # Not cached (over the member cap), so each read re-opens the archive.
     assert calls["n"] == 2
+
+
+def test_get_member_size_uses_last_duplicate(tmp_path):
+    # A ZIP may carry duplicate member names; zipfile.open()/extraction resolves
+    # to the LAST one, so the size guard must report that one's size — not the
+    # first, smaller duplicate (which could let a size-limit check pass while a
+    # larger trailing payload is extracted).
+    archive_members.clear_cache()
+    archive_path = str(tmp_path / "dup.zip")
+    big = b"MUCH-LARGER-PAYLOAD"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("game.iso", b"sm")
+        zf.writestr("game.iso", big)
+    assert archive_service._get_member_size(archive_path, "game.iso") == len(big)
 
 
 def test_shared_reader_caches_until_bytes_change(tmp_path, monkeypatch):

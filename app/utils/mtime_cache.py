@@ -50,6 +50,11 @@ class MtimeCache(Generic[T]):
         # byte size and lands on the same coarse mtime tick (rapid rewrites on
         # overlay/NAS filesystems) still bumps ctime — which, unlike mtime, can't
         # be set back via utime() — so the cache won't serve a stale listing.
+        # Residual limitation: a filesystem with second-granularity timestamps
+        # could still collide if a same-size rewrite lands within the same second
+        # for BOTH mtime and ctime; that's not a concern for the archive use here
+        # (game archives aren't rewritten in place sub-second), and callers that
+        # know they've rewritten a path can call ``invalidate()``.
         return (st.st_mtime_ns, st.st_ctime_ns, st.st_size)
 
     def get_or_compute(

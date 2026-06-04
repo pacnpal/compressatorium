@@ -423,13 +423,20 @@ class ArchiveService:
         # for a single size lookup. Returns None when the member is absent or the
         # container didn't record an uncompressed size (mirrors the prior 7z
         # behaviour, which returned ``entry.uncompressed`` unmodified).
+        #
+        # For a ZIP with duplicate member names, ``zipfile.open(name)`` extracts
+        # the *last* such entry (NameToInfo maps a name to its final occurrence),
+        # so the size guard must read the last match too — otherwise a small
+        # leading duplicate could let the limit check pass while a larger trailing
+        # payload is the one actually extracted.
+        size: Optional[int] = None
         try:
             for member in read_archive_members(archive_path):
                 if member.name == internal_path:
-                    return member.size
+                    size = member.size
         except Exception:
             return None
-        return None
+        return size
 
     def _extract_related_from_zip(
         self,
