@@ -30,6 +30,10 @@ from utils.path_utils import (
 router = APIRouter()
 logger = get_logger("files")
 
+# Upper bound on archives summarized in one /archive-summary request. The browser
+# hydrates the visible page, so this is a safety ceiling, not the normal size.
+MAX_ARCHIVE_SUMMARY_PATHS = 1000
+
 
 def _detect_file_outputs(
     item_path: str, ext: str,
@@ -334,7 +338,15 @@ async def archive_summary_batch(request: MetadataBatchRequest) -> dict:
     """
     def _compute() -> dict:
         result: dict = {}
-        for path in request.paths:
+        # Bound how much archive-opening work one request can queue onto a single
+        # threadpool worker. The browser hydrates the visible page (~one page of
+        # rows), so this cap is only a defense-in-depth ceiling against an
+        # oversized/hostile batch; paths beyond it get an error rather than
+        # silently monopolizing the worker.
+        for index, path in enumerate(request.paths):
+            if index >= MAX_ARCHIVE_SUMMARY_PATHS:
+                result[path] = {"error": "batch_limit_exceeded"}
+                continue
             if not is_within_configured_volumes(path, treat_archives=False):
                 result[path] = {"error": "path_outside_configured_volumes"}
                 continue

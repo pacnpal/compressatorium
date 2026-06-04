@@ -27,6 +27,16 @@ class FileBrowserStore {
   // Path of the directory listing currently in flight, used to collapse a
   // duplicate refresh of the same directory (non-reactive control state).
   _inflightListingPath = null;
+  // Path of the last successfully-applied listing; lets a forced post-mutation
+  // refresh tell itself apart from a duplicate (pre-load) navigation.
+  _loadedPath = null;
+  // A forced refresh that arrived while the same dir was already loading; re-run
+  // it once the in-flight load settles so a mutation refresh isn't dropped.
+  _pendingForcedReload = null;
+  // Bumped each time a fresh listing replaces `entries`. A background archive
+  // summary hydration only merges when this is unchanged, so a same-path refresh
+  // can't be clobbered by an older hydration response.
+  _listingGeneration = 0;
 
   // Selection
   selectedFiles = new SvelteMap();
@@ -308,8 +318,16 @@ class FileBrowserStore {
     // double-fired navigate). A listing can take a while in huge folders and
     // the browser caps connections per host, so a redundant identical request
     // just starves the pool behind the one already running. A load for a
-    // different path still proceeds.
-    if (this._inflightListingPath === requested) return;
+    // different path still proceeds. Exception: a *forced* refresh of a dir we
+    // have already loaded once is a deliberate re-load (rename/delete call
+    // refresh({ force: true }) to reflect a mutation), so it must not be dropped
+    // — queue it to re-run when the in-flight load settles. A forced refresh
+    // that races the dir's *initial* load is still just a duplicate navigation
+    // and is collapsed.
+    if (this._inflightListingPath === requested) {
+      if (force && this._loadedPath === requested) this._pendingForcedReload = requested;
+      return;
+    }
     this._inflightListingPath = requested;
     this.loading = true;
     this.entriesError = null;
@@ -321,10 +339,12 @@ class FileBrowserStore {
         return;
       }
       this.entries = data?.entries ?? [];
-      // Archive rows come back without member counts / verifiable_by (the
-      // listing is lazy so big folders render instantly); hydrate those badges
-      // in the background without blocking the listing.
-      this._hydrateArchiveSummaries(requested);
+      this._loadedPath = requested;
+      // New listing generation so a late hydration from the previous listing
+      // can't merge into these rows. The visible page's archive badges are then
+      // hydrated by FileList's effect (scoped to the visible page, re-running on
+      // pagination/sort/filter) — the listing itself renders without waiting.
+      this._listingGeneration += 1;
     } catch (e) {
       if (this.currentPath !== requested) return;
       this.entriesError = e?.message ?? 'Failed to load files';
@@ -333,26 +353,50 @@ class FileBrowserStore {
       // Only the active request clears the spinner. A stale request finishing
       // after the user navigated away (a newer load is now in flight under a
       // different _inflightListingPath) must not hide the new request's spinner.
-      if (this._inflightListingPath === requested) {
+      const isActive = this._inflightListingPath === requested;
+      if (isActive) {
         this._inflightListingPath = null;
         this.loading = false;
       }
       this._clampPage();
+      // A forced refresh arrived for this dir while it was loading; run it now
+      // against fresh server state.
+      if (isActive && this._pendingForcedReload === requested) {
+        this._pendingForcedReload = null;
+        if (this.currentPath === requested && !this.searchMode && !this.currentArchivePath) {
+          this.refresh({ force: true });
+        }
+      }
     }
   }
 
   /**
-   * Fetch per-archive summaries (member counts + verifiable_by) for the archive
-   * rows in the current directory listing and merge them into `entries`, so the
-   * row badges appear once the background batch resolves. Mirrors the
-   * chdMetadata / datMatching hydration pattern, but merges into the entry rows
-   * (FileRow/RowActionsMenu read these fields straight off the entry) rather
-   * than a side store. No-op when there are no archives or the listing has moved
-   * on; failures are non-fatal (rows just stay un-summarized).
-   * @param {string} requestedPath - the directory these entries were loaded for
+   * Hydrate archive-summary badges for the archives on the CURRENT visible page.
+   * Public entry point for components to call on pagination / sort / filter
+   * changes (it reads `visibleEntries` synchronously, so a Svelte `$effect` that
+   * invokes it will re-run when those change). Idempotent: rows already hydrated
+   * (archive_items set) are skipped.
    */
-  async _hydrateArchiveSummaries(requestedPath) {
-    const archivePaths = this.entries
+  hydrateVisibleArchiveSummaries() {
+    if (this.searchMode || this.currentArchivePath) return;
+    this._hydrateArchiveSummaries(this._listingGeneration);
+  }
+
+  /**
+   * Fetch per-archive summaries (member counts + verifiable_by) for the archive
+   * rows on the visible page and merge them into `entries` (and any selected copy
+   * of those rows), so the badges appear once the background batch resolves.
+   * Mirrors the chdMetadata / datMatching hydration pattern, but merges into the
+   * entry rows (FileRow/RowActionsMenu read these fields straight off the entry)
+   * rather than a side store. Scoping to the visible page bounds the batch size
+   * and the server-side archive opening. No-op when there are no un-hydrated
+   * archives on screen; failures are non-fatal (rows just stay un-summarized).
+   * @param {number} generation - the listing generation these rows belong to
+   */
+  async _hydrateArchiveSummaries(generation) {
+    // Only the visible page: keeps the batch small and the server from opening
+    // every archive in a huge folder at once.
+    const archivePaths = this.visibleEntries
       .filter((e) => e?.type === 'archive' && e?.path && e.archive_items == null)
       .map((e) => e.path);
     if (archivePaths.length === 0) return;
@@ -362,16 +406,16 @@ class FileBrowserStore {
     } catch (_e) {
       return;
     }
-    // Bail if the listing moved on while the summaries were in flight.
-    if (this.currentPath !== requestedPath || this.searchMode || this.currentArchivePath) {
+    // Bail if the listing was replaced (navigation or same-path refresh) while
+    // the summaries were in flight, so an older response can't clobber newer rows.
+    if (this._listingGeneration !== generation || this.searchMode || this.currentArchivePath) {
       return;
     }
     let changed = false;
-    const next = this.entries.map((e) => {
+    const merge = (e) => {
       if (e?.type !== 'archive' || !e?.path) return e;
       const s = summary[e.path];
       if (!s || s.error) return e;
-      changed = true;
       return {
         ...e,
         archive_items: s.archive_items,
@@ -380,6 +424,16 @@ class FileBrowserStore {
         has_chd: s.has_chd ?? e.has_chd,
         verifiable_by: Array.isArray(s.verifiable_by) ? s.verifiable_by : e.verifiable_by,
       };
+    };
+    const next = this.entries.map((e) => {
+      const merged = merge(e);
+      if (merged !== e) {
+        changed = true;
+        // Keep any selected copy of this row in sync, the bulk Verify gate
+        // reads verifiable_by from selectedFiles, not from `entries`.
+        if (this.selectedFiles.has(merged.path)) this.selectedFiles.set(merged.path, merged);
+      }
+      return merged;
     });
     if (changed) this.entries = next;
   }

@@ -46,12 +46,20 @@ class MtimeCache(Generic[T]):
             return None
         return (st.st_mtime_ns, st.st_size)
 
-    def get_or_compute(self, path: str, compute: Callable[[], T]) -> T:
+    def get_or_compute(
+        self,
+        path: str,
+        compute: Callable[[], T],
+        should_cache: Callable[[T], bool] | None = None,
+    ) -> T:
         """Return the cached value for ``path`` or compute, store, and return it.
 
         If ``path`` can't be ``stat``'d (missing/permission), the result is
         computed but not cached — there's no stable key to invalidate against,
-        and the next read will recompute anyway.
+        and the next read will recompute anyway. ``should_cache``, when given, is
+        called with the freshly computed value and must return ``True`` for it to
+        be stored; this lets callers keep memory bounded by declining to retain
+        unusually large values (they're recomputed on the next read instead).
         """
         key = self._stat_key(path)
         if key is not None:
@@ -63,7 +71,7 @@ class MtimeCache(Generic[T]):
 
         value = compute()
 
-        if key is not None:
+        if key is not None and (should_cache is None or should_cache(value)):
             with self._lock:
                 self._store[path] = (key, value)
                 self._store.move_to_end(path)
@@ -72,9 +80,11 @@ class MtimeCache(Generic[T]):
         return value
 
     def invalidate(self, path: str) -> None:
+        """Drop any cached value for ``path`` (e.g. after a known write)."""
         with self._lock:
             self._store.pop(path, None)
 
     def clear(self) -> None:
+        """Drop every cached entry (used by tests for isolation)."""
         with self._lock:
             self._store.clear()

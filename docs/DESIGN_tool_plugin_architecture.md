@@ -350,14 +350,18 @@ builds fresh dicts per call (the archive route annotates entries in place).
 
 The directory listing is also **lazy by default**: `GET /files` takes
 `summarize_archives` (default `True` for API back-compat) but the web UI calls it
-with `summarize_archives=false`, so archive rows return with
-`archive_items`/`archive_has_output`/`archive_truncated`/`verifiable_by` unset and
-the listing renders instantly. The browser then hydrates those badges from
-`POST /archive-summary` (a batch keyed by archive path, computed by the shared
-`_summarize_archive` helper so it's byte-identical to the inline
-`summarize_archives=true` path) — mirroring how CHD `media_type` is hydrated via
-`/chd-metadata`. The summary batch and the romz gate share the reader's cache, so
-hydrating a folder opens each archive at most once.
+with `summarize_archives=false`. In that lazy mode an archive row's counters
+(`archive_items` / `archive_has_output` / `archive_truncated`) come back `null`
+(Python `None`) and `verifiable_by` comes back as an empty list `[]` (the field is
+always a list, never null), so the listing renders instantly. The browser then
+hydrates those badges from `POST /archive-summary` (a batch keyed by archive path,
+computed by the shared `_summarize_archive` helper so it's byte-identical to the
+inline `summarize_archives=true` path) — mirroring how CHD `media_type` is
+hydrated via `/chd-metadata`. To keep that hydration bounded, the browser
+summarizes only the **visible page** of archive rows (re-hydrating on
+page/sort/filter changes), and the endpoint additionally caps each batch at
+`MAX_ARCHIVE_SUMMARY_PATHS`. The summary batch and the romz gate share the
+reader's cache, so hydrating a folder opens each archive at most once.
 
 ### 3.4 `registry.py`
 

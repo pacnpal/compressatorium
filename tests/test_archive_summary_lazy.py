@@ -102,6 +102,41 @@ async def test_batch_reports_per_path_errors(summary_env):
     assert summary["/etc/passwd"]["error"] == "path_outside_configured_volumes"
 
 
+@pytest.mark.asyncio
+async def test_batch_caps_path_count(summary_env, monkeypatch):
+    root = summary_env["root"]
+    # Cap at 1 so the second path is rejected without doing its archive work.
+    monkeypatch.setattr(files_routes, "MAX_ARCHIVE_SUMMARY_PATHS", 1)
+    summary = await files_routes.archive_summary_batch(
+        MetadataBatchRequest(paths=[f"{root}/Disc.zip", f"{root}/Solo.zip"]),
+    )
+    assert "error" not in summary[f"{root}/Disc.zip"]
+    assert summary[f"{root}/Solo.zip"]["error"] == "batch_limit_exceeded"
+
+
+def test_oversized_listings_are_not_cached(tmp_path, monkeypatch):
+    archive_members.clear_cache()
+    archive_path = str(tmp_path / "Many.zip")
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("game.iso", b"iso")
+
+    # Force the "too many members to cache" branch for any non-empty archive.
+    monkeypatch.setattr(archive_members, "MAX_CACHED_MEMBERS", 0)
+    calls = {"n": 0}
+    original = archive_members._read_uncached
+
+    def counting(path):
+        calls["n"] += 1
+        return original(path)
+
+    monkeypatch.setattr(archive_members, "_read_uncached", counting)
+
+    archive_members.read_archive_members(archive_path)
+    archive_members.read_archive_members(archive_path)
+    # Not cached (over the member cap), so each read re-opens the archive.
+    assert calls["n"] == 2
+
+
 def test_shared_reader_caches_until_bytes_change(tmp_path, monkeypatch):
     archive_members.clear_cache()
     archive_path = str(tmp_path / "Pack.zip")

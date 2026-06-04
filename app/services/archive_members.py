@@ -63,6 +63,14 @@ class ArchiveMember(NamedTuple):
 # worker (MtimeCache is thread-safe). This is the one place an archive is opened.
 _cache: MtimeCache[list[ArchiveMember]] = MtimeCache()
 
+# Don't retain the raw member list of an archive with more than this many members.
+# The cache holds the *unfiltered* central directory, so without a cap an archive
+# of hundreds of thousands of entries (or a crafted one) could pin a large list
+# in memory for every one of the cache's slots. Oversized archives are still read
+# correctly — just recomputed on each access rather than cached, trading a little
+# CPU for a hard memory bound. Comfortably above any real game archive.
+MAX_CACHED_MEMBERS = 10_000
+
 
 def read_archive_members(archive_path: str) -> list[ArchiveMember]:
     """Return every member of ``archive_path``, cached per ``(path, mtime, size)``.
@@ -70,9 +78,13 @@ def read_archive_members(archive_path: str) -> list[ArchiveMember]:
     Raises ``ValueError`` for unsupported extensions and ``RuntimeError`` when the
     optional backend for a supported extension is missing, so callers can decide
     how to degrade. The result is shared and cached — treat it as read-only.
+    Listings larger than :data:`MAX_CACHED_MEMBERS` are returned but not cached so
+    a pathological archive can't pin a huge list in memory.
     """
     return _cache.get_or_compute(
-        archive_path, lambda: _read_uncached(archive_path),
+        archive_path,
+        lambda: _read_uncached(archive_path),
+        should_cache=lambda members: len(members) <= MAX_CACHED_MEMBERS,
     )
 
 
@@ -102,6 +114,7 @@ def _read_uncached(archive_path: str) -> list[ArchiveMember]:
 
 
 def _read_zip(archive_path: str) -> list[ArchiveMember]:
+    """Read every ZIP member, flagging symlinks via the Unix `external_attr`."""
     members: list[ArchiveMember] = []
     with zipfile.ZipFile(archive_path, "r") as zf:
         for info in zf.infolist():
@@ -115,6 +128,7 @@ def _read_zip(archive_path: str) -> list[ArchiveMember]:
 
 
 def _read_7z(archive_path: str) -> list[ArchiveMember]:
+    """Read every 7z member; ``uncompressed`` is ``None`` when the archive omits it."""
     members: list[ArchiveMember] = []
     with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
         for entry in zf.list():
@@ -131,6 +145,7 @@ def _read_7z(archive_path: str) -> list[ArchiveMember]:
 
 
 def _read_rar(archive_path: str) -> list[ArchiveMember]:
+    """Read every RAR member, flagging symlinks when the rarfile backend reports them."""
     members: list[ArchiveMember] = []
     with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
         for info in rf.infolist():

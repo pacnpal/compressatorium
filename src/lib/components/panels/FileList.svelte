@@ -138,6 +138,10 @@
     datMatchTerminalCount;
     const allPaths = entries.map((e) => e?.path).filter(Boolean);
     if (allPaths.length === 0) return;
+    // Hydrate archive-summary badges (member counts, verifiable_by) for the
+    // archives on this visible page. Re-runs with this effect on page / sort /
+    // filter changes because it reads the same visible `entries`.
+    fileBrowser.hydrateVisibleArchiveSummaries();
     // chdMetadata.hydrate is cheap for any path (no jobs spawned), so
     // the full list is fine. DAT match jobs need filtering on two
     // axes:
