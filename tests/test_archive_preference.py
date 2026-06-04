@@ -31,18 +31,17 @@ def test_keeps_bin_when_no_cue_or_gdi():
 
 
 def test_archive_input_extensions_cover_all_source_tools():
-    # The archive listing must surface every convertible source, chdman
-    # create sources, Dolphin sources, 3DS sources (issue #113), and Switch
-    # (nsz) sources. A bare .chd is an output/recompress target, not a
-    # convertible source, so it stays out (chdman copy/extract disallow
-    # archive input).
+    # The convert gate must accept every source convertible straight from an
+    # archive: chdman create sources, Dolphin sources, 3DS sources (issue #113),
+    # Switch (nsz) sources, and .chd (chdman extract decompresses a .chd pulled
+    # out of an archive back to a disc image).
     exts = registry.archive_input_extensions()
     assert {".3ds", ".cci", ".cia"} <= exts          # 3DS (the reported gap)
     assert {".rvz", ".gcz", ".wia", ".wbfs"} <= exts  # Dolphin
     assert {".gdi", ".iso", ".cue", ".bin"} <= exts   # chdman create
     assert {".nsp", ".xci", ".nsz", ".xcz"} <= exts   # Switch (nsz)
     assert {".cso", ".zso", ".dax"} <= exts           # CSO (maxcso decompress)
-    assert ".chd" not in exts
+    assert ".chd" in exts                             # chdman extract-from-archive
     # Handheld ROMs are browse-only, not convertible in place, so they stay OUT
     # of the convert-gate set (recompressing an archived ROM would be recursive).
     assert not ({".gb", ".gbc", ".gba", ".nds"} & exts)
@@ -59,8 +58,11 @@ def test_browse_listing_is_global_known_superset_of_convert_gate():
     assert {".gb", ".gbc", ".gba", ".nds"} <= listable
     # ...but stay out of the convert-gate (browse-only, no in-place conversion).
     assert not ({".gb", ".gbc", ".gba", ".nds"} & convertible)
-    # A finished .chd is disowned as a source by chdman, so it never lists.
-    assert ".chd" not in listable
+    # A .chd shows in browse AND is convertible from an archive: chdman extract
+    # decompresses it. (It's still not a loose source — chdman drops it from its
+    # input_extensions — so a .chd on disk isn't badged convertible.)
+    assert ".chd" in listable
+    assert ".chd" in convertible
     # Archive containers themselves aren't listed as members of an archive.
     assert not ({".zip", ".7z", ".rar"} & listable)
 
@@ -92,6 +94,21 @@ def test_list_7z_surfaces_handheld_rom_member(tmp_path):
     members = {e["internal_path"]: e for e in entries}
     assert "inner.gba" in members
     assert members["inner.gba"]["extension"] == ".gba"
+
+
+def test_list_zip_surfaces_chd_member_as_convertible(tmp_path):
+    # A .chd packed in an archive shows when you browse in, and unlike a loose
+    # .chd it's convertible there — chdman extract decompresses it back to a
+    # disc image.
+    archive = tmp_path / "Disc.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("disc.chd", b"chd")
+
+    entries = archive_service.list_archive_contents(str(archive))
+    members = {e["internal_path"]: e for e in entries}
+    assert "disc.chd" in members
+    assert members["disc.chd"]["extension"] == ".chd"
+    assert "chdman" in registry.tools_accepting_archive_member(".chd")
 
 
 def test_convertible_only_skips_list_only_members_before_entry_cap(

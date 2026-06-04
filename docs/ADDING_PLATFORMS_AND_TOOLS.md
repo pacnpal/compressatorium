@@ -688,9 +688,12 @@ Everything else is spec-driven:
   fuss. *Converting* a member in place is the gate: set `allows_archive_input=True`
   only when a mode should accept the member straight from the archive (that's
   what `archive_input_extensions()` gathers, and it's what `plan_job` and the
-  recursive search path ride on). Leave it `False` when the input is an *output*
-  class (like chdman extract/copy on `.chd`) or when a member's only meant to be
-  *seen*, not reprocessed (romz ROMs — visible in browse, never recompressed).
+  recursive search path ride on). Leave it `False` when reprocessing the member
+  from an archive is a pointless round trip (chdman *copy*, which would re-CHD a
+  `.chd`) or when a member's only meant to be *seen*, not reprocessed (romz ROMs
+  — visible in browse, never recompressed). Note chdman *extract* DOES opt in:
+  pullin' a `.chd` out of an archive to decompress it back to a disc image is a
+  real, useful conversion.
   See §17.5.
 
 ### 5.8 Mark inputs convertible in listings: `app/routes/files.py`
@@ -1196,10 +1199,11 @@ DEPLOYMENT.md / DOCKER-COMPOSE.md    new env var, if any
   flat config in `eslint.config.js`) and keep the style consistent.
 - **The image runs as uid 999 (`converter`).** Binaries must be executable by a
   non-root user; install them to a world-readable path like `/usr/local/bin`.
-- **Most convertible-source modes are archive-aware.** chdman *create*, Dolphin,
-  3DS, and Switch (nsz) all accept members straight out of `.zip/.7z/.rar`; only
-  chdman *extract/copy* stay opted out, because they act on a finished `.chd`
-  (an output, not a convertible source). See **§17** for how to wire archive
+- **Most convertible-source modes are archive-aware.** chdman *create* and
+  *extract*, Dolphin, 3DS, and Switch (nsz) all accept members straight out of
+  `.zip/.7z/.rar` (chdman extract decompresses a `.chd` pulled from an archive);
+  only chdman *copy* stays opted out, because re-CHD'ing a `.chd` from inside an
+  archive is a pointless round trip. See **§17** for how to wire archive
   input into a new tool. If your tool genuinely can't read its inputs from inside
   an archive, leave `allows_archive_input=False` on its `ModeSpec` (the default)
   and the single guard in `plan_job` blocks archive (`::`) members automatically.
@@ -1325,9 +1329,10 @@ preserves the original protection measures.
 
 Users keep dumps inside `.zip`/`.7z`/`.rar` archives, so every tool that takes a
 *convertible source* can convert a member straight out of the archive without a
-manual unzip first. Today chdman *create*, Dolphin, 3DS, and Switch (nsz) all
-support this; only chdman *extract/copy* opt out, because their input is a
-finished `.chd` (an output, not a source).
+manual unzip first. Today chdman *create* and *extract*, Dolphin, 3DS, and Switch
+(nsz) all support this — chdman extract even decompresses a `.chd` pulled from an
+archive back to a disc image; only chdman *copy* opts out, because re-CHD'ing a
+`.chd` from inside an archive is a pointless round trip.
 
 The pipeline is **tool-agnostic and registry-driven**: a member arrives as a
 `"<archive>::<member>"` pseudo-path, the job layer extracts it to a real temp
@@ -1410,12 +1415,14 @@ does not apply to them.
 
 ### 17.5 When *not* to opt in
 
-Leave `allows_archive_input=False` (the default) when the mode's input is an
-**output class**, not a convertible source — e.g. chdman `extract`/`copy`, which
-operate on a finished `.chd`. Re-reading a `.chd` from an archive is a recompress
-target, not a conversion source, so the guard rejects it (and
+Leave `allows_archive_input=False` (the default) when reprocessing the member
+from an archive is a **pointless round trip** — e.g. chdman `copy`, which would
+re-CHD a finished `.chd` back into another `.chd`. The guard rejects it (and
 `tests/test_archive_conversion_e2e.py::test_archive_chd_member_rejected_for_recompress`
-locks that in). Same logic for any "decompress an already-final artifact" mode.
+locks that in). Note the distinction from chdman `extract`: extract takes the
+same `.chd` input but *opts in*, because decompressing a `.chd` pulled from an
+archive back to its disc image is a genuine, useful conversion — "output class"
+alone doesn't disqualify a mode, only a no-op round trip does.
 
 **Visible-but-not-convertible (no flag, that's the point).** A tool that
 *produces* archives (romz packs a ROM into `.7z`/`.zip`) has a third case: the

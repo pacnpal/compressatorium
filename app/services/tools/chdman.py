@@ -59,6 +59,12 @@ def _build_modes() -> list[ModeSpec]:
             group="extract",
             output_ext=ext,
             input_extensions=_CHD,
+            # A .chd packed in an archive can be pulled out and decompressed
+            # back to its disc image — the job pipeline extracts the member to a
+            # temp file before chdman runs, same as the create direction. (copy
+            # stays off below: recompressing a .chd straight out of an archive
+            # is a pointless round trip.)
+            allows_archive_input=True,
         )
         for mode, (label, ext) in _EXTRACT_MODES.items()
     ]
