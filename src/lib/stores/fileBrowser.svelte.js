@@ -337,8 +337,8 @@ class FileBrowserStore {
     // Token for this specific request. Compared against the latest token (not
     // the path) so an A→B→A sequence — where the older and newer A share a path
     // — can't let the stale older A apply results or clear the spinner.
-    const myReq = (this._listingRequestSeq += 1);
-    const isLatest = () => this._listingRequestSeq === myReq;
+    this._listingRequestSeq += 1;
+    const myReq = this._listingRequestSeq;
     this.loading = true;
     this.entriesError = null;
     try {
@@ -347,7 +347,7 @@ class FileBrowserStore {
       // navigated away (into another dir, an archive, or search) while it was
       // in flight.
       if (
-        !isLatest() || this.currentPath !== requested
+        this._listingRequestSeq !== myReq || this.currentPath !== requested
         || this.currentArchivePath || this.searchMode
       ) {
         return;
@@ -360,13 +360,13 @@ class FileBrowserStore {
       // pagination/sort/filter) — the listing itself renders without waiting.
       this._listingGeneration += 1;
     } catch (e) {
-      if (!isLatest() || this.currentPath !== requested) return;
+      if (this._listingRequestSeq !== myReq || this.currentPath !== requested) return;
       this.entriesError = e?.message ?? 'Failed to load files';
       this.entries = [];
     } finally {
       // Only the latest request clears the spinner / in-flight path. A stale
       // request finishing later must not hide a newer request's spinner.
-      const active = isLatest();
+      const active = this._listingRequestSeq === myReq;
       if (active) {
         this._inflightListingPath = null;
         this.loading = false;
