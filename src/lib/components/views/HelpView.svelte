@@ -384,8 +384,10 @@
       Any convertible source works this way — 3DS ROMs, Dolphin discs, Switch dumps
       (<code>.nsp</code>/<code>.xci</code>, your own <code>prod.keys</code> still required), and PSP/PS2
       images (both the <code>.iso</code> you compress and the <code>.cso</code>/<code>.zso</code>/<code>.dax</code>
-      you decompress). The one exception is CHDMAN extract and copy, which act on a finished
-      <code>.chd</code> (an output, not a source).
+      you decompress). CHDMAN's extract modes can even pull a <code>.chd</code> out of an
+      archive and decompress it back to a disc image. The one exception is CHDMAN's
+      copy/recompress mode: recompressing an already-finished <code>.chd</code> straight out of
+      an archive is a pointless round trip, so it isn't offered there.
     </p>
     <p>
       When a <code>.cue</code> or <code>.gdi</code> sits next to its <code>.bin</code>
