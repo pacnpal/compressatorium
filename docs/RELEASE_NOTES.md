@@ -13,7 +13,7 @@ global (so a packed ROM and an archived `.chd` are now visible inside their
 container), CHD decompression straight out of an archive, registry-driven
 library-scan / DAT-match across every format, tool-neutral process-priority and
 timeout settings, dependency refreshes, and the related fixes below. Sections
-are newest-first; a per-beta breakdown is in [Beta history](#beta-history-410-beta-1--beta-4)
+are newest-first; a per-beta breakdown is in [Beta history](#beta-history-410-beta-1-to-beta-4)
 at the end of this release.
 
 ### CHD: decompress a .chd straight out of an archive
@@ -158,7 +158,7 @@ at the end of this release.
     `python-multipart` `>=0.0.29` → `>=0.0.30` (#140).
   - **GitHub Actions:** `docker/setup-qemu-action` 4.0.0 → 4.1.0 (#145).
 
-### Beta history (4.1.0-beta-1 → beta-4)
+### Beta history (4.1.0-beta-1 to beta-4)
 
 The stable 4.1.0 was cut from four betas. Each entry below points at the
 thematic section above where the change is described in full; this is the

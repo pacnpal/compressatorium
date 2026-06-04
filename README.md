@@ -245,7 +245,7 @@ a source.
 Browsing into an archive does **not** list everything it contains. It lists the
 file types the app *knows* — every extension that some tool recognizes as a
 convertible source (`.iso`, `.cue`/`.bin`, `.gdi`, `.gcz`/`.wia`/`.rvz`/`.wbfs`,
-`.cci`/`.cia`/`.3ds`/`.cxi`/`.3dsx`, `.nsp`/`.xci`, the handheld ROMs
+`.cci`/`.cia`/`.3ds`/`.cxi`/`.3dsx`, `.nsp`/`.xci`, `.cso`/`.zso`/`.dax`, the handheld ROMs
 `.gb`/`.gbc`/`.gba`/`.nds`, …) plus a `.chd` you can decompress in place. Anything
 else is hidden, on purpose:
 
@@ -418,7 +418,7 @@ On small screens the file list switches to a card layout. Controls use 44 to 48p
 - Archives extract temporarily during conversion, then clean up automatically
 - When a `.cue`/`.gdi` is present in the same archive folder, `.bin` entries are suppressed and batch jobs are deduplicated by output path to avoid stalled conversions.
 - Archive listings include safety limits (max entries/size) and expose truncation metadata when limits are hit.
-- **Browsing is global, scoped to known extensions.** When you look inside an archive, the listing shows every member whose extension is one the app understands — every tool's convertible source plus a `.chd` you can decompress — regardless of which tool is currently selected. That covers CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), 3DS (`.cci`/`.cia`/`.3ds`/`.cxi`/`.3dsx`), Switch (`.nsp`/`.xci`), CSO (`.iso`), and Handheld ROM (`.gb`/`.gbc`/`.gba`/`.nds`). Archive members appear for whichever tool accepts them, exactly like on-disk files.
+- **Browsing is global, scoped to known extensions.** When you look inside an archive, the listing shows every member whose extension is one the app understands — every tool's convertible source plus a `.chd` you can decompress — regardless of which tool is currently selected. That covers CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), 3DS (`.cci`/`.cia`/`.3ds`/`.cxi`/`.3dsx`), Switch (`.nsp`/`.xci`), CSO (`.iso`/`.cso`/`.zso`/`.dax`), and Handheld ROM (`.gb`/`.gbc`/`.gba`/`.nds`). Archive members appear for whichever tool accepts them, exactly like on-disk files.
 - **Why everything else is hidden.** Unknown files (text, `.nfo`/`.sfv`, cover art, manuals), nested archives (a `.zip` inside a `.zip`), and OS/NAS clutter (`__MACOSX/…`, `.DS_Store`, `Thumbs.db`) are filtered out — they aren't convertible or verifiable, so listing them would only be noise. See [Archives → Why only certain files show inside an archive](#why-only-certain-files-show-inside-an-archive).
 - **Some shown members are view-only.** A handheld ROM this app packed (`Game.gba` inside `Game.gba.7z`) is listed for visibility/verification but not offered for re-conversion (recompressing an archived ROM would be recursive); unpack it by selecting the archive and running `romz_extract`. A `.chd` inside an archive can be decompressed in place but not recompressed (copy/recompress acts on a finished output). Such members are badged non-convertible.
 - The only inputs that can't come from an archive are CHDMAN extract/copy modes, which operate on a finished `.chd` (an output, not a convertible source), and Handheld ROM compression, whose `.7z`/`.zip` are the packed product.

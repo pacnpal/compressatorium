@@ -399,7 +399,8 @@
       a member appears if and only if its extension is one some tool recognizes as a
       convertible source (<code>.iso</code>, <code>.cue</code>/<code>.bin</code>,
       <code>.gdi</code>, the Dolphin and 3DS formats, <code>.nsp</code>/<code>.xci</code>,
-      the handheld ROMs <code>.gb</code>/<code>.gbc</code>/<code>.gba</code>/<code>.nds</code>,
+      <code>.cso</code>/<code>.zso</code>/<code>.dax</code>, the handheld ROMs
+      <code>.gb</code>/<code>.gbc</code>/<code>.gba</code>/<code>.nds</code>,
       …), plus a <code>.chd</code> you can decompress in place — no matter which tool you
       currently have selected.
     </p>
