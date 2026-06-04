@@ -412,21 +412,8 @@ class FileBrowserStore {
       return;
     }
     let changed = false;
-    const merge = (e) => {
-      if (e?.type !== 'archive' || !e?.path) return e;
-      const s = summary[e.path];
-      if (!s || s.error) return e;
-      return {
-        ...e,
-        archive_items: s.archive_items,
-        archive_has_output: s.archive_has_output,
-        archive_truncated: s.archive_truncated,
-        has_chd: s.has_chd ?? e.has_chd,
-        verifiable_by: Array.isArray(s.verifiable_by) ? s.verifiable_by : e.verifiable_by,
-      };
-    };
     const next = this.entries.map((e) => {
-      const merged = merge(e);
+      const merged = this._mergeArchiveSummary(e, summary);
       if (merged !== e) {
         changed = true;
         // Keep any selected copy of this row in sync, the bulk Verify gate
@@ -436,6 +423,28 @@ class FileBrowserStore {
       return merged;
     });
     if (changed) this.entries = next;
+  }
+
+  /**
+   * Merge an archive's hydrated summary into a single entry row. Returns a NEW
+   * object when a (non-error) summary applies to this archive path, otherwise
+   * returns the same entry unchanged — callers detect a real change by identity
+   * (`merged !== entry`).
+   * @param {any} entry - a listing row
+   * @param {Record<string, any>} summary - path -> summary (or {error}) map
+   */
+  _mergeArchiveSummary(entry, summary) {
+    if (entry?.type !== 'archive' || !entry?.path) return entry;
+    const s = summary[entry.path];
+    if (!s || s.error) return entry;
+    return {
+      ...entry,
+      archive_items: s.archive_items,
+      archive_has_output: s.archive_has_output,
+      archive_truncated: s.archive_truncated,
+      has_chd: s.has_chd ?? entry.has_chd,
+      verifiable_by: Array.isArray(s.verifiable_by) ? s.verifiable_by : entry.verifiable_by,
+    };
   }
 
   /**

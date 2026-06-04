@@ -5,10 +5,12 @@ and ``RomzService.is_single_rom_archive`` both open and parse an archive to answ
 a question about its members. A directory listing — or the ``/archive-summary``
 batch that hydrates archive badges, or a re-navigation to the same folder — would
 otherwise re-open and re-parse every archive each time. This memoizes the result
-keyed by ``(path, mtime_ns, size)``: any write that replaces the file bumps mtime
-and/or size and invalidates the entry, so a conversion that rewrites an archive
-can't be served a stale listing. The cache is LRU-bounded so memory stays flat
-over very large libraries.
+keyed by ``(path, mtime_ns, ctime_ns, size)``: any write that replaces the file
+bumps mtime/ctime and/or size and invalidates the entry, so a conversion that
+rewrites an archive can't be served a stale listing (ctime is included because it
+can't be reset via ``utime()`` and so survives a same-size rewrite that lands on
+the same coarse mtime tick). The cache is LRU-bounded so memory stays flat over
+very large libraries.
 
 Values are treated as immutable by the cache — callers that hand back mutable
 structures (e.g. lists of dicts) must copy before mutating, since every hit
@@ -30,21 +32,25 @@ DEFAULT_MAX_ENTRIES = 8192
 
 
 class MtimeCache(Generic[T]):
-    """Thread-safe LRU cache keyed by a path's ``(mtime_ns, size)`` stat."""
+    """Thread-safe LRU cache keyed by a path's ``(mtime_ns, ctime_ns, size)`` stat."""
 
     def __init__(self, maxsize: int = DEFAULT_MAX_ENTRIES) -> None:
         self._max = max(1, int(maxsize))
         self._lock = threading.Lock()
         # path -> (stat_key, value), ordered oldest-first for LRU eviction.
-        self._store: OrderedDict[str, tuple[tuple[int, int], T]] = OrderedDict()
+        self._store: OrderedDict[str, tuple[tuple[int, int, int], T]] = OrderedDict()
 
     @staticmethod
-    def _stat_key(path: str) -> tuple[int, int] | None:
+    def _stat_key(path: str) -> tuple[int, int, int] | None:
         try:
             st = os.stat(path)
         except OSError:
             return None
-        return (st.st_mtime_ns, st.st_size)
+        # Include ctime alongside mtime+size: an in-place rewrite that preserves
+        # byte size and lands on the same coarse mtime tick (rapid rewrites on
+        # overlay/NAS filesystems) still bumps ctime — which, unlike mtime, can't
+        # be set back via utime() — so the cache won't serve a stale listing.
+        return (st.st_mtime_ns, st.st_ctime_ns, st.st_size)
 
     def get_or_compute(
         self,
