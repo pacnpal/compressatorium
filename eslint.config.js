@@ -10,6 +10,7 @@ export default [
       'static/assets/**',
       'static/index.html',
       'node_modules/**',
+      '.venv/**',
       '**/*.min.js',
     ],
   },
