@@ -62,6 +62,7 @@ MATRIX = [
     (".chd", ConversionMode.EXTRACTCD, ".cue"),
     (".chd", ConversionMode.EXTRACTDVD, ".iso"),
     (".chd", ConversionMode.EXTRACTRAW, ".raw"),
+    (".chd", ConversionMode.EXTRACTHD, ".raw"),
     (".chd", ConversionMode.EXTRACTLD, ".avi"),
 ]
 
