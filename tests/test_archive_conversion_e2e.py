@@ -57,6 +57,13 @@ MATRIX = [
     (".cso", ConversionMode.CSO_DECOMPRESS, ".iso"),
     (".zso", ConversionMode.CSO_DECOMPRESS, ".iso"),
     (".dax", ConversionMode.CSO_DECOMPRESS, ".iso"),
+    # chdman extract-from-archive: a .chd pulled out of an archive decompresses
+    # back to its disc image. The output extension is mode-derived.
+    (".chd", ConversionMode.EXTRACTCD, ".cue"),
+    (".chd", ConversionMode.EXTRACTDVD, ".iso"),
+    (".chd", ConversionMode.EXTRACTRAW, ".raw"),
+    (".chd", ConversionMode.EXTRACTHD, ".raw"),
+    (".chd", ConversionMode.EXTRACTLD, ".avi"),
 ]
 
 
@@ -156,9 +163,10 @@ async def test_archive_member_converts_end_to_end(e2e_env, ext, mode, out_ext):
 
 @pytest.mark.asyncio
 async def test_archive_chd_member_rejected_for_recompress(e2e_env):
-    """A .chd inside an archive is an output/recompress target, not a
-    convertible source: chdman copy/extract keep allows_archive_input=False,
-    so the route must reject it (the inverse guard for the #113 change)."""
+    """Recompressing a .chd straight out of an archive is a pointless round
+    trip, so chdman's copy mode keeps allows_archive_input=False and the route
+    must reject it — even though the extract modes now accept a .chd from an
+    archive (decompress) and copy shares the same .chd input extension."""
     from fastapi import HTTPException
 
     tmp_path: Path = e2e_env["tmp_path"]

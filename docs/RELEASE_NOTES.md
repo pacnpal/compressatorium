@@ -9,6 +9,16 @@ CSO·ZSO·DAX support (maxcso), Handheld ROM archiving (GB / GBC / GBA / NDS ↔
 across every format, tool-neutral process-priority and timeout settings, and the
 related fixes below. Sections are newest-first.
 
+### CHD: decompress a .chd straight out of an archive
+
+#### New
+
+- **Extract a CHD without unzipping it first.** A `.chd` packed inside a `.zip`/`.7z`/`.rar` now shows when you browse into the archive and can be extracted in place — chdman's Extract CD/DVD/Raw/HD/LD modes accept a `.chd` member, decompress it back to its disc image (`.cue`+`.bin`, `.iso`, `.raw`, …), and drop the result next to the archive. Previously a `.chd` inside an archive was hidden and unconvertible; you had to unzip by hand first. Recompression is deliberately **not** offered from an archive: chdman's Copy/Recompress mode would just re-CHD an already-finished `.chd`, a pointless round trip, so it stays disabled for archive members.
+
+#### Internal
+
+- chdman's five extract modes set `allows_archive_input=True` (in both the Python and JS registries); only `copy` stays opted out. `.chd` therefore joins `registry.archive_input_extensions()` (the convert gate) and, because chdman intentionally drops `.chd` from its loose-source `input_extensions`, `ArchiveService._listable_extensions` now unions `archive_input_extensions()` into the browse set so an archived `.chd` is *visible* there too (a loose `.chd` on disk stays non-convertible — it's still an output, not a source). The job pipeline needed no changes: it already extracts a member to a temp file before the tool runs, so extract-from-archive rides the same path as create-from-archive. Tests: `tests/test_archive_conversion_e2e.py` (extractcd/dvd/raw/ld from a real `.zip`, Copy still rejected), `tests/test_archive_preference.py` (`.chd` lists and is convertible from an archive).
+
 ### Handheld ROM: the ROM is now visible inside its archive
 
 #### Fixed

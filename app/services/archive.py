@@ -139,20 +139,25 @@ class ArchiveService:
         """Extensions surfaced when *browsing* the members of an archive.
 
         Global, scoped to known extensions: every source extension any tool
-        recognizes (``registry.convertible_extensions()``), minus the archive
-        container extensions themselves (no point listing a ``.zip`` inside a
-        ``.zip``). This is a superset of the convert-gate set, so it also shows
-        members that are visible-only — a romz ROM appears when you browse into
-        its archive even though no mode will re-convert it in place (its
+        recognizes (``registry.convertible_extensions()``) plus anything a mode
+        can accept straight from an archive (``archive_input_extensions()`` —
+        which adds ``.chd``, an output chdman disowns as a loose source but
+        decompresses from inside an archive), minus the archive container
+        extensions themselves (no point listing a ``.zip`` inside a ``.zip``).
+        This is a superset of the convert-gate set, so it also shows members
+        that are visible-only — a romz ROM appears when you browse into its
+        archive even though no mode will re-convert it in place (its
         ``convertible_by`` stays empty, see ``tools_accepting_archive_member``).
-        Finished outputs a tool disowns as a source (chdman drops ``.chd`` from
-        its ``input_extensions``) stay hidden for free. Falls back to the static
-        set if the registry can't be imported (defensive, it always loads).
+        Falls back to the static set if the registry can't be imported
+        (defensive, it always loads).
         """
         try:
             from services.tools import registry
 
-            exts = registry.convertible_extensions() - ARCHIVE_EXTENSIONS
+            exts = (
+                registry.convertible_extensions()
+                | registry.archive_input_extensions()
+            ) - ARCHIVE_EXTENSIONS
             if exts:
                 return exts
         except Exception:  # pragma: no cover - registry always loads in-app

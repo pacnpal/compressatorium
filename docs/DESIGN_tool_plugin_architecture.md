@@ -122,7 +122,7 @@ class ModeSpec:
     supports_compression: bool = False
     supports_compression_level: bool = False   # dolphin rvz/wia only
     supports_delete_on_verify: bool = False
-    allows_archive_input: bool = False         # opt-in; set True on every convertible-source mode (chdman create, dolphin, z3ds). Only chdman extract/copy (.chd input) leave it False
+    allows_archive_input: bool = False         # opt-in; set True on every mode that can take a member straight from an archive (chdman create + extract, dolphin, z3ds). Only chdman copy (.chd recompress round-trip) leaves it False
 ```
 
 **Archive browsing is global, scoped to known extensions; the convert gate is
