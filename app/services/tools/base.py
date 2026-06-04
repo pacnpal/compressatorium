@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel
@@ -68,6 +69,18 @@ class ToolPlugin(Protocol):
 
         Returns ``None`` when the tool cannot produce an output for this
         input or no output is present (neither finished nor mid-conversion).
+        """
+
+    def verifies_path(self, path: str) -> bool:
+        """Whether this tool's verify/info applies to a concrete file.
+
+        The per-file refinement of ``verify_extensions``: the default is a
+        plain extension match, but a tool that claims a broad container
+        extension yet only handles a narrow subset (romz claims ``.7z``/
+        ``.zip`` but only verifies single-ROM archives it produced) overrides
+        this with per-file inspection. Listing code calls it so the frontend
+        gates the Verify/Info row-actions on what the tool can actually
+        handle, not on extension alone.
         """
 
     def convert(
@@ -153,6 +166,11 @@ class BaseTool:
 
     def detect_output(self, input_path: str) -> OutputStatus | None:
         return None
+
+    def verifies_path(self, path: str) -> bool:
+        # Default: a plain extension match. Tools that over-claim a container
+        # extension (e.g. romz on .7z/.zip) override with per-file inspection.
+        return Path(path).suffix.lower() in self.verify_extensions
 
     async def embedded_hashes(
         self, path: str, *, cancel_event: asyncio.Event | None = None,

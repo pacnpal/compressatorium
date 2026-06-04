@@ -2,11 +2,11 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A disc image converter that wraps five tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), and **maxcso** (PSP/PS2 CSO/ZSO). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A disc image converter that wraps six tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), and **7z** (handheld ROM archives). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
-* **Five tools in one.** CHDMAN, Dolphin, 3DS, Switch, or CSO/ZSO compression, chosen per job.
+* **Six tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, or handheld ROM (GB/GBC/GBA/DS) compression, chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -14,19 +14,32 @@ A disc image converter that wraps five tools: **CHDMAN** (MAME), **dolphin-tool*
 * **Existing-output detection** with skip, rename, or overwrite.
 * **Delete-on-verify.** Optionally remove the source after a conversion verifies. Off by default.
 * **Progress tracking** through a live job queue.
-* **File info** for CHD, Dolphin, 3DS, and Switch files.
+* **File info** for CHD, Dolphin, 3DS, Switch, CSO, and handheld ROM files.
 
 ### Supported Conversions
 
-| Tool | Input Formats | Output Formats | Use Case |
-|------|--------------|----------------|----------|
-| **CHDMAN** | .gdi, .cue, .bin, .iso | .chd | CD/DVD/LaserDisc to CHD |
-| **Dolphin** | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | GameCube/Wii disc images |
-| **3DS** | .cci, .cia, .3ds | .zcci, .zcia, .z3ds | Nintendo 3DS ROM compression |
-| **Switch** | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Nintendo Switch compress/decompress (needs your own prod.keys) |
-| **CSO** | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | PSP/PS2 ISO compress (CSO v1/v2, ZSO, DAX) and decompress, via maxcso |
+| Tool | Platform / Use | Input Formats | Output Formats | Compression Control | External Keys | Binary |
+|------|----------------|---------------|----------------|---------------------|---------------|--------|
+| **CHDMAN** | CD / DVD / HD / LaserDisc discs | .gdi, .cue, .bin, .iso, .chd | .chd, .cue, .bin, .iso, .raw, .avi | Codec list (zstd, zlib, …) | None | `mame-tools` |
+| **Dolphin** | GameCube / Wii discs | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | Codec + numeric level | None | `dolphin-emu` |
+| **3DS** | Nintendo 3DS ROMs | .cci, .cia, .3ds, .cxi, .3dsx, .zcci, .zcia, .z3ds, .zcxi, .z3dsx | .zcci, .zcia, .z3ds, .zcxi, .z3dsx, .cci, .cia, .3ds, .cxi, .3dsx | None (fixed) | None | `z3ds_compressor` |
+| **Switch** | Nintendo Switch dumps | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Layout + level | **Yes** (`prod.keys`) | `nsz` |
+| **CSO** | PSP / PS2 disc images | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | Effort preset (Fast/Default/Max) | None | `maxcso` |
+| **Handheld ROM** | Game Boy / GBC / GBA / DS ROMs | .gb, .gbc, .gba, .nds, .7z, .zip | .7z, .zip, .gb, .gbc, .gba, .nds | Effort preset (Fast/Default/Max) | None | `7z` (p7zip-full) |
 
-> **Archive inputs:** every input format above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. The exception is CHDMAN extract and copy modes, which act on a finished `.chd`. That is an output, not a convertible source.
+Every conversion above is lossless and fully reversible — including **3DS**, which
+now decompresses back to the original ROM as well. This uses
+[`z3ds_compress`](https://github.com/pacnpal/z3ds_compress) (a fork that adds a
+decompression mode and `.cxi`/`.3dsx` support to the original
+[`energeticokay/z3ds_compress`](https://github.com/energeticokay/z3ds_compress)).
+The compressed `.z3ds` can be read directly by Azahar, or restored to
+`.cci`/`.cia`/`.3ds` with `z3ds_decompress`; see
+[Nintendo 3DS Support](#nintendo-3ds-support).
+Each tool's full mode list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's
+`cso2_compress`, the ROM packer's `romz_7z`/`romz_zip`/`romz_extract`) is in
+[Supported Operations](#supported-operations).
+
+> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. Two exceptions: CHDMAN extract and copy modes act on a finished `.chd` (an output, not a convertible source); and **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member.
 
 ### MAME Redump DAT Integration
 
@@ -106,6 +119,7 @@ When you open the Web UI, you'll see the tool options at the top:
 * **3DS** - For compressing Nintendo 3DS ROMs
 * **Switch** - For compressing/decompressing Nintendo Switch dumps (needs your own prod.keys)
 * **CSO** - For compressing/decompressing PSP/PS2 ISO images to CSO/ZSO
+* **Handheld ROM** - For compressing/extracting GB/GBC/GBA/DS ROM dumps to .7z/.zip archives
 
 **Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
 
@@ -450,25 +464,40 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 
 ## Nintendo 3DS Support
 
-3DS ROM compression is available in the Web UI and REST API using [z3ds_compress](https://github.com/energeticokay/z3ds_compress).
+3DS ROM compression **and decompression** are available in the Web UI and REST
+API using [z3ds_compress](https://github.com/pacnpal/z3ds_compress) — a fork of
+the original [`energeticokay/z3ds_compress`](https://github.com/energeticokay/z3ds_compress)
+that adds a decompression mode and support for `.cxi`/`.3dsx` files.
 
-Select **3DS** as the primary tool, pick `.cci`/`.cia`/`.3ds` ROMs, and compress.
-The general workflow (queue, verify, delete-on-verify, archives) is in the
+Select **3DS** as the primary tool, pick your files, and choose a mode:
+**Compress 3DS** (`z3ds_compress`) packs a raw ROM, and **Decompress 3DS**
+(`z3ds_decompress`) restores the original ROM from a Z3DS file. The general
+workflow (queue, verify, delete-on-verify, archives) is in the
 [Usage Guide](#usage-guide); the 3DS-specific bits are below.
+
+> **Round-trip is lossless.** The compressed `.z3ds`/`.zcci`/`.zcia` is a
+> seekable-Zstandard container that Azahar reads directly, *and* it can be
+> decompressed back to a byte-identical original. Direction is chosen by the
+> mode (we pass the tool's explicit `-c`/`-d` flag), so it never depends on
+> guessing from the file contents.
 
 ### Supported File Formats
 
-**Input Formats:**
+**Compress inputs (raw ROMs):**
 - **`.cci`** - CCI (CTR Card Image) format - Nintendo 3DS cartridge dumps
 - **`.cia`** - CIA (CTR Importable Archive) format - Installable packages, updates, DLC
 - **`.3ds`** - Alternative extension for cartridge dumps (identical to .cci, can be renamed)
+- **`.cxi`** - CXI (CTR Executable Image) - experimental
+- **`.3dsx`** - 3DSX homebrew executable - experimental
 
-**Output Formats:**
-- **`.zcci`** - Compressed CCI format (from .cci input)
-- **`.zcia`** - Compressed CIA format (from .cia input)
-- **`.z3ds`** - Compressed 3DS format (from .3ds input)
+**Compressed outputs / decompress inputs (Z3DS containers):**
+- **`.zcci`** ↔ `.cci`
+- **`.zcia`** ↔ `.cia`
+- **`.z3ds`** ↔ `.3ds`
+- **`.zcxi`** ↔ `.cxi`
+- **`.z3dsx`** ↔ `.3dsx`
 
-**Important Note:** The `.3ds` and `.cci` formats are functionally identical - they're both cartridge dump formats with different file extensions. You can freely rename between them. The z3ds_compress tool supports both extensions and maintains the naming convention (.3ds → .z3ds, .cci → .zcci).
+**Important Note:** The `.3ds` and `.cci` formats are functionally identical - they're both cartridge dump formats with different file extensions. You can freely rename between them. The z3ds_compress tool supports both extensions and maintains the naming convention (.3ds → .z3ds, .cci → .zcci, and the reverse on decompress).
 
 ### Technical Details
 
@@ -478,15 +507,15 @@ The general workflow (queue, verify, delete-on-verify, archives) is in the
 
 **Compatibility:**
 - Compressed ROMs are **natively supported** by [Azahar emulator](https://azahar-emu.org/) (release 2123+)
-- Can be decompressed back to original format using the same tool if needed
 - **`.cci` files:** Thoroughly tested and production-ready
 - **`.cia` files:** Supported but considered experimental
 - **`.3ds` files:** Same as .cci - fully supported (they're the same format)
 
 **3DS-specific notes:**
-- z3ds_compressor binary ships in the Docker image (`Z3DS_COMPRESSOR_PATH=/usr/local/bin/z3ds_compressor`).
+- z3ds_compressor binary ships in the Docker image (`Z3DS_COMPRESSOR_PATH=/usr/local/bin/z3ds_compressor`), built from the [pacnpal/z3ds_compress](https://github.com/pacnpal/z3ds_compress) fork via CMake.
 - Compression settings are **fixed** — 3DS is the one tool with no compression picker.
 - ROMs must be **decrypted** before compression (encrypted ROMs will not work).
+- Decompression (`z3ds_decompress`) does not offer delete-on-verify: the restored ROM is not itself a verify-class file, so the compressed source can't be confirmed before deletion.
 
 ### Environment Variables
 
@@ -498,7 +527,7 @@ The general workflow (queue, verify, delete-on-verify, archives) is in the
 
 ### REST API Endpoints
 
-- `POST /api/jobs` or `POST /api/jobs/batch` - Queue 3DS compression jobs (use `mode: "z3ds_compress"`)
+- `POST /api/jobs` or `POST /api/jobs/batch` - Queue 3DS jobs (use `mode: "z3ds_compress"` or `mode: "z3ds_decompress"`)
 - `GET /api/z3ds-info?path=/path/to/rom.cci` - Get file information (size, format, compression status)
 - `GET /api/z3ds-verify?path=/path/to/rom.zcci` - Verify compressed 3DS output integrity
 - `GET /api/z3ds-verify/events?path=/path/to/rom.zcci` - SSE stream for 3DS verify progress
@@ -762,13 +791,17 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 - `dolphin_rvz`, `dolphin_wia`, `dolphin_gcz`, `dolphin_iso`
 
 **Nintendo 3DS**
-- `z3ds_compress` (.cci → .zcci, .cia → .zcia, .3ds → .z3ds)
+- `z3ds_compress` (.cci → .zcci, .cia → .zcia, .3ds → .z3ds, .cxi → .zcxi, .3dsx → .z3dsx)
+- `z3ds_decompress` (.zcci → .cci, .zcia → .cia, .z3ds → .3ds, .zcxi → .cxi, .z3dsx → .3dsx)
 
 **PSP / PS2 (CSO)**
 - `cso_compress` (.iso → .cso, CSO v1), `cso2_compress` (.iso → .cso, CSO v2), `zso_compress` (.iso → .zso), `dax_compress` (.iso → .dax), `cso_decompress` (.cso/.zso/.dax → .iso)
 
+**Handheld ROM (GB/GBC/GBA/NDS)**
+- `romz_7z` (.gb/.gbc/.gba/.nds → .7z), `romz_zip` (.gb/.gbc/.gba/.nds → .zip), `romz_extract` (.7z/.zip → original ROM)
+
 Notes:
-- Compression settings apply to CHD **create**/**copy**, Dolphin RVZ/WIA, Switch (`nsz_compress`), and the CSO/CSO v2/ZSO/DAX compress modes (the latter take an effort preset). Other modes ignore them.
+- Compression settings apply to CHD **create**/**copy**, Dolphin RVZ/WIA, Switch (`nsz_compress`), the CSO/CSO v2/ZSO/DAX compress modes, and the handheld ROM compress modes (`romz_7z`/`romz_zip`) — the last two take an effort preset. Other modes ignore them.
 - Extract/decompress operations ignore compression settings.
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
@@ -1057,8 +1090,10 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.iso` - ISO 9660 disc images (CHD or Dolphin based on ISO handling)
 - `.cue` / `.bin` - CD images with cue sheets
 - `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii disc images (Dolphin)
-- `.cci`, `.cia`, `.3ds` - Nintendo 3DS ROM images (3DS compression)
+- `.cci`, `.cia`, `.3ds`, `.cxi`, `.3dsx` - Nintendo 3DS ROM images (3DS compression)
+- `.zcci`, `.zcia`, `.z3ds`, `.zcxi`, `.z3dsx` - compressed 3DS ROMs (3DS decompression)
 - `.cso`, `.zso`, `.dax` - PSP/PS2 compressed ISO images (CSO decompression)
+- `.gb`, `.gbc`, `.gba`, `.nds` - Game Boy / GBC / GBA / DS ROMs (handheld ROM compression)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives
@@ -1068,8 +1103,9 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 **Output formats:**
 - `.chd` - Compressed Hunks of Data (MAME/CHDMAN)
 - `.rvz`, `.wia`, `.gcz`, `.iso` - Dolphin output formats
-- `.zcci`, `.zcia`, `.z3ds` - Compressed Nintendo 3DS ROMs
+- `.zcci`, `.zcia`, `.z3ds`, `.zcxi`, `.z3dsx` - Compressed Nintendo 3DS ROMs (z3ds_decompress restores the original ROM)
 - `.cso`, `.zso`, `.dax` - Compressed PSP/PS2 ISO images (maxcso; `.cso` covers CSO v1 and v2)
+- `.7z`, `.zip` - Handheld ROM archives (7z; `romz_extract` restores the original `.gb`/`.gbc`/`.gba`/`.nds`)
 
 ---
 
@@ -1132,6 +1168,6 @@ This project is a fork of the original Docker CHD Converter project by [MarcTV](
 - Author: [MarcTV](https://github.com/MarcTV)
 
 **Additional Tools:**
-- [z3ds_compress](https://github.com/energeticokay/z3ds_compress) by [energeticokay](https://github.com/energeticokay) - Nintendo 3DS ROM compression
+- [z3ds_compress](https://github.com/pacnpal/z3ds_compress) (fork with decompression + `.cxi`/`.3dsx` support), based on the original [z3ds_compress](https://github.com/energeticokay/z3ds_compress) by [energeticokay](https://github.com/energeticokay) - Nintendo 3DS ROM compression / decompression
 
 Thanks to MarcTV and energeticokay for building and sharing these tools.

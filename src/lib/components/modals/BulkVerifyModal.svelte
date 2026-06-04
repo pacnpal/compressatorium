@@ -36,7 +36,11 @@
     function pickVerifyTarget(entry) {
       const path = typeof entry === 'string' ? entry : entry?.path;
       if (!path) return null;
-      const direct = registry.toolForVerifyPath(path);
+      // Narrow by the backend's per-file `verifiable_by` when we have the entry
+      // object (romz: single-ROM .7z/.zip only), matching the row menu. A bare
+      // path string carries no refinement, so it falls back to extension match.
+      const verifiableBy = typeof entry === 'object' ? entry?.verifiable_by : undefined;
+      const direct = registry.verifyToolForPath(path, verifiableBy);
       if (direct) return { tool: direct, path };
       const outputs = typeof entry === 'object' && Array.isArray(entry?.outputs)
         ? entry.outputs

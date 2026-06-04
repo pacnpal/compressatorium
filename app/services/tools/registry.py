@@ -89,6 +89,19 @@ class ToolRegistry:
             None,
         )
 
+    def tools_verifying_path(self, path: str) -> list[ToolPlugin]:
+        """Tools whose verify/info applies to a concrete file path.
+
+        The per-file companion to :meth:`tool_for_verify`: each tool refines
+        the plain extension match via ``verifies_path`` (romz inspects archive
+        members so a non-single-ROM ``.7z``/``.zip`` is excluded). Returns
+        every claiming tool, in registration order, so the file listing can
+        surface a tool-neutral ``verifiable_by`` flag the frontend gates the
+        Verify/Info row-actions on. May do disk I/O (archive inspection); call
+        it off the event loop.
+        """
+        return [t for t in self._tools.values() if t.verifies_path(path)]
+
     def verify_extensions(self) -> frozenset[str]:
         """Union of every registered tool's verify_extensions.
 

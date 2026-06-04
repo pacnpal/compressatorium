@@ -6,7 +6,7 @@ pydantic-settings>=2.14.1
 py7zr>=1.1.0
 rarfile>=4.2
 defusedxml>=0.7.1
-python-multipart>=0.0.29
+python-multipart>=0.0.30
 SQLAlchemy>=2.0.50,<3.0
 alembic>=1.18.4
 # nsz: Nintendo Switch NSP/XCI <-> NSZ/XCZ (de)compressor. Pulls zstandard +

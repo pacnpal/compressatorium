@@ -19,7 +19,7 @@ export function getFileIcon(entry) {
   if (entry.type === 'archive') return '📦';
   const ext = entry.extension?.toLowerCase();
   if (ext === '.chd') return '💿';
-  if (['.rvz', '.wia', '.gcz', '.wbfs', '.3ds', '.cci', '.cia', '.z3ds', '.zcci', '.zcia'].includes(ext)) {
+  if (['.rvz', '.wia', '.gcz', '.wbfs', '.3ds', '.cci', '.cia', '.cxi', '.3dsx', '.z3ds', '.zcci', '.zcia', '.zcxi', '.z3dsx'].includes(ext)) {
     return '🎮';
   }
   if (['.iso', '.gdi', '.cue', '.bin'].includes(ext)) return '💽';

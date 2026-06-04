@@ -251,7 +251,7 @@ class SubprocessRunner:
     def active_pids(self) -> list[int]: ...
 
     async def run(self, cmd: list[str], *, input_path: str, output_path: str,
-                  parse_progress, cancel_event=None,
+                  parse_progress, cancel_event=None, cwd=None,
                   start_message="Starting...") -> AsyncGenerator[dict, None]:
         """Spawn cmd, stream stdout, yield {"progress","message"}.
         Handles: nice/ionice wrap, stdbuf, PID tracking, \\r/\\n line buffering,
@@ -259,6 +259,9 @@ class SubprocessRunner:
         (terminate->kill, clean partial output), ConversionCancelled, non-zero
         exit -> RuntimeError(tail), final 100%.
         `parse_progress(line) -> int|None` is the only per-tool knob.
+        `cwd` (optional) sets the subprocess working directory — used by `romz`
+        to run `7z a` from the ROM's directory so the archive stores just the
+        basename, not the absolute volume path.
         """
 
     async def run_capture(self, cmd: list[str], *, timeout=None,
@@ -281,6 +284,84 @@ The dolphin/z3ds output-size heuristic and dolphin's heartbeat become opt-in
 flags on `run()`. One-shot subprocess work (info / header / embedded-hash
 extraction) shares `run_capture()` rather than re-implementing the
 spawn / cancel / timeout / terminate dance per tool.
+
+### 3.3.1 Shared archive-limit enforcement (`services/archive.py`)
+
+`ArchiveService.enforce_archive_limits(members)` is the shared seam any
+archive-backed tool MUST call before shelling out to its own extractor.
+`ArchiveService`'s own extract path already applies the configured
+`CHD_ARCHIVE_MAX_ENTRIES` / `CHD_ARCHIVE_MAX_MEMBER_SIZE` /
+`CHD_ARCHIVE_MAX_TOTAL_SIZE` guards (zip-bomb / oversized-archive protection),
+but tools that read archives via their own member listing and run a CLI
+directly (e.g. `romz` shelling out to `7z` for extract/verify) would otherwise
+bypass those limits. `members` is a list of `(name, uncompressed_size)` from the
+tool's raw listing — pass the *unfiltered* listing so junk entries still count
+against the entry/size budget. New archive-backed tools should route through
+this helper rather than re-checking limits per tool; do not duplicate the size
+arithmetic.
+
+Tools that extract with **preserved member paths** (e.g. `romz` running
+`7z x`) MUST reject unsafe member paths up front on **every** member before
+shelling out — not just the member they intend to keep. A CLI extractor
+recreates the full archive tree, so an absolute or `..`-escaping path on any
+member (including ignored junk sidecars like `__MACOSX/../../victim`) could
+write outside the temp dir. `ArchiveService._validate_member` is the strict,
+Windows-portable guard, but it also bans `:` and `\\` — characters a loose ROM
+on a POSIX volume may legally contain — so a tool that must **round-trip** the
+archive it produced (verify/extract its own output) should instead block only
+the actual escape vectors (absolute path, `..` component) via a local check
+like `RomzService._reject_traversal`, which `os.path.normpath`s the member and
+rejects only absolute / `..`-leading results. Such tools must also forbid
+symlink members (zip `external_attr` `S_ISLNK` / py7zr `FileInfo.is_symlink`),
+since `7z x` restores symlinks as links.
+
+### 3.3.2 Shared cached archive member reader (`services/archive_members.py`)
+
+Reading an archive's member list is the hot path behind two unrelated features:
+`ArchiveService.list_archive_contents` (the file browser's per-archive summary)
+and `RomzService.is_single_rom_archive` (the romz Verify/Info gate, §3.6). Each
+used to open and parse the archive itself, so one archive row on screen was
+opened **twice**, and a directory of thousands of single-ROM archives turned a
+single listing into thousands of redundant `zipfile`/`py7zr`/`rarfile` opens —
+the listing endpoint blocked for ~40 s and starved the browser's connection pool
+behind it.
+
+`services/archive_members.read_archive_members(path)` is the single seam every
+member-listing consumer MUST go through. It returns a uniform
+`list[ArchiveMember]` (`name`, `size | None`, `is_dir`, `is_symlink`) for `.zip`
+/ `.7z` / `.rar`, behind **one module-global** `utils.mtime_cache.MtimeCache`
+keyed by `(path, mtime_ns, size)`. Because the cache is global and format-blind,
+every consumer and every supported container benefits for free, and the
+invalidation is automatic: a conversion that rewrites an archive bumps its
+mtime/size and the next read recomputes. Adding a new archive format is one
+`_read_<ext>` plus the extension — all consumers pick it up with no further
+change.
+
+Consumers keep their own *policy* over the shared *read*: `ArchiveService`
+filters to convertible members and enforces the size limits (§3.3.1) in
+`_filter_members` (one format-agnostic pass that replaced the old per-format
+`_list_zip`/`_list_7z`/`_list_rar` triplet); `romz` rejects symlink members as a
+security gate. "Raw" means unfiltered — directories, junk, and symlinks are all
+returned so each policy can decide. Only **metadata listing** routes through the
+reader; byte-extraction paths (`ArchiveService._extract_*`) and the `7z t`
+integrity check still open the archive directly because they read content, which
+isn't cacheable. The cache returns a shared list, so `list_archive_contents`
+builds fresh dicts per call (the archive route annotates entries in place).
+
+The directory listing is also **lazy by default**: `GET /files` takes
+`summarize_archives` (default `True` for API back-compat) but the web UI calls it
+with `summarize_archives=false`. In that lazy mode an archive row's counters
+(`archive_items` / `archive_has_output` / `archive_truncated`) come back `null`
+(Python `None`) and `verifiable_by` comes back as an empty list `[]` (the field is
+always a list, never null), so the listing renders instantly. The browser then
+hydrates those badges from `POST /archive-summary` (a batch keyed by archive path,
+computed by the shared `_summarize_archive` helper so it's byte-identical to the
+inline `summarize_archives=true` path) — mirroring how CHD `media_type` is
+hydrated via `/chd-metadata`. To keep that hydration bounded, the browser
+summarizes only the **visible page** of archive rows (re-hydrating on
+page/sort/filter changes), and the endpoint additionally caps each batch at
+`MAX_ARCHIVE_SUMMARY_PATHS`. The summary batch and the romz gate share the
+reader's cache, so hydrating a folder opens each archive at most once.
 
 ### 3.4 `registry.py`
 
@@ -374,12 +455,62 @@ class FileEntry(BaseModel):
     ...
     convertible_by: list[str] = []           # tool ids that accept this input
     outputs: list[OutputStatus] = []         # detected sibling outputs
+    verifiable_by: list[str] = []            # tool ids whose Verify/Info apply here
     # legacy fields kept during migration (see Phase 7), removed at the end
 ```
 
 `files.py` `scan_directory`/`search_files` stop hardcoding three flag blocks
 and instead loop `for tool in registry.all()` calling a tool-provided
 `detect_output(item_path)`.
+
+#### Per-file verify gate (`verifies_path` / `verifiable_by`)
+
+`verify_extensions` is a coarse, extension-level claim. Most tools verify
+every file with a matching extension, but a tool can claim a **broad container
+extension while only handling a narrow subset** of it — `romz` claims `.7z`/
+`.zip` (its extract-mode inputs) yet its Verify/Info only apply to the
+single-ROM archives it produced, not to an arbitrary multi-file `.zip` the user
+happens to have. Gating the frontend's Verify/Info row-actions on the
+extension alone would offer the affordance where the tool can't actually use it
+(issue #146).
+
+The plugin contract closes that gap with `ToolPlugin.verifies_path(path) ->
+bool`: the per-file refinement of `verify_extensions`. `BaseTool` defaults it to
+the plain extension match, so existing tools are unaffected; `RomzTool`
+overrides it to inspect the archive's members (exactly one handheld-ROM member —
+the same invariant verify/extract enforce, via
+`RomzService.is_single_rom_archive`). The registry exposes
+`tools_verifying_path(path)` (the per-file companion to `tool_for_verify`), and
+`routes/files.py` materializes the result into the tool-neutral
+`FileEntry.verifiable_by` list for on-disk files and archive containers. The
+frontend (`RowActionsMenu`) gates Verify/Info on `verifiable_by` when present,
+falling back to the registry's extension match for rows the listing doesn't
+annotate (e.g. archive members, which can't be verified in place). `verifies_path`
+may do disk I/O (archive inspection), so call it off the event loop — the
+`files.py` scans already run in a threadpool.
+
+Two consumer-side notes keep the gate airtight:
+
+- **Frontend precedence.** The registry's extension match (`toolForVerifyPath`)
+  stays the source of truth, because it encodes deliberate UX exclusions the
+  backend's broader `verify_extensions` don't — e.g. Dolphin's
+  `verify_extensions` include `.iso`, but the frontend intentionally omits
+  `.iso` from `DOLPHIN_VERIFY_EXTS` so CD/DVD ISOs aren't routed to a Dolphin
+  verify that fails. `verifiable_by` may therefore only **narrow** that match,
+  never broaden it. This rule lives in one place — `registry.verifyToolForPath`
+  (resolve the extension match, then drop it when a present `verifiable_by`
+  excludes it) — and every verify entry point uses it: the per-row menu
+  (`RowActionsMenu`), the "Verify selected" gate (`FileList`), and the bulk
+  target picker (`BulkVerifyModal`), so a non-single-ROM archive can't slip a
+  romz Verify through the batch path either.
+- **Output targets.** A source row can verify *from* an existing sibling output
+  (`entry.outputs[].path`), so that path needs the same gate. Rather than
+  re-listing the output inside the row, the producing tool's `detect_output`
+  validates the candidate before claiming it: `RomzTool.detect_output` only
+  reports a finished `.7z`/`.zip` as a romz output when it is a genuine
+  single-ROM archive (a mid-conversion placeholder still badges as
+  in-progress). A coincidental multi-file `Game.gba.7z` thus never enters
+  `outputs`, so the verify-from-output flow can't offer romz Verify on it.
 
 ### 3.7 Frontend descriptor (`src/lib/tools/registry.js`)
 

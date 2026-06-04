@@ -9,6 +9,8 @@ from pathlib import Path, PurePosixPath
 from typing import List, Tuple, Optional, Union, Dict
 
 from config import settings
+from services.archive_members import read_archive_members
+from utils.junk import is_junk_path
 
 try:
     import py7zr
@@ -34,7 +36,8 @@ ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
 CONVERTIBLE_EXTENSIONS = {
     ".gdi", ".iso", ".cue", ".bin",          # chdman create modes
     ".gcz", ".wia", ".rvz", ".wbfs",         # Dolphin (.iso shared above)
-    ".cci", ".cia", ".3ds",                  # 3DS (z3ds compress)
+    ".cci", ".cia", ".3ds", ".cxi", ".3dsx", # 3DS (z3ds compress)
+    ".zcci", ".zcia", ".z3ds", ".zcxi", ".z3dsx",  # 3DS (z3ds decompress)
 }
 
 logger = get_logger("archive")
@@ -91,15 +94,25 @@ class ArchiveService:
         _, max_member_size, max_total_size = self._archive_limits()
         return max_member_size > 0 or max_total_size > 0
 
-    @staticmethod
-    def _is_macos_metadata_member(member: str) -> bool:
-        parts = PurePosixPath(member).parts
-        if not parts:
-            return False
-        name = parts[-1]
-        if name == ".DS_Store" or name.startswith("._"):
-            return True
-        return "__MACOSX" in parts
+    def enforce_archive_limits(self, members: list[Tuple[str, int]]) -> None:
+        """Apply the configured archive entry/size limits to a member listing.
+
+        Shared with romz, which reads archives via its own member listing and
+        runs ``7z`` directly rather than going through this service's extract
+        path. Without this, deployments that set ``CHD_ARCHIVE_MAX_ENTRIES`` /
+        ``CHD_ARCHIVE_MAX_MEMBER_SIZE`` / ``CHD_ARCHIVE_MAX_TOTAL_SIZE`` to guard
+        against oversized archives / zip bombs would not have those limits
+        applied to romz extract or verify. ``members`` is ``(name, size)`` with
+        uncompressed sizes.
+        """
+        max_entries, _, _ = self._archive_limits()
+        if max_entries > 0 and len(members) > max_entries:
+            raise ValueError(f"Archive exceeds max entries ({max_entries})")
+        total = 0
+        for name, size in members:
+            self._check_member_size(size, member=name)
+            total += size
+        self._check_total_size(total)
 
     def _create_temp_dir(self) -> str:
         base_dir = settings.temp_dir
@@ -143,29 +156,34 @@ class ArchiveService:
     def list_archive_contents(
         self, archive_path: str, *, include_meta: bool = False
     ) -> Union[List[dict], Dict[str, Union[List[dict], bool]]]:
-        """List convertible files inside an archive."""
-        ext = Path(archive_path).suffix.lower()
-        entries = []
-        truncated = False
-        start = time.monotonic()
+        """List convertible files inside an archive.
 
-        try:
-            if ext == ".zip":
-                entries, truncated = self._list_zip(archive_path)
-            elif ext == ".7z" and HAS_7Z:
-                entries, truncated = self._list_7z(archive_path)
-            elif ext == ".rar" and HAS_RAR:
-                entries, truncated = self._list_rar(archive_path)
-        except Exception as e:
-            logger.exception("Error listing archive %s: %s", archive_path, e)
-        finally:
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "Listed archive %s entries=%d in %.2fs",
-                    archive_path,
-                    len(entries),
-                    time.monotonic() - start,
-                )
+        Members are read through the shared, mtime-cached
+        :func:`services.archive_members.read_archive_members`, so an archive is
+        opened at most once per ``(path, mtime, size)`` no matter how many times
+        the browser/summary path lists it (and the romz gate shares that same
+        cached read). The convertible/limit filtering and ``output_stem`` shaping
+        are applied per call against the cached raw members, returning fresh dicts
+        the archive route is free to annotate in place.
+        """
+        ext = Path(archive_path).suffix.lower()
+        entries: List[dict] = []
+        truncated = False
+        if ext in ARCHIVE_EXTENSIONS:
+            start = time.monotonic()
+            try:
+                raw_members = read_archive_members(archive_path)
+                entries, truncated = self._filter_members(archive_path, raw_members)
+            except Exception as e:
+                logger.exception("Error listing archive %s: %s", archive_path, e)
+            finally:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "Listed archive %s entries=%d in %.2fs",
+                        archive_path,
+                        len(entries),
+                        time.monotonic() - start,
+                    )
 
         entries = self._filter_preferred_entries(entries)
 
@@ -175,6 +193,82 @@ class ArchiveService:
         if include_meta:
             return {"entries": entries, "truncated": truncated}
         return entries
+
+    def _filter_members(
+        self, archive_path: str, members: list,
+    ) -> Tuple[List[dict], bool]:
+        """Filter raw archive members to convertible entries within size limits.
+
+        Format-agnostic replacement for the old per-format ``_list_zip`` /
+        ``_list_7z`` / ``_list_rar`` triplet: every container now yields a
+        uniform :class:`~services.archive_members.ArchiveMember` list, so a single
+        pass applies the junk filter, member-path validation, the registry's
+        convertible-extension gate, and the configured entry/size limits. ``size``
+        of ``None`` means the container didn't record an uncompressed size; that's
+        a skip-and-truncate when any size limit is active, otherwise treated as 0.
+        """
+        entries: List[dict] = []
+        max_entries, max_member_size, max_total_size = self._archive_limits()
+        convertible = self._convertible_extensions()
+        total_size = 0
+        truncated = False
+        for member in members:
+            if member.is_dir:
+                continue
+            if is_junk_path(member.name):
+                continue
+            try:
+                self._validate_member(member.name)
+            except ValueError:
+                continue
+            ext = Path(member.name).suffix.lower()
+            if ext not in convertible:
+                continue
+            size = member.size
+            if size is None:
+                if max_member_size > 0 or max_total_size > 0:
+                    logger.warning(
+                        "Skipping archive member %s (unknown size)", member.name,
+                    )
+                    truncated = True
+                    continue
+                size = 0
+            if max_member_size > 0 and size > max_member_size:
+                logger.warning(
+                    "Skipping oversized archive member %s (%s)",
+                    member.name,
+                    self._format_size(size),
+                )
+                truncated = True
+                continue
+            if max_total_size > 0 and (total_size + size) > max_total_size:
+                logger.warning(
+                    "Archive %s hit max total size limit (%s)",
+                    archive_path,
+                    self._format_size(max_total_size),
+                )
+                truncated = True
+                break
+            total_size += size
+            entries.append(
+                {
+                    "archive_path": archive_path,
+                    "internal_path": member.name,
+                    "name": os.path.basename(member.name),
+                    "size": size,
+                    "extension": ext,
+                    "convertible": True,
+                }
+            )
+            if max_entries > 0 and len(entries) >= max_entries:
+                logger.warning(
+                    "Archive %s hit max entry limit (%s)",
+                    archive_path,
+                    max_entries,
+                )
+                truncated = True
+                break
+        return entries, truncated
 
     @staticmethod
     def _filter_preferred_entries(entries: List[dict]) -> List[dict]:
@@ -196,243 +290,6 @@ class ArchiveService:
             filtered.append(entry)
 
         return filtered
-
-    def _list_zip(self, archive_path: str) -> Tuple[List[dict], bool]:
-        """List contents of a ZIP file."""
-        entries = []
-        max_entries, max_member_size, max_total_size = self._archive_limits()
-        convertible = self._convertible_extensions()
-        total_size = 0
-        truncated = False
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            for info in zf.infolist():
-                if info.is_dir():
-                    continue
-                if self._is_macos_metadata_member(info.filename):
-                    continue
-                try:
-                    self._validate_member(info.filename)
-                except ValueError:
-                    continue
-                ext = Path(info.filename).suffix.lower()
-                if ext in convertible:
-                    if max_member_size > 0 and info.file_size > max_member_size:
-                        logger.warning(
-                            "Skipping oversized archive member %s (%s)",
-                            info.filename,
-                            self._format_size(info.file_size),
-                        )
-                        truncated = True
-                        continue
-                    if max_total_size > 0 and (total_size + info.file_size) > max_total_size:
-                        logger.warning(
-                            "Archive %s hit max total size limit (%s)",
-                            archive_path,
-                            self._format_size(max_total_size),
-                        )
-                        truncated = True
-                        break
-                    total_size += info.file_size
-                    entries.append(
-                        {
-                            "archive_path": archive_path,
-                            "internal_path": info.filename,
-                            "name": os.path.basename(info.filename),
-                            "size": info.file_size,
-                            "extension": ext,
-                            "convertible": True,
-                        }
-                    )
-                    if max_entries > 0 and len(entries) >= max_entries:
-                        logger.warning(
-                            "Archive %s hit max entry limit (%s)",
-                            archive_path,
-                            max_entries,
-                        )
-                        truncated = True
-                        break
-        return entries, truncated
-
-    def _list_7z(self, archive_path: str) -> Tuple[List[dict], bool]:
-        """List contents of a 7z file."""
-        entries = []
-        max_entries, max_member_size, max_total_size = self._archive_limits()
-        convertible = self._convertible_extensions()
-        total_size = 0
-        truncated = False
-        with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
-            archive_info = zf.archiveinfo()
-            if hasattr(archive_info, "files"):
-                for name, info in archive_info.files.items():
-                    if self._is_macos_metadata_member(name):
-                        continue
-                    try:
-                        self._validate_member(name)
-                    except ValueError:
-                        continue
-                    ext = Path(name).suffix.lower()
-                    if ext in convertible:
-                        size = self._coerce_size(getattr(info, "uncompressed", None))
-                        if size is None:
-                            if max_member_size > 0 or max_total_size > 0:
-                                logger.warning(
-                                    "Skipping archive member %s (unknown size)",
-                                    name,
-                                )
-                                truncated = True
-                                continue
-                            size = 0
-                        if max_member_size > 0 and size > max_member_size:
-                            logger.warning(
-                                "Skipping oversized archive member %s (%s)",
-                                name,
-                                self._format_size(size),
-                            )
-                            truncated = True
-                            continue
-                        if max_total_size > 0 and (total_size + size) > max_total_size:
-                            logger.warning(
-                                "Archive %s hit max total size limit (%s)",
-                                archive_path,
-                                self._format_size(max_total_size),
-                            )
-                            truncated = True
-                            break
-                        total_size += size
-                        entries.append(
-                            {
-                                "archive_path": archive_path,
-                                "internal_path": name,
-                                "name": os.path.basename(name),
-                                "size": size,
-                                "extension": ext,
-                                "convertible": True,
-                            }
-                        )
-                        if max_entries > 0 and len(entries) >= max_entries:
-                            logger.warning(
-                                "Archive %s hit max entry limit (%s)",
-                                archive_path,
-                                max_entries,
-                            )
-                            truncated = True
-                            break
-                if truncated:
-                    return entries, truncated
-            if not entries:
-                for entry in zf.list():
-                    if entry.is_directory:
-                        continue
-                    if self._is_macos_metadata_member(entry.filename):
-                        continue
-                    try:
-                        self._validate_member(entry.filename)
-                    except ValueError:
-                        continue
-                    ext = Path(entry.filename).suffix.lower()
-                    if ext in convertible:
-                        size = self._coerce_size(entry.uncompressed)
-                        if size is None:
-                            if max_member_size > 0 or max_total_size > 0:
-                                logger.warning(
-                                    "Skipping archive member %s (unknown size)",
-                                    entry.filename,
-                                )
-                                truncated = True
-                                continue
-                            size = 0
-                        if max_member_size > 0 and size > max_member_size:
-                            logger.warning(
-                                "Skipping oversized archive member %s (%s)",
-                                entry.filename,
-                                self._format_size(size),
-                            )
-                            truncated = True
-                            continue
-                        if max_total_size > 0 and (total_size + size) > max_total_size:
-                            logger.warning(
-                                "Archive %s hit max total size limit (%s)",
-                                archive_path,
-                                self._format_size(max_total_size),
-                            )
-                            truncated = True
-                            break
-                        total_size += size
-                        entries.append(
-                            {
-                                "archive_path": archive_path,
-                                "internal_path": entry.filename,
-                                "name": os.path.basename(entry.filename),
-                                "size": size,
-                                "extension": ext,
-                                "convertible": True,
-                            }
-                        )
-                        if max_entries > 0 and len(entries) >= max_entries:
-                            logger.warning(
-                                "Archive %s hit max entry limit (%s)",
-                                archive_path,
-                                max_entries,
-                            )
-                            truncated = True
-                            break
-        return entries, truncated
-
-    def _list_rar(self, archive_path: str) -> Tuple[List[dict], bool]:
-        """List contents of a RAR file."""
-        entries = []
-        max_entries, max_member_size, max_total_size = self._archive_limits()
-        convertible = self._convertible_extensions()
-        total_size = 0
-        truncated = False
-        with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
-            for info in rf.infolist():
-                if info.is_dir():
-                    continue
-                if self._is_macos_metadata_member(info.filename):
-                    continue
-                try:
-                    self._validate_member(info.filename)
-                except ValueError:
-                    continue
-                ext = Path(info.filename).suffix.lower()
-                if ext in convertible:
-                    if max_member_size > 0 and info.file_size > max_member_size:
-                        logger.warning(
-                            "Skipping oversized archive member %s (%s)",
-                            info.filename,
-                            self._format_size(info.file_size),
-                        )
-                        truncated = True
-                        continue
-                    if max_total_size > 0 and (total_size + info.file_size) > max_total_size:
-                        logger.warning(
-                            "Archive %s hit max total size limit (%s)",
-                            archive_path,
-                            self._format_size(max_total_size),
-                        )
-                        truncated = True
-                        break
-                    total_size += info.file_size
-                    entries.append(
-                        {
-                            "archive_path": archive_path,
-                            "internal_path": info.filename,
-                            "name": os.path.basename(info.filename),
-                            "size": info.file_size,
-                            "extension": ext,
-                            "convertible": True,
-                        }
-                    )
-                    if max_entries > 0 and len(entries) >= max_entries:
-                        logger.warning(
-                            "Archive %s hit max entry limit (%s)",
-                            archive_path,
-                            max_entries,
-                        )
-                        truncated = True
-                        break
-        return entries, truncated
 
     def extract_file(self, archive_path: str, internal_path: str) -> Tuple[str, str]:
         """Extract a specific file from an archive into a temp directory."""
@@ -562,25 +419,24 @@ class ArchiveService:
             raise ValueError(f"Unsupported archive format: {archive_ext}")
 
     def _get_member_size(self, archive_path: str, internal_path: str) -> Optional[int]:
-        archive_ext = Path(archive_path).suffix.lower()
+        # Reuse the shared, cached member read instead of re-opening the archive
+        # for a single size lookup. Returns None when the member is absent or the
+        # container didn't record an uncompressed size (mirrors the prior 7z
+        # behaviour, which returned ``entry.uncompressed`` unmodified).
+        #
+        # For a ZIP with duplicate member names, ``zipfile.open(name)`` extracts
+        # the *last* such entry (NameToInfo maps a name to its final occurrence),
+        # so the size guard must read the last match too — otherwise a small
+        # leading duplicate could let the limit check pass while a larger trailing
+        # payload is the one actually extracted.
+        size: Optional[int] = None
         try:
-            if archive_ext == ".zip":
-                with zipfile.ZipFile(archive_path, "r") as zf:
-                    info = zf.getinfo(internal_path)
-                    return info.file_size
-            if archive_ext == ".7z" and HAS_7Z:
-                with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
-                    for entry in zf.list():
-                        if entry.filename == internal_path:
-                            return entry.uncompressed
-                return None
-            if archive_ext == ".rar" and HAS_RAR:
-                with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[name-defined]
-                    info = rf.getinfo(internal_path)
-                    return info.file_size
+            for member in read_archive_members(archive_path):
+                if member.name == internal_path:
+                    size = member.size
         except Exception:
             return None
-        return None
+        return size
 
     def _extract_related_from_zip(
         self,
@@ -596,7 +452,7 @@ class ArchiveService:
             for info in zf.infolist():
                 if info.is_dir():
                     continue
-                if self._is_macos_metadata_member(info.filename):
+                if is_junk_path(info.filename):
                     continue
                 try:
                     self._validate_member(info.filename)
@@ -630,7 +486,7 @@ class ArchiveService:
                 if entry.is_directory:
                     continue
                 name = entry.filename
-                if self._is_macos_metadata_member(name):
+                if is_junk_path(name):
                     continue
                 try:
                     self._validate_member(name)
@@ -667,7 +523,7 @@ class ArchiveService:
             for info in rf.infolist():
                 if info.is_dir():
                     continue
-                if self._is_macos_metadata_member(info.filename):
+                if is_junk_path(info.filename):
                     continue
                 try:
                     self._validate_member(info.filename)

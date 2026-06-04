@@ -5,6 +5,7 @@ paths) into tests before later phases move dispatch logic onto the registry.
 """
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -32,8 +33,14 @@ from app.services.nsz import (
     NSZ_DECOMPRESS_EXTENSIONS,
     nsz_service,
 )
+from app.services.romz import (
+    ROMZ_ARCHIVE_EXTENSIONS,
+    ROMZ_COMPRESS_EXTENSIONS,
+    romz_service,
+)
 from app.services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
+    Z3DS_DECOMPRESS_EXTENSIONS,
     z3ds_compress_service,
 )
 
@@ -47,18 +54,20 @@ def _legacy_tool_for_mode(mode: str) -> str:
     """Replicates the dispatch ladder at job_manager.py:1444."""
     if mode.startswith("dolphin_"):
         return "dolphin"
-    if mode == ConversionMode.Z3DS_COMPRESS.value:
+    if mode.startswith("z3ds_"):
         return "z3ds"
     if mode.startswith("nsz_"):
         return "nsz"
     if mode.startswith(("cso_", "cso2_", "zso_", "dax_")):
         return "cso"
+    if mode.startswith("romz_"):
+        return "romz"
     return "chdman"
 
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 23
+    assert len(resolved) == 27
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -88,6 +97,7 @@ def test_kind_classification():
     assert spec("extractcd").kind is ModeKind.EXTRACT
     assert spec("copy").kind is ModeKind.COPY
     assert spec("z3ds_compress").kind is ModeKind.COMPRESS
+    assert spec("z3ds_decompress").kind is ModeKind.EXTRACT
     # dolphin compress vs extract
     assert spec("dolphin_rvz").kind is ModeKind.COMPRESS
     assert spec("dolphin_iso").kind is ModeKind.EXTRACT
@@ -100,6 +110,10 @@ def test_kind_classification():
     assert spec("zso_compress").kind is ModeKind.COMPRESS
     assert spec("dax_compress").kind is ModeKind.COMPRESS
     assert spec("cso_decompress").kind is ModeKind.EXTRACT
+    # romz 7z/zip compress vs extract
+    assert spec("romz_7z").kind is ModeKind.COMPRESS
+    assert spec("romz_zip").kind is ModeKind.COMPRESS
+    assert spec("romz_extract").kind is ModeKind.EXTRACT
 
 
 @pytest.mark.parametrize(
@@ -122,6 +136,10 @@ def test_kind_classification():
         ("zso_compress", True),
         ("dax_compress", True),
         ("cso_decompress", False),
+        # romz 7z/zip compress expose an effort preset; extract doesn't.
+        ("romz_7z", True),
+        ("romz_zip", True),
+        ("romz_extract", False),
     ],
 )
 def test_supports_compression_matches_current_behavior(mode, expected):
@@ -134,7 +152,8 @@ def test_compression_level_only_for_dolphin_rvz_wia():
         assert registry.spec(mode).supports_compression_level is True
     for mode in ("createcd", "copy", "dolphin_gcz", "dolphin_iso", "z3ds_compress",
                  "nsz_decompress", "cso_compress", "cso2_compress", "zso_compress",
-                 "dax_compress", "cso_decompress"):
+                 "dax_compress", "cso_decompress", "romz_7z", "romz_zip",
+                 "romz_extract"):
         assert registry.spec(mode).supports_compression_level is False
 
 
@@ -143,10 +162,13 @@ def test_convertible_extensions_match_service_constants():
         set(CHDMAN_CONVERTIBLE_EXTENSIONS)
         | set(DOLPHIN_CONVERTIBLE_EXTENSIONS)
         | set(Z3DS_CONVERTIBLE_EXTENSIONS)
+        | set(Z3DS_DECOMPRESS_EXTENSIONS)
         | set(NSZ_COMPRESS_EXTENSIONS)
         | set(NSZ_DECOMPRESS_EXTENSIONS)
         | set(MAXCSO_COMPRESS_EXTENSIONS)
         | set(MAXCSO_DECOMPRESS_EXTENSIONS)
+        | set(ROMZ_COMPRESS_EXTENSIONS)
+        | set(ROMZ_ARCHIVE_EXTENSIONS)
     )
     assert set(registry.convertible_extensions()) == expected
 
@@ -165,6 +187,12 @@ def test_tools_for_input_representative():
     assert [t.id for t in registry.tools_for_input("game.cso")] == ["cso"]
     assert [t.id for t in registry.tools_for_input("game.zso")] == ["cso"]
     assert [t.id for t in registry.tools_for_input("game.dax")] == ["cso"]
+    # Handheld ROM sources + the archives romz can extract from.
+    assert [t.id for t in registry.tools_for_input("Game.gba")] == ["romz"]
+    assert [t.id for t in registry.tools_for_input("Game.gb")] == ["romz"]
+    assert [t.id for t in registry.tools_for_input("Game.nds")] == ["romz"]
+    assert [t.id for t in registry.tools_for_input("Game.7z")] == ["romz"]
+    assert [t.id for t in registry.tools_for_input("Game.zip")] == ["romz"]
     # A finished .chd is not a "convertible-from" source in the listing.
     assert registry.tools_for_input("out.chd") == []
 
@@ -178,7 +206,29 @@ def test_tool_for_verify_representative():
     assert registry.tool_for_verify("game.cso").id == "cso"
     assert registry.tool_for_verify("game.zso").id == "cso"
     assert registry.tool_for_verify("game.dax").id == "cso"
+    assert registry.tool_for_verify("Game.7z").id == "romz"
+    assert registry.tool_for_verify("Game.zip").id == "romz"
     assert registry.tool_for_verify("nope.txt") is None
+
+
+def test_tools_verifying_path_refines_extension_match(tmp_path):
+    # Non-archive verify targets fall back to the plain extension match, so
+    # tools_verifying_path agrees with tool_for_verify there.
+    assert [t.id for t in registry.tools_verifying_path("out.chd")] == ["chdman"]
+    assert [t.id for t in registry.tools_verifying_path("disc.rvz")] == ["dolphin"]
+    assert registry.tools_verifying_path("nope.txt") == []
+
+    # romz refines the .7z/.zip claim: only single-ROM archives surface it.
+    single = tmp_path / "Game.gba.zip"
+    with zipfile.ZipFile(single, "w") as zf:
+        zf.writestr("Game.gba", b"ROMDATA")
+    assert [t.id for t in registry.tools_verifying_path(str(single))] == ["romz"]
+
+    multi = tmp_path / "Bundle.zip"
+    with zipfile.ZipFile(multi, "w") as zf:
+        zf.writestr("a.gba", b"a")
+        zf.writestr("readme.txt", b"b")
+    assert registry.tools_verifying_path(str(multi)) == []
 
 
 @pytest.mark.parametrize("output_dir", [None, "/data/out"])
@@ -205,6 +255,8 @@ def test_tool_for_verify_representative():
         ("cso_decompress", maxcso_service, "/data/game.cso"),
         ("cso_decompress", maxcso_service, "/data/game.zso"),
         ("cso_decompress", maxcso_service, "/data/game.dax"),
+        ("romz_7z", romz_service, "/data/Game.gba"),
+        ("romz_zip", romz_service, "/data/Game.nds"),
     ],
 )
 def test_output_path_delegation_matches_service(
@@ -277,7 +329,7 @@ def test_mode_spec_tool_id_must_match_owner():
         ToolRegistry().register(_StubTool())
 
 
-@pytest.mark.parametrize("tool_id", ["chdman", "dolphin", "z3ds", "nsz", "cso"])
+@pytest.mark.parametrize("tool_id", ["chdman", "dolphin", "z3ds", "nsz", "cso", "romz"])
 def test_output_extensions_cover_mode_output_exts(tool_id):
     tool = registry.get(tool_id)
     declared = {m.output_ext for m in tool.modes if m.output_ext is not None}

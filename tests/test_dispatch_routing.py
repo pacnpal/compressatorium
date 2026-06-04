@@ -26,12 +26,14 @@ def _legacy_dispatch_id(mode: str) -> str:
     the same tool selection, differing only in the progress message."""
     if mode.startswith("dolphin_"):
         return "dolphin"
-    if mode == ConversionMode.Z3DS_COMPRESS.value:
+    if mode.startswith("z3ds_"):
         return "z3ds"
     if mode.startswith("nsz_"):
         return "nsz"
     if mode.startswith(("cso_", "cso2_", "zso_", "dax_")):
         return "cso"
+    if mode.startswith("romz_"):
+        return "romz"
     return "chdman"
 
 
@@ -46,7 +48,7 @@ def test_verify_dispatch_matches_legacy_ladder(mode, monkeypatch):
 
         return _verify
 
-    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso"):
+    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso", "romz"):
         monkeypatch.setattr(
             registry.get(tool_id)._service, "verify", _record(tool_id)
         )
@@ -73,7 +75,7 @@ def test_convert_dispatch_matches_legacy_ladder(mode, monkeypatch):
 
         return _convert
 
-    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso"):
+    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso", "romz"):
         monkeypatch.setattr(
             registry.get(tool_id)._service, "convert", _record(tool_id)
         )
