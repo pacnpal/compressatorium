@@ -39,7 +39,7 @@ Each tool's full mode list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's
 `cso2_compress`, the ROM packer's `romz_7z`/`romz_zip`/`romz_extract`) is in
 [Supported Operations](#supported-operations).
 
-> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. Two exceptions: CHDMAN extract and copy modes act on a finished `.chd` (an output, not a convertible source); and **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member.
+> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. This even covers CHDMAN's extract modes pulling a `.chd` out of an archive and decompressing it back to a disc image. Two exceptions: CHDMAN's **copy/recompress** mode is not offered from an archive (recompressing an already-finished `.chd` would be a pointless round trip); and **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member.
 
 ### MAME Redump DAT Integration
 
@@ -236,9 +236,47 @@ the file is bad.
 Browse straight into a ZIP, 7z, or RAR and convert a file from inside it — no need
 to extract first. The member is unpacked to a temp dir for the conversion and
 cleaned up afterwards. Any convertible **source** works this way (CHD create,
-Dolphin, 3DS, Switch, and CSO — Switch still needs your own `prod.keys`). The
-exception is CHDMAN extract/copy, which act on a finished `.chd` output rather than
-a source.
+Dolphin, 3DS, Switch, and CSO — Switch still needs your own `prod.keys`), and
+CHDMAN's extract modes can even pull a `.chd` out of an archive and decompress it
+back to a disc image. The exception is CHDMAN's copy/recompress mode: it acts on a
+finished `.chd`, and recompressing one straight out of an archive is a pointless
+round trip, so it's not offered there.
+
+#### Why only certain files show inside an archive
+
+Browsing into an archive does **not** list everything it contains. It lists the
+file types the app *knows* — every extension that some tool recognizes as a
+convertible source (`.iso`, `.cue`/`.bin`, `.gdi`, `.gcz`/`.wia`/`.rvz`/`.wbfs`,
+`.cci`/`.cia`/`.3ds`/`.cxi`/`.3dsx`, `.nsp`/`.xci`, `.cso`/`.zso`/`.dax`, the handheld ROMs
+`.gb`/`.gbc`/`.gba`/`.nds`, …) plus a `.chd` you can decompress in place. Anything
+else is hidden, on purpose:
+
+- **Unknown files are filtered out.** Read-me text, `.nfo`/`.sfv` files, box art,
+  manuals, save states — none of it is something the app can convert or verify, so
+  it would only be clutter in the browser. The listing is *global, scoped to known
+  extensions*: a member shows up if and only if its extension is one the app
+  understands, regardless of which tool you currently have selected.
+- **Nested archives are hidden.** A `.zip` inside a `.zip` (or `.7z`/`.rar`) is not
+  listed — there's no point browsing an archive within an archive.
+- **OS/NAS clutter is ignored.** macOS `__MACOSX/…` resource forks, `.DS_Store`,
+  `Thumbs.db` and the like never appear, so a ROM zipped on a Mac or Windows box
+  still reads as a clean single-file archive.
+
+Some members that *are* shown still can't be converted from inside the archive,
+and the UI badges them non-convertible:
+
+- **A handheld ROM packed by this app** (`Game.gba` inside `Game.gba.7z`) is shown
+  so you can see and verify it, but it isn't offered for re-conversion —
+  recompressing an already-archived ROM would just be packing a `.7z` into another
+  `.7z`. To unpack it, select the archive file itself and run `romz_extract`.
+- **A `.chd` inside an archive** can be *decompressed* in place (chdman's extract
+  modes), but it can't be recompressed — it's already a finished CHD, so chdman's
+  copy/recompress mode is deliberately not offered from an archive.
+
+In short: if a file you expect isn't in the list, it's almost always because its
+extension isn't one of the convertible/verifiable types the app handles. Loose
+files on disk follow the same rule — the file list filters to the types the
+selected tool understands.
 
 ### Troubleshooting
 
@@ -382,8 +420,10 @@ On small screens the file list switches to a card layout. Controls use 44 to 48p
 - Archives extract temporarily during conversion, then clean up automatically
 - When a `.cue`/`.gdi` is present in the same archive folder, `.bin` entries are suppressed and batch jobs are deduplicated by output path to avoid stalled conversions.
 - Archive listings include safety limits (max entries/size) and expose truncation metadata when limits are hit.
-- **Any convertible source inside an archive can be converted.** That covers CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), and 3DS (`.cci`/`.cia`/`.3ds`). Archive members show up for whichever tool accepts them, exactly like on-disk files.
-- The only inputs that can't come from an archive are CHDMAN extract/copy modes, which operate on a finished `.chd` (an output, not a convertible source).
+- **Browsing is global, scoped to known extensions.** When you look inside an archive, the listing shows every member whose extension is one the app understands — every tool's convertible source plus a `.chd` you can decompress — regardless of which tool is currently selected. That covers CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), 3DS (`.cci`/`.cia`/`.3ds`/`.cxi`/`.3dsx`), Switch (`.nsp`/`.xci`), CSO (`.iso`/`.cso`/`.zso`/`.dax`), and Handheld ROM (`.gb`/`.gbc`/`.gba`/`.nds`). Archive members appear for whichever tool accepts them, exactly like on-disk files.
+- **Why everything else is hidden.** Unknown files (text, `.nfo`/`.sfv`, cover art, manuals), nested archives (a `.zip` inside a `.zip`), and OS/NAS clutter (`__MACOSX/…`, `.DS_Store`, `Thumbs.db`) are filtered out — they aren't convertible or verifiable, so listing them would only be noise. See [Archives → Why only certain files show inside an archive](#why-only-certain-files-show-inside-an-archive).
+- **Some shown members are view-only.** A handheld ROM this app packed (`Game.gba` inside `Game.gba.7z`) is listed for visibility/verification but not offered for re-conversion (recompressing an archived ROM would be recursive); unpack it by selecting the archive and running `romz_extract`. A `.chd` inside an archive can be decompressed in place but not recompressed (copy/recompress acts on a finished output). Such members are badged non-convertible.
+- The only inputs that can't come from an archive are CHDMAN's copy/recompress mode (recompressing an already-finished `.chd` would be a pointless round trip — though the extract modes *can* decompress a `.chd` straight out of an archive) and Handheld ROM compression, whose `.7z`/`.zip` are the packed product.
 
 **ISO Handling & Dolphin Tools (GameCube/Wii)**
 - Toggle ISO handling between CHDMAN and Dolphin (controls ISO info/verify and conversions)
@@ -806,7 +846,7 @@ Notes:
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
 - 3DS compression uses fixed settings (no user configuration needed).
-- Archive inputs are supported for every convertible source (CHD create, Dolphin, 3DS, Switch, and CSO), except CHDMAN extract/copy modes, which act on a finished `.chd` output.
+- Archive inputs are supported for every convertible source (CHD create, Dolphin, 3DS, Switch, and CSO), plus CHDMAN's extract modes decompressing a `.chd` pulled out of an archive. The exception is CHDMAN's copy/recompress mode, which would just re-compress an already-finished `.chd`.
 
 ---
 
