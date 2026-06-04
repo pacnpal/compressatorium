@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import archive_members
 from app.services import romz as romz_mod
 from app.services.romz import RomzService, _compress_flags, _parse_progress
 
@@ -326,7 +327,7 @@ def test_info_non_rom_archive_falls_back_to_basic(tmp_path):
     assert info["ratio"] is None
 
 
-@pytest.mark.skipif(not romz_mod.HAS_7Z, reason="py7zr not installed")
+@pytest.mark.skipif(not archive_members.HAS_7Z, reason="py7zr not installed")
 def test_single_rom_member_reads_real_7z(tmp_path):
     """Exercise the py7zr listing branch with a genuine .7z archive."""
     import py7zr

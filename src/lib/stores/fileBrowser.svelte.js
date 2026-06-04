@@ -330,8 +330,13 @@ class FileBrowserStore {
       this.entriesError = e?.message ?? 'Failed to load files';
       this.entries = [];
     } finally {
-      if (this._inflightListingPath === requested) this._inflightListingPath = null;
-      this.loading = false;
+      // Only the active request clears the spinner. A stale request finishing
+      // after the user navigated away (a newer load is now in flight under a
+      // different _inflightListingPath) must not hide the new request's spinner.
+      if (this._inflightListingPath === requested) {
+        this._inflightListingPath = null;
+        this.loading = false;
+      }
       this._clampPage();
     }
   }

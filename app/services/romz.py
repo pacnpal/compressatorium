@@ -33,9 +33,6 @@ from config import settings
 from logging_setup import get_logger
 from services.archive import archive_service
 from services.archive_members import read_archive_members
-# Re-exported: py7zr now lives in the shared reader, but romz's public module
-# attribute is still used as a test skip-guard / availability probe.
-from services.archive_members import HAS_7Z as HAS_7Z  # noqa: F401
 from services.subprocess_runner import (
     ConversionCancelled,
     SubprocessRunner,
