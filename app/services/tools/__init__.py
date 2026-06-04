@@ -13,6 +13,7 @@ from .dolphin import DolphinTool
 from .maxcso import MaxcsoTool
 from .nsz import NszTool
 from .registry import ToolRegistry
+from .romz import RomzTool
 from .spec import ModeKind, ModeSpec
 from .z3ds import Z3dsTool
 
@@ -22,6 +23,7 @@ registry.register(DolphinTool(settings.dolphin_tool_path))
 registry.register(Z3dsTool(settings.z3ds_compressor_path))
 registry.register(NszTool(settings.nsz_path))
 registry.register(MaxcsoTool(settings.maxcso_path))
+registry.register(RomzTool(settings.sevenzip_path))
 
 __all__ = [
     "BaseTool",

@@ -10,9 +10,9 @@ FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b
 # Install build dependencies
 #
 # DL3008 (pin apt versions) is intentionally ignored: build-stage uses
-# generic packages (git, build-essential, libzstd-dev) where the latest
-# patched versions are preferable to a frozen pin.  Reproducibility comes
-# from the snapshot-pinned mame-tools deb in the runtime stage below, not
+# generic packages (git, build-essential, cmake, pkg-config, libzstd-dev) where
+# the latest patched versions are preferable to a frozen pin.  Reproducibility
+# comes from the snapshot-pinned mame-tools deb in the runtime stage below, not
 # from these build deps.
 ENV DEBIAN_FRONTEND=noninteractive
 # hadolint ignore=DL3008
@@ -20,21 +20,29 @@ RUN apt-get update -o Acquire::Retries=3 && \
     apt-get install -y --no-install-recommends \
     git \
     build-essential \
+    cmake \
+    pkg-config \
     libzstd-dev \
     ca-certificates && \
-    git clone https://github.com/energeticokay/z3ds_compress.git /tmp/z3ds
+    git clone https://github.com/pacnpal/z3ds_compress.git /tmp/z3ds && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/z3ds
 
-RUN g++ -O3 src/*.cpp -o z3ds_compressor -lzstd && \
-    chmod +x z3ds_compressor
+# The fork (pacnpal/z3ds_compress) builds with CMake and adds 3DS decompression
+# (.zcci/.zcia/.z3ds/.zcxi/.z3dsx -> raw ROM) plus .cxi/.3dsx support. Its
+# CMakeLists statically links libzstd via pkg-config (hence pkg-config above).
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build -j"$(nproc)" && \
+    chmod +x build/z3ds_compressor
 
 # ---------------------------------------------------------------------------
 # maxcso builder stage: compile maxcso (PSP/PS2 ISO <-> CSO/ZSO) from source.
 #
 # maxcso is a plain `make` C++ build linking system liblz4 / libuv / libdeflate
 # (plus zlib). Compiles per-arch automatically, so multi-arch buildx works.
-# Cloning master mirrors the z3ds stage; pin --branch <tag> for reproducibility.
+# Cloning the default branch mirrors the z3ds stage; pin --branch <tag> for
+# reproducibility.
 # DL3008 ignored for the same reason as the z3ds builder (generic build deps).
 # ---------------------------------------------------------------------------
 FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8 AS maxcso-builder
@@ -170,8 +178,8 @@ COPY requirements.txt /app/
 # runtime (SWITCH_KEYS); no keys are baked into this image.
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Install z3ds_compressor from builder stage
-COPY --from=builder /tmp/z3ds/z3ds_compressor /usr/local/bin/z3ds_compressor
+# Install z3ds_compressor from builder stage (CMake emits it under build/)
+COPY --from=builder /tmp/z3ds/build/z3ds_compressor /usr/local/bin/z3ds_compressor
 
 # Install maxcso from its builder stage (PSP/PS2 ISO <-> CSO/ZSO)
 COPY --from=maxcso-builder /tmp/maxcso/maxcso /usr/local/bin/maxcso

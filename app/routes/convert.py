@@ -22,6 +22,7 @@ from models import (
 )
 from services.archive import archive_service
 from services.job_manager import QueueBackpressureError, job_manager
+from services.romz import romz_service
 from services.lock_manager import lock_manager
 from services.tools import ModeKind, registry
 from sse_starlette.sse import EventSourceResponse
@@ -216,6 +217,8 @@ class SkipReason(Enum):
     Z3DS_BAD_EXTENSION = "z3ds_bad_extension"
     NSZ_BAD_EXTENSION = "nsz_bad_extension"
     CSO_BAD_EXTENSION = "cso_bad_extension"
+    ROMZ_BAD_EXTENSION = "romz_bad_extension"
+    ROMZ_INVALID_ARCHIVE = "romz_invalid_archive"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
 
 
@@ -267,7 +270,9 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
     ),
     SkipReason.Z3DS_BAD_EXTENSION: (
         400,
-        "z3ds_compress mode requires Nintendo 3DS ROM files (.cci, .cia, .3ds)",
+        "z3ds_compress requires Nintendo 3DS ROMs (.cci, .cia, .3ds, .cxi, .3dsx); "
+        "z3ds_decompress requires compressed 3DS files "
+        "(.zcci, .zcia, .z3ds, .zcxi, .z3dsx)",
     ),
     SkipReason.NSZ_BAD_EXTENSION: (
         400,
@@ -277,6 +282,16 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         400,
         "cso_compress/cso2_compress/zso_compress/dax_compress require .iso; "
         "cso_decompress requires .cso/.zso/.dax",
+    ),
+    SkipReason.ROMZ_BAD_EXTENSION: (
+        400,
+        "romz_7z/romz_zip require .gb/.gbc/.gba/.nds; "
+        "romz_extract requires .7z/.zip",
+    ),
+    SkipReason.ROMZ_INVALID_ARCHIVE: (
+        422,
+        "Archive is not a single handheld-ROM archive produced by this tool "
+        "(corrupt, multi-file, or holds no ROM)",
     ),
     SkipReason.DOLPHIN_SAME_PATH: (
         400,
@@ -309,6 +324,7 @@ async def plan_job(
     is_z3ds = spec.tool_id == "z3ds"
     is_nsz = spec.tool_id == "nsz"
     is_cso = spec.tool_id == "cso"
+    is_romz = spec.tool_id == "romz"
 
     archive_source_dir = None  # Directory where the archive is located (for output)
     output_path = None
@@ -334,8 +350,11 @@ async def plan_job(
         # correctly; chdman/dolphin strip it back off via Path.stem.
         effective_output_dir = output_dir or archive_source_dir
         output_name = archive_service._output_name_for_member(internal_path)
-        output_path = _get_output_path(
-            mode, output_name, effective_output_dir, treat_as_stem=True,
+        # Off the event loop: output_path() is pure string work for most tools,
+        # but romz extract peeks inside the archive to derive the ROM's name.
+        output_path = await run_in_threadpool(
+            _get_output_path, mode, output_name, effective_output_dir,
+            treat_as_stem=True,
         )
         base_output_path = output_path
 
@@ -389,12 +408,39 @@ async def plan_job(
         if ext not in spec.input_extensions:
             raise SkipFile(SkipReason.CSO_BAD_EXTENSION)
 
+    if is_romz:
+        # spec.input_extensions is per-mode: compress (.gb/.gbc/.gba/.nds) vs
+        # extract (.7z/.zip).
+        ext = _input_extension(file_path)
+        if ext not in spec.input_extensions:
+            raise SkipFile(SkipReason.ROMZ_BAD_EXTENSION)
+        if mode == "romz_extract":
+            # Validate the archive is a real single-ROM archive BEFORE planning
+            # an output / allowing overwrite. get_output_path_for_mode falls
+            # back to the suffix-stripped stem for unreadable/invalid archives,
+            # so without this an ordinary/corrupt/multi-ROM archive next to an
+            # existing same-stem file could drive duplicate_action=overwrite to
+            # delete that unrelated file before convert() ever validates.
+            try:
+                await run_in_threadpool(
+                    romz_service._single_rom_member, file_path,
+                )
+            except Exception as exc:
+                # Broad by design: corrupt/multi-ROM archives surface as
+                # ValueError, zipfile.BadZipFile, py7zr errors, OSError, … and
+                # all map to the same skip. Log the cause for troubleshooting.
+                logger.debug(
+                    "romz_extract validation failed for %s: %s", file_path, exc,
+                )
+                raise SkipFile(SkipReason.ROMZ_INVALID_ARCHIVE) from None
+
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive
     if output_path is None:
         effective_output_dir = output_dir or archive_source_dir
-        output_path = _get_output_path(
-            mode, file_path, effective_output_dir,
+        # Off the event loop: romz extract reads the archive to name its output.
+        output_path = await run_in_threadpool(
+            _get_output_path, mode, file_path, effective_output_dir,
         )
         base_output_path = output_path
 
@@ -479,14 +525,16 @@ async def check_duplicates(request: CheckDuplicatesRequest):
             if not effective_output_dir:
                 effective_output_dir = os.path.dirname(archive_path)
 
+        # Off the event loop: romz extract reads the archive to name its output.
         if "::" in file_path:
             output_name = archive_service._output_name_for_member(actual_filename)
-            output_path = _get_output_path(
-                mode, output_name, effective_output_dir, treat_as_stem=True,
+            output_path = await run_in_threadpool(
+                _get_output_path, mode, output_name, effective_output_dir,
+                treat_as_stem=True,
             )
         else:
-            output_path = _get_output_path(
-                mode, actual_filename, effective_output_dir,
+            output_path = await run_in_threadpool(
+                _get_output_path, mode, actual_filename, effective_output_dir,
             )
         exists, _ = check_output_conflicts(mode, output_path)
 

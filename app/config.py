@@ -143,6 +143,12 @@ class Settings(BaseSettings):
         default=18, alias="NSZ_COMPRESSION_LEVEL", ge=1, le=22,
     )
 
+    # 7z CLI (handheld ROM .gb/.gbc/.gba/.nds <-> .7z/.zip). Ships in the image
+    # via the p7zip-full package; the binary is `7z`. A bare name resolves on
+    # PATH; set SEVENZIP_PATH to pin an absolute path (e.g. `7zz` on distros that
+    # ship the newer `7zip` package instead).
+    sevenzip_path: str = Field(default="7z", alias="SEVENZIP_PATH")
+
     # MAMERedump DAT sync
     mameredump_repo: str = Field(
         default="MetalSlug/MAMERedump", alias="MAMEREDUMP_REPO",
@@ -270,6 +276,20 @@ class Settings(BaseSettings):
     )
     maxcso_verify_timeout: int | None = Field(
         default=None, alias="COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT",
+    )
+    # romz (7z ROM packer): like nsz/z3ds/maxcso, info() is a filesystem read so
+    # only a verify-timeout override is exposed, no info-timeout.
+    romz_nice: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_ROMZ_NICE",
+    )
+    romz_ioprio_class: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_ROMZ_IOPRIO_CLASS",
+    )
+    romz_ioprio_level: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_ROMZ_IOPRIO_LEVEL",
+    )
+    romz_verify_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_ROMZ_VERIFY_TIMEOUT",
     )
     verify_progress_timeout: int = Field(
         default=0,

@@ -18,8 +18,10 @@ from models import (
     DolphinDiscInfo,
     MetadataBatchRequest,
     NszInfo,
+    RomzInfo,
     Z3DSInfo,
 )
+from services.archive import ARCHIVE_EXTENSIONS
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import chdman_service
 from services.disc_id import (
@@ -44,7 +46,16 @@ from services.nsz import (
     NSZ_DECOMPRESS_EXTENSIONS,
     nsz_service,
 )
-from services.z3ds_compress import Z3DS_CONVERTIBLE_EXTENSIONS, z3ds_compress_service
+from services.romz import (
+    ROMZ_ARCHIVE_EXTENSIONS,
+    ROMZ_COMPRESS_EXTENSIONS,
+    romz_service,
+)
+from services.z3ds_compress import (
+    Z3DS_CONVERTIBLE_EXTENSIONS,
+    Z3DS_DECOMPRESS_EXTENSIONS,
+    z3ds_compress_service,
+)
 from services.verification_store import verification_store
 from sse_starlette.sse import EventSourceResponse
 from utils.path_utils import is_within_configured_volumes
@@ -216,8 +227,12 @@ async def scan_metadata_task(
 
     # Discovery is registry-driven: walk every extension any registered tool
     # produces or can verify (issue #131) so Dolphin/3DS/Switch outputs are
-    # eligible for the scan, not just CHDs.
-    scan_extensions = registry.scannable_extensions()
+    # eligible for the scan, not just CHDs. Archive containers (.zip/.7z/.rar)
+    # are excluded: they're browse-into containers handled by the archive
+    # subsystem, never DAT-matchable as a whole, so the romz tool advertising
+    # .7z/.zip outputs must not make the scan enumerate and hash every unrelated
+    # archive under the configured volumes.
+    scan_extensions = registry.scannable_extensions() - ARCHIVE_EXTENSIONS
 
     def collect_scannable_paths():
         """Collect all scannable output paths from volumes (runs in thread pool)."""
@@ -506,7 +521,8 @@ async def get_app_version() -> dict:
 # ============ Z3DS endpoints ============
 
 
-Z3DS_VERIFY_EXTENSIONS = {".z3ds", ".zcci", ".zcia"}
+# The verify-class files are the compressed containers (== decompress inputs).
+Z3DS_VERIFY_EXTENSIONS = set(Z3DS_DECOMPRESS_EXTENSIONS)
 Z3DS_INFO_EXTENSIONS = Z3DS_CONVERTIBLE_EXTENSIONS | Z3DS_VERIFY_EXTENSIONS
 
 
@@ -529,6 +545,14 @@ CSO_INFO_EXTENSIONS = MAXCSO_COMPRESS_EXTENSIONS | MAXCSO_DECOMPRESS_EXTENSIONS
 def _is_cso_info_file(path: str) -> bool:
     ext = os.path.splitext(path)[1].lower()
     return ext in CSO_INFO_EXTENSIONS
+
+
+ROMZ_INFO_EXTENSIONS = ROMZ_COMPRESS_EXTENSIONS | ROMZ_ARCHIVE_EXTENSIONS
+
+
+def _is_romz_info_file(path: str) -> bool:
+    ext = os.path.splitext(path)[1].lower()
+    return ext in ROMZ_INFO_EXTENSIONS
 
 
 @router.get("/info", response_model=CHDInfo)
@@ -795,7 +819,10 @@ async def get_z3ds_info(
     if not _is_z3ds_info_file(path):
         raise HTTPException(
             status_code=400,
-            detail="Not a supported 3DS ROM format (.3ds, .cci, .cia, .z3ds, .zcci, .zcia)",
+            detail=(
+                "Not a supported 3DS ROM format "
+                "(.3ds, .cci, .cia, .cxi, .3dsx, .z3ds, .zcci, .zcia, .zcxi, .z3dsx)"
+            ),
         )
 
     try:
@@ -851,6 +878,47 @@ async def get_cso_info(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to read CSO info: {e!s}",
+        ) from None
+
+
+@router.get("/romz-info", response_model=RomzInfo)
+async def get_romz_info(
+    path: str = Query(..., description="Path to a ROM (.gb/.gbc/.gba/.nds) or .7z/.zip"),
+):
+    """Get basic information about a handheld ROM or its .7z/.zip archive."""
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: path outside configured volumes",
+        )
+    if not await run_in_threadpool(os.path.isfile, path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_romz_info_file(path):
+        raise HTTPException(
+            status_code=400,
+            detail="Not a supported ROM format (.gb, .gbc, .gba, .nds, .7z, .zip)",
+        )
+
+    try:
+        info = await run_in_threadpool(romz_service.info, path)
+        return RomzInfo(
+            file=info["file"],
+            size=info["size"],
+            size_display=info["size_display"],
+            format=info.get("format"),
+            extension=info["extension"],
+            compressed=info["compressed"],
+            compression_type=info.get("compression_type"),
+            contained_name=info.get("contained_name"),
+            original_size=info.get("original_size"),
+            ratio=info.get("ratio"),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read ROM info: {e!s}",
         ) from None
 
 
@@ -961,7 +1029,10 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         sync_name="verify_z3ds",
         events_name="verify_z3ds_events",
         batch_name="verify_z3ds_batch_events",
-        bad_ext_detail="Not a supported compressed 3DS format (.z3ds, .zcci, .zcia)",
+        bad_ext_detail=(
+            "Not a supported compressed 3DS format "
+            "(.z3ds, .zcci, .zcia, .zcxi, .z3dsx)"
+        ),
         verify_error_prefix="Failed to verify 3DS ROM",
     ),
     "nsz": _VerifyRouteConfig(
@@ -981,6 +1052,15 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         batch_name="verify_cso_batch_events",
         bad_ext_detail="Not a supported compressed CSO format (.cso, .zso, .dax)",
         verify_error_prefix="Failed to verify CSO file",
+    ),
+    "romz": _VerifyRouteConfig(
+        url_prefix="romz-",
+        service=lambda: romz_service,
+        sync_name="verify_romz",
+        events_name="verify_romz_events",
+        batch_name="verify_romz_batch_events",
+        bad_ext_detail="Not a supported ROM archive (.7z, .zip)",
+        verify_error_prefix="Failed to verify ROM archive",
     ),
 }
 
@@ -1307,4 +1387,7 @@ verify_nsz, verify_nsz_events, verify_nsz_batch_events = register_verify_routes(
 )
 verify_cso, verify_cso_events, verify_cso_batch_events = register_verify_routes(
     router, registry.get("cso"),
+)
+verify_romz, verify_romz_events, verify_romz_batch_events = register_verify_routes(
+    router, registry.get("romz"),
 )

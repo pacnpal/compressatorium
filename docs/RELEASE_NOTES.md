@@ -1,6 +1,67 @@
 # Release Notes
 
-## 4.0.1 (2026-06-02)
+## 4.1.0 (2026-06-03)
+
+This release rolls up everything since 4.0 into one version: PSP / PS2
+CSO·ZSO·DAX support (maxcso), Handheld ROM archiving (GB / GBC / GBA / NDS ↔
+`.7z`/`.zip`), full Nintendo 3DS reversibility on a new upstream fork
+(decompression + `.cxi`/`.3dsx`), registry-driven library-scan / DAT-match
+across every format, tool-neutral process-priority and timeout settings, and the
+related fixes below. Sections are newest-first.
+
+### Faster directory listings in archive-heavy folders
+
+#### Changed
+
+- **Browsing a folder with thousands of archives is now fast.** The file listing used to open and parse *every* archive in the directory on the request thread — twice each (once for the member summary, once for the romz single-ROM Verify/Info gate) — so a large `.zip`/`.7z` folder could take ~40 s to list and, because the browser caps connections per host, that one slow request stalled job/metadata polling behind it (the UI looked frozen). The listing now returns immediately and the per-archive badges (member counts, "N converted", romz Verify/Info eligibility) are hydrated in the background via a new `POST /api/archive-summary` batch — the same pattern already used for CHD media-type badges. The badges therefore appear a moment after the rows.
+
+#### Internal
+
+- New shared, mtime-keyed archive-member cache. `services/archive_members.read_archive_members()` is now the single seam every member-listing consumer reads through (`ArchiveService.list_archive_contents`, `RomzService.is_single_rom_archive`, archive size lookups), backed by one global `utils.mtime_cache.MtimeCache` keyed by `(path, mtime, size)`. An archive is opened at most once per change across all consumers and all formats (`.zip`/`.7z`/`.rar`), invalidated automatically when a conversion rewrites it; a new format gets the cache for free. The change also collapsed `ArchiveService`'s three per-format listing methods into one format-agnostic `_filter_members`. `GET /api/files` gained `summarize_archives` (default `true` for API back-compat; the Web UI passes `false` and hydrates via `/api/archive-summary`). Hydration is bounded to the **visible page** (re-running on pagination/sort/filter) with a server-side `MAX_ARCHIVE_SUMMARY_PATHS` ceiling, and the raw-member cache skips archives over `MAX_CACHED_MEMBERS` so memory stays flat. The browser store also de-dupes a duplicate in-flight listing of the same directory, drops stale responses after navigation (a listing-generation guard prevents a late hydration from clobbering a newer listing), still honours a forced post-mutation refresh while a load is in flight, and keeps selected archive rows in sync with hydrated badges. Documented in `docs/DESIGN_tool_plugin_architecture.md` §3.3.2. Tests: `tests/test_archive_summary_lazy.py` (lazy deferral, batch↔inline parity, per-path error handling, batch cap, cache open-once / invalidate-on-change / oversized-not-cached).
+
+### Nintendo 3DS: decompression + new upstream (.cxi/.3dsx)
+
+#### New
+
+- **3DS is now fully reversible.** A new `z3ds_decompress` mode restores the original ROM from a compressed Z3DS container (`.zcci → .cci`, `.zcia → .cia`, `.z3ds → .3ds`, `.zcxi → .cxi`, `.z3dsx → .3dsx`), in the Web UI ("Decompress 3DS") and the REST API. The compress/decompress round trip is byte-identical. The old "compress-only, keep your sources" caveat is gone — though delete-on-verify is offered for compress only (the restored ROM is not itself a verify-class file, so the compressed source can't be confirmed before deletion).
+- **Two new 3DS input formats.** `.cxi` (CTR Executable Image) and `.3dsx` (homebrew) join `.cci`/`.cia`/`.3ds` as compressible inputs, mapping to `.zcxi`/`.z3dsx` (and back). Treated as experimental, like `.cia`.
+
+#### Changed
+
+- **New upstream: [`pacnpal/z3ds_compress`](https://github.com/pacnpal/z3ds_compress).** The `z3ds_compressor` binary is now built from this fork (which adds the decompression mode and `.cxi`/`.3dsx` support) instead of `energeticokay/z3ds_compress`. The fork builds with **CMake** (static libzstd via pkg-config), so the Docker builder stage gained `cmake`/`pkg-config` and the bundled `.local-bin/z3ds_compressor` was rebuilt. Direction is always forced with the tool's explicit `-c`/`-d` flag, so it never depends on magic-header auto-detection.
+
+#### Internal
+
+- `z3ds` slots the second mode in with no job-pipeline edits — the registry dispatches it like every other tool. `app/services/z3ds_compress.py` gained `Z3DS_DECOMPRESS_EXTENSIONS` / `Z3DS_DECOMPRESS_FORMATS` and direction-aware `_build_command` (`-c`/`-d`), `convert` (progress verb + ratio), `get_output_path_for_mode`, `info`, and `verify_stream`; the plugin adds a `ModeKind.EXTRACT` `ModeSpec`, splits `output_extensions` (compressed + restored ROMs) from `verify_extensions` (compressed containers only), and the `ConversionMode.Z3DS_DECOMPRESS` enum value, route messages, and `info.py` extension sets follow. Tests: extended registry / dispatch-routing / output-path suites plus new `z3ds_decompress` command-flag, extension-map, and info coverage.
+
+### Handheld ROM: Verify/Info only on single-ROM archives
+
+#### Changed
+
+- **The romz Verify/Info row-actions now appear only on single-ROM `.7z`/`.zip` archives**, not on every archive in a directory. The Handheld ROM tool claims `.7z`/`.zip` so it can offer Verify/Info on the archives it produces, but it previously surfaced those actions on *any* archive purely by extension — including an unrelated multi-file `.zip` you happened to have. The file listing now inspects each archive's members and only offers romz Verify/Info when it holds exactly one Game Boy / GBC / GBA / DS ROM (the same single-ROM invariant verify/extract already enforce; OS/NAS clutter like `__MACOSX/…` / `.DS_Store` is ignored). The same gate covers the verify-*from-output* flow (a loose ROM row only offers Verify against a sibling `Game.gba.7z` when that archive is a genuine romz output) and the bulk **Verify selected** path (a non-single-ROM archive selected in extract mode no longer surfaces the button or gets submitted to the romz batch verify). Non-romz archives are unchanged — they stay browseable archives (`type="archive"`) with their extract behavior intact (issue #146).
+
+#### Internal
+
+- New per-file `ToolPlugin.verifies_path(path)` seam: the refinement of `verify_extensions` from a coarse extension claim to a per-file decision. `BaseTool` defaults it to the extension match (every other tool is unaffected); `RomzTool` overrides it via the new `RomzService.is_single_rom_archive` member probe. The registry exposes `tools_verifying_path(path)`, and `routes/files.py` materializes it into a tool-neutral `FileEntry.verifiable_by` list (on-disk files + archive containers, in both the directory listing and recursive search) that the frontend gates Verify/Info on. The narrowing rule is centralized in `registry.verifyToolForPath` and shared by the row menu (`RowActionsMenu`), the "Verify selected" gate (`FileList`), and the bulk target picker (`BulkVerifyModal`). The registry's extension match stays the source of truth so deliberate frontend exclusions hold (e.g. `.iso` is still not routed to Dolphin verify); `verifiable_by` only narrows it. `RomzTool.detect_output` likewise validates the candidate so a non-single-ROM `.7z`/`.zip` is never badged as a romz output (keeping the verify-from-output flow consistent). Documented in `docs/DESIGN_tool_plugin_architecture.md` §3.6 and `docs/ADDING_PLATFORMS_AND_TOOLS.md`.
+- Tests: `tests/test_romz_files_integration.py` gains listing- and search-level regressions (a multi-file / no-ROM / corrupt archive does not surface romz actions; a single-ROM archive does; a coincidentally-named multi-file sibling is not badged as a romz output); `tests/test_romz_service.py` covers `is_single_rom_archive`; `tests/test_tool_registry.py` covers `tools_verifying_path`; and the `FileEntry` JSON-key parity suite is extended for `verifiable_by`.
+
+### Handheld ROM support: GB / GBC / GBA / NDS → .7z / .zip
+
+#### New
+
+- **A sixth tool: Handheld ROM.** Compress Game Boy, Game Boy Color, Game Boy Advance, and Nintendo DS ROM dumps (`.gb` / `.gbc` / `.gba` / `.nds`) to a standard `.7z` or `.zip` archive, and extract them back. Three modes: `romz_7z` (ROM → `.7z`, LZMA2, smallest output), `romz_zip` (ROM → `.zip`, deflate, broadest compatibility), and `romz_extract` (`.7z`/`.zip` → the original ROM). Available in the Web UI and REST API, with live progress, single + batch verify, and file-info. No keys required.
+- **Archive-quality lossless compression.** The compress/extract round trip reproduces the original ROM byte-for-byte (verified by SHA-1 on real homebrew dumps). On the sample set GBA dumps shrank by roughly half and GB/GBC by around two thirds. Output names preserve the ROM extension in front of the archive suffix (`Game.gba` → `Game.gba.7z`), so the extract direction is deterministic and same-stem ROMs of different platforms never collide.
+- **Compression-effort presets.** The compress modes expose a Fast / Default / Max preset, reusing the same compression picker (and the shared "Reset to default" button) as the other tools and remembered per tool between sessions. Max is the `-mx9 -md=256m -mfb=273 -m0=lzma2` profile; the tool ships with Max as the default. Verify runs `7z t` over the archive, and delete-on-verify is offered for the compress modes.
+
+#### Internal
+
+- The tool reuses the `7z` binary already in the image (`p7zip-full`, exposed via the new `SEVENZIP_PATH` env var, default `7z`) — no new build stage. The write/extract/test paths shell out through the shared `SubprocessRunner`; the read side (member listing, info, single-member validation) reuses `zipfile` / `py7zr` directly.
+- Slots into the registry as `romz` with **zero job-pipeline edits** — `job_manager` / `convert` / `files` / `info` all dispatch through the registry. New `app/services/romz.py` service + `app/services/tools/romz.py` plugin, a `RomzInfo` model (with the contained-ROM name, original size, and ratio) and `romz_*` `FileEntry` fields, the three `ConversionMode` entries (`ROMZ_7Z` / `ROMZ_ZIP` / `ROMZ_EXTRACT`), and an `info.py` `_VERIFY_CONFIG` entry behind the shared verify-route factory. ROM outputs are picked up automatically by the registry-driven library scan / DAT-match (`scannable_extensions()`) and the tool-neutral priority/timeout policy (`COMPRESSATORIUM_ROMZ_*`).
+- `.7z`/`.zip` stay classified as browseable archives (`type="archive"`): the compress/extract modes set `allows_archive_input=false`, so ROM extensions never enter the archive-member surface and the existing archive guard keeps archive browsing undisturbed. When `romz_extract` is the active mode the file browser makes archive rows selectable (the row's checkbox; name-click still browses in), gated on `conversion.allowsInput`, so the extract workflow is reachable from the UI — every other tool still treats archives as browse-only.
+- The extract mode reverts this tool's own single-ROM archives: it validates exactly one handheld-ROM payload, ignoring OS/NAS clutter (`__MACOSX/._Game.gba`, `.DS_Store`, `Thumbs.db`, …) so a ROM zipped on macOS/Windows still counts as one member. This junk filtering now goes through a shared, platform-agnostic `utils.junk.is_junk_path` (a path-level companion to `is_junk_entry`), which also replaces the macOS-only `ArchiveService._is_macos_metadata_member` so archive listings, `info()`, and romz validation hide the same clutter.
+- Recursive **Search All** now emits `.7z`/`.zip` containers as top-level results (not just their members), so the `romz_extract` batch workflow is reachable from search too; the container row mirrors the on-disk file schema and is browse-only unless an archive-direct mode is active.
+- Extract and verify are hardened: both honor the shared `CHD_ARCHIVE_MAX_ENTRIES` / `CHD_ARCHIVE_MAX_MEMBER_SIZE` / `CHD_ARCHIVE_MAX_TOTAL_SIZE` limits via the new `ArchiveService.enforce_archive_limits` (zip-bomb / oversized-archive guard, previously bypassed because romz shells out to `7z`); verify now requires a single-ROM payload before running `7z t`, so an unrelated multi-file/source archive can't be marked "Verified"; and the `7z t` test, like the extract command, passes member/archive names after `--` so a name beginning with `-` is treated as a filename.
+- Tests: new `tests/test_romz_service.py` (compress / extract round-trip / verify / single-member validation / cancel cleanup, plus a real `zipfile`/`py7zr` listing exercise), `tests/test_romz_routes.py` (info + single/batch SSE verify), and `tests/test_romz_files_integration.py` (the archive-classification regression), plus extended registry, dispatch-routing, mode-parity, and outputs-parity suites.
 
 ### PSP / PS2 support: CSO / ZSO / DAX via maxcso (#127)
 

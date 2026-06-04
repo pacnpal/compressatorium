@@ -7,16 +7,27 @@ vertical slice, from the binary in the Docker image, through the Python service
 and tool plugin, the job pipeline, the FastAPI routes, and finally the Svelte
 web UI, and shows how to add a tool and a platform in tandem.
 
-It is written against the codebase as it stands today, with five tools already
+It is written against the codebase as it stands today, with six tools already
 wired up:
 
 | Tool | Binary | Service module | Plugin | Handles |
 |------|--------|----------------|--------|---------|
 | **chdman** | `mame-tools` (`/usr/bin/chdman`) | `app/services/chdman.py` | `app/services/tools/chdman.py` | CD/DVD/HD/Raw/LaserDisc disc images to/from `.chd` |
 | **dolphin-tool** | `dolphin-emu` (`/usr/local/bin/dolphin-tool`) | `app/services/dolphin_tool.py` | `app/services/tools/dolphin.py` | GameCube/Wii images to/from `.rvz/.wia/.gcz/.iso` |
-| **z3ds_compressor** | built from source (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | `app/services/tools/z3ds.py` | Nintendo 3DS ROMs to `.zcci/.zcia/.z3ds` |
+| **z3ds_compressor** | built from source via CMake (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | `app/services/tools/z3ds.py` | Nintendo 3DS ROMs to/from `.zcci/.zcia/.z3ds/.zcxi/.z3dsx` |
 | **nsz** | `nsz` pip package (on PATH) | `app/services/nsz.py` | `app/services/tools/nsz.py` | Nintendo Switch `.nsp`/`.xci` to/from `.nsz`/`.xcz` |
 | **maxcso** | built from source (`/usr/local/bin/maxcso`) | `app/services/maxcso.py` | `app/services/tools/maxcso.py` | PSP/PS2 `.iso` to/from `.cso` (CSO v1/v2) / `.zso` / `.dax` (tool id `cso`) |
+| **7z** | `p7zip-full` (`7z` on PATH) | `app/services/romz.py` | `app/services/tools/romz.py` | Handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` to/from `.7z`/`.zip` (tool id `romz`) |
+
+> **`romz` is the "produces archives / reuses an existing binary" example.** It
+> needs no Dockerfile build step (the `7z` CLI already ships via `p7zip-full`)
+> and reuses `app/services/archive.py`'s `zipfile`/`py7zr` for the read side
+> (member listing, info, single-member validation), shelling `7z` only for the
+> write/extract/test paths via the shared `SubprocessRunner`. Its `.7z`/`.zip`
+> inputs overlap the archive-browse extensions, so its modes set
+> `allows_archive_input=False` and `routes/files.py`'s existing `is_archive`
+> guard keeps those files classified as browseable archives, not convertible
+> sources.
 
 `z3ds` is the cleanest, most self-contained example of "a new tool that handles
 a new platform," so this guide uses it as the reference implementation
@@ -110,10 +121,10 @@ Two supporting layers:
   `archive_input_extensions()`, `verify_extensions()`, `output_extensions()`,
   `scannable_extensions()` (which drives the library scan / DAT-match
   discovery), and friends.
-- **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py`** are the five
-  plugins. Each is a thin `BaseTool` subclass that holds `ModeSpec` rows and
-  delegates the real work to the underlying service singleton.
-- **`__init__.py`** builds the `registry` singleton and registers all five
+- **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py` / `romz.py`**
+  are the six plugins. Each is a thin `BaseTool` subclass that holds `ModeSpec`
+  rows and delegates the real work to the underlying service singleton.
+- **`__init__.py`** builds the `registry` singleton and registers all six
   tools. This is the single wiring point.
 
 ### The plugin contract: `ModeSpec` and `BaseTool`
@@ -147,16 +158,18 @@ A plugin subclasses `BaseTool` and provides:
 | `verify(path)` / `verify_stream(path)` | deep integrity check, one-shot and streaming |
 | `info(path)` / `info_model(raw, path)` | metadata dict + the Pydantic model it maps to |
 | `output_path(mode, input_path, output_dir=None, *, treat_as_stem=False)` | compute the output path |
-| `detect_output(input_path)` | optional, returns an `OutputStatus` so the file list can badge "output already exists" |
+| `detect_output(input_path)` | optional, returns an `OutputStatus` so the file list can badge "output already exists". May content-validate the candidate before claiming it: `romz` only reports a `.7z`/`.zip` sibling as its output when it's a genuine single-ROM archive (not just any file matching the `Game.gba.7z` naming), so the badge and the source row's verify-from-output flow track real outputs. |
+| `verifies_path(path)` | optional per-file refinement of `verify_extensions`. Default (in `BaseTool`) is a plain extension match; override when your tool claims a broad container extension but only handles a subset (`romz` claims `.7z`/`.zip` yet only verifies single-ROM archives). `routes/files.py` materializes the result into `FileEntry.verifiable_by`, which the frontend gates the Verify/Info row-actions on. May do disk I/O — it runs inside the threadpool scan. |
 | `active_pids()` | PIDs for the debug heartbeat |
 | `post_convert(input_path, output_path, mode)` | optional hook, default no-op |
 | `embedded_hashes(path, *, cancel_event=None)` | **optional** DAT-match fast path. Return `(sha1, match_type)` tuples your format already carries / can derive cheaply (so matching skips a full file hash); default `[]` → the caller falls back to a file-level SHA1, which is correct for raw formats. Raise `EmbeddedHashUnavailable` (from `services.tools.base`) when you *should* yield a hash but the attempt failed transiently, so it's recorded as a non-cacheable miss instead of a false negative. |
 | `embedded_hash_is_exhaustive` | optional flag (default `False`). Set `True` only when your container bytes can never appear in a DAT (e.g. a recompressed image), so a content-hash miss is definitive and the file-level fallback is skipped; leave `False` if your file's own SHA1 might be indexed. |
 
 `BaseTool` fills in `input_extensions` (the union of every mode's
-`input_extensions`), `spec(mode)`, no-op `detect_output` / `post_convert`, and
-the `embedded_hashes` default (`[]`, `embedded_hash_is_exhaustive=False`), so a
-real plugin only overrides what differs. See `app/services/tools/z3ds.py` for the
+`input_extensions`), `spec(mode)`, no-op `detect_output` / `post_convert`, the
+extension-match `verifies_path` default, and the `embedded_hashes` default
+(`[]`, `embedded_hash_is_exhaustive=False`), so a real plugin only overrides
+what differs. See `app/services/tools/z3ds.py` for the
 smallest complete example (~120 lines, mostly delegation). For one-shot
 subprocess work (info / header / hash extraction), reuse the shared
 `SubprocessRunner.run_capture()` (cancel/timeout-aware, applies the tool
@@ -854,6 +867,8 @@ PLUGIN (app/services/tools/<tool>.py)
     output_extensions, verify_extensions
 [ ] delegate convert/verify/verify_stream/info/info_model/output_path/active_pids
 [ ] optional: detect_output() for "output exists" badges
+[ ] optional: verifies_path() to refine verify_extensions per-file when the
+    tool over-claims a container extension (drives FileEntry.verifiable_by)
 [ ] optional: embedded_hashes()/embedded_hash_is_exhaustive for the DAT-match
     fast path (default falls back to file-level SHA1)
 [ ] optional: allows_archive_input=True on source modes (both registries) — see §17

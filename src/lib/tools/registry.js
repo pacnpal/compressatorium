@@ -30,9 +30,17 @@ const DOLPHIN_SOURCE_EXTS = ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'];
 // in RowActionsMenu would let the user disambiguate directly.
 const DOLPHIN_VERIFY_EXTS = ['.gcz', '.wia', '.rvz', '.wbfs'];
 
-const Z3DS_SOURCE_EXTS = ['.cci', '.cia', '.3ds'];
-const Z3DS_VERIFY_EXTS = ['.zcci', '.zcia', '.z3ds'];
-const Z3DS_OUT_MAP = { '.cci': '.zcci', '.cia': '.zcia', '.3ds': '.z3ds' };
+// 3DS (z3ds). Compress takes a raw ROM; decompress takes a compressed Z3DS
+// container. Both directions are "sources" depending on the chosen mode.
+const Z3DS_COMPRESS_EXTS = ['.cci', '.cia', '.3ds', '.cxi', '.3dsx'];
+const Z3DS_VERIFY_EXTS = ['.zcci', '.zcia', '.z3ds', '.zcxi', '.z3dsx'];
+const Z3DS_SOURCE_EXTS = [...Z3DS_COMPRESS_EXTS, ...Z3DS_VERIFY_EXTS];
+const Z3DS_OUT_MAP = {
+  '.cci': '.zcci', '.cia': '.zcia', '.3ds': '.z3ds',
+  '.cxi': '.zcxi', '.3dsx': '.z3dsx',
+  '.zcci': '.cci', '.zcia': '.cia', '.z3ds': '.3ds',
+  '.zcxi': '.cxi', '.z3dsx': '.3dsx',
+};
 
 // Switch (nsz). Both directions are "sources" depending on the chosen mode.
 const NSZ_COMPRESS_EXTS = ['.nsp', '.xci'];
@@ -47,6 +55,13 @@ const NSZ_OUT_MAP = {
 const CSO_COMPRESS_EXTS = ['.iso'];
 const CSO_VERIFY_EXTS = ['.cso', '.zso', '.dax'];
 const CSO_SOURCE_EXTS = [...CSO_COMPRESS_EXTS, ...CSO_VERIFY_EXTS];
+
+// Handheld ROM packer (7z). Compress takes a loose GB/GBC/GBA/NDS ROM;
+// extract takes one of the .7z/.zip archives it writes. Both directions are
+// "sources" by mode. Output names preserve the ROM extension (Game.gba.7z).
+const ROMZ_COMPRESS_EXTS = ['.gb', '.gbc', '.gba', '.nds'];
+const ROMZ_VERIFY_EXTS = ['.7z', '.zip'];
+const ROMZ_SOURCE_EXTS = [...ROMZ_COMPRESS_EXTS, ...ROMZ_VERIFY_EXTS];
 
 /**
  * @typedef {Object} ModeEntry
@@ -223,7 +238,7 @@ export const TOOLS = [
   {
     id: 'z3ds',
     label: '3DS',
-    hint: 'Compress Nintendo 3DS ROMs (.3ds, .cci, .cia).',
+    hint: 'Compress and decompress Nintendo 3DS ROMs (.3ds/.cci/.cia/.cxi/.3dsx ↔ Z3DS).',
     verifyPrefix: 'z3ds',
     sourceExts: Z3DS_SOURCE_EXTS,
     verifyExts: Z3DS_VERIFY_EXTS,
@@ -237,15 +252,19 @@ export const TOOLS = [
     compressionStyle: 'none',
     modes: [
       { mode: 'z3ds_compress', kind: 'compress', label: 'Compress 3DS', group: 'z3ds',
-        outputExt: null, inputExtensions: Z3DS_SOURCE_EXTS,
+        outputExt: null, inputExtensions: Z3DS_COMPRESS_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,
         supportsDeleteOnVerify: true, allowsArchiveInput: true },
+      { mode: 'z3ds_decompress', kind: 'extract', label: 'Decompress 3DS', group: 'z3ds',
+        outputExt: null, inputExtensions: Z3DS_VERIFY_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: true },
     ],
     getInfo: (path) => api.getZ3DSInfo(path),
     verify: (path, opts) => api.verify3DS(path, opts),
     verifyBatch: (paths, opts) => api.verifyBatchZ3DS(paths, opts),
     productPath: (path) => {
-      const m = /\.(3ds|cci|cia)$/i.exec(path);
+      const m = /\.(3ds|cci|cia|cxi|3dsx|zcci|zcia|z3ds|zcxi|z3dsx)$/i.exec(path);
       if (!m) return path;
       const ext = `.${m[1].toLowerCase()}`;
       return swapExt(path, Z3DS_OUT_MAP[ext] ?? ext);
@@ -358,6 +377,53 @@ export const TOOLS = [
       return path;
     },
   },
+  {
+    id: 'romz',
+    label: 'Handheld ROM',
+    hint: 'Compress Game Boy / GBC / GBA / DS ROM dumps to .7z / .zip (and back).',
+    verifyPrefix: 'romz',
+    sourceExts: ROMZ_SOURCE_EXTS,
+    verifyExts: ROMZ_VERIFY_EXTS,
+    modeGroups: ['romz'],
+    groups: { romz: 'GB / GBC / GBA / DS' },
+    defaultMode: 'romz_7z',
+    glyph: 'ROM',
+    accent: 'var(--badge-romz)',
+    // The output container is fixed by the mode (.7z vs .zip); the dropdown
+    // picks a compression *effort* preset (no numeric level), like CSO.
+    compressionCodecs: [
+      { value: 'max', label: 'Max', hint: 'Smallest (-mx9 -md=256m -mfb=273)' },
+      { value: 'default', label: 'Default', hint: 'Balanced (-mx7)' },
+      { value: 'fast', label: 'Fast', hint: 'Fastest, larger output (-mx1)' },
+    ],
+    compressionStyle: 'single-with-level',
+    modes: [
+      { mode: 'romz_7z', kind: 'compress', label: 'Compress ROM → 7z', group: 'romz',
+        outputExt: '.7z', inputExtensions: ROMZ_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
+      { mode: 'romz_zip', kind: 'compress', label: 'Compress ROM → zip', group: 'romz',
+        outputExt: '.zip', inputExtensions: ROMZ_COMPRESS_EXTS,
+        supportsCompression: true, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: false },
+      { mode: 'romz_extract', kind: 'extract', label: 'Extract ROM ← 7z/zip', group: 'romz',
+        outputExt: null, inputExtensions: ROMZ_VERIFY_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+    ],
+    getInfo: (path) => api.getRomzInfo(path),
+    verify: (path, opts) => api.verifyRomz(path, opts),
+    verifyBatch: (paths, opts) => api.verifyBatchRomz(paths, opts),
+    // Compress preserves the ROM extension in front of the archive suffix
+    // (Game.gba -> Game.gba.7z); extract strips the archive suffix back off.
+    productPath: (path, mode = 'romz_7z') => {
+      if (/\.(gb|gbc|gba|nds)$/i.test(path)) {
+        return path + (mode === 'romz_zip' ? '.zip' : '.7z');
+      }
+      if (/\.(7z|zip)$/i.test(path)) return path.replace(/\.(7z|zip)$/i, '');
+      return path;
+    },
+  },
 ];
 
 const byId = new Map(TOOLS.map((t) => [t.id, t]));
@@ -369,6 +435,12 @@ function endsWithAny(path, exts) {
   if (!path) return false;
   const lower = path.toLowerCase();
   return exts.some((ext) => lower.endsWith(ext));
+}
+
+/** Verify-class tool whose verifyExts match the path (extension only). */
+function matchVerifyTool(path) {
+  if (!path) return null;
+  return TOOLS.find((t) => endsWithAny(path, t.verifyExts)) ?? null;
 }
 
 /** Build the single/batch verify URL from the tool's verifyPrefix. */
@@ -394,8 +466,31 @@ export const registry = {
   /** The owning tool for a wire-mode value. */
   toolForMode: (mode) => byMode.get(mode)?.tool,
 
-  /** Pick the tool whose verify_extensions match a given file path, or null. */
-  toolForVerifyPath: (path) => TOOLS.find((t) => endsWithAny(path, t.verifyExts)) ?? null,
+  /** Pick the tool whose verify_extensions match a given file path, or null.
+   *  Pure extension match — use `verifyToolForPath` when an entry's backend
+   *  `verifiable_by` refinement should also apply (e.g. romz archive rows). */
+  toolForVerifyPath: (path) => matchVerifyTool(path),
+
+  /**
+   * Verify tool for a concrete file, narrowed by the backend's per-file
+   * `verifiable_by` refinement when provided. The extension match stays the
+   * source of truth — it encodes deliberate UX exclusions the backend's
+   * broader verify_extensions don't (e.g. `.iso` is intentionally NOT routed
+   * to Dolphin verify) — and `verifiable_by` may only NARROW it, never broaden
+   * it (romz claims `.7z`/`.zip` by extension but only single-ROM archives are
+   * actually verifiable). Pass the listing's `entry.verifiable_by`; omit it
+   * (undefined) for paths the listing doesn't annotate, leaving the plain
+   * extension match. Shared by the row menu and the bulk-verify paths so they
+   * gate identically.
+   */
+  verifyToolForPath: (path, verifiableBy) => {
+    const tool = matchVerifyTool(path);
+    if (!tool) return null;
+    if (Array.isArray(verifiableBy) && !verifiableBy.includes(tool.id)) {
+      return null;
+    }
+    return tool;
+  },
 
   /** Tools whose source extensions match the given path (convertible sources). */
   toolsForSourcePath: (path) => TOOLS.filter((t) => endsWithAny(path, t.sourceExts)),
