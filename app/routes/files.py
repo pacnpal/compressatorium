@@ -472,9 +472,16 @@ async def search_files(
                                         **_legacy_output_fields([], {}),
                                     },
                                 )
-                                # List archive contents
+                                # List archive contents. Search surfaces
+                                # convertible hits, so gate to the convert-gate
+                                # subset (not the wider browse listing): that
+                                # both drops list-only members (a romz ROM is
+                                # browse-only) and keeps them from consuming the
+                                # per-archive entry cap ahead of a genuine
+                                # convertible member.
                                 archive_result = archive_service.list_archive_contents(
                                     item_path, include_meta=True,
+                                    convertible_only=True,
                                 )
                                 archive_contents = archive_result["entries"]
                                 if archive_result["truncated"]:
@@ -489,18 +496,6 @@ async def search_files(
                                     ) = _detect_archive_member_outputs(
                                         entry, archive_dir,
                                     )
-                                    # "Search all" surfaces convertible hits, so
-                                    # skip list-only members (a romz ROM is
-                                    # visible when browsing into its archive, but
-                                    # isn't an in-place conversion input — its
-                                    # convertible_by is empty). Mirrors the
-                                    # on-disk ``if convertible_by`` gate above so
-                                    # search never offers a row plan_job rejects.
-                                    # The archive container itself is still
-                                    # emitted (above), so the archive stays
-                                    # findable and browseable.
-                                    if not member_convertible_by:
-                                        continue
                                     tool_fields = _legacy_output_fields(
                                         member_convertible_by, member_by_tool,
                                     )

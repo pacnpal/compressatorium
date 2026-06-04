@@ -43,20 +43,26 @@ def test_archive_input_extensions_cover_all_source_tools():
     assert {".nsp", ".xci", ".nsz", ".xcz"} <= exts   # Switch (nsz)
     assert {".cso", ".zso", ".dax"} <= exts           # CSO (maxcso decompress)
     assert ".chd" not in exts
-    # Handheld ROMs are visible-only (lists_archive_members), not convertible
-    # in place, so they stay OUT of the convert-gate set.
+    # Handheld ROMs are browse-only, not convertible in place, so they stay OUT
+    # of the convert-gate set (recompressing an archived ROM would be recursive).
     assert not ({".gb", ".gbc", ".gba", ".nds"} & exts)
 
 
-def test_listable_extensions_superset_includes_handheld_roms():
-    # The browser listing is a superset of the convert-gate set: it also shows
-    # romz ROMs so a single-ROM .zip/.7z isn't reported as an empty folder,
-    # even though those ROMs can't be re-converted in place (non-recursive).
-    listable = registry.archive_listable_extensions()
+def test_browse_listing_is_global_known_superset_of_convert_gate():
+    # The browse listing is global, scoped to known extensions: every known
+    # source extension shows (so romz ROMs aren't an "Empty folder"), and it's a
+    # superset of the convert-gate set the search/conversion path uses.
+    listable = archive_service._listable_extensions()
     convertible = registry.archive_input_extensions()
     assert convertible <= listable
+    # Handheld ROMs surface in browse because they're known sources...
     assert {".gb", ".gbc", ".gba", ".nds"} <= listable
+    # ...but stay out of the convert-gate (browse-only, no in-place conversion).
     assert not ({".gb", ".gbc", ".gba", ".nds"} & convertible)
+    # A finished .chd is disowned as a source by chdman, so it never lists.
+    assert ".chd" not in listable
+    # Archive containers themselves aren't listed as members of an archive.
+    assert not ({".zip", ".7z", ".rar"} & listable)
 
 
 def test_list_zip_surfaces_handheld_rom_member(tmp_path):
@@ -86,6 +92,32 @@ def test_list_7z_surfaces_handheld_rom_member(tmp_path):
     members = {e["internal_path"]: e for e in entries}
     assert "inner.gba" in members
     assert members["inner.gba"]["extension"] == ".gba"
+
+
+def test_convertible_only_skips_list_only_members_before_entry_cap(
+    tmp_path, monkeypatch,
+):
+    # Regression: a ZIP whose first rows are list-only ROMs followed by a real
+    # convertible source must still cough up that source under the entry cap.
+    # The convert-gated search path strips the ROMs out *before* the cap, so a
+    # pile of .gba can't crowd out the .iso the way browse would have shown it.
+    from services import archive as archive_module
+
+    monkeypatch.setattr(archive_module.settings, "archive_max_entries", 2)
+    archive_members.clear_cache()
+
+    archive = tmp_path / "Pack.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for i in range(5):
+            zf.writestr(f"rom{i}.gba", b"rom")  # list-only, ahead of the source
+        zf.writestr("disc.iso", b"iso")          # the convertible member
+
+    result = archive_service.list_archive_contents(
+        str(archive), include_meta=True, convertible_only=True,
+    )
+    names = {e["internal_path"] for e in result["entries"]}
+    assert "disc.iso" in names
+    assert not any(n.endswith(".gba") for n in names)
 
 
 def test_list_zip_surfaces_3ds_member(tmp_path):

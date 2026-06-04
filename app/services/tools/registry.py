@@ -78,32 +78,15 @@ class ToolRegistry:
                     exts.update(mode.input_extensions)
         return frozenset(exts)
 
-    def archive_listable_extensions(self) -> frozenset[str]:
-        """Extensions surfaced when browsing INTO an archive.
-
-        Superset of :meth:`archive_input_extensions`: a member is listed when
-        some mode can convert it in place (``allows_archive_input``) OR when a
-        tool just wants it visible without an in-place conversion action
-        (``lists_archive_members``, e.g. romz single-ROM archives). Decouples
-        "show this member" from "convert this member" so listing a romz ROM
-        doesn't make ``plan_job`` accept ``archive.zip::game.gb`` and recompress
-        a ROM that's already archived (recursive).
-        """
-        exts: set[str] = set()
-        for tool in self._tools.values():
-            for mode in tool.modes:
-                if mode.allows_archive_input or mode.lists_archive_members:
-                    exts.update(mode.input_extensions)
-        return frozenset(exts)
-
     def tools_accepting_archive_member(self, ext: str) -> list[str]:
         """Tool ids with at least one ``allows_archive_input`` mode for ``ext``.
 
         The archive-member analogue of ``ext in tool.input_extensions``: a tool
         is only convertible-in-place when some mode of it both takes the ext AND
-        allows archive input. romz lists members (``lists_archive_members``) but
-        has no ``allows_archive_input`` mode, so it is correctly excluded — the
-        ROM is visible but carries no in-place conversion affordance.
+        allows archive input. A listing-only member (a romz ROM, surfaced
+        because it's a known source extension) has no ``allows_archive_input``
+        mode, so it is correctly excluded — visible, but no in-place conversion
+        affordance.
         """
         ext = ext.lower()
         return [

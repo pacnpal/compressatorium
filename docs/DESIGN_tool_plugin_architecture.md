@@ -123,18 +123,27 @@ class ModeSpec:
     supports_compression_level: bool = False   # dolphin rvz/wia only
     supports_delete_on_verify: bool = False
     allows_archive_input: bool = False         # opt-in; set True on every convertible-source mode (chdman create, dolphin, z3ds). Only chdman extract/copy (.chd input) leave it False
-    lists_archive_members: bool = False        # opt-in; surface this mode's inputs as members when browsing INTO an archive WITHOUT making them convertible in place (romz single-ROM archives: visible/verifiable, but recompressing would be recursive)
 ```
 
-`allows_archive_input` and `lists_archive_members` are two **independent** facts —
-"can this member be converted in place?" vs "should this member be visible when
-browsing the archive?". The registry exposes them as two unions:
-`archive_input_extensions()` (the convert gate in `plan_job`) and
-`archive_listable_extensions()` (the archive-browser filter, a superset that also
-includes `lists_archive_members` inputs). Conflating them is what hid romz ROMs
-inside their own archives ("Empty folder / 0 items" despite the ARC/OK badge);
-the listing filter (`ArchiveService._listable_extensions`) now uses the superset
-while the conversion gate stays on `allows_archive_input`.
+**Archive browsing is global, scoped to known extensions; the convert gate is
+narrower.** Two registry unions, two jobs:
+
+- `convertible_extensions()` — every source extension any tool recognizes. The
+  archive *browse* listing (`ArchiveService._listable_extensions`) uses this
+  minus the archive containers, so anything we know how to compress shows up
+  when you look inside an archive. A finished output a tool disowns as a source
+  stays hidden for free (chdman drops `.chd` from its `input_extensions`).
+- `archive_input_extensions()` — only the inputs of `allows_archive_input` modes.
+  This is the *convert gate* in `plan_job` and the filter the recursive *search*
+  path uses (`ArchiveService._convert_gate_extensions`).
+
+A member is *listed* (browse) far more liberally than it is *convertible in
+place* (gate). A romz ROM is a known source, so it shows when you browse into its
+archive — fixing the "Empty folder / 0 items" bug — but no `allows_archive_input`
+mode accepts it, so `tools_accepting_archive_member` returns nothing and it
+carries no conversion affordance (recompressing an archived ROM would be
+recursive). Search stays on the narrow gate so list-only members can't consume
+the per-archive entry cap ahead of a genuine convertible member.
 
 Every prefix check in the codebase maps to a field:
 
@@ -349,10 +358,10 @@ mtime/size and the next read recomputes. Adding a new archive format is one
 change.
 
 Consumers keep their own *policy* over the shared *read*: `ArchiveService`
-filters to **listable** members (registry `archive_listable_extensions()` via
-`_listable_extensions`, the superset of the convert-gate set so romz ROMs are
-visible) and enforces the size limits (§3.3.1) in `_filter_members` (one
-format-agnostic pass that replaced the old per-format
+filters members to a caller-supplied extension set — the global known-source set
+(`_listable_extensions`, browse) or the narrower convert-gate set
+(`_convert_gate_extensions`, search) — and enforces the size limits (§3.3.1) in
+`_filter_members` (one format-agnostic pass that replaced the old per-format
 `_list_zip`/`_list_7z`/`_list_rar` triplet); `romz` rejects symlink members as a
 security gate. A listed member is only badged convertible-in-place when a tool can
 accept it straight from an archive — the archive route derives that via

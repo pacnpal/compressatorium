@@ -30,9 +30,9 @@ def _summary_env(tmp_path, monkeypatch):
     # chdman-convertible archive member (.iso) -> archive_items == 1.
     with zipfile.ZipFile(tmp_path / "Disc.zip", "w") as zf:
         zf.writestr("game.iso", b"iso-bytes")
-    # Single handheld ROM -> archive_items == 1 (the .gba is listed for
-    # visibility via lists_archive_members, though not convertible in place)
-    # and verifiable_by == ["romz"].
+    # Single handheld ROM -> archive_items == 1 (the .gba is a known source, so
+    # browse lists it for visibility, though it's not convertible in place) and
+    # verifiable_by == ["romz"].
     with zipfile.ZipFile(tmp_path / "Solo.zip", "w") as zf:
         zf.writestr("inner.gba", b"rom")
     # Multi-file archive: the ROM is listed but notes.txt isn't, so

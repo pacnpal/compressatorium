@@ -398,12 +398,12 @@ export const TOOLS = [
     ],
     compressionStyle: 'single-with-level',
     // NOTE: keep allowsArchiveInput: false on every romz mode. The ROM packed
-    // inside a romz archive IS shown when browsing into it, but that listing is
-    // driven entirely by the backend (registry.archive_listable_extensions /
-    // the mode's lists_archive_members flag) — there is no frontend mirror.
-    // Recompressing a ROM that's already archived would be recursive, so the
-    // backend rejects it; flipping this flag here would offer a conversion the
-    // convert route refuses (ARCHIVE_INPUT_NOT_ALLOWED).
+    // inside a romz archive still shows when you browse in, but that's the
+    // backend's doing — archive browsing lists every known source extension
+    // (registry.convertible_extensions), no frontend mirror needed.
+    // Recompressing a ROM that's already archived would be plumb recursive, so
+    // the backend rejects it; flippin' this flag here would offer up a
+    // conversion the convert route refuses (ARCHIVE_INPUT_NOT_ALLOWED).
     modes: [
       { mode: 'romz_7z', kind: 'compress', label: 'Compress ROM → 7z', group: 'romz',
         outputExt: '.7z', inputExtensions: ROMZ_COMPRESS_EXTS,

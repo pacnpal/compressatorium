@@ -180,10 +180,10 @@ async def test_archive_chd_member_rejected_for_recompress(e2e_env):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [ConversionMode.ROMZ_7Z, ConversionMode.ROMZ_ZIP])
 async def test_romz_member_listed_but_not_recompressed(e2e_env, mode):
-    """A handheld ROM inside an archive is surfaced for visibility
-    (lists_archive_members) but is NOT convertible in place: romz compress
-    keeps allows_archive_input=False, so recompressing it would be recursive.
-    The route must reject it even though it now appears in the listing."""
+    """A handheld ROM inside an archive is surfaced for visibility (it's a known
+    source extension, so browse lists it) but is NOT convertible in place: romz
+    compress keeps allows_archive_input=False, so recompressing it would be
+    recursive. The route must reject it even though it appears in the listing."""
     from fastapi import HTTPException
 
     tmp_path: Path = e2e_env["tmp_path"]
