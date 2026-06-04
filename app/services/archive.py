@@ -28,16 +28,19 @@ except ImportError:
 
 
 ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
-# Fallback set of convertible archive-member extensions, used only when the
-# tool registry can't be consulted. The authoritative list comes from
-# ``ArchiveService._convertible_extensions()`` (which unions every mode that
-# allows archive input). Historically this was hardcoded to CHDMAN's sources,
-# which silently hid 3DS members (.3ds/.cci/.cia) inside archives, issue #113.
+# Fallback set of listable archive-member extensions, used only when the tool
+# registry can't be consulted. The authoritative list comes from the registry:
+# ``_listable_extensions()`` (browse) uses ``convertible_extensions()`` minus the
+# archive containers, every known source extension; ``_convert_gate_extensions()``
+# (search) uses ``archive_input_extensions()``. Historically this was hardcoded to
+# CHDMAN's sources, which silently hid 3DS members inside archives (issue #113)
+# and romz ROMs (the .zip "Empty folder" bug).
 CONVERTIBLE_EXTENSIONS = {
     ".gdi", ".iso", ".cue", ".bin",          # chdman create modes
     ".gcz", ".wia", ".rvz", ".wbfs",         # Dolphin (.iso shared above)
     ".cci", ".cia", ".3ds", ".cxi", ".3dsx", # 3DS (z3ds compress)
     ".zcci", ".zcia", ".z3ds", ".zcxi", ".z3dsx",  # 3DS (z3ds decompress)
+    ".gb", ".gbc", ".gba", ".nds",           # handheld ROMs (romz, listing only)
 }
 
 logger = get_logger("archive")
@@ -132,13 +135,42 @@ class ArchiveService:
         return ext in ARCHIVE_EXTENSIONS
 
     @staticmethod
-    def _convertible_extensions() -> frozenset:
-        """Extensions treated as convertible archive members.
+    def _listable_extensions() -> frozenset:
+        """Extensions surfaced when *browsing* the members of an archive.
 
-        Sourced from the tool registry so archive listings surface the same
-        inputs the conversion path can actually accept from an archive
-        (chdman create + 3DS today). Falls back to the static set if the
-        registry can't be imported (defensive, it always loads in-app).
+        Global, scoped to known extensions: every source extension any tool
+        recognizes (``registry.convertible_extensions()``), minus the archive
+        container extensions themselves (no point listing a ``.zip`` inside a
+        ``.zip``). This is a superset of the convert-gate set, so it also shows
+        members that are visible-only — a romz ROM appears when you browse into
+        its archive even though no mode will re-convert it in place (its
+        ``convertible_by`` stays empty, see ``tools_accepting_archive_member``).
+        Finished outputs a tool disowns as a source (chdman drops ``.chd`` from
+        its ``input_extensions``) stay hidden for free. Falls back to the static
+        set if the registry can't be imported (defensive, it always loads).
+        """
+        try:
+            from services.tools import registry
+
+            exts = registry.convertible_extensions() - ARCHIVE_EXTENSIONS
+            if exts:
+                return exts
+        except Exception:  # pragma: no cover - registry always loads in-app
+            logger.debug(
+                "Tool registry unavailable; using static convertible extensions",
+                exc_info=True,
+            )
+        return frozenset(CONVERTIBLE_EXTENSIONS)
+
+    @staticmethod
+    def _convert_gate_extensions() -> frozenset:
+        """Extensions a member must have to be a real archive-conversion input.
+
+        The narrower convert-gate subset (``registry.archive_input_extensions``):
+        only members some mode can actually accept from an archive. Used by the
+        recursive *search* path, which surfaces convertible hits — not the wider
+        browse listing — so list-only members (romz ROMs) never count toward the
+        per-archive entry cap before a genuine convertible member is reached.
         """
         try:
             from services.tools import registry
@@ -154,26 +186,40 @@ class ArchiveService:
         return frozenset(CONVERTIBLE_EXTENSIONS)
 
     def list_archive_contents(
-        self, archive_path: str, *, include_meta: bool = False
+        self, archive_path: str, *, include_meta: bool = False,
+        convertible_only: bool = False,
     ) -> Union[List[dict], Dict[str, Union[List[dict], bool]]]:
-        """List convertible files inside an archive.
+        """List the files inside an archive.
 
         Members are read through the shared, mtime-cached
         :func:`services.archive_members.read_archive_members`, so an archive is
         opened at most once per ``(path, mtime, size)`` no matter how many times
         the browser/summary path lists it (and the romz gate shares that same
-        cached read). The convertible/limit filtering and ``output_stem`` shaping
+        cached read). The extension/limit filtering and ``output_stem`` shaping
         are applied per call against the cached raw members, returning fresh dicts
         the archive route is free to annotate in place.
+
+        ``convertible_only`` narrows the extension gate from the browse listing
+        (every known source, :meth:`_listable_extensions`) to the convert-gate
+        subset (:meth:`_convert_gate_extensions`). The recursive search path sets
+        it so list-only members never consume the entry cap ahead of a genuine
+        convertible member.
         """
         ext = Path(archive_path).suffix.lower()
         entries: List[dict] = []
         truncated = False
+        allowed = (
+            self._convert_gate_extensions()
+            if convertible_only
+            else self._listable_extensions()
+        )
         if ext in ARCHIVE_EXTENSIONS:
             start = time.monotonic()
             try:
                 raw_members = read_archive_members(archive_path)
-                entries, truncated = self._filter_members(archive_path, raw_members)
+                entries, truncated = self._filter_members(
+                    archive_path, raw_members, allowed,
+                )
             except Exception as e:
                 logger.exception("Error listing archive %s: %s", archive_path, e)
             finally:
@@ -195,21 +241,23 @@ class ArchiveService:
         return entries
 
     def _filter_members(
-        self, archive_path: str, members: list,
+        self, archive_path: str, members: list, allowed: frozenset,
     ) -> Tuple[List[dict], bool]:
-        """Filter raw archive members to convertible entries within size limits.
+        """Filter raw archive members to entries within size limits.
 
         Format-agnostic replacement for the old per-format ``_list_zip`` /
         ``_list_7z`` / ``_list_rar`` triplet: every container now yields a
         uniform :class:`~services.archive_members.ArchiveMember` list, so a single
-        pass applies the junk filter, member-path validation, the registry's
-        convertible-extension gate, and the configured entry/size limits. ``size``
+        pass applies the junk filter, member-path validation, the caller's
+        ``allowed`` extension gate, and the configured entry/size limits. ``size``
         of ``None`` means the container didn't record an uncompressed size; that's
         a skip-and-truncate when any size limit is active, otherwise treated as 0.
+        The entry cap counts only members that pass ``allowed``, so a caller
+        gating on the convert-gate subset never burns the cap on list-only rows.
         """
         entries: List[dict] = []
         max_entries, max_member_size, max_total_size = self._archive_limits()
-        convertible = self._convertible_extensions()
+        convertible = allowed
         total_size = 0
         truncated = False
         for member in members:
@@ -257,7 +305,13 @@ class ArchiveService:
                     "name": os.path.basename(member.name),
                     "size": size,
                     "extension": ext,
-                    "convertible": True,
+                    # No "convertible" flag here: a member can be *listable*
+                    # (e.g. a romz ROM, surfaced for visibility) without being a
+                    # valid archive-conversion input. Convertibility is decided
+                    # per consumer from the registry (route layer derives
+                    # ``convertible_by`` via ``tools_accepting_archive_member``),
+                    # so stamping a blanket True here would misreport list-only
+                    # members to any direct caller of this service.
                 }
             )
             if max_entries > 0 and len(entries) >= max_entries:

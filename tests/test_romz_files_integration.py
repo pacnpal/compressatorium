@@ -145,3 +145,35 @@ async def test_loose_rom_is_romz_convertible_and_badges_output(romz_env):
     assert junky.has_romz is False and junky.romz_ready is False
     assert junky.romz_path is None
     assert not any(o.tool_id == "romz" for o in junky.outputs)
+
+
+@pytest.mark.asyncio
+async def test_search_excludes_listing_only_rom_members(romz_env):
+    # "Search all" surfaces convertible hits. A romz ROM is visible when
+    # browsing into its archive, but it is not an in-place conversion input, so
+    # it must NOT appear as an archive-member search row (which the UI would
+    # offer for conversion and plan_job would then reject). The archive
+    # container itself still appears so the archive stays findable.
+    result = await files_routes.search_files(path=romz_env["root"])
+
+    member_exts = {Path(m["name"]).suffix.lower() for m in result["archives"]}
+    assert not ({".gb", ".gbc", ".gba", ".nds"} & member_exts)
+
+    archive_names = {f["name"] for f in result["files"] if f.get("type") == "archive"}
+    assert "Bundle.zip" in archive_names
+
+
+@pytest.mark.asyncio
+async def test_browse_into_romz_archive_shows_rom_but_not_convertible(romz_env):
+    # Browsing into a single-ROM archive must surface the ROM member (the
+    # "Empty folder / 0 items" bug fix) — but the member is listing-only, so it
+    # carries no in-place conversion affordance the convert route would reject.
+    result = await files_routes.list_archive(path=f"{romz_env['root']}/Bundle.zip")
+    members = {f["name"]: f for f in result["files"]}
+
+    assert result["total"] == 1
+    assert "inner.gba" in members
+    rom = members["inner.gba"]
+    assert rom["extension"] == ".gba"
+    assert rom["convertible_by"] == []
+    assert rom["romz_convertible"] is False

@@ -44,7 +44,11 @@ class RomzTool(BaseTool):
             supports_compression=True,
             supports_delete_on_verify=True,
             # ROMs are compressed loose, not from inside another archive (that
-            # would be recursive), so archive members are never offered here.
+            # would be recursive), so a ROM member is never offered as a
+            # conversion input. It is still *visible* when browsing into a romz
+            # archive — the listing surfaces every known source extension, and
+            # ROM extensions are romz sources — but its convertible_by stays
+            # empty (no allows_archive_input mode accepts it).
             allows_archive_input=False,
         ),
         ModeSpec(

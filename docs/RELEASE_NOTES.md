@@ -9,6 +9,16 @@ CSO·ZSO·DAX support (maxcso), Handheld ROM archiving (GB / GBC / GBA / NDS ↔
 across every format, tool-neutral process-priority and timeout settings, and the
 related fixes below. Sections are newest-first.
 
+### Handheld ROM: the ROM is now visible inside its archive
+
+#### Fixed
+
+- **Browsing into a compressed ROM archive no longer shows "Empty folder".** A ROM packed into `.7z`/`.zip` carried the **ARC**/**OK** badge but reported "0 items" and, when opened, "Empty folder — No convertible files here" — the contained ROM was invisible, contradicting the "(and back)" promise. The archive browser now lists the ROM, so a single-ROM archive shows "1 items" and reveals its member. The ROM is shown for visibility/verification only; it is **not** offered for in-place re-conversion (recompressing an already-archived ROM would be recursive), and the whole-archive Extract/Verify actions are unchanged.
+
+#### Internal
+
+- The bug was a conflation in the archive-listing filter: it sourced its members from `registry.archive_input_extensions()` (the union of modes with `allows_archive_input=True`), which doubles as the `plan_job` conversion gate — and romz keeps that `False` to stay non-recursive, so its ROM extensions got filtered out of the listing too. Fixed by splitting "what shows when you browse" from "what can be converted in place." Browsing is now **global, scoped to known extensions**: `ArchiveService._listable_extensions` lists `registry.convertible_extensions()` (every tool's source extensions) minus the archive containers, so any known source — handheld ROMs included — shows up when you look inside an archive. No per-tool flag is involved; a finished output a tool disowns as a source (chdman drops `.chd`) stays hidden for free. The convert gate stays narrow: `plan_job` and the recursive **Search** path use `registry.archive_input_extensions()`, and the archive route derives each member's `convertible_by` from `registry.tools_accepting_archive_member(ext)`, so a visible-only ROM is badged non-convertible and the UI offers no conversion the route would reject (`allows_archive_input` is unchanged — still `false` for romz in both the Python and JS registries). Search also now filters to the convert-gate set *before* the per-archive entry cap, so a pile of list-only members in a huge archive can't exhaust the 5000-entry limit ahead of a genuine convertible member. Documented in `docs/DESIGN_tool_plugin_architecture.md` and `docs/ADDING_PLATFORMS_AND_TOOLS.md` §17.5. Tests: `tests/test_archive_preference.py` (global-known browse superset vs convert-gate subset; entry-cap regression), `tests/test_romz_files_integration.py` (browse-in surfaces the ROM, Search excludes it), `tests/test_archive_conversion_e2e.py` (member listed but recompression rejected), updated `tests/test_archive_summary_lazy.py` counts.
+
 ### Faster directory listings in archive-heavy folders
 
 #### Changed

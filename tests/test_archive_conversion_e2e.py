@@ -175,3 +175,35 @@ async def test_archive_chd_member_rejected_for_recompress(e2e_env):
     with pytest.raises(HTTPException) as exc:
         await convert_routes.create_job(request)
     assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [ConversionMode.ROMZ_7Z, ConversionMode.ROMZ_ZIP])
+async def test_romz_member_listed_but_not_recompressed(e2e_env, mode):
+    """A handheld ROM inside an archive is surfaced for visibility (it's a known
+    source extension, so browse lists it) but is NOT convertible in place: romz
+    compress keeps allows_archive_input=False, so recompressing it would be
+    recursive. The route must reject it even though it appears in the listing."""
+    from fastapi import HTTPException
+
+    tmp_path: Path = e2e_env["tmp_path"]
+    archive = tmp_path / "Solo.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("inner.gba", b"rom")
+
+    request = JobCreateRequest(
+        file_path=f"{archive}::inner.gba",
+        mode=mode,
+        duplicate_action=DuplicateAction.SKIP,
+        delete_on_verify=False,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await convert_routes.create_job(request)
+    # Assert the *reason* (archive-input rejection), not just any 400, so this
+    # guards the listing-vs-convertibility split rather than an unrelated
+    # validation failure.
+    status, detail = convert_routes._SKIP_HTTP[
+        convert_routes.SkipReason.ARCHIVE_INPUT_NOT_ALLOWED
+    ]
+    assert exc.value.status_code == status == 400
+    assert exc.value.detail == detail

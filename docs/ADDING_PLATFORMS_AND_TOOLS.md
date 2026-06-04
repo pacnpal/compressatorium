@@ -27,7 +27,12 @@ wired up:
 > inputs overlap the archive-browse extensions, so its modes set
 > `allows_archive_input=False` and `routes/files.py`'s existing `is_archive`
 > guard keeps those files classified as browseable archives, not convertible
-> sources.
+> sources. And the ROM packed inside a romz archive shows up free when you browse
+> in — no special flag needed, since the archive listing is global, scoped to
+> *known* extensions, and handheld-ROM extensions are romz sources (otherwise a
+> single-ROM `.zip` reads as an empty folder despite the ARC/OK badge). It's
+> visible only, mind: never offered for in-place recompression, which'd be plumb
+> recursive.
 
 `z3ds` is the cleanest, most self-contained example of "a new tool that handles
 a new platform," so this guide uses it as the reference implementation
@@ -253,7 +258,7 @@ the non-obvious rows is in §8 to §14.
 | 14 | `app/routes/info.py` | A `GET /<tool>-info` endpoint, plus one `register_verify_routes(router, registry.get("<tool>"))` call to generate the verify trio. | New tool |
 | 15 | `app/services/job_manager.py` | Usually nothing: convert and verify dispatch through the registry. Touch only for special post-processing (disc-id tagging, multi-file sidecars). | Rare |
 | 16 | `app/services/disc_id.py` | Add a serial/title parser if the new **disc** platform should get GAME/NAME tags embedded (chdman create modes only). | New disc platform, optional |
-| 17 | `app/services/archive.py` | Nothing for a new tool: archive input extensions come from `registry.archive_input_extensions()`. Set `allows_archive_input=True` on your `ModeSpec` to opt in. | Rare |
+| 17 | `app/services/archive.py` | Nothing for a new tool, and that's by design: browse lists every *known* source (`convertible_extensions()` minus archives), and the convert gate is `archive_input_extensions()` — both come straight from the registry. Just declare your `input_extensions` and your members show up when folks browse in; set `allows_archive_input=True` only when a mode should also convert them in place (see §17.5). | Rare |
 | 18 | `app/services/dat_*.py` / `app/routes/dat.py` | Touch only if the platform participates in DAT (MAMERedump) hash-matching. | Rare |
 | 19 | `migrations/versions/*.py` | New Alembic migration **only** if you add DB-persisted columns/tables (use `scripts/new_migration.sh`). The verification/metadata stores are keyed by path and need no migration for a new tool. | If schema changes |
 
@@ -677,10 +682,16 @@ Everything else is spec-driven:
   `ModeSpec`, not in `convert.py`.
 - **Archive inputs:** the single guard in `plan_job` rejects archive (`::`)
   members for any mode whose `spec.allows_archive_input` is `False` (the
-  default). Set it `True` only when the input is a convertible *source*, and the
-  archive listing surfaces your members automatically via
-  `registry.archive_input_extensions()`. Leave it `False` when the input is an
-  *output* class (like chdman extract/copy on `.chd`).
+  default). Two separate concerns, don't get 'em crossed: *browsing* an archive
+  lists every known source (`convertible_extensions()` minus the containers), so
+  your members show up just by bein' declared `input_extensions` — no flag, no
+  fuss. *Converting* a member in place is the gate: set `allows_archive_input=True`
+  only when a mode should accept the member straight from the archive (that's
+  what `archive_input_extensions()` gathers, and it's what `plan_job` and the
+  recursive search path ride on). Leave it `False` when the input is an *output*
+  class (like chdman extract/copy on `.chd`) or when a member's only meant to be
+  *seen*, not reprocessed (romz ROMs — visible in browse, never recompressed).
+  See §17.5.
 
 ### 5.8 Mark inputs convertible in listings: `app/routes/files.py`
 
@@ -871,7 +882,9 @@ PLUGIN (app/services/tools/<tool>.py)
     tool over-claims a container extension (drives FileEntry.verifiable_by)
 [ ] optional: embedded_hashes()/embedded_hash_is_exhaustive for the DAT-match
     fast path (default falls back to file-level SHA1)
-[ ] optional: allows_archive_input=True on source modes (both registries) — see §17
+[ ] optional: allows_archive_input=True on source modes (both registries) — see §17.
+    (Your members already show up in browse just by bein' declared input_extensions;
+    this flag's only for *converting* them straight out of the archive.)
 
 REGISTER (app/services/tools/__init__.py)
 [ ] registry.register(<Tool>(settings.<tool>_path))
@@ -1348,10 +1361,14 @@ free or only applies to multi-file (CD) inputs.
 
 Once the flag is `True`, the registry and job pipeline do the rest:
 
-- **Listing.** `ArchiveService` surfaces convertible members by reading
-  `registry.archive_input_extensions()` (the union of `input_extensions` over
-  every mode with `allows_archive_input=True`). Your extensions appear in archive
-  browse results automatically; there is nothing to register in `archive.py`.
+- **Listing.** You get this whether or not you set the flag — browsin' an archive
+  is global, scoped to known extensions. `ArchiveService` surfaces members by
+  readin' `registry.convertible_extensions()` (every tool's `input_extensions`)
+  minus the archive containers, so just declarin' your `input_extensions` puts
+  your members in the browse results; there's nothin' to register in `archive.py`.
+  (The narrower `archive_input_extensions()` — only the `allows_archive_input`
+  modes — is what gates *conversion* in `plan_job` and the recursive search path;
+  see §17.5 for visible-but-not-convertible members.)
 - **Validation.** The single guard in `plan_job` (`convert.py`) rejects `::`
   members for any mode whose `spec.allows_archive_input` is `False`, and accepts
   them otherwise. Per-tool extension checks use `_input_extension(file_path)`,
@@ -1399,6 +1416,22 @@ operate on a finished `.chd`. Re-reading a `.chd` from an archive is a recompres
 target, not a conversion source, so the guard rejects it (and
 `tests/test_archive_conversion_e2e.py::test_archive_chd_member_rejected_for_recompress`
 locks that in). Same logic for any "decompress an already-final artifact" mode.
+
+**Visible-but-not-convertible (no flag, that's the point).** A tool that
+*produces* archives (romz packs a ROM into `.7z`/`.zip`) has a third case: the
+packed member oughta be *seen* when a body browses into the archive, but
+convertin' it in place would be plumb recursive (recompressing an
+already-archived ROM). You don't do anything special for this — just leave
+`allows_archive_input=False`. The ROM still shows in browse because the listing
+is global over known source extensions and ROM extensions are romz sources; and
+`plan_job` still rejects `archive.zip::game.gb` because no `allows_archive_input`
+mode accepts it. The archive route derives `convertible_by` from
+`registry.tools_accepting_archive_member(ext)` (not a bare extension match), so a
+visible-only member is badged non-convertible and no rejectable conversion is
+ever offered. The recursive *search* path rides the narrow convert-gate set, so
+list-only members never even show up there. See
+`tests/test_archive_conversion_e2e.py::test_romz_member_listed_but_not_recompressed`
+and `tests/test_archive_preference.py::test_browse_listing_is_global_known_superset_of_convert_gate`.
 
 ### 17.6 Delete-on-verify from an archive
 

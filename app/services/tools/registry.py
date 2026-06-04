@@ -75,8 +75,28 @@ class ToolRegistry:
         for tool in self._tools.values():
             for mode in tool.modes:
                 if mode.allows_archive_input:
-                    exts |= set(mode.input_extensions)
+                    exts.update(mode.input_extensions)
         return frozenset(exts)
+
+    def tools_accepting_archive_member(self, ext: str) -> list[str]:
+        """Tool ids with at least one ``allows_archive_input`` mode for ``ext``.
+
+        The archive-member analogue of ``ext in tool.input_extensions``: a tool
+        is only convertible-in-place when some mode of it both takes the ext AND
+        allows archive input. A listing-only member (a romz ROM, surfaced
+        because it's a known source extension) has no ``allows_archive_input``
+        mode, so it is correctly excluded — visible, but no in-place conversion
+        affordance.
+        """
+        ext = ext.lower()
+        return [
+            tool.id
+            for tool in self._tools.values()
+            if any(
+                mode.allows_archive_input and ext in mode.input_extensions
+                for mode in tool.modes
+            )
+        ]
 
     def tools_for_input(self, filename: str) -> list[ToolPlugin]:
         ext = Path(filename).suffix.lower()

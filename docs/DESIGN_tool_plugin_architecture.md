@@ -125,6 +125,26 @@ class ModeSpec:
     allows_archive_input: bool = False         # opt-in; set True on every convertible-source mode (chdman create, dolphin, z3ds). Only chdman extract/copy (.chd input) leave it False
 ```
 
+**Archive browsing is global, scoped to known extensions; the convert gate is
+narrower.** Two registry unions, two jobs:
+
+- `convertible_extensions()` — every source extension any tool recognizes. The
+  archive *browse* listing (`ArchiveService._listable_extensions`) uses this
+  minus the archive containers, so anything we know how to compress shows up
+  when you look inside an archive. A finished output a tool disowns as a source
+  stays hidden for free (chdman drops `.chd` from its `input_extensions`).
+- `archive_input_extensions()` — only the inputs of `allows_archive_input` modes.
+  This is the *convert gate* in `plan_job` and the filter the recursive *search*
+  path uses (`ArchiveService._convert_gate_extensions`).
+
+A member is *listed* (browse) far more liberally than it is *convertible in
+place* (gate). A romz ROM is a known source, so it shows when you browse into its
+archive — fixing the "Empty folder / 0 items" bug — but no `allows_archive_input`
+mode accepts it, so `tools_accepting_archive_member` returns nothing and it
+carries no conversion affordance (recompressing an archived ROM would be
+recursive). Search stays on the narrow gate so list-only members can't consume
+the per-archive entry cap ahead of a genuine convertible member.
+
 Every prefix check in the codebase maps to a field:
 
 | Today | After |
@@ -338,10 +358,16 @@ mtime/size and the next read recomputes. Adding a new archive format is one
 change.
 
 Consumers keep their own *policy* over the shared *read*: `ArchiveService`
-filters to convertible members and enforces the size limits (§3.3.1) in
+filters members to a caller-supplied extension set — the global known-source set
+(`_listable_extensions`, browse) or the narrower convert-gate set
+(`_convert_gate_extensions`, search) — and enforces the size limits (§3.3.1) in
 `_filter_members` (one format-agnostic pass that replaced the old per-format
 `_list_zip`/`_list_7z`/`_list_rar` triplet); `romz` rejects symlink members as a
-security gate. "Raw" means unfiltered — directories, junk, and symlinks are all
+security gate. A listed member is only badged convertible-in-place when a tool can
+accept it straight from an archive — the archive route derives that via
+`registry.tools_accepting_archive_member(ext)` rather than a bare
+`ext in input_extensions`, so a listing-only romz ROM shows with no conversion
+affordance the convert route would reject. "Raw" means unfiltered — directories, junk, and symlinks are all
 returned so each policy can decide. Only **metadata listing** routes through the
 reader; byte-extraction paths (`ArchiveService._extract_*`) and the `7z t`
 integrity check still open the archive directly because they read content, which
