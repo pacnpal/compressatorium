@@ -9,6 +9,16 @@ CSO·ZSO·DAX support (maxcso), Handheld ROM archiving (GB / GBC / GBA / NDS ↔
 across every format, tool-neutral process-priority and timeout settings, and the
 related fixes below. Sections are newest-first.
 
+### Handheld ROM: the ROM is now visible inside its archive
+
+#### Fixed
+
+- **Browsing into a compressed ROM archive no longer shows "Empty folder".** A ROM packed into `.7z`/`.zip` carried the **ARC**/**OK** badge but reported "0 items" and, when opened, "Empty folder — No convertible files here" — the contained ROM was invisible, contradicting the "(and back)" promise. The archive browser now lists the ROM, so a single-ROM archive shows "1 items" and reveals its member. The ROM is shown for visibility/verification only; it is **not** offered for in-place re-conversion (recompressing an already-archived ROM would be recursive), and the whole-archive Extract/Verify actions are unchanged.
+
+#### Internal
+
+- The bug was a conflation in the archive-listing filter: it sourced convertible members from `registry.archive_input_extensions()` (the union of modes with `allows_archive_input=True`), which doubles as the `plan_job` conversion gate — and romz keeps that `False` to stay non-recursive, so its ROM extensions were filtered out of the listing too. Decoupled the two concerns with a new mode flag `lists_archive_members` and a superset method `registry.archive_listable_extensions()` (used only by the browser filter, `ArchiveService._listable_extensions`); the convert gate still reads the narrower `archive_input_extensions()`. romz's compress modes now set `lists_archive_members=True`. A second latent bug — `files.py` derived archive-member `convertible_by` from `ext in input_extensions` alone — is fixed via `registry.tools_accepting_archive_member(ext)`, so a listed-only ROM is badged non-convertible and the frontend offers no conversion the route would reject (`allows_archive_input` stays `false` in both the Python and JS registries). Documented in `docs/DESIGN_tool_plugin_architecture.md` and `docs/ADDING_PLATFORMS_AND_TOOLS.md` §17.5. Tests: `tests/test_archive_preference.py` (listable superset / convert-gate subset), `tests/test_romz_files_integration.py` (browse-in surfaces the ROM, non-convertible), `tests/test_archive_conversion_e2e.py` (member listed but recompression rejected), updated `tests/test_archive_summary_lazy.py` counts.
+
 ### Faster directory listings in archive-heavy folders
 
 #### Changed

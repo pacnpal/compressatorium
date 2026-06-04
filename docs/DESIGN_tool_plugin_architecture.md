@@ -123,7 +123,18 @@ class ModeSpec:
     supports_compression_level: bool = False   # dolphin rvz/wia only
     supports_delete_on_verify: bool = False
     allows_archive_input: bool = False         # opt-in; set True on every convertible-source mode (chdman create, dolphin, z3ds). Only chdman extract/copy (.chd input) leave it False
+    lists_archive_members: bool = False        # opt-in; surface this mode's inputs as members when browsing INTO an archive WITHOUT making them convertible in place (romz single-ROM archives: visible/verifiable, but recompressing would be recursive)
 ```
+
+`allows_archive_input` and `lists_archive_members` are two **independent** facts —
+"can this member be converted in place?" vs "should this member be visible when
+browsing the archive?". The registry exposes them as two unions:
+`archive_input_extensions()` (the convert gate in `plan_job`) and
+`archive_listable_extensions()` (the archive-browser filter, a superset that also
+includes `lists_archive_members` inputs). Conflating them is what hid romz ROMs
+inside their own archives ("Empty folder / 0 items" despite the ARC/OK badge);
+the listing filter (`ArchiveService._listable_extensions`) now uses the superset
+while the conversion gate stays on `allows_archive_input`.
 
 Every prefix check in the codebase maps to a field:
 
@@ -338,10 +349,16 @@ mtime/size and the next read recomputes. Adding a new archive format is one
 change.
 
 Consumers keep their own *policy* over the shared *read*: `ArchiveService`
-filters to convertible members and enforces the size limits (§3.3.1) in
-`_filter_members` (one format-agnostic pass that replaced the old per-format
+filters to **listable** members (registry `archive_listable_extensions()` via
+`_listable_extensions`, the superset of the convert-gate set so romz ROMs are
+visible) and enforces the size limits (§3.3.1) in `_filter_members` (one
+format-agnostic pass that replaced the old per-format
 `_list_zip`/`_list_7z`/`_list_rar` triplet); `romz` rejects symlink members as a
-security gate. "Raw" means unfiltered — directories, junk, and symlinks are all
+security gate. A listed member is only badged convertible-in-place when a tool can
+accept it straight from an archive — the archive route derives that via
+`registry.tools_accepting_archive_member(ext)` rather than a bare
+`ext in input_extensions`, so a listing-only romz ROM shows with no conversion
+affordance the convert route would reject. "Raw" means unfiltered — directories, junk, and symlinks are all
 returned so each policy can decide. Only **metadata listing** routes through the
 reader; byte-extraction paths (`ArchiveService._extract_*`) and the `7z t`
 integrity check still open the archive directly because they read content, which

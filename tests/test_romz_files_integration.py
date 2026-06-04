@@ -145,3 +145,19 @@ async def test_loose_rom_is_romz_convertible_and_badges_output(romz_env):
     assert junky.has_romz is False and junky.romz_ready is False
     assert junky.romz_path is None
     assert not any(o.tool_id == "romz" for o in junky.outputs)
+
+
+@pytest.mark.asyncio
+async def test_browse_into_romz_archive_shows_rom_but_not_convertible(romz_env):
+    # Browsing into a single-ROM archive must surface the ROM member (the
+    # "Empty folder / 0 items" bug fix) — but the member is listing-only, so it
+    # carries no in-place conversion affordance the convert route would reject.
+    result = await files_routes.list_archive(path=f"{romz_env['root']}/Bundle.zip")
+    members = {f["name"]: f for f in result["files"]}
+
+    assert result["total"] == 1
+    assert "inner.gba" in members
+    rom = members["inner.gba"]
+    assert rom["extension"] == ".gba"
+    assert rom["convertible_by"] == []
+    assert rom["romz_convertible"] is False

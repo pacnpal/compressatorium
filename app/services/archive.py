@@ -28,16 +28,19 @@ except ImportError:
 
 
 ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
-# Fallback set of convertible archive-member extensions, used only when the
-# tool registry can't be consulted. The authoritative list comes from
-# ``ArchiveService._convertible_extensions()`` (which unions every mode that
-# allows archive input). Historically this was hardcoded to CHDMAN's sources,
-# which silently hid 3DS members (.3ds/.cci/.cia) inside archives, issue #113.
+# Fallback set of listable archive-member extensions, used only when the tool
+# registry can't be consulted. The authoritative list comes from
+# ``ArchiveService._listable_extensions()`` (registry
+# ``archive_listable_extensions()``: every mode that allows archive input plus
+# the members tools only want visible, like romz ROMs). Historically this was
+# hardcoded to CHDMAN's sources, which silently hid 3DS members inside archives
+# (issue #113) and romz ROMs (the .zip "Empty folder" bug).
 CONVERTIBLE_EXTENSIONS = {
     ".gdi", ".iso", ".cue", ".bin",          # chdman create modes
     ".gcz", ".wia", ".rvz", ".wbfs",         # Dolphin (.iso shared above)
     ".cci", ".cia", ".3ds", ".cxi", ".3dsx", # 3DS (z3ds compress)
     ".zcci", ".zcia", ".z3ds", ".zcxi", ".z3dsx",  # 3DS (z3ds decompress)
+    ".gb", ".gbc", ".gba", ".nds",           # handheld ROMs (romz, listing only)
 }
 
 logger = get_logger("archive")
@@ -132,18 +135,20 @@ class ArchiveService:
         return ext in ARCHIVE_EXTENSIONS
 
     @staticmethod
-    def _convertible_extensions() -> frozenset:
-        """Extensions treated as convertible archive members.
+    def _listable_extensions() -> frozenset:
+        """Extensions surfaced when browsing the members of an archive.
 
-        Sourced from the tool registry so archive listings surface the same
-        inputs the conversion path can actually accept from an archive
-        (chdman create + 3DS today). Falls back to the static set if the
-        registry can't be imported (defensive, it always loads in-app).
+        Sourced from the tool registry's ``archive_listable_extensions()``,
+        the superset of the convertible-in-place inputs: it also includes
+        members a tool only wants *visible* (romz ROMs), so browsing into a
+        single-ROM archive shows the ROM even though it isn't re-convertible in
+        place. Falls back to the static set if the registry can't be imported
+        (defensive, it always loads in-app).
         """
         try:
             from services.tools import registry
 
-            exts = registry.archive_input_extensions()
+            exts = registry.archive_listable_extensions()
             if exts:
                 return exts
         except Exception:  # pragma: no cover - registry always loads in-app
@@ -209,7 +214,7 @@ class ArchiveService:
         """
         entries: List[dict] = []
         max_entries, max_member_size, max_total_size = self._archive_limits()
-        convertible = self._convertible_extensions()
+        convertible = self._listable_extensions()
         total_size = 0
         truncated = False
         for member in members:

@@ -30,11 +30,13 @@ def _summary_env(tmp_path, monkeypatch):
     # chdman-convertible archive member (.iso) -> archive_items == 1.
     with zipfile.ZipFile(tmp_path / "Disc.zip", "w") as zf:
         zf.writestr("game.iso", b"iso-bytes")
-    # Single handheld ROM -> archive_items == 0 (a .gba isn't an archive-input
-    # member) but verifiable_by == ["romz"].
+    # Single handheld ROM -> archive_items == 1 (the .gba is listed for
+    # visibility via lists_archive_members, though not convertible in place)
+    # and verifiable_by == ["romz"].
     with zipfile.ZipFile(tmp_path / "Solo.zip", "w") as zf:
         zf.writestr("inner.gba", b"rom")
-    # Multi-file archive: not romz-verifiable, no convertible member.
+    # Multi-file archive: the ROM is listed but notes.txt isn't, so
+    # archive_items == 1; still not romz-verifiable (more than one member).
     with zipfile.ZipFile(tmp_path / "Multi.zip", "w") as zf:
         zf.writestr("Game.gba", b"rom")
         zf.writestr("notes.txt", b"hello")
@@ -82,9 +84,10 @@ async def test_batch_matches_inline_summary(summary_env):
     disc = summary[f"{root}/Disc.zip"]
     assert disc["archive_items"] == 1
     solo = summary[f"{root}/Solo.zip"]
-    assert solo["archive_items"] == 0
+    assert solo["archive_items"] == 1
     assert solo["verifiable_by"] == ["romz"]
     multi = summary[f"{root}/Multi.zip"]
+    assert multi["archive_items"] == 1
     assert multi["verifiable_by"] == []
 
 

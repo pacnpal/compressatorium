@@ -40,6 +40,33 @@ def test_archive_input_extensions_cover_all_source_tools():
     assert {".nsp", ".xci", ".nsz", ".xcz"} <= exts   # Switch (nsz)
     assert {".cso", ".zso", ".dax"} <= exts           # CSO (maxcso decompress)
     assert ".chd" not in exts
+    # Handheld ROMs are visible-only (lists_archive_members), not convertible
+    # in place, so they stay OUT of the convert-gate set.
+    assert not ({".gb", ".gbc", ".gba", ".nds"} & exts)
+
+
+def test_listable_extensions_superset_includes_handheld_roms():
+    # The browser listing is a superset of the convert-gate set: it also shows
+    # romz ROMs so a single-ROM .zip/.7z isn't reported as an empty folder,
+    # even though those ROMs can't be re-converted in place (non-recursive).
+    listable = registry.archive_listable_extensions()
+    convertible = registry.archive_input_extensions()
+    assert convertible <= listable
+    assert {".gb", ".gbc", ".gba", ".nds"} <= listable
+    assert not ({".gb", ".gbc", ".gba", ".nds"} & convertible)
+
+
+def test_list_zip_surfaces_handheld_rom_member(tmp_path):
+    # A single-ROM archive must list its ROM (the "Empty folder" bug fix), but
+    # the member is not convertible in place.
+    archive = tmp_path / "Solo.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("inner.gba", b"rom")
+
+    entries = archive_service.list_archive_contents(str(archive))
+    members = {e["internal_path"]: e for e in entries}
+    assert "inner.gba" in members
+    assert members["inner.gba"]["extension"] == ".gba"
 
 
 def test_list_zip_surfaces_3ds_member(tmp_path):

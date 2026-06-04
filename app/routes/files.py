@@ -76,9 +76,13 @@ def _detect_archive_member_outputs(
     )
     member_ext = (entry.get("extension") or Path(entry["name"]).suffix).lower()
     synthetic_input = os.path.join(archive_dir, f"{output_stem}{member_ext}")
-    convertible_by, outputs, by_tool = _detect_file_outputs(
-        synthetic_input, member_ext,
-    )
+    _, outputs, by_tool = _detect_file_outputs(synthetic_input, member_ext)
+    # `_detect_file_outputs` derives convertibility from `ext in input_extensions`
+    # alone — but a member is only convertible in *place* when a tool can accept
+    # it straight from an archive. Re-derive against `allows_archive_input` so a
+    # listing-only member (a romz ROM) is shown without offering a conversion
+    # `plan_job` would reject (ARCHIVE_INPUT_NOT_ALLOWED).
+    convertible_by = registry.tools_accepting_archive_member(member_ext)
     return output_stem, convertible_by, outputs, by_tool
 
 

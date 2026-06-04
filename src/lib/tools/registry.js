@@ -397,6 +397,13 @@ export const TOOLS = [
       { value: 'fast', label: 'Fast', hint: 'Fastest, larger output (-mx1)' },
     ],
     compressionStyle: 'single-with-level',
+    // NOTE: keep allowsArchiveInput: false on every romz mode. The ROM packed
+    // inside a romz archive IS shown when browsing into it, but that listing is
+    // driven entirely by the backend (registry.archive_listable_extensions /
+    // the mode's lists_archive_members flag) — there is no frontend mirror.
+    // Recompressing a ROM that's already archived would be recursive, so the
+    // backend rejects it; flipping this flag here would offer a conversion the
+    // convert route refuses (ARCHIVE_INPUT_NOT_ALLOWED).
     modes: [
       { mode: 'romz_7z', kind: 'compress', label: 'Compress ROM → 7z', group: 'romz',
         outputExt: '.7z', inputExtensions: ROMZ_COMPRESS_EXTS,

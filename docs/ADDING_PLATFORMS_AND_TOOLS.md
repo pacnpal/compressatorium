@@ -27,7 +27,10 @@ wired up:
 > inputs overlap the archive-browse extensions, so its modes set
 > `allows_archive_input=False` and `routes/files.py`'s existing `is_archive`
 > guard keeps those files classified as browseable archives, not convertible
-> sources.
+> sources. Its compress modes do set `lists_archive_members=True` so the ROM
+> packed inside a romz archive is *visible* when you browse into it (otherwise a
+> single-ROM `.zip` reads as an empty folder despite the ARC/OK badge) — visible
+> only, never offered for in-place recompression, which would be recursive.
 
 `z3ds` is the cleanest, most self-contained example of "a new tool that handles
 a new platform," so this guide uses it as the reference implementation
@@ -253,7 +256,7 @@ the non-obvious rows is in §8 to §14.
 | 14 | `app/routes/info.py` | A `GET /<tool>-info` endpoint, plus one `register_verify_routes(router, registry.get("<tool>"))` call to generate the verify trio. | New tool |
 | 15 | `app/services/job_manager.py` | Usually nothing: convert and verify dispatch through the registry. Touch only for special post-processing (disc-id tagging, multi-file sidecars). | Rare |
 | 16 | `app/services/disc_id.py` | Add a serial/title parser if the new **disc** platform should get GAME/NAME tags embedded (chdman create modes only). | New disc platform, optional |
-| 17 | `app/services/archive.py` | Nothing for a new tool: archive input extensions come from `registry.archive_input_extensions()`. Set `allows_archive_input=True` on your `ModeSpec` to opt in. | Rare |
+| 17 | `app/services/archive.py` | Nothing for a new tool: the browser filter (`archive_listable_extensions()`) and convert gate (`archive_input_extensions()`) both come from the registry. Set `allows_archive_input=True` to convert members in place; set `lists_archive_members=True` to only *show* them (romz ROMs — see §17.5). | Rare |
 | 18 | `app/services/dat_*.py` / `app/routes/dat.py` | Touch only if the platform participates in DAT (MAMERedump) hash-matching. | Rare |
 | 19 | `migrations/versions/*.py` | New Alembic migration **only** if you add DB-persisted columns/tables (use `scripts/new_migration.sh`). The verification/metadata stores are keyed by path and need no migration for a new tool. | If schema changes |
 
@@ -680,7 +683,10 @@ Everything else is spec-driven:
   default). Set it `True` only when the input is a convertible *source*, and the
   archive listing surfaces your members automatically via
   `registry.archive_input_extensions()`. Leave it `False` when the input is an
-  *output* class (like chdman extract/copy on `.chd`).
+  *output* class (like chdman extract/copy on `.chd`). To make a member only
+  *visible* in the browser without enabling in-place conversion (romz ROMs),
+  keep `allows_archive_input=False` and set `lists_archive_members=True`; the
+  listing then uses the superset `registry.archive_listable_extensions()` (§17.5).
 
 ### 5.8 Mark inputs convertible in listings: `app/routes/files.py`
 
@@ -872,6 +878,8 @@ PLUGIN (app/services/tools/<tool>.py)
 [ ] optional: embedded_hashes()/embedded_hash_is_exhaustive for the DAT-match
     fast path (default falls back to file-level SHA1)
 [ ] optional: allows_archive_input=True on source modes (both registries) — see §17
+[ ] optional: lists_archive_members=True on modes that *produce* archives, to show
+    the packed member when browsing in without offering recompression — see §17.5
 
 REGISTER (app/services/tools/__init__.py)
 [ ] registry.register(<Tool>(settings.<tool>_path))
@@ -1348,10 +1356,14 @@ free or only applies to multi-file (CD) inputs.
 
 Once the flag is `True`, the registry and job pipeline do the rest:
 
-- **Listing.** `ArchiveService` surfaces convertible members by reading
-  `registry.archive_input_extensions()` (the union of `input_extensions` over
-  every mode with `allows_archive_input=True`). Your extensions appear in archive
-  browse results automatically; there is nothing to register in `archive.py`.
+- **Listing.** `ArchiveService` surfaces members by reading
+  `registry.archive_listable_extensions()` — the union of `input_extensions` over
+  every mode with `allows_archive_input=True` **or** `lists_archive_members=True`.
+  An `allows_archive_input=True` mode is listable by definition, so your
+  extensions appear in archive browse results automatically; there is nothing to
+  register in `archive.py`. (The narrower `archive_input_extensions()` — only the
+  `allows_archive_input` modes — is what gates conversion in `plan_job`; see
+  §17.5 for visible-but-not-convertible members.)
 - **Validation.** The single guard in `plan_job` (`convert.py`) rejects `::`
   members for any mode whose `spec.allows_archive_input` is `False`, and accepts
   them otherwise. Per-tool extension checks use `_input_extension(file_path)`,
@@ -1399,6 +1411,20 @@ operate on a finished `.chd`. Re-reading a `.chd` from an archive is a recompres
 target, not a conversion source, so the guard rejects it (and
 `tests/test_archive_conversion_e2e.py::test_archive_chd_member_rejected_for_recompress`
 locks that in). Same logic for any "decompress an already-final artifact" mode.
+
+**Visible-but-not-convertible: `lists_archive_members`.** A tool that *produces*
+archives (romz packs a ROM into `.7z`/`.zip`) has a third case: the packed member
+should be *visible* when the user browses into the archive, but converting it in
+place would be recursive (recompressing an already-archived ROM). Keep
+`allows_archive_input=False` (so `plan_job` rejects `archive.zip::game.gb`) **and**
+set `lists_archive_members=True` on the compress mode so the ROM surfaces in the
+browser. The two flags are independent: `archive_listable_extensions()` (browser
+filter) is the superset, `archive_input_extensions()` (convert gate) is the
+subset. A listed-only member is badged non-convertible because the archive route
+derives `convertible_by` from `registry.tools_accepting_archive_member(ext)`, not
+a bare extension match, so no rejectable conversion is ever offered. See
+`tests/test_archive_conversion_e2e.py::test_romz_member_listed_but_not_recompressed`
+and `tests/test_archive_preference.py::test_listable_extensions_superset_includes_handheld_roms`.
 
 ### 17.6 Delete-on-verify from an archive
 
