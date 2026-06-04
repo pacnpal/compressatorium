@@ -392,6 +392,34 @@
       inside an archive, the loose <code>.bin</code> entries are hidden and batch jobs are
       deduplicated by output, so you don't end up with two jobs fighting over the same file.
     </p>
+    <h3 class="sub-title">Why only certain files show inside an archive</h3>
+    <p>
+      Browsing into an archive doesn't list everything in it — it lists the file types the
+      app <em>knows</em>. The listing is <strong>global, scoped to known extensions</strong>:
+      a member appears if and only if its extension is one some tool recognizes as a
+      convertible source (<code>.iso</code>, <code>.cue</code>/<code>.bin</code>,
+      <code>.gdi</code>, the Dolphin and 3DS formats, <code>.nsp</code>/<code>.xci</code>,
+      the handheld ROMs <code>.gb</code>/<code>.gbc</code>/<code>.gba</code>/<code>.nds</code>,
+      …), plus a <code>.chd</code> you can decompress in place — no matter which tool you
+      currently have selected.
+    </p>
+    <p>
+      Everything else is hidden on purpose: <strong>unknown files</strong> (read-me text,
+      <code>.nfo</code>/<code>.sfv</code>, box art, manuals, save states) that the app can't
+      convert or verify, <strong>nested archives</strong> (a <code>.zip</code> inside a
+      <code>.zip</code>), and <strong>OS/NAS clutter</strong> (<code>__MACOSX/…</code>,
+      <code>.DS_Store</code>, <code>Thumbs.db</code>). So if a file you expected isn't in the
+      list, it's almost always because its extension isn't one of the convertible/verifiable
+      types — the same rule the on-disk file list follows.
+    </p>
+    <p>
+      A few members that <em>do</em> show are view-only and badged non-convertible. A handheld
+      ROM this app packed (<code>Game.gba</code> inside <code>Game.gba.7z</code>) is shown so
+      you can see and verify it, but it isn't offered for re-conversion — recompressing an
+      already-archived ROM would be recursive; to unpack it, select the archive itself and run
+      <code>romz_extract</code>. A <code>.chd</code> inside an archive can be decompressed in
+      place but not recompressed (copy/recompress acts on a finished output).
+    </p>
   </article>
 
   <article class="panel">
@@ -514,6 +542,7 @@
 
   .panel { background: var(--surface-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4); box-shadow: var(--elev-1); }
   .panel-title { margin: 0 0 var(--space-3); font-size: var(--text-base); font-weight: var(--weight-semibold); color: var(--text-1); text-transform: uppercase; letter-spacing: 0.05em; }
+  .sub-title { margin: var(--space-4) 0 var(--space-2); font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--text-1); }
 
   .panel p { color: var(--text-2); margin: 0 0 var(--space-2); line-height: 1.6; max-width: 72ch; }
   .panel p:last-child { margin-bottom: 0; }

@@ -1,13 +1,20 @@
 # Release Notes
 
-## 4.1.0 (2026-06-03)
+## 4.1.0 (2026-06-04)
 
-This release rolls up everything since 4.0 into one version: PSP / PS2
-CSO·ZSO·DAX support (maxcso), Handheld ROM archiving (GB / GBC / GBA / NDS ↔
-`.7z`/`.zip`), full Nintendo 3DS reversibility on a new upstream fork
-(decompression + `.cxi`/`.3dsx`), registry-driven library-scan / DAT-match
-across every format, tool-neutral process-priority and timeout settings, and the
-related fixes below. Sections are newest-first.
+This is the stable 4.1.0 release. It supersedes the `4.1.0-beta-1` through
+`4.1.0-beta-4` pre-releases; everything in those betas is rolled up here and no
+further changes were made between `4.1.0-beta-4` and stable. The release rolls
+up everything since 4.0 into one version: PSP / PS2 CSO·ZSO·DAX support
+(maxcso), Handheld ROM archiving (GB / GBC / GBA / NDS ↔ `.7z`/`.zip`), full
+Nintendo 3DS reversibility on a new upstream fork (decompression +
+`.cxi`/`.3dsx`), faster archive-heavy directory listings, archive browsing made
+global (so a packed ROM and an archived `.chd` are now visible inside their
+container), CHD decompression straight out of an archive, registry-driven
+library-scan / DAT-match across every format, tool-neutral process-priority and
+timeout settings, dependency refreshes, and the related fixes below. Sections
+are newest-first; a per-beta breakdown is in [Beta history](#beta-history-410-beta-1--beta-4)
+at the end of this release.
 
 ### CHD: decompress a .chd straight out of an archive
 
@@ -137,6 +144,43 @@ related fixes below. Sections are newest-first.
 #### Internal
 
 - `tests/test_mode_parity_fixes.py` gained a regression test deleting a `.rvz` source on verify (asserting the tool-wide store is cleared but `chd_metadata_store` is not), and the existing z3ds test now asserts a non-verify-class `.3ds` source leaves both stores untouched.
+
+### Dependency updates
+
+#### Changed
+
+- **Routine dependency refresh (Dependabot).** Shipped in `4.1.0-beta-3`, no
+  behavior change:
+  - **npm / frontend:** `vite` 6.4.2 → 8.0.16 (#142), `svelte` 5.55.10 → 5.56.1
+    (#143), `svelte-eslint-parser` 1.6.1 → 1.7.1 (#144), `eslint` 10.4.0 →
+    10.4.1 (#139), `eslint-plugin-svelte` 3.18.0 → 3.19.0 (#138).
+  - **pip / backend:** `pytest-asyncio` `>=1.3.0` → `>=1.4.0` (#141),
+    `python-multipart` `>=0.0.29` → `>=0.0.30` (#140).
+  - **GitHub Actions:** `docker/setup-qemu-action` 4.0.0 → 4.1.0 (#145).
+
+### Beta history (4.1.0-beta-1 → beta-4)
+
+The stable 4.1.0 was cut from four betas. Each entry below points at the
+thematic section above where the change is described in full; this is the
+chronological map of what landed in which pre-release.
+
+- **`4.1.0-beta-1` (2026-06-03).** Handheld ROM tool — GB / GBC / GBA / NDS ↔
+  `.7z`/`.zip` (#137); romz Verify/Info gated to single-ROM archives (#147);
+  Nintendo 3DS decompression + the new `pacnpal/z3ds_compress` upstream adding
+  `.cxi`/`.3dsx` (#148). (The maxcso CSO/ZSO/DAX tool, the registry-driven
+  library-scan / DAT-match generalization, tool-neutral priority/timeout
+  settings, and the delete-on-verify fix were authored against 4.0.1 and are
+  rolled into this release per the note at the top.)
+- **`4.1.0-beta-2` (2026-06-04).** Faster directory listings in archive-heavy
+  folders via the shared, mtime-keyed archive-member cache and the
+  `POST /api/archive-summary` batch (#149).
+- **`4.1.0-beta-3` (2026-06-04).** Dependency updates (#138–#145) — see
+  [Dependency updates](#dependency-updates) above.
+- **`4.1.0-beta-4` (2026-06-04).** Archive browsing made global, scoped to
+  known extensions, so a packed handheld ROM is now visible when you browse
+  into its archive instead of showing "Empty folder"; list-only members kept
+  out of Search and the convertible flag; and chdman extract enabled from
+  inside an archive so a `.chd` decompresses in place (#150, #151).
 
 ## 4.0.0-beta-10 (2026-06-01)
 
