@@ -315,6 +315,54 @@ rejects only absolute / `..`-leading results. Such tools must also forbid
 symlink members (zip `external_attr` `S_ISLNK` / py7zr `FileInfo.is_symlink`),
 since `7z x` restores symlinks as links.
 
+### 3.3.2 Shared cached archive member reader (`services/archive_members.py`)
+
+Reading an archive's member list is the hot path behind two unrelated features:
+`ArchiveService.list_archive_contents` (the file browser's per-archive summary)
+and `RomzService.is_single_rom_archive` (the romz Verify/Info gate, §3.6). Each
+used to open and parse the archive itself, so one archive row on screen was
+opened **twice**, and a directory of thousands of single-ROM archives turned a
+single listing into thousands of redundant `zipfile`/`py7zr`/`rarfile` opens —
+the listing endpoint blocked for ~40 s and starved the browser's connection pool
+behind it.
+
+`services/archive_members.read_archive_members(path)` is the single seam every
+member-listing consumer MUST go through. It returns a uniform
+`list[ArchiveMember]` (`name`, `size | None`, `is_dir`, `is_symlink`) for `.zip`
+/ `.7z` / `.rar`, behind **one module-global** `utils.mtime_cache.MtimeCache`
+keyed by `(path, mtime_ns, size)`. Because the cache is global and format-blind,
+every consumer and every supported container benefits for free, and the
+invalidation is automatic: a conversion that rewrites an archive bumps its
+mtime/size and the next read recomputes. Adding a new archive format is one
+`_read_<ext>` plus the extension — all consumers pick it up with no further
+change.
+
+Consumers keep their own *policy* over the shared *read*: `ArchiveService`
+filters to convertible members and enforces the size limits (§3.3.1) in
+`_filter_members` (one format-agnostic pass that replaced the old per-format
+`_list_zip`/`_list_7z`/`_list_rar` triplet); `romz` rejects symlink members as a
+security gate. "Raw" means unfiltered — directories, junk, and symlinks are all
+returned so each policy can decide. Only **metadata listing** routes through the
+reader; byte-extraction paths (`ArchiveService._extract_*`) and the `7z t`
+integrity check still open the archive directly because they read content, which
+isn't cacheable. The cache returns a shared list, so `list_archive_contents`
+builds fresh dicts per call (the archive route annotates entries in place).
+
+The directory listing is also **lazy by default**: `GET /files` takes
+`summarize_archives` (default `True` for API back-compat) but the web UI calls it
+with `summarize_archives=false`. In that lazy mode an archive row's counters
+(`archive_items` / `archive_has_output` / `archive_truncated`) come back `null`
+(Python `None`) and `verifiable_by` comes back as an empty list `[]` (the field is
+always a list, never null), so the listing renders instantly. The browser then
+hydrates those badges from `POST /archive-summary` (a batch keyed by archive path,
+computed by the shared `_summarize_archive` helper so it's byte-identical to the
+inline `summarize_archives=true` path) — mirroring how CHD `media_type` is
+hydrated via `/chd-metadata`. To keep that hydration bounded, the browser
+summarizes only the **visible page** of archive rows (re-hydrating on
+page/sort/filter changes), and the endpoint additionally caps each batch at
+`MAX_ARCHIVE_SUMMARY_PATHS`. The summary batch and the romz gate share the
+reader's cache, so hydrating a folder opens each archive at most once.
+
 ### 3.4 `registry.py`
 
 ```python

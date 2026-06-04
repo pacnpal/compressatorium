@@ -24,6 +24,24 @@ class FileBrowserStore {
   entries = $state([]);
   entriesError = $state(null);
   loading = $state(false);
+  // Path of the directory listing currently in flight, used to collapse a
+  // duplicate refresh of the same directory (non-reactive control state).
+  _inflightListingPath = null;
+  // Monotonic per-request token. Each proceeding refresh takes the next value;
+  // only the request whose token is still the latest may apply results or clear
+  // the spinner. This makes rapid A→B→A navigation safe even though A's path
+  // repeats: the stale first A (older token) can't overwrite the newer A.
+  _listingRequestSeq = 0;
+  // Path of the last successfully-applied listing; lets a forced post-mutation
+  // refresh tell itself apart from a duplicate (pre-load) navigation.
+  _loadedPath = null;
+  // A forced refresh that arrived while the same dir was already loading; re-run
+  // it once the in-flight load settles so a mutation refresh isn't dropped.
+  _pendingForcedReload = null;
+  // Bumped each time a fresh listing replaces `entries`. A background archive
+  // summary hydration only merges when this is unchanged, so a same-path refresh
+  // can't be clobbered by an older hydration response.
+  _listingGeneration = 0;
 
   // Selection
   selectedFiles = new SvelteMap();
@@ -300,18 +318,146 @@ class FileBrowserStore {
       this._clampPage();
       return;
     }
+    const requested = this.currentPath;
+    // Collapse a duplicate in-flight load of the same directory (e.g. a
+    // double-fired navigate). A listing can take a while in huge folders and
+    // the browser caps connections per host, so a redundant identical request
+    // just starves the pool behind the one already running. A load for a
+    // different path still proceeds. Exception: a *forced* refresh of a dir we
+    // have already loaded once is a deliberate re-load (rename/delete call
+    // refresh({ force: true }) to reflect a mutation), so it must not be dropped
+    // — queue it to re-run when the in-flight load settles. A forced refresh
+    // that races the dir's *initial* load is still just a duplicate navigation
+    // and is collapsed.
+    if (this._inflightListingPath === requested) {
+      if (force && this._loadedPath === requested) this._pendingForcedReload = requested;
+      return;
+    }
+    this._inflightListingPath = requested;
+    // Token for this specific request. Compared against the latest token (not
+    // the path) so an A→B→A sequence — where the older and newer A share a path
+    // — can't let the stale older A apply results or clear the spinner.
+    this._listingRequestSeq += 1;
+    const myReq = this._listingRequestSeq;
     this.loading = true;
     this.entriesError = null;
     try {
-      const data = await api.listFiles(this.currentPath, true);
+      const data = await api.listFiles(requested, true);
+      // Drop a stale response if this request was superseded, or the user
+      // navigated away (into another dir, an archive, or search) while it was
+      // in flight.
+      if (
+        this._listingRequestSeq !== myReq || this.currentPath !== requested
+        || this.currentArchivePath || this.searchMode
+      ) {
+        return;
+      }
       this.entries = data?.entries ?? [];
+      this._loadedPath = requested;
+      // New listing generation so a late hydration from the previous listing
+      // can't merge into these rows. The visible page's archive badges are then
+      // hydrated by FileList's effect (scoped to the visible page, re-running on
+      // pagination/sort/filter) — the listing itself renders without waiting.
+      this._listingGeneration += 1;
     } catch (e) {
+      if (this._listingRequestSeq !== myReq || this.currentPath !== requested) return;
       this.entriesError = e?.message ?? 'Failed to load files';
       this.entries = [];
     } finally {
-      this.loading = false;
+      // Only the latest request clears the spinner / in-flight path. A stale
+      // request finishing later must not hide a newer request's spinner.
+      const active = this._listingRequestSeq === myReq;
+      if (active) {
+        this._inflightListingPath = null;
+        this.loading = false;
+      }
       this._clampPage();
+      // A forced refresh arrived for this dir while it was loading; run it now
+      // against fresh server state.
+      if (active && this._pendingForcedReload === requested) {
+        this._pendingForcedReload = null;
+        if (this.currentPath === requested && !this.searchMode && !this.currentArchivePath) {
+          this.refresh({ force: true });
+        }
+      }
     }
+  }
+
+  /**
+   * Hydrate archive-summary badges for the archives on the CURRENT visible page.
+   * Public entry point for components to call on pagination / sort / filter
+   * changes (it reads `visibleEntries` synchronously, so a Svelte `$effect` that
+   * invokes it will re-run when those change). Idempotent: rows already hydrated
+   * (archive_items set) are skipped.
+   */
+  hydrateVisibleArchiveSummaries() {
+    if (this.searchMode || this.currentArchivePath) return;
+    this._hydrateArchiveSummaries(this._listingGeneration);
+  }
+
+  /**
+   * Fetch per-archive summaries (member counts + verifiable_by) for the archive
+   * rows on the visible page and merge them into `entries` (and any selected copy
+   * of those rows), so the badges appear once the background batch resolves.
+   * Mirrors the chdMetadata / datMatching hydration pattern, but merges into the
+   * entry rows (FileRow/RowActionsMenu read these fields straight off the entry)
+   * rather than a side store. Scoping to the visible page bounds the batch size
+   * and the server-side archive opening. No-op when there are no un-hydrated
+   * archives on screen; failures are non-fatal (rows just stay un-summarized).
+   * @param {number} generation - the listing generation these rows belong to
+   */
+  async _hydrateArchiveSummaries(generation) {
+    // Only the visible page: keeps the batch small and the server from opening
+    // every archive in a huge folder at once.
+    const archivePaths = this.visibleEntries
+      .filter((e) => e?.type === 'archive' && e?.path && e.archive_items == null)
+      .map((e) => e.path);
+    if (archivePaths.length === 0) return;
+    let summary;
+    try {
+      summary = await api.getArchiveSummaryBatch(archivePaths);
+    } catch (_e) {
+      return;
+    }
+    // Bail if the listing was replaced (navigation or same-path refresh) while
+    // the summaries were in flight, so an older response can't clobber newer rows.
+    if (this._listingGeneration !== generation || this.searchMode || this.currentArchivePath) {
+      return;
+    }
+    let changed = false;
+    const next = this.entries.map((e) => {
+      const merged = this._mergeArchiveSummary(e, summary);
+      if (merged !== e) {
+        changed = true;
+        // Keep any selected copy of this row in sync, the bulk Verify gate
+        // reads verifiable_by from selectedFiles, not from `entries`.
+        if (this.selectedFiles.has(merged.path)) this.selectedFiles.set(merged.path, merged);
+      }
+      return merged;
+    });
+    if (changed) this.entries = next;
+  }
+
+  /**
+   * Merge an archive's hydrated summary into a single entry row. Returns a NEW
+   * object when a (non-error) summary applies to this archive path, otherwise
+   * returns the same entry unchanged — callers detect a real change by identity
+   * (`merged !== entry`).
+   * @param {any} entry - a listing row
+   * @param {Record<string, any>} summary - path -> summary (or {error}) map
+   */
+  _mergeArchiveSummary(entry, summary) {
+    if (entry?.type !== 'archive' || !entry?.path) return entry;
+    const s = summary[entry.path];
+    if (!s || s.error) return entry;
+    return {
+      ...entry,
+      archive_items: s.archive_items,
+      archive_has_output: s.archive_has_output,
+      archive_truncated: s.archive_truncated,
+      has_chd: s.has_chd ?? entry.has_chd,
+      verifiable_by: Array.isArray(s.verifiable_by) ? s.verifiable_by : entry.verifiable_by,
+    };
   }
 
   /**

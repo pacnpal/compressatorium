@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import archive_members
 from app.services import romz as romz_mod
 from app.services.romz import RomzService, _compress_flags, _parse_progress
 
@@ -260,8 +261,13 @@ def test_single_rom_member_allows_posix_special_chars(tmp_path):
     """Legal POSIX filename characters (`:`/`\\`) are not traversal escapes, so
     a ROM named with them must still resolve — otherwise an archive this tool
     produced from such a source could never be verified/extracted."""
-    for name in ("Game:1.gba", "Game\\x.gba"):
-        archive = _make_zip(tmp_path / "weird.zip", {name: b"ROM"})
+    # Distinct archive paths per case: the shared member reader is cached by
+    # (path, mtime, ctime, size), so rewriting one path twice with same-size
+    # contents could, on a coarse-timestamp filesystem, return the first
+    # listing for the second read. Separate paths keep this test about the
+    # special-char resolution, independent of cache/timestamp granularity.
+    for idx, name in enumerate(("Game:1.gba", "Game\\x.gba")):
+        archive = _make_zip(tmp_path / f"weird{idx}.zip", {name: b"ROM"})
         assert RomzService._single_rom_member(str(archive)) == name
 
 
@@ -326,7 +332,7 @@ def test_info_non_rom_archive_falls_back_to_basic(tmp_path):
     assert info["ratio"] is None
 
 
-@pytest.mark.skipif(not romz_mod.HAS_7Z, reason="py7zr not installed")
+@pytest.mark.skipif(not archive_members.HAS_7Z, reason="py7zr not installed")
 def test_single_rom_member_reads_real_7z(tmp_path):
     """Exercise the py7zr listing branch with a genuine .7z archive."""
     import py7zr

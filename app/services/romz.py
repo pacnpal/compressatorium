@@ -4,8 +4,8 @@ This tool losslessly compresses Game Boy, Game Boy Color, Game Boy Advance and
 Nintendo DS ROM dumps (``.gb`` / ``.gbc`` / ``.gba`` / ``.nds``) into standard
 ``.7z`` (LZMA2) or ``.zip`` (deflate) archives, and extracts them back to the
 exact original ROM. The ``7z`` binary ships in the image already (``p7zip-full``),
-so no extra build step is needed; the read/metadata side reuses ``zipfile`` /
-``py7zr`` directly.
+so no extra build step is needed; the read/metadata side reads members through
+the shared, mtime-cached ``services.archive_members`` reader.
 
 Three modes:
 
@@ -25,7 +25,6 @@ import contextlib
 import os
 import re
 import shutil
-import stat
 import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -33,6 +32,7 @@ from pathlib import Path
 from config import settings
 from logging_setup import get_logger
 from services.archive import archive_service
+from services.archive_members import read_archive_members
 from services.subprocess_runner import (
     ConversionCancelled,
     SubprocessRunner,
@@ -40,15 +40,6 @@ from services.subprocess_runner import (
     verify_timeout,
 )
 from utils.junk import is_junk_path
-
-try:
-    import py7zr
-
-    HAS_7Z = True
-except ImportError:  # pragma: no cover - py7zr ships in requirements
-    HAS_7Z = False
-
-import zipfile
 
 # SubprocessRunner "owner" for the shared priority/timeout policy. An optional
 # COMPRESSATORIUM_ROMZ_* override takes precedence over the tool-neutral
@@ -122,11 +113,18 @@ class RomzService:
         self.sevenzip_path = settings.sevenzip_path
         self._runner = SubprocessRunner(owner=_OWNER)
 
-    # ----- archive member listing (read side; reuses zipfile / py7zr) -------
+    # ----- archive member listing (read side; shared cached reader) ---------
 
     @staticmethod
     def _list_entries(archive_path: str) -> list[tuple[str, int, bool]]:
         """Return ``(internal_path, uncompressed_size, is_dir)`` for every member.
+
+        Reads through the shared, mtime-cached
+        :func:`services.archive_members.read_archive_members` so the file listing
+        doesn't re-open an archive this tool's single-ROM gate already inspected
+        (the archive summary path reads the same cache). Only ``.zip``/``.7z`` are
+        supported here — the only containers romz produces and reverts — so a
+        ``.rar`` raises rather than being silently treated as romz-verifiable.
 
         Rejects archives containing a **symlink** member up front. This tool only
         ever packs a single loose ROM file, so a symlink masquerading as the ROM
@@ -138,29 +136,16 @@ class RomzService:
         under the temp root, so they must count toward CHD_ARCHIVE_MAX_ENTRIES.
         """
         ext = Path(archive_path).suffix.lower()
-        entries: list[tuple[str, int, bool]] = []
-        if ext == ".zip":
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                for info in zf.infolist():
-                    if stat.S_ISLNK(info.external_attr >> 16):
-                        raise ValueError("Archive contains a symlink member")
-                    entries.append(
-                        (info.filename, int(info.file_size), info.is_dir()),
-                    )
-        elif ext == ".7z":
-            if not HAS_7Z:
-                raise RuntimeError("py7zr is required to read .7z archives")
-            with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
-                for entry in zf.list():
-                    if entry.is_symlink:
-                        raise ValueError("Archive contains a symlink member")
-                    # py7zr >=1.1.0 FileInfo.uncompressed is a required int
-                    # (archive.py reads it the same way); `or 0` just guards a
-                    # 0-byte/None edge without the redundant getattr default.
-                    size = entry.uncompressed or 0
-                    entries.append((entry.filename, int(size), entry.is_directory))
-        else:
+        if ext not in (".zip", ".7z"):
             raise ValueError(f"Unsupported archive extension: {ext}")
+        entries: list[tuple[str, int, bool]] = []
+        for member in read_archive_members(archive_path):
+            if member.is_symlink:
+                raise ValueError("Archive contains a symlink member")
+            # size is None only when the container omits an uncompressed size;
+            # treat that as 0 for the entry/limit accounting (matches the prior
+            # ``entry.uncompressed or 0``).
+            entries.append((member.name, int(member.size or 0), member.is_dir))
         return entries
 
     @classmethod
@@ -214,7 +199,9 @@ class RomzService:
         payload, no symlink member, no traversal/absolute member path, and within
         the shared archive entry/size limits. Anything those paths would reject
         (and any unreadable/corrupt archive) is simply not romz-ready — never
-        raises, returns ``False``.
+        raises, returns ``False``. The underlying member read is mtime-cached by
+        :func:`services.archive_members.read_archive_members`, so repeated listing
+        calls don't re-open the archive.
         """
         try:
             cls._single_rom_member(archive_path)

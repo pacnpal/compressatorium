@@ -9,6 +9,16 @@ CSO·ZSO·DAX support (maxcso), Handheld ROM archiving (GB / GBC / GBA / NDS ↔
 across every format, tool-neutral process-priority and timeout settings, and the
 related fixes below. Sections are newest-first.
 
+### Faster directory listings in archive-heavy folders
+
+#### Changed
+
+- **Browsing a folder with thousands of archives is now fast.** The file listing used to open and parse *every* archive in the directory on the request thread — twice each (once for the member summary, once for the romz single-ROM Verify/Info gate) — so a large `.zip`/`.7z` folder could take ~40 s to list and, because the browser caps connections per host, that one slow request stalled job/metadata polling behind it (the UI looked frozen). The listing now returns immediately and the per-archive badges (member counts, "N converted", romz Verify/Info eligibility) are hydrated in the background via a new `POST /api/archive-summary` batch — the same pattern already used for CHD media-type badges. The badges therefore appear a moment after the rows.
+
+#### Internal
+
+- New shared, mtime-keyed archive-member cache. `services/archive_members.read_archive_members()` is now the single seam every member-listing consumer reads through (`ArchiveService.list_archive_contents`, `RomzService.is_single_rom_archive`, archive size lookups), backed by one global `utils.mtime_cache.MtimeCache` keyed by `(path, mtime, size)`. An archive is opened at most once per change across all consumers and all formats (`.zip`/`.7z`/`.rar`), invalidated automatically when a conversion rewrites it; a new format gets the cache for free. The change also collapsed `ArchiveService`'s three per-format listing methods into one format-agnostic `_filter_members`. `GET /api/files` gained `summarize_archives` (default `true` for API back-compat; the Web UI passes `false` and hydrates via `/api/archive-summary`). Hydration is bounded to the **visible page** (re-running on pagination/sort/filter) with a server-side `MAX_ARCHIVE_SUMMARY_PATHS` ceiling, and the raw-member cache skips archives over `MAX_CACHED_MEMBERS` so memory stays flat. The browser store also de-dupes a duplicate in-flight listing of the same directory, drops stale responses after navigation (a listing-generation guard prevents a late hydration from clobbering a newer listing), still honours a forced post-mutation refresh while a load is in flight, and keeps selected archive rows in sync with hydrated badges. Documented in `docs/DESIGN_tool_plugin_architecture.md` §3.3.2. Tests: `tests/test_archive_summary_lazy.py` (lazy deferral, batch↔inline parity, per-path error handling, batch cap, cache open-once / invalidate-on-change / oversized-not-cached).
+
 ### Nintendo 3DS: decompression + new upstream (.cxi/.3dsx)
 
 #### New

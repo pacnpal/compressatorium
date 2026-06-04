@@ -100,9 +100,26 @@ export const api = {
   },
 
   // ─── Files ────────────────────────────────────────────────────────────
-  listFiles(path, showArchives = true) {
-    const params = new URLSearchParams({ path, show_archives: String(showArchives) });
+  // summarizeArchives=false keeps the directory listing fast in folders with
+  // thousands of archives: archive rows come back without member counts /
+  // verifiable_by, which the browser then hydrates via getArchiveSummaryBatch
+  // (mirroring CHD media_type hydration). Pass true for a one-shot inline
+  // summary when not hydrating separately.
+  listFiles(path, showArchives = true, summarizeArchives = false) {
+    const params = new URLSearchParams({
+      path,
+      show_archives: String(showArchives),
+      summarize_archives: String(summarizeArchives),
+    });
     return fetchJson(buildApiUrl('/files', params), undefined, 'Failed to list files');
+  },
+
+  // Per-archive summaries (member counts, verifiable_by) for the lazy listing.
+  getArchiveSummaryBatch(paths) {
+    if (!paths?.length) return Promise.resolve({});
+    return jsonPost(
+      buildApiUrl('/archive-summary'), { paths }, {}, 'Failed to fetch archive summaries',
+    );
   },
 
   searchFiles(path, recursive = true, includeArchives = true) {
