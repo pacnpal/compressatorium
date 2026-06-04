@@ -2,8 +2,11 @@ import sys
 import zipfile
 from pathlib import Path
 
+import pytest
+
 sys.path.append(str(Path(__file__).resolve().parents[1] / "app"))
 
+from services import archive_members
 from services.archive import archive_service
 from services.tools import registry
 
@@ -62,6 +65,22 @@ def test_list_zip_surfaces_handheld_rom_member(tmp_path):
     archive = tmp_path / "Solo.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("inner.gba", b"rom")
+
+    entries = archive_service.list_archive_contents(str(archive))
+    members = {e["internal_path"]: e for e in entries}
+    assert "inner.gba" in members
+    assert members["inner.gba"]["extension"] == ".gba"
+
+
+@pytest.mark.skipif(not archive_members.HAS_7Z, reason="py7zr not installed")
+def test_list_7z_surfaces_handheld_rom_member(tmp_path):
+    # Same as the .zip case, but through the py7zr handler — archive-member
+    # listing goes through format-specific code, so .7z needs its own guard.
+    import py7zr
+
+    archive = tmp_path / "Solo.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.writestr(b"rom", "inner.gba")
 
     entries = archive_service.list_archive_contents(str(archive))
     members = {e["internal_path"]: e for e in entries}

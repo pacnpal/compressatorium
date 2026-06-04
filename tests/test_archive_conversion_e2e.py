@@ -199,4 +199,11 @@ async def test_romz_member_listed_but_not_recompressed(e2e_env, mode):
     )
     with pytest.raises(HTTPException) as exc:
         await convert_routes.create_job(request)
-    assert exc.value.status_code == 400
+    # Assert the *reason* (archive-input rejection), not just any 400, so this
+    # guards the listing-vs-convertibility split rather than an unrelated
+    # validation failure.
+    status, detail = convert_routes._SKIP_HTTP[
+        convert_routes.SkipReason.ARCHIVE_INPUT_NOT_ALLOWED
+    ]
+    assert exc.value.status_code == status == 400
+    assert exc.value.detail == detail

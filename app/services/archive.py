@@ -262,7 +262,13 @@ class ArchiveService:
                     "name": os.path.basename(member.name),
                     "size": size,
                     "extension": ext,
-                    "convertible": True,
+                    # No "convertible" flag here: a member can be *listable*
+                    # (e.g. a romz ROM, surfaced for visibility) without being a
+                    # valid archive-conversion input. Convertibility is decided
+                    # per consumer from the registry (route layer derives
+                    # ``convertible_by`` via ``tools_accepting_archive_member``),
+                    # so stamping a blanket True here would misreport list-only
+                    # members to any direct caller of this service.
                 }
             )
             if max_entries > 0 and len(entries) >= max_entries:
