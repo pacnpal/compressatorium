@@ -75,7 +75,7 @@ class ToolRegistry:
         for tool in self._tools.values():
             for mode in tool.modes:
                 if mode.allows_archive_input:
-                    exts |= set(mode.input_extensions)
+                    exts.update(mode.input_extensions)
         return frozenset(exts)
 
     def archive_listable_extensions(self) -> frozenset[str]:
@@ -93,7 +93,7 @@ class ToolRegistry:
         for tool in self._tools.values():
             for mode in tool.modes:
                 if mode.allows_archive_input or mode.lists_archive_members:
-                    exts |= set(mode.input_extensions)
+                    exts.update(mode.input_extensions)
         return frozenset(exts)
 
     def tools_accepting_archive_member(self, ext: str) -> list[str]:
