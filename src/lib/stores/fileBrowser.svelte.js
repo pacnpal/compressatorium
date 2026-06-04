@@ -24,6 +24,9 @@ class FileBrowserStore {
   entries = $state([]);
   entriesError = $state(null);
   loading = $state(false);
+  // Path of the directory listing currently in flight, used to collapse a
+  // duplicate refresh of the same directory (non-reactive control state).
+  _inflightListingPath = null;
 
   // Selection
   selectedFiles = new SvelteMap();
@@ -300,18 +303,80 @@ class FileBrowserStore {
       this._clampPage();
       return;
     }
+    const requested = this.currentPath;
+    // Collapse a duplicate in-flight load of the same directory (e.g. a
+    // double-fired navigate). A listing can take a while in huge folders and
+    // the browser caps connections per host, so a redundant identical request
+    // just starves the pool behind the one already running. A load for a
+    // different path still proceeds.
+    if (this._inflightListingPath === requested) return;
+    this._inflightListingPath = requested;
     this.loading = true;
     this.entriesError = null;
     try {
-      const data = await api.listFiles(this.currentPath, true);
+      const data = await api.listFiles(requested, true);
+      // Drop a stale response if the user navigated away (into another dir, an
+      // archive, or search) while it was in flight.
+      if (this.currentPath !== requested || this.currentArchivePath || this.searchMode) {
+        return;
+      }
       this.entries = data?.entries ?? [];
+      // Archive rows come back without member counts / verifiable_by (the
+      // listing is lazy so big folders render instantly); hydrate those badges
+      // in the background without blocking the listing.
+      this._hydrateArchiveSummaries(requested);
     } catch (e) {
+      if (this.currentPath !== requested) return;
       this.entriesError = e?.message ?? 'Failed to load files';
       this.entries = [];
     } finally {
+      if (this._inflightListingPath === requested) this._inflightListingPath = null;
       this.loading = false;
       this._clampPage();
     }
+  }
+
+  /**
+   * Fetch per-archive summaries (member counts + verifiable_by) for the archive
+   * rows in the current directory listing and merge them into `entries`, so the
+   * row badges appear once the background batch resolves. Mirrors the
+   * chdMetadata / datMatching hydration pattern, but merges into the entry rows
+   * (FileRow/RowActionsMenu read these fields straight off the entry) rather
+   * than a side store. No-op when there are no archives or the listing has moved
+   * on; failures are non-fatal (rows just stay un-summarized).
+   * @param {string} requestedPath - the directory these entries were loaded for
+   */
+  async _hydrateArchiveSummaries(requestedPath) {
+    const archivePaths = this.entries
+      .filter((e) => e?.type === 'archive' && e?.path && e.archive_items == null)
+      .map((e) => e.path);
+    if (archivePaths.length === 0) return;
+    let summary;
+    try {
+      summary = await api.getArchiveSummaryBatch(archivePaths);
+    } catch (_e) {
+      return;
+    }
+    // Bail if the listing moved on while the summaries were in flight.
+    if (this.currentPath !== requestedPath || this.searchMode || this.currentArchivePath) {
+      return;
+    }
+    let changed = false;
+    const next = this.entries.map((e) => {
+      if (e?.type !== 'archive' || !e?.path) return e;
+      const s = summary[e.path];
+      if (!s || s.error) return e;
+      changed = true;
+      return {
+        ...e,
+        archive_items: s.archive_items,
+        archive_has_output: s.archive_has_output,
+        archive_truncated: s.archive_truncated,
+        has_chd: s.has_chd ?? e.has_chd,
+        verifiable_by: Array.isArray(s.verifiable_by) ? s.verifiable_by : e.verifiable_by,
+      };
+    });
+    if (changed) this.entries = next;
   }
 
   /**

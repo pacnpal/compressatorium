@@ -6,7 +6,14 @@ from pathlib import Path
 from config import settings
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from models import BulkDeleteRequest, DirectoryListing, FileEntry, OutputStatus, Volume
+from models import (
+    BulkDeleteRequest,
+    DirectoryListing,
+    FileEntry,
+    MetadataBatchRequest,
+    OutputStatus,
+    Volume,
+)
 from services.archive import ARCHIVE_EXTENSIONS, archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.job_manager import job_manager
@@ -116,6 +123,42 @@ def _legacy_output_fields(
     return fields
 
 
+def _summarize_archive(item_path: str) -> dict:
+    """Per-archive summary fields for the file listing / archive-summary batch.
+
+    Reads the archive once (via the shared mtime-cached member reader) and
+    derives: the member count, how many members already have a sibling output
+    from any tool, whether the listing hit the archive limits, whether any
+    member has a CHD sibling (the legacy ``has_chd`` flag), and the per-archive
+    ``verifiable_by`` gate (romz only claims single-ROM .7z/.zip). Shared by the
+    inline ``summarize_archives=True`` path and the lazy ``/archive-summary``
+    batch the browser hydrates with, so both report identical badges. Blocking
+    I/O — call it off the event loop.
+    """
+    archive_result = archive_service.list_archive_contents(
+        item_path, include_meta=True,
+    )
+    contents = archive_result["entries"]
+    archive_dir = os.path.dirname(item_path)
+    archive_has_output = 0
+    member_has_chd = False
+    for entry in contents:
+        _, _, _, member_by_tool = _detect_archive_member_outputs(entry, archive_dir)
+        # A member counts as "converted" once any tool already has a sibling
+        # output for it, not just CHDMAN.
+        if member_by_tool:
+            archive_has_output += 1
+        if "chdman" in member_by_tool:
+            member_has_chd = True
+    return {
+        "archive_items": len(contents),
+        "archive_has_output": archive_has_output,
+        "archive_truncated": bool(archive_result["truncated"]),
+        "has_chd": member_has_chd,
+        "verifiable_by": _verifiable_by(item_path),
+    }
+
+
 async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     _, is_locked = await run_in_threadpool(lock_manager.check_file_status, path)
     if is_locked:
@@ -207,7 +250,6 @@ async def list_files(
                     elif os.path.isfile(item_path):
                         size = os.path.getsize(item_path)
                         is_archive = ext in ARCHIVE_EXTENSIONS
-                        archive_truncated = None
                         if is_archive and not show_archives_flag:
                             continue
 
@@ -226,28 +268,23 @@ async def list_files(
 
                         archive_items = None
                         archive_has_output = None
-                        if is_archive and summarize_archives_flag:
-                            archive_result = archive_service.list_archive_contents(
-                                item_path, include_meta=True,
-                            )
-                            contents = archive_result["entries"]
-                            archive_items = len(contents)
-                            archive_truncated = bool(archive_result["truncated"])
-                            archive_has_output = 0
-                            archive_dir = os.path.dirname(item_path)
-                            member_has_chd = False
-                            for entry in contents:
-                                _, _, _, member_by_tool = (
-                                    _detect_archive_member_outputs(entry, archive_dir)
-                                )
-                                # A member counts as "converted" once any tool
-                                # already has a sibling output for it, not just
-                                # CHDMAN.
-                                if member_by_tool:
-                                    archive_has_output += 1
-                                if "chdman" in member_by_tool:
-                                    member_has_chd = True
-                            tool_fields["has_chd"] = member_has_chd
+                        archive_truncated = None
+                        # verifiable_by for an archive requires opening it (romz's
+                        # single-ROM gate); for a plain file it's a cheap extension
+                        # check. So only the archive case is deferred when
+                        # summaries are lazy — the browser then hydrates both the
+                        # member counts and verifiable_by via /archive-summary.
+                        verifiable_by: list[str] = []
+                        if is_archive:
+                            if summarize_archives_flag:
+                                summary = _summarize_archive(item_path)
+                                archive_items = summary["archive_items"]
+                                archive_has_output = summary["archive_has_output"]
+                                archive_truncated = summary["archive_truncated"]
+                                tool_fields["has_chd"] = summary["has_chd"]
+                                verifiable_by = summary["verifiable_by"]
+                        else:
+                            verifiable_by = _verifiable_by(item_path)
 
                         entry = FileEntry(
                             name=item,
@@ -257,12 +294,10 @@ async def list_files(
                             extension=ext,
                             archive_items=archive_items,
                             archive_has_output=archive_has_output,
-                            archive_truncated=archive_truncated
-                            if is_archive and summarize_archives_flag
-                            else None,
+                            archive_truncated=archive_truncated,
                             convertible_by=convertible_by,
                             outputs=outputs,
-                            verifiable_by=_verifiable_by(item_path),
+                            verifiable_by=verifiable_by,
                             **tool_fields,
                         )
                         entries.append(entry)
@@ -280,6 +315,43 @@ async def list_files(
     )
 
     return DirectoryListing(volume=volume_name, path=path, entries=entries)
+
+
+@router.post("/archive-summary")
+async def archive_summary_batch(request: MetadataBatchRequest) -> dict:
+    """Per-archive summaries for the lazy file listing.
+
+    ``/api/files`` with ``summarize_archives=false`` returns archive rows without
+    member counts or ``verifiable_by`` so a directory with thousands of archives
+    lists instantly instead of opening every archive on the request thread. The
+    browser then calls this with the visible archive paths to hydrate those
+    badges — mirroring how CHD ``media_type`` is hydrated via
+    ``/api/chd-metadata``. Each path opens its archive at most once (shared
+    mtime-cached reader); a non-archive / missing / out-of-volume / unreadable
+    path gets an ``error`` field instead of failing the whole batch. The full
+    batch runs in one threadpool hop to keep the blocking archive I/O off the
+    event loop without flooding the pool with one task per path.
+    """
+    def _compute() -> dict:
+        result: dict = {}
+        for path in request.paths:
+            if not is_within_configured_volumes(path, treat_archives=False):
+                result[path] = {"error": "path_outside_configured_volumes"}
+                continue
+            if not os.path.isfile(path):
+                result[path] = {"error": "file_not_found"}
+                continue
+            if Path(path).suffix.lower() not in ARCHIVE_EXTENSIONS:
+                result[path] = {"error": "not_an_archive"}
+                continue
+            try:
+                result[path] = _summarize_archive(path)
+            except Exception:
+                logger.exception("Failed to summarize archive %s", path)
+                result[path] = {"error": "summary_failed"}
+        return result
+
+    return await run_in_threadpool(_compute)
 
 
 @router.get("/files/search")
