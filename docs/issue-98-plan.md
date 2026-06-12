@@ -135,23 +135,35 @@ Q7 on whether to allow a user override.)
      than necessary).
 - **Headroom math.** Peak simultaneous disk = `source(cso) + full(iso) +
   partial(chd)`, which the single-step model never holds. Introduce a shared
-  **`app/services/disk.py`** helper, `ensure_headroom(work_dir, required_bytes,
+  **`app/services/disk.py`** helper, `ensure_headroom(path, required_bytes,
   margin)`, built on `shutil.disk_usage`. Required bytes are derived from the
   `ChainStep.output_ratio` values: `required ≈ input_size * (Σ output_ratio) +
   margin` (for cso→chd: `input * (2.0 + 1.2) + margin`). `ChainTool.convert`
   calls it **before step 1**, raising a clear "insufficient disk space" error
-  that surfaces as a normal job failure. This is a **new shared seam** (no disk
-  check exists today); single-step tools can opt into it later. (Open Q2: hard
-  fail vs warn; margin/setting name.)
+  that surfaces as a normal job failure.
+  - **Multi-volume correctness.** Compressatorium is explicitly multi-volume,
+    so the **work dir (intermediates) and the final output dir can be on
+    different filesystems**. `shutil.disk_usage` is per-mount, so the check must
+    run **independently on each target**: the work-dir mount must hold the
+    intermediate(s) (`input * intermediate_ratio`), and the output-dir mount
+    must hold the final (`input * output_ratio`). When both resolve to the same
+    mount (`os.stat(...).st_dev` match), sum the two requirements instead of
+    checking them separately so the shared filesystem isn't double-spent. The
+    `chain.py` precheck calls `ensure_headroom` once per distinct mount.
+  - This is a **new shared seam** (no disk check exists today); single-step
+    tools can opt into it later. (Open Q2: hard fail vs warn; margin/setting
+    name.)
 
 ### 1.4 Progress aggregation (weighted, single bar)
 
 chd compression dominates cso decompression, so a 50/50 split misreports. The
-weights live on `ChainStep` (cso `0.20`, chd `0.80`). Inside
-`ChainTool.convert`, each sub-step's 0–100 maps into its slice:
+weights live on `ChainStep` (cso `0.20`, chd `0.80`). To stay robust if a future
+chain's weights don't pre-sum to `1.0`, `ChainTool` **normalizes the weights by
+their total** (`w_i = weight_i / Σ weight`) once at construction, then each
+sub-step's 0–100 maps into its normalized slice:
 
 ```
-aggregate = round( (Σ weight_j for j<i)*100 + weight_i * step_progress_i )
+aggregate = round( (Σ w_j for j<i)*100 + w_i * step_progress_i )   # w = normalized weights
 ```
 
 The aggregate is **monotonic non-decreasing** and ends at 100 when the last step
@@ -291,7 +303,10 @@ suffix, so add a small **`InputKind`** seam rather than faking an extension:
   the folder **basename**: `<parent>/<folder_name>.iso`. `MakePs3IsoTool.detect_output`
   reports it (in-progress vs ready via `lock_manager.check_file_status`).
 - **Output-path derivation.** `output_path` = `output_dir/<folder_basename>.iso`
-  (folder name, not a stem swap).
+  (folder name, not a stem swap). **Normalize first** — derive the basename from
+  `Path(path).name` (or `os.path.basename(os.path.normpath(path))`), because a
+  trailing slash makes `os.path.basename("/a/MyGame/")` return `""` and would
+  otherwise yield an invalid `.../MyGame/.iso`.
 - **Verify gate.** makeps3iso has **no native verify**. Recommended: ship
   **no-verify, `supports_delete_on_verify=False`** — deleting a user-curated
   decrypted folder is destructive and there is no cheap trustworthy verify.
@@ -299,10 +314,19 @@ suffix, so add a small **`InputKind`** seam rather than faking an extension:
   the **built iso** and confirm its `TITLE_ID` matches the source folder — a
   light readback, not a full round-trip via `extractps3iso`. (Open Q4.)
 - **Lock manager.** Locks key on `sha256(normpath(path))`, so a **directory
-  path locks fine as-is**. Caveat: a per-file job *inside* the folder hashes to a
-  different key and wouldn't be blocked by the folder lock. For folder→iso this
-  is acceptable (we only read the folder, and we don't offer per-file conversion
-  of PS3 folder contents). Flag as a known limitation (Open Q — acceptable).
+  path locks fine as-is** for exact-path collisions. But the bare hash gives no
+  **containment** protection: a per-file job (or a rename/delete route) acting on
+  a path *inside* an active directory job — e.g. `<folder>/PS3_GAME/PARAM.SFO`
+  while `<folder>` is being packed — hashes to a different key and slips through,
+  which can corrupt the in-flight `.iso`. **Recommendation:** extend the active
+  lookup (`find_active_job_for_path` / `_assert_path_not_in_use` in
+  `job_manager.py`) with a **descendant check** — beyond the existing
+  `cand == target` and "active-dir contains target" cases, also reject when
+  `target` is a descendant of an active **directory** job's path
+  (`target.relative_to(cand_path)` succeeds, guarded by `try/except ValueError`).
+  This makes a directory job protect its whole subtree against concurrent
+  mutation, in both directions. (The containment check is cheap — string/`Path`
+  prefix, no extra disk I/O.)
 - **Job model.** Add `input_kind: str = "file"` to `ConversionJob` (and the
   enqueue path); `file_path` holds the directory path, `output_path` the iso.
   `_process_job` and the verify gate read `input_kind` to skip the file-only
