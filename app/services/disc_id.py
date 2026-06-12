@@ -282,21 +282,24 @@ def _parse_system_cnf(data: bytes) -> dict:
     return {}
 
 
-def _parse_param_sfo(data: bytes) -> dict:
-    """
-    Parse a PSP PARAM.SFO binary blob and return game_id, title, platform.
+def parse_sfo_keys(data: bytes) -> dict[str, str]:
+    """Return every UTF-8 string key of a PSF (PARAM.SFO) blob.
+
+    The shared, format-only PARAM.SFO table reader. Both the PSP/CHD tagging
+    path (``_parse_param_sfo`` below) and PS3 folder detection
+    (``services.ps3``) build on this, so the binary table parsing lives in one
+    place (per the repo's "modularity is key" rule) rather than being
+    copy-pasted per platform.
+
     SFO format (little-endian):
-      0x00  4   magic "\x00PSF"
-      0x04  2   version minor
-      0x06  2   version major
+      0x00  4   magic "\\x00PSF"
       0x08  4   key_table_offset
       0x0C  4   data_table_offset
       0x10  4   num_entries
-    Then num_entries × 16-byte index entries:
+    Then num_entries x 16-byte index entries:
       0x00  2   key_offset (from key_table_offset)
       0x02  2   data_format  (0x0204 = utf8 string)
       0x04  4   data_len
-      0x08  4   data_max_len
       0x0C  4   data_offset (from data_table_offset)
     """
     if len(data) < 20 or data[:4] != _SFO_MAGIC:
@@ -305,41 +308,47 @@ def _parse_param_sfo(data: bytes) -> dict:
         key_table_off = struct.unpack_from("<I", data, 8)[0]
         data_table_off = struct.unpack_from("<I", data, 12)[0]
         num_entries = struct.unpack_from("<I", data, 16)[0]
-
-        result: dict = {}
-        for i in range(num_entries):
-            entry_off = 20 + i * 16
-            if entry_off + 16 > len(data):
-                break
-            key_off = struct.unpack_from("<H", data, entry_off)[0]
-            fmt = struct.unpack_from("<H", data, entry_off + 2)[0]
-            data_len = struct.unpack_from("<I", data, entry_off + 4)[0]
-            val_off = struct.unpack_from("<I", data, entry_off + 12)[0]
-
-            key_start = key_table_off + key_off
-            key_end = data.find(b"\x00", key_start)
-            if key_end < 0:
-                continue
-            key = data[key_start:key_end].decode("ascii", errors="replace")
-
-            if fmt != _SFO_FMT_UTF8:
-                continue
-            val_start = data_table_off + val_off
-            val_end = val_start + data_len
-            if val_end > len(data):
-                continue
-            val = data[val_start:val_end].rstrip(b"\x00").decode("utf-8", errors="replace")
-
-            if key == "DISC_ID":
-                result["game_id"] = val
-            elif key == "TITLE":
-                result["title"] = val
-
-        if result:
-            result["platform"] = "psp"
-        return result
-    except Exception:
+    except struct.error:
         return {}
+
+    out: dict[str, str] = {}
+    for i in range(num_entries):
+        entry_off = 20 + i * 16
+        if entry_off + 16 > len(data):
+            break
+        key_off = struct.unpack_from("<H", data, entry_off)[0]
+        fmt = struct.unpack_from("<H", data, entry_off + 2)[0]
+        data_len = struct.unpack_from("<I", data, entry_off + 4)[0]
+        val_off = struct.unpack_from("<I", data, entry_off + 12)[0]
+
+        key_start = key_table_off + key_off
+        key_end = data.find(b"\x00", key_start)
+        if key_end < 0:
+            continue
+        key = data[key_start:key_end].decode("ascii", errors="replace")
+        if fmt != _SFO_FMT_UTF8:
+            continue
+        val_start = data_table_off + val_off
+        val_end = val_start + data_len
+        if val_end > len(data):
+            continue
+        out[key] = data[val_start:val_end].rstrip(b"\x00").decode(
+            "utf-8", errors="replace",
+        )
+    return out
+
+
+def _parse_param_sfo(data: bytes) -> dict:
+    """Parse a PSP PARAM.SFO blob into game_id, title, platform."""
+    keys = parse_sfo_keys(data)
+    result: dict = {}
+    if "DISC_ID" in keys:
+        result["game_id"] = keys["DISC_ID"]
+    if "TITLE" in keys:
+        result["title"] = keys["TITLE"]
+    if result:
+        result["platform"] = "psp"
+    return result
 
 
 def _parse_ipbin(data: bytes) -> dict:

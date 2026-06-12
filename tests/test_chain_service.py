@@ -36,11 +36,11 @@ def chain_env(monkeypatch, tmp_path):
     """Patch the chain's temp dir + disc-ID embed, and install fake steps."""
     work = tmp_path / "chainwork"
 
-    def _mkdtemp(prefix=""):
+    def _scratch(prefix=""):
         work.mkdir(parents=True, exist_ok=True)
         return str(work)
 
-    monkeypatch.setattr(chain_mod.tempfile, "mkdtemp", _mkdtemp)
+    monkeypatch.setattr(chain_mod, "create_scratch_dir", _scratch)
     # No real disc parsing/tagging: keep the embed a no-op.
     monkeypatch.setattr(chain_mod, "extract_from_source", lambda p: None)
 
@@ -97,9 +97,10 @@ def test_chain_orchestration_progress_and_intermediate(chain_env, tmp_path):
     assert os.path.dirname(calls[0]["out"]) == str(work)
     assert calls[1]["in"] == calls[0]["out"]
     assert calls[1]["out"] == str(out)
-    # Compression routes only to the step that supports it (chdman createdvd).
+    # cso_to_chd advertises no compression, so a client-supplied preset is
+    # dropped (not smuggled to chdman as a codec): neither step receives it.
     assert calls[0]["compression"] is None
-    assert calls[1]["compression"] == "zstd"
+    assert calls[1]["compression"] is None
 
     # Aggregate progress is monotonic and ends at 100.
     progs = [u["progress"] for u in updates]
@@ -133,6 +134,31 @@ def test_chain_propagates_cancel_and_cleans_up(chain_env, tmp_path):
     # Temp work dir removed even though the job aborted; no partial final.
     assert not work.exists()
     assert not out.exists()
+
+
+def test_uncompressed_iso_size_reads_container_headers(tmp_path):
+    import struct
+
+    from app.services.maxcso import uncompressed_iso_size
+
+    cso = tmp_path / "g.cso"
+    cso.write_bytes(b"CISO" + struct.pack("<I", 24) + struct.pack("<Q", 5_000_000)
+                    + struct.pack("<I", 2048))
+    assert uncompressed_iso_size(str(cso)) == 5_000_000
+
+    zso = tmp_path / "g.zso"
+    zso.write_bytes(b"ZISO" + struct.pack("<I", 24) + struct.pack("<Q", 7_000_000)
+                    + struct.pack("<I", 2048))
+    assert uncompressed_iso_size(str(zso)) == 7_000_000
+
+    dax = tmp_path / "g.dax"
+    dax.write_bytes(b"DAX\x00" + struct.pack("<I", 3_000_000) + b"\x00" * 8)
+    assert uncompressed_iso_size(str(dax)) == 3_000_000
+
+    # Unknown header -> None (caller falls back to the ratio estimate).
+    other = tmp_path / "g.bin"
+    other.write_bytes(b"\x00" * 16)
+    assert uncompressed_iso_size(str(other)) is None
 
 
 def test_chain_headroom_blocks_before_any_step(chain_env, tmp_path, monkeypatch):

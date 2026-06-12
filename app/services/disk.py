@@ -15,10 +15,33 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
+from pathlib import Path
 
 
 class InsufficientDiskSpace(RuntimeError):
     """Raised by :func:`ensure_headroom` when a target volume lacks space."""
+
+
+def create_scratch_dir(prefix: str) -> str:
+    """Create a temp working dir under the operator's configured scratch volume.
+
+    Honors ``settings.temp_dir`` (``CHD_TEMP_DIR``) — the same base the archive
+    extractor uses — so large intermediates land on the scratch volume rather
+    than the container's (often small) ``/tmp`` overlay, which is also the
+    volume the headroom preflight checks. Falls back to the system default if
+    that directory can't be created.
+    """
+    from config import settings  # local import to keep this module stdlib-only
+
+    base_dir = settings.temp_dir or str(Path(settings.data_dir) / "temp")
+    if base_dir:
+        try:
+            Path(base_dir).mkdir(parents=True, exist_ok=True)
+            return tempfile.mkdtemp(prefix=prefix, dir=base_dir)
+        except OSError:
+            pass
+    return tempfile.mkdtemp(prefix=prefix)
 
 
 def _nearest_existing(path: str) -> str:

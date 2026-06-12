@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -34,8 +33,9 @@ from config import settings
 from logging_setup import get_logger
 from models import OutputStatus
 from services.disc_id import embed_in_chd, extract_from_source
-from services.disk import ensure_headroom
+from services.disk import create_scratch_dir, ensure_headroom
 from services.lock_manager import lock_manager
+from services.maxcso import uncompressed_iso_size
 
 from .base import BaseTool
 from .spec import ChainSpec, ChainStep, ModeKind
@@ -145,7 +145,7 @@ class ChainTool(BaseTool):
         cancel_event: asyncio.Event | None,
     ) -> AsyncGenerator[dict, None]:
         spec = self.spec(mode)
-        work_dir = tempfile.mkdtemp(prefix="cmptr-chain-")
+        work_dir = create_scratch_dir("cmptr-chain-")
         try:
             self._preflight_headroom(input_path, output_path, spec, work_dir)
 
@@ -169,11 +169,15 @@ class ChainTool(BaseTool):
                     )
                     step_out = os.path.join(work_dir, f"{stem}{ext}")
                     intermediate_source = step_out
-                # Compression only matters to a step that supports it (the
-                # chdman create step); cso_decompress takes none.
+                # Only forward compression when the chain itself advertises it
+                # AND the sub-step supports it. cso_to_chd advertises no
+                # compression (the CSO UI's effort presets are meaningless to
+                # chdman), so a stale preset from an API/batch client is dropped
+                # rather than smuggled in as a chdman codec.
                 step_compression = (
                     compression
-                    if self._registry.spec(step.mode).supports_compression
+                    if spec.supports_compression
+                    and self._registry.spec(step.mode).supports_compression
                     else None
                 )
 
@@ -210,11 +214,21 @@ class ChainTool(BaseTool):
             return  # can't size the input; skip rather than block the job
         if input_size <= 0:
             return
-        n = len(spec.steps)
-        intermediate_bytes = int(
-            input_size * sum(s.output_ratio for s in spec.steps[: n - 1])
-        )
-        final_bytes = int(input_size * spec.steps[-1].output_ratio)
+        # Prefer the true uncompressed ISO size from the container header: a
+        # highly compressed .cso/.zso/.dax can be a small fraction of the ISO
+        # maxcso will write, so a ratio on the compressed size badly under-counts
+        # the intermediate. The final .chd is at most the ISO size (chdman
+        # compresses), so the uncompressed size is a safe bound for both.
+        uncompressed = uncompressed_iso_size(input_path)
+        if uncompressed and uncompressed > 0:
+            intermediate_bytes = uncompressed
+            final_bytes = uncompressed
+        else:
+            n = len(spec.steps)
+            intermediate_bytes = int(
+                input_size * sum(s.output_ratio for s in spec.steps[: n - 1])
+            )
+            final_bytes = int(input_size * spec.steps[-1].output_ratio)
         margin = int(getattr(settings, "chain_disk_margin_mb", 512)) * 1024 * 1024
         targets: list[tuple[str, int]] = [(output_path, final_bytes)]
         if intermediate_bytes > 0:

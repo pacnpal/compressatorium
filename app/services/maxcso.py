@@ -25,6 +25,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import struct
 import threading
 import time
 from collections.abc import AsyncGenerator
@@ -44,6 +45,36 @@ _OWNER = "maxcso"
 # Compress takes a raw .iso; decompress takes any maxcso-produced container.
 MAXCSO_COMPRESS_EXTENSIONS = {".iso"}
 MAXCSO_DECOMPRESS_EXTENSIONS = {".cso", ".zso", ".dax"}
+
+
+def uncompressed_iso_size(path: str) -> int | None:
+    """Read the uncompressed ISO size (bytes) from a CSO/ZSO/DAX header.
+
+    A highly compressed container can be a small fraction of the ISO maxcso
+    will write, so estimating disk headroom from the compressed file size badly
+    under-counts. The uncompressed size lives in the container header:
+
+    - CSO (``CISO``) / ZSO (``ZISO``): ``uint64`` at offset 8.
+    - DAX (``DAX\\0``): ``uint32`` at offset 4.
+
+    Returns ``None`` for an unknown/unreadable header (caller falls back to a
+    ratio-based estimate).
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(16)
+    except OSError:
+        return None
+    if len(head) < 16:
+        return None
+    try:
+        if head[:4] in (b"CISO", b"ZISO"):
+            return int(struct.unpack_from("<Q", head, 8)[0]) or None
+        if head[:4] == b"DAX\x00":
+            return int(struct.unpack_from("<I", head, 4)[0]) or None
+    except struct.error:
+        return None
+    return None
 
 # Output extension is decided by the mode, not the input extension (an .iso can
 # become .cso/.zso/.dax), so the map is keyed by mode rather than suffix. CSO v1
