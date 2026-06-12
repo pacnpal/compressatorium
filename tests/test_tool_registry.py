@@ -60,6 +60,8 @@ def _legacy_tool_for_mode(mode: str) -> str:
     """Replicates the dispatch ladder at job_manager.py:1444."""
     if mode in COMPOSITE_MODES:
         return "chain"
+    if mode == "folder_to_iso":
+        return "makeps3iso"
     if mode.startswith("dolphin_"):
         return "dolphin"
     if mode.startswith("z3ds_"):
@@ -75,7 +77,7 @@ def _legacy_tool_for_mode(mode: str) -> str:
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 28
+    assert len(resolved) == 29
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 

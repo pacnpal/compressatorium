@@ -75,6 +75,44 @@ RUN make && \
     chmod +x maxcso
 
 # ---------------------------------------------------------------------------
+# makeps3iso builder stage: compile makeps3iso (decrypted PS3 disc/JB folder ->
+# .iso) from source.
+#
+# bucanero/ps3iso-utils is GPL-3.0, plain portable C (no x86 asm / SIMD — the
+# only arch flag is a Darwin-only `-arch x86_64`, never hit here), built with a
+# bare `make` per utility directory. Compiles per-arch automatically, so
+# linux/amd64 and linux/arm64 buildx both work, same as the maxcso stage. We
+# ship the unmodified upstream binary as a separate executable (not linked into
+# the app) and pin the source ref for GPL-3.0 source-correspondence, exactly as
+# maxcso is pinned. Only makeps3iso is built/copied: verify is a pure-Python
+# PARAM.SFO readback, so extractps3iso (round-trip) isn't needed.
+# DL3008 ignored for the same reason as the other builders (generic build deps).
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8 AS makeps3iso-builder
+ENV DEBIAN_FRONTEND=noninteractive
+# Pinned to an immutable commit so release images are reproducible. master @
+# 2022-03-09 (latest upstream; last tagged release predates it). Override with
+# --build-arg MAKEPS3ISO_REF=<tag|sha> to update makeps3iso intentionally.
+ARG MAKEPS3ISO_REF=878090980a9042c61901920fed1b034af215e8c7
+# hadolint ignore=DL3008
+RUN apt-get update -o Acquire::Retries=3 && \
+    apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    ca-certificates && \
+    git clone https://github.com/bucanero/ps3iso-utils.git /tmp/ps3iso-utils && \
+    git -C /tmp/ps3iso-utils checkout "${MAKEPS3ISO_REF}" && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/ps3iso-utils
+
+RUN make -C makeps3iso && \
+    if [ ! -f makeps3iso/makeps3iso ] && [ -f makeps3iso/bin/makeps3iso ]; then \
+      cp makeps3iso/bin/makeps3iso makeps3iso/makeps3iso; \
+    fi && \
+    chmod +x makeps3iso/makeps3iso
+
+# ---------------------------------------------------------------------------
 # Frontend builder stage: compile the Svelte 5 SPA with Vite.
 #
 # Output is emitted to /build/static via vite.config.js (build.outDir),
@@ -183,6 +221,10 @@ COPY --from=builder /tmp/z3ds/build/z3ds_compressor /usr/local/bin/z3ds_compress
 
 # Install maxcso from its builder stage (PSP/PS2 ISO <-> CSO/ZSO)
 COPY --from=maxcso-builder /tmp/maxcso/maxcso /usr/local/bin/maxcso
+
+# Install makeps3iso from its builder stage (decrypted PS3 folder -> .iso).
+# GPL-3.0, shipped unmodified as a standalone binary (see the builder stage).
+COPY --from=makeps3iso-builder /tmp/ps3iso-utils/makeps3iso/makeps3iso /usr/local/bin/makeps3iso
 
 # Copy application
 COPY app/ /app/

@@ -31,6 +31,8 @@ def _legacy_dispatch_id(mode: str) -> str:
     """Replicates the convert/verify dispatch ladders formerly in
     ``_process_job`` (job_manager.py:1464 / :1576 / :1611).  Both ladders make
     the same tool selection, differing only in the progress message."""
+    if mode == "folder_to_iso":
+        return "makeps3iso"
     if mode.startswith("dolphin_"):
         return "dolphin"
     if mode.startswith("z3ds_"):
@@ -55,7 +57,7 @@ def test_verify_dispatch_matches_legacy_ladder(mode, monkeypatch):
 
         return _verify
 
-    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso", "romz"):
+    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso", "romz", "makeps3iso"):
         monkeypatch.setattr(
             registry.get(tool_id)._service, "verify", _record(tool_id)
         )
@@ -82,7 +84,7 @@ def test_convert_dispatch_matches_legacy_ladder(mode, monkeypatch):
 
         return _convert
 
-    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso", "romz"):
+    for tool_id in ("chdman", "dolphin", "z3ds", "nsz", "cso", "romz", "makeps3iso"):
         monkeypatch.setattr(
             registry.get(tool_id)._service, "convert", _record(tool_id)
         )

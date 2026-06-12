@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from config import settings
 from fastapi.concurrency import run_in_threadpool
-from models import ConversionJob, ConversionMode, JobStatus
+from models import ConversionJob, ConversionMode, InputKind, JobStatus
 from services.archive import archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
@@ -85,6 +85,9 @@ class JobManager:
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._cancelled: Set[str] = set()
         self._cancel_events: Dict[str, asyncio.Event] = {}
+        # Strong refs to in-flight requeue tasks so the event loop can't
+        # garbage-collect them mid-`asyncio.sleep` (see _schedule_dir_lock_requeue).
+        self._requeue_tasks: Set[asyncio.Task] = set()
         self._delete_plans: Dict[str, Dict[str, object]] = {}
         self._last_progress_at: Dict[str, float] = {}
         self._last_progress_log_at: Dict[str, float] = {}
@@ -166,6 +169,21 @@ class JobManager:
                     "Output path matches input; refusing to overwrite source"
                 )
 
+        # Carry the mode's input kind end-to-end so the pipeline skips the
+        # archive-extract / file-only assumptions for a directory job and the
+        # lock manager can protect the whole source subtree. Derived from the
+        # registry spec (every conversion mode is registered; external jobs
+        # bypass this path), so FILE/DIRECTORY can't drift via a typo.
+        try:
+            mode_spec = registry.spec(mode.value)
+            input_kind = (
+                InputKind.DIRECTORY
+                if InputKind.DIRECTORY in mode_spec.input_kinds
+                else InputKind.FILE
+            )
+        except KeyError:
+            input_kind = InputKind.FILE
+
         job = ConversionJob(
             id=job_id,
             file_path=file_path,
@@ -178,6 +196,7 @@ class JobManager:
             allow_overwrite=allow_overwrite,
             compression=compression,
             delete_on_verify=delete_on_verify,
+            input_kind=input_kind,
         )
 
         self.jobs[job_id] = job
@@ -524,6 +543,104 @@ class JobManager:
         except (OSError, RuntimeError):
             return None
 
+    @staticmethod
+    def _is_descendant(target: Path, ancestor: Path) -> bool:
+        """Whether ``target`` is at or below ``ancestor`` (pure path prefix)."""
+        try:
+            target.relative_to(ancestor)
+            return True
+        except ValueError:
+            return False
+
+    def _directory_job_blocks(self, job: ConversionJob, target: Path) -> bool:
+        """True when ``target`` lives inside an active directory job's source.
+
+        A directory job (makeps3iso folder->iso) is packaging its whole source
+        subtree, so a per-file job / rename / delete on any path *under* that
+        folder — e.g. ``<folder>/PS3_GAME/PARAM.SFO`` while ``<folder>`` is being
+        packed — would corrupt the in-flight ISO. The bare path-hash lock can't
+        see that containment (a child hashes to a different key), so guard it
+        here. Cheap: a normalized ``Path`` prefix check, no extra disk I/O.
+        """
+        if job.input_kind != InputKind.DIRECTORY:
+            return False
+        job_dir = self._normalize_path(job.file_path)
+        if job_dir is None:
+            return False
+        return self._is_descendant(target, job_dir)
+
+    def _blocked_by_dir_lock(self, job: ConversionJob) -> bool:
+        """Whether this job's input/output is inside a directory subtree another
+        job has locked (a makeps3iso folder->iso job packing that tree).
+
+        Such a conflict is **transient** — it clears when the folder job
+        finishes — so the dispatcher waits and re-queues the job rather than
+        failing it, exactly like a job waiting its turn in the queue.
+        """
+        if job.input_kind == InputKind.DIRECTORY:
+            return lock_manager.dir_lock_would_conflict(job.file_path)
+        paths = [job.output_path]
+        if "::" not in job.file_path:
+            paths.append(job.file_path)
+        return any(lock_manager.is_within_locked_dir(p) for p in paths if p)
+
+    async def _defer_blocked_job(self, job_id: str, *, output_lock_held: bool) -> None:
+        """Release a job blocked by a directory subtree lock and re-queue it.
+
+        The job waits its turn in the queue and is re-dispatched once the folder
+        job releases the lock — the same outcome as any queued job, never a
+        failure. Releases the held slot (and the output lock when one was taken)
+        so the folder job and others can proceed meanwhile.
+        """
+        job = self.jobs.get(job_id)
+        if output_lock_held and job is not None and job.output_path:
+            lock_manager.release_lock(job.output_path)
+        if job_id in self._cancel_events:
+            del self._cancel_events[job_id]
+        concurrency_manager.release(job_id)
+        if job is not None:
+            job.message = "Waiting for an in-progress folder conversion to finish..."
+            await self._notify_subscribers(
+                job_id,
+                {
+                    "type": "status",
+                    "job_id": job_id,
+                    "status": job.status.value,
+                    "progress": job.progress,
+                    "message": job.message,
+                },
+            )
+        self._schedule_dir_lock_requeue(job_id)
+
+    def _schedule_dir_lock_requeue(self, job_id: str, delay: float = 2.0) -> None:
+        """Re-dispatch a deferred job after a short delay so it retries once the
+        blocking folder job has had a chance to finish."""
+
+        async def _requeue() -> None:
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+            job = self.jobs.get(job_id)
+            if job is None or job_id in self._cancelled:
+                return
+            if job.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                return
+            job.status = JobStatus.QUEUED
+            ticket = concurrency_manager.reserve_ticket(job_id)
+            self._queue.put_nowait((ticket, job_id))
+            self._last_progress_at[job_id] = time.monotonic()
+
+        # Keep a strong reference until the task finishes; a bare create_task()
+        # can be collected while still awaiting the sleep.
+        task = asyncio.create_task(_requeue())
+        self._requeue_tasks.add(task)
+        task.add_done_callback(self._requeue_tasks.discard)
+
     def _track_candidate_paths(self, file_path: str) -> List[str]:
         if "::" in file_path:
             return []
@@ -570,6 +687,10 @@ class JobManager:
         for job in self.jobs.values():
             if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
                 continue
+            # A directory job protects its whole subtree against concurrent
+            # mutation: a target *inside* the in-flight folder is in use.
+            if self._directory_job_blocks(job, target):
+                return job
             for candidate in self._candidate_paths(job):
                 cand_path = self._normalize_path(candidate)
                 if cand_path is None:
@@ -596,6 +717,10 @@ class JobManager:
                 continue
             if job.mode in _EXTERNAL_JOB_MODES:
                 continue
+            # Reject a delete that targets a path inside another active
+            # directory job's source folder (its whole subtree is in use).
+            if self._directory_job_blocks(job, target):
+                return True
             for candidate in self._candidate_paths(job):
                 cand_path = self._normalize_path(candidate)
                 if cand_path is None:
@@ -1350,11 +1475,23 @@ class JobManager:
             await self._prune_jobs(exclude_id=job_id)
             return
 
+        # If this job's path is inside a folder another job is currently packing
+        # (makeps3iso folder->iso), don't fail — wait in the queue and retry once
+        # that folder job releases its subtree lock, like any queued job.
+        if await run_in_threadpool(self._blocked_by_dir_lock, job):
+            await self._defer_blocked_job(job_id, output_lock_held=False)
+            return
+
         # Try to acquire lock for the output file (prevents race conditions)
         lock_acquired = lock_manager.acquire_lock(
             job.output_path, allow_existing=job.allow_overwrite
         )
         if not lock_acquired:
+            # A transient block by a folder->iso subtree lock (racing the
+            # precheck) waits & re-queues rather than failing.
+            if await run_in_threadpool(self._blocked_by_dir_lock, job):
+                await self._defer_blocked_job(job_id, output_lock_held=False)
+                return
             # Could not acquire lock - either file exists or is being converted
             # Check current status to provide better error message
             file_exists, is_locked = lock_manager.check_file_status(job.output_path)
@@ -1378,6 +1515,23 @@ class JobManager:
             await self._cleanup_temp_dir(job)
             await self._prune_jobs(exclude_id=job_id)
             return
+
+        # A directory-input job (makeps3iso folder->iso) additionally locks its
+        # whole source subtree, so any concurrent per-file job / rename / delete
+        # whose path falls inside the folder contends on the lock instead of
+        # corrupting the in-flight ISO. A conflict here means another job is
+        # already operating inside the folder; fail like an output collision.
+        dir_lock_acquired = False
+        if job.input_kind == InputKind.DIRECTORY:
+            dir_lock_acquired = await run_in_threadpool(
+                lock_manager.acquire_dir_lock, job.file_path,
+            )
+            if not dir_lock_acquired:
+                # Another job is operating inside this folder; wait in the queue
+                # and retry rather than failing (releases the output lock taken
+                # just above).
+                await self._defer_blocked_job(job_id, output_lock_held=True)
+                return
 
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.now(timezone.utc)
@@ -1797,6 +1951,9 @@ class JobManager:
             # Only release lock if we acquired it
             if lock_acquired:
                 lock_manager.release_lock(job.output_path)
+            # Release the directory subtree lock held by a folder->iso job.
+            if dir_lock_acquired:
+                lock_manager.release_dir_lock(job.file_path)
 
             concurrency_manager.release(job_id)
 

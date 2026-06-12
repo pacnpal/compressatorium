@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### PS3 decrypted folder → ISO (issue #98, Phase 2)
+
+#### New
+
+- **Build a PS3 `.iso` from a decrypted disc/JB folder.** A new **PS3 ISO**
+  tool packages a folder you've already decrypted (a `PS3_GAME/` root, plus
+  `PS3_DISC.SFB` for disc rips) into a single `.iso` that RPCS3 mounts directly,
+  using **makeps3iso**. This is the first conversion whose input is a *folder*,
+  not a file: browse to (or search for) a PS3 folder, switch to the PS3 ISO
+  tool, and the folder becomes selectable like any source row — clicking its
+  name still navigates in. The output is `<folder>.iso` next to the source (or
+  in your chosen output directory). After a successful build the tool does a
+  light PARAM.SFO `TITLE_ID` readback from the produced ISO and flags a mismatch
+  in the job message. Decryption and keys are **out of scope** — this only
+  repackages folders you already decrypted, and it never deletes the source
+  folder (no delete-on-verify).
+
+#### Internal
+
+- The directory-input seam scaffolded in Phase 1 (`InputKind` +
+  `ModeSpec.input_kinds`, `ToolPlugin.accepts_directory`,
+  `registry.tools_for_directory`, the `services.ps3` detector) is now wired
+  end-to-end: a `MakePs3IsoTool` + `makeps3iso` service, `ConversionJob.input_kind`
+  threaded through `plan_job` / the job pipeline (a directory source skips the
+  archive-extract path), convertible-directory annotation in the file listing
+  **and** recursive search, frontend selection for convertible folders, and
+  lock-manager **subtree protection** (a per-file job / rename / delete inside an
+  in-flight folder is rejected so it can't corrupt the ISO). `InputKind` moved
+  from `services.tools.spec` to `models` (re-exported) so the job model can type
+  the field without an import cycle. The makeps3iso binary (GPL-3.0,
+  `bucanero/ps3iso-utils`, pinned commit) is built unmodified in the multi-stage
+  `Dockerfile`, mirroring maxcso, and confirmed to build on linux/amd64 and
+  linux/arm64 (plain portable C, no x86 asm). Tests: `tests/test_makeps3iso.py`,
+  plus directory coverage in `tests/test_ps3_detector.py`.
+
 ### CSO → CHD in one step (issue #98, Phase 1)
 
 #### New

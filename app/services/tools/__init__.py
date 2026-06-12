@@ -11,6 +11,7 @@ from .base import BaseTool, ToolPlugin
 from .chain import ChainTool
 from .chdman import ChdmanTool
 from .dolphin import DolphinTool
+from .makeps3iso import MakePs3IsoTool
 from .maxcso import MaxcsoTool
 from .nsz import NszTool
 from .registry import ToolRegistry
@@ -25,6 +26,7 @@ registry.register(Z3dsTool(settings.z3ds_compressor_path))
 registry.register(NszTool(settings.nsz_path))
 registry.register(MaxcsoTool(settings.maxcso_path))
 registry.register(RomzTool(settings.sevenzip_path))
+registry.register(MakePs3IsoTool(settings.makeps3iso_path))
 # Composite/pipeline modes register last: ChainTool drives the component tools
 # above through the registry, so they must already be present.
 registry.register(ChainTool(registry, chdman_path=settings.chdman_path))

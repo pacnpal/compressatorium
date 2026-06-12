@@ -126,6 +126,13 @@ class Settings(BaseSettings):
         default="/usr/local/bin/maxcso", alias="MAXCSO_PATH",
     )
 
+    # makeps3iso binary path (decrypted PS3 disc/JB folder -> .iso). Built from
+    # source (bucanero/ps3iso-utils, GPL-3.0) into the image at
+    # /usr/local/bin/makeps3iso; set MAKEPS3ISO_PATH to relocate/override.
+    makeps3iso_path: str = Field(
+        default="/usr/local/bin/makeps3iso", alias="MAKEPS3ISO_PATH",
+    )
+
     # Extra free space (MB) a chained conversion (e.g. cso->iso->chd) keeps
     # beyond its estimated peak before starting. A chain holds source + full
     # intermediate + partial final at once, so it preflights disk headroom on
@@ -284,6 +291,18 @@ class Settings(BaseSettings):
     )
     maxcso_verify_timeout: int | None = Field(
         default=None, alias="COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT",
+    )
+    # makeps3iso (PS3 folder -> ISO): one packing subprocess. Its verify is a
+    # pure-Python PARAM.SFO readback (no child process), so only the shared
+    # nice/ioprio policy applies; expose the per-tool overrides for parity.
+    makeps3iso_nice: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_MAKEPS3ISO_NICE",
+    )
+    makeps3iso_ioprio_class: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_MAKEPS3ISO_IOPRIO_CLASS",
+    )
+    makeps3iso_ioprio_level: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_MAKEPS3ISO_IOPRIO_LEVEL",
     )
     # romz (7z ROM packer): like nsz/z3ds/maxcso, info() is a filesystem read so
     # only a verify-timeout override is exposed, no info-timeout.

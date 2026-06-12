@@ -57,6 +57,28 @@ def _detect_file_outputs(
     return convertible_by, outputs, by_tool
 
 
+def _detect_directory_outputs(
+    item_path: str,
+) -> tuple[list[str], list[OutputStatus]]:
+    """Registry-driven convertibility + output detection for a directory row.
+
+    The directory analogue of :func:`_detect_file_outputs`: ask the registry
+    which tools accept this folder as their input unit (``tools_for_directory``
+    runs each tool's source-layout detector) and collect their sibling outputs
+    (``<folder>.iso``). Cheap but does disk I/O (a stat for ``PS3_GAME/`` and a
+    small SFO header read) — call it inside the threadpool scan, never on the
+    event loop.
+    """
+    convertible_by: list[str] = []
+    outputs: list[OutputStatus] = []
+    for tool in registry.tools_for_directory(item_path):
+        convertible_by.append(tool.id)
+        status = tool.detect_output(item_path)
+        if status is not None:
+            outputs.append(status)
+    return convertible_by, outputs
+
+
 def _detect_archive_member_outputs(
     entry: dict, archive_dir: str,
 ) -> tuple[str, list[str], list[OutputStatus], dict[str, OutputStatus]]:
@@ -204,6 +226,19 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
             status_code=409, detail=f"Path is in use by active job {job_id}",
         )
 
+    # Also reject when the target is a descendant of an active directory job's
+    # source folder (makeps3iso packing the whole subtree). The candidate-path
+    # match above can't see that containment, so delegate to the registry-aware
+    # central lookup which knows each job's input_kind.
+    blocking = await run_in_threadpool(
+        job_manager.find_active_job_for_path, path, is_dir=is_dir,
+    )
+    if blocking is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Path is in use by active job {blocking.id}",
+        )
+
 
 @router.get("/volumes", response_model=list[Volume])
 async def list_volumes():
@@ -252,8 +287,21 @@ async def list_files(
 
                 try:
                     if os.path.isdir(item_path):
+                        # Annotate a convertible folder (a PS3 disc/JB folder
+                        # makeps3iso can pack) just like a file row, so the
+                        # browser can badge + select it. A plain folder gets
+                        # empty lists and stays navigation-only.
+                        dir_convertible_by, dir_outputs = (
+                            _detect_directory_outputs(item_path)
+                        )
                         entries.append(
-                            FileEntry(name=item, path=item_path, type="directory"),
+                            FileEntry(
+                                name=item,
+                                path=item_path,
+                                type="directory",
+                                convertible_by=dir_convertible_by,
+                                outputs=dir_outputs,
+                            ),
                         )
                     elif os.path.isfile(item_path):
                         size = os.path.getsize(item_path)
@@ -410,7 +458,34 @@ async def search_files(
 
                     try:
                         if os.path.isdir(item_path):
-                            if recursive_scan and not os.path.islink(item_path):
+                            # A convertible folder (PS3 disc/JB folder) is itself
+                            # a job unit: emit it as a selectable directory row so
+                            # it's discoverable in search / batch-select, and do
+                            # NOT recurse past it (its inner files aren't separate
+                            # jobs). scan_directory alone would leave it invisible
+                            # to recursive search. A plain folder still recurses.
+                            dir_convertible_by, dir_outputs = (
+                                _detect_directory_outputs(item_path)
+                            )
+                            if dir_convertible_by:
+                                files.append(
+                                    {
+                                        "name": item,
+                                        "path": item_path,
+                                        "type": "directory",
+                                        "size": None,
+                                        "extension": "",
+                                        "chd_path": None,
+                                        "in_archive": False,
+                                        "convertible_by": dir_convertible_by,
+                                        "outputs": dir_outputs,
+                                        "verifiable_by": [],
+                                        **_legacy_output_fields(
+                                            dir_convertible_by, {},
+                                        ),
+                                    },
+                                )
+                            elif recursive_scan and not os.path.islink(item_path):
                                 _scan(item_path)
                         elif os.path.isfile(item_path):
                             is_archive = ext in ARCHIVE_EXTENSIONS

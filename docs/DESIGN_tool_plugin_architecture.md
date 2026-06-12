@@ -429,13 +429,50 @@ New chained conversions (xci→nsp, wud→wua, a future folder→iso→chd) are 
 
 Every input seam keys off `Path(filename).suffix`; a folder has none. For
 directory-unit conversions (issue #98 Phase 2, makeps3iso folder→iso) the seam
-is an `InputKind` enum + `ModeSpec.input_kinds` (default `{FILE}`, zero behavior
-change), a `ToolPlugin.accepts_directory(path)` predicate (default `False`; the
-directory analogue of `ext in input_extensions`), and
-`registry.tools_for_directory(path)`. The per-source-type detector for PS3 lives
-in `services/ps3.py` (requires the `PS3_GAME/` disc/JB layout). Scaffolding only
-so far — the makeps3iso tool, listing annotation, job-model `input_kind`, and UI
-selection are not wired yet.
+is an `InputKind` enum (defined in `models.py` so `ConversionJob` can type its
+field without an import cycle; re-exported from `services.tools.spec`) +
+`ModeSpec.input_kinds` (default `{FILE}`, zero behavior change), a
+`ToolPlugin.accepts_directory(path)` predicate (default `False`; the directory
+analogue of `ext in input_extensions`), and `registry.tools_for_directory(path)`.
+The per-source-type detector for PS3 lives in `services/ps3.py` (requires the
+`PS3_GAME/` disc/JB layout, rejecting bare installed-game folders).
+
+The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
+`InputKind.DIRECTORY` mode), is wired end-to-end:
+
+- **Tool/service.** `MakePs3IsoTool.accepts_directory` runs `ps3.is_ps3_iso_source`;
+  `makeps3iso_service` shells out via `SubprocessRunner.run(["makeps3iso", folder,
+  out.iso], …)`, derives the output from the folder's **normalized basename**
+  (`<folder>.iso`, never `.iso` from a trailing slash), removes a partial ISO on
+  cancel/failure, and runs a light **PARAM.SFO `TITLE_ID` readback** from the
+  built ISO (reusing the shared `disc_id.read_iso_file` ISO 9660 reader) as an
+  advisory check — `supports_delete_on_verify=False`, so a curated source folder
+  is never auto-deleted.
+- **Job model.** `ConversionJob.input_kind: InputKind` is threaded end-to-end
+  (derived from the mode spec at queue time, serialized to a string only at the
+  API/persistence edge). The generic `_process_job` flow already handles a
+  directory source — the archive-extract branch is gated on `"::"`, which a
+  folder never carries — so no directory-specific convert branch is needed.
+- **Listing + search.** `files.py` annotates convertible directory rows
+  (`_detect_directory_outputs` → `registry.tools_for_directory`) with
+  `convertible_by` + the sibling `.iso` output in **both** `scan_directory` and
+  the recursive search `_scan` (the latter emits the folder as a job unit and
+  does not recurse past it, so it's discoverable / batch-selectable).
+- **Lock manager.** A directory job protects its whole subtree:
+  `find_active_job_for_path` / `_is_path_in_use_by_other_job` (and the files-route
+  `_assert_path_not_in_use`, which delegates to the former) treat any path that is
+  a **descendant** of an active `InputKind.DIRECTORY` job's source as in-use, so a
+  per-file job / rename / delete inside an in-flight folder can't corrupt the ISO.
+- **Plan + UI.** `plan_job` branches on `InputKind.DIRECTORY in spec.input_kinds`
+  (validate `isdir` + the detector, normalized basename for output + display
+  name). The frontend mode carries `inputKinds: ['directory']`; a *convertible*
+  directory row becomes checkbox-selectable (`fileBrowser._isSelectable` /
+  `conversion.allowsInputEntry`) while the name-click still navigates — a plain
+  directory stays navigation-only.
+
+The `-s` 4 GB FAT32 split flag is not exposed (single `.iso`; target volumes are
+ext4/NTFS/exFAT). makeps3iso (GPL-3.0) is built unmodified from a pinned
+`bucanero/ps3iso-utils` commit in the multi-stage `Dockerfile`, mirroring maxcso.
 
 ### 3.4 `registry.py`
 
