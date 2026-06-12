@@ -207,11 +207,25 @@ are the obvious knob to tune from observed timings later).
   `mode_specs()`/`spec()` (structural compatibility); optional `chain_specs()`
   helper.
 - `app/services/job_manager.py` — create/pass `work_dir` for chain modes; no
-  progress or verify changes.
+  progress or verify changes. **One non-obvious change:** `_process_job` embeds
+  the disc-ID `GAME`/`NAME` CHD tags only when `job.mode.value` is *exactly*
+  `createcd`/`createdvd`. `cso_to_chd` hides the final `createdvd` behind the
+  composite mode, so the produced `.chd` would **lose the tags a direct
+  `createdvd` gets**. Fix: have `ChainTool` run that post-convert tag step for its
+  final create step (it knows the final tool/mode), or generalize the embed into
+  the `post_convert` hook (`docs/DESIGN_tool_plugin_architecture.md` §3.2) so the
+  chain inherits it. The chain must call `post_convert` on the final step's tool.
 - `app/routes/convert.py` — `plan_job` already resolves output via
-  `registry.for_mode(mode).output_path` and validates against
-  `spec.input_extensions`; confirm the `ChainSpec` path validates the `.cso`
-  input. No structural change expected.
+  `registry.for_mode(mode).output_path`, but its **input-extension validation is
+  not generic**: it lives in hard-coded per-tool branches
+  (`is_dolphin`/`is_z3ds`/`is_nsz`/`is_cso`/`is_romz`). A `ChainSpec` with
+  `tool_id="chain"` matches none of them, so a direct API/batch submission for
+  `cso_to_chd` would **skip validation and accept any non-`.chd` file**, failing
+  late in the worker. Fix: add a **registry-driven extension check** — validate
+  `_input_extension(path) in spec.input_extensions` for any spec/tool not covered
+  by a legacy branch (ideally fold the legacy branches into the same generic
+  check). This is a small but **required** structural change, not the no-op the
+  earlier draft assumed.
 - `app/models.py` — add `cso_to_chd` to `ConversionMode`.
 - `app/services/disk.py` *(new)* — `ensure_headroom`.
 - `app/config.py` — optional headroom margin / setting (no new binary path —
@@ -299,6 +313,18 @@ suffix, so add a small **`InputKind`** seam rather than faking an extension:
   the small SFO header) and inside the threadpool. A directory variant of
   `tools_for_input` (`tools_for_directory`) drives this. (Open Q6: always-on vs
   lazy hydration like archive summaries.)
+- **Frontend selection/action (not just annotation).** Annotating folder rows
+  with `convertible_by`/`outputs` is necessary but **not sufficient** to make
+  folder→iso usable: the browser treats directories as navigation only —
+  `FileRow` routes a directory click to navigation and `fileBrowser._isSelectable()`
+  returns `false` for every `entry.type === 'directory'`. Without a change, a
+  valid PS3 folder shows metadata but **can't be selected or submitted**. Phase 2
+  must therefore add a frontend path for directory modes: make a
+  *convertible* directory row selectable (e.g. `_isSelectable` returns true when
+  the row has `convertible_by`, distinct from the navigation affordance) and give
+  it a convert action, while a plain directory stays navigation-only. This is a
+  `src/` change (`FileRow`/`fileBrowser`/`RowActionsMenu`), beyond the
+  `registry.js`/model edits listed below.
 - **`detect_output` for a folder.** No suffix to swap — derive the sibling from
   the folder **basename**: `<parent>/<folder_name>.iso`. `MakePs3IsoTool.detect_output`
   reports it (in-progress vs ready via `lock_manager.check_file_status`).
@@ -343,12 +369,20 @@ suffix, so add a small **`InputKind`** seam rather than faking an extension:
 The directory analogue of an extension check, in a new `app/services/ps3.py`
 (or on the tool), threaded through detect → plan → process:
 
-- **Disc folder:** contains `PS3_GAME/` **and** `PS3_DISC.SFB`.
-- **Game folder:** contains a `PARAM.SFO` under a TITLEID directory (or at the
-  expected `PS3_GAME/PARAM.SFO` path).
+- **Disc rip (JB) folder:** contains a **`PS3_GAME/` root**, and for a true disc
+  image also `PS3_DISC.SFB`. This is the layout `makeps3iso` packages.
 
-A folder matching either shape is a valid makeps3iso input; anything else is not
-offered. The SFO read reuses the existing PSF parser in `disc_id.py`.
+**Require the disc/JB layout — a bare `PARAM.SFO` is not enough.** Accepting any
+TITLEID directory that merely contains a `PARAM.SFO` would also match
+installed-game / HDD `game/` / digital game-data layouts that have **no
+`PS3_GAME` root or `PS3_DISC.SFB`**. `makeps3iso` is not meant to package those —
+they'd be advertised in the UI and queued as valid `folder_to_iso` inputs but
+produce an invalid ISO or fail late. So the detector must **prove the folder is a
+genuine makeps3iso source** (require the `PS3_GAME/` disc structure, with
+`PS3_DISC.SFB` for disc rips) before advertising it; a folder that only has a
+`PARAM.SFO` under a TITLEID is **rejected**. The SFO read (for the title/id
+readback in §2.3's optional verify) reuses the existing PSF parser in
+`disc_id.py`.
 
 ### 2.5 Reused (Phase 1 / existing) vs new
 
