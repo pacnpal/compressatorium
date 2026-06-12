@@ -46,8 +46,13 @@ class MakePs3IsoTool(BaseTool):
             input_kinds=frozenset({InputKind.DIRECTORY}),
         ),
     )
-    # The .iso it produces, for output badges / scan discovery.
-    output_extensions = frozenset({".iso"})
+    # Intentionally does NOT advertise ".iso" in output_extensions. That union
+    # feeds the global metadata/DAT scan walk (registry.scannable_extensions),
+    # and ".iso" is a generic source suffix (raw PS2/PSP/Wii/CD-DVD images) that
+    # no tool can verify — advertising it would drag every library ISO into a
+    # full-file-SHA1 scan. The produced "<folder>.iso" is surfaced via the
+    # directory row's detect_output badge instead, which needs no extension
+    # registration. (BaseTool defaults output_extensions to an empty set.)
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
