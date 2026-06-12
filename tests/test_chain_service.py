@@ -115,7 +115,7 @@ def test_chain_orchestration_progress_and_intermediate(chain_env, tmp_path):
 
 
 def test_chain_propagates_cancel_and_cleans_up(chain_env, tmp_path):
-    calls, work, install = chain_env
+    _calls, work, install = chain_env
     install(cso_cancel=True)
     src = tmp_path / "Game.cso"
     src.write_bytes(b"x" * 1000)

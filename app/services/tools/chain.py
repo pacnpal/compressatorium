@@ -87,7 +87,7 @@ class ChainTool(BaseTool):
 
     def __init__(self, registry: "ToolRegistry", *, chdman_path: str) -> None:
         # No binary of its own; it drives the component tools via the registry.
-        self.binary_path = ""
+        super().__init__("")
         self._registry = registry
         self._chdman_path = chdman_path
 

@@ -9,12 +9,6 @@ from app.services import disk
 from app.services.disk import InsufficientDiskSpace, ensure_headroom
 
 
-def _fake_usage(free_by_path):
-    def _usage(path):
-        return os.terminal_size((0, 0)) if False else _Usage(free_by_path(path))
-    return _usage
-
-
 class _Usage:
     def __init__(self, free):
         self.total = free
