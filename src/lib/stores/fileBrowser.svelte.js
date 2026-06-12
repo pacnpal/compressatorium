@@ -557,7 +557,14 @@ class FileBrowserStore {
    */
   _isSelectable(entry) {
     if (!entry) return false;
-    if (entry.type === 'directory') return false;
+    if (entry.type === 'directory') {
+      // Directories are navigation-only EXCEPT under a directory-input mode
+      // (makeps3iso folder_to_iso), where a folder the backend marked
+      // convertible becomes a selectable job unit. The name-click still
+      // navigates (handled in FileRow); only the checkbox selects, mirroring
+      // how archive rows browse-on-name / select-on-checkbox.
+      return conversion.allowsInputEntry(entry);
+    }
     if (entry.type === 'archive') {
       // Archives are normally browse-into containers, not selectable rows.
       // They become selectable only when the active mode takes the archive
@@ -583,7 +590,10 @@ class FileBrowserStore {
   get convertibleSelection() {
     const out = [];
     for (const entry of this.selectedFiles.values()) {
-      if (conversion.allowsInput(entry?.path)) out.push(entry);
+      // Entry-aware gate (not just the path) so a directory mode submits only
+      // convertible folders and a file mode never submits a stale folder
+      // selection left over from switching tools.
+      if (conversion.allowsInputEntry(entry)) out.push(entry);
     }
     return out;
   }

@@ -24,7 +24,7 @@ from services.archive import archive_service
 from services.job_manager import QueueBackpressureError, job_manager
 from services.romz import romz_service
 from services.lock_manager import lock_manager
-from services.tools import ModeKind, registry
+from services.tools import InputKind, ModeKind, registry
 from sse_starlette.sse import EventSourceResponse
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
 from utils.path_utils import is_within_configured_volumes
@@ -221,6 +221,7 @@ class SkipReason(Enum):
     ROMZ_INVALID_ARCHIVE = "romz_invalid_archive"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
     CHAIN_BAD_EXTENSION = "chain_bad_extension"
+    PS3_FOLDER_INVALID = "ps3_folder_invalid"
 
 
 class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
@@ -302,7 +303,66 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         400,
         "cso_to_chd requires a .cso/.zso/.dax source",
     ),
+    SkipReason.PS3_FOLDER_INVALID: (
+        400,
+        "folder_to_iso requires a decrypted PS3 disc/JB folder "
+        "(a PS3_GAME/ root, plus PS3_DISC.SFB for disc rips)",
+    ),
 }
+
+
+async def _plan_directory_job(
+    file_path: str,
+    *,
+    mode: str,
+    output_dir: str | None,
+    duplicate_action: DuplicateAction,
+) -> JobPlan:
+    """Resolve a directory-input job (makeps3iso folder->iso) into a ``JobPlan``.
+
+    Delete-on-verify is not offered for directory modes (the tool's
+    ``supports_delete_on_verify`` is False and the route blocks it upstream), so
+    there is no delete snapshot here.
+    """
+    if not await run_in_threadpool(os.path.isdir, file_path):
+        raise SkipFile(SkipReason.FILE_NOT_FOUND)
+    # Registry-driven: the tool's accepts_directory runs its source-layout
+    # detector (PS3 disc/JB layout) off the event loop — no tool-identity branch.
+    accepts = await run_in_threadpool(
+        registry.for_mode(mode).accepts_directory, file_path,
+    )
+    if not accepts:
+        raise SkipFile(SkipReason.PS3_FOLDER_INVALID)
+
+    normalized = os.path.normpath(file_path)
+    display_filename = os.path.basename(normalized)
+    output_path = await run_in_threadpool(
+        _get_output_path, mode, normalized, output_dir,
+    )
+    base_output_path = output_path
+
+    output_exists, is_locked = check_output_conflicts(mode, output_path)
+    if output_exists or is_locked:
+        if duplicate_action == DuplicateAction.SKIP:
+            raise SkipFile(SkipReason.OUTPUT_EXISTS)
+        if duplicate_action == DuplicateAction.OVERWRITE:
+            if is_locked:
+                raise SkipFile(SkipReason.OUTPUT_LOCKED)
+        elif duplicate_action == DuplicateAction.RENAME:
+            output_path = get_unique_output_path(output_path)
+
+    allow_overwrite = (
+        duplicate_action == DuplicateAction.OVERWRITE and output_exists
+    )
+    return JobPlan(
+        file_path=file_path,
+        output_path=output_path,
+        base_output_path=base_output_path,
+        allow_overwrite=allow_overwrite,
+        display_filename=display_filename,
+        delete_snapshot=None,
+        priority=0,
+    )
 
 
 async def plan_job(
@@ -331,6 +391,18 @@ async def plan_job(
     is_cso = spec.tool_id == "cso"
     is_romz = spec.tool_id == "romz"
     is_chain = spec.tool_id == "chain"
+
+    # Directory-as-input mode (makeps3iso folder->iso): a folder, not a file with
+    # a suffix. Validate isdir + the tool's source-layout detector instead of
+    # isfile + an extension match, and derive the output / display name from the
+    # NORMALIZED basename (a trailing slash otherwise yields "" -> ".iso").
+    if InputKind.DIRECTORY in spec.input_kinds:
+        return await _plan_directory_job(
+            file_path,
+            mode=mode,
+            output_dir=output_dir,
+            duplicate_action=duplicate_action,
+        )
 
     archive_source_dir = None  # Directory where the archive is located (for output)
     output_path = None

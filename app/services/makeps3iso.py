@@ -1,0 +1,229 @@
+"""Wrapper for ``makeps3iso`` (https://github.com/bucanero/ps3iso-utils).
+
+makeps3iso packages an already-decrypted PS3 disc/JB folder (a ``PS3_GAME/``
+root, plus ``PS3_DISC.SFB`` for disc rips) into a single ``.iso`` that RPCS3
+mounts directly. Decryption and keys are out of scope — this only repackages a
+folder the user already decrypted.
+
+This is the first **directory-as-input** tool: its unit of work is a folder, not
+a file with a suffix, so it relies on the ``services.ps3`` source-layout detector
+(``ToolPlugin.accepts_directory``) instead of an extension match.
+
+CLI: ``makeps3iso <input_folder> <output.iso>`` (a ``-s`` flag would split the
+output at 4 GB for FAT32; we always emit a single ``.iso`` — target volumes are
+ext4/NTFS/exFAT). makeps3iso has no native verify, so after a successful build
+the service does a light **PARAM.SFO ``TITLE_ID`` readback** from the produced
+ISO (reusing ``services.ps3`` + the shared ISO 9660 reader) and confirms it
+matches the source folder. The readback is advisory: a mismatch / unreadable
+header logs a warning but does not fail the job (and never deletes the curated
+source folder — ``supports_delete_on_verify`` is ``False``).
+"""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import os
+import re
+from collections.abc import AsyncGenerator
+from pathlib import Path
+
+from config import settings
+from logging_setup import get_logger
+from services import ps3
+from services.subprocess_runner import (
+    ConversionCancelled,
+    SubprocessRunner,
+    ioprio_prefix,
+)
+
+# SubprocessRunner "owner" for the shared priority/timeout policy. An optional
+# COMPRESSATORIUM_MAKEPS3ISO_* override takes precedence over the tool-neutral
+# COMPRESSATORIUM_TOOL_* default (see services/subprocess_runner.py).
+_OWNER = "makeps3iso"
+
+# makeps3iso draws a percentage as it writes the ISO; pull the last "NN%" token
+# off a line. When a build emits no parseable percentage the SubprocessRunner
+# falls back to output-file growth for stall detection, so progress just holds
+# at its last value until the final 100% — it never false-stalls.
+_PROGRESS_RE = re.compile(r"(\d{1,3})\s*%")
+
+logger = get_logger("makeps3iso")
+
+
+class MakePs3IsoService:
+    """Wrapper for the makeps3iso binary."""
+
+    def __init__(self) -> None:
+        self.makeps3iso_path = settings.makeps3iso_path
+        self._runner = SubprocessRunner(owner=_OWNER)
+
+    # ----- command ----------------------------------------------------------
+
+    def _build_command(self, folder: str, output_path: str) -> list[str]:
+        cmd = [self.makeps3iso_path, folder, output_path]
+        # run() applies nice via preexec but not ionice, so wrap with the shared
+        # ionice prefix here (mirrors chdman) — packing an ISO is I/O-heavy.
+        prefix = ioprio_prefix(self._runner.owner)
+        return prefix + cmd if prefix else cmd
+
+    def _parse_progress(self, line: str) -> int | None:
+        match = None
+        for match in _PROGRESS_RE.finditer(line):
+            pass
+        if match is None:
+            return None
+        value = int(match.group(1))
+        return value if 0 <= value <= 100 else None
+
+    def active_pids(self) -> list[int]:
+        return self._runner.active_pids()
+
+    # ----- output paths -----------------------------------------------------
+
+    @staticmethod
+    def get_output_path(
+        input_path: str,
+        output_dir: str | None = None,
+        *,
+        treat_as_stem: bool = False,  # noqa: ARG004 - interface parity
+    ) -> str:
+        """Output ``.iso`` path for a folder input.
+
+        Derived from the folder's **normalized basename**, not a suffix swap: a
+        trailing slash would make ``os.path.basename("/a/MyGame/")`` return
+        ``""`` and yield an invalid ``.../MyGame/.iso``. ``treat_as_stem`` is
+        accepted only for interface parity with the file-based tools (a folder
+        never arrives as a flattened archive member).
+        """
+        normalized = os.path.normpath(input_path)
+        filename = f"{os.path.basename(normalized)}.iso"
+        if output_dir:
+            return str(Path(output_dir) / filename)
+        return str(Path(normalized).parent / filename)
+
+    # ----- convert ----------------------------------------------------------
+
+    async def convert(
+        self,
+        input_path: str,
+        output_path: str,
+        mode: str = "folder_to_iso",  # noqa: ARG002 - single-mode tool
+        *,
+        compression: str | None = None,  # noqa: ARG002 - no compression knob
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        cmd = self._build_command(input_path, output_path)
+        try:
+            async for update in self._runner.run(
+                cmd,
+                input_path=input_path,
+                output_path=output_path,
+                parse_progress=self._parse_progress,
+                cancel_event=cancel_event,
+                fail_label="makeps3iso",
+                complete_message="ISO build complete",
+            ):
+                # Hold back the runner's terminal 100% so the readback message
+                # is the final update the job records.
+                if update.get("progress", 0) >= 100:
+                    continue
+                yield update
+        except Exception:
+            # makeps3iso writes the .iso in place, so a cancel / non-zero exit /
+            # stall leaves a partial behind. Remove it so a retry isn't blocked
+            # by (or silently trusts) a truncated image. (run() does not clean
+            # the output itself.)
+            if await asyncio.to_thread(os.path.exists, output_path):
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(os.remove, output_path)
+            raise
+
+        message = await asyncio.to_thread(
+            self._readback_message, input_path, output_path,
+        )
+        yield {"progress": 100, "message": message}
+
+    @staticmethod
+    def _readback_message(folder: str, iso_path: str) -> str:
+        """Light PARAM.SFO TITLE_ID readback; advisory, never fatal."""
+        try:
+            source_id = ps3.ps3_title_id(folder)
+            built_id = ps3.ps3_iso_title_id(iso_path)
+        except Exception as exc:  # never let the readback fail a good build
+            logger.debug("makeps3iso readback skipped for %s: %s", iso_path, exc)
+            return "ISO build complete"
+        if source_id and built_id:
+            if source_id == built_id:
+                return f"ISO build complete (verified TITLE_ID {built_id})"
+            logger.warning(
+                "makeps3iso TITLE_ID mismatch for %s: source=%s built=%s",
+                iso_path, source_id, built_id,
+            )
+            return "ISO build complete (warning: TITLE_ID mismatch)"
+        if not built_id:
+            logger.warning(
+                "makeps3iso could not read back PARAM.SFO TITLE_ID from %s",
+                iso_path,
+            )
+        return "ISO build complete"
+
+    # ----- info -------------------------------------------------------------
+
+    def info(self, folder_path: str) -> dict:
+        """Filesystem-level info for a PS3 folder (PARAM.SFO title/id).
+
+        Synchronous; wrap callers in a threadpool.
+        """
+        if not os.path.isdir(folder_path):
+            raise FileNotFoundError(f"Folder not found: {folder_path}")
+
+        total = 0
+        for root, _dirs, names in os.walk(folder_path):
+            for name in names:
+                with contextlib.suppress(OSError):
+                    total += os.path.getsize(os.path.join(root, name))
+
+        keys = ps3.ps3_folder_sfo_keys(folder_path)
+        size_mb = total / (1024 * 1024)
+        size_display = (
+            f"{size_mb:.2f} MB" if size_mb < 1024 else f"{size_mb / 1024:.2f} GB"
+        )
+        return {
+            "file": folder_path,
+            "size": total,
+            "size_display": size_display,
+            "format": "PS3 disc/JB folder",
+            "extension": "",
+            "compressed": False,
+            "compression_type": None,
+            "title": keys.get("TITLE") or None,
+            "title_id": keys.get("TITLE_ID") or None,
+        }
+
+    # ----- verify -----------------------------------------------------------
+
+    async def verify(self, iso_path: str) -> dict:
+        """Confirm a built ``.iso`` carries a readable PS3 PARAM.SFO TITLE_ID.
+
+        makeps3iso has no native verify; this is the light readback. It is not
+        wired to delete-on-verify (deleting a curated source folder is
+        destructive), so it only runs when explicitly requested.
+        """
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("makeps3iso verify (TITLE_ID readback) for %s", iso_path)
+        title_id = await asyncio.to_thread(ps3.ps3_iso_title_id, iso_path)
+        if title_id:
+            return {"valid": True, "message": f"PS3 ISO TITLE_ID {title_id}"}
+        return {
+            "valid": False,
+            "message": "No readable PS3 PARAM.SFO TITLE_ID in ISO",
+        }
+
+
+# Re-exported so callers can `except ConversionCancelled` symmetrically with the
+# other services even though makeps3iso raises it via the shared runner.
+__all__ = ["ConversionCancelled", "MakePs3IsoService", "makeps3iso_service"]
+
+# Global service instance
+makeps3iso_service = MakePs3IsoService()

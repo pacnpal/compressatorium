@@ -4,6 +4,26 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict
 
 
+class InputKind(str, Enum):
+    """The unit of work a conversion mode consumes.
+
+    The codebase historically keyed every input seam off
+    ``Path(filename).suffix``, which assumes a file. A directory has no suffix,
+    so a mode that packages a folder (makeps3iso folder->iso) declares
+    ``DIRECTORY`` and relies on a detector predicate
+    (``ToolPlugin.accepts_directory``) instead of an extension match.
+
+    Defined here (rather than in ``services.tools.spec``) so ``ConversionJob``
+    can type its ``input_kind`` field against the enum without importing the
+    ``services.tools`` package — that package imports ``models`` while building
+    the registry, so the reverse import would be a cycle. ``spec.py`` re-exports
+    it, keeping ``from services.tools.spec import InputKind`` working.
+    """
+
+    FILE = "file"
+    DIRECTORY = "directory"
+
+
 class ConversionMode(str, Enum):
     CREATERAW = "createraw"
     CREATEHD = "createhd"
@@ -33,6 +53,7 @@ class ConversionMode(str, Enum):
     ROMZ_7Z = "romz_7z"
     ROMZ_ZIP = "romz_zip"
     ROMZ_EXTRACT = "romz_extract"
+    FOLDER_TO_ISO = "folder_to_iso"
     METADATA_SCAN = "metadata_scan"
     DAT_MATCH = "dat_match"
 
@@ -132,6 +153,12 @@ class ConversionJob(BaseModel):
     allow_overwrite: bool = False
     compression: str | None = None
     delete_on_verify: bool = False
+    # The unit of work this job consumes. FILE for every existing mode; a
+    # directory-input mode (makeps3iso folder->iso) carries DIRECTORY so the
+    # pipeline skips the archive-extract / file-only assumptions and the lock
+    # manager can protect the whole source subtree. Serialized to its string
+    # value at the API/persistence edge (InputKind is a str enum).
+    input_kind: InputKind = InputKind.FILE
 
 
 class JobCreateRequest(BaseModel):
@@ -278,6 +305,19 @@ class RomzInfo(BaseModel):
     contained_name: str | None = None
     original_size: int | None = None
     ratio: str | None = None
+
+
+class Ps3IsoInfo(BaseModel):
+    """Information about a decrypted PS3 disc/JB folder (makeps3iso source)."""
+    file: str
+    size: int
+    size_display: str
+    format: str | None = None
+    extension: str
+    compressed: bool
+    compression_type: str | None = None
+    title: str | None = None
+    title_id: str | None = None
 
 
 class LayoutPreferences(BaseModel):

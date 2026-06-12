@@ -9,26 +9,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+# ``InputKind`` lives in ``models`` so ``ConversionJob`` can type its field
+# against it without importing the ``services.tools`` package (which imports
+# ``models`` to build the registry — the reverse import would be a cycle). It is
+# re-exported here so ``from services.tools.spec import InputKind`` and the
+# ``ModeSpec.input_kinds`` default keep working unchanged.
+from models import InputKind
+
 
 class ModeKind(str, Enum):
     CREATE = "create"      # source -> compressed container
     EXTRACT = "extract"    # compressed container -> source
     COPY = "copy"          # recompress in place
     COMPRESS = "compress"  # generic one-shot compressor (z3ds-style)
-
-
-class InputKind(str, Enum):
-    """The unit of work a mode consumes.
-
-    Everything in the codebase historically keyed input off
-    ``Path(filename).suffix``, which assumes a file. A directory has no
-    suffix, so a mode that packages a folder (makeps3iso folder->iso) declares
-    ``DIRECTORY`` and relies on a detector predicate
-    (``ToolPlugin.accepts_directory``) instead of an extension match.
-    """
-
-    FILE = "file"
-    DIRECTORY = "directory"
 
 
 @dataclass(frozen=True)

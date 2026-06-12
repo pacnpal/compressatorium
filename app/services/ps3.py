@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 
-from services.disc_id import parse_sfo_keys
+from services.disc_id import parse_sfo_keys, read_iso_file
 
 
 def is_ps3_iso_source(path: str) -> bool:
@@ -47,3 +47,23 @@ def ps3_title_id(path: str) -> str | None:
     """Best-effort TITLE_ID for a PS3 disc/JB folder (verify/info readback)."""
     keys = read_sfo_keys(os.path.join(path, "PS3_GAME", "PARAM.SFO"))
     return keys.get("TITLE_ID") or None
+
+
+def ps3_folder_sfo_keys(path: str) -> dict[str, str]:
+    """All PARAM.SFO string keys for a PS3 disc/JB folder (info display)."""
+    return read_sfo_keys(os.path.join(path, "PS3_GAME", "PARAM.SFO"))
+
+
+def ps3_iso_title_id(iso_path: str) -> str | None:
+    """Best-effort TITLE_ID read back from a built PS3 ``.iso``.
+
+    The light, no-native-verify integrity check: walk the produced ISO 9660
+    image to ``PS3_GAME/PARAM.SFO`` and read its ``TITLE_ID`` (reusing the
+    shared ISO reader + SFO parser), so the makeps3iso service can confirm the
+    packed ISO carries the same title id as the source folder. Returns ``None``
+    when the image isn't a readable PS3 ISO.
+    """
+    data = read_iso_file(iso_path, ["PS3_GAME", "PARAM.SFO"])
+    if not data:
+        return None
+    return parse_sfo_keys(data).get("TITLE_ID") or None

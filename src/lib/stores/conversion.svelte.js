@@ -95,6 +95,42 @@ class ConversionStore {
   }
 
   /**
+   * True when the active mode's unit of work is a directory (makeps3iso
+   * folder_to_iso), declared via the registry mode's `inputKinds`. A
+   * directory mode accepts only convertible folders, never files.
+   */
+  get isDirectoryMode() {
+    const kinds = this.currentSpec?.inputKinds;
+    return Array.isArray(kinds) && kinds.includes('directory');
+  }
+
+  /**
+   * Whether the given listing entry is a valid input for the active mode.
+   * The entry-aware companion to `allowsInput(path)`: it can see `entry.type`
+   * and the backend's `entry.convertible_by`, which a bare path can't. Used by
+   * fileBrowser for both selection gating and the convertible subset, so a
+   * directory mode only ever submits convertible folders and a file mode never
+   * submits a folder.
+   *
+   * - Directory mode: only a directory row the backend marked convertible by
+   *   THIS tool qualifies (folders the detector accepts).
+   * - File/archive mode: a directory never qualifies; otherwise fall back to
+   *   the path-based `allowsInput`.
+   */
+  allowsInputEntry(entry) {
+    if (!entry) return false;
+    if (this.isDirectoryMode) {
+      return (
+        entry.type === 'directory'
+        && Array.isArray(entry.convertible_by)
+        && entry.convertible_by.includes(this.currentTool?.id)
+      );
+    }
+    if (entry.type === 'directory') return false;
+    return this.allowsInput(entry.path);
+  }
+
+  /**
    * True when the given path is a valid input for the currently
    * selected mode. Used by fileBrowser to gate selection so users
    * can't queue jobs the worker would just reject, e.g. selecting a

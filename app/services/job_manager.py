@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from config import settings
 from fastapi.concurrency import run_in_threadpool
-from models import ConversionJob, ConversionMode, JobStatus
+from models import ConversionJob, ConversionMode, InputKind, JobStatus
 from services.archive import archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
@@ -166,6 +166,21 @@ class JobManager:
                     "Output path matches input; refusing to overwrite source"
                 )
 
+        # Carry the mode's input kind end-to-end so the pipeline skips the
+        # archive-extract / file-only assumptions for a directory job and the
+        # lock manager can protect the whole source subtree. Derived from the
+        # registry spec (every conversion mode is registered; external jobs
+        # bypass this path), so FILE/DIRECTORY can't drift via a typo.
+        try:
+            mode_spec = registry.spec(mode.value)
+            input_kind = (
+                InputKind.DIRECTORY
+                if InputKind.DIRECTORY in mode_spec.input_kinds
+                else InputKind.FILE
+            )
+        except KeyError:
+            input_kind = InputKind.FILE
+
         job = ConversionJob(
             id=job_id,
             file_path=file_path,
@@ -178,6 +193,7 @@ class JobManager:
             allow_overwrite=allow_overwrite,
             compression=compression,
             delete_on_verify=delete_on_verify,
+            input_kind=input_kind,
         )
 
         self.jobs[job_id] = job
@@ -524,6 +540,32 @@ class JobManager:
         except (OSError, RuntimeError):
             return None
 
+    @staticmethod
+    def _is_descendant(target: Path, ancestor: Path) -> bool:
+        """Whether ``target`` is at or below ``ancestor`` (pure path prefix)."""
+        try:
+            target.relative_to(ancestor)
+            return True
+        except ValueError:
+            return False
+
+    def _directory_job_blocks(self, job: ConversionJob, target: Path) -> bool:
+        """True when ``target`` lives inside an active directory job's source.
+
+        A directory job (makeps3iso folder->iso) is packaging its whole source
+        subtree, so a per-file job / rename / delete on any path *under* that
+        folder — e.g. ``<folder>/PS3_GAME/PARAM.SFO`` while ``<folder>`` is being
+        packed — would corrupt the in-flight ISO. The bare path-hash lock can't
+        see that containment (a child hashes to a different key), so guard it
+        here. Cheap: a normalized ``Path`` prefix check, no extra disk I/O.
+        """
+        if job.input_kind != InputKind.DIRECTORY:
+            return False
+        job_dir = self._normalize_path(job.file_path)
+        if job_dir is None:
+            return False
+        return self._is_descendant(target, job_dir)
+
     def _track_candidate_paths(self, file_path: str) -> List[str]:
         if "::" in file_path:
             return []
@@ -570,6 +612,10 @@ class JobManager:
         for job in self.jobs.values():
             if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
                 continue
+            # A directory job protects its whole subtree against concurrent
+            # mutation: a target *inside* the in-flight folder is in use.
+            if self._directory_job_blocks(job, target):
+                return job
             for candidate in self._candidate_paths(job):
                 cand_path = self._normalize_path(candidate)
                 if cand_path is None:
@@ -596,6 +642,10 @@ class JobManager:
                 continue
             if job.mode in _EXTERNAL_JOB_MODES:
                 continue
+            # Reject a delete that targets a path inside another active
+            # directory job's source folder (its whole subtree is in use).
+            if self._directory_job_blocks(job, target):
+                return True
             for candidate in self._candidate_paths(job):
                 cand_path = self._normalize_path(candidate)
                 if cand_path is None:

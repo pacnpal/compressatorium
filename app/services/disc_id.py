@@ -193,6 +193,27 @@ def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
     return entries
 
 
+def read_iso_file(iso_path: str, path_parts: list[str]) -> Optional[bytes]:
+    """Read one file's bytes from an ISO 9660 image by path, or ``None``.
+
+    The shared, format-only ISO 9660 path lookup: open the image, walk the PVD
+    root directory to ``path_parts`` (e.g. ``["PS3_GAME", "PARAM.SFO"]``), and
+    return the file bytes. Callers that need a specific embedded file from a
+    built ISO (PS3 ``TITLE_ID`` readback in ``services.ps3``) reuse this rather
+    than re-implementing the ISO 9660 walk, per the repo's "modularity is key"
+    rule. Returns ``None`` for a non-ISO / unreadable image or a missing path.
+    """
+    try:
+        with open(iso_path, "rb") as f:
+            pvd = _read_pvd(f)
+            if not pvd:
+                return None
+            root_lba, root_size = _pvd_root_dir(pvd)
+            return _find_file(f, root_lba, root_size, path_parts)
+    except OSError:
+        return None
+
+
 def _find_file(f, root_lba: int, root_size: int, path_parts: list[str]) -> Optional[bytes]:
     """
     Walk an ISO 9660 directory tree and return the raw bytes of the file at

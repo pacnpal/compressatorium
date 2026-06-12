@@ -63,6 +63,13 @@ const ROMZ_COMPRESS_EXTS = ['.gb', '.gbc', '.gba', '.nds'];
 const ROMZ_VERIFY_EXTS = ['.7z', '.zip'];
 const ROMZ_SOURCE_EXTS = [...ROMZ_COMPRESS_EXTS, ...ROMZ_VERIFY_EXTS];
 
+// makeps3iso (PS3 folder -> ISO). The unit of work is a DIRECTORY, not a file
+// with a suffix, so it declares no source/verify extensions; the mode carries
+// `inputKinds: ['directory']` and selection runs through the backend's
+// per-folder `convertible_by` annotation instead of an extension match.
+const PS3_SOURCE_EXTS = [];
+const PS3_VERIFY_EXTS = [];
+
 /**
  * @typedef {Object} ModeEntry
  * @property {string} mode
@@ -71,6 +78,7 @@ const ROMZ_SOURCE_EXTS = [...ROMZ_COMPRESS_EXTS, ...ROMZ_VERIFY_EXTS];
  * @property {string} group
  * @property {string|null} outputExt
  * @property {string[]} inputExtensions
+ * @property {string[]} [inputKinds]   ['directory'] for a folder-input mode; omitted ⇒ file
  * @property {boolean} supportsCompression
  * @property {boolean} supportsCompressionLevel
  * @property {boolean} supportsDeleteOnVerify
@@ -446,6 +454,38 @@ export const TOOLS = [
       if (/\.(7z|zip)$/i.test(path)) return path.replace(/\.(7z|zip)$/i, '');
       return path;
     },
+  },
+  {
+    id: 'makeps3iso',
+    label: 'PS3 ISO',
+    hint: 'Build a PS3 .iso from a decrypted disc/JB folder (a PS3_GAME/ root). No keys, no decryption.',
+    // No verify endpoint: makeps3iso's only check is a backend PARAM.SFO
+    // TITLE_ID readback, not a user-facing /api verify route.
+    verifyPrefix: '',
+    sourceExts: PS3_SOURCE_EXTS,
+    verifyExts: PS3_VERIFY_EXTS,
+    modeGroups: ['makeps3iso'],
+    groups: { makeps3iso: 'PS3 Folder → ISO' },
+    defaultMode: 'folder_to_iso',
+    glyph: 'PS3',
+    accent: 'var(--badge-dvd)',
+    compressionCodecs: [],
+    compressionStyle: 'none',
+    modes: [
+      // The only directory-input mode: its `inputKinds` flips fileBrowser
+      // selection from "files only" to "convertible folders only".
+      { mode: 'folder_to_iso', kind: 'create', label: 'PS3 Folder → ISO', group: 'makeps3iso',
+        outputExt: '.iso', inputExtensions: [], inputKinds: ['directory'],
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+    ],
+    // No file-path Info/Verify: a folder has no extension to route on. Left
+    // undefined so infoToolsForPath / toolForVerifyPath skip this tool.
+    getInfo: undefined,
+    verify: undefined,
+    verifyBatch: undefined,
+    // The product is a sibling "<folder>.iso" (folder name, not a stem swap).
+    productPath: (path) => `${(path ?? '').replace(/[/\\]+$/, '')}.iso`,
   },
 ];
 

@@ -20,7 +20,9 @@
 
   const selected = $derived(fileBrowser.selectedFiles.has(path));
   // Files are always selectable; archives only when the active mode takes the
-  // archive directly (e.g. romz_extract on .7z/.zip). Drives the checkbox.
+  // archive directly (e.g. romz_extract on .7z/.zip); directories only under a
+  // folder-input mode (makeps3iso) and only when the backend marked them
+  // convertible. Drives the checkbox; the name button still navigates.
   const selectable = $derived(fileBrowser.isSelectable(entry));
   const datMatch = $derived(datMatching.matchFor(path));
   const chdMeta = $derived(chdMetadata.metadataFor(path));
@@ -148,7 +150,7 @@
         </Badge>
       {/if}
     {/each}
-    {#if isFile && convertibleBy.length > 0}
+    {#if (isFile || isDirectory) && convertibleBy.length > 0}
       <span class="convertible-hint" title={`Convertible by: ${convertibleBy.join(', ')}`}>
         {convertibleBy.join('·')}
       </span>

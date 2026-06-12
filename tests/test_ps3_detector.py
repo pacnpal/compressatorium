@@ -82,10 +82,15 @@ def test_title_id_readback(tmp_path):
     assert ps3_title_id(str(root)) == "BLES01807"
 
 
-def test_registry_directory_seam_present(tmp_path):
-    # The seam exists; no directory tool is registered yet (makeps3iso is
-    # deferred), so a valid PS3 folder resolves to no tool for now.
+def test_registry_directory_resolves_makeps3iso(tmp_path):
+    # A valid PS3 disc/JB folder resolves to the makeps3iso tool via the
+    # directory seam; an arbitrary folder resolves to no tool.
     root = tmp_path / "MyGame"
     (root / "PS3_GAME").mkdir(parents=True)
     (root / "PS3_DISC.SFB").write_bytes(b"\x00")
-    assert registry.tools_for_directory(str(root)) == []
+    tools = registry.tools_for_directory(str(root))
+    assert [t.id for t in tools] == ["makeps3iso"]
+
+    plain = tmp_path / "random"
+    plain.mkdir()
+    assert registry.tools_for_directory(str(plain)) == []
