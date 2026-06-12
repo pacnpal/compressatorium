@@ -566,6 +566,74 @@ class JobManager:
             return False
         return self._is_descendant(target, job_dir)
 
+    def _blocked_by_dir_lock(self, job: ConversionJob) -> bool:
+        """Whether this job's input/output is inside a directory subtree another
+        job has locked (a makeps3iso folder->iso job packing that tree).
+
+        Such a conflict is **transient** — it clears when the folder job
+        finishes — so the dispatcher waits and re-queues the job rather than
+        failing it, exactly like a job waiting its turn in the queue.
+        """
+        if job.input_kind == InputKind.DIRECTORY:
+            return lock_manager.dir_lock_would_conflict(job.file_path)
+        paths = [job.output_path]
+        if "::" not in job.file_path:
+            paths.append(job.file_path)
+        return any(lock_manager.is_within_locked_dir(p) for p in paths if p)
+
+    async def _defer_blocked_job(self, job_id: str, *, output_lock_held: bool) -> None:
+        """Release a job blocked by a directory subtree lock and re-queue it.
+
+        The job waits its turn in the queue and is re-dispatched once the folder
+        job releases the lock — the same outcome as any queued job, never a
+        failure. Releases the held slot (and the output lock when one was taken)
+        so the folder job and others can proceed meanwhile.
+        """
+        job = self.jobs.get(job_id)
+        if output_lock_held and job is not None and job.output_path:
+            lock_manager.release_lock(job.output_path)
+        if job_id in self._cancel_events:
+            del self._cancel_events[job_id]
+        concurrency_manager.release(job_id)
+        if job is not None:
+            job.message = "Waiting for an in-progress folder conversion to finish..."
+            await self._notify_subscribers(
+                job_id,
+                {
+                    "type": "status",
+                    "job_id": job_id,
+                    "status": job.status.value,
+                    "progress": job.progress,
+                    "message": job.message,
+                },
+            )
+        self._schedule_dir_lock_requeue(job_id)
+
+    def _schedule_dir_lock_requeue(self, job_id: str, delay: float = 2.0) -> None:
+        """Re-dispatch a deferred job after a short delay so it retries once the
+        blocking folder job has had a chance to finish."""
+
+        async def _requeue() -> None:
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+            job = self.jobs.get(job_id)
+            if job is None or job_id in self._cancelled:
+                return
+            if job.status in (
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+            ):
+                return
+            job.status = JobStatus.QUEUED
+            ticket = concurrency_manager.reserve_ticket(job_id)
+            self._queue.put_nowait((ticket, job_id))
+            self._last_progress_at[job_id] = time.monotonic()
+
+        asyncio.create_task(_requeue())
+
     def _track_candidate_paths(self, file_path: str) -> List[str]:
         if "::" in file_path:
             return []
@@ -1400,11 +1468,23 @@ class JobManager:
             await self._prune_jobs(exclude_id=job_id)
             return
 
+        # If this job's path is inside a folder another job is currently packing
+        # (makeps3iso folder->iso), don't fail — wait in the queue and retry once
+        # that folder job releases its subtree lock, like any queued job.
+        if await run_in_threadpool(self._blocked_by_dir_lock, job):
+            await self._defer_blocked_job(job_id, output_lock_held=False)
+            return
+
         # Try to acquire lock for the output file (prevents race conditions)
         lock_acquired = lock_manager.acquire_lock(
             job.output_path, allow_existing=job.allow_overwrite
         )
         if not lock_acquired:
+            # A transient block by a folder->iso subtree lock (racing the
+            # precheck) waits & re-queues rather than failing.
+            if await run_in_threadpool(self._blocked_by_dir_lock, job):
+                await self._defer_blocked_job(job_id, output_lock_held=False)
+                return
             # Could not acquire lock - either file exists or is being converted
             # Check current status to provide better error message
             file_exists, is_locked = lock_manager.check_file_status(job.output_path)
@@ -1440,19 +1520,10 @@ class JobManager:
                 lock_manager.acquire_dir_lock, job.file_path,
             )
             if not dir_lock_acquired:
-                lock_manager.release_lock(job.output_path)
-                job.status = JobStatus.FAILED
-                job.error_message = "Source folder is in use by another active job"
-                job.completed_at = datetime.now(timezone.utc)
-                await self._notify_subscribers(
-                    job_id,
-                    {"type": "error", "job_id": job_id, "error": job.error_message},
-                )
-                if job_id in self._cancel_events:
-                    del self._cancel_events[job_id]
-                concurrency_manager.release(job_id)
-                await self._cleanup_temp_dir(job)
-                await self._prune_jobs(exclude_id=job_id)
+                # Another job is operating inside this folder; wait in the queue
+                # and retry rather than failing (releases the output lock taken
+                # just above).
+                await self._defer_blocked_job(job_id, output_lock_held=True)
                 return
 
         job.status = JobStatus.PROCESSING

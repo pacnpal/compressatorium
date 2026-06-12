@@ -107,8 +107,14 @@ async def test_search_emits_convertible_directory(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
+def _confine_to_volume(monkeypatch, root):
+    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(root))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(root))
+
+
 @pytest.mark.asyncio
-async def test_plan_job_accepts_valid_ps3_dir(tmp_path):
+async def test_plan_job_accepts_valid_ps3_dir(tmp_path, monkeypatch):
+    _confine_to_volume(monkeypatch, tmp_path)
     folder = _make_ps3_folder(tmp_path / "MyGame")
     plan = await convert_routes.plan_job(
         str(folder),
@@ -121,6 +127,25 @@ async def test_plan_job_accepts_valid_ps3_dir(tmp_path):
     assert plan.output_path == str(tmp_path / "MyGame.iso")
     assert plan.display_filename == "MyGame"
     assert plan.allow_overwrite is False
+
+
+@pytest.mark.asyncio
+async def test_plan_job_rejects_output_outside_volumes(tmp_path, monkeypatch):
+    # The PS3 folder is itself the volume root, so the default sibling output
+    # ("<root>.iso") lands outside all configured volumes -> rejected.
+    vol = tmp_path / "vol"
+    _make_ps3_folder(vol)
+    _confine_to_volume(monkeypatch, vol)
+    with pytest.raises(convert_routes.SkipFile) as exc:
+        await convert_routes.plan_job(
+            str(vol),
+            spec=registry.spec("folder_to_iso"),
+            mode="folder_to_iso",
+            output_dir=None,
+            duplicate_action=convert_routes.DuplicateAction.SKIP,
+            delete_on_verify=False,
+        )
+    assert exc.value.reason is convert_routes.SkipReason.PS3_OUTPUT_OUTSIDE_VOLUMES
 
 
 @pytest.mark.asyncio
@@ -157,7 +182,8 @@ async def test_plan_job_rejects_output_inside_source(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_plan_job_handles_trailing_slash(tmp_path):
+async def test_plan_job_handles_trailing_slash(tmp_path, monkeypatch):
+    _confine_to_volume(monkeypatch, tmp_path)
     _make_ps3_folder(tmp_path / "MyGame")
     plan = await convert_routes.plan_job(
         str(tmp_path / "MyGame") + "/",  # trailing slash
@@ -320,3 +346,54 @@ def test_dir_lock_serializes_subtree(tmp_path):
     # Once released, the subtree is free again.
     assert lock_manager.acquire_lock(inside) is True
     lock_manager.release_lock(inside)
+
+
+@pytest.mark.asyncio
+async def test_blocked_job_requeues_instead_of_failing(tmp_path):
+    # A job whose output is inside a folder being packed waits in the queue and
+    # is re-dispatched, rather than being failed. job_manager resolves its
+    # lock/concurrency managers via absolute ``services.*`` imports, so import
+    # those from the same module graph (the ``app.services.*`` aliases are
+    # distinct singletons under PYTHONPATH=app).
+    from app.services.job_manager import job_manager
+    from services.concurrency_manager import concurrency_manager
+    from services.lock_manager import lock_manager
+
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_inside = str(tmp_path / "MyGame" / "PS3_GAME" / "extra.chd")
+    job = ConversionJob(
+        id="ps3wait1",
+        file_path=str(tmp_path / "src.cue"),
+        filename="src.cue",
+        mode=ConversionMode.CREATECD,
+        status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        output_path=out_inside,
+        input_kind=InputKind.FILE,
+    )
+    job_manager.jobs[job.id] = job
+    assert lock_manager.acquire_dir_lock(folder) is True
+    try:
+        # The output lives inside the packed folder -> a transient block: wait.
+        assert job_manager._blocked_by_dir_lock(job) is True
+        # Re-dispatch (no delay) re-queues the job; it is never failed.
+        job_manager._schedule_dir_lock_requeue(job.id, delay=0)
+        await asyncio.sleep(0.05)
+        assert job.status == JobStatus.QUEUED
+        drained, found = [], False
+        while not job_manager._queue.empty():
+            item = job_manager._queue.get_nowait()
+            if item[1] == job.id:
+                found = True
+            else:
+                drained.append(item)
+        for item in drained:
+            job_manager._queue.put_nowait(item)
+        assert found
+    finally:
+        lock_manager.release_dir_lock(folder)
+        concurrency_manager.release_ticket(job.id)
+        job_manager.jobs.pop(job.id, None)
+        job_manager._cancelled.discard(job.id)
+    # With the folder lock gone, the job is no longer blocked.
+    assert job_manager._blocked_by_dir_lock(job) is False

@@ -45,20 +45,70 @@ class LockManager:
 
     @staticmethod
     def _path_within(child: str, parent: str) -> bool:
-        """True when normalized ``child`` is ``parent`` or nested under it."""
+        """True when resolved ``child`` is ``parent`` or nested under it."""
         if child == parent:
             return True
         return child.startswith(parent + os.sep)
 
-    def _within_locked_dir_locked(self, normalized_path: str) -> bool:
-        """Whether ``normalized_path`` falls inside a locked directory subtree.
+    @staticmethod
+    def _resolve(path: str) -> str:
+        """Resolve symlinks (and normalize) so subtree containment can't be
+        bypassed by reaching a locked directory through a symlinked path
+        (e.g. ``/vol/link_to_Game/PS3_GAME/...`` vs the locked ``/vol/Game``).
+        ``realpath`` resolves the existing ancestors of a not-yet-created output
+        and leaves the leaf lexical, which is exactly what containment needs.
+        """
+        try:
+            return os.path.realpath(path)
+        except OSError:
+            return os.path.normpath(path)
 
-        Caller must hold ``self._lock_mutex``.
+    def _within_locked_dir_locked(self, resolved_path: str) -> bool:
+        """Whether an already-resolved path falls inside a locked dir subtree.
+
+        Caller must hold ``self._lock_mutex`` and pass a ``_resolve``-d path.
+        ``self._dir_locks`` entries are stored resolved.
         """
         return any(
-            self._path_within(normalized_path, locked_dir)
+            self._path_within(resolved_path, locked_dir)
             for locked_dir in self._dir_locks
         )
+
+    def _dir_overlaps_locked(self, resolved: str) -> bool:
+        """Whether a directory subtree at resolved path overlaps any lock.
+
+        Caller must hold ``self._lock_mutex``. True when the directory itself is
+        locked, a locked output file resolves inside it, or another directory
+        lock nests with it in either direction.
+        """
+        if resolved in self._dir_locks:
+            return True
+        if any(self._path_within(self._resolve(p), resolved) for p in self._locks):
+            return True
+        return any(
+            self._path_within(resolved, d) or self._path_within(d, resolved)
+            for d in self._dir_locks
+        )
+
+    def is_within_locked_dir(self, path: str) -> bool:
+        """Whether ``path`` falls inside a directory subtree another job locked.
+
+        The read-only companion to :meth:`acquire_lock`'s subtree check: lets the
+        job pipeline tell a *transient* conflict (an active folder->iso job is
+        packing a tree this path lives in — wait and retry) apart from a
+        permanent one (the output already exists — fail). Resolves symlinks.
+        """
+        with self._lock_mutex:
+            if not self._dir_locks:
+                return False
+            return self._within_locked_dir_locked(self._resolve(path))
+
+    def dir_lock_would_conflict(self, dir_path: str) -> bool:
+        """Whether :meth:`acquire_dir_lock` for ``dir_path`` would currently
+        conflict with an existing lock (without acquiring anything)."""
+        resolved = self._resolve(dir_path)
+        with self._lock_mutex:
+            return self._dir_overlaps_locked(resolved)
 
     def _lock_file_path(self, normalized_path: str) -> str:
         # Use a stable hash to avoid path length issues and keep locks in /tmp.
@@ -154,10 +204,11 @@ class LockManager:
         """
         normalized_path = os.path.normpath(output_path)
         with self._lock_mutex:
-            is_locked = (
-                normalized_path in self._locks
-                or self._within_locked_dir_locked(normalized_path)
-            )
+            is_locked = normalized_path in self._locks
+            # Resolve symlinks only when a directory subtree lock is actually
+            # held (the uncommon case), to keep the hot listing path cheap.
+            if not is_locked and self._dir_locks:
+                is_locked = self._within_locked_dir_locked(self._resolve(output_path))
             file_exists = os.path.isfile(normalized_path)
 
         if is_locked:
@@ -236,8 +287,11 @@ class LockManager:
 
             # Reject a target that lives inside a directory subtree another job
             # has locked (makeps3iso packing the folder): the per-file job
-            # contends here just like an exact output collision.
-            if self._within_locked_dir_locked(normalized_path):
+            # contends here just like an exact output collision. Resolve
+            # symlinks so a symlinked path into the folder can't slip through.
+            if self._dir_locks and self._within_locked_dir_locked(
+                self._resolve(output_path)
+            ):
                 return False
 
             # Try to create a lock file
@@ -352,18 +406,11 @@ class LockManager:
         directory lock (in either nesting direction), or an external process
         already holds the directory's lock file.
         """
-        normalized = os.path.normpath(dir_path)
+        # Store and compare directory locks resolved, so containment holds
+        # through symlinks.
+        normalized = self._resolve(dir_path)
         with self._lock_mutex:
-            if normalized in self._dir_locks:
-                return False
-            # A locked output file already living inside this subtree.
-            if any(self._path_within(p, normalized) for p in self._locks):
-                return False
-            # Another directory lock overlapping in either direction.
-            if any(
-                self._path_within(normalized, d) or self._path_within(d, normalized)
-                for d in self._dir_locks
-            ):
+            if self._dir_overlaps_locked(normalized):
                 return False
 
             lock_file_path = self._lock_file_path(normalized)
@@ -403,7 +450,7 @@ class LockManager:
 
     def release_dir_lock(self, dir_path: str):
         """Release a directory subtree lock acquired via :meth:`acquire_dir_lock`."""
-        normalized = os.path.normpath(dir_path)
+        normalized = self._resolve(dir_path)
         with self._lock_mutex:
             if normalized not in self._dir_locks:
                 return

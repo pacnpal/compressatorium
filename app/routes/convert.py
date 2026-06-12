@@ -223,6 +223,7 @@ class SkipReason(Enum):
     CHAIN_BAD_EXTENSION = "chain_bad_extension"
     PS3_FOLDER_INVALID = "ps3_folder_invalid"
     PS3_OUTPUT_INSIDE_SOURCE = "ps3_output_inside_source"
+    PS3_OUTPUT_OUTSIDE_VOLUMES = "ps3_output_outside_volumes"
 
 
 class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
@@ -314,6 +315,11 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         "Output .iso would be written inside the source folder being packed; "
         "choose an output directory outside the PS3 folder",
     ),
+    SkipReason.PS3_OUTPUT_OUTSIDE_VOLUMES: (
+        400,
+        "Default output .iso would land outside the configured volumes "
+        "(the PS3 folder is a volume root); choose an in-volume output directory",
+    ),
 }
 
 
@@ -352,10 +358,21 @@ async def _plan_directory_job(
     # into itself and corrupt the image. The default output is a sibling
     # ("<folder>.iso"), so this only triggers when output_dir is set to the
     # source folder or a descendant. (The lock manager's subtree protection
-    # guards against *other* jobs, not a job's own output.)
-    output_norm = os.path.normpath(output_path)
-    if output_norm == normalized or output_norm.startswith(normalized + os.sep):
+    # guards against *other* jobs, not a job's own output.) Resolve symlinks
+    # first so a symlinked output dir into the tree can't slip past this.
+    output_real = await run_in_threadpool(os.path.realpath, output_path)
+    source_real = await run_in_threadpool(os.path.realpath, file_path)
+    if output_real == source_real or output_real.startswith(source_real + os.sep):
         raise SkipFile(SkipReason.PS3_OUTPUT_INSIDE_SOURCE)
+
+    # The route only validates a user-supplied output_dir; the *derived* sibling
+    # output is unchecked. When the PS3 folder is itself a volume root, that
+    # sibling lands outside all configured volumes, so enforce the same volume
+    # boundary the rest of the API treats as the access edge.
+    if not await run_in_threadpool(
+        is_within_configured_volumes, output_path, treat_archives=False,
+    ):
+        raise SkipFile(SkipReason.PS3_OUTPUT_OUTSIDE_VOLUMES)
 
     output_exists, is_locked = check_output_conflicts(mode, output_path)
     if output_exists or is_locked:
