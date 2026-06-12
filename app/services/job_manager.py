@@ -1429,6 +1429,32 @@ class JobManager:
             await self._prune_jobs(exclude_id=job_id)
             return
 
+        # A directory-input job (makeps3iso folder->iso) additionally locks its
+        # whole source subtree, so any concurrent per-file job / rename / delete
+        # whose path falls inside the folder contends on the lock instead of
+        # corrupting the in-flight ISO. A conflict here means another job is
+        # already operating inside the folder; fail like an output collision.
+        dir_lock_acquired = False
+        if job.input_kind == InputKind.DIRECTORY:
+            dir_lock_acquired = await run_in_threadpool(
+                lock_manager.acquire_dir_lock, job.file_path,
+            )
+            if not dir_lock_acquired:
+                lock_manager.release_lock(job.output_path)
+                job.status = JobStatus.FAILED
+                job.error_message = "Source folder is in use by another active job"
+                job.completed_at = datetime.now(timezone.utc)
+                await self._notify_subscribers(
+                    job_id,
+                    {"type": "error", "job_id": job_id, "error": job.error_message},
+                )
+                if job_id in self._cancel_events:
+                    del self._cancel_events[job_id]
+                concurrency_manager.release(job_id)
+                await self._cleanup_temp_dir(job)
+                await self._prune_jobs(exclude_id=job_id)
+                return
+
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.now(timezone.utc)
         processing_now = sum(
@@ -1847,6 +1873,9 @@ class JobManager:
             # Only release lock if we acquired it
             if lock_acquired:
                 lock_manager.release_lock(job.output_path)
+            # Release the directory subtree lock held by a folder->iso job.
+            if dir_lock_acquired:
+                lock_manager.release_dir_lock(job.file_path)
 
             concurrency_manager.release(job_id)
 

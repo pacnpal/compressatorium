@@ -289,3 +289,34 @@ def test_directory_job_protects_subtree(tmp_path):
         assert job_manager.find_active_job_for_path(outside) is None
     finally:
         job_manager.jobs.pop(job.id, None)
+
+
+def test_dir_lock_serializes_subtree(tmp_path):
+    # A directory subtree lock makes any path inside the folder contend on the
+    # lock exactly like an output collision, so a concurrent per-file job can't
+    # write into the tree while makeps3iso packs it.
+    from app.services.lock_manager import lock_manager
+
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    inside = str(tmp_path / "MyGame" / "PS3_GAME" / "extra.chd")
+    sibling = str(tmp_path / "MyGame.iso")
+
+    assert lock_manager.acquire_dir_lock(folder) is True
+    try:
+        # The whole subtree reads as locked; acquiring a per-file lock inside
+        # the folder is refused.
+        _exists, is_locked = lock_manager.check_file_status(inside)
+        assert is_locked is True
+        assert lock_manager.acquire_lock(inside) is False
+        # A sibling output (the job's own .iso) is outside the subtree, so it
+        # locks normally.
+        assert lock_manager.acquire_lock(sibling) is True
+        lock_manager.release_lock(sibling)
+        # A second packing of the same folder is refused while it's locked.
+        assert lock_manager.acquire_dir_lock(folder) is False
+    finally:
+        lock_manager.release_dir_lock(folder)
+
+    # Once released, the subtree is free again.
+    assert lock_manager.acquire_lock(inside) is True
+    lock_manager.release_lock(inside)
