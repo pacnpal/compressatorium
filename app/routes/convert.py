@@ -222,6 +222,7 @@ class SkipReason(Enum):
     DOLPHIN_SAME_PATH = "dolphin_same_path"
     CHAIN_BAD_EXTENSION = "chain_bad_extension"
     PS3_FOLDER_INVALID = "ps3_folder_invalid"
+    PS3_OUTPUT_INSIDE_SOURCE = "ps3_output_inside_source"
 
 
 class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
@@ -308,6 +309,11 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         "folder_to_iso requires a decrypted PS3 disc/JB folder "
         "(a PS3_GAME/ root, plus PS3_DISC.SFB for disc rips)",
     ),
+    SkipReason.PS3_OUTPUT_INSIDE_SOURCE: (
+        400,
+        "Output .iso would be written inside the source folder being packed; "
+        "choose an output directory outside the PS3 folder",
+    ),
 }
 
 
@@ -340,6 +346,16 @@ async def _plan_directory_job(
         _get_output_path, mode, normalized, output_dir,
     )
     base_output_path = output_path
+
+    # Refuse to write the ISO inside the very folder being packed: makeps3iso
+    # walks the source tree, so an output under it would be (partially) ingested
+    # into itself and corrupt the image. The default output is a sibling
+    # ("<folder>.iso"), so this only triggers when output_dir is set to the
+    # source folder or a descendant. (The lock manager's subtree protection
+    # guards against *other* jobs, not a job's own output.)
+    output_norm = os.path.normpath(output_path)
+    if output_norm == normalized or output_norm.startswith(normalized + os.sep):
+        raise SkipFile(SkipReason.PS3_OUTPUT_INSIDE_SOURCE)
 
     output_exists, is_locked = check_output_conflicts(mode, output_path)
     if output_exists or is_locked:

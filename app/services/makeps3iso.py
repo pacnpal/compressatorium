@@ -68,12 +68,12 @@ class MakePs3IsoService:
         return prefix + cmd if prefix else cmd
 
     def _parse_progress(self, line: str) -> int | None:
-        match = None
-        for match in _PROGRESS_RE.finditer(line):
-            pass
-        if match is None:
+        # Take the LAST percentage on the line (makeps3iso may redraw several on
+        # one carriage-return-joined chunk; the last is the current value).
+        matches = _PROGRESS_RE.findall(line)
+        if not matches:
             return None
-        value = int(match.group(1))
+        value = int(matches[-1])
         return value if 0 <= value <= 100 else None
 
     def active_pids(self) -> list[int]:

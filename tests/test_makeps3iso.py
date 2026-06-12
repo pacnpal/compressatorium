@@ -7,7 +7,6 @@ search directory annotation, the service convert (mocked subprocess), and the
 from __future__ import annotations
 
 import asyncio
-import struct
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,40 +18,7 @@ from app.routes import files as files_routes
 from app.services.makeps3iso import ConversionCancelled, makeps3iso_service
 from app.services.tools import registry
 
-
-def _make_sfo(pairs: list[tuple[str, str]]) -> bytes:
-    keys_blob = b""
-    key_offsets = []
-    for key, _ in pairs:
-        key_offsets.append(len(keys_blob))
-        keys_blob += key.encode("ascii") + b"\x00"
-    data_blob = b""
-    data_meta = []
-    for _, value in pairs:
-        encoded = value.encode("utf-8") + b"\x00"
-        data_meta.append((len(data_blob), len(encoded)))
-        data_blob += encoded
-    num = len(pairs)
-    index_size = num * 16
-    key_table_off = 20 + index_size
-    data_table_off = key_table_off + len(keys_blob)
-    header = struct.pack("<4sHH", b"\x00PSF", 1, 1)
-    header += struct.pack("<III", key_table_off, data_table_off, num)
-    index = b""
-    for key_off, (data_off, data_len) in zip(key_offsets, data_meta):
-        index += struct.pack("<HHIII", key_off, 0x0204, data_len, data_len, data_off)
-    return header + index + keys_blob + data_blob
-
-
-def _make_ps3_folder(root: Path) -> Path:
-    """A minimal valid PS3 disc/JB folder (PS3_GAME/ root + PS3_DISC.SFB)."""
-    game = root / "PS3_GAME"
-    game.mkdir(parents=True)
-    (game / "PARAM.SFO").write_bytes(
-        _make_sfo([("TITLE_ID", "BLES01807"), ("TITLE", "Some Game")])
-    )
-    (root / "PS3_DISC.SFB").write_bytes(b"\x00")
-    return root
+from .ps3_helpers import make_ps3_folder as _make_ps3_folder
 
 
 # --------------------------------------------------------------------------- #
@@ -171,6 +137,23 @@ async def test_plan_job_rejects_non_ps3_dir(tmp_path):
             delete_on_verify=False,
         )
     assert exc.value.reason is convert_routes.SkipReason.PS3_FOLDER_INVALID
+
+
+@pytest.mark.asyncio
+async def test_plan_job_rejects_output_inside_source(tmp_path):
+    # An output_dir inside the source folder would make makeps3iso pack its own
+    # in-progress ISO and corrupt the image — must be rejected.
+    folder = _make_ps3_folder(tmp_path / "MyGame")
+    with pytest.raises(convert_routes.SkipFile) as exc:
+        await convert_routes.plan_job(
+            str(folder),
+            spec=registry.spec("folder_to_iso"),
+            mode="folder_to_iso",
+            output_dir=str(folder / "PS3_GAME"),
+            duplicate_action=convert_routes.DuplicateAction.SKIP,
+            delete_on_verify=False,
+        )
+    assert exc.value.reason is convert_routes.SkipReason.PS3_OUTPUT_INSIDE_SOURCE
 
 
 @pytest.mark.asyncio
