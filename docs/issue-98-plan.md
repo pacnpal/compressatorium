@@ -150,6 +150,13 @@ Q7 on whether to allow a user override.)
     mount (`os.stat(...).st_dev` match), sum the two requirements instead of
     checking them separately so the shared filesystem isn't double-spent. The
     `chain.py` precheck calls `ensure_headroom` once per distinct mount.
+  - **Output dir may not exist yet.** `create_job` accepts an `output_dir` that
+    doesn't exist (it resolves inside a configured volume and is `mkdir`-ed later
+    by `SubprocessRunner.run`). A naive `os.stat`/`shutil.disk_usage` on that
+    parent would fail in preflight before the mkdir runs. `ensure_headroom` (and
+    the `st_dev` mount check) must therefore **walk up to the nearest existing
+    ancestor** of the target — `shutil.disk_usage` reports the same filesystem
+    for any path on that mount — rather than assuming the leaf dir exists.
   - This is a **new shared seam** (no disk check exists today); single-step
     tools can opt into it later. (Open Q2: hard fail vs warn; margin/setting
     name.)
@@ -309,10 +316,18 @@ suffix, so add a small **`InputKind`** seam rather than faking an extension:
   directory row is `name/path/type="directory"`. Add: for each directory, ask
   `registry.tools_for_directory(path)`; if a tool accepts it, annotate the row
   with `convertible_by` + `outputs` (sibling `<folder>.iso`) just like a file
-  row. Keep the detector cheap (stat for `PS3_DISC.SFB` / `PARAM.SFO`, read only
+  row. Keep the detector cheap (stat for `PS3_GAME/` / `PS3_DISC.SFB`, read only
   the small SFO header) and inside the threadpool. A directory variant of
   `tools_for_input` (`tools_for_directory`) drives this. (Open Q6: always-on vs
   lazy hydration like archive summaries.)
+- **Recursive search (`files.py:search_files` / `_scan`).** `scan_directory`
+  alone is not enough: the recursive `_scan` walks **into** directories but only
+  ever appends `os.path.isfile` entries — it never emits the directory itself. If
+  left as-is, a valid PS3 folder shows in normal listings but stays **invisible
+  to search and search-based batch-select**. `_scan` must also emit a
+  *convertible* directory entry (one accepted by `tools_for_directory`) — without
+  recursing past it as a job unit — so folders are discoverable and selectable in
+  large trees, the same way `scan_directory` annotates them.
 - **Frontend selection/action (not just annotation).** Annotating folder rows
   with `convertible_by`/`outputs` is necessary but **not sufficient** to make
   folder→iso usable: the browser treats directories as navigation only —
@@ -363,6 +378,12 @@ suffix, so add a small **`InputKind`** seam rather than faking an extension:
 - **`plan_job` validation (`convert.py`).** Add an `os.path.isdir` branch: for a
   directory mode, validate `isdir(path)` **and** the PS3 detector instead of
   `isfile(path)` + extension. Today a directory falls through to `FILE_NOT_FOUND`.
+- **Queued display filename.** `job_manager._queue_job_locked` derives
+  `ConversionJob.filename` from `os.path.basename(file_path)` when no
+  `filename_override` is given — and a directory path with a **trailing slash**
+  makes that `""`, producing blank job rows/notifications. The directory branch
+  must pass a **normalized display filename** (the same `Path(path).name` used for
+  the output basename) as `filename_override`, not just a normalized output path.
 
 ### 2.4 The "valid PS3 iso source" detector
 
@@ -415,8 +436,11 @@ readback in §2.3's optional verify) reuses the existing PSF parser in
 
 ### 2.7 New tests
 
-- Directory detector: disc-folder and game-folder fixtures accepted; a plain
-  folder rejected.
+- Directory detector: a disc/JB folder fixture (`PS3_GAME/`, + `PS3_DISC.SFB`)
+  is **accepted**; an installed-game / HDD `game/` fixture that has only a
+  `PARAM.SFO` under a TITLEID (no `PS3_GAME` root) is **rejected** (per §2.4); a
+  plain folder is rejected. (The earlier "game-folder accepted" wording would
+  have codified the exact unsafe behavior §2.4 forbids.)
 - `tools_for_directory` returns `MakePs3IsoTool` for a valid PS3 folder, nothing
   for an arbitrary folder.
 - `scan_directory` annotates a PS3 folder row with `convertible_by` + sibling
