@@ -6,6 +6,7 @@ search directory annotation, the service convert (mocked subprocess), and the
 """
 from __future__ import annotations
 
+import asyncio
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
@@ -245,6 +246,32 @@ async def test_service_convert_cancel_cleans_partial(tmp_path, monkeypatch):
     with pytest.raises(ConversionCancelled):
         await _drain()
     # The partial ISO is removed so a retry isn't blocked by a truncated image.
+    assert not Path(out_iso).exists()
+
+
+@pytest.mark.asyncio
+async def test_service_convert_cleans_partial_on_task_cancellation(tmp_path, monkeypatch):
+    # Task cancellation / generator close raise BaseException-derived
+    # CancelledError / GeneratorExit, which an `except Exception` would miss —
+    # the partial ISO must still be cleaned up.
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+
+    async def fake_run(cmd, *, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"partial")
+        yield {"progress": 10, "message": "Writing..."}
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+
+    async def _drain():
+        return [
+            u
+            async for u in makeps3iso_service.convert(folder, out_iso, "folder_to_iso")
+        ]
+
+    with pytest.raises(asyncio.CancelledError):
+        await _drain()
     assert not Path(out_iso).exists()
 
 

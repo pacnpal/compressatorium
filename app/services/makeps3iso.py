@@ -129,14 +129,18 @@ class MakePs3IsoService:
                 if update.get("progress", 0) >= 100:
                     continue
                 yield update
-        except Exception:
-            # makeps3iso writes the .iso in place, so a cancel / non-zero exit /
-            # stall leaves a partial behind. Remove it so a retry isn't blocked
-            # by (or silently trusts) a truncated image. (run() does not clean
-            # the output itself.)
-            if await asyncio.to_thread(os.path.exists, output_path):
-                with contextlib.suppress(OSError):
-                    await asyncio.to_thread(os.remove, output_path)
+        except BaseException:
+            # makeps3iso writes the .iso in place, so any abnormal exit leaves a
+            # partial behind: a non-zero exit / stall (RuntimeError), a cancel
+            # (ConversionCancelled), AND task cancellation / generator close,
+            # which raise the BaseException-derived CancelledError / GeneratorExit
+            # — caught here too so the partial is never orphaned. Remove it
+            # *synchronously* (a single local unlink): awaiting during a
+            # cancellation could be re-cancelled and skip the cleanup. Re-raise so
+            # cancellation semantics are preserved. (run() does not clean the
+            # output itself.) A missing file raises OSError, which is suppressed.
+            with contextlib.suppress(OSError):
+                os.remove(output_path)
             raise
 
         message = await asyncio.to_thread(
