@@ -85,6 +85,9 @@ class JobManager:
         self._subscribers: Dict[str, List[asyncio.Queue]] = {}
         self._cancelled: Set[str] = set()
         self._cancel_events: Dict[str, asyncio.Event] = {}
+        # Strong refs to in-flight requeue tasks so the event loop can't
+        # garbage-collect them mid-`asyncio.sleep` (see _schedule_dir_lock_requeue).
+        self._requeue_tasks: Set[asyncio.Task] = set()
         self._delete_plans: Dict[str, Dict[str, object]] = {}
         self._last_progress_at: Dict[str, float] = {}
         self._last_progress_log_at: Dict[str, float] = {}
@@ -632,7 +635,11 @@ class JobManager:
             self._queue.put_nowait((ticket, job_id))
             self._last_progress_at[job_id] = time.monotonic()
 
-        asyncio.create_task(_requeue())
+        # Keep a strong reference until the task finishes; a bare create_task()
+        # can be collected while still awaiting the sleep.
+        task = asyncio.create_task(_requeue())
+        self._requeue_tasks.add(task)
+        task.add_done_callback(self._requeue_tasks.discard)
 
     def _track_candidate_paths(self, file_path: str) -> List[str]:
         if "::" in file_path:
