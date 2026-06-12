@@ -71,6 +71,15 @@ class ToolPlugin(Protocol):
         input or no output is present (neither finished nor mid-conversion).
         """
 
+    def accepts_directory(self, path: str) -> bool:
+        """Whether this tool can take ``path`` (a directory) as its input unit.
+
+        The directory analogue of ``ext in input_extensions``. Default
+        ``False``; a tool with an ``InputKind.DIRECTORY`` mode (makeps3iso
+        folder->iso) overrides this to run its source-layout detector. May do
+        disk I/O — call it off the event loop.
+        """
+
     def verifies_path(self, path: str) -> bool:
         """Whether this tool's verify/info applies to a concrete file.
 
@@ -166,6 +175,10 @@ class BaseTool:
 
     def detect_output(self, input_path: str) -> OutputStatus | None:
         return None
+
+    def accepts_directory(self, path: str) -> bool:
+        # Default: file-only tool. Directory-input tools (makeps3iso) override.
+        return False
 
     def verifies_path(self, path: str) -> bool:
         # Default: a plain extension match. Tools that over-claim a container

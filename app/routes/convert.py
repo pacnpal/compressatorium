@@ -220,6 +220,7 @@ class SkipReason(Enum):
     ROMZ_BAD_EXTENSION = "romz_bad_extension"
     ROMZ_INVALID_ARCHIVE = "romz_invalid_archive"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
+    CHAIN_BAD_EXTENSION = "chain_bad_extension"
 
 
 class SkipFile(Exception):  # noqa: N818 - control-flow signal, not an error
@@ -297,6 +298,10 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         400,
         "Output path matches input; overwriting would delete the source file",
     ),
+    SkipReason.CHAIN_BAD_EXTENSION: (
+        400,
+        "cso_to_chd requires a .cso/.zso/.dax source",
+    ),
 }
 
 
@@ -325,6 +330,7 @@ async def plan_job(
     is_nsz = spec.tool_id == "nsz"
     is_cso = spec.tool_id == "cso"
     is_romz = spec.tool_id == "romz"
+    is_chain = spec.tool_id == "chain"
 
     archive_source_dir = None  # Directory where the archive is located (for output)
     output_path = None
@@ -407,6 +413,15 @@ async def plan_job(
         ext = _input_extension(file_path)
         if ext not in spec.input_extensions:
             raise SkipFile(SkipReason.CSO_BAD_EXTENSION)
+
+    if is_chain:
+        # Composite modes (tool_id="chain") match none of the legacy per-tool
+        # branches, so without this a direct API/batch submission would accept
+        # any non-.chd file and fail late in the worker. Validate the chain's
+        # declared source extensions (cso_to_chd: .cso/.zso/.dax).
+        ext = _input_extension(file_path)
+        if ext not in spec.input_extensions:
+            raise SkipFile(SkipReason.CHAIN_BAD_EXTENSION)
 
     if is_romz:
         # spec.input_extensions is per-mode: compress (.gb/.gbc/.gba/.nds) vs

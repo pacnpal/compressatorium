@@ -326,8 +326,8 @@ export const TOOLS = [
     verifyPrefix: 'cso',
     sourceExts: CSO_SOURCE_EXTS,
     verifyExts: CSO_VERIFY_EXTS,
-    modeGroups: ['cso'],
-    groups: { cso: 'CSO / ZSO / DAX' },
+    modeGroups: ['cso', 'chain'],
+    groups: { cso: 'CSO / ZSO / DAX', chain: 'CSO → CHD' },
     defaultMode: 'cso_compress',
     glyph: 'CSO',
     accent: 'var(--badge-cso)',
@@ -363,6 +363,14 @@ export const TOOLS = [
         outputExt: '.iso', inputExtensions: CSO_VERIFY_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,
         supportsDeleteOnVerify: false, allowsArchiveInput: true },
+      // Composite pipeline (maxcso decompress -> chdman createdvd). The .chd is
+      // verified/badged by the chdman tool entry; the final CHD uses chdman's
+      // default compression, so no codec picker is shown here.
+      { mode: 'cso_to_chd', kind: 'create', label: 'Convert to CHD (→ ISO → CHD)',
+        group: 'chain',
+        outputExt: '.chd', inputExtensions: CSO_VERIFY_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        supportsDeleteOnVerify: true, allowsArchiveInput: true },
     ],
     getInfo: (path) => api.getCsoInfo(path),
     verify: (path, opts) => api.verifyCso(path, opts),
@@ -377,7 +385,11 @@ export const TOOLS = [
           : '.cso';
         return swapExt(path, ext);
       }
-      if (/\.(cso|zso|dax)$/i.test(path)) return swapExt(path, '.iso');
+      if (/\.(cso|zso|dax)$/i.test(path)) {
+        // The chain packages a compressed source straight to .chd; plain
+        // decompress yields the .iso.
+        return swapExt(path, mode === 'cso_to_chd' ? '.chd' : '.iso');
+      }
       return path;
     },
   },

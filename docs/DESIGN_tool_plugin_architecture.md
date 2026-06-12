@@ -389,6 +389,54 @@ page/sort/filter changes), and the endpoint additionally caps each batch at
 `MAX_ARCHIVE_SUMMARY_PATHS`. The summary batch and the romz gate share the
 reader's cache, so hydrating a folder opens each archive at most once.
 
+### 3.3.3 Cross-tool chaining (`ChainSpec` / `ChainTool`, `services/disk.py`)
+
+Some conversions are a pipeline of existing single-tool modes (issue #98:
+`cso_to_chd` = maxcso `cso_decompress` → chdman `createdvd`). The chaining seam
+sits **above** the plugin contract rather than rewriting it.
+
+- **`ChainStep` / `ChainSpec` (`services/tools/spec.py`)** — a `ChainSpec` is a
+  structural superset of `ModeSpec` (same `mode`/`tool_id`/`kind`/`output_ext`/
+  `input_extensions`/`supports_*`/`allows_archive_input` fields every registry
+  consumer reads), plus `steps` (ordered `ChainStep(tool_id, mode, weight,
+  output_ratio)`), `intermediate_exts`, and `verify_step`. Because it quacks
+  like a `ModeSpec`, `registry.spec(mode)` / `mode_specs()` / `convertible_extensions()`
+  need no changes.
+- **`ChainTool(BaseTool)` (`services/tools/chain.py`)** — a synthetic tool
+  (`id="chain"`) registered **after** its component tools and handed the
+  `registry`. Its `convert` orchestrates the steps via
+  `registry.for_mode(step.mode).convert(...)`, writing intermediates into a
+  private temp dir (cleaned in `finally`), aggregating each step's 0–100 into a
+  **normalized-weight** slice of one bar, and routing `compression` only to a
+  step whose sub-mode supports it. `verify`/`info`/`output_path` delegate to the
+  `verify_step` (final) tool, so `job_manager`'s existing verify gate and
+  delete-on-verify drive the chain with no special-casing — the original source
+  is deleted only after the **final** output verifies. The chain claims no
+  `verify_extensions`/`output_extensions` of its own (the final tool already
+  owns them). Disc-ID tagging that `job_manager` only runs for literal
+  `createcd`/`createdvd` is re-applied by the chain for its final step.
+- **`services/disk.ensure_headroom`** — the shared free-space preflight a chain
+  runs before step 1 (a chain holds source + full intermediate + partial final
+  at once, which the single-step model never did). It is multi-volume aware:
+  requirements are grouped by mount (`st_dev` of the nearest existing ancestor,
+  since the output dir may not exist yet) and each mount is checked once, summing
+  co-located targets. Cushion is `COMPRESSATORIUM_CHAIN_DISK_MARGIN_MB`.
+
+New chained conversions (xci→nsp, wud→wua, a future folder→iso→chd) are a new
+`ChainSpec` row + its component modes — no new machinery.
+
+### 3.3.4 Directory inputs (`InputKind`, `accepts_directory`)
+
+Every input seam keys off `Path(filename).suffix`; a folder has none. For
+directory-unit conversions (issue #98 Phase 2, makeps3iso folder→iso) the seam
+is an `InputKind` enum + `ModeSpec.input_kinds` (default `{FILE}`, zero behavior
+change), a `ToolPlugin.accepts_directory(path)` predicate (default `False`; the
+directory analogue of `ext in input_extensions`), and
+`registry.tools_for_directory(path)`. The per-source-type detector for PS3 lives
+in `services/ps3.py` (requires the `PS3_GAME/` disc/JB layout). Scaffolding only
+so far — the makeps3iso tool, listing annotation, job-model `input_kind`, and UI
+selection are not wired yet.
+
 ### 3.4 `registry.py`
 
 ```python

@@ -17,7 +17,14 @@ from app.models import ConversionMode
 from app.services.tools import registry
 
 EXTERNAL_MODES = {ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH}
-CONVERSION_MODES = [m.value for m in ConversionMode if m not in EXTERNAL_MODES]
+# Composite/chain modes orchestrate several services and have no single
+# ``_service`` to monkeypatch, so the single-tool ladder/parity model below
+# doesn't apply (they get dedicated coverage in test_chain_service.py).
+CONVERSION_MODES = [
+    m.value
+    for m in ConversionMode
+    if m not in EXTERNAL_MODES and registry.for_mode(m.value).id != "chain"
+]
 
 
 def _legacy_dispatch_id(mode: str) -> str:
@@ -98,3 +105,19 @@ def test_external_modes_never_resolve():
     for mode in EXTERNAL_MODES:
         with pytest.raises(KeyError):
             registry.for_mode(mode.value)
+
+
+def test_chain_verify_delegates_to_final_step_tool(monkeypatch):
+    """cso_to_chd verifies the final .chd via the verify_step tool (chdman)."""
+    called: dict[str, str] = {}
+
+    async def _verify(path):
+        called["id"] = "chdman"
+        return {"valid": True, "message": "ok"}
+
+    monkeypatch.setattr(registry.get("chdman")._service, "verify", _verify)
+
+    result = asyncio.run(registry.for_mode("cso_to_chd").verify("/data/out.chd"))
+
+    assert result == {"valid": True, "message": "ok"}
+    assert called["id"] == "chdman"
