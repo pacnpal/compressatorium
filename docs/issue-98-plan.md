@@ -327,10 +327,13 @@ suffix, so add a small **`InputKind`** seam rather than faking an extension:
   This makes a directory job protect its whole subtree against concurrent
   mutation, in both directions. (The containment check is cheap — string/`Path`
   prefix, no extra disk I/O.)
-- **Job model.** Add `input_kind: str = "file"` to `ConversionJob` (and the
-  enqueue path); `file_path` holds the directory path, `output_path` the iso.
-  `_process_job` and the verify gate read `input_kind` to skip the file-only
-  assumptions. Reuse `temp_dir` if makeps3iso writes to a temp then moves.
+- **Job model.** Add `input_kind: InputKind = InputKind.FILE` to `ConversionJob`
+  (and the enqueue path) — the **same `InputKind` enum** from §2.2, not a bare
+  string, so FILE/DIRECTORY can't drift via typos. Thread the enum end-to-end
+  through `plan_job`, `_process_job`, and the verify gate (which read it to skip
+  the file-only assumptions), and serialize to/from a string only at the
+  API/persistence edge. `file_path` holds the directory path, `output_path` the
+  iso. Reuse `temp_dir` if makeps3iso writes to a temp then moves.
 - **`plan_job` validation (`convert.py`).** Add an `os.path.isdir` branch: for a
   directory mode, validate `isdir(path)` **and** the PS3 detector instead of
   `isfile(path)` + extension. Today a directory falls through to `FILE_NOT_FOUND`.
