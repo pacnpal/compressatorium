@@ -8,13 +8,14 @@ from __future__ import annotations
 from config import settings
 
 from .base import BaseTool, ToolPlugin
+from .chain import ChainTool
 from .chdman import ChdmanTool
 from .dolphin import DolphinTool
 from .maxcso import MaxcsoTool
 from .nsz import NszTool
 from .registry import ToolRegistry
 from .romz import RomzTool
-from .spec import ModeKind, ModeSpec
+from .spec import ChainSpec, ChainStep, InputKind, ModeKind, ModeSpec
 from .z3ds import Z3dsTool
 
 registry = ToolRegistry()
@@ -24,9 +25,15 @@ registry.register(Z3dsTool(settings.z3ds_compressor_path))
 registry.register(NszTool(settings.nsz_path))
 registry.register(MaxcsoTool(settings.maxcso_path))
 registry.register(RomzTool(settings.sevenzip_path))
+# Composite/pipeline modes register last: ChainTool drives the component tools
+# above through the registry, so they must already be present.
+registry.register(ChainTool(registry, chdman_path=settings.chdman_path))
 
 __all__ = [
     "BaseTool",
+    "ChainSpec",
+    "ChainStep",
+    "InputKind",
     "ModeKind",
     "ModeSpec",
     "ToolPlugin",

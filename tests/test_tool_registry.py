@@ -50,8 +50,16 @@ EXTERNAL_MODES = {ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH}
 CONVERSION_MODES = [m for m in ConversionMode if m not in EXTERNAL_MODES]
 
 
+# Composite/pipeline modes (tool_id="chain") are a newer construct that
+# orchestrates several single-tool modes; they predate neither the legacy ladder
+# below nor its prefix rules, so they're enumerated explicitly.
+COMPOSITE_MODES = {"cso_to_chd"}
+
+
 def _legacy_tool_for_mode(mode: str) -> str:
     """Replicates the dispatch ladder at job_manager.py:1444."""
+    if mode in COMPOSITE_MODES:
+        return "chain"
     if mode.startswith("dolphin_"):
         return "dolphin"
     if mode.startswith("z3ds_"):
@@ -67,7 +75,7 @@ def _legacy_tool_for_mode(mode: str) -> str:
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 27
+    assert len(resolved) == 28
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -183,10 +191,11 @@ def test_tools_for_input_representative():
     assert [t.id for t in registry.tools_for_input("game.nsp")] == ["nsz"]
     assert [t.id for t in registry.tools_for_input("game.nsz")] == ["nsz"]
     assert [t.id for t in registry.tools_for_input("disc.gdi")] == ["chdman"]
-    # .cso/.zso/.dax are convertible-from sources for the decompress mode.
-    assert [t.id for t in registry.tools_for_input("game.cso")] == ["cso"]
-    assert [t.id for t in registry.tools_for_input("game.zso")] == ["cso"]
-    assert [t.id for t in registry.tools_for_input("game.dax")] == ["cso"]
+    # .cso/.zso/.dax are convertible-from sources for the maxcso decompress mode
+    # and for the cso_to_chd chain (which packages them straight to .chd).
+    assert sorted(t.id for t in registry.tools_for_input("game.cso")) == ["chain", "cso"]
+    assert sorted(t.id for t in registry.tools_for_input("game.zso")) == ["chain", "cso"]
+    assert sorted(t.id for t in registry.tools_for_input("game.dax")) == ["chain", "cso"]
     # Handheld ROM sources + the archives romz can extract from.
     assert [t.id for t in registry.tools_for_input("Game.gba")] == ["romz"]
     assert [t.id for t in registry.tools_for_input("Game.gb")] == ["romz"]
@@ -388,9 +397,16 @@ def test_delete_on_verify_iff_output_is_verifiable():
     output without also enabling delete-on-verify (or vice versa).
     """
     for tool in registry.all():
-        vexts = tool.verify_extensions
         for mode in tool.modes:
             outs = _mode_output_exts(tool, mode)
+            # A composite/chain mode deliberately claims no verify_extensions of
+            # its own (chdman already owns .chd verify); its output is verified
+            # by the final step's tool, which ChainTool.verify delegates to.
+            if getattr(mode, "steps", None):
+                vtool = registry.get(mode.steps[mode.verify_step].tool_id)
+                vexts = vtool.verify_extensions
+            else:
+                vexts = tool.verify_extensions
             verifiable = bool(outs) and outs <= vexts
             assert mode.supports_delete_on_verify == verifiable, (
                 f"{mode.mode}: supports_delete_on_verify={mode.supports_delete_on_verify} "

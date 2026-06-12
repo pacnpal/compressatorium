@@ -29,6 +29,7 @@ class ConversionMode(str, Enum):
     ZSO_COMPRESS = "zso_compress"
     DAX_COMPRESS = "dax_compress"
     CSO_DECOMPRESS = "cso_decompress"
+    CSO_TO_CHD = "cso_to_chd"
     ROMZ_7Z = "romz_7z"
     ROMZ_ZIP = "romz_zip"
     ROMZ_EXTRACT = "romz_extract"

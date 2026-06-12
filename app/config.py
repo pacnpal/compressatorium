@@ -126,6 +126,14 @@ class Settings(BaseSettings):
         default="/usr/local/bin/maxcso", alias="MAXCSO_PATH",
     )
 
+    # Extra free space (MB) a chained conversion (e.g. cso->iso->chd) keeps
+    # beyond its estimated peak before starting. A chain holds source + full
+    # intermediate + partial final at once, so it preflights disk headroom on
+    # both the work-dir and output-dir volumes; this is the per-volume cushion.
+    chain_disk_margin_mb: int = Field(
+        default=512, alias="COMPRESSATORIUM_CHAIN_DISK_MARGIN_MB",
+    )
+
     # nsz (Nintendo Switch NSP/XCI <-> NSZ/XCZ). Installed via pip into the
     # venv, so the console script lives on PATH (/opt/venv/bin in Docker, .venv
     # locally). A bare name resolves in both; set NSZ_PATH to pin an absolute

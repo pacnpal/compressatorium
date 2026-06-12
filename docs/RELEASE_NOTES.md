@@ -1,5 +1,43 @@
 # Release Notes
 
+## Unreleased
+
+### CSO → CHD in one step (issue #98, Phase 1)
+
+#### New
+
+- **Convert a `.cso`/`.zso`/`.dax` straight to `.chd`.** A new
+  **Convert to CHD** mode on the CSO tool runs the full PSP/PS2 pipeline —
+  maxcso decompresses the compressed image to a temporary `.iso`, then chdman
+  packages that to a `.chd` (PPSSPP / PCSX2 / RetroArch read the result). The
+  intermediate `.iso` lives in a private temp dir and is cleaned up
+  automatically; only the source and the final `.chd` remain. Delete-on-verify
+  works end-to-end: the original `.cso` is removed only after the final `.chd`
+  passes chdman verification. Disc-ID `GAME`/`NAME` tags are embedded into the
+  CHD just like a direct Create DVD. The final CHD uses chdman's default
+  compression (no codec picker yet for the chain).
+
+#### Internal
+
+- A general **cross-tool chaining seam** sits above the existing plugin
+  registry: a `ChainSpec` (ordered `(tool_id, mode)` steps + declared
+  intermediates + which step owns the final verify) and a synthetic `ChainTool`
+  that orchestrates the component tools through the registry. Every existing
+  registry consumer (convert route, job_manager, files route) works unchanged —
+  `registry.for_mode("cso_to_chd")` resolves to the chain, verify/delete-on-verify
+  delegate to the final step's tool. Progress is aggregated into one bar with
+  normalized per-step weights (chd compression dominates cso decompression). A
+  new shared `services.disk.ensure_headroom` preflights free space on the
+  work-dir and output-dir volumes independently (a chain holds source +
+  intermediate + partial final at once). Tests: `tests/test_chain_service.py`,
+  `tests/test_disk_headroom.py`, plus chain coverage in `tests/test_tool_registry.py`.
+- **Directory-input scaffolding** for the upcoming PS3 folder→iso work (issue
+  #98, Phase 2): an `InputKind` enum + `ModeSpec.input_kinds`, a
+  `ToolPlugin.accepts_directory` seam with `registry.tools_for_directory`, and a
+  PS3 disc/JB-folder detector (`services.ps3`) that requires the `PS3_GAME/`
+  layout and rejects bare installed-game folders. No makeps3iso binary, UI, or
+  job plumbing yet. Tests: `tests/test_ps3_detector.py`.
+
 ## 4.1.0 (2026-06-04)
 
 This is the stable 4.1.0 release. It supersedes the `4.1.0-beta-1` through

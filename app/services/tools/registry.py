@@ -102,6 +102,15 @@ class ToolRegistry:
         ext = Path(filename).suffix.lower()
         return [t for t in self._tools.values() if ext in t.input_extensions]
 
+    def tools_for_directory(self, path: str) -> list[ToolPlugin]:
+        """Tools that accept ``path`` (a directory) as their input unit.
+
+        The directory analogue of :meth:`tools_for_input`. Each tool decides
+        via ``accepts_directory`` (default ``False``), which runs the tool's
+        source-layout detector. May do disk I/O — call off the event loop.
+        """
+        return [t for t in self._tools.values() if t.accepts_directory(path)]
+
     def tool_for_verify(self, path: str) -> ToolPlugin | None:
         ext = Path(path).suffix.lower()
         return next(
