@@ -648,9 +648,172 @@ def test_fold_split_iso_entries_requires_contiguous_parts():
     assert all(e.split_parts is None for e in folded)
 
 
+def test_fold_split_iso_entries_requires_two_parts():
+    from app.models import FileEntry
+
+    # A lone .0 (no .1) is an interrupted split, not a finished one-file result
+    # (that would be a plain Game.iso). Folding it would hide the raw partial row
+    # and disable the single-row/bulk delete actions needed for recovery, so
+    # leave it visible as its raw .0 row.
+    entries = [
+        FileEntry(name="Game.iso.0", path="/d/Game.iso.0", type="file", size=1,
+                  extension=".0"),
+    ]
+    folded = files_routes._fold_split_iso_entries(entries)
+    names = [e.name for e in folded]
+    assert names == ["Game.iso.0"]
+    assert all(e.split_parts is None for e in folded)
+
+
 # --------------------------------------------------------------------------- #
 # Split: overwrite cleanup, conflict detection, stall-probe widening
 # --------------------------------------------------------------------------- #
+
+
+def test_detect_output_surfaces_split_set(tmp_path):
+    # A >4 GB ``-s`` build leaves only the split set (no bare <folder>.iso), so
+    # detect_output must probe it and still badge the source folder's row,
+    # pointing at the .0 part RPCS3 mounts.
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out = str(tmp_path / "MyGame.iso")
+    tool = registry.get("makeps3iso")
+
+    # No output yet -> no badge.
+    assert tool.detect_output(folder) is None
+
+    # A lone .0 (interrupted split) is not a finished output -> still no badge.
+    Path(f"{out}.0").write_bytes(b"0")
+    assert tool.detect_output(folder) is None
+
+    # A complete split set (.0 + .1) -> badged, ready, pointing at .0.
+    Path(f"{out}.1").write_bytes(b"1")
+    status = tool.detect_output(folder)
+    assert status is not None
+    assert status.exists is True
+    assert status.ready is True
+    assert status.path == f"{out}.0"
+
+    # A plain <folder>.iso still wins (bare path present).
+    Path(f"{out}.0").unlink()
+    Path(f"{out}.1").unlink()
+    Path(out).write_bytes(b"iso")
+    bare = tool.detect_output(folder)
+    assert bare is not None and bare.path == out
+
+
+@pytest.mark.asyncio
+async def test_clear_existing_output_rejects_directory(tmp_path, monkeypatch):
+    # When the overwrite target already exists as a *directory* named like the
+    # output, remove_outputs can't clear it (os.remove fails on a dir and is
+    # suppressed) and makeps3iso would write *inside* it. Reject instead.
+    import app.services.job_manager as jm_module
+    from app.services.job_manager import job_manager
+
+    async def _noop_clear(_path):
+        return None
+
+    monkeypatch.setattr(jm_module.verification_store, "clear", _noop_clear)
+
+    out = str(tmp_path / "MyGame.iso")
+    Path(out).mkdir()  # a directory shadowing the output path
+    job = ConversionJob(
+        id="ps3dirout1",
+        file_path=str(tmp_path / "MyGame"),
+        filename="MyGame",
+        mode=ConversionMode.FOLDER_TO_ISO,
+        status=JobStatus.PROCESSING,
+        created_at=datetime.now(timezone.utc),
+        output_path=out,
+        input_kind=InputKind.DIRECTORY,
+        allow_overwrite=True,
+    )
+    with pytest.raises(RuntimeError, match="not a file"):
+        await job_manager._clear_existing_output(job)
+    # The directory is left intact, not partially clobbered.
+    assert Path(out).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_process_job_rejects_existing_split_set_without_overwrite(tmp_path):
+    # A prior split build left Game.iso.0/.1 (no bare Game.iso), so the bare-path
+    # output lock can't see the collision. A non-overwrite directory job reaching
+    # the worker must fail like a normal output collision rather than clobber the
+    # existing split set (and unlink its parts on a later failure cleanup).
+    from app.services.job_manager import job_manager
+    from services.concurrency_manager import concurrency_manager
+    from services.lock_manager import lock_manager
+
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out = str(tmp_path / "MyGame.iso")
+    Path(f"{out}.0").write_bytes(b"0")
+    Path(f"{out}.1").write_bytes(b"1")
+    job = ConversionJob(
+        id="ps3wcol1",
+        file_path=folder,
+        filename="MyGame",
+        mode=ConversionMode.FOLDER_TO_ISO,
+        status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        output_path=out,
+        input_kind=InputKind.DIRECTORY,
+        allow_overwrite=False,
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        await job_manager._process_job(job.id)
+        assert job.status == JobStatus.FAILED
+        assert "already exists" in (job.error_message or "")
+        # The prior split set is left intact, never clobbered.
+        assert Path(f"{out}.0").exists() and Path(f"{out}.1").exists()
+        # The output lock taken for the collision check is released again.
+        _, is_locked = lock_manager.check_file_status(out)
+        assert is_locked is False
+    finally:
+        lock_manager.release_lock(out)
+        concurrency_manager.release(job.id)
+        job_manager.jobs.pop(job.id, None)
+        job_manager._cancel_events.pop(job.id, None)
+        job_manager._cancelled.discard(job.id)
+
+
+@pytest.mark.asyncio
+async def test_process_job_rejects_directory_output(tmp_path):
+    # A directory shadowing the output path (MyGame.iso/) is never a valid
+    # makeps3iso target. acquire_lock already rejects it (its ``not isfile``
+    # clause fires for both overwrite states), so the worker fails the job rather
+    # than writing *into* the directory. Regression guard against that clobber.
+    from app.services.job_manager import job_manager
+    from services.concurrency_manager import concurrency_manager
+    from services.lock_manager import lock_manager
+
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out = str(tmp_path / "MyGame.iso")
+    Path(out).mkdir()  # a directory occupying the output path
+    job = ConversionJob(
+        id="ps3wdir1",
+        file_path=folder,
+        filename="MyGame",
+        mode=ConversionMode.FOLDER_TO_ISO,
+        status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        output_path=out,
+        input_kind=InputKind.DIRECTORY,
+        allow_overwrite=False,
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        await job_manager._process_job(job.id)
+        assert job.status == JobStatus.FAILED
+        # The directory is left intact, never written into.
+        assert Path(out).is_dir()
+        _, is_locked = lock_manager.check_file_status(out)
+        assert is_locked is False
+    finally:
+        lock_manager.release_lock(out)
+        concurrency_manager.release(job.id)
+        job_manager.jobs.pop(job.id, None)
+        job_manager._cancel_events.pop(job.id, None)
+        job_manager._cancelled.discard(job.id)
 
 
 def test_check_output_conflicts_split_aware(tmp_path):

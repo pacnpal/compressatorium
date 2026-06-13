@@ -773,8 +773,15 @@ class JobManager:
             return
         if job.input_kind == InputKind.DIRECTORY:
             # makeps3iso output is a single .iso OR a split set (.0/.1/…); clear
-            # all of it via the tool's own part-aware cleanup.
-            await asyncio.to_thread(
+            # all of it via the tool's own part-aware cleanup. But a destination
+            # that already exists as a *directory* named like the output can't be
+            # cleared by remove_outputs (its os.remove() fails on a dir and is
+            # suppressed); makeps3iso would then write *inside* it while the job
+            # still reports the bare path as its output. Reject rather than
+            # corrupt — mirroring the non-file guard on the file-job path below.
+            if await run_in_threadpool(os.path.isdir, job.output_path):
+                raise RuntimeError("Output path exists and is not a file")
+            await run_in_threadpool(
                 makeps3iso_service.remove_outputs, job.output_path,
             )
             await verification_store.clear(job.output_path)
@@ -1576,6 +1583,38 @@ class JobManager:
             await self._cleanup_temp_dir(job)
             await self._prune_jobs(exclude_id=job_id)
             return
+
+        # acquire_lock above already rejects a destination that exists but isn't a
+        # plain file — incl. a *directory* shadowing the output path — via its
+        # ``not os.path.isfile`` clause (for both overwrite states). What it can't
+        # see is a prior split set (``Game.iso.0``/``.1`` with no bare
+        # ``Game.iso``): os.path.exists(bare) is False, so the lock is granted. A
+        # non-overwrite job would then clobber that existing deliverable and, on a
+        # later failure, unlink its parts via remove_outputs. Mirror the bare-file
+        # "already exists" rejection for the split set. (An authorized overwrite
+        # clears it in _clear_existing_output.)
+        if job.input_kind == InputKind.DIRECTORY and not job.allow_overwrite:
+            existing_parts = await run_in_threadpool(
+                makeps3iso_service.split_parts, job.output_path,
+            )
+            # split_parts returns [base] only when the bare file exists (already
+            # rejected by acquire_lock above); a real split set is the numbered
+            # parts, so treat that as an output collision.
+            if existing_parts and existing_parts != [job.output_path]:
+                job.status = JobStatus.FAILED
+                job.error_message = "Output file already exists"
+                job.completed_at = datetime.now(timezone.utc)
+                await self._notify_subscribers(
+                    job_id,
+                    {"type": "error", "job_id": job_id, "error": job.error_message},
+                )
+                lock_manager.release_lock(job.output_path)
+                if job_id in self._cancel_events:
+                    del self._cancel_events[job_id]
+                concurrency_manager.release(job_id)
+                await self._cleanup_temp_dir(job)
+                await self._prune_jobs(exclude_id=job_id)
+                return
 
         # A directory-input job (makeps3iso folder->iso) additionally locks its
         # whole source subtree, so any concurrent per-file job / rename / delete
