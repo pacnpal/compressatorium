@@ -41,17 +41,16 @@
   APIs (`acquire_dir_lock` / `release_dir_lock` / `is_within_locked_dir` /
   `dir_lock_would_conflict`): a directory job takes an exclusive `fcntl` lock on
   its whole subtree, so concurrent jobs serialize. A job blocked by that lock is
-  **deferred** — its slot is released and it is re-queued (after a fixed short delay) to run
-  once the folder finishes, instead of failing. A rename / delete inside an
+  **deferred** — its slot is released and it is re-queued after a fixed short
+  delay to run once the folder finishes, instead of failing (a `Set[asyncio.Task]`
+  holds strong refs so the retry task can't be GC'd mid-sleep). A rename / delete inside an
   in-flight folder is still rejected outright (via `find_active_job_for_path`).
   All subtree containment comparisons resolve symlinks (`os.path.realpath`) so a
   symlinked path into a locked folder can't slip past them, and
   `_plan_directory_job` validates the resolved output is not inside the source
   **and** is within a configured volume. `InputKind` moved
   from `services.tools.spec` to `models` (re-exported) so the job model can type
-  the field without an import cycle (the requeue uses a fixed short delay and a
-  `Set[asyncio.Task]` keeps strong refs so the retry task can't be GC'd
-  mid-sleep). The makeps3iso binary (GPL-3.0,
+  the field without an import cycle. The makeps3iso binary (GPL-3.0,
   `bucanero/ps3iso-utils`, pinned commit) is built unmodified in the multi-stage
   `Dockerfile`, mirroring maxcso, and confirmed to build on linux/amd64 and
   linux/arm64 (plain portable C, no x86 asm). Tests: `tests/test_makeps3iso.py`,
