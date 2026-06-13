@@ -1,6 +1,11 @@
 # Release Notes
 
-## Unreleased
+## 4.2.0 (2026-06-13)
+
+This release adds the first folder-input tool and the first cross-tool chain. PS3
+ISO packs a decrypted PS3 folder into a `.iso` that RPCS3 mounts directly, with an
+optional 4 GB split for FAT32 targets, and a new CSO mode converts a
+`.cso`/`.zso`/`.dax` straight to `.chd` in one step. Sections are newest-first.
 
 ### PS3 decrypted folder → ISO (issue #98, Phase 2)
 
