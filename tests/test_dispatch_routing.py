@@ -93,7 +93,8 @@ def test_convert_dispatch_matches_legacy_ladder(mode, monkeypatch):
         return [
             u
             async for u in registry.for_mode(mode).convert(
-                "/data/in", "/data/out", mode, compression=None, cancel_event=None
+                "/data/in", "/data/out", mode, compression=None, split=False,
+                cancel_event=None,
             )
         ]
 
