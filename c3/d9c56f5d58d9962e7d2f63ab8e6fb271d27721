@@ -1,0 +1,31 @@
+src/lib/components/views/HelpView.svelte
+  s_5b8d6d45a59408::t_3b345b6d552e9f 41
+  s_5b8d6d45a59408::t_7cee1e82250249 381
+  s_5b8d6d45a59408::t_f1018b8937ca81 402
+  s_5b8d6d45a59408::t_4568f24432a21e 495
+  s_5b8d6d45a59408::t_7bcd3a7830b720 111,122-125
+  s_5b8d6d45a59408::t_23eb058c156a57 142-143
+  s_5b8d6d45a59408::t_fceeb455e52eaa 50-55
+README.md
+  s_5b8d6d45a59408::t_d8a41c90812ebd 5,27,53,62,129,240,254,464,701,730,1005,1223,1225
+.github/workflows/docker-image.yml
+  s_5b8d6d45a59408::t_d8a41c90812ebd 121,126,223
+docs/ADDING_PLATFORMS_AND_TOOLS.md
+  s_5b8d6d45a59408::t_d8a41c90812ebd 15,707,1112,1346,1436
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "c3d9c56f5d58d9962e7d2f63ab8e6fb271d27721",
+  "prompts": {},
+  "sessions": {
+    "s_5b8d6d45a59408": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc783c0f-f178-40ee-9aea-e77bc9a147c7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "pacnpal <183241239+pacnpal@users.noreply.github.com>"
+    }
+  }
+}
