@@ -1,0 +1,24 @@
+README.md
+  s_5b8d6d45a59408::t_903bce8ec655c2 29
+  s_5b8d6d45a59408::t_1f126c9941a229 53
+  s_5b8d6d45a59408::t_be91b458b58bf5 931
+  s_5b8d6d45a59408::t_af731ca50e334b 1230
+src/lib/components/views/HelpView.svelte
+  s_5b8d6d45a59408::t_a830ef0007566a 54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "b2f485102ac79d92c555d4d22a3e5d97abccc03a",
+  "prompts": {},
+  "sessions": {
+    "s_5b8d6d45a59408": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc783c0f-f178-40ee-9aea-e77bc9a147c7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "pacnpal <183241239+pacnpal@users.noreply.github.com>"
+    }
+  }
+}
