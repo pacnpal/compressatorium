@@ -254,9 +254,11 @@ to extract first. The member is unpacked to a temp dir for the conversion and
 cleaned up afterwards. Any convertible **source** works this way (CHD create,
 Dolphin, 3DS, Switch, and CSO — Switch still needs your own `prod.keys`), and
 CHDMAN's extract modes can even pull a `.chd` out of an archive and decompress it
-back to a game image. The exception is CHDMAN's copy/recompress mode: it acts on a
+back to a game image. CHDMAN's copy/recompress mode is the exception: it acts on a
 finished `.chd`, and recompressing one straight out of an archive is a pointless
-round trip, so it's not offered there.
+round trip, so it's not offered there. Handheld ROM and PS3 ISO also don't take
+archive inputs: the ROM packer's `.7z`/`.zip` are its product, and PS3 ISO's
+input is a folder, not a file.
 
 #### Why only certain files show inside an archive
 
@@ -439,7 +441,7 @@ On small screens the file list switches to a card layout. Controls use 44 to 48p
 - **Browsing is global, scoped to known extensions.** When you look inside an archive, the listing shows every member whose extension is one the app understands — every tool's convertible source plus a `.chd` you can decompress — regardless of which tool is currently selected. That covers CHDMAN (`.gdi`/`.iso`/`.cue`/`.bin`), Dolphin (`.iso`/`.gcz`/`.wia`/`.rvz`/`.wbfs`), 3DS (`.cci`/`.cia`/`.3ds`/`.cxi`/`.3dsx`), Switch (`.nsp`/`.xci`), CSO (`.iso`/`.cso`/`.zso`/`.dax`), and Handheld ROM (`.gb`/`.gbc`/`.gba`/`.nds`). Archive members appear for whichever tool accepts them, exactly like on-disk files.
 - **Why everything else is hidden.** Unknown files (text, `.nfo`/`.sfv`, cover art, manuals), nested archives (a `.zip` inside a `.zip`), and OS/NAS clutter (`__MACOSX/…`, `.DS_Store`, `Thumbs.db`) are filtered out — they aren't convertible or verifiable, so listing them would only be noise. See [Archives → Why only certain files show inside an archive](#why-only-certain-files-show-inside-an-archive).
 - **Some shown members are view-only.** A handheld ROM this app packed (`Game.gba` inside `Game.gba.7z`) is listed for visibility/verification but not offered for re-conversion (recompressing an archived ROM would be recursive); unpack it by selecting the archive and running `romz_extract`. A `.chd` inside an archive can be decompressed in place but not recompressed (copy/recompress acts on a finished output). Such members are badged non-convertible.
-- The only inputs that can't come from an archive are CHDMAN's copy/recompress mode (recompressing an already-finished `.chd` would be a pointless round trip — though the extract modes *can* decompress a `.chd` straight out of an archive) and Handheld ROM compression, whose `.7z`/`.zip` are the packed product.
+- The inputs that can't come from an archive are CHDMAN's copy/recompress mode (recompressing an already-finished `.chd` would be a pointless round trip — though the extract modes *can* decompress a `.chd` straight out of an archive), Handheld ROM compression, whose `.7z`/`.zip` are the packed product, and PS3 ISO, whose input is a folder rather than a file (a zipped `PS3_GAME` tree can't be selected from inside an archive).
 
 **ISO Handling & Dolphin Tools (GameCube/Wii)**
 - Toggle ISO handling between CHDMAN and Dolphin (controls ISO info/verify and conversions)
@@ -944,7 +946,7 @@ Notes:
 - `extractcd` produces both `.cue` and `.bin` outputs.
 - Dolphin GCZ/ISO outputs ignore compression selection.
 - 3DS compression uses fixed settings (no user configuration needed).
-- Archive inputs are supported for every convertible source (CHD create, Dolphin, 3DS, Switch, and CSO), plus CHDMAN's extract modes decompressing a `.chd` pulled out of an archive. The exception is CHDMAN's copy/recompress mode, which would just re-compress an already-finished `.chd`.
+- Archive inputs are supported for the file-based convertible sources (CHD create, Dolphin, 3DS, Switch, and CSO), plus CHDMAN's extract modes decompressing a `.chd` pulled out of an archive. Exceptions: CHDMAN's copy/recompress mode (it would just re-compress an already-finished `.chd`), Handheld ROM compression (its `.7z`/`.zip` are the product), and PS3 ISO (its input is a folder, not a file).
 
 ---
 
