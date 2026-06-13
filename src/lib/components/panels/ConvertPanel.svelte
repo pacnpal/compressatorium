@@ -27,6 +27,7 @@
   const incompatibleCount = $derived(selectedCount - convertibleCount);
   const tool = $derived(conversion.currentTool);
   const supportsDeleteOnVerify = $derived(conversion.supportsDeleteOnVerify);
+  const supportsSplit = $derived(conversion.supportsSplit);
   const converting = $derived(conversion.converting);
 
   // Delete-on-verify is validated by the backend against a snapshot of
@@ -183,6 +184,14 @@
           bind:checked={conversion.deleteOnVerify}
           label="Delete sources after successful verification"
           description="The created output is verified before sources are deleted. Skipped if verify fails."
+        />
+      {/if}
+
+      {#if supportsSplit}
+        <Checkbox
+          bind:checked={conversion.split}
+          label="Split into 4 GB parts (FAT32)"
+          description="Writes Game.iso.0, Game.iso.1, … so the image fits on FAT32. RPCS3 mounts the .0 part. Single .iso below 4 GB."
         />
       {/if}
     </div>

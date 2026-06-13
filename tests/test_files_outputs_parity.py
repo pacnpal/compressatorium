@@ -213,7 +213,10 @@ async def test_list_files_json_keys_are_additive(parity_env):
     for entry in listing.entries:
         keys = set(entry.model_dump().keys())
         assert LEGACY_FILEENTRY_KEYS <= keys
-        assert keys - LEGACY_FILEENTRY_KEYS == NEW_KEYS_WITH_VERIFY
+        # split_parts (issue #98): present on every FileEntry (None unless this
+        # row is a folded makeps3iso split-ISO set). The search path emits plain
+        # dicts without it, so it's only added to the listing's key set.
+        assert keys - LEGACY_FILEENTRY_KEYS == NEW_KEYS_WITH_VERIFY | {"split_parts"}
 
 
 @pytest.mark.asyncio

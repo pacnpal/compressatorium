@@ -550,3 +550,54 @@ async def test_plan_job_rename_steps_past_split_set(tmp_path, monkeypatch):
     )
     # RENAME bumps past the occupied split set to a free name.
     assert plan.output_path == str(tmp_path / "MyGame_1.iso")
+
+
+# --------------------------------------------------------------------------- #
+# File listing: fold a split ISO set into one logical entry
+# --------------------------------------------------------------------------- #
+
+
+def test_fold_split_iso_entries():
+    from app.models import FileEntry
+
+    entries = [
+        FileEntry(name="A.iso.0", path="/d/A.iso.0", type="file",
+                  size=4_000_000_000, extension=".0"),
+        FileEntry(name="A.iso.1", path="/d/A.iso.1", type="file",
+                  size=2_000_000_000, extension=".1"),
+        FileEntry(name="B.chd", path="/d/B.chd", type="file", size=10,
+                  extension=".chd", convertible_by=["chdman"]),
+        FileEntry(name="orphan.iso.1", path="/d/orphan.iso.1", type="file",
+                  size=5, extension=".1"),
+        FileEntry(name="sub", path="/d/sub", type="directory"),
+    ]
+    folded = files_routes._fold_split_iso_entries(entries)
+    names = [e.name for e in folded]
+
+    # The A.iso set collapses into one entry; siblings dropped.
+    assert "A.iso" in names
+    assert "A.iso.0" not in names and "A.iso.1" not in names
+    # An orphan .1 (no .0) and unrelated rows pass through untouched.
+    assert "orphan.iso.1" in names
+    assert "B.chd" in names and "sub" in names
+
+    folded_iso = next(e for e in folded if e.name == "A.iso")
+    assert folded_iso.path == "/d/A.iso.0"          # .0 is the mount target
+    assert folded_iso.size == 6_000_000_000          # summed across parts
+    assert folded_iso.extension == ".iso"
+    assert folded_iso.split_parts == 2
+    assert folded_iso.convertible_by == []           # a deliverable, not a source
+    assert folded_iso.verifiable_by == []
+
+
+def test_fold_split_iso_entries_noop_without_parts():
+    from app.models import FileEntry
+
+    entries = [
+        FileEntry(name="Game.iso", path="/d/Game.iso", type="file", size=1,
+                  extension=".iso"),
+        FileEntry(name="x.chd", path="/d/x.chd", type="file", size=1,
+                  extension=".chd"),
+    ]
+    # No .0 part present -> list returned unchanged (a plain .iso never matches).
+    assert files_routes._fold_split_iso_entries(entries) == entries

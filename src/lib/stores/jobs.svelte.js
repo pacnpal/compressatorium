@@ -301,6 +301,7 @@ class JobsStore {
         opts.outputDir ?? null,
         opts.compression ?? null,
         opts.deleteOnVerify ?? false,
+        opts.split ?? false,
       );
       this._applyJob(job);
       return job;
@@ -320,6 +321,7 @@ class JobsStore {
         opts.duplicateAction ?? 'skip',
         opts.compression ?? null,
         opts.deleteOnVerify ?? false,
+        opts.split ?? false,
       );
       if (Array.isArray(created)) {
         for (const job of created) this._applyJob(job);
