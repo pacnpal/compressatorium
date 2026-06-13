@@ -470,9 +470,27 @@ The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
   `conversion.allowsInputEntry`) while the name-click still navigates — a plain
   directory stays navigation-only.
 
-The `-s` 4 GB FAT32 split flag is not exposed (single `.iso`; target volumes are
-ext4/NTFS/exFAT). makeps3iso (GPL-3.0) is built unmodified from a pinned
-`bucanero/ps3iso-utils` commit in the multi-stage `Dockerfile`, mirroring maxcso.
+- **4 GB FAT32 split (`-s`).** An opt-in per-job toggle exposes makeps3iso's
+  split mode for FAT32 targets. `split` rides the shared `ToolPlugin.convert`
+  contract beside `compression` (file tools ignore it) and threads
+  request → `create_job`/`create_jobs_atomic` → `ConversionJob.split` →
+  `convert(split=…)`; the frontend gates the checkbox on a `supportsSplit` mode
+  flag. The split is **size-dependent and its part names are unknown until the
+  build finishes**: makeps3iso only splits past ~4 GB (`0x1FFFE0` sectors),
+  renaming the first part to `<output>.iso.0` and writing `.1`/`.2`/…, but emits
+  a single `<output>.iso` below the threshold. So the service never assumes a
+  shape — `split_parts()` probes the base then `.0`/`.1`/… post-build; the
+  `TITLE_ID` readback reads the first part; failure cleanup unlinks the base and
+  every numbered part. `_plan_directory_job` counts an existing split set as an
+  output collision (RENAME steps past it via `get_unique_ps3_iso_output_path`),
+  and `files.py` folds a set into one logical listing entry
+  (`_fold_split_iso_entries`: name `<base>.iso`, `path` = the `.0` part,
+  summed size, `FileEntry.split_parts` = count, no convertible/verify
+  affordances — it's a final deliverable, not a source). The recursive *search*
+  path only emits convertible sources, so split parts never surface there.
+
+makeps3iso (GPL-3.0) is built unmodified from a pinned `bucanero/ps3iso-utils`
+commit in the multi-stage `Dockerfile`, mirroring maxcso.
 
 ### 3.4 `registry.py`
 

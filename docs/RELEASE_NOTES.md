@@ -18,6 +18,14 @@
   in the job message. Decryption and keys are **out of scope** — this only
   repackages folders you already decrypted, and it never deletes the source
   folder (no delete-on-verify).
+- **Optional 4 GB split for FAT32 targets.** A per-job **Split into 4 GB parts
+  (FAT32)** toggle on the PS3 ISO tool runs makeps3iso with `-s`. A FAT32
+  filesystem can't hold a single file larger than 4 GB, so most PS3 discs won't
+  fit as one `.iso`; with the toggle on, an image over ~4 GB is written as
+  `Game.iso.0`, `Game.iso.1`, … (RPCS3 mounts the `.0`). A title under 4 GB
+  still produces a single `Game.iso`. The file browser **folds a split set into
+  one entry** — it shows `Game.iso` with the combined size and a part count, not
+  a row per chunk. Default off; ext4/NTFS/exFAT targets don't need it.
 
 #### Internal
 
@@ -36,6 +44,19 @@
   `Dockerfile`, mirroring maxcso, and confirmed to build on linux/amd64 and
   linux/arm64 (plain portable C, no x86 asm). Tests: `tests/test_makeps3iso.py`,
   plus directory coverage in `tests/test_ps3_detector.py`.
+- **Split (`-s`) plumbing.** A `split` bool joins the shared
+  `ToolPlugin.convert` contract next to `compression` (file tools accept and
+  ignore it) and threads request → `create_job`/`create_jobs_atomic` →
+  `ConversionJob` → `convert()`. makeps3iso's split output is **size-dependent**
+  (only >4 GB splits) and the part names aren't known until the build finishes,
+  so the service discovers them by probing `<output>` then `<output>.0`/`.1`/…;
+  the `TITLE_ID` readback targets the first part and failure cleanup removes the
+  base **and** every numbered part. `_plan_directory_job` treats an existing
+  split set as an output collision (and RENAME steps past it); the file listing
+  folds a set into one `FileEntry` (`split_parts` count, `.0` as the path).
+  Frontend: a `supportsSplit` mode flag gates the toggle, masked at submit like
+  `deleteOnVerify`. Tests in `tests/test_makeps3iso.py` (argv flag placement,
+  part detection, part-aware readback/cleanup, plan collision, listing fold).
 
 ### CSO → CHD in one step (issue #98, Phase 1)
 
