@@ -157,7 +157,24 @@ class MakePs3IsoService:
         split: bool = False,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
+        # Overwrite cleanly: a prior build at this path may be a single ``.iso``
+        # OR a split set (``.0``/``.1``/…). The generic overwrite cleanup only
+        # unlinks the plain ``output_path``, so it misses a split set's parts —
+        # clear base + every numbered part here so a new build can't strand a
+        # stale ``.iso.N``. Safe: convert is only reached when the target is free
+        # (a no-op scan here) or overwrite was authorized upstream
+        # (``acquire_lock(allow_existing=…)`` gates the rest).
+        await asyncio.to_thread(self._remove_outputs, output_path)
         cmd = self._build_command(input_path, output_path, split=split)
+        # A split build renames the base .iso to .iso.0 and writes .iso.1/…, so
+        # the bare output_path stops growing mid-run; widen the stall probe to
+        # the whole set (summed size) so a healthy split isn't killed as stalled
+        # when makeps3iso's percent plateaus during a large part write.
+        growth_paths = None
+        if split:
+            growth_paths = lambda: [  # noqa: E731 - tiny resolver closure
+                output_path, *self._numbered_parts(output_path),
+            ]
         try:
             async for update in self._runner.run(
                 cmd,
@@ -167,6 +184,7 @@ class MakePs3IsoService:
                 cancel_event=cancel_event,
                 fail_label="makeps3iso",
                 complete_message="ISO build complete",
+                output_growth_paths=growth_paths,
             ):
                 # Hold back the runner's terminal 100% so the readback message
                 # is the final update the job records.

@@ -602,3 +602,89 @@ def test_fold_split_iso_entries_noop_without_parts():
     ]
     # No .0 part present -> list returned unchanged (a plain .iso never matches).
     assert files_routes._fold_split_iso_entries(entries) == entries
+
+
+# --------------------------------------------------------------------------- #
+# Split: overwrite cleanup, conflict detection, stall-probe widening
+# --------------------------------------------------------------------------- #
+
+
+def test_check_output_conflicts_split_aware(tmp_path):
+    out = str(tmp_path / "Game.iso")
+    # A prior split build left only the .0 part (no plain Game.iso).
+    Path(out + ".0").write_bytes(b"p0")
+    exists, _ = convert_routes.check_output_conflicts("folder_to_iso", out)
+    assert exists is True
+    # A non-directory mode ignores the .0 probe (no plain file present).
+    exists_other, _ = convert_routes.check_output_conflicts("createcd", out)
+    assert exists_other is False
+
+
+@pytest.mark.asyncio
+async def test_service_convert_overwrites_existing_split_set(tmp_path, monkeypatch):
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+    # A prior split build left parts; a new (single) build must not strand them.
+    Path(f"{out_iso}.0").write_bytes(b"old0")
+    Path(f"{out_iso}.1").write_bytes(b"old1")
+
+    async def fake_run(cmd, *, output_path, complete_message, **_kwargs):
+        Path(output_path).write_bytes(b"new single iso")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+    _ = [
+        u
+        async for u in makeps3iso_service.convert(folder, out_iso, "folder_to_iso")
+    ]
+    assert Path(out_iso).exists()
+    assert not Path(f"{out_iso}.0").exists()
+    assert not Path(f"{out_iso}.1").exists()
+
+
+@pytest.mark.asyncio
+async def test_service_convert_split_widens_stall_probe(tmp_path, monkeypatch):
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+    captured: dict = {}
+
+    async def fake_run(
+        cmd, *, output_path, complete_message, output_growth_paths=None, **_kwargs,
+    ):
+        captured["growth"] = output_growth_paths
+        Path(f"{output_path}.0").write_bytes(b"a")
+        Path(f"{output_path}.1").write_bytes(b"b")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+    _ = [
+        u
+        async for u in makeps3iso_service.convert(
+            folder, out_iso, "folder_to_iso", split=True,
+        )
+    ]
+    # A split run widens the stall probe to follow the renamed/added parts.
+    assert callable(captured["growth"])
+    assert set(captured["growth"]()) == {out_iso, f"{out_iso}.0", f"{out_iso}.1"}
+
+
+@pytest.mark.asyncio
+async def test_service_convert_no_split_leaves_stall_probe_default(tmp_path, monkeypatch):
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+    captured: dict = {}
+
+    async def fake_run(
+        cmd, *, output_path, complete_message, output_growth_paths=None, **_kwargs,
+    ):
+        captured["growth"] = output_growth_paths
+        Path(output_path).write_bytes(b"iso")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+    _ = [
+        u
+        async for u in makeps3iso_service.convert(folder, out_iso, "folder_to_iso")
+    ]
+    # Non-split build uses the default single-path probe (None).
+    assert captured["growth"] is None

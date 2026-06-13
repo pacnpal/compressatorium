@@ -173,6 +173,14 @@ def check_output_conflicts(mode: str, output_path: str) -> tuple:
         bin_exists, bin_locked = lock_manager.check_file_status(bin_path)
         exists = exists or bin_exists or bin_locked
         locked = locked or bin_locked
+    elif mode == "folder_to_iso":
+        # A prior makeps3iso ``-s`` build over 4 GB leaves ``<output>.iso.0``
+        # (and ``.1``/…) with no plain ``<output>.iso``, so the bare-path check
+        # above would miss it. Probe the ``.0`` part so the duplicate preflight
+        # (/jobs/check-duplicates) and plan agree a split set already occupies
+        # the target.
+        if os.path.exists(output_path + ".0"):
+            exists = True
 
     return exists, locked
 
@@ -400,11 +408,10 @@ async def _plan_directory_job(
     ):
         raise SkipFile(SkipReason.PS3_OUTPUT_OUTSIDE_VOLUMES)
 
-    # Split-set aware: a prior ``-s`` build leaves ``<output>.iso.0``/… with no
-    # plain ``<output>.iso``, so probe the ``.0`` part too (the in-flight case is
-    # already covered — a running job holds the lock on the base output path).
-    _, is_locked = check_output_conflicts(mode, output_path)
-    output_exists = await run_in_threadpool(_ps3_iso_output_taken, output_path)
+    # check_output_conflicts is split-set aware for folder_to_iso (it probes the
+    # .0 part), so a prior split build counts as an existing output here and in
+    # the /jobs/check-duplicates preflight alike.
+    output_exists, is_locked = check_output_conflicts(mode, output_path)
     if output_exists or is_locked:
         if duplicate_action == DuplicateAction.SKIP:
             raise SkipFile(SkipReason.OUTPUT_EXISTS)
