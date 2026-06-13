@@ -494,7 +494,7 @@
       <dd>No. Jobs run on the server, not in your tab. Close the browser, reboot your laptop, come back later, and the queue is still chugging. Reopen the page and it reconnects to whatever's running.</dd>
 
       <dt>Can I undo a conversion?</dt>
-      <dd>There's no undo button, but you usually don't need one. Your source is still there. If you already deleted it, you can run an extract mode to rebuild the original game image from a CHD, or dolphin_iso to get a plain ISO back from an RVZ.</dd>
+      <dd>There's no undo button, but you usually don't need one. Your source is still there. If you already deleted it, you can run an extract mode to rebuild the original game image from a CHD, or dolphin_iso to get a plain ISO back from an RVZ/WIA/GCZ.</dd>
 
       <dt>I converted to CHD and it barely got smaller. Why?</dt>
       <dd>Some content just doesn't compress. Already-compressed audio or video, encrypted data, and a lot of PS2 DVDs are close to incompressible. A weak result usually means the disc was already dense, not that something went wrong. Double-check you used the right create mode too.</dd>
