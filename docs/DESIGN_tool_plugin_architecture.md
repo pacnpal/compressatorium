@@ -459,22 +459,32 @@ The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
   the recursive search `_scan` (the latter emits the folder as a job unit and
   does not recurse past it, so it's discoverable / batch-selectable).
 - **Lock manager.** A directory job protects its whole subtree two ways:
-  - *Admission* (rename / delete / new-job validation): `find_active_job_for_path`
-    / `_is_path_in_use_by_other_job` (and the files-route `_assert_path_not_in_use`,
-    which delegates to the former) treat any path that is a **descendant** of an
-    active `InputKind.DIRECTORY` job's source as in-use, so a rename / delete
-    inside an in-flight folder is rejected.
+  - *Filesystem mutation* (rename / delete / delete-on-verify cleanup): the
+    files-route `_assert_path_not_in_use` (→ `find_active_job_for_path`) rejects
+    a rename or delete of any path that is a **descendant** of an active
+    `InputKind.DIRECTORY` job's source, and delete-on-verify cleanup applies the
+    same descendant check via `_is_path_in_use_by_other_job`. (New-job *output*
+    collisions are handled separately by `check_output_conflicts` in `plan_job`,
+    not these helpers.)
   - *Runtime* (concurrent conversions): the lock manager exposes directory-lock
-    APIs — `acquire_dir_lock` / `release_dir_lock` (cross-process `fcntl` lock on
-    the resolved subtree) plus the read-only `is_within_locked_dir` /
-    `dir_lock_would_conflict`. A directory job holds its subtree lock for the
-    whole run; per-file jobs hit `acquire_lock`'s subtree guard. When
-    `MAX_CONCURRENT_JOBS > 1`, a job whose input/output falls inside a locked
-    subtree is **deferred, not failed**: `_process_job` releases the concurrency
-    slot (and any output lock taken) and `_schedule_dir_lock_requeue` re-queues
-    it after a fixed short delay, so it runs once the folder job releases the lock —
-    a `Set[asyncio.Task]` holds strong refs so a requeue task can't be GC'd
-    mid-sleep. All containment comparisons (admission and runtime) resolve
+    APIs — `acquire_dir_lock` / `release_dir_lock` plus the read-only
+    `is_within_locked_dir` / `dir_lock_would_conflict`. `acquire_dir_lock` takes
+    an `fcntl` lock on the **directory path itself** (so the exact same path is
+    cross-process exclusive) and records the resolved path in an in-memory
+    `_dir_locks` set; **subtree containment is enforced in-process** — a per-file
+    `acquire_lock` checks `_dir_locks` and contends on a child output, and the
+    code notes this is sound because `MAX_CONCURRENT_JOBS` concurrency all lives
+    in one process (it is *not* a cross-process subtree lock — a child output in
+    a second process hashes to a different lock file). A directory job holds the
+    lock for its whole run. When `MAX_CONCURRENT_JOBS > 1`, a job whose
+    input/output falls inside a locked subtree is **deferred, not failed**:
+    `_process_job` releases the concurrency slot (and any output lock taken) and
+    `_schedule_dir_lock_requeue` re-queues it after a fixed short delay, so it
+    runs once the folder job releases the lock — a `Set[asyncio.Task]` holds
+    strong refs so a requeue task can't be GC'd mid-sleep. (A *new* submission
+    whose output is already inside the locked subtree never reaches this path: it
+    is rejected at plan time by `check_output_conflicts`, which reads the dir lock
+    through `check_file_status`.) All containment comparisons resolve
     symlinks via `os.path.realpath`, so a symlinked path into a locked folder
     can't bypass them; resolution is gated on a dir lock actually being held to
     keep the hot listing path cheap. `_plan_directory_job` additionally rejects a
