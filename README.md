@@ -26,7 +26,7 @@ A game image converter that wraps seven tools: **CHDMAN** (MAME), **dolphin-tool
 | **Switch** | Nintendo Switch dumps | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Layout + level | **Yes** (`prod.keys`) | `nsz` |
 | **CSO** | PSP / PS2 game images | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | Effort preset (Fast/Default/Max) | None | `maxcso` |
 | **Handheld ROM** | Game Boy / GBC / GBA / DS ROMs | .gb, .gbc, .gba, .nds, .7z, .zip | .7z, .zip, .gb, .gbc, .gba, .nds | Effort preset (Fast/Default/Max) | None | `7z` (p7zip-full) |
-| **PS3 ISO** | Decrypted PS3 disc / JB folders | a `PS3_GAME/` folder (plus `PS3_DISC.SFB` for disc rips) | .iso (optional 4 GB FAT32 split) | None (fixed) | None | `makeps3iso` |
+| **PS3 ISO** | Decrypted PS3 disc / JB folders | a folder containing `PS3_GAME/` (plus `PS3_DISC.SFB` for disc rips) | .iso (optional 4 GB FAT32 split) | None (fixed) | None | `makeps3iso` |
 
 Most conversions above are lossless and fully reversible, including **3DS**, which
 now decompresses back to the original ROM as well. This uses
@@ -50,7 +50,7 @@ Each tool's full mode list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's
 `cso2_compress`, the ROM packer's `romz_7z`/`romz_zip`/`romz_extract`, and the PS3
 packer's `folder_to_iso`) is in [Supported Operations](#supported-operations).
 
-> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin game images, and Switch dumps. Browse into the archive, pick a member, and convert. This even covers CHDMAN's extract modes pulling a `.chd` out of an archive and decompressing it back to a game image. Two exceptions: CHDMAN's **copy/recompress** mode is not offered from an archive (recompressing an already-finished `.chd` would be a pointless round trip); and **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member.
+> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin game images, and Switch dumps. Browse into the archive, pick a member, and convert. This even covers CHDMAN's extract modes pulling a `.chd` out of an archive and decompressing it back to a game image. A few exceptions: CHDMAN's **copy/recompress** mode is not offered from an archive (recompressing an already-finished `.chd` would be a pointless round trip); **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member; and **PS3 ISO** takes a folder, not a file, so it is never an archive input (a zipped `PS3_GAME` tree can't be converted from inside an archive).
 
 ### MAME Redump DAT Integration
 
@@ -928,7 +928,7 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 - `romz_7z` (.gb/.gbc/.gba/.nds → .7z), `romz_zip` (.gb/.gbc/.gba/.nds → .zip), `romz_extract` (.7z/.zip → original ROM)
 
 **PS3 ISO (decrypted folder)**
-- `folder_to_iso` (a `PS3_GAME/` folder → `<folder>.iso`, with an optional `-s` 4 GB FAT32 split)
+- `folder_to_iso` (a folder containing `PS3_GAME/` → `<folder>.iso`, with an optional `-s` 4 GB FAT32 split)
 
 Notes:
 - Compression settings apply to CHD **create**/**copy**, Dolphin RVZ/WIA, Switch (`nsz_compress`), the CSO/CSO v2/ZSO/DAX compress modes, and the handheld ROM compress modes (`romz_7z`/`romz_zip`) — the last two take an effort preset. Other modes ignore them.
@@ -1227,7 +1227,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.zcci`, `.zcia`, `.z3ds`, `.zcxi`, `.z3dsx` - compressed 3DS ROMs (3DS decompression)
 - `.cso`, `.zso`, `.dax` - PSP/PS2 compressed ISO images (CSO decompression, or `cso_to_chd` to a `.chd`)
 - `.gb`, `.gbc`, `.gba`, `.nds` - Game Boy / GBC / GBA / DS ROMs (handheld ROM compression)
-- A decrypted PS3 folder (a `PS3_GAME/` layout) - packed to `.iso` (PS3 ISO tool; the input is a folder, not a file)
+- A decrypted PS3 folder (one containing a `PS3_GAME/` directory) - packed to `.iso` (PS3 ISO tool; the input is a folder, not a file)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives

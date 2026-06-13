@@ -51,7 +51,7 @@
       glyph: 'PS3',
       name: 'PS3 ISO',
       blurb: 'A decrypted PS3 disc or JB folder packed into a single .iso that RPCS3 mounts directly, using makeps3iso. This is the one tool that takes a folder instead of a file, and the one conversion that does not reverse: it repackages a folder you already decrypted, and never deletes it. Most PS3 discs are over 4 GB, so for a FAT32 drive there is a per-job toggle that splits the image into 4 GB parts (RPCS3 mounts the .0). No keys, and no decryption here.',
-      io: 'a PS3_GAME/ folder  →  .iso',
+      io: 'the folder holding PS3_GAME/  →  .iso',
     },
   ];
 
