@@ -161,6 +161,10 @@
       const filePaths = entries
         .filter((e) => {
           if (!e?.path || e.type === 'directory' || e.type === 'archive') return false;
+          // A folded split set advertises `.iso` but its path is only the .0
+          // part; hashing that as a whole ISO yields a false unmatched badge
+          // (and wastes a 4 GB hash pass), so skip it.
+          if (e.split_parts != null) return false;
           const ext = (e.extension ?? '').toLowerCase();
           return ext && matchExtSet.has(ext);
         })
@@ -174,9 +178,11 @@
   function openBulkVerify() {
     // Forward only filesystem paths; the verify-batch endpoint
     // rejects `archive::member` paths (treat_archives=false +
-    // os.path.isfile on the literal string).
+    // os.path.isfile on the literal string). Folded split sets are excluded
+    // too — their path is only the .0 part, so a verify would inspect a
+    // partial image.
     ui.bulkVerifyItems = Array.from(fileBrowser.selectedFiles.values())
-      .filter((e) => e?.path && !e.path.includes('::'));
+      .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
   }
 
   function openBulkDelete() {

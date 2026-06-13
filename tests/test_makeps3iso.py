@@ -604,6 +604,23 @@ def test_fold_split_iso_entries_noop_without_parts():
     assert files_routes._fold_split_iso_entries(entries) == entries
 
 
+def test_fold_split_iso_entries_requires_contiguous_parts():
+    from app.models import FileEntry
+
+    # A gap (.0 + .2, no .1) is an incomplete/corrupt set — don't fold it into a
+    # single "valid" row; leave the raw parts visible so the gap is obvious.
+    entries = [
+        FileEntry(name="Game.iso.0", path="/d/Game.iso.0", type="file", size=1,
+                  extension=".0"),
+        FileEntry(name="Game.iso.2", path="/d/Game.iso.2", type="file", size=1,
+                  extension=".2"),
+    ]
+    folded = files_routes._fold_split_iso_entries(entries)
+    names = [e.name for e in folded]
+    assert names == ["Game.iso.0", "Game.iso.2"]
+    assert all(e.split_parts is None for e in folded)
+
+
 # --------------------------------------------------------------------------- #
 # Split: overwrite cleanup, conflict detection, stall-probe widening
 # --------------------------------------------------------------------------- #

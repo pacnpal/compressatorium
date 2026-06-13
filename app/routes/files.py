@@ -60,7 +60,15 @@ def _fold_split_iso_entries(entries: list[FileEntry]) -> list[FileEntry]:
         match = _SPLIT_ISO_PART_RE.match(entry.name)
         if match:
             groups.setdefault(match.group("base"), {})[int(match.group("idx"))] = entry
-    foldable = {base: parts for base, parts in groups.items() if 0 in parts}
+    # Fold only a *complete* set: indices contiguous from 0 (0,1,…,N-1). An
+    # interrupted copy/write can leave a gap (e.g. .0 + .2, no .1); folding that
+    # would render one "valid" Game.iso hiding a corrupt/incomplete set, so leave
+    # such parts visible as their raw .N rows instead.
+    foldable = {
+        base: parts
+        for base, parts in groups.items()
+        if set(parts) == set(range(len(parts)))  # implies 0 in parts and no gaps
+    }
     if not foldable:
         return entries
 
