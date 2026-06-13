@@ -7,7 +7,7 @@ vertical slice, from the binary in the Docker image, through the Python service
 and tool plugin, the job pipeline, the FastAPI routes, and finally the Svelte
 web UI, and shows how to add a tool and a platform in tandem.
 
-It is written against the codebase as it stands today, with six tools already
+It is written against the codebase as it stands today, with seven tools already
 wired up:
 
 | Tool | Binary | Service module | Plugin | Handles |
@@ -18,6 +18,18 @@ wired up:
 | **nsz** | `nsz` pip package (on PATH) | `app/services/nsz.py` | `app/services/tools/nsz.py` | Nintendo Switch `.nsp`/`.xci` to/from `.nsz`/`.xcz` |
 | **maxcso** | built from source (`/usr/local/bin/maxcso`) | `app/services/maxcso.py` | `app/services/tools/maxcso.py` | PSP/PS2 `.iso` to/from `.cso` (CSO v1/v2) / `.zso` / `.dax` (tool id `cso`) |
 | **7z** | `p7zip-full` (`7z` on PATH) | `app/services/romz.py` | `app/services/tools/romz.py` | Handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` to/from `.7z`/`.zip` (tool id `romz`) |
+| **makeps3iso** | built from source (`/usr/local/bin/makeps3iso`) | `app/services/makeps3iso.py` | `app/services/tools/makeps3iso.py` | A decrypted PS3 folder (`PS3_GAME/` layout) packed to `.iso` (tool id `makeps3iso`, directory input) |
+
+> **Three tool shapes.** Most tools take a file matched by suffix, and that is
+> the path this guide walks. Two newer shapes sit on the same plugin/registry
+> contract and have their own seams: a **directory-input** tool (makeps3iso, the
+> last row above) selects a folder through `accepts_directory` / `InputKind`
+> instead of a suffix, and a **chain** mode (`cso_to_chd`) runs two existing
+> tools as one job through a `ChainSpec`. If you're adding either of those, read
+> the file-suffix walkthrough below for the shared plumbing (routes, job
+> pipeline, frontend registry), then see the two seam writeups in
+> `docs/DESIGN_tool_plugin_architecture.md` (§3.3.3 cross-tool chaining and
+> §3.3.4 directory inputs) for the parts that differ.
 
 > **`romz` is the "produces archives / reuses an existing binary" example.** It
 > needs no Dockerfile build step (the `7z` CLI already ships via `p7zip-full`)

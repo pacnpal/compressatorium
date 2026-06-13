@@ -1,8 +1,16 @@
 # Issue #98 — Plan: cso→chd chaining seam, and PS3 folder→iso
 
-**Status:** Research / design proposal · **Scope:** two of the #98 conversions ·
-**Companions:** `docs/DESIGN_tool_plugin_architecture.md`,
-`docs/ADDING_PLATFORMS_AND_TOOLS.md`
+> **Shipped (historical).** Both phases below landed in 4.2.0. Phase 1
+> (cross-tool chaining, `cso_to_chd`) shipped in #157; Phase 2 (PS3
+> folder→ISO, makeps3iso) in #158, with the optional 4 GB FAT32 split in #160
+> and the split-set hardening in #161. This doc is the original plan, kept for
+> context. For the as-built behavior see `docs/DESIGN_tool_plugin_architecture.md`,
+> the per-tool sections in `README.md`, and the 4.2.0 entry in
+> `docs/RELEASE_NOTES.md`.
+
+**Status:** Implemented in 4.2.0 (was: research / design proposal) · **Scope:**
+two of the #98 conversions · **Companions:**
+`docs/DESIGN_tool_plugin_architecture.md`, `docs/ADDING_PLATFORMS_AND_TOOLS.md`
 
 This is a plan, not an implementation. It introduces two **independent** seams
 above the existing plugin/registry contract (tools shell out to a CLI and yield

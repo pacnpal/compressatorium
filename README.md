@@ -2,11 +2,11 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A disc image converter that wraps six tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), and **7z** (handheld ROM archives). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A disc image converter that wraps seven tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), and **makeps3iso** (PS3 decrypted folder → ISO). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
-* **Six tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, or handheld ROM (GB/GBC/GBA/DS) compression, chosen per job.
+* **Seven tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, handheld ROM (GB/GBC/GBA/DS), or PS3 ISO (a decrypted PS3 folder packed to `.iso`), chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -26,8 +26,9 @@ A disc image converter that wraps six tools: **CHDMAN** (MAME), **dolphin-tool**
 | **Switch** | Nintendo Switch dumps | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Layout + level | **Yes** (`prod.keys`) | `nsz` |
 | **CSO** | PSP / PS2 disc images | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | Effort preset (Fast/Default/Max) | None | `maxcso` |
 | **Handheld ROM** | Game Boy / GBC / GBA / DS ROMs | .gb, .gbc, .gba, .nds, .7z, .zip | .7z, .zip, .gb, .gbc, .gba, .nds | Effort preset (Fast/Default/Max) | None | `7z` (p7zip-full) |
+| **PS3 ISO** | Decrypted PS3 disc / JB folders | a `PS3_GAME/` folder (plus `PS3_DISC.SFB` for disc rips) | .iso (optional 4 GB FAT32 split) | None (fixed) | None | `makeps3iso` |
 
-Every conversion above is lossless and fully reversible — including **3DS**, which
+Most conversions above are lossless and fully reversible, including **3DS**, which
 now decompresses back to the original ROM as well. This uses
 [`z3ds_compress`](https://github.com/pacnpal/z3ds_compress) (a fork that adds a
 decompression mode and `.cxi`/`.3dsx` support to the original
@@ -35,9 +36,19 @@ decompression mode and `.cxi`/`.3dsx` support to the original
 The compressed `.z3ds` can be read directly by Azahar, or restored to
 `.cci`/`.cia`/`.3ds` with `z3ds_decompress`; see
 [Nintendo 3DS Support](#nintendo-3ds-support).
+
+**PS3 ISO** is the exception to the round trip. It packs a decrypted PS3 folder
+into a `.iso` that RPCS3 mounts directly; there is no reverse mode back to a
+folder, and it never deletes the source. See
+[PlayStation 3 Support](#playstation-3-support-folder--iso).
+
+The CSO tool also has a one-step chain, `cso_to_chd`, that runs a `.cso`/`.zso`/`.dax`
+through maxcso to a temporary `.iso` and then chdman to a `.chd` in a single job;
+see [PSP / PS2 Support](#psp--ps2-support-cso--zso--dax).
+
 Each tool's full mode list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's
-`cso2_compress`, the ROM packer's `romz_7z`/`romz_zip`/`romz_extract`) is in
-[Supported Operations](#supported-operations).
+`cso2_compress`, the ROM packer's `romz_7z`/`romz_zip`/`romz_extract`, and the PS3
+packer's `folder_to_iso`) is in [Supported Operations](#supported-operations).
 
 > **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. This even covers CHDMAN's extract modes pulling a `.chd` out of an archive and decompressing it back to a disc image. Two exceptions: CHDMAN's **copy/recompress** mode is not offered from an archive (recompressing an already-finished `.chd` would be a pointless round trip); and **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member.
 
@@ -118,8 +129,9 @@ When you open the Web UI, you'll see the tool options at the top:
 * **Dolphin** - For GameCube/Wii disc image conversions
 * **3DS** - For compressing Nintendo 3DS ROMs
 * **Switch** - For compressing/decompressing Nintendo Switch dumps (needs your own prod.keys)
-* **CSO** - For compressing/decompressing PSP/PS2 ISO images to CSO/ZSO
+* **CSO** - For compressing/decompressing PSP/PS2 ISO images to CSO/ZSO (and a one-step CSO → CHD chain)
 * **Handheld ROM** - For compressing/extracting GB/GBC/GBA/DS ROM dumps to .7z/.zip archives
+* **PS3 ISO** - For packing a decrypted PS3 folder into a `.iso` RPCS3 can mount
 
 **Choose the tool that matches your files.** The interface then shows only the modes and file types that tool can use.
 
@@ -129,6 +141,7 @@ When you open the Web UI, you'll see the tool options at the top:
 * Click on folders to browse subdirectories
 * Check the boxes next to files you want to convert
 * Archives (.zip, .7z, .rar) can be browsed by clicking them
+* With the **PS3 ISO** tool selected, a decrypted PS3 folder is itself selectable as a source (clicking its name still browses into it); the rest of the tools take files
 
 ### 3. Configure and Convert
 
@@ -341,7 +354,7 @@ The Web UI ships with light and dark themes and is fully responsive from desktop
 
 #### Workspace
 
-A three-pane layout: navigation and tool picker on the left, the volume and file browser in the middle, and a live convert panel with the job queue on the right. Selecting a tool (CHDMAN, Dolphin, or 3DS) refilters the file list and the convert options to match.
+A three-pane layout: navigation and tool picker on the left, the volume and file browser in the middle, and a live convert panel with the job queue on the right. Selecting a tool refilters the file list and the convert options to match.
 
 | Light | Dark |
 |-------|------|
@@ -700,6 +713,17 @@ Select **CSO** as the primary tool and pick a mode (the general workflow is in t
 - *Compress ISO → ZSO* (`.iso` → `.zso`, lz4-based, faster to decode)
 - *Compress ISO → DAX* (`.iso` → `.dax`, legacy PSP format)
 - *Decompress CSO/ZSO/DAX → ISO* (`.cso`/`.zso`/`.dax` → `.iso`)
+- *Convert to CHD* (`cso_to_chd`: `.cso`/`.zso`/`.dax` → `.chd` in one step)
+
+**CSO → CHD in one step.** The `cso_to_chd` mode runs the whole chain as a single
+job: maxcso decompresses the compressed image to a temporary `.iso`, then chdman
+packages that to a `.chd` (PPSSPP, PCSX2, and RetroArch read the result). The
+intermediate `.iso` lives in a private temp dir and is cleaned up after, so only
+the source and the final `.chd` remain. Delete-on-verify works end to end: the
+original `.cso` is removed only after the final `.chd` passes chdman verification.
+Disc-ID `GAME`/`NAME` tags are embedded into the CHD just like a direct Create
+DVD. The chain uses chdman's default compression (there is no codec picker for it
+yet).
 
 ### Supported File Formats
 
@@ -736,11 +760,74 @@ Select **CSO** as the primary tool and pick a mode (the general workflow is in t
 
 ### REST API Endpoints
 
-* `POST /api/jobs` or `POST /api/jobs/batch` - Queue CSO jobs (use `mode: "cso_compress"`, `"cso2_compress"`, `"zso_compress"`, `"dax_compress"`, or `"cso_decompress"`)
+* `POST /api/jobs` or `POST /api/jobs/batch` - Queue CSO jobs (use `mode: "cso_compress"`, `"cso2_compress"`, `"zso_compress"`, `"dax_compress"`, `"cso_decompress"`, or `"cso_to_chd"`)
 * `GET /api/cso-info?path=/path/to/game.cso` - Get file information (size, format, compression status)
 * `GET /api/cso-verify?path=/path/to/game.cso` - Verify a compressed CSO/ZSO/DAX output
 * `GET /api/cso-verify/events?path=/path/to/game.cso` - SSE stream for CSO verify progress
 * `POST /api/cso-verify-batch/events` - SSE stream for batch CSO verification
+
+---
+
+## PlayStation 3 Support (folder → ISO)
+
+The PS3 ISO tool packs a decrypted PS3 disc or JB folder into a single `.iso`
+that RPCS3 mounts directly, using [makeps3iso](https://github.com/bucanero/ps3iso-utils).
+This is the one tool whose input is a folder, not a file, and the one conversion
+that is not reversible. It repackages a folder you already decrypted. It does not
+decrypt anything and needs no keys.
+
+### How to Use
+
+Select **PS3 ISO** as the primary tool. A decrypted PS3 folder then shows up as a
+selectable source in the file browser and in Search All (clicking its name still
+browses into it). Pick the folder and run the one mode, `folder_to_iso`. The
+output is `<folder>.iso` next to the source, or in a custom output directory
+inside a mounted volume. The general workflow (queue, output handling) is in the
+[Usage Guide](#usage-guide).
+
+A folder qualifies when it has the decrypted PS3 layout: a `PS3_GAME/` directory,
+plus `PS3_DISC.SFB` for disc rips. A bare installed-game folder is not accepted.
+
+### Optional 4 GB split for FAT32
+
+FAT32 can't hold a single file larger than 4 GB, so most PS3 discs won't fit as
+one `.iso`. The per-job **Split into 4 GB parts (FAT32)** toggle runs makeps3iso
+with `-s`, so an image over ~4 GB is written as `Game.iso.0`, `Game.iso.1`, and so
+on (RPCS3 mounts the `.0`). A title under 4 GB still produces a single `Game.iso`.
+The file browser folds a split set into one entry, showing `Game.iso` with the
+combined size and a part count rather than a row per chunk. The toggle is off by
+default; ext4, NTFS, and exFAT targets don't need it.
+
+### Notes
+
+- makeps3iso has no native verify, so there is no verify or delete-on-verify for
+  this tool. After a successful build it does a light PARAM.SFO `TITLE_ID`
+  readback from the produced ISO and flags a mismatch in the job message.
+- While a folder is being packed, its whole subtree is locked. A per-file job
+  that was already queued and whose input or output lands inside the folder is
+  deferred, re-queued, and retried once the build finishes (only reachable with
+  `MAX_CONCURRENT_JOBS > 1`). A new request whose output lands inside the folder
+  is rejected up front like any output collision.
+- The default output (`<folder>.iso`) must land inside a configured volume. If the
+  folder is itself a volume root, so the sibling output would escape every volume,
+  the job is rejected with a message asking for an in-volume output directory.
+- The makeps3iso binary (GPL-3.0, from `bucanero/ps3iso-utils`) is built into the
+  Docker image and builds on both `linux/amd64` and `linux/arm64`.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAKEPS3ISO_PATH` | `/usr/local/bin/makeps3iso` | Path to the makeps3iso binary |
+
+(Global vars, including the tool-neutral priority knobs, are in [Environment Variables](#environment-variables).)
+
+### REST API Endpoints
+
+- `POST /api/jobs` or `POST /api/jobs/batch` - Queue a PS3 ISO job (use `mode: "folder_to_iso"`, with `input_path` set to the PS3 folder and an optional `split: true` for the 4 GB FAT32 split)
+
+There is no info or verify endpoint for this tool, since makeps3iso has no native
+verify.
 
 ---
 
@@ -835,10 +922,13 @@ All actions are queued and processed by the job queue (FIFO). The queue is the o
 - `z3ds_decompress` (.zcci → .cci, .zcia → .cia, .z3ds → .3ds, .zcxi → .cxi, .z3dsx → .3dsx)
 
 **PSP / PS2 (CSO)**
-- `cso_compress` (.iso → .cso, CSO v1), `cso2_compress` (.iso → .cso, CSO v2), `zso_compress` (.iso → .zso), `dax_compress` (.iso → .dax), `cso_decompress` (.cso/.zso/.dax → .iso)
+- `cso_compress` (.iso → .cso, CSO v1), `cso2_compress` (.iso → .cso, CSO v2), `zso_compress` (.iso → .zso), `dax_compress` (.iso → .dax), `cso_decompress` (.cso/.zso/.dax → .iso), `cso_to_chd` (.cso/.zso/.dax → .chd, one-step chain through maxcso + chdman)
 
 **Handheld ROM (GB/GBC/GBA/NDS)**
 - `romz_7z` (.gb/.gbc/.gba/.nds → .7z), `romz_zip` (.gb/.gbc/.gba/.nds → .zip), `romz_extract` (.7z/.zip → original ROM)
+
+**PS3 ISO (decrypted folder)**
+- `folder_to_iso` (a `PS3_GAME/` folder → `<folder>.iso`, with an optional `-s` 4 GB FAT32 split)
 
 Notes:
 - Compression settings apply to CHD **create**/**copy**, Dolphin RVZ/WIA, Switch (`nsz_compress`), the CSO/CSO v2/ZSO/DAX compress modes, and the handheld ROM compress modes (`romz_7z`/`romz_zip`) — the last two take an effort preset. Other modes ignore them.
@@ -967,6 +1057,9 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `DOLPHIN_TOOL_PATH` | `/usr/local/bin/dolphin-tool` | Path to dolphin-tool binary |
 | `Z3DS_COMPRESSOR_PATH` | `/usr/local/bin/z3ds_compressor` | Path to z3ds_compressor binary |
 | `MAXCSO_PATH` | `/usr/local/bin/maxcso` | Path to maxcso binary (PSP/PS2 CSO/CSO v2/ZSO/DAX) |
+| `MAKEPS3ISO_PATH` | `/usr/local/bin/makeps3iso` | Path to the makeps3iso binary (PS3 folder → ISO) |
+| `NSZ_PATH` | `nsz` | Path to the nsz binary (Nintendo Switch); resolved on PATH by default |
+| `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM archives); resolved on PATH by default (set an absolute path or `7zz` if your distro ships the newer `7zip` package) |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (`1` = serial queue processing) |
 | `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
 | `MAX_VERIFY_CONCURRENCY` | `1` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |
@@ -979,7 +1072,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `6` | I/O priority level for every tool (`0` highest, `7` lowest). Legacy alias: `CHD_CHDMAN_IOPRIO_LEVEL`. |
 | `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` | `60` | Timeout in seconds for `info`/`header` subprocesses, used by chdman and Dolphin (nsz/3DS read info from the filesystem, so it doesn't apply to them). 0 disables. Legacy alias: `CHD_INFO_TIMEOUT`. |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` | `0` | Timeout in seconds for verify runs across all tools (0 disables). Legacy alias: `CHD_VERIFY_TIMEOUT`. |
-| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, or `MAXCSO` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`, `COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT=300`). |
+| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | (shared default) | Optional per-tool overrides that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `<TOOL>` is `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ` (handheld ROM), or `MAKEPS3ISO` (e.g. `COMPRESSATORIUM_DOLPHIN_TOOL_NICE=15`, `COMPRESSATORIUM_NSZ_VERIFY_TIMEOUT=300`, `COMPRESSATORIUM_MAXCSO_VERIFY_TIMEOUT=300`). `MAKEPS3ISO` takes the `_NICE`/`_IOPRIO_*` knobs but has no `_VERIFY_TIMEOUT`, since makeps3iso has no verify step. |
 | `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | (shared default) | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN` or `DOLPHIN_TOOL` (the only tools whose `info` runs a subprocess); falls back to the shared `COMPRESSATORIUM_TOOL_INFO_TIMEOUT`. |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |
@@ -1132,8 +1225,9 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii disc images (Dolphin)
 - `.cci`, `.cia`, `.3ds`, `.cxi`, `.3dsx` - Nintendo 3DS ROM images (3DS compression)
 - `.zcci`, `.zcia`, `.z3ds`, `.zcxi`, `.z3dsx` - compressed 3DS ROMs (3DS decompression)
-- `.cso`, `.zso`, `.dax` - PSP/PS2 compressed ISO images (CSO decompression)
+- `.cso`, `.zso`, `.dax` - PSP/PS2 compressed ISO images (CSO decompression, or `cso_to_chd` to a `.chd`)
 - `.gb`, `.gbc`, `.gba`, `.nds` - Game Boy / GBC / GBA / DS ROMs (handheld ROM compression)
+- A decrypted PS3 folder (a `PS3_GAME/` layout) - packed to `.iso` (PS3 ISO tool; the input is a folder, not a file)
 
 **Archive formats (Web UI):**
 - `.zip` - ZIP archives
@@ -1146,6 +1240,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 - `.zcci`, `.zcia`, `.z3ds`, `.zcxi`, `.z3dsx` - Compressed Nintendo 3DS ROMs (z3ds_decompress restores the original ROM)
 - `.cso`, `.zso`, `.dax` - Compressed PSP/PS2 ISO images (maxcso; `.cso` covers CSO v1 and v2)
 - `.7z`, `.zip` - Handheld ROM archives (7z; `romz_extract` restores the original `.gb`/`.gbc`/`.gba`/`.nds`)
+- `.iso` (and a split `.iso.0`/`.iso.1`/… set on FAT32) - PS3 ISO packed from a decrypted folder (makeps3iso)
 
 ---
 
@@ -1181,7 +1276,7 @@ npm run lint        # ESLint (JS + .svelte), flat config in eslint.config.js
 * `src/App.svelte`: the root shell. Sidebar, topbar, routed view, error boundary, focus management on route change, skip-to-content link, and the `<ModeWatcher />` (theme) and `<Toaster />` (notifications) mounts.
 * `src/lib/stores/*.svelte.js`: class-singleton stores with Svelte 5 `$state` fields, one per feature domain (jobs / fileBrowser / conversion / verification / datMatching / chdMetadata / ui).
 * `src/lib/api/`: REST client, auto-reconnecting EventSource (`sse.js`), and a POST-body SSE stream parser for batch verify (`sseFetch.js`). Backend snapshot-on-connect (`/api/jobs/events`) hydrates the full job state, so there's no separate REST round-trip.
-* `src/lib/tools/registry.js`: every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, **compression codecs / style / level range**, API bindings). Adding a fourth tool is one new entry plus the backend plugin. Helpers like `registry.allFilterableExts()` keep UI surfaces (file-list filter dropdown, conversion mode dropdown, compression picker, and so on) extended automatically.
+* `src/lib/tools/registry.js`: every tool fact (id, label, hint, verify URL segment, source/verify exts, modes, groups, default mode, glyph, accent, **compression codecs / style / level range**, API bindings). Adding another tool is one new entry plus the backend plugin. Helpers like `registry.allFilterableExts()` keep UI surfaces (file-list filter dropdown, conversion mode dropdown, compression picker, and so on) extended automatically.
 * `src/lib/components/panels/`: `VolumeList`, `Breadcrumb`, `FileList`, `FileRow`, `RowActionsMenu` (file browser); `ModeSelect`, `CompressionPicker`, `ConvertPanel` (conversion config); `JobRow`, `JobsPanel` (queue / completed / failed tabs with global Cancel-all / Clear / stuck-state recovery).
 * `src/lib/components/modals/`: `BaseModal` (bits-ui Dialog wrapper), `ConfirmModal` (canonical confirm/cancel), then `BulkVerifyModal`, `DuplicateModal`, `DeleteModal`, `BulkDeleteModal`, `RenameModal`, `FileInfoModal`, `CancelAllJobsModal`, `ClearDoneModal`. Each mounts in `App.svelte` and self-renders against a `ui` store target.
 * `src/lib/components/dashboard/`: `StatCard` wrapper plus `QueueSummaryCard`, `VolumeOverviewCard`, `RecentConversionsCard`, `VerificationStatusCard`, `QuickToolsCard`. QuickToolsCard iterates `registry.all()`, so adding a tool auto-adds a tile.
@@ -1209,5 +1304,8 @@ This project is a fork of the original Docker CHD Converter project by [MarcTV](
 
 **Additional Tools:**
 - [z3ds_compress](https://github.com/pacnpal/z3ds_compress) (fork with decompression + `.cxi`/`.3dsx` support), based on the original [z3ds_compress](https://github.com/energeticokay/z3ds_compress) by [energeticokay](https://github.com/energeticokay) - Nintendo 3DS ROM compression / decompression
+- [maxcso](https://github.com/unknownbrackets/maxcso) by [unknownbrackets](https://github.com/unknownbrackets) - PSP/PS2 CSO/ZSO/DAX compression
+- [nsz](https://github.com/nicoboss/nsz) by [nicoboss](https://github.com/nicoboss) - Nintendo Switch NSP/XCI compression
+- [ps3iso-utils (makeps3iso)](https://github.com/bucanero/ps3iso-utils) by [bucanero](https://github.com/bucanero) - PS3 decrypted folder → ISO (GPL-3.0)
 
-Thanks to MarcTV and energeticokay for building and sharing these tools.
+Thanks to everyone who built and shared these tools.

@@ -32,7 +32,7 @@ The full environment variable reference lives in [README.md](../README.md#enviro
 | `PUID` / `PGID` | `999` | Remap the `converter` user/group to match host ownership |
 | `CHD_DATA_DIR` | `/config` | Persistent data; the SQLite DB lives here |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
-| `COMPRESSATORIUM_TOOL_NICE` / `COMPRESSATORIUM_TOOL_IOPRIO_CLASS` / `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `10` / `2` / `6` | CPU and I/O priority for **all** tools (chdman, Dolphin, 3DS, Switch, PSP/PS2 CSO). Legacy aliases `CHD_CHDMAN_NICE` / `CHD_CHDMAN_IOPRIO_CLASS` / `CHD_CHDMAN_IOPRIO_LEVEL` still work. Also `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` (chdman/Dolphin info subprocess) and `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` (verify across all tools). Per-tool overrides: `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` for `<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`; `_INFO_TIMEOUT` only for `CHDMAN` and `DOLPHIN_TOOL`. |
+| `COMPRESSATORIUM_TOOL_NICE` / `COMPRESSATORIUM_TOOL_IOPRIO_CLASS` / `COMPRESSATORIUM_TOOL_IOPRIO_LEVEL` | `10` / `2` / `6` | CPU and I/O priority for **all** tools (chdman, Dolphin, 3DS, Switch, PSP/PS2 CSO, handheld ROM, PS3 ISO). Legacy aliases `CHD_CHDMAN_NICE` / `CHD_CHDMAN_IOPRIO_CLASS` / `CHD_CHDMAN_IOPRIO_LEVEL` still work. Also `COMPRESSATORIUM_TOOL_INFO_TIMEOUT` (chdman/Dolphin info subprocess) and `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` (verify across all tools). Per-tool overrides: `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` for `<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ`, `MAKEPS3ISO` (`MAKEPS3ISO` has no `_VERIFY_TIMEOUT`, since makeps3iso has no verify step); `_INFO_TIMEOUT` only for `CHDMAN` and `DOLPHIN_TOOL`. |
 | `SWITCH_KEYS` | (unset) | Directory holding your own Switch `prod.keys`. Source of truth for the Switch (nsz) tool; mount it read-only. When unset, the app best-effort checks `~/.switch` and your mounted volumes. No keys ship with the image. |
 | `STATIC_DIR` | `/static` | Static web assets |
 
@@ -70,7 +70,7 @@ Volume precedence:
 - Async job queue with configurable concurrency, SSE progress, job cancellation, and per-job file locks.
 - Archive support (ZIP, 7z, RAR) through `py7zr`, `rarfile`, and the `p7zip-full` / `unrar-free` system packages, with temp extraction and cleanup.
 - Auto-generated API docs at `/docs` (OpenAPI/Swagger).
-- CI/CD in `.github/workflows/docker-image.yml`: builds `linux/amd64` and `linux/arm64` and pushes to Docker Hub and GHCR on pushes to `latest` and on `v*` tags.
+- CI/CD in `.github/workflows/docker-image.yml`: builds `linux/amd64` and `linux/arm64` and pushes to Docker Hub and GHCR. It triggers on a published GitHub Release only (no push or tag trigger); the image tags come from the release tag.
 
 ## What you should add yourself
 
