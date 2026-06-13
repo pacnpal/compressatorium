@@ -458,11 +458,29 @@ The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
   `convertible_by` + the sibling `.iso` output in **both** `scan_directory` and
   the recursive search `_scan` (the latter emits the folder as a job unit and
   does not recurse past it, so it's discoverable / batch-selectable).
-- **Lock manager.** A directory job protects its whole subtree:
-  `find_active_job_for_path` / `_is_path_in_use_by_other_job` (and the files-route
-  `_assert_path_not_in_use`, which delegates to the former) treat any path that is
-  a **descendant** of an active `InputKind.DIRECTORY` job's source as in-use, so a
-  per-file job / rename / delete inside an in-flight folder can't corrupt the ISO.
+- **Lock manager.** A directory job protects its whole subtree two ways:
+  - *Admission* (rename / delete / new-job validation): `find_active_job_for_path`
+    / `_is_path_in_use_by_other_job` (and the files-route `_assert_path_not_in_use`,
+    which delegates to the former) treat any path that is a **descendant** of an
+    active `InputKind.DIRECTORY` job's source as in-use, so a rename / delete
+    inside an in-flight folder is rejected.
+  - *Runtime* (concurrent conversions): the lock manager exposes directory-lock
+    APIs — `acquire_dir_lock` / `release_dir_lock` (cross-process `fcntl` lock on
+    the resolved subtree) plus the read-only `is_within_locked_dir` /
+    `dir_lock_would_conflict`. A directory job holds its subtree lock for the
+    whole run; per-file jobs hit `acquire_lock`'s subtree guard. When
+    `MAX_CONCURRENT_JOBS > 1`, a job whose input/output falls inside a locked
+    subtree is **deferred, not failed**: `_process_job` releases the concurrency
+    slot (and any output lock taken) and `_schedule_dir_lock_requeue` re-queues
+    it after a fixed short delay, so it runs once the folder job releases the lock —
+    a `Set[asyncio.Task]` holds strong refs so a requeue task can't be GC'd
+    mid-sleep. All containment comparisons (admission and runtime) resolve
+    symlinks via `os.path.realpath`, so a symlinked path into a locked folder
+    can't bypass them; resolution is gated on a dir lock actually being held to
+    keep the hot listing path cheap. `_plan_directory_job` additionally rejects a
+    derived output that resolves inside the source or outside the configured
+    volumes, so a folder-at-volume-root build can't write a sibling `.iso`
+    outside all volumes or ingest its own in-progress ISO.
 - **Plan + UI.** `plan_job` branches on `InputKind.DIRECTORY in spec.input_kinds`
   (validate `isdir` + the detector, normalized basename for output + display
   name). The frontend mode carries `inputKinds: ['directory']`; a *convertible*
