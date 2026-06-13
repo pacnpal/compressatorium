@@ -38,7 +38,7 @@
     {
       glyph: 'CSO',
       name: 'CSO',
-      blurb: 'PSP and PS2 game images to CSO, CSO v2, ZSO, or DAX, the compressed ISO formats PPSSPP and PCSX2 read directly, so the compressed file plays without a separate decompress step. Lossless and fully reversible, using maxcso. CSO v1 is the deflate-based, universally-supported default; CSO v2 improves block alignment for recent emulators; ZSO uses lz4 for faster decoding; DAX is a legacy PSP format. No keys needed. An ISO can also go to CHDMAN or Dolphin instead; the tool picker decides. There is also a one-step Convert to CHD mode (cso_to_chd).',
+      blurb: 'PSP and PS2 game images to CSO, CSO v2, ZSO, or DAX, the compressed ISO formats PPSSPP and PCSX2 read directly, so the compressed file plays without a separate decompress step. The CSO formats are lossless and fully reversible, using maxcso. CSO v1 is the deflate-based, universally-supported default; CSO v2 improves block alignment for recent emulators; ZSO uses lz4 for faster decoding; DAX is a legacy PSP format. No keys needed. An ISO can also go to CHDMAN or Dolphin instead; the tool picker decides. There is also a one-step Convert to CHD mode (cso_to_chd); that one changes container, so extracting the CHD later gives an ISO, not the original CSO/ZSO/DAX.',
       io: '.iso  ↔  .cso / .zso / .dax',
     },
     {

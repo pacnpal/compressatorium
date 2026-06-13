@@ -24,7 +24,7 @@ A game image converter that wraps seven tools: **CHDMAN** (MAME), **dolphin-tool
 | **Dolphin** | GameCube / Wii discs | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | Codec + numeric level | None | `dolphin-emu` |
 | **3DS** | Nintendo 3DS ROMs | .cci, .cia, .3ds, .cxi, .3dsx, .zcci, .zcia, .z3ds, .zcxi, .z3dsx | .zcci, .zcia, .z3ds, .zcxi, .z3dsx, .cci, .cia, .3ds, .cxi, .3dsx | None (fixed) | None | `z3ds_compressor` |
 | **Switch** | Nintendo Switch dumps | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Layout + level | **Yes** (`prod.keys`) | `nsz` |
-| **CSO** | PSP / PS2 game images | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | Effort preset (Fast/Default/Max) | None | `maxcso` |
+| **CSO** | PSP / PS2 game images | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso, .chd | Effort preset (Fast/Default/Max); the `cso_to_chd` chain ignores it and uses chdman defaults | None | `maxcso` (+ chdman for `cso_to_chd`) |
 | **Handheld ROM** | Game Boy / GBC / GBA / DS ROMs | .gb, .gbc, .gba, .nds, .7z, .zip | .7z, .zip, .gb, .gbc, .gba, .nds | Effort preset (Fast/Default/Max) | None | `7z` (p7zip-full) |
 | **PS3 ISO** | Decrypted PS3 disc / JB folders | a folder containing `PS3_GAME/` (plus `PS3_DISC.SFB` for disc rips) | .iso (optional 4 GB FAT32 split) | None (fixed) | None | `makeps3iso` |
 
@@ -801,7 +801,7 @@ one `.iso`. The per-job **Split into 4 GB parts (FAT32)** toggle runs makeps3iso
 with `-s`, so an image over ~4 GB is written as `Game.iso.0`, `Game.iso.1`, and so
 on (RPCS3 mounts the `.0`). A title under 4 GB still produces a single `Game.iso`.
 The file browser folds a split set into one entry, showing `Game.iso` with the
-combined size and a part count rather than a row per chunk. The toggle is off by
+combined size rather than a row per chunk. The toggle is off by
 default; ext4, NTFS, and exFAT targets don't need it.
 
 ### Notes
@@ -812,8 +812,10 @@ default; ext4, NTFS, and exFAT targets don't need it.
 - While a folder is being packed, its whole subtree is locked. A per-file job
   that was already queued and whose input or output lands inside the folder is
   deferred, re-queued, and retried once the build finishes (only reachable with
-  `MAX_CONCURRENT_JOBS > 1`). A new request whose output lands inside the folder
-  is rejected up front like any output collision.
+  `MAX_CONCURRENT_JOBS > 1`). A new request whose output lands inside the folder is
+  treated as an output collision: skip and overwrite are rejected up front (the
+  subtree reads as locked), while rename gets a fresh name that the subtree lock
+  still guards when the job runs.
 - The default output (`<folder>.iso`) must land inside a configured volume. If the
   folder is itself a volume root, so the sibling output would escape every volume,
   the job is rejected with a message asking for an in-volume output directory.

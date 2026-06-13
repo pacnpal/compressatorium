@@ -29,8 +29,8 @@ optional 4 GB split for FAT32 targets, and a new CSO mode converts a
   fit as one `.iso`; with the toggle on, an image over ~4 GB is written as
   `Game.iso.0`, `Game.iso.1`, … (RPCS3 mounts the `.0`). A title under 4 GB
   still produces a single `Game.iso`. The file browser **folds a split set into
-  one entry** — it shows `Game.iso` with the combined size and a part count, not
-  a row per chunk. Default off; ext4/NTFS/exFAT targets don't need it.
+  one entry** — it shows `Game.iso` with the combined size, not a row per chunk.
+  Default off; ext4/NTFS/exFAT targets don't need it.
 - **Concurrent jobs that touch a folder being packed don't corrupt it.** While a
   PS3 folder is being built into an ISO its whole subtree is locked. A per-file
   job that was **already queued** when the folder build starts and whose
