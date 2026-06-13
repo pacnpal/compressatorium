@@ -37,14 +37,17 @@ The compressed `.z3ds` can be read directly by Azahar, or restored to
 `.cci`/`.cia`/`.3ds` with `z3ds_decompress`; see
 [Nintendo 3DS Support](#nintendo-3ds-support).
 
-**PS3 ISO** is the exception to the round trip. It packs a decrypted PS3 folder
-into a `.iso` that RPCS3 mounts directly; there is no reverse mode back to a
-folder, and it never deletes the source. See
+**PS3 ISO** is the clearest exception to the round trip. It packs a decrypted PS3
+folder into a `.iso` that RPCS3 mounts directly; there is no reverse mode back to
+a folder, and it never deletes the source. See
 [PlayStation 3 Support](#playstation-3-support-folder--iso).
 
 The CSO tool also has a one-step chain, `cso_to_chd`, that runs a `.cso`/`.zso`/`.dax`
-through maxcso to a temporary `.iso` and then chdman to a `.chd` in a single job;
-see [PSP / PS2 Support](#psp--ps2-support-cso--zso--dax).
+through maxcso to a temporary `.iso` and then chdman to a `.chd` in a single job.
+The disc image survives losslessly, but this one changes container: extracting the
+resulting `.chd` gives you an `.iso`, not the original `.cso`/`.zso`/`.dax`, so
+delete-on-verify here trades the compressed source for a CHD. See
+[PSP / PS2 Support](#psp--ps2-support-cso--zso--dax).
 
 Each tool's full mode list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's
 `cso2_compress`, the ROM packer's `romz_7z`/`romz_zip`/`romz_extract`, and the PS3
@@ -721,9 +724,12 @@ packages that to a `.chd` (PPSSPP, PCSX2, and RetroArch read the result). The
 intermediate `.iso` lives in a private temp dir and is cleaned up after, so only
 the source and the final `.chd` remain. Delete-on-verify works end to end: the
 original `.cso` is removed only after the final `.chd` passes chdman verification.
-Disc-ID `GAME`/`NAME` tags are embedded into the CHD just like a direct Create
-DVD. The chain uses chdman's default compression (there is no codec picker for it
-yet).
+Note this changes container, so it's a one-way trip: extracting the `.chd` later
+(chdman `extractdvd`) gives back the `.iso`, not the original `.cso`/`.zso`/`.dax`.
+The disc image is preserved, but the compressed source is not reproducible once
+deleted. Disc-ID `GAME`/`NAME` tags are embedded into the CHD just like a direct
+Create DVD. The chain uses chdman's default compression (there is no codec picker
+for it yet).
 
 ### Supported File Formats
 
