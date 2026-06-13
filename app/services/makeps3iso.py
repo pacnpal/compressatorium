@@ -166,15 +166,15 @@ class MakePs3IsoService:
         # (``acquire_lock(allow_existing=…)`` gates the rest).
         await asyncio.to_thread(self._remove_outputs, output_path)
         cmd = self._build_command(input_path, output_path, split=split)
+
         # A split build renames the base .iso to .iso.0 and writes .iso.1/…, so
         # the bare output_path stops growing mid-run; widen the stall probe to
         # the whole set (summed size) so a healthy split isn't killed as stalled
         # when makeps3iso's percent plateaus during a large part write.
-        growth_paths = None
-        if split:
-            growth_paths = lambda: [  # noqa: E731 - tiny resolver closure
-                output_path, *self._numbered_parts(output_path),
-            ]
+        def _growth_paths() -> list[str]:
+            return [output_path, *self._numbered_parts(output_path)]
+
+        growth_paths = _growth_paths if split else None
         try:
             async for update in self._runner.run(
                 cmd,
