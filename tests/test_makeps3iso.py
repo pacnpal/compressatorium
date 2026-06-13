@@ -776,6 +776,46 @@ async def test_process_job_rejects_existing_split_set_without_overwrite(tmp_path
         job_manager._cancelled.discard(job.id)
 
 
+@pytest.mark.asyncio
+async def test_process_job_rejects_directory_output(tmp_path):
+    # A directory shadowing the output path (MyGame.iso/) is never a valid
+    # makeps3iso target. acquire_lock already rejects it (its ``not isfile``
+    # clause fires for both overwrite states), so the worker fails the job rather
+    # than writing *into* the directory. Regression guard against that clobber.
+    from app.services.job_manager import job_manager
+    from services.concurrency_manager import concurrency_manager
+    from services.lock_manager import lock_manager
+
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out = str(tmp_path / "MyGame.iso")
+    Path(out).mkdir()  # a directory occupying the output path
+    job = ConversionJob(
+        id="ps3wdir1",
+        file_path=folder,
+        filename="MyGame",
+        mode=ConversionMode.FOLDER_TO_ISO,
+        status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        output_path=out,
+        input_kind=InputKind.DIRECTORY,
+        allow_overwrite=False,
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        await job_manager._process_job(job.id)
+        assert job.status == JobStatus.FAILED
+        # The directory is left intact, never written into.
+        assert Path(out).is_dir()
+        _, is_locked = lock_manager.check_file_status(out)
+        assert is_locked is False
+    finally:
+        lock_manager.release_lock(out)
+        concurrency_manager.release(job.id)
+        job_manager.jobs.pop(job.id, None)
+        job_manager._cancel_events.pop(job.id, None)
+        job_manager._cancelled.discard(job.id)
+
+
 def test_check_output_conflicts_split_aware(tmp_path):
     out = str(tmp_path / "Game.iso")
     # A prior split build left only the .0 part (no plain Game.iso).

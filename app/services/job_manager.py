@@ -1584,13 +1584,15 @@ class JobManager:
             await self._prune_jobs(exclude_id=job_id)
             return
 
-        # The bare-path lock above can't see a prior split set (Game.iso.0/.1
-        # with no bare Game.iso): acquire_lock only checks the literal output
-        # path, so a non-overwrite directory job would otherwise start on top of
-        # an existing split deliverable, clobber it, and (on a later failure)
-        # unlink the prior job's parts via remove_outputs. Mirror the bare-file
-        # "already exists" rejection for the split set when overwrite wasn't
-        # authorized; an authorized overwrite clears it in _clear_existing_output.
+        # acquire_lock above already rejects a destination that exists but isn't a
+        # plain file — incl. a *directory* shadowing the output path — via its
+        # ``not os.path.isfile`` clause (for both overwrite states). What it can't
+        # see is a prior split set (``Game.iso.0``/``.1`` with no bare
+        # ``Game.iso``): os.path.exists(bare) is False, so the lock is granted. A
+        # non-overwrite job would then clobber that existing deliverable and, on a
+        # later failure, unlink its parts via remove_outputs. Mirror the bare-file
+        # "already exists" rejection for the split set. (An authorized overwrite
+        # clears it in _clear_existing_output.)
         if job.input_kind == InputKind.DIRECTORY and not job.allow_overwrite:
             existing_parts = await run_in_threadpool(
                 makeps3iso_service.split_parts, job.output_path,

@@ -75,18 +75,21 @@ class MakePs3IsoTool(BaseTool):
         if not (file_exists or is_converting):
             # A successful >4 GB ``-s`` build leaves no bare ``<folder>.iso`` —
             # only the contiguous split set ``<folder>.iso.0``/``.1``/…. The
-            # bare-path status check above misses it, so probe the split parts and
-            # badge the set (pointing ``path`` at the ``.0`` part RPCS3 mounts). A
-            # lone ``.0`` is an interrupted split, not a finished output, so
-            # require ≥2 parts — mirroring the file-browser fold.
-            parts = self._service.split_parts(candidate)
-            if len(parts) < 2:
+            # bare-path status check above misses it, so probe the set and badge
+            # it (pointing ``path`` at the ``.0`` part RPCS3 mounts). detect_output
+            # runs once per convertible folder in /api/files + recursive search,
+            # so check the ``.0``/``.1`` parts directly (two stats) instead of
+            # scanning the whole parent dir for every row. A lone ``.0`` is an
+            # interrupted split, not a finished output, so require ``.1`` too —
+            # mirroring the file-browser fold's ≥2-part rule.
+            part0 = f"{candidate}.0"
+            if not (os.path.isfile(part0) and os.path.isfile(f"{candidate}.1")):
                 return None
             return OutputStatus(
                 tool_id=self.id,
                 exists=True,
                 ready=True,
-                path=parts[0],
+                path=part0,
             )
         return OutputStatus(
             tool_id=self.id,
