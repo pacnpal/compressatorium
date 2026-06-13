@@ -140,6 +140,7 @@ class JobManager:
         filename_override: Optional[str] = None,
         compression: Optional[str] = None,
         delete_on_verify: bool = False,
+        split: bool = False,
         delete_snapshot: Optional[Dict[str, object]] = None,
     ) -> ConversionJob:
         """Queue a job while holding _create_lock (no backpressure check here)."""
@@ -196,6 +197,7 @@ class JobManager:
             allow_overwrite=allow_overwrite,
             compression=compression,
             delete_on_verify=delete_on_verify,
+            split=split,
             input_kind=input_kind,
         )
 
@@ -230,6 +232,7 @@ class JobManager:
         filename_override: Optional[str] = None,
         compression: Optional[str] = None,
         delete_on_verify: bool = False,
+        split: bool = False,
         delete_snapshot: Optional[Dict[str, object]] = None,
     ) -> ConversionJob:
         """Create a new conversion job."""
@@ -244,6 +247,7 @@ class JobManager:
                 filename_override=filename_override,
                 compression=compression,
                 delete_on_verify=delete_on_verify,
+                split=split,
                 delete_snapshot=delete_snapshot,
             )
         await self._prune_jobs()
@@ -255,6 +259,7 @@ class JobManager:
         mode: ConversionMode,
         compression: Optional[str] = None,
         delete_on_verify: bool = False,
+        split: bool = False,
     ) -> List[ConversionJob]:
         """Create multiple jobs atomically under a single backpressure check."""
         if not job_specs:
@@ -282,6 +287,7 @@ class JobManager:
                         ),
                         compression=compression,
                         delete_on_verify=delete_on_verify,
+                        split=split,
                         delete_snapshot=spec.get("delete_snapshot"),
                     )
                 )
@@ -1625,6 +1631,7 @@ class JobManager:
                 job.output_path,
                 job.mode.value,
                 compression=job.compression,
+                split=job.split,
                 cancel_event=cancel_event,
             ):
                 if cancel_event.is_set():

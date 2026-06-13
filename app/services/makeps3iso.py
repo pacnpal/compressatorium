@@ -9,14 +9,22 @@ This is the first **directory-as-input** tool: its unit of work is a folder, not
 a file with a suffix, so it relies on the ``services.ps3`` source-layout detector
 (``ToolPlugin.accepts_directory``) instead of an extension match.
 
-CLI: ``makeps3iso <input_folder> <output.iso>`` (a ``-s`` flag would split the
-output at 4 GB for FAT32; we always emit a single ``.iso`` — target volumes are
-ext4/NTFS/exFAT). makeps3iso has no native verify, so after a successful build
-the service does a light **PARAM.SFO ``TITLE_ID`` readback** from the produced
-ISO (reusing ``services.ps3`` + the shared ISO 9660 reader) and confirms it
-matches the source folder. The readback is advisory: a mismatch / unreadable
-header logs a warning but does not fail the job (and never deletes the curated
-source folder — ``supports_delete_on_verify`` is ``False``).
+CLI: ``makeps3iso [-s] <input_folder> [<output.iso>]``. With the optional ``-s``
+**split** flag (opt-in per job, for FAT32 targets that can't hold a >4 GB file)
+makeps3iso writes the image in ~4 GB parts: it only splits once the image
+crosses the threshold (``0x1FFFE0`` sectors ≈ 4 GiB), renaming the first part to
+``<output>.iso.0`` and writing ``<output>.iso.1``, ``.2`` … RPCS3 mounts the
+``.0``. A sub-4 GB title still emits a single ``<output>.iso`` even with ``-s``,
+so the produced filenames are only known **after** the build — the service
+discovers them by probing for ``<output>`` then ``<output>.0``/``.1``/… on disk.
+
+makeps3iso has no native verify, so after a successful build the service does a
+light **PARAM.SFO ``TITLE_ID`` readback** from the produced ISO (reusing
+``services.ps3`` + the shared ISO 9660 reader). The PVD / PARAM.SFO live near the
+start, so the readback always targets the **first** produced file (the ``.0``
+part when split). The readback is advisory: a mismatch / unreadable header logs a
+warning but does not fail the job (and never deletes the curated source folder —
+``supports_delete_on_verify`` is ``False``).
 """
 from __future__ import annotations
 
@@ -60,12 +68,47 @@ class MakePs3IsoService:
 
     # ----- command ----------------------------------------------------------
 
-    def _build_command(self, folder: str, output_path: str) -> list[str]:
-        cmd = [self.makeps3iso_path, folder, output_path]
+    def _build_command(
+        self, folder: str, output_path: str, *, split: bool = False,
+    ) -> list[str]:
+        # ``-s`` (split for FAT32) goes BEFORE the input folder per makeps3iso's
+        # arg parser (``makeps3iso [-s] <folder> [<output>]``).
+        cmd = [self.makeps3iso_path]
+        if split:
+            cmd.append("-s")
+        cmd += [folder, output_path]
         # run() applies nice via preexec but not ionice, so wrap with the shared
         # ionice prefix here (mirrors chdman) — packing an ISO is I/O-heavy.
         prefix = ioprio_prefix(self._runner.owner)
         return prefix + cmd if prefix else cmd
+
+    @staticmethod
+    def _numbered_parts(output_path: str) -> list[str]:
+        """Ordered ``output_path.0`` / ``.1`` / … split parts that exist on disk."""
+        parts: list[tuple[int, str]] = []
+        with contextlib.suppress(OSError):
+            for sibling in os.scandir(os.path.dirname(output_path) or "."):
+                match = re.fullmatch(
+                    re.escape(os.path.basename(output_path)) + r"\.(\d+)",
+                    sibling.name,
+                )
+                if match and sibling.is_file():
+                    parts.append((int(match.group(1)), sibling.path))
+        return [path for _, path in sorted(parts)]
+
+    @classmethod
+    def split_parts(cls, output_path: str) -> list[str]:
+        """Files makeps3iso actually produced for ``output_path``, in order.
+
+        A single ``[output_path]`` for a sub-4 GB build (split or not), or the
+        ordered ``[output_path.0, output_path.1, ...]`` parts once a ``-s`` build
+        crossed the 4 GB threshold. Empty if nothing exists. Probing the disk is
+        the only reliable signal — whether a ``-s`` build split is size-dependent
+        and unknown until it finishes.
+        """
+        if os.path.isfile(output_path):
+            return [output_path]
+        return cls._numbered_parts(output_path)
 
     def _parse_progress(self, line: str) -> int | None:
         # Take the LAST percentage on the line (makeps3iso may redraw several on
@@ -111,9 +154,10 @@ class MakePs3IsoService:
         mode: str = "folder_to_iso",  # noqa: ARG002 - single-mode tool
         *,
         compression: str | None = None,  # noqa: ARG002 - no compression knob
+        split: bool = False,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
-        cmd = self._build_command(input_path, output_path)
+        cmd = self._build_command(input_path, output_path, split=split)
         try:
             async for update in self._runner.run(
                 cmd,
@@ -135,18 +179,37 @@ class MakePs3IsoService:
             # (ConversionCancelled), AND task cancellation / generator close,
             # which raise the BaseException-derived CancelledError / GeneratorExit
             # — caught here too so the partial is never orphaned. Remove it
-            # *synchronously* (a single local unlink): awaiting during a
-            # cancellation could be re-cancelled and skip the cleanup. Re-raise so
-            # cancellation semantics are preserved. (run() does not clean the
-            # output itself.) A missing file raises OSError, which is suppressed.
-            with contextlib.suppress(OSError):
-                os.remove(output_path)
+            # *synchronously* (local unlinks): awaiting during a cancellation
+            # could be re-cancelled and skip the cleanup. A split run may have
+            # left several parts (output.0, .1, …) plus the not-yet-renamed base,
+            # so clear them all. Re-raise so cancellation semantics are preserved.
+            # (run() does not clean the output itself.)
+            self._remove_outputs(output_path)
             raise
 
+        # ``-s`` only splits past 4 GB and the part names aren't known until now,
+        # so discover what was actually written. Readback targets the first file
+        # (the .0 part holds the PVD / PARAM.SFO).
+        parts = self.split_parts(output_path)
+        readback_target = parts[0] if parts else output_path
         message = await asyncio.to_thread(
-            self._readback_message, input_path, output_path,
+            self._readback_message, input_path, readback_target,
         )
+        if len(parts) > 1:
+            message = f"{message} — split into {len(parts)} parts"
         yield {"progress": 100, "message": message}
+
+    @classmethod
+    def _remove_outputs(cls, output_path: str) -> None:
+        """Synchronously unlink the base output *and* any split parts.
+
+        A mid-split failure can leave both the not-yet-renamed base and some
+        numbered parts, so clear both unconditionally (don't go through
+        ``split_parts``, which stops at the base when it exists).
+        """
+        for target in [output_path, *cls._numbered_parts(output_path)]:
+            with contextlib.suppress(OSError):
+                os.remove(target)
 
     @staticmethod
     def _readback_message(folder: str, iso_path: str) -> str:

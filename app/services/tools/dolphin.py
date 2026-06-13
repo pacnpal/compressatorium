@@ -124,6 +124,7 @@ class DolphinTool(BaseTool):
         mode: str,
         *,
         compression: str | None = None,
+        split: bool = False,  # noqa: ARG002 - split applies only to makeps3iso
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         return self._service.convert(

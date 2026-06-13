@@ -137,6 +137,32 @@ def get_unique_output_path(base_path: str) -> str:
         counter += 1
 
 
+def _ps3_iso_output_taken(output_path: str) -> bool:
+    """Whether a PS3 ISO output path is occupied by a single file, a held lock,
+    *or* a prior split set (``<output>.iso.0``).
+
+    A ``-s`` build only writes ``<output>.iso.0``/``.1``/… (no plain
+    ``<output>.iso``) once it crosses 4 GB, so the bare-path check the other
+    tools use would miss it and silently clobber the set.
+    """
+    file_exists, is_locked = lock_manager.check_file_status(output_path)
+    return file_exists or is_locked or os.path.exists(output_path + ".0")
+
+
+def get_unique_ps3_iso_output_path(base_path: str) -> str:
+    """:func:`get_unique_output_path` that also steps past an existing split set."""
+    if not _ps3_iso_output_taken(base_path):
+        return base_path
+    path = Path(base_path)
+    stem, suffix, parent = path.stem, path.suffix, path.parent
+    counter = 1
+    while True:
+        candidate = str(parent / f"{stem}_{counter}{suffix}")
+        if not _ps3_iso_output_taken(candidate):
+            return candidate
+        counter += 1
+
+
 def check_output_conflicts(mode: str, output_path: str) -> tuple:
     file_exists, is_locked = lock_manager.check_file_status(output_path)
     exists = file_exists or is_locked
@@ -374,7 +400,11 @@ async def _plan_directory_job(
     ):
         raise SkipFile(SkipReason.PS3_OUTPUT_OUTSIDE_VOLUMES)
 
-    output_exists, is_locked = check_output_conflicts(mode, output_path)
+    # Split-set aware: a prior ``-s`` build leaves ``<output>.iso.0``/… with no
+    # plain ``<output>.iso``, so probe the ``.0`` part too (the in-flight case is
+    # already covered — a running job holds the lock on the base output path).
+    _, is_locked = check_output_conflicts(mode, output_path)
+    output_exists = await run_in_threadpool(_ps3_iso_output_taken, output_path)
     if output_exists or is_locked:
         if duplicate_action == DuplicateAction.SKIP:
             raise SkipFile(SkipReason.OUTPUT_EXISTS)
@@ -382,7 +412,9 @@ async def _plan_directory_job(
             if is_locked:
                 raise SkipFile(SkipReason.OUTPUT_LOCKED)
         elif duplicate_action == DuplicateAction.RENAME:
-            output_path = get_unique_output_path(output_path)
+            output_path = await run_in_threadpool(
+                get_unique_ps3_iso_output_path, output_path,
+            )
 
     allow_overwrite = (
         duplicate_action == DuplicateAction.OVERWRITE and output_exists
@@ -818,6 +850,7 @@ async def create_job(request: JobCreateRequest):
             filename_override=plan.display_filename,
             compression=compression,
             delete_on_verify=request.delete_on_verify,
+            split=request.split,
             delete_snapshot=plan.delete_snapshot,
         )
     except QueueBackpressureError as exc:
@@ -969,6 +1002,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             request.mode,
             compression=compression,
             delete_on_verify=request.delete_on_verify,
+            split=request.split,
         )
     except QueueBackpressureError as exc:
         raise HTTPException(status_code=429, detail=exc.detail) from exc

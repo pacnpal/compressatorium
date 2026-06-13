@@ -397,3 +397,156 @@ async def test_blocked_job_requeues_instead_of_failing(tmp_path):
         job_manager._cancelled.discard(job.id)
     # With the folder lock gone, the job is no longer blocked.
     assert job_manager._blocked_by_dir_lock(job) is False
+
+
+# --------------------------------------------------------------------------- #
+# Split (-s, 4 GB FAT32) — argv, dynamic part detection, readback, cleanup
+# --------------------------------------------------------------------------- #
+
+
+def test_split_parts_single_vs_multipart(tmp_path):
+    base = str(tmp_path / "Game.iso")
+    # A sub-4 GB build (split or not) leaves the plain file -> [base].
+    Path(base).write_bytes(b"single")
+    assert makeps3iso_service.split_parts(base) == [base]
+
+    # A >4 GB split leaves only numbered parts (no plain base); returned in
+    # numeric order (.2 must sort after .10's sibling, not lexically).
+    Path(base).unlink()
+    for n in (0, 1, 2):
+        Path(f"{base}.{n}").write_bytes(b"x")
+    assert makeps3iso_service.split_parts(base) == [
+        f"{base}.0", f"{base}.1", f"{base}.2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_service_convert_split_argv_places_flag_first(tmp_path, monkeypatch):
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+
+    captured: dict = {}
+
+    async def fake_run(cmd, *, output_path, complete_message, **_kwargs):
+        captured["cmd"] = cmd
+        Path(output_path).write_bytes(b"small iso")  # sub-4GB: single file
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+
+    updates = [
+        u
+        async for u in makeps3iso_service.convert(
+            folder, out_iso, "folder_to_iso", split=True,
+        )
+    ]
+    # `-s` goes before the folder: `makeps3iso -s <folder> <out.iso>`.
+    assert captured["cmd"][-4:] == [
+        makeps3iso_service.makeps3iso_path, "-s", folder, out_iso,
+    ]
+    # A single-file (sub-4GB) result carries no split suffix.
+    assert "split into" not in updates[-1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_service_convert_split_multipart_message_and_readback(
+    tmp_path, monkeypatch,
+):
+    from app.services import makeps3iso as mk_module
+
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+
+    async def fake_run(cmd, *, output_path, complete_message, **_kwargs):
+        # Simulate a >4GB split: two numbered parts, no plain base file.
+        Path(f"{output_path}.0").write_bytes(b"part0")
+        Path(f"{output_path}.1").write_bytes(b"part1")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+
+    readback_paths: list[str] = []
+    monkeypatch.setattr(mk_module.ps3, "ps3_title_id", lambda _f: "BLES00000")
+
+    def _iso_id(path):
+        readback_paths.append(path)
+        return "BLES00000"
+
+    monkeypatch.setattr(mk_module.ps3, "ps3_iso_title_id", _iso_id)
+
+    updates = [
+        u
+        async for u in makeps3iso_service.convert(
+            folder, out_iso, "folder_to_iso", split=True,
+        )
+    ]
+    # Readback targets the .0 part (it holds the PVD / PARAM.SFO).
+    assert readback_paths == [f"{out_iso}.0"]
+    # The final message reports the verified id AND the part count.
+    assert "split into 2 parts" in updates[-1]["message"]
+    assert "BLES00000" in updates[-1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_service_convert_split_cleanup_removes_all_parts(tmp_path, monkeypatch):
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+
+    async def fake_run(cmd, *, output_path, **_kwargs):
+        Path(f"{output_path}.0").write_bytes(b"part0")
+        Path(f"{output_path}.1").write_bytes(b"part1")
+        yield {"progress": 40, "message": "Writing..."}
+        raise ConversionCancelled("cancelled")
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+
+    with pytest.raises(ConversionCancelled):
+        _ = [
+            u
+            async for u in makeps3iso_service.convert(
+                folder, out_iso, "folder_to_iso", split=True,
+            )
+        ]
+    # Every split part is removed, not just the (never-written) base path.
+    assert not Path(f"{out_iso}.0").exists()
+    assert not Path(f"{out_iso}.1").exists()
+
+
+# --------------------------------------------------------------------------- #
+# plan_job: a prior split set counts as an output collision
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_plan_job_rejects_existing_split_set(tmp_path, monkeypatch):
+    _confine_to_volume(monkeypatch, tmp_path)
+    _make_ps3_folder(tmp_path / "MyGame")
+    # A prior split build left only the .0 part (no plain MyGame.iso).
+    (tmp_path / "MyGame.iso.0").write_bytes(b"part0")
+    with pytest.raises(convert_routes.SkipFile) as exc:
+        await convert_routes.plan_job(
+            str(tmp_path / "MyGame"),
+            spec=registry.spec("folder_to_iso"),
+            mode="folder_to_iso",
+            output_dir=None,
+            duplicate_action=convert_routes.DuplicateAction.SKIP,
+            delete_on_verify=False,
+        )
+    assert exc.value.reason is convert_routes.SkipReason.OUTPUT_EXISTS
+
+
+@pytest.mark.asyncio
+async def test_plan_job_rename_steps_past_split_set(tmp_path, monkeypatch):
+    _confine_to_volume(monkeypatch, tmp_path)
+    _make_ps3_folder(tmp_path / "MyGame")
+    (tmp_path / "MyGame.iso.0").write_bytes(b"part0")
+    plan = await convert_routes.plan_job(
+        str(tmp_path / "MyGame"),
+        spec=registry.spec("folder_to_iso"),
+        mode="folder_to_iso",
+        output_dir=None,
+        duplicate_action=convert_routes.DuplicateAction.RENAME,
+        delete_on_verify=False,
+    )
+    # RENAME bumps past the occupied split set to a free name.
+    assert plan.output_path == str(tmp_path / "MyGame_1.iso")
