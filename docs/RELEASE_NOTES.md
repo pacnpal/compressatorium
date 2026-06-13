@@ -26,6 +26,17 @@
   still produces a single `Game.iso`. The file browser **folds a split set into
   one entry** — it shows `Game.iso` with the combined size and a part count, not
   a row per chunk. Default off; ext4/NTFS/exFAT targets don't need it.
+- **Concurrent jobs that touch a folder being packed don't corrupt it.** While a
+  PS3 folder is being built into an ISO its whole subtree is locked. A per-file
+  job that was **already queued** when the folder build starts and whose
+  input/output lands inside that folder (only reachable when
+  `MAX_CONCURRENT_JOBS > 1`) is **deferred — re-queued and retried** once the
+  folder job finishes, instead of failing. A *new* request submitted while the
+  folder is mid-build is treated like any other output collision: it's rejected
+  up front (HTTP 409 for a single job, skipped in a batch). The default output
+  (`<folder>.iso`) must also land inside a configured volume; if the folder is
+  itself a volume root (so the sibling output would escape all volumes), the plan
+  is rejected with a clear message asking for an in-volume output directory.
 
 #### Internal
 
@@ -36,8 +47,26 @@
   threaded through `plan_job` / the job pipeline (a directory source skips the
   archive-extract path), convertible-directory annotation in the file listing
   **and** recursive search, frontend selection for convertible folders, and
-  lock-manager **subtree protection** (a per-file job / rename / delete inside an
-  in-flight folder is rejected so it can't corrupt the ISO). `InputKind` moved
+  lock-manager **subtree protection**. The lock manager grows directory-lock
+  APIs (`acquire_dir_lock` / `release_dir_lock` / `is_within_locked_dir` /
+  `dir_lock_would_conflict`): a directory job takes an `fcntl` lock on the
+  directory path itself and records the subtree in an in-memory `_dir_locks`
+  set; subtree containment (whether a per-file output lands inside) is enforced
+  **in-process** (the `MAX_CONCURRENT_JOBS` concurrency all lives in one
+  process), so a child path contends just like an output collision. A job
+  already queued when the lock is taken and found to fall inside the subtree is
+  **deferred** — its slot is released and it is re-queued after a fixed short
+  delay to run once the folder finishes, instead of failing (a `Set[asyncio.Task]`
+  holds strong refs so the retry task can't be GC'd mid-sleep); a *new*
+  submission whose output is already inside the locked subtree is rejected at
+  plan time via `check_output_conflicts` like any collision. A rename / delete
+  inside an in-flight folder is rejected by the files route's
+  `_assert_path_not_in_use` (→ `find_active_job_for_path`), and delete-on-verify
+  cleanup honors the same descendant check (`_is_path_in_use_by_other_job`).
+  All subtree containment comparisons resolve symlinks (`os.path.realpath`) so a
+  symlinked path into a locked folder can't slip past them, and
+  `_plan_directory_job` validates the resolved output is not inside the source
+  **and** is within a configured volume. `InputKind` moved
   from `services.tools.spec` to `models` (re-exported) so the job model can type
   the field without an import cycle. The makeps3iso binary (GPL-3.0,
   `bucanero/ps3iso-utils`, pinned commit) is built unmodified in the multi-stage
