@@ -779,9 +779,9 @@ class JobManager:
             # suppressed); makeps3iso would then write *inside* it while the job
             # still reports the bare path as its output. Reject rather than
             # corrupt — mirroring the non-file guard on the file-job path below.
-            if await asyncio.to_thread(os.path.isdir, job.output_path):
+            if await run_in_threadpool(os.path.isdir, job.output_path):
                 raise RuntimeError("Output path exists and is not a file")
-            await asyncio.to_thread(
+            await run_in_threadpool(
                 makeps3iso_service.remove_outputs, job.output_path,
             )
             await verification_store.clear(job.output_path)
