@@ -190,7 +190,7 @@ class MakePs3IsoService:
         # ``-s`` only splits past 4 GB and the part names aren't known until now,
         # so discover what was actually written. Readback targets the first file
         # (the .0 part holds the PVD / PARAM.SFO).
-        parts = self.split_parts(output_path)
+        parts = await asyncio.to_thread(self.split_parts, output_path)
         readback_target = parts[0] if parts else output_path
         message = await asyncio.to_thread(
             self._readback_message, input_path, readback_target,

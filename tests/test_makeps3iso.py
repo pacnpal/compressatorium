@@ -411,12 +411,13 @@ def test_split_parts_single_vs_multipart(tmp_path):
     assert makeps3iso_service.split_parts(base) == [base]
 
     # A >4 GB split leaves only numbered parts (no plain base); returned in
-    # numeric order (.2 must sort after .10's sibling, not lexically).
+    # numeric order — a double-digit part proves it's numeric, not lexical
+    # (lexically ".10" would sort before ".2").
     Path(base).unlink()
-    for n in (0, 1, 2):
+    for n in (0, 1, 2, 10):
         Path(f"{base}.{n}").write_bytes(b"x")
     assert makeps3iso_service.split_parts(base) == [
-        f"{base}.0", f"{base}.1", f"{base}.2",
+        f"{base}.0", f"{base}.1", f"{base}.2", f"{base}.10",
     ]
 
 
