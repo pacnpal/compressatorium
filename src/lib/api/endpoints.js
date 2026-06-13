@@ -160,7 +160,14 @@ export const api = {
   },
 
   // ─── Jobs ─────────────────────────────────────────────────────────────
-  createJob(filePath, mode = 'createcd', outputDir = null, compression = null, deleteOnVerify = false) {
+  createJob(
+    filePath,
+    mode = 'createcd',
+    outputDir = null,
+    compression = null,
+    deleteOnVerify = false,
+    split = false,
+  ) {
     return jsonPost(
       `${API_BASE}/jobs`,
       {
@@ -169,6 +176,7 @@ export const api = {
         output_dir: outputDir,
         compression,
         delete_on_verify: deleteOnVerify,
+        split,
       },
       {},
       'Failed to create job',
@@ -182,6 +190,7 @@ export const api = {
     duplicateAction = 'skip',
     compression = null,
     deleteOnVerify = false,
+    split = false,
   ) {
     return jsonPost(
       `${API_BASE}/jobs/batch`,
@@ -192,6 +201,7 @@ export const api = {
         duplicate_action: duplicateAction,
         compression,
         delete_on_verify: deleteOnVerify,
+        split,
       },
       {},
       'Failed to create jobs',

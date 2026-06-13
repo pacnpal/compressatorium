@@ -54,6 +54,7 @@ class ConversionStore {
   dolphinCompressionLevel = $state('19');
   outputDir = $state('');
   deleteOnVerify = $state(false);
+  split = $state(false);
   customFilterMode = $state(false);
 
   duplicateCheck = $state(null);
@@ -88,6 +89,10 @@ class ConversionStore {
 
   get supportsDeleteOnVerify() {
     return !!this.currentSpec?.supportsDeleteOnVerify;
+  }
+
+  get supportsSplit() {
+    return !!this.currentSpec?.supportsSplit;
   }
 
   get allowsArchiveInput() {
@@ -285,6 +290,8 @@ class ConversionStore {
     // The backend rejects the combination outright, so a sticky flag
     // would fail the next submission instead of silently degrading.
     if (!this.supportsDeleteOnVerify) this.deleteOnVerify = false;
+    // Likewise clear the split flag when leaving a mode that offers it.
+    if (!this.supportsSplit) this.split = false;
   }
 
   setCompression(list) {
@@ -423,6 +430,8 @@ class ConversionStore {
         // going through setMode (the backend rejects the combination
         // for extract/raw modes).
         deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
+        // Same masking for the makeps3iso 4 GB FAT32 split toggle.
+        split: this.supportsSplit && this.split,
       });
       // Report what the backend actually created. createBatch can
       // legitimately return fewer jobs than requested when the user

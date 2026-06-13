@@ -259,6 +259,7 @@ class SubprocessRunner:
         fail_label: str = "process",
         complete_message: str = "Conversion complete",
         cwd: str | None = None,
+        output_growth_paths: Callable[[], list[str]] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Spawn ``cmd``, stream stdout, and yield ``{"progress", "message"}``.
 
@@ -269,6 +270,13 @@ class SubprocessRunner:
         cancel watcher (terminate -> kill), ``ConversionCancelled`` on request,
         a non-zero-exit ``RuntimeError`` carrying the output tail, and the final
         100% emit.
+
+        ``output_growth_paths`` is an optional callable returning the set of
+        files whose **summed** size is the growth signal for stall detection,
+        replacing the single ``output_path`` probe. A tool whose output filename
+        changes mid-run uses it so the probe keeps following the write — e.g.
+        makeps3iso ``-s`` renames the base ``.iso`` to ``.iso.0`` and then writes
+        ``.iso.1``/…, which the bare ``output_path`` probe would stop seeing.
         """
         output_dir = os.path.dirname(output_path)
         if output_dir:
@@ -345,21 +353,31 @@ class SubprocessRunner:
                     if len(output_lines) > 30:
                         output_lines.pop(0)
 
+            def _measure_output() -> int | None:
+                # Summed size of the growth-probe target(s). Default is the
+                # single output_path; output_growth_paths widens it to a set
+                # whose total grows monotonically even as filenames change
+                # mid-run (makeps3iso split). Returns None when nothing exists.
+                paths = (
+                    output_growth_paths() if output_growth_paths
+                    else ([output_path] if output_path else [])
+                )
+                total = 0
+                found = False
+                for probe in paths:
+                    try:
+                        total += os.path.getsize(probe)
+                        found = True
+                    except OSError:
+                        continue
+                return total if found else None
+
             def _update_output_activity(now: float):
                 nonlocal last_output_size, last_activity_at
-                if not output_path:
+                size = _measure_output()
+                if size is None:
                     return
-                try:
-                    if not os.path.exists(output_path):
-                        return
-                    size = os.path.getsize(output_path)
-                except OSError:
-                    return
-                if last_output_size is None:
-                    last_output_size = size
-                    last_activity_at = now
-                    return
-                if size > last_output_size:
+                if last_output_size is None or size > last_output_size:
                     last_output_size = size
                     last_activity_at = now
 

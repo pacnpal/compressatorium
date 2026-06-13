@@ -1,5 +1,6 @@
 from logging_setup import get_logger
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -33,6 +34,67 @@ logger = get_logger("files")
 # Upper bound on archives summarized in one /archive-summary request. The browser
 # hydrates the visible page, so this is a safety ceiling, not the normal size.
 MAX_ARCHIVE_SUMMARY_PATHS = 1000
+
+
+# A makeps3iso ``-s`` split set: ``Game.iso.0``, ``Game.iso.1``, … The numeric
+# suffix follows a real ``.iso`` so a plain ``.iso`` never matches.
+_SPLIT_ISO_PART_RE = re.compile(r"^(?P<base>.+\.iso)\.(?P<idx>\d+)$", re.IGNORECASE)
+
+
+def _fold_split_iso_entries(entries: list[FileEntry]) -> list[FileEntry]:
+    """Collapse a makeps3iso split set into one logical ISO entry.
+
+    A ``-s`` build over 4 GB writes ``Game.iso.0`` / ``.1`` / … and no plain
+    ``Game.iso``. Listing them raw would scatter a single game across several
+    ``.0`` / ``.1`` rows, so fold each set (keyed on the ``.0`` part) into one
+    entry: display name ``Game.iso``, ``path`` pointing at the ``.0`` part (what
+    RPCS3 mounts), ``size`` summed across parts, and ``split_parts`` = the count.
+    The set is a final FAT32 deliverable, not a convertible source, so it carries
+    no ``convertible_by`` / ``verifiable_by`` (you'd re-pack from the folder, not
+    a partial first chunk). An orphan ``.1`` with no ``.0`` is left untouched.
+    """
+    groups: dict[str, dict[int, FileEntry]] = {}
+    for entry in entries:
+        if entry.type != "file":
+            continue
+        match = _SPLIT_ISO_PART_RE.match(entry.name)
+        if match:
+            groups.setdefault(match.group("base"), {})[int(match.group("idx"))] = entry
+    # Fold only a *complete* set: indices contiguous from 0 (0,1,…,N-1). An
+    # interrupted copy/write can leave a gap (e.g. .0 + .2, no .1); folding that
+    # would render one "valid" Game.iso hiding a corrupt/incomplete set, so leave
+    # such parts visible as their raw .N rows instead.
+    foldable = {
+        base: parts
+        for base, parts in groups.items()
+        if set(parts) == set(range(len(parts)))  # implies 0 in parts and no gaps
+    }
+    if not foldable:
+        return entries
+
+    result: list[FileEntry] = []
+    emitted: set[str] = set()
+    for entry in entries:
+        match = _SPLIT_ISO_PART_RE.match(entry.name) if entry.type == "file" else None
+        base = match.group("base") if match else None
+        if base in foldable:
+            if base in emitted:
+                continue  # a sibling part of an already-folded set — drop it
+            parts = foldable[base]
+            result.append(
+                FileEntry(
+                    name=base,
+                    path=parts[0].path,  # the .0 part is the mount/readback target
+                    type="file",
+                    size=sum(p.size or 0 for p in parts.values()),
+                    extension=".iso",
+                    split_parts=len(parts),
+                ),
+            )
+            emitted.add(base)
+            continue
+        result.append(entry)
+    return result
 
 
 def _detect_file_outputs(
@@ -364,7 +426,7 @@ async def list_files(
             raise HTTPException(status_code=403, detail="Permission denied") from None
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Directory not found") from None
-        return entries
+        return _fold_split_iso_entries(entries)
 
     entries = await run_in_threadpool(
         scan_directory, path, show_archives, summarize_archives,

@@ -99,12 +99,13 @@ class MakePs3IsoTool(BaseTool):
         output_path: str,
         mode: str,
         *,
-        compression: str | None = None,
+        compression: str | None = None,  # noqa: ARG002 - no compression knob
+        split: bool = False,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
         return self._service.convert(
             input_path, output_path, mode,
-            compression=compression, cancel_event=cancel_event,
+            split=split, cancel_event=cancel_event,
         )
 
     async def verify(self, path: str) -> dict:

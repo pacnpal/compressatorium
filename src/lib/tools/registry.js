@@ -83,6 +83,7 @@ const PS3_VERIFY_EXTS = [];
  * @property {boolean} supportsCompressionLevel
  * @property {boolean} supportsDeleteOnVerify
  * @property {boolean} allowsArchiveInput
+ * @property {boolean} [supportsSplit] makeps3iso -s 4 GB FAT32 split (opt-in)
  */
 
 /**
@@ -477,7 +478,9 @@ export const TOOLS = [
       { mode: 'folder_to_iso', kind: 'create', label: 'PS3 Folder → ISO', group: 'makeps3iso',
         outputExt: '.iso', inputExtensions: [], inputKinds: ['directory'],
         supportsCompression: false, supportsCompressionLevel: false,
-        supportsDeleteOnVerify: false, allowsArchiveInput: false },
+        supportsDeleteOnVerify: false, allowsArchiveInput: false,
+        // makeps3iso -s: split the output into ~4 GB parts for FAT32 targets.
+        supportsSplit: true },
     ],
     // No file-path Info/Verify: a folder has no extension to route on. Left
     // undefined so infoToolsForPath / toolForVerifyPath skip this tool.

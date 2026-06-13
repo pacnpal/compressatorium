@@ -99,9 +99,15 @@ class ToolPlugin(Protocol):
         mode: str,
         *,
         compression: str | None = None,
+        split: bool = False,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
-        """Run a conversion, yielding ``{"progress", "message"}`` updates."""
+        """Run a conversion, yielding ``{"progress", "message"}`` updates.
+
+        ``split`` is honored only by tools whose mode declares it (makeps3iso
+        folder->iso, ``-s`` 4 GB FAT32 split); other tools accept and ignore it,
+        exactly as they do ``compression`` they don't use.
+        """
 
     async def verify(self, path: str) -> dict:
         """Verify an output file; returns ``{"valid", "message"}``."""

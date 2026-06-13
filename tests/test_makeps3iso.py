@@ -397,3 +397,383 @@ async def test_blocked_job_requeues_instead_of_failing(tmp_path):
         job_manager._cancelled.discard(job.id)
     # With the folder lock gone, the job is no longer blocked.
     assert job_manager._blocked_by_dir_lock(job) is False
+
+
+# --------------------------------------------------------------------------- #
+# Split (-s, 4 GB FAT32) — argv, dynamic part detection, readback, cleanup
+# --------------------------------------------------------------------------- #
+
+
+def test_split_parts_single_vs_multipart(tmp_path):
+    base = str(tmp_path / "Game.iso")
+    # A sub-4 GB build (split or not) leaves the plain file -> [base].
+    Path(base).write_bytes(b"single")
+    assert makeps3iso_service.split_parts(base) == [base]
+
+    # A >4 GB split leaves only numbered parts (no plain base); returned in
+    # numeric order — a double-digit part proves it's numeric, not lexical
+    # (lexically ".10" would sort before ".2"). makeps3iso writes a contiguous
+    # run from .0, so the set here is contiguous 0..10.
+    Path(base).unlink()
+    for n in range(11):
+        Path(f"{base}.{n}").write_bytes(b"x")
+    assert makeps3iso_service.split_parts(base) == [
+        f"{base}.{n}" for n in range(11)
+    ]
+
+
+def test_split_parts_ignores_noncontiguous_siblings(tmp_path):
+    """An unrelated numbered sibling is never treated as part of the split set.
+
+    ``split_parts``/``remove_outputs`` only enumerate the contiguous run from
+    ``.0``; a ``Game.iso.2024`` backup with no ``.0`` (or one beyond a gap) must
+    be left alone so authorized-overwrite cleanup can't silently delete it.
+    """
+    base = str(tmp_path / "Game.iso")
+
+    # No .0 at all -> the lone numbered sibling is not a split part.
+    stray = Path(f"{base}.2024")
+    stray.write_bytes(b"backup")
+    assert makeps3iso_service.split_parts(base) == []
+    makeps3iso_service.remove_outputs(base)
+    assert stray.exists()
+
+    # A gap stops enumeration: .0/.1 belong to the set, .2024 sits past the gap.
+    for n in (0, 1):
+        Path(f"{base}.{n}").write_bytes(b"x")
+    assert makeps3iso_service.split_parts(base) == [f"{base}.0", f"{base}.1"]
+    makeps3iso_service.remove_outputs(base)
+    assert stray.exists()
+    assert not Path(f"{base}.0").exists()
+    assert not Path(f"{base}.1").exists()
+
+
+@pytest.mark.asyncio
+async def test_service_convert_split_argv_places_flag_first(tmp_path, monkeypatch):
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+
+    captured: dict = {}
+
+    async def fake_run(cmd, *, output_path, complete_message, **_kwargs):
+        captured["cmd"] = cmd
+        Path(output_path).write_bytes(b"small iso")  # sub-4GB: single file
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+
+    updates = [
+        u
+        async for u in makeps3iso_service.convert(
+            folder, out_iso, "folder_to_iso", split=True,
+        )
+    ]
+    # `-s` goes before the folder: `makeps3iso -s <folder> <out.iso>`.
+    assert captured["cmd"][-4:] == [
+        makeps3iso_service.makeps3iso_path, "-s", folder, out_iso,
+    ]
+    # A single-file (sub-4GB) result carries no split suffix.
+    assert "split into" not in updates[-1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_service_convert_split_multipart_message_and_readback(
+    tmp_path, monkeypatch,
+):
+    from app.services import makeps3iso as mk_module
+
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+
+    async def fake_run(cmd, *, output_path, complete_message, **_kwargs):
+        # Simulate a >4GB split: two numbered parts, no plain base file.
+        Path(f"{output_path}.0").write_bytes(b"part0")
+        Path(f"{output_path}.1").write_bytes(b"part1")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+
+    readback_paths: list[str] = []
+    monkeypatch.setattr(mk_module.ps3, "ps3_title_id", lambda _f: "BLES00000")
+
+    def _iso_id(path):
+        readback_paths.append(path)
+        return "BLES00000"
+
+    monkeypatch.setattr(mk_module.ps3, "ps3_iso_title_id", _iso_id)
+
+    updates = [
+        u
+        async for u in makeps3iso_service.convert(
+            folder, out_iso, "folder_to_iso", split=True,
+        )
+    ]
+    # Readback targets the .0 part (it holds the PVD / PARAM.SFO).
+    assert readback_paths == [f"{out_iso}.0"]
+    # The final message reports the verified id AND the part count.
+    assert "split into 2 parts" in updates[-1]["message"]
+    assert "BLES00000" in updates[-1]["message"]
+
+
+@pytest.mark.asyncio
+async def test_service_convert_split_cleanup_removes_all_parts(tmp_path, monkeypatch):
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+
+    async def fake_run(cmd, *, output_path, **_kwargs):
+        Path(f"{output_path}.0").write_bytes(b"part0")
+        Path(f"{output_path}.1").write_bytes(b"part1")
+        yield {"progress": 40, "message": "Writing..."}
+        raise ConversionCancelled("cancelled")
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+
+    with pytest.raises(ConversionCancelled):
+        _ = [
+            u
+            async for u in makeps3iso_service.convert(
+                folder, out_iso, "folder_to_iso", split=True,
+            )
+        ]
+    # Every split part is removed, not just the (never-written) base path.
+    assert not Path(f"{out_iso}.0").exists()
+    assert not Path(f"{out_iso}.1").exists()
+
+
+# --------------------------------------------------------------------------- #
+# plan_job: a prior split set counts as an output collision
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_plan_job_rejects_existing_split_set(tmp_path, monkeypatch):
+    _confine_to_volume(monkeypatch, tmp_path)
+    _make_ps3_folder(tmp_path / "MyGame")
+    # A prior split build left only the .0 part (no plain MyGame.iso).
+    (tmp_path / "MyGame.iso.0").write_bytes(b"part0")
+    with pytest.raises(convert_routes.SkipFile) as exc:
+        await convert_routes.plan_job(
+            str(tmp_path / "MyGame"),
+            spec=registry.spec("folder_to_iso"),
+            mode="folder_to_iso",
+            output_dir=None,
+            duplicate_action=convert_routes.DuplicateAction.SKIP,
+            delete_on_verify=False,
+        )
+    assert exc.value.reason is convert_routes.SkipReason.OUTPUT_EXISTS
+
+
+@pytest.mark.asyncio
+async def test_plan_job_rename_steps_past_split_set(tmp_path, monkeypatch):
+    _confine_to_volume(monkeypatch, tmp_path)
+    _make_ps3_folder(tmp_path / "MyGame")
+    (tmp_path / "MyGame.iso.0").write_bytes(b"part0")
+    plan = await convert_routes.plan_job(
+        str(tmp_path / "MyGame"),
+        spec=registry.spec("folder_to_iso"),
+        mode="folder_to_iso",
+        output_dir=None,
+        duplicate_action=convert_routes.DuplicateAction.RENAME,
+        delete_on_verify=False,
+    )
+    # RENAME bumps past the occupied split set to a free name.
+    assert plan.output_path == str(tmp_path / "MyGame_1.iso")
+
+
+# --------------------------------------------------------------------------- #
+# File listing: fold a split ISO set into one logical entry
+# --------------------------------------------------------------------------- #
+
+
+def test_fold_split_iso_entries():
+    from app.models import FileEntry
+
+    entries = [
+        FileEntry(name="A.iso.0", path="/d/A.iso.0", type="file",
+                  size=4_000_000_000, extension=".0"),
+        FileEntry(name="A.iso.1", path="/d/A.iso.1", type="file",
+                  size=2_000_000_000, extension=".1"),
+        FileEntry(name="B.chd", path="/d/B.chd", type="file", size=10,
+                  extension=".chd", convertible_by=["chdman"]),
+        FileEntry(name="orphan.iso.1", path="/d/orphan.iso.1", type="file",
+                  size=5, extension=".1"),
+        FileEntry(name="sub", path="/d/sub", type="directory"),
+    ]
+    folded = files_routes._fold_split_iso_entries(entries)
+    names = [e.name for e in folded]
+
+    # The A.iso set collapses into one entry; siblings dropped.
+    assert "A.iso" in names
+    assert "A.iso.0" not in names and "A.iso.1" not in names
+    # An orphan .1 (no .0) and unrelated rows pass through untouched.
+    assert "orphan.iso.1" in names
+    assert "B.chd" in names and "sub" in names
+
+    folded_iso = next(e for e in folded if e.name == "A.iso")
+    assert folded_iso.path == "/d/A.iso.0"          # .0 is the mount target
+    assert folded_iso.size == 6_000_000_000          # summed across parts
+    assert folded_iso.extension == ".iso"
+    assert folded_iso.split_parts == 2
+    assert folded_iso.convertible_by == []           # a deliverable, not a source
+    assert folded_iso.verifiable_by == []
+
+
+def test_fold_split_iso_entries_noop_without_parts():
+    from app.models import FileEntry
+
+    entries = [
+        FileEntry(name="Game.iso", path="/d/Game.iso", type="file", size=1,
+                  extension=".iso"),
+        FileEntry(name="x.chd", path="/d/x.chd", type="file", size=1,
+                  extension=".chd"),
+    ]
+    # No .0 part present -> list returned unchanged (a plain .iso never matches).
+    assert files_routes._fold_split_iso_entries(entries) == entries
+
+
+def test_fold_split_iso_entries_requires_contiguous_parts():
+    from app.models import FileEntry
+
+    # A gap (.0 + .2, no .1) is an incomplete/corrupt set — don't fold it into a
+    # single "valid" row; leave the raw parts visible so the gap is obvious.
+    entries = [
+        FileEntry(name="Game.iso.0", path="/d/Game.iso.0", type="file", size=1,
+                  extension=".0"),
+        FileEntry(name="Game.iso.2", path="/d/Game.iso.2", type="file", size=1,
+                  extension=".2"),
+    ]
+    folded = files_routes._fold_split_iso_entries(entries)
+    names = [e.name for e in folded]
+    assert names == ["Game.iso.0", "Game.iso.2"]
+    assert all(e.split_parts is None for e in folded)
+
+
+# --------------------------------------------------------------------------- #
+# Split: overwrite cleanup, conflict detection, stall-probe widening
+# --------------------------------------------------------------------------- #
+
+
+def test_check_output_conflicts_split_aware(tmp_path):
+    out = str(tmp_path / "Game.iso")
+    # A prior split build left only the .0 part (no plain Game.iso).
+    Path(out + ".0").write_bytes(b"p0")
+    exists, _ = convert_routes.check_output_conflicts("folder_to_iso", out)
+    assert exists is True
+    # A non-directory mode ignores the .0 probe (no plain file present).
+    exists_other, _ = convert_routes.check_output_conflicts("createcd", out)
+    assert exists_other is False
+
+
+@pytest.mark.asyncio
+async def test_clear_existing_output_gated_on_overwrite(tmp_path, monkeypatch):
+    # Overwrite cleanup of a prior split set is gated on allow_overwrite, so a
+    # set that wasn't authorized for replacement (e.g. appeared post-plan) is
+    # never deleted out from under a skip/rename decision.
+    import app.services.job_manager as jm_module
+    from app.services.job_manager import job_manager
+
+    # The verification store needs a DB; stub its clear for this unit test.
+    async def _noop_clear(_path):
+        return None
+
+    monkeypatch.setattr(jm_module.verification_store, "clear", _noop_clear)
+
+    out = str(tmp_path / "MyGame.iso")
+    Path(f"{out}.0").write_bytes(b"0")
+    Path(f"{out}.1").write_bytes(b"1")
+    job = ConversionJob(
+        id="ps3ovw1",
+        file_path=str(tmp_path / "MyGame"),
+        filename="MyGame",
+        mode=ConversionMode.FOLDER_TO_ISO,
+        status=JobStatus.PROCESSING,
+        created_at=datetime.now(timezone.utc),
+        output_path=out,
+        input_kind=InputKind.DIRECTORY,
+        allow_overwrite=False,
+    )
+    await job_manager._clear_existing_output(job)
+    assert Path(f"{out}.0").exists() and Path(f"{out}.1").exists()
+
+    job.allow_overwrite = True
+    await job_manager._clear_existing_output(job)
+    assert not Path(f"{out}.0").exists() and not Path(f"{out}.1").exists()
+
+
+def test_find_active_job_for_inflight_split_part(tmp_path):
+    # While a split build runs, its numbered parts (Game.iso.0/.1/…) must read
+    # as in-use even though they aren't in the static candidate paths, so a
+    # rename/delete can't mutate a part mid-write.
+    from app.services.job_manager import job_manager
+
+    out = str(tmp_path / "MyGame.iso")
+    job = ConversionJob(
+        id="ps3split1",
+        file_path=str(tmp_path / "src.iso"),
+        filename="src.iso",
+        mode=ConversionMode.FOLDER_TO_ISO,
+        status=JobStatus.PROCESSING,
+        created_at=datetime.now(timezone.utc),
+        output_path=out,
+        input_kind=InputKind.DIRECTORY,
+        split=True,
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        assert job_manager.find_active_job_for_path(f"{out}.0") is job
+        assert job_manager.find_active_job_for_path(f"{out}.1") is job
+        # An unrelated sibling is not in use.
+        assert job_manager.find_active_job_for_path(str(tmp_path / "Other.iso")) is None
+        # Without split, a numbered part is no longer matched.
+        job.split = False
+        assert job_manager.find_active_job_for_path(f"{out}.1") is None
+    finally:
+        job_manager.jobs.pop(job.id, None)
+
+
+@pytest.mark.asyncio
+async def test_service_convert_split_widens_stall_probe(tmp_path, monkeypatch):
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+    captured: dict = {}
+
+    async def fake_run(
+        cmd, *, output_path, complete_message, output_growth_paths=None, **_kwargs,
+    ):
+        captured["growth"] = output_growth_paths
+        Path(f"{output_path}.0").write_bytes(b"a")
+        Path(f"{output_path}.1").write_bytes(b"b")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+    _ = [
+        u
+        async for u in makeps3iso_service.convert(
+            folder, out_iso, "folder_to_iso", split=True,
+        )
+    ]
+    # A split run widens the stall probe to follow the renamed/added parts.
+    assert callable(captured["growth"])
+    assert set(captured["growth"]()) == {out_iso, f"{out_iso}.0", f"{out_iso}.1"}
+
+
+@pytest.mark.asyncio
+async def test_service_convert_no_split_leaves_stall_probe_default(tmp_path, monkeypatch):
+    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
+    out_iso = str(tmp_path / "MyGame.iso")
+    captured: dict = {}
+
+    async def fake_run(
+        cmd, *, output_path, complete_message, output_growth_paths=None, **_kwargs,
+    ):
+        captured["growth"] = output_growth_paths
+        Path(output_path).write_bytes(b"iso")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
+    _ = [
+        u
+        async for u in makeps3iso_service.convert(folder, out_iso, "folder_to_iso")
+    ]
+    # Non-split build uses the default single-path probe (None).
+    assert captured["growth"] is None

@@ -74,7 +74,7 @@ def test_convert_dispatch_matches_legacy_ladder(mode, monkeypatch):
 
     def _record(tool_id):
         def _convert(input_path, output_path, mode_, *, compression=None,
-                     cancel_event=None):
+                     split=False, cancel_event=None):
             called["id"] = tool_id
 
             async def _gen():
@@ -93,7 +93,8 @@ def test_convert_dispatch_matches_legacy_ladder(mode, monkeypatch):
         return [
             u
             async for u in registry.for_mode(mode).convert(
-                "/data/in", "/data/out", mode, compression=None, cancel_event=None
+                "/data/in", "/data/out", mode, compression=None, split=False,
+                cancel_event=None,
             )
         ]
 

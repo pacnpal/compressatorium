@@ -122,6 +122,11 @@ class FileEntry(BaseModel):
     # archive's members so only single-ROM .7z/.zip surface its row-actions —
     # not every archive. Empty when no tool can verify/info the path.
     verifiable_by: list[str] = []
+    # For a folded split-ISO set (makeps3iso -s output: Game.iso.0, .1, ...): the
+    # number of part files this single logical entry represents. None for an
+    # ordinary single-file entry. The entry's ``path`` points at the ``.0`` part
+    # (what RPCS3 mounts / verify reads) and ``size`` is the summed part size.
+    split_parts: int | None = None
 
 
 class DirectoryListing(BaseModel):
@@ -153,6 +158,9 @@ class ConversionJob(BaseModel):
     allow_overwrite: bool = False
     compression: str | None = None
     delete_on_verify: bool = False
+    # Split the output into ~4 GB parts for FAT32 targets (makeps3iso -s).
+    # Only meaningful for the folder->iso directory mode; ignored elsewhere.
+    split: bool = False
     # The unit of work this job consumes. FILE for every existing mode; a
     # directory-input mode (makeps3iso folder->iso) carries DIRECTORY so the
     # pipeline skips the archive-extract / file-only assumptions and the lock
@@ -170,6 +178,7 @@ class JobCreateRequest(BaseModel):
     )  # What to do if output exists
     compression: str | None = None  # Comma-separated list (e.g. "zlib,lzma")
     delete_on_verify: bool = False
+    split: bool = False  # makeps3iso folder->iso: split output into 4 GB parts
 
 
 class BatchJobCreateRequest(BaseModel):
@@ -181,6 +190,7 @@ class BatchJobCreateRequest(BaseModel):
     )  # What to do if output exists
     compression: str | None = None  # Comma-separated list (e.g. "zlib,lzma")
     delete_on_verify: bool = False
+    split: bool = False  # makeps3iso folder->iso: split output into 4 GB parts
 
 
 class CheckDuplicatesRequest(BaseModel):

@@ -79,10 +79,16 @@
   });
   const canGetInfo = $derived(!!infoTool && !inArchive);
 
+  // A folded makeps3iso split set (Game.iso.0/.1/…) is shown as one row whose
+  // path is just the .0 part, so the single-path rename/delete endpoints would
+  // only touch .0 and orphan the rest. Disable both until the backend can act
+  // on the whole set (the parts are still individually manageable if needed).
+  const isSplitSet = $derived(entry?.split_parts != null);
+
   // Rename / Delete operate on the filesystem, archive members can't be
   // renamed or deleted in-place, so disable them inside archive views.
-  const canRename = $derived(!inArchive);
-  const canDelete = $derived(!inArchive);
+  const canRename = $derived(!inArchive && !isSplitSet);
+  const canDelete = $derived(!inArchive && !isSplitSet);
 
   async function handleVerify() {
     if (!verifyTool || !verifyPath) return;
