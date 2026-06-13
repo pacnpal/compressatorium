@@ -103,7 +103,12 @@
   // when the selection is purely archive members.
   const selectedHasFilesystemPath = $derived.by(() => {
     const sel = Array.from(fileBrowser.selectedFiles.values());
-    return sel.some((e) => e?.path && !e.path.includes('::'));
+    // A folded makeps3iso split set has a real .0 path but is excluded from
+    // bulk delete (openBulkDelete drops split_parts != null rows, matching the
+    // disabled single-row Delete). Gate on the same predicate so a selection of
+    // *only* split rows doesn't surface a Delete button that opens an empty
+    // "Delete 0 files?" modal; a mixed selection still shows it for the rest.
+    return sel.some((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
   });
 
   let searchInput = $state('');

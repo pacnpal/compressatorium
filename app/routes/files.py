@@ -51,7 +51,8 @@ def _fold_split_iso_entries(entries: list[FileEntry]) -> list[FileEntry]:
     RPCS3 mounts), ``size`` summed across parts, and ``split_parts`` = the count.
     The set is a final FAT32 deliverable, not a convertible source, so it carries
     no ``convertible_by`` / ``verifiable_by`` (you'd re-pack from the folder, not
-    a partial first chunk). An orphan ``.1`` with no ``.0`` is left untouched.
+    a partial first chunk). An orphan ``.1`` with no ``.0`` — or a lone ``.0``
+    with no ``.1`` (an interrupted split) — is left untouched.
     """
     groups: dict[str, dict[int, FileEntry]] = {}
     for entry in entries:
@@ -60,14 +61,19 @@ def _fold_split_iso_entries(entries: list[FileEntry]) -> list[FileEntry]:
         match = _SPLIT_ISO_PART_RE.match(entry.name)
         if match:
             groups.setdefault(match.group("base"), {})[int(match.group("idx"))] = entry
-    # Fold only a *complete* set: indices contiguous from 0 (0,1,…,N-1). An
-    # interrupted copy/write can leave a gap (e.g. .0 + .2, no .1); folding that
-    # would render one "valid" Game.iso hiding a corrupt/incomplete set, so leave
+    # Fold only a *complete* multi-part set: ≥2 indices contiguous from 0
+    # (0,1,…,N-1). An interrupted copy/write can leave a gap (e.g. .0 + .2, no
+    # .1); folding that would render one "valid" Game.iso hiding a
+    # corrupt/incomplete set. A lone ``.0`` is likewise the state left by a split
+    # interrupted before ``.1`` exists — a valid one-file result is the plain
+    # ``.iso``, never a bare ``.0`` — so folding it would hide the raw partial row
+    # and disable the single-row/bulk delete actions needed for recovery. Leave
     # such parts visible as their raw .N rows instead.
     foldable = {
         base: parts
         for base, parts in groups.items()
-        if set(parts) == set(range(len(parts)))  # implies 0 in parts and no gaps
+        # ≥2 parts, contiguous from 0 (no gaps, no lone first chunk).
+        if len(parts) >= 2 and set(parts) == set(range(len(parts)))
     }
     if not foldable:
         return entries

@@ -86,6 +86,16 @@
   Frontend: a `supportsSplit` mode flag gates the toggle, masked at submit like
   `deleteOnVerify`. Tests in `tests/test_makeps3iso.py` (argv flag placement,
   part detection, part-aware readback/cleanup, plan collision, listing fold).
+  Split-set handling is hardened across the surfaces: the listing fold requires a
+  **contiguous set of ≥2 parts** (a lone `Game.iso.0` is an interrupted split, so
+  it stays a raw row with its single-row/bulk delete actions intact — bulk delete
+  also hides when only folded split rows are selected); `MakePs3IsoTool.detect_output`
+  probes the split set so a `>4 GB` build still badges its source folder (and the
+  unverified-output delete warning still fires) when no bare `<folder>.iso` exists;
+  the overwrite cleanup rejects a destination that already exists as a *directory*
+  (its `os.remove` would no-op and makeps3iso would write *inside* it); and the
+  worker rejects an existing split set as an output collision when overwrite wasn't
+  authorized (the bare-path lock alone can't see `.0`/`.1`).
 
 ### CSO → CHD in one step (issue #98, Phase 1)
 

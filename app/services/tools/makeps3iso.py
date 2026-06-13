@@ -73,7 +73,21 @@ class MakePs3IsoTool(BaseTool):
         candidate = self._service.get_output_path(input_path)
         file_exists, is_converting = lock_manager.check_file_status(candidate)
         if not (file_exists or is_converting):
-            return None
+            # A successful >4 GB ``-s`` build leaves no bare ``<folder>.iso`` —
+            # only the contiguous split set ``<folder>.iso.0``/``.1``/…. The
+            # bare-path status check above misses it, so probe the split parts and
+            # badge the set (pointing ``path`` at the ``.0`` part RPCS3 mounts). A
+            # lone ``.0`` is an interrupted split, not a finished output, so
+            # require ≥2 parts — mirroring the file-browser fold.
+            parts = self._service.split_parts(candidate)
+            if len(parts) < 2:
+                return None
+            return OutputStatus(
+                tool_id=self.id,
+                exists=True,
+                ready=True,
+                path=parts[0],
+            )
         return OutputStatus(
             tool_id=self.id,
             exists=file_exists,
