@@ -824,7 +824,7 @@ default; ext4, NTFS, and exFAT targets don't need it.
 
 ### REST API Endpoints
 
-- `POST /api/jobs` or `POST /api/jobs/batch` - Queue a PS3 ISO job (use `mode: "folder_to_iso"`, with `input_path` set to the PS3 folder and an optional `split: true` for the 4 GB FAT32 split)
+- `POST /api/jobs` or `POST /api/jobs/batch` - Queue a PS3 ISO job. Use `mode: "folder_to_iso"` with the PS3 folder as the input path (`file_path` for a single job, `file_paths` for a batch), plus an optional `split: true` for the 4 GB FAT32 split.
 
 There is no info or verify endpoint for this tool, since makeps3iso has no native
 verify.
