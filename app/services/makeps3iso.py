@@ -84,8 +84,15 @@ class MakePs3IsoService:
 
     @staticmethod
     def _numbered_parts(output_path: str) -> list[str]:
-        """Ordered ``output_path.0`` / ``.1`` / … split parts that exist on disk."""
-        parts: list[tuple[int, str]] = []
+        """Ordered ``output_path.0`` / ``.1`` / … split parts that exist on disk.
+
+        Taken only as a contiguous run starting at ``.0`` — an unrelated numbered
+        sibling (e.g. ``Game.iso.2024`` with no ``.0``, or one beyond a gap) is
+        never enumerated, so it is never summed, probed, or deleted as part of
+        this split set. This mirrors the file-browser fold, which likewise only
+        folds a contiguous ``.0``-based set.
+        """
+        found: dict[int, str] = {}
         with contextlib.suppress(OSError):
             for sibling in os.scandir(os.path.dirname(output_path) or "."):
                 match = re.fullmatch(
@@ -93,8 +100,13 @@ class MakePs3IsoService:
                     sibling.name,
                 )
                 if match and sibling.is_file():
-                    parts.append((int(match.group(1)), sibling.path))
-        return [path for _, path in sorted(parts)]
+                    found[int(match.group(1))] = sibling.path
+        parts: list[str] = []
+        idx = 0
+        while idx in found:
+            parts.append(found[idx])
+            idx += 1
+        return parts
 
     @classmethod
     def split_parts(cls, output_path: str) -> list[str]:

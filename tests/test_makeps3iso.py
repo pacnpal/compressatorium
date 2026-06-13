@@ -412,13 +412,40 @@ def test_split_parts_single_vs_multipart(tmp_path):
 
     # A >4 GB split leaves only numbered parts (no plain base); returned in
     # numeric order — a double-digit part proves it's numeric, not lexical
-    # (lexically ".10" would sort before ".2").
+    # (lexically ".10" would sort before ".2"). makeps3iso writes a contiguous
+    # run from .0, so the set here is contiguous 0..10.
     Path(base).unlink()
-    for n in (0, 1, 2, 10):
+    for n in range(11):
         Path(f"{base}.{n}").write_bytes(b"x")
     assert makeps3iso_service.split_parts(base) == [
-        f"{base}.0", f"{base}.1", f"{base}.2", f"{base}.10",
+        f"{base}.{n}" for n in range(11)
     ]
+
+
+def test_split_parts_ignores_noncontiguous_siblings(tmp_path):
+    """An unrelated numbered sibling is never treated as part of the split set.
+
+    ``split_parts``/``remove_outputs`` only enumerate the contiguous run from
+    ``.0``; a ``Game.iso.2024`` backup with no ``.0`` (or one beyond a gap) must
+    be left alone so authorized-overwrite cleanup can't silently delete it.
+    """
+    base = str(tmp_path / "Game.iso")
+
+    # No .0 at all -> the lone numbered sibling is not a split part.
+    stray = Path(f"{base}.2024")
+    stray.write_bytes(b"backup")
+    assert makeps3iso_service.split_parts(base) == []
+    makeps3iso_service.remove_outputs(base)
+    assert stray.exists()
+
+    # A gap stops enumeration: .0/.1 belong to the set, .2024 sits past the gap.
+    for n in (0, 1):
+        Path(f"{base}.{n}").write_bytes(b"x")
+    assert makeps3iso_service.split_parts(base) == [f"{base}.0", f"{base}.1"]
+    makeps3iso_service.remove_outputs(base)
+    assert stray.exists()
+    assert not Path(f"{base}.0").exists()
+    assert not Path(f"{base}.1").exists()
 
 
 @pytest.mark.asyncio
