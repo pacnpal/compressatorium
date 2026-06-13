@@ -2,7 +2,7 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A disc image converter that wraps seven tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), and **makeps3iso** (PS3 decrypted folder → ISO). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A game image converter that wraps seven tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), and **makeps3iso** (PS3 decrypted folder → ISO). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
@@ -24,7 +24,7 @@ A disc image converter that wraps seven tools: **CHDMAN** (MAME), **dolphin-tool
 | **Dolphin** | GameCube / Wii discs | .iso, .wbfs, .rvz, .wia, .gcz | .rvz, .wia, .gcz, .iso | Codec + numeric level | None | `dolphin-emu` |
 | **3DS** | Nintendo 3DS ROMs | .cci, .cia, .3ds, .cxi, .3dsx, .zcci, .zcia, .z3ds, .zcxi, .z3dsx | .zcci, .zcia, .z3ds, .zcxi, .z3dsx, .cci, .cia, .3ds, .cxi, .3dsx | None (fixed) | None | `z3ds_compressor` |
 | **Switch** | Nintendo Switch dumps | .nsp, .xci, .nsz, .xcz | .nsz, .xcz, .nsp, .xci | Layout + level | **Yes** (`prod.keys`) | `nsz` |
-| **CSO** | PSP / PS2 disc images | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | Effort preset (Fast/Default/Max) | None | `maxcso` |
+| **CSO** | PSP / PS2 game images | .iso, .cso, .zso, .dax | .cso, .zso, .dax, .iso | Effort preset (Fast/Default/Max) | None | `maxcso` |
 | **Handheld ROM** | Game Boy / GBC / GBA / DS ROMs | .gb, .gbc, .gba, .nds, .7z, .zip | .7z, .zip, .gb, .gbc, .gba, .nds | Effort preset (Fast/Default/Max) | None | `7z` (p7zip-full) |
 | **PS3 ISO** | Decrypted PS3 disc / JB folders | a `PS3_GAME/` folder (plus `PS3_DISC.SFB` for disc rips) | .iso (optional 4 GB FAT32 split) | None (fixed) | None | `makeps3iso` |
 
@@ -50,7 +50,7 @@ Each tool's full mode list (e.g. CHDMAN's `createcd`/`extractcd`, CSO's
 `cso2_compress`, the ROM packer's `romz_7z`/`romz_zip`/`romz_extract`, and the PS3
 packer's `folder_to_iso`) is in [Supported Operations](#supported-operations).
 
-> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin disc images, and Switch dumps. Browse into the archive, pick a member, and convert. This even covers CHDMAN's extract modes pulling a `.chd` out of an archive and decompressing it back to a disc image. Two exceptions: CHDMAN's **copy/recompress** mode is not offered from an archive (recompressing an already-finished `.chd` would be a pointless round trip); and **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member.
+> **Archive inputs:** most input formats above can be converted straight from inside a ZIP, 7z, or RAR archive, including 3DS ROMs, Dolphin game images, and Switch dumps. Browse into the archive, pick a member, and convert. This even covers CHDMAN's extract modes pulling a `.chd` out of an archive and decompressing it back to a game image. Two exceptions: CHDMAN's **copy/recompress** mode is not offered from an archive (recompressing an already-finished `.chd` would be a pointless round trip); and **Handheld ROM** does not accept loose ROMs from inside an archive — its `.7z`/`.zip` are the packed product, so to unpack one select the archive file itself and run `romz_extract`, rather than browsing into it for a member.
 
 ### MAME Redump DAT Integration
 
@@ -59,7 +59,7 @@ Compressatorium can sync [MAME Redump](https://github.com/MetalSlug/MAMERedump) 
 - **One-click sync**: Click "Sync from MAME Redump" in the DAT panel to download all ~69 DATs automatically from GitHub
 - **Auto-sync**: Set `MAMEREDUMP_AUTO_SYNC=true` to sync DATs on container startup when none are loaded
 - **CHD files**: Matched via the embedded header / data SHA1 (codec-independent, works with any compression setting on chdman 0.285)
-- **Dolphin RVZ/WIA/GCZ**: Matched via the disc image's content SHA1 reconstructed by `dolphin-tool verify` — the same hash MAME Redump records for GameCube/Wii discs — so compressed Dolphin outputs match without the container bytes having to be identical
+- **Dolphin RVZ/WIA/GCZ**: Matched via the game image's content SHA1 reconstructed by `dolphin-tool verify` — the same hash MAME Redump records for GameCube/Wii discs — so compressed Dolphin outputs match without the container bytes having to be identical
 - **Everything else** (3DS/Switch/CSO·ZSO·DAX/`.iso`/`.bin`): Matched via file-level SHA1
 - **Library scan**: The background scan discovers and DAT-matches every registered tool's output (CHD, Dolphin RVZ/WIA/GCZ, 3DS, Switch, CSO/ZSO, `.iso`, and the `.bin` data track from CHDMAN extract), not just CHDs, so non-CHD libraries get cached match results too. Heavy Dolphin disc-hashing during the scan honors `MATCH_MAX_FILE_SIZE` and stops promptly if you cancel the scan.
 - **DAT management**: Import, list, and delete DATs via the web UI "DAT Files" button
@@ -126,7 +126,7 @@ docker pull pacnpal/compressatorium:3.7.0-beta-3
 When you open the Web UI, you'll see the tool options at the top:
 
 * **CHDMAN** - For converting CD/DVD/LaserDisc images to CHD format
-* **Dolphin** - For GameCube/Wii disc image conversions
+* **Dolphin** - For GameCube/Wii game image conversions
 * **3DS** - For compressing Nintendo 3DS ROMs
 * **Switch** - For compressing/decompressing Nintendo Switch dumps (needs your own prod.keys)
 * **CSO** - For compressing/decompressing PSP/PS2 ISO images to CSO/ZSO (and a one-step CSO → CHD chain)
@@ -237,7 +237,7 @@ on every folder open.
 Sync the MAMERedump DATs from the DAT Library (or import your own `.dat`/`.xml`
 from No-Intro/Redump) and converted files are checked against known-good hashes —
 a blue DAT badge means the file matches. CHDs match on the codec-independent header
-SHA1, and Dolphin RVZ/WIA/GCZ match on the disc image's content SHA1 reconstructed by
+SHA1, and Dolphin RVZ/WIA/GCZ match on the game image's content SHA1 reconstructed by
 `dolphin-tool verify --algorithm sha1` (the same hash Redump records), so **any
 compression setting still matches** for both. A missing badge usually means the DATs
 aren't synced, the title isn't in the DAT, or the file is larger than
@@ -251,7 +251,7 @@ to extract first. The member is unpacked to a temp dir for the conversion and
 cleaned up afterwards. Any convertible **source** works this way (CHD create,
 Dolphin, 3DS, Switch, and CSO — Switch still needs your own `prod.keys`), and
 CHDMAN's extract modes can even pull a `.chd` out of an archive and decompress it
-back to a disc image. The exception is CHDMAN's copy/recompress mode: it acts on a
+back to a game image. The exception is CHDMAN's copy/recompress mode: it acts on a
 finished `.chd`, and recompressing one straight out of an archive is a pointless
 round trip, so it's not offered there.
 
@@ -461,7 +461,7 @@ On small screens the file list switches to a card layout. Controls use 44 to 48p
 
 **Verification**
 - Verify CHD files using chdman's built-in verification
-- Verify GameCube/Wii disc images using dolphin-tool (ISO uses Dolphin when ISO handling is set to Dolphin)
+- Verify GameCube/Wii game images using dolphin-tool (ISO uses Dolphin when ISO handling is set to Dolphin)
 - Verification status persisted across sessions (stored in `/config/verified_chds.json`)
 - Integrated verification workflow when deleting source files
 - Visual indicators showing verified vs unverified items
@@ -698,7 +698,7 @@ keys, firmware, or copyrighted game data.
 ## PSP / PS2 Support (CSO / ZSO / DAX)
 
 CSO/ZSO/DAX compression and decompression use [maxcso](https://github.com/unknownbrackets/maxcso),
-the standard PSP/PS2 ISO compressor. It shrinks `.iso` disc images into `.cso`,
+the standard PSP/PS2 ISO compressor. It shrinks `.iso` game images into `.cso`,
 `.zso`, or `.dax` (and reverses the process). PPSSPP (PSP) and PCSX2 (PS2) read these
 compressed formats directly, so the compressed file plays without a separate
 decompress step. No keys are required.
@@ -727,7 +727,7 @@ yet).
 
 ### Supported File Formats
 
-* **`.iso`** - Raw PSP/PS2 disc image (compress source)
+* **`.iso`** - Raw PSP/PS2 game image (compress source)
 * **`.cso`** - Compressed ISO (CISO, deflate); CSO v1 and v2 share this extension
 * **`.zso`** - Compressed ISO (lz4, faster decompression)
 * **`.dax`** - Legacy compressed ISO (compress target and decompress source)
@@ -1002,7 +1002,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/dolphin-info` | Get Dolphin disc metadata |
-| GET | `/api/dolphin-verify` | Verify a disc image's integrity |
+| GET | `/api/dolphin-verify` | Verify a game image's integrity |
 | GET | `/api/dolphin-verify/events` | SSE stream for Dolphin verification progress |
 | POST | `/api/dolphin-verify-batch/events` | SSE stream for batch Dolphin verification |
 
@@ -1220,9 +1220,9 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 **Input formats:**
 - `.gdi` - GD-ROM (Dreamcast)
-- `.iso` - ISO 9660 disc images (CHD or Dolphin based on ISO handling)
+- `.iso` - ISO 9660 game images (CHD or Dolphin based on ISO handling)
 - `.cue` / `.bin` - CD images with cue sheets
-- `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii disc images (Dolphin)
+- `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii game images (Dolphin)
 - `.cci`, `.cia`, `.3ds`, `.cxi`, `.3dsx` - Nintendo 3DS ROM images (3DS compression)
 - `.zcci`, `.zcia`, `.z3ds`, `.zcxi`, `.z3dsx` - compressed 3DS ROMs (3DS decompression)
 - `.cso`, `.zso`, `.dax` - PSP/PS2 compressed ISO images (CSO decompression, or `cso_to_chd` to a `.chd`)

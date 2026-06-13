@@ -38,7 +38,7 @@
     {
       glyph: 'CSO',
       name: 'CSO',
-      blurb: 'PSP and PS2 disc images to CSO, CSO v2, ZSO, or DAX, the compressed ISO formats PPSSPP and PCSX2 read directly, so the compressed file plays without a separate decompress step. Lossless and fully reversible, using maxcso. CSO v1 is the deflate-based, universally-supported default; CSO v2 improves block alignment for recent emulators; ZSO uses lz4 for faster decoding; DAX is a legacy PSP format. No keys needed. An ISO can also go to CHDMAN or Dolphin instead; the tool picker decides.',
+      blurb: 'PSP and PS2 game images to CSO, CSO v2, ZSO, or DAX, the compressed ISO formats PPSSPP and PCSX2 read directly, so the compressed file plays without a separate decompress step. Lossless and fully reversible, using maxcso. CSO v1 is the deflate-based, universally-supported default; CSO v2 improves block alignment for recent emulators; ZSO uses lz4 for faster decoding; DAX is a legacy PSP format. No keys needed. An ISO can also go to CHDMAN or Dolphin instead; the tool picker decides. There is also a one-step Convert to CHD mode (cso_to_chd).',
       io: '.iso  ↔  .cso / .zso / .dax',
     },
     {
@@ -46,6 +46,12 @@
       name: 'Handheld ROM',
       blurb: 'Game Boy, Game Boy Color, Game Boy Advance, and Nintendo DS ROM dumps to a standard .7z or .zip archive, and back. Archive-quality lossless compression with the 7z tool: GBA dumps shrink by roughly half, GB/GBC by around two thirds. Reverting is just extraction. .7z gives the smallest file (LZMA2); .zip trades some size for the broadest compatibility. No keys needed.',
       io: '.gb / .gbc / .gba / .nds  ↔  .7z / .zip',
+    },
+    {
+      glyph: 'PS3',
+      name: 'PS3 ISO',
+      blurb: 'A decrypted PS3 disc or JB folder packed into a single .iso that RPCS3 mounts directly, using makeps3iso. This is the one tool that takes a folder instead of a file, and the one conversion that does not reverse: it repackages a folder you already decrypted, and never deletes it. Most PS3 discs are over 4 GB, so for a FAT32 drive there is a per-job toggle that splits the image into 4 GB parts (RPCS3 mounts the .0). No keys, and no decryption here.',
+      io: 'a PS3_GAME/ folder  →  .iso',
     },
   ];
 
@@ -102,6 +108,7 @@
         ['zso_compress', 'Compress a PSP/PS2 ISO to ZSO (lz4, faster to decode). Same effort presets.', '.zso'],
         ['dax_compress', 'Compress to DAX, the legacy PSP format some older tools expect. Same effort presets.', '.dax'],
         ['cso_decompress', 'Decompress CSO/ZSO/DAX back to a plain ISO.', '.iso'],
+        ['cso_to_chd', 'Convert a CSO/ZSO/DAX straight to CHD in one step (maxcso decompresses to a temp ISO, then chdman packs it). Uses chdman default compression.', '.chd'],
       ],
     },
     {
@@ -110,6 +117,12 @@
         ['romz_7z', 'Compress a GB/GBC/GBA/DS ROM to a .7z archive (smallest). Pick an effort preset (Fast/Default/Max).', '.7z'],
         ['romz_zip', 'Compress to a .zip archive (broadest compatibility). Same effort presets.', '.zip'],
         ['romz_extract', 'Extract the ROM back out of a .7z/.zip archive.', '.gb / .gbc / .gba / .nds'],
+      ],
+    },
+    {
+      tool: 'PS3 ISO',
+      rows: [
+        ['folder_to_iso', 'Pack a decrypted PS3 folder into an .iso RPCS3 mounts. An optional toggle splits the output into 4 GB parts for FAT32 drives.', '.iso'],
       ],
     },
   ];
@@ -126,7 +139,8 @@
     <p class="lead">
       Start by choosing the tool that matches your files. The rest of the interface
       filters itself to that tool, so you only ever see modes and formats that apply.
-      The file list also greys out anything the current tool can't touch.
+      The file list also greys out anything the current tool can't touch. Most tools
+      take a file; PS3 ISO is the exception and takes a decrypted PS3 folder.
     </p>
     <ul class="tool-list">
       {#each tools as tool (tool.name)}
@@ -364,7 +378,7 @@
     </p>
     <p>
       CHDs match on the header SHA1, which is codec-independent. Dolphin RVZ/WIA/GCZ match on
-      the disc image's content SHA1, reconstructed on the fly by
+      the game image's content SHA1, reconstructed on the fly by
       <code>dolphin-tool verify --algorithm sha1</code> — the same hash Redump records — so any
       compression setting still matches for both. A missing badge usually means the DATs aren't
       synced, the title isn't in the DAT, or the file is over <code>MATCH_MAX_FILE_SIZE</code>
@@ -385,7 +399,7 @@
       (<code>.nsp</code>/<code>.xci</code>, your own <code>prod.keys</code> still required), and PSP/PS2
       images (both the <code>.iso</code> you compress and the <code>.cso</code>/<code>.zso</code>/<code>.dax</code>
       you decompress). CHDMAN's extract modes can even pull a <code>.chd</code> out of an
-      archive and decompress it back to a disc image. The one exception is CHDMAN's
+      archive and decompress it back to a game image. The one exception is CHDMAN's
       copy/recompress mode: recompressing an already-finished <code>.chd</code> straight out of
       an archive is a pointless round trip, so it isn't offered there.
     </p>
@@ -478,7 +492,7 @@
       <dd>No. Jobs run on the server, not in your tab. Close the browser, reboot your laptop, come back later, and the queue is still chugging. Reopen the page and it reconnects to whatever's running.</dd>
 
       <dt>Can I undo a conversion?</dt>
-      <dd>There's no undo button, but you usually don't need one. Your source is still there. If you already deleted it, you can run an extract mode to rebuild the original disc image from a CHD, or dolphin_iso to get a plain ISO back from an RVZ.</dd>
+      <dd>There's no undo button, but you usually don't need one. Your source is still there. If you already deleted it, you can run an extract mode to rebuild the original game image from a CHD, or dolphin_iso to get a plain ISO back from an RVZ.</dd>
 
       <dt>I converted to CHD and it barely got smaller. Why?</dt>
       <dd>Some content just doesn't compress. Already-compressed audio or video, encrypted data, and a lot of PS2 DVDs are close to incompressible. A weak result usually means the disc was already dense, not that something went wrong. Double-check you used the right create mode too.</dd>
