@@ -1,0 +1,45 @@
+README.md
+  s_5b8d6d45a59408::t_ce1775e730d61b 144
+  s_5b8d6d45a59408::t_6d842c4db376a4 5
+  s_5b8d6d45a59408::t_2699bd756f0cf5 771-833
+  s_5b8d6d45a59408::t_ea0c4bd6eda3d7 39-48,50-51
+  s_5b8d6d45a59408::t_ed807961dbac66 132,134
+  s_5b8d6d45a59408::t_dcf7791136b7cd 29,31
+  s_5b8d6d45a59408::t_66d4de499eca32 357
+  s_5b8d6d45a59408::t_36a4ae3acab0d4 716-726
+  s_5b8d6d45a59408::t_a274582250178c 1075
+  s_5b8d6d45a59408::t_0a967d0e9b024d 1228,1230
+  s_5b8d6d45a59408::t_2d6bcea65c3a6e 763
+  s_5b8d6d45a59408::t_203df6c316a053 925,930-931
+  s_5b8d6d45a59408::t_c5e353df597000 1060-1062
+  s_5b8d6d45a59408::t_c3dd6743704b26 1243
+  s_5b8d6d45a59408::t_143d52032cb239 9
+  s_5b8d6d45a59408::t_287903040504f6 1307-1309,1311
+  s_5b8d6d45a59408::t_c2601d5d061608 1279
+docs/DEPLOYMENT.md
+  s_5b8d6d45a59408::t_dbe4b9ae11f8a7 35
+  s_5b8d6d45a59408::t_9d9e0b54ab5fdf 73
+docs/issue-98-plan.md
+  s_5b8d6d45a59408::t_84066715998f99 3-13
+docs/ADDING_PLATFORMS_AND_TOOLS.md
+  s_5b8d6d45a59408::t_9ded1621c7e73a 10,21-32
+docs/DOCKER-COMPOSE.md
+  s_5b8d6d45a59408::t_5bbb3cbc9519fb 146
+  s_5b8d6d45a59408::t_6806ca848aa7e3 156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "bab541caf2ddf849e93741bc514a0fa2bc9f9efd",
+  "prompts": {},
+  "sessions": {
+    "s_5b8d6d45a59408": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc783c0f-f178-40ee-9aea-e77bc9a147c7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "pacnpal <183241239+pacnpal@users.noreply.github.com>"
+    }
+  }
+}
