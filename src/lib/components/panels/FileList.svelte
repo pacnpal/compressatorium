@@ -181,9 +181,12 @@
 
   function openBulkDelete() {
     // Same filter as Verify, /files/delete-batch fails on archive
-    // members for the same treat_archives=false reason.
+    // members for the same treat_archives=false reason. Folded makeps3iso
+    // split sets are also excluded: their row path is only the .0 part, so a
+    // single-path delete-batch would orphan .1+ (matching the disabled
+    // single-row Delete action).
     ui.bulkDeleteEntries = Array.from(fileBrowser.selectedFiles.values())
-      .filter((e) => e?.path && !e.path.includes('::'));
+      .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
   }
 
   function sortIcon(field) {

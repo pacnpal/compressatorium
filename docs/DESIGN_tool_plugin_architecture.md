@@ -488,14 +488,26 @@ The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
   summed size, `FileEntry.split_parts` = count, no convertible/verify
   affordances — it's a final deliverable, not a source). The recursive *search*
   path only emits convertible sources, so split parts never surface there.
-  Lifecycle completeness: the split-set probe lives in `check_output_conflicts`
-  (mode `folder_to_iso`), so the `/jobs/check-duplicates` preflight and the plan
-  agree a set occupies the target; the service clears any prior output (base +
-  parts) before writing so an **overwrite** can't strand a stale `.iso.N`; the
-  stall probe is widened via `SubprocessRunner.run(output_growth_paths=…)` to
-  the summed size of the set, so a split build isn't killed as stalled once the
-  base is renamed away; and `RowActionsMenu` disables single-path rename/delete
-  on a folded set (its `path` is only the `.0` part).
+  Lifecycle completeness across the multi-file model:
+  - **Conflicts:** the split-set probe lives in `check_output_conflicts`
+    (mode `folder_to_iso`), so the `/jobs/check-duplicates` preflight and the
+    plan agree a set occupies the target.
+  - **Overwrite:** `JobManager._clear_existing_output` removes the prior output
+    (single `.iso` **or** the whole split set, via `makeps3iso_service`'s
+    part-aware `remove_outputs`) **only when `allow_overwrite` was granted** — so
+    a set that appears after planning is never deleted out from under a
+    skip/rename decision (the per-path `acquire_lock` only sees the bare name).
+  - **Completed size:** the completion block sums `split_parts()` for directory
+    jobs, so a split build reports a real `output_size` instead of `None`.
+  - **Stall detection:** widened via `SubprocessRunner.run(output_growth_paths=…)`
+    to the summed size of the set, so a split build isn't killed as stalled once
+    the base is renamed away.
+  - **In-flight protection:** `_split_output_blocks` marks a running split job's
+    numbered parts in-use in `find_active_job_for_path` /
+    `_is_path_in_use_by_other_job`, so a part can't be renamed/deleted mid-write.
+  - **Row actions:** `RowActionsMenu` disables single-path rename/delete and
+    `FileList.openBulkDelete` excludes a folded set (its `path` is only the `.0`
+    part, so a single-path op would orphan `.1+`).
 
 makeps3iso (GPL-3.0) is built unmodified from a pinned `bucanero/ps3iso-utils`
 commit in the multi-stage `Dockerfile`, mirroring maxcso.

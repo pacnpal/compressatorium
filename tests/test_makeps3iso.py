@@ -621,25 +621,70 @@ def test_check_output_conflicts_split_aware(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_service_convert_overwrites_existing_split_set(tmp_path, monkeypatch):
-    folder = str(_make_ps3_folder(tmp_path / "MyGame"))
-    out_iso = str(tmp_path / "MyGame.iso")
-    # A prior split build left parts; a new (single) build must not strand them.
-    Path(f"{out_iso}.0").write_bytes(b"old0")
-    Path(f"{out_iso}.1").write_bytes(b"old1")
+async def test_clear_existing_output_gated_on_overwrite(tmp_path, monkeypatch):
+    # Overwrite cleanup of a prior split set is gated on allow_overwrite, so a
+    # set that wasn't authorized for replacement (e.g. appeared post-plan) is
+    # never deleted out from under a skip/rename decision.
+    import app.services.job_manager as jm_module
+    from app.services.job_manager import job_manager
 
-    async def fake_run(cmd, *, output_path, complete_message, **_kwargs):
-        Path(output_path).write_bytes(b"new single iso")
-        yield {"progress": 100, "message": complete_message}
+    # The verification store needs a DB; stub its clear for this unit test.
+    async def _noop_clear(_path):
+        return None
 
-    monkeypatch.setattr(makeps3iso_service._runner, "run", fake_run)
-    _ = [
-        u
-        async for u in makeps3iso_service.convert(folder, out_iso, "folder_to_iso")
-    ]
-    assert Path(out_iso).exists()
-    assert not Path(f"{out_iso}.0").exists()
-    assert not Path(f"{out_iso}.1").exists()
+    monkeypatch.setattr(jm_module.verification_store, "clear", _noop_clear)
+
+    out = str(tmp_path / "MyGame.iso")
+    Path(f"{out}.0").write_bytes(b"0")
+    Path(f"{out}.1").write_bytes(b"1")
+    job = ConversionJob(
+        id="ps3ovw1",
+        file_path=str(tmp_path / "MyGame"),
+        filename="MyGame",
+        mode=ConversionMode.FOLDER_TO_ISO,
+        status=JobStatus.PROCESSING,
+        created_at=datetime.now(timezone.utc),
+        output_path=out,
+        input_kind=InputKind.DIRECTORY,
+        allow_overwrite=False,
+    )
+    await job_manager._clear_existing_output(job)
+    assert Path(f"{out}.0").exists() and Path(f"{out}.1").exists()
+
+    job.allow_overwrite = True
+    await job_manager._clear_existing_output(job)
+    assert not Path(f"{out}.0").exists() and not Path(f"{out}.1").exists()
+
+
+def test_find_active_job_for_inflight_split_part(tmp_path):
+    # While a split build runs, its numbered parts (Game.iso.0/.1/…) must read
+    # as in-use even though they aren't in the static candidate paths, so a
+    # rename/delete can't mutate a part mid-write.
+    from app.services.job_manager import job_manager
+
+    out = str(tmp_path / "MyGame.iso")
+    job = ConversionJob(
+        id="ps3split1",
+        file_path=str(tmp_path / "src.iso"),
+        filename="src.iso",
+        mode=ConversionMode.FOLDER_TO_ISO,
+        status=JobStatus.PROCESSING,
+        created_at=datetime.now(timezone.utc),
+        output_path=out,
+        input_kind=InputKind.DIRECTORY,
+        split=True,
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        assert job_manager.find_active_job_for_path(f"{out}.0") is job
+        assert job_manager.find_active_job_for_path(f"{out}.1") is job
+        # An unrelated sibling is not in use.
+        assert job_manager.find_active_job_for_path(str(tmp_path / "Other.iso")) is None
+        # Without split, a numbered part is no longer matched.
+        job.split = False
+        assert job_manager.find_active_job_for_path(f"{out}.1") is None
+    finally:
+        job_manager.jobs.pop(job.id, None)
 
 
 @pytest.mark.asyncio

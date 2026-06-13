@@ -23,6 +23,7 @@ from services.concurrency_manager import concurrency_manager
 from services.disc_id import embed_in_chd as disc_id_embed
 from services.disc_id import extract_from_source as disc_id_from_source
 from services.lock_manager import lock_manager
+from services.makeps3iso import makeps3iso_service
 from services.tools import registry
 from services.verification_store import verification_store
 from services.z3ds_compress import Z3DS_DECOMPRESS_FORMATS, Z3DS_OUTPUT_FORMATS
@@ -697,6 +698,10 @@ class JobManager:
             # mutation: a target *inside* the in-flight folder is in use.
             if self._directory_job_blocks(job, target):
                 return job
+            # An in-flight split build's numbered parts (Game.iso.0/.1/…) count
+            # as the job's output even though they aren't in _candidate_paths.
+            if self._split_output_blocks(job, target):
+                return job
             for candidate in self._candidate_paths(job):
                 cand_path = self._normalize_path(candidate)
                 if cand_path is None:
@@ -727,6 +732,8 @@ class JobManager:
             # directory job's source folder (its whole subtree is in use).
             if self._directory_job_blocks(job, target):
                 return True
+            if self._split_output_blocks(job, target):
+                return True
             for candidate in self._candidate_paths(job):
                 cand_path = self._normalize_path(candidate)
                 if cand_path is None:
@@ -734,6 +741,54 @@ class JobManager:
                 if cand_path == target:
                     return True
         return False
+
+    def _split_output_blocks(self, job: ConversionJob, target: Path) -> bool:
+        """Whether ``target`` is a numbered split part of an active split job's
+        output (``Game.iso.0``/``.1``/…).
+
+        makeps3iso ``-s`` renames the locked base ``.iso`` to ``.iso.0`` and
+        writes ``.iso.1``/… mid-run, so those names don't exist when the job is
+        queued and can't be listed in the static ``_candidate_paths`` (which
+        carries the base ``output_path``). A prefix check marks the whole set
+        in-use so a rename/delete can't mutate a part while it's being written.
+        """
+        if not job.split or not job.output_path:
+            return False
+        out = self._normalize_path(job.output_path)
+        if out is None or target.parent != out.parent:
+            return False
+        prefix = out.name + "."
+        suffix = target.name[len(prefix):]
+        return target.name.startswith(prefix) and suffix.isdigit()
+
+    async def _clear_existing_output(self, job: ConversionJob) -> None:
+        """Remove a prior output ahead of an **authorized** overwrite.
+
+        Gated on ``allow_overwrite`` so it never deletes an output the user chose
+        to skip/rename — including a split set (``Game.iso.0``/…) that appeared
+        after planning but before the worker started (the per-path
+        ``acquire_lock`` only sees the bare base name).
+        """
+        if not job.allow_overwrite or not job.output_path:
+            return
+        if job.input_kind == InputKind.DIRECTORY:
+            # makeps3iso output is a single .iso OR a split set (.0/.1/…); clear
+            # all of it via the tool's own part-aware cleanup.
+            await asyncio.to_thread(
+                makeps3iso_service.remove_outputs, job.output_path,
+            )
+            await verification_store.clear(job.output_path)
+            return
+        if not os.path.exists(job.output_path):
+            return
+        if not os.path.isfile(job.output_path):
+            raise RuntimeError("Output path exists and is not a file")
+        os.remove(job.output_path)
+        await verification_store.clear(job.output_path)
+        if job.mode.value == "extractcd":
+            bin_path = str(Path(job.output_path).with_suffix(".bin"))
+            if os.path.isfile(bin_path):
+                os.remove(bin_path)
 
     def _get_queued_and_processing_jobs(self) -> tuple[list[str], list[str]]:
         """Get lists of queued and processing job IDs.
@@ -1615,15 +1670,7 @@ class JobManager:
                 if cancel_event.is_set():
                     raise ConversionCancelled("Conversion cancelled")
 
-            if job.allow_overwrite and os.path.exists(job.output_path):
-                if not os.path.isfile(job.output_path):
-                    raise RuntimeError("Output path exists and is not a file")
-                os.remove(job.output_path)
-                await verification_store.clear(job.output_path)
-                if job.mode.value == "extractcd":
-                    bin_path = str(Path(job.output_path).with_suffix(".bin"))
-                    if os.path.isfile(bin_path):
-                        os.remove(bin_path)
+            await self._clear_existing_output(job)
 
             _convert_service = registry.for_mode(job.mode.value)
             async for update in _convert_service.convert(
@@ -1666,7 +1713,18 @@ class JobManager:
                 job.progress = 100
 
                 # Get output file size
-                if os.path.exists(job.output_path):
+                if job.input_kind == InputKind.DIRECTORY:
+                    # makeps3iso may finish as a single .iso OR a split set
+                    # (.0/.1/…) with no bare .iso, so sum whatever was produced
+                    # (split_parts returns [base] or the numbered parts).
+                    total_size = 0
+                    for part in makeps3iso_service.split_parts(job.output_path):
+                        try:
+                            total_size += os.path.getsize(part)
+                        except OSError:
+                            pass
+                    job.output_size = total_size if total_size > 0 else None
+                elif os.path.exists(job.output_path):
                     if job.mode.value == "extractcd":
                         cue_size = 0
                         bin_size = 0

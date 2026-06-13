@@ -157,14 +157,6 @@ class MakePs3IsoService:
         split: bool = False,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[dict, None]:
-        # Overwrite cleanly: a prior build at this path may be a single ``.iso``
-        # OR a split set (``.0``/``.1``/…). The generic overwrite cleanup only
-        # unlinks the plain ``output_path``, so it misses a split set's parts —
-        # clear base + every numbered part here so a new build can't strand a
-        # stale ``.iso.N``. Safe: convert is only reached when the target is free
-        # (a no-op scan here) or overwrite was authorized upstream
-        # (``acquire_lock(allow_existing=…)`` gates the rest).
-        await asyncio.to_thread(self._remove_outputs, output_path)
         cmd = self._build_command(input_path, output_path, split=split)
 
         # A split build renames the base .iso to .iso.0 and writes .iso.1/…, so
@@ -202,7 +194,7 @@ class MakePs3IsoService:
             # left several parts (output.0, .1, …) plus the not-yet-renamed base,
             # so clear them all. Re-raise so cancellation semantics are preserved.
             # (run() does not clean the output itself.)
-            self._remove_outputs(output_path)
+            self.remove_outputs(output_path)
             raise
 
         # ``-s`` only splits past 4 GB and the part names aren't known until now,
@@ -218,10 +210,12 @@ class MakePs3IsoService:
         yield {"progress": 100, "message": message}
 
     @classmethod
-    def _remove_outputs(cls, output_path: str) -> None:
+    def remove_outputs(cls, output_path: str) -> None:
         """Synchronously unlink the base output *and* any split parts.
 
-        A mid-split failure can leave both the not-yet-renamed base and some
+        Used both for failure cleanup here and for authorized overwrite cleanup
+        by the job pipeline (which gates the call on ``allow_overwrite``). A
+        mid-split failure can leave both the not-yet-renamed base and some
         numbered parts, so clear both unconditionally (don't go through
         ``split_parts``, which stops at the base when it exists).
         """
