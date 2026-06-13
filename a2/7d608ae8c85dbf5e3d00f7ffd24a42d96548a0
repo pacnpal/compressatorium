@@ -1,0 +1,21 @@
+src/lib/components/views/HelpView.svelte
+  s_5b8d6d45a59408::t_da9ea231c00ccb 402-406
+README.md
+  s_5b8d6d45a59408::t_8fc41ae9e645a8 64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "a27d608ae8c85dbf5e3d00f7ffd24a42d96548a0",
+  "prompts": {},
+  "sessions": {
+    "s_5b8d6d45a59408": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc783c0f-f178-40ee-9aea-e77bc9a147c7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "pacnpal <183241239+pacnpal@users.noreply.github.com>"
+    }
+  }
+}
