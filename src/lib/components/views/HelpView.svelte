@@ -399,9 +399,11 @@
       (<code>.nsp</code>/<code>.xci</code>, your own <code>prod.keys</code> still required), and PSP/PS2
       images (both the <code>.iso</code> you compress and the <code>.cso</code>/<code>.zso</code>/<code>.dax</code>
       you decompress). CHDMAN's extract modes can even pull a <code>.chd</code> out of an
-      archive and decompress it back to a game image. The one exception is CHDMAN's
-      copy/recompress mode: recompressing an already-finished <code>.chd</code> straight out of
-      an archive is a pointless round trip, so it isn't offered there.
+      archive and decompress it back to a game image. CHDMAN's copy/recompress mode is
+      the one exception: recompressing an already-finished <code>.chd</code> straight out of
+      an archive is a pointless round trip, so it isn't offered there. PS3 ISO sits outside
+      this entirely: it takes a folder, not a file, so a zipped <code>PS3_GAME</code> tree is
+      never an archive input.
     </p>
     <p>
       When a <code>.cue</code> or <code>.gdi</code> sits next to its <code>.bin</code>
