@@ -1,0 +1,23 @@
+package.json
+  s_5b8d6d45a59408::t_7d1d5afd449c4d 3
+docs/RELEASE_NOTES.md
+  s_5b8d6d45a59408::t_9431010634f539 3-8
+package-lock.json
+  s_5b8d6d45a59408::t_e0d84085350299 3,9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "a923dc5a01d13d2b576fb44ea1d3db16f5fbc8f5",
+  "prompts": {},
+  "sessions": {
+    "s_5b8d6d45a59408": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc783c0f-f178-40ee-9aea-e77bc9a147c7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "pacnpal <183241239+pacnpal@users.noreply.github.com>"
+    }
+  }
+}
