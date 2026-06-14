@@ -50,7 +50,7 @@
     {
       glyph: 'PS3',
       name: 'PS3 ISO',
-      blurb: 'A decrypted PS3 disc or JB folder packed into a single .iso that RPCS3 mounts directly, using makeps3iso. This is the one tool that takes a folder instead of a file, and the one conversion that does not reverse: it repackages a folder you already decrypted, and never deletes it. Most PS3 discs are over 4 GB, so for a FAT32 drive there is a per-job toggle that splits the image into 4 GB parts (RPCS3 mounts the .0). No keys, and no decryption here.',
+      blurb: 'A decrypted PS3 disc or JB folder packed into a single .iso that RPCS3 mounts directly, using makeps3iso. This is the one tool that takes a folder instead of a file, and the only tool with no reverse mode at all: it repackages a folder you already decrypted, and never deletes it. Most PS3 discs are over 4 GB, so for a FAT32 drive there is a per-job toggle that splits the image into 4 GB parts (RPCS3 mounts the .0). No keys, and no decryption here.',
       io: 'the folder holding PS3_GAME/  →  .iso',
     },
   ];
@@ -401,9 +401,12 @@
       you decompress). CHDMAN's extract modes can even pull a <code>.chd</code> out of an
       archive and decompress it back to a game image. CHDMAN's copy/recompress mode is
       the one exception: recompressing an already-finished <code>.chd</code> straight out of
-      an archive is a pointless round trip, so it isn't offered there. PS3 ISO sits outside
-      this entirely: it takes a folder, not a file, so a zipped <code>PS3_GAME</code> tree is
-      never an archive input.
+      an archive is a pointless round trip, so it isn't offered there. Handheld ROM doesn't
+      take archive members either: a loose <code>.gb</code>/<code>.gba</code>/<code>.nds</code>
+      inside an archive is shown but not converted in place, since its <code>.7z</code>/<code>.zip</code>
+      are the packed product (unpack one by selecting the archive and running
+      <code>romz_extract</code>). PS3 ISO sits outside this entirely: it takes a folder, not a
+      file, so a zipped <code>PS3_GAME</code> tree is never an archive input.
     </p>
     <p>
       When a <code>.cue</code> or <code>.gdi</code> sits next to its <code>.bin</code>

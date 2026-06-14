@@ -52,7 +52,7 @@ throughout. When in doubt, **copy what z3ds does.**
 
 > **The `nszip` example below is now real.** This guide was written before
 > Switch support existed and uses a *fictional* `nszip` tool as its §5
-> walkthrough. That tool now ships for real as **`nsz`** (last row above). The
+> walkthrough. That tool now ships for real as **`nsz`** (the `nsz` row above). The
 > walkthrough still teaches the generic pattern, but the real `nsz`
 > implementation differs from the sketch in three ways worth knowing:
 >
@@ -138,10 +138,12 @@ Two supporting layers:
   `archive_input_extensions()`, `verify_extensions()`, `output_extensions()`,
   `scannable_extensions()` (which drives the library scan / DAT-match
   discovery), and friends.
-- **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py` / `romz.py`**
-  are the six plugins. Each is a thin `BaseTool` subclass that holds `ModeSpec`
-  rows and delegates the real work to the underlying service singleton.
-- **`__init__.py`** builds the `registry` singleton and registers all six
+- **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py` / `romz.py` /
+  `makeps3iso.py`** are the seven plugins. Each is a thin `BaseTool` subclass that
+  holds `ModeSpec` rows and delegates the real work to the underlying service
+  singleton (`makeps3iso.py` is the directory-input one; see §3.3.4 of the design
+  doc).
+- **`__init__.py`** builds the `registry` singleton and registers all seven
   tools. This is the single wiring point.
 
 ### The plugin contract: `ModeSpec` and `BaseTool`

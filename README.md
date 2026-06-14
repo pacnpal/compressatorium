@@ -815,9 +815,10 @@ default; ext4, NTFS, and exFAT targets don't need it.
   that was already queued and whose input or output lands inside the folder is
   deferred, re-queued, and retried once the build finishes (only reachable with
   `MAX_CONCURRENT_JOBS > 1`). A new request whose output lands inside the folder is
-  treated as an output collision: skip and overwrite are rejected up front (the
-  subtree reads as locked), while rename gets a fresh name that the subtree lock
-  still guards when the job runs.
+  treated as an output collision: skip and overwrite are rejected up front, since
+  the subtree reads as locked. Rename can't slip in either, because every candidate
+  path under the locked subtree also reads as locked, so a new job can't write into
+  the folder until the build finishes.
 - The default output (`<folder>.iso`) must land inside a configured volume. If the
   folder is itself a volume root, so the sibling output would escape every volume,
   the job is rejected with a message asking for an in-volume output directory.
@@ -1072,6 +1073,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM archives); resolved on PATH by default (set an absolute path or `7zz` if your distro ships the newer `7zip` package) |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (`1` = serial queue processing) |
 | `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
+| `COMPRESSATORIUM_CHAIN_DISK_MARGIN_MB` | `512` | Free-space margin in MB the `cso_to_chd` chain preflights before it starts, on top of the room needed for the temporary `.iso` plus the final `.chd`. Raise it if valid chain jobs are rejected for headroom. |
 | `MAX_VERIFY_CONCURRENCY` | `1` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |
 | `MAX_METADATA_SCAN_CONCURRENCY` | `1` | Maximum concurrent metadata scan tasks |
 | `MAX_MATCH_CONCURRENCY` | `1` | Maximum concurrent DAT hash-matching operations. Raise only if your storage can handle parallel full-file reads (matching a raw Wii ISO is a full-file SHA1). |
