@@ -43,6 +43,18 @@ optional 4 GB split for FAT32 targets, and a new CSO mode converts a
   itself a volume root (so the sibling output would escape all volumes), the plan
   is rejected with a clear message asking for an in-volume output directory.
 
+#### Fixed
+
+- **Rename no longer spin-loops when its output is inside a folder being packed.**
+  A new `duplicate_action="rename"` job whose output lands in a locked PS3 subtree
+  used to probe numbered names (`name_1`, `name_2`, …) in a tight loop. Every
+  candidate sits in the same locked subtree and reads as locked, so the loop spun
+  with no sleep until the folder build released the lock, burning a thread. It now
+  detects the held subtree and rejects the request up front with the same
+  locked-output error skip and overwrite already returned, so the job pipeline
+  defers and retries it like any other blocked job (only reachable with
+  `MAX_CONCURRENT_JOBS > 1`).
+
 #### Internal
 
 - The directory-input seam scaffolded in Phase 1 (`InputKind` +

@@ -780,9 +780,10 @@ for it yet).
 
 The PS3 ISO tool packs a decrypted PS3 disc or JB folder into a single `.iso`
 that RPCS3 mounts directly, using [makeps3iso](https://github.com/bucanero/ps3iso-utils).
-This is the one tool whose input is a folder, not a file, and the one conversion
-that is not reversible. It repackages a folder you already decrypted. It does not
-decrypt anything and needs no keys.
+This is the one tool whose input is a folder, not a file, and the one tool with no
+reverse mode at all. It repackages a folder you already decrypted. It does not
+decrypt anything and needs no keys. (The `cso_to_chd` chain also changes container,
+but a CHD still extracts back to an ISO; PS3 ISO has no way back at all.)
 
 ### How to Use
 
@@ -815,10 +816,11 @@ default; ext4, NTFS, and exFAT targets don't need it.
   that was already queued and whose input or output lands inside the folder is
   deferred, re-queued, and retried once the build finishes (only reachable with
   `MAX_CONCURRENT_JOBS > 1`). A new request whose output lands inside the folder is
-  treated as an output collision: skip and overwrite are rejected up front, since
-  the subtree reads as locked. Rename can't slip in either, because every candidate
-  path under the locked subtree also reads as locked, so a new job can't write into
-  the folder until the build finishes.
+  treated as an output collision and rejected up front, since the subtree reads as
+  locked. That covers skip, overwrite, and rename alike: rename doesn't probe
+  numbered siblings here, because every candidate lives in the same locked subtree,
+  so it's rejected with the same locked-output error instead of looping until the
+  build finishes.
 - The default output (`<folder>.iso`) must land inside a configured volume. If the
   folder is itself a volume root, so the sibling output would escape every volume,
   the job is rejected with a message asking for an in-volume output directory.

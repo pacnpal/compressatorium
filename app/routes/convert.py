@@ -117,11 +117,33 @@ def get_disallowed_archive_paths(file_paths: list[str]) -> set[str]:
     }
 
 
+def _reject_rename_in_locked_dir(base_path: str) -> None:
+    """Bail out of unique-name probing when ``base_path`` is inside a locked
+    directory subtree (a ``folder_to_iso`` job packing a PS3 folder).
+
+    Every numbered sibling these helpers would probe shares ``base_path``'s
+    parent, so all of them fall inside the same held subtree and
+    ``check_file_status`` reports each as locked — the ``while`` loops would spin
+    with no sleep until the dir lock releases, burning a thread, then return an
+    arbitrarily numbered name. A rename whose every candidate is inside a held
+    subtree can never succeed, so reject it up front exactly like skip/overwrite
+    do (``SkipFile(OUTPUT_LOCKED)``) and let the job pipeline defer/requeue it.
+
+    Only a *directory* subtree lock triggers this; an ordinary single-file lock
+    on ``base_path`` leaves its numbered siblings free, so that case still probes
+    normally.
+    """
+    if lock_manager.is_within_locked_dir(base_path):
+        raise SkipFile(SkipReason.OUTPUT_LOCKED)
+
+
 def get_unique_output_path(base_path: str) -> str:
     """Generate a unique output path by appending a number if the file exists."""
     file_exists, is_locked = lock_manager.check_file_status(base_path)
     if not file_exists and not is_locked:
         return base_path
+
+    _reject_rename_in_locked_dir(base_path)
 
     path = Path(base_path)
     stem = path.stem
@@ -153,6 +175,7 @@ def get_unique_ps3_iso_output_path(base_path: str) -> str:
     """:func:`get_unique_output_path` that also steps past an existing split set."""
     if not _ps3_iso_output_taken(base_path):
         return base_path
+    _reject_rename_in_locked_dir(base_path)
     path = Path(base_path)
     stem, suffix, parent = path.stem, path.suffix, path.parent
     counter = 1
@@ -186,6 +209,7 @@ def check_output_conflicts(mode: str, output_path: str) -> tuple:
 
 
 def get_unique_output_path_for_extractcd(base_path: str) -> str:
+    _reject_rename_in_locked_dir(base_path)
     path = Path(base_path)
     stem = path.stem
     suffix = path.suffix or ".cue"
