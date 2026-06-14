@@ -726,7 +726,9 @@ packages that to a `.chd` (PPSSPP, PCSX2, and RetroArch read the result). The
 intermediate `.iso` lives in a private temp dir and is cleaned up after, so only
 the source and the final `.chd` remain. Delete-on-verify works end to end: the
 original `.cso` is removed only after the final `.chd` passes chdman verification.
-Note this changes container, so it's a one-way trip: extracting the `.chd` later
+If the `.cso` came from inside an archive, delete-on-verify removes the whole
+archive, not just that member, with a warning in the delete plan, the same as any
+archive-sourced conversion. Note this changes container, so it's a one-way trip: extracting the `.chd` later
 (chdman `extractdvd`) gives back the `.iso`, not the original `.cso`/`.zso`/`.dax`.
 The disc image is preserved, but the compressed source is not reproducible once
 deleted. Disc-ID `GAME`/`NAME` tags are embedded into the CHD just like a direct
@@ -1075,7 +1077,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `SEVENZIP_PATH` | `7z` | Path to the 7z binary (handheld ROM archives); resolved on PATH by default (set an absolute path or `7zz` if your distro ships the newer `7zip` package) |
 | `MAX_CONCURRENT_JOBS` | `1` | Maximum parallel conversion jobs (`1` = serial queue processing) |
 | `MAX_QUEUE_DEPTH` | `0` | Max queued+processing conversion jobs before create endpoints return `429` (0 disables) |
-| `COMPRESSATORIUM_CHAIN_DISK_MARGIN_MB` | `512` | Free-space margin in MB the `cso_to_chd` chain preflights before it starts, on top of the room needed for the temporary `.iso` plus the final `.chd`. Raise it if valid chain jobs are rejected for headroom. |
+| `COMPRESSATORIUM_CHAIN_DISK_MARGIN_MB` | `512` | Free-space margin in MB the `cso_to_chd` chain keeps beyond the room needed for the temporary `.iso` plus the final `.chd`. A job is rejected when free space is below `required + margin`, so a bigger margin is stricter. If a valid chain job is wrongly rejected for headroom, lower this or free up space (or point `CHD_TEMP_DIR` / the output at a roomier volume). |
 | `MAX_VERIFY_CONCURRENCY` | `1` | Maximum concurrent verify workloads across CHD/Dolphin/3DS verify endpoints |
 | `MAX_METADATA_SCAN_CONCURRENCY` | `1` | Maximum concurrent metadata scan tasks |
 | `MAX_MATCH_CONCURRENCY` | `1` | Maximum concurrent DAT hash-matching operations. Raise only if your storage can handle parallel full-file reads (matching a raw Wii ISO is a full-file SHA1). |
