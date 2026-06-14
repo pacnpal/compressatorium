@@ -7,17 +7,29 @@ vertical slice, from the binary in the Docker image, through the Python service
 and tool plugin, the job pipeline, the FastAPI routes, and finally the Svelte
 web UI, and shows how to add a tool and a platform in tandem.
 
-It is written against the codebase as it stands today, with six tools already
+It is written against the codebase as it stands today, with seven tools already
 wired up:
 
 | Tool | Binary | Service module | Plugin | Handles |
 |------|--------|----------------|--------|---------|
-| **chdman** | `mame-tools` (`/usr/bin/chdman`) | `app/services/chdman.py` | `app/services/tools/chdman.py` | CD/DVD/HD/Raw/LaserDisc disc images to/from `.chd` |
+| **chdman** | `mame-tools` (`/usr/bin/chdman`) | `app/services/chdman.py` | `app/services/tools/chdman.py` | CD/DVD/HD/Raw/LaserDisc game images to/from `.chd` |
 | **dolphin-tool** | `dolphin-emu` (`/usr/local/bin/dolphin-tool`) | `app/services/dolphin_tool.py` | `app/services/tools/dolphin.py` | GameCube/Wii images to/from `.rvz/.wia/.gcz/.iso` |
 | **z3ds_compressor** | built from source via CMake (`/usr/local/bin/z3ds_compressor`) | `app/services/z3ds_compress.py` | `app/services/tools/z3ds.py` | Nintendo 3DS ROMs to/from `.zcci/.zcia/.z3ds/.zcxi/.z3dsx` |
 | **nsz** | `nsz` pip package (on PATH) | `app/services/nsz.py` | `app/services/tools/nsz.py` | Nintendo Switch `.nsp`/`.xci` to/from `.nsz`/`.xcz` |
 | **maxcso** | built from source (`/usr/local/bin/maxcso`) | `app/services/maxcso.py` | `app/services/tools/maxcso.py` | PSP/PS2 `.iso` to/from `.cso` (CSO v1/v2) / `.zso` / `.dax` (tool id `cso`) |
 | **7z** | `p7zip-full` (`7z` on PATH) | `app/services/romz.py` | `app/services/tools/romz.py` | Handheld ROM `.gb`/`.gbc`/`.gba`/`.nds` to/from `.7z`/`.zip` (tool id `romz`) |
+| **makeps3iso** | built from source (`/usr/local/bin/makeps3iso`) | `app/services/makeps3iso.py` | `app/services/tools/makeps3iso.py` | A decrypted PS3 folder (`PS3_GAME/` layout) packed to `.iso` (tool id `makeps3iso`, directory input) |
+
+> **Three tool shapes.** Most tools take a file matched by suffix, and that is
+> the path this guide walks. Two newer shapes sit on the same plugin/registry
+> contract and have their own seams: a **directory-input** tool (makeps3iso, the
+> last row above) selects a folder through `accepts_directory` / `InputKind`
+> instead of a suffix, and a **chain** mode (`cso_to_chd`) runs two existing
+> tools as one job through a `ChainSpec`. If you're adding either of those, read
+> the file-suffix walkthrough below for the shared plumbing (routes, job
+> pipeline, frontend registry), then see the two seam writeups in
+> `docs/DESIGN_tool_plugin_architecture.md` (§3.3.3 cross-tool chaining and
+> §3.3.4 directory inputs) for the parts that differ.
 
 > **`romz` is the "produces archives / reuses an existing binary" example.** It
 > needs no Dockerfile build step (the `7z` CLI already ships via `p7zip-full`)
@@ -40,7 +52,7 @@ throughout. When in doubt, **copy what z3ds does.**
 
 > **The `nszip` example below is now real.** This guide was written before
 > Switch support existed and uses a *fictional* `nszip` tool as its §5
-> walkthrough. That tool now ships for real as **`nsz`** (last row above). The
+> walkthrough. That tool now ships for real as **`nsz`** (the `nsz` row above). The
 > walkthrough still teaches the generic pattern, but the real `nsz`
 > implementation differs from the sketch in three ways worth knowing:
 >
@@ -126,10 +138,12 @@ Two supporting layers:
   `archive_input_extensions()`, `verify_extensions()`, `output_extensions()`,
   `scannable_extensions()` (which drives the library scan / DAT-match
   discovery), and friends.
-- **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py` / `romz.py`**
-  are the six plugins. Each is a thin `BaseTool` subclass that holds `ModeSpec`
-  rows and delegates the real work to the underlying service singleton.
-- **`__init__.py`** builds the `registry` singleton and registers all six
+- **`chdman.py` / `dolphin.py` / `z3ds.py` / `nsz.py` / `maxcso.py` / `romz.py` /
+  `makeps3iso.py`** are the seven plugins. Each is a thin `BaseTool` subclass that
+  holds `ModeSpec` rows and delegates the real work to the underlying service
+  singleton (`makeps3iso.py` is the directory-input one; see §3.3.4 of the design
+  doc).
+- **`__init__.py`** builds the `registry` singleton and registers all seven
   tools. This is the single wiring point.
 
 ### The plugin contract: `ModeSpec` and `BaseTool`
@@ -692,7 +706,7 @@ Everything else is spec-driven:
   from an archive is a pointless round trip (chdman *copy*, which would re-CHD a
   `.chd`) or when a member's only meant to be *seen*, not reprocessed (romz ROMs
   — visible in browse, never recompressed). Note chdman *extract* DOES opt in:
-  pullin' a `.chd` out of an archive to decompress it back to a disc image is a
+  pullin' a `.chd` out of an archive to decompress it back to a game image is a
   real, useful conversion.
   See §17.5.
 
@@ -1097,7 +1111,7 @@ references. `tests/test_alembic_migrations.py` validates head consistency.
 ## 13. Supporting services: disc_id, archive, DAT
 
 These are **disc-format-specific** and usually irrelevant to a non-disc tool, but
-matter when your *platform* is a disc image processed by chdman.
+matter when your *platform* is a game image processed by chdman.
 
 - **`app/services/disc_id.py`** extracts a game serial/title (for example
   `SLUS-20312`) from PS1/PS2/PSP/Dreamcast sources and embeds GAME/NAME tags into
@@ -1331,7 +1345,7 @@ Users keep dumps inside `.zip`/`.7z`/`.rar` archives, so every tool that takes a
 *convertible source* can convert a member straight out of the archive without a
 manual unzip first. Today chdman *create* and *extract*, Dolphin, 3DS, and Switch
 (nsz) all support this — chdman extract even decompresses a `.chd` pulled from an
-archive back to a disc image; only chdman *copy* opts out, because re-CHD'ing a
+archive back to a game image; only chdman *copy* opts out, because re-CHD'ing a
 `.chd` from inside an archive is a pointless round trip.
 
 The pipeline is **tool-agnostic and registry-driven**: a member arrives as a
@@ -1421,7 +1435,7 @@ re-CHD a finished `.chd` back into another `.chd`. The guard rejects it (and
 `tests/test_archive_conversion_e2e.py::test_archive_chd_member_rejected_for_recompress`
 locks that in). Note the distinction from chdman `extract`: extract takes the
 same `.chd` input but *opts in*, because decompressing a `.chd` pulled from an
-archive back to its disc image is a genuine, useful conversion — "output class"
+archive back to its game image is a genuine, useful conversion — "output class"
 alone doesn't disqualify a mode, only a no-op round trip does.
 
 **Visible-but-not-convertible (no flag, that's the point).** A tool that

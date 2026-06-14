@@ -29,8 +29,8 @@ optional 4 GB split for FAT32 targets, and a new CSO mode converts a
   fit as one `.iso`; with the toggle on, an image over ~4 GB is written as
   `Game.iso.0`, `Game.iso.1`, … (RPCS3 mounts the `.0`). A title under 4 GB
   still produces a single `Game.iso`. The file browser **folds a split set into
-  one entry** — it shows `Game.iso` with the combined size and a part count, not
-  a row per chunk. Default off; ext4/NTFS/exFAT targets don't need it.
+  one entry** — it shows `Game.iso` with the combined size, not a row per chunk.
+  Default off; ext4/NTFS/exFAT targets don't need it.
 - **Concurrent jobs that touch a folder being packed don't corrupt it.** While a
   PS3 folder is being built into an ISO its whole subtree is locked. A per-file
   job that was **already queued** when the folder build starts and whose
@@ -42,6 +42,18 @@ optional 4 GB split for FAT32 targets, and a new CSO mode converts a
   (`<folder>.iso`) must also land inside a configured volume; if the folder is
   itself a volume root (so the sibling output would escape all volumes), the plan
   is rejected with a clear message asking for an in-volume output directory.
+
+#### Fixed
+
+- **Rename no longer spin-loops when its output is inside a folder being packed.**
+  A new `duplicate_action="rename"` job whose output lands in a locked PS3 subtree
+  used to probe numbered names (`name_1`, `name_2`, …) in a tight loop. Every
+  candidate sits in the same locked subtree and reads as locked, so the loop spun
+  with no sleep until the folder build released the lock, burning a thread. It now
+  detects the held subtree and rejects the request up front with the same
+  locked-output error skip and overwrite already returned, so the job pipeline
+  defers and retries it like any other blocked job (only reachable with
+  `MAX_CONCURRENT_JOBS > 1`).
 
 #### Internal
 

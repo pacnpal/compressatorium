@@ -118,12 +118,12 @@ jobs:
             type=sha,prefix=sha-,format=short
           labels: |
             org.opencontainers.image.title=Compressatorium
-            org.opencontainers.image.description=Web UI for converting game disc images
+            org.opencontainers.image.description=Web UI for converting game images
             org.opencontainers.image.vendor=${{ github.repository_owner }}
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
           annotations: |
             org.opencontainers.image.title=Compressatorium
-            org.opencontainers.image.description=Web UI for converting game disc images
+            org.opencontainers.image.description=Web UI for converting game images
 
       - name: Build and push
         id: build
@@ -220,7 +220,7 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
           repository: ${{ env.DOCKERHUB_IMAGE }}
           readme-filepath: ./README.md
-          short-description: "Web UI for converting game disc images"
+          short-description: "Web UI for converting game images"
 
   summary:
     name: Build Summary
