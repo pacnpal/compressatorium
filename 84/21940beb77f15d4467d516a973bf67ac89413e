@@ -1,0 +1,28 @@
+README.md
+  s_f4cd36a27b5fae::t_f29bf3f75a6fce 819-823
+  s_f4cd36a27b5fae::t_f3ea7c04c9eff4 783-786
+tests/test_unique_output_path_locked_dir.py
+  s_f4cd36a27b5fae::t_8832c9962b76dc 1-76
+app/routes/convert.py
+  s_f4cd36a27b5fae::t_b1289f72f74366 120-139,146
+  s_f4cd36a27b5fae::t_127d0e3f781c2f 212
+  s_f4cd36a27b5fae::t_cb637c67728df7 178
+docs/RELEASE_NOTES.md
+  s_f4cd36a27b5fae::t_4f81fe0e27d564 46-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "8421940beb77f15d4467d516a973bf67ac89413e",
+  "prompts": {},
+  "sessions": {
+    "s_f4cd36a27b5fae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e6b40f9-7a71-4961-8b76-cc528c0b4136",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "pacnpal <183241239+pacnpal@users.noreply.github.com>"
+    }
+  }
+}
