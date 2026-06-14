@@ -1,0 +1,26 @@
+docs/ADDING_PLATFORMS_AND_TOOLS.md
+  s_5b8d6d45a59408::t_04b0d6acc9eee4 55
+  s_5b8d6d45a59408::t_793a8db893b7eb 141-146
+README.md
+  s_5b8d6d45a59408::t_05c0ba9d9df709 818-821
+  s_5b8d6d45a59408::t_e938e7c1b3b39a 1076
+src/lib/components/views/HelpView.svelte
+  s_5b8d6d45a59408::t_9928806fba34fa 53
+  s_5b8d6d45a59408::t_27d6d974764d14 404-409
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "13a6f875c844df16b24b4eee7403ea77113d2404",
+  "prompts": {},
+  "sessions": {
+    "s_5b8d6d45a59408": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fc783c0f-f178-40ee-9aea-e77bc9a147c7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "pacnpal <183241239+pacnpal@users.noreply.github.com>"
+    }
+  }
+}
