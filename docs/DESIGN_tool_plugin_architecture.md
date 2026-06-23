@@ -191,6 +191,11 @@ class ToolPlugin(Protocol):
     def verify_stream(self, path: str) -> AsyncGenerator[dict, None]: ...
     async def info(self, path: str) -> dict: ...                    # raw dict
     def info_model(self, raw: dict, path: str) -> BaseModel: ...    # typed model for the API
+    # The five simple "what is this file" models (z3ds/nsz/cso/romz/makeps3iso)
+    # subclass models.BasicFileInfo (file/size/size_display/format/extension/
+    # compressed/compression_type); their info_model() builds the shared fields
+    # via BaseTool._basic_info_fields(raw) and adds only their extras, so the
+    # raw->model mapping is defined once.
 
     # DAT-match fast path: (sha1, match_type) pairs the tool can report
     # cheaply (chdman header/data SHA1 from the metadata cache, dolphin disc
