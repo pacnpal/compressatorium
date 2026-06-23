@@ -1,7 +1,9 @@
+import json
 import logging
 from logging_setup import get_logger
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from config import settings
 from fastapi import FastAPI
@@ -12,13 +14,38 @@ from services.job_manager import job_manager
 from services.nsz import nsz_service
 
 
-def get_version() -> str:
-    """Return app version from APP_VERSION env var (set by Docker build arg).
+# package.json (repo root) is the single source of truth for the version.
+_PACKAGE_JSON = Path(__file__).resolve().parent.parent / "package.json"
 
-    In production containers the version is injected at build time from the
-    GitHub release tag.  Local / dev runs fall back to "dev".
+
+def _version_from_package_json() -> str | None:
+    """Return ``version`` from the repo-root ``package.json``, or ``None``.
+
+    ``None`` when the file is missing or unparseable (e.g. a slim image that
+    does not ship ``package.json``), so the caller can fall back to ``"dev"``.
     """
-    return os.environ.get("APP_VERSION", "dev")
+    try:
+        with _PACKAGE_JSON.open(encoding="utf-8") as fh:
+            version = json.load(fh).get("version")
+    except (OSError, ValueError):
+        return None
+    return version or None
+
+
+def get_version() -> str:
+    """Return the application version.
+
+    ``APP_VERSION`` (the Docker build arg, derived from the release tag) wins so
+    container builds stay authoritative. When it is unset or empty (local
+    ``./run_dev.sh`` runs, tests, CI) fall back to the ``version`` field in the
+    repo-root ``package.json`` -- which ``AGENTS.md`` names the single source of
+    truth -- so the served version cannot silently drift from the file.
+    ``"dev"`` is the last resort when neither is available.
+    """
+    env_version = os.environ.get("APP_VERSION")
+    if env_version:
+        return env_version
+    return _version_from_package_json() or "dev"
 
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
