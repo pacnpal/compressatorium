@@ -128,7 +128,7 @@ def test_chain_tags_final_chd_via_post_convert(chain_env, tmp_path, monkeypatch)
     """The chain drives the final step's ``post_convert`` with the intermediate
     source and the final CHD — the same disc-ID path a direct ``createdvd`` job
     takes. This is what replaces the old bespoke ``_embed_disc_id`` (#181)."""
-    calls, work, install = chain_env
+    _calls, work, install = chain_env
     install()
 
     seen: list[tuple[str, str, str]] = []

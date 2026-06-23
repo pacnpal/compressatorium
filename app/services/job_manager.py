@@ -1749,6 +1749,22 @@ class JobManager:
                 self._cancelled.discard(job_id)
                 job.progress = 100
 
+                # Run the tool's post-convert hook before sizing the output.
+                # chdman uses it to embed disc-ID GAME/NAME tags into a freshly
+                # created CD/DVD CHD; the default is a no-op, so this is safe to
+                # call for every mode. Running it first means the output_size
+                # computed below reflects the tagged file. The source
+                # (input_path) is still present here, even when delete-on-verify
+                # is requested (deletion happens after verify).
+                try:
+                    await registry.for_mode(job.mode.value).post_convert(
+                        input_path, job.output_path, job.mode.value,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "Job %s post-convert hook skipped: %s", job_id, e
+                    )
+
                 # Get output file size
                 if job.input_kind == InputKind.DIRECTORY:
                     # makeps3iso may finish as a single .iso OR a split set
@@ -1779,20 +1795,6 @@ class JobManager:
                         job.output_size = total_size if total_size > 0 else None
                     else:
                         job.output_size = os.path.getsize(job.output_path)
-
-                # Run the tool's post-convert hook. chdman uses it to embed
-                # disc-ID GAME/NAME tags into a freshly created CD/DVD CHD; the
-                # default is a no-op, so this is safe to call for every mode.
-                # The source (input_path) is still present here, even when
-                # delete-on-verify is requested (deletion happens after verify).
-                try:
-                    await registry.for_mode(job.mode.value).post_convert(
-                        input_path, job.output_path, job.mode.value,
-                    )
-                except Exception as e:
-                    logger.debug(
-                        "Job %s post-convert hook skipped: %s", job_id, e
-                    )
 
                 verified = False
                 source_deleted = False

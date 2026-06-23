@@ -141,16 +141,59 @@ def test_post_convert_idempotent_skips_matching_tag(tmp_path, chd_out, patch_emb
     assert embedded == []
 
 
-def test_post_convert_reembeds_when_tag_differs(tmp_path, chd_out, patch_embed):
-    set_source, set_existing, embedded = patch_embed
+def test_post_convert_reembeds_when_tag_differs(
+    tmp_path, chd_out, patch_embed, monkeypatch,
+):
+    set_source, set_existing, _embedded = patch_embed
     set_source({"game_id": "SLUS-20312", "title": "Demo"})
-    set_existing("SLES-00000")  # stale / wrong serial -> overwrite
+    set_existing("SLES-00000")  # stale / wrong serial already on the CHD
+
+    order: list[tuple] = []
+
+    async def _clear(path, chdman_path):
+        order.append(("clear", path))
+
+    async def _embed(path, game_id, title, chdman_path):
+        order.append(("embed", path, game_id, title))
+        return True
+
+    monkeypatch.setattr(chdman_mod, "clear_embedded_disc_id", _clear)
+    monkeypatch.setattr(chdman_mod, "embed_in_chd", _embed)
 
     src = tmp_path / "Game.iso"
     src.write_bytes(b"x")
     _run(registry.get("chdman").post_convert(str(src), str(chd_out), "createdvd"))
 
-    assert embedded == [(str(chd_out), "SLUS-20312", "Demo")]
+    # chdman addmeta appends, so the stale GAME/NAME is stripped *before* the new
+    # pair is written — otherwise the old serial persists and the embed never
+    # converges (it would just accumulate duplicate GAME tags).
+    assert order == [
+        ("clear", str(chd_out)),
+        ("embed", str(chd_out), "SLUS-20312", "Demo"),
+    ]
+
+
+def test_post_convert_fresh_chd_does_not_clear(
+    tmp_path, chd_out, patch_embed, monkeypatch,
+):
+    set_source, set_existing, embedded = patch_embed
+    set_source({"game_id": "SLUS-20312"})
+    set_existing(None)  # freshly created CHD: no prior tag
+
+    cleared: list[str] = []
+
+    async def _clear(path, chdman_path):
+        cleared.append(path)
+
+    monkeypatch.setattr(chdman_mod, "clear_embedded_disc_id", _clear)
+
+    src = tmp_path / "Game.iso"
+    src.write_bytes(b"x")
+    _run(registry.get("chdman").post_convert(str(src), str(chd_out), "createdvd"))
+
+    # The common path (no existing tag) pays no delmeta cost.
+    assert cleared == []
+    assert embedded == [(str(chd_out), "SLUS-20312", "SLUS-20312")]
 
 
 def test_post_convert_missing_output_is_noop(tmp_path, patch_embed):

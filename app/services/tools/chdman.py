@@ -16,7 +16,12 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import CHDInfo, OutputStatus
 from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
-from services.disc_id import embed_in_chd, extract_from_source, read_embedded_game_id
+from services.disc_id import (
+    clear_embedded_disc_id,
+    embed_in_chd,
+    extract_from_source,
+    read_embedded_game_id,
+)
 from services.lock_manager import lock_manager
 
 from .base import BaseTool
@@ -195,6 +200,13 @@ class ChdmanTool(BaseTool):
             existing = await read_embedded_game_id(output_path, self.binary_path)
             if existing == game_id:
                 return
+            if existing is not None:
+                # chdman addmeta appends rather than replaces, so a CHD that
+                # already carries a *different* serial must have the stale
+                # GAME/NAME stripped first — otherwise the old tag persists and
+                # the embed never converges. A freshly created CHD has no tag,
+                # so this is skipped in the normal path.
+                await clear_embedded_disc_id(output_path, self.binary_path)
             title = disc_info.get("title") or game_id
             embedded = await embed_in_chd(output_path, game_id, title, self.binary_path)
             if embedded:
