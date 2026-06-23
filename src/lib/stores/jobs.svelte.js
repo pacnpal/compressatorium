@@ -172,9 +172,9 @@ class JobsStore {
       this._byId.set(job.id, job);
     }
     if (job.file_path) {
-      this.creatingJobs = this.creatingJobs.filter(
-        (p) => p.file_path !== job.file_path || p.mode !== job.mode,
-      );
+      // Clear exactly one matching optimistic placeholder (the oldest), not
+      // every one — see _removeOptimistic.
+      this._removeOptimistic(job.file_path, job.mode);
     }
   }
 
@@ -287,9 +287,19 @@ class JobsStore {
   }
 
   _removeOptimistic(filePath, mode) {
-    this.creatingJobs = this.creatingJobs.filter(
-      (p) => !(p.file_path === filePath && p.mode === mode),
-    );
+    // Drop a single matching placeholder (the oldest), not every one. Submitting
+    // the same file+mode twice creates two indistinguishable placeholders;
+    // clearing both when the first real job (or skip) resolves would under-count
+    // the optimistic total and discard the second placeholder before its own
+    // job arrives. Removing one per resolution keeps the count accurate.
+    let removed = false;
+    this.creatingJobs = this.creatingJobs.filter((p) => {
+      if (!removed && p.file_path === filePath && p.mode === mode) {
+        removed = true;
+        return false;
+      }
+      return true;
+    });
   }
 
   async create(filePath, mode, opts = {}) {
