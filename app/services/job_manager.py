@@ -680,14 +680,17 @@ class JobManager:
         if job.output_path:
             paths.append(job.output_path)
             # Companion outputs a mode writes beside its primary (extractcd's
-            # .bin). makeps3iso's split parts are queue-time-unknown and tracked
-            # by _split_output_blocks' prefix match instead, so this stays empty
-            # for it until the parts exist.
-            paths.extend(
-                registry.for_mode(job.mode.value).companion_outputs(
-                    job.output_path, job.mode.value,
+            # .bin). Directory modes are skipped: makeps3iso's split parts are
+            # queue-time-unknown, disk-probed (companion_outputs scans the dir),
+            # and already covered by _split_output_blocks' I/O-free prefix match —
+            # so this stays a pure, event-loop-safe lookup (this helper is called
+            # synchronously from async route code).
+            if job.input_kind != InputKind.DIRECTORY:
+                paths.extend(
+                    registry.for_mode(job.mode.value).companion_outputs(
+                        job.output_path, job.mode.value,
+                    )
                 )
-            )
         return paths
 
     def find_active_job_for_path(
@@ -793,14 +796,17 @@ class JobManager:
             )
             await verification_store.clear(job.output_path)
             return
-        if not os.path.exists(job.output_path):
-            return
-        if not os.path.isfile(job.output_path):
-            raise RuntimeError("Output path exists and is not a file")
-        os.remove(job.output_path)
-        await verification_store.clear(job.output_path)
-        # Clear any companion outputs the mode wrote beside the primary
-        # (extractcd's .bin), enumerated from the tool rather than re-derived.
+        # Clear the primary output if present (rejecting a non-file occupant),
+        # then every companion the mode wrote beside it — enumerated from the
+        # tool, not re-derived. Companions are cleared even when the primary is
+        # already gone: a lone companion (e.g. a stray extractcd .bin whose .cue
+        # was deleted) is what made check_output_conflicts authorize the
+        # overwrite, so it must not be left to collide with the new output.
+        if os.path.exists(job.output_path):
+            if not os.path.isfile(job.output_path):
+                raise RuntimeError("Output path exists and is not a file")
+            os.remove(job.output_path)
+            await verification_store.clear(job.output_path)
         for companion in registry.for_mode(job.mode.value).companion_outputs(
             job.output_path, job.mode.value,
         ):

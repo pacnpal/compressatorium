@@ -130,3 +130,56 @@ def test_extractcd_job_protects_bin_companion_in_use(tmp_path):
         assert job_manager._is_path_in_use_by_other_job("other", bin_path) is True
     finally:
         job_manager.jobs.pop(job.id, None)
+
+
+def test_candidate_paths_skips_directory_companion_scan(tmp_path):
+    # A folder_to_iso job's split parts must NOT be enumerated by _candidate_paths
+    # (the directory companion scan is skipped — the parts are covered I/O-free by
+    # _split_output_blocks), keeping this sync helper event-loop-safe.
+    from app.services.job_manager import job_manager
+
+    out = str(tmp_path / "Game.iso")
+    (tmp_path / "Game.iso.0").write_bytes(b"p0")
+    (tmp_path / "Game.iso.1").write_bytes(b"p1")
+    job = ConversionJob(
+        id="fti-candidates",
+        file_path=str(tmp_path / "MyGame"),
+        filename="MyGame",
+        mode=ConversionMode.FOLDER_TO_ISO,
+        status=JobStatus.PROCESSING,
+        created_at=datetime.now(timezone.utc),
+        output_path=out,
+        input_kind=InputKind.DIRECTORY,
+    )
+
+    paths = job_manager._candidate_paths(job)
+
+    assert out in paths
+    assert str(tmp_path / "Game.iso.0") not in paths
+    assert str(tmp_path / "Game.iso.1") not in paths
+
+
+@pytest.mark.asyncio
+async def test_clear_existing_output_removes_lone_companion(tmp_path):
+    # Overwrite was authorized because a stray .bin exists even though the .cue
+    # primary is gone; the clear must still remove the lone .bin so it can't
+    # collide with the new output.
+    from app.services.job_manager import job_manager
+
+    bin_path = tmp_path / "Game.bin"
+    bin_path.write_bytes(b"data")
+    job = ConversionJob(
+        id="extractcd-lone-clear",
+        file_path=str(tmp_path / "Game.chd"),
+        filename="Game.chd",
+        mode=ConversionMode.EXTRACTCD,
+        status=JobStatus.PROCESSING,
+        created_at=datetime.now(timezone.utc),
+        output_path=str(tmp_path / "Game.cue"),  # absent
+        input_kind=InputKind.FILE,
+        allow_overwrite=True,
+    )
+
+    await job_manager._clear_existing_output(job)
+
+    assert not bin_path.exists()
