@@ -140,11 +140,12 @@ class FileBrowserStore {
       if (av > bv) return 1 * order;
       // Stable final tiebreaker: rows with equal primary keys keep a
       // deterministic order across refreshes, so they don't jump when the
-      // [...files, ...archives] input order shifts (issue #183).
+      // [...files, ...archives] input order shifts (issue #183). Follows the
+      // sort direction so toggling asc/desc fully inverts the view.
       const ap = (a.path ?? '').toLowerCase();
       const bp = (b.path ?? '').toLowerCase();
-      if (ap < bp) return -1;
-      if (ap > bp) return 1;
+      if (ap < bp) return -1 * order;
+      if (ap > bp) return 1 * order;
       return 0;
     });
     return list;

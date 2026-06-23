@@ -183,8 +183,10 @@ class ConcurrencyManager:
                 # strictly increasing and in the same numeric range.
                 self._fallback_ticket = max(self._fallback_ticket, next_ticket)
                 return next_ticket
-        except OSError:
-            # Counter file unreadable/unwritable: issue a strictly-increasing
+        except (OSError, ValueError):
+            # Counter file unreadable/unwritable, or its contents corrupted
+            # (a partial write -> non-numeric body that int() rejects): issue a
+            # strictly-increasing
             # in-process ticket seeded above the last value seen on disk instead
             # of a wall-clock number that could collide or sort out of range and
             # mis-order FIFO admission (issue #183, site 4). MAX_CONCURRENT_JOBS
