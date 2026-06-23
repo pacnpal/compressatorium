@@ -796,22 +796,31 @@ class JobManager:
             )
             await verification_store.clear(job.output_path)
             return
-        # Clear the primary output if present (rejecting a non-file occupant),
-        # then every companion the mode wrote beside it — enumerated from the
-        # tool, not re-derived. Companions are cleared even when the primary is
-        # already gone: a lone companion (e.g. a stray extractcd .bin whose .cue
-        # was deleted) is what made check_output_conflicts authorize the
-        # overwrite, so it must not be left to collide with the new output.
-        if os.path.exists(job.output_path):
-            if not os.path.isfile(job.output_path):
+        # Clear the primary output and every companion the mode wrote beside it
+        # (enumerated from the tool, not re-derived). Companions are cleared even
+        # when the primary is already gone: a lone companion (e.g. a stray
+        # extractcd .bin whose .cue was deleted) is what made
+        # check_output_conflicts authorize the overwrite, so it must not be left
+        # to collide with the new output. Validate the whole set first — a
+        # non-file occupant (a directory squatting on the primary or a companion
+        # name) can't be unlinked, so reject before removing anything rather than
+        # deleting the primary and then failing against the stray occupant.
+        targets = [
+            job.output_path,
+            *registry.for_mode(job.mode.value).companion_outputs(
+                job.output_path, job.mode.value,
+            ),
+        ]
+        for target in targets:
+            if os.path.exists(target) and not os.path.isfile(target):
                 raise RuntimeError("Output path exists and is not a file")
-            os.remove(job.output_path)
+        primary_removed = False
+        for target in targets:
+            if os.path.isfile(target):
+                os.remove(target)
+                primary_removed = primary_removed or target == job.output_path
+        if primary_removed:
             await verification_store.clear(job.output_path)
-        for companion in registry.for_mode(job.mode.value).companion_outputs(
-            job.output_path, job.mode.value,
-        ):
-            if os.path.isfile(companion):
-                os.remove(companion)
 
     def _get_queued_and_processing_jobs(self) -> tuple[list[str], list[str]]:
         """Get lists of queued and processing job IDs.

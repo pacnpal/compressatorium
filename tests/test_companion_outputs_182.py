@@ -183,3 +183,30 @@ async def test_clear_existing_output_removes_lone_companion(tmp_path):
     await job_manager._clear_existing_output(job)
 
     assert not bin_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_clear_existing_output_rejects_non_file_companion(tmp_path):
+    # A directory squatting on the .bin companion name can't be unlinked, so the
+    # overwrite-clear must reject up front — without removing the primary .cue.
+    from app.services.job_manager import job_manager
+
+    cue = tmp_path / "Game.cue"
+    cue.write_bytes(b"cue")
+    (tmp_path / "Game.bin").mkdir()  # non-file occupant on the companion name
+    job = ConversionJob(
+        id="extractcd-nonfile-companion",
+        file_path=str(tmp_path / "Game.chd"),
+        filename="Game.chd",
+        mode=ConversionMode.EXTRACTCD,
+        status=JobStatus.PROCESSING,
+        created_at=datetime.now(timezone.utc),
+        output_path=str(cue),
+        input_kind=InputKind.FILE,
+        allow_overwrite=True,
+    )
+
+    with pytest.raises(RuntimeError):
+        await job_manager._clear_existing_output(job)
+    # Rejected before any unlink: the primary is untouched.
+    assert cue.exists()
