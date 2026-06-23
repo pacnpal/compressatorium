@@ -32,16 +32,12 @@ class ConcurrencyManager:
         # Per-reservation sequence: a uniqueness tiebreaker baked into each
         # ticket filename so two reservations never sort to the same slot.
         self._seq = 0
-        # Seed the in-process fallback ticket above any value already on disk so
-        # a later counter-read failure still issues strictly-increasing, in-range
-        # tickets (see _next_ticket) rather than a wall-clock number.
-        self._fallback_ticket = 0
-        try:
-            with open(self._ticket_counter_path, "r", encoding="utf-8") as fh:
-                raw = fh.read().strip()
-                self._fallback_ticket = int(raw) if raw else 0
-        except (OSError, ValueError):
-            self._fallback_ticket = 0
+        # Seed the in-process fallback ticket above any value already on disk
+        # AND above any live ticket file preserved across a restart, so a later
+        # counter-read failure -- or a missing/corrupt counter at startup while a
+        # slot is still busy -- still issues strictly-increasing tickets that
+        # sort after older queued work (see _next_ticket).
+        self._fallback_ticket = self._highest_known_ticket()
 
     def reserve_ticket(self, key: str) -> int:
         """Reserve a FIFO ticket for the job."""
@@ -176,6 +172,30 @@ class ConcurrencyManager:
             return []
         entries.sort()
         return [key for _, _, key in entries]
+
+    def _highest_known_ticket(self) -> int:
+        """Highest ticket number across the on-disk counter and any live ticket
+        files, so the in-process fallback resumes above existing queued work even
+        when the counter is missing/corrupt (e.g. a busy-slot restart that
+        preserved older, higher-numbered tickets)."""
+        highest = 0
+        try:
+            with open(self._ticket_counter_path, "r", encoding="utf-8") as fh:
+                raw = fh.read().strip()
+                if raw:
+                    highest = int(raw)
+        except (OSError, ValueError):
+            highest = 0
+        try:
+            for name in os.listdir(self.lock_dir):
+                if not name.startswith("queue_") or not name.endswith(".ticket"):
+                    continue
+                first = name[len("queue_"):-len(".ticket")].split("_", 1)[0]
+                if first.isdigit():
+                    highest = max(highest, int(first))
+        except OSError:
+            pass
+        return highest
 
     def _next_ticket(self) -> int:
         try:

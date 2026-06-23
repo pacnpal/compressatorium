@@ -195,6 +195,18 @@ def test_list_tickets_includes_legacy_filenames(tmp_path):
     assert "newjob" in keys
 
 
+def test_seed_considers_preserved_tickets_when_counter_corrupt(tmp_path):
+    cm = _mk_cm(tmp_path)
+    # Busy-slot restart: the counter is corrupt but a high-numbered ticket file
+    # was preserved. The fallback seed must resume above it, not restart at 1.
+    with open(cm._ticket_counter_path, "w", encoding="utf-8") as fh:
+        fh.write("not-a-number")
+    with open(os.path.join(cm.lock_dir, "queue_100_oldjob.ticket"), "w", encoding="utf-8") as fh:
+        fh.write("{}")
+
+    assert cm._highest_known_ticket() >= 100
+
+
 def test_colliding_ticket_int_does_not_double_admit(tmp_path, monkeypatch):
     # Force every ticket to the SAME integer (simulating a counter collision);
     # admission must still pick exactly the first max_concurrent by (seq, key),
