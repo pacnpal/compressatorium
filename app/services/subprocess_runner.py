@@ -130,6 +130,22 @@ def verify_timeout(owner: str | None = None) -> int:
     return max(0, int(_resolve_policy("verify_timeout", owner) or 0))
 
 
+def _split_stream_lines(buffer: str) -> tuple[list[str], str]:
+    """Segment accumulated subprocess output into complete lines + a remainder.
+
+    Segmentation is a pure function of the byte stream, independent of where
+    ``read()`` chunk boundaries fall: CRLF and bare CR (progress redraws) are
+    normalized to LF, then the buffer is split on LF. The text after the final
+    LF is returned as the remainder to prepend to the next chunk. Lines are
+    stripped and blanks dropped, matching the prior per-separator loop's output
+    minus its chunk-boundary sensitivity (issue #183, site 5).
+    """
+    normalized = buffer.replace("\r\n", "\n").replace("\r", "\n")
+    segments = normalized.split("\n")
+    remainder = segments[-1]
+    return [s.strip() for s in segments[:-1] if s.strip()], remainder
+
+
 class SubprocessRunner:
     """Spawns a conversion subprocess and streams progress updates.
 
@@ -425,28 +441,22 @@ class SubprocessRunner:
 
                 buffer += chunk.decode("utf-8", errors="replace")
 
-                while "\r" in buffer or "\n" in buffer:
-                    sep = "\r" if "\r" in buffer else "\n"
-                    parts = buffer.split(sep)
-                    for part in parts[:-1]:
-                        line = part.strip()
-                        if not line:
-                            continue
-                        _record_line(line)
-                        now = time.monotonic()
-                        progress = parse_progress(line)
-                        if progress is not None and progress > last_progress_value:
-                            last_progress_value = progress
-                            last_activity_at = now
-                        yield {
-                            "progress": (
-                                progress
-                                if progress is not None
-                                else last_progress_value
-                            ),
-                            "message": line,
-                        }
-                    buffer = parts[-1]
+                lines, buffer = _split_stream_lines(buffer)
+                for line in lines:
+                    _record_line(line)
+                    now = time.monotonic()
+                    progress = parse_progress(line)
+                    if progress is not None and progress > last_progress_value:
+                        last_progress_value = progress
+                        last_activity_at = now
+                    yield {
+                        "progress": (
+                            progress
+                            if progress is not None
+                            else last_progress_value
+                        ),
+                        "message": line,
+                    }
                 if await _check_stall(time.monotonic()):
                     break
 

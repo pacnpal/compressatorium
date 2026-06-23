@@ -29,6 +29,19 @@ class ConcurrencyManager:
                     fh.write("0")
             except OSError:
                 pass
+        # Per-reservation sequence: a uniqueness tiebreaker baked into each
+        # ticket filename so two reservations never sort to the same slot.
+        self._seq = 0
+        # Seed the in-process fallback ticket above any value already on disk so
+        # a later counter-read failure still issues strictly-increasing, in-range
+        # tickets (see _next_ticket) rather than a wall-clock number.
+        self._fallback_ticket = 0
+        try:
+            with open(self._ticket_counter_path, "r", encoding="utf-8") as fh:
+                raw = fh.read().strip()
+                self._fallback_ticket = int(raw) if raw else 0
+        except (OSError, ValueError):
+            self._fallback_ticket = 0
 
     def reserve_ticket(self, key: str) -> int:
         """Reserve a FIFO ticket for the job."""
@@ -36,7 +49,11 @@ class ConcurrencyManager:
             return self._ticket_handles[key][0]
 
         ticket = self._next_ticket()
-        ticket_path = os.path.join(self.lock_dir, f"queue_{ticket}_{key}.ticket")
+        self._seq += 1
+        seq = self._seq
+        ticket_path = os.path.join(
+            self.lock_dir, f"queue_{ticket}_{seq}_{key}.ticket"
+        )
         self._create_ticket_file(ticket_path, ticket)
         self._ticket_handles[key] = (ticket, ticket_path)
         return ticket
@@ -110,33 +127,44 @@ class ConcurrencyManager:
         while True:
             if cancel_event and cancel_event.is_set():
                 return False
-            tickets = self._list_tickets()
-            if ticket not in tickets:
+            queued_keys = self._list_tickets()
+            if key not in queued_keys:
                 self._restore_ticket_file(key, ticket)
                 await asyncio.sleep(0.2)
                 continue
-            if ticket in tickets[: self.max_concurrent]:
+            if key in queued_keys[: self.max_concurrent]:
                 return True
             await asyncio.sleep(0.2)
 
-    def _list_tickets(self) -> list[int]:
-        tickets = []
+    def _list_tickets(self) -> list[str]:
+        """Return queued job keys in FIFO order.
+
+        Ordered by ``(ticket, seq, key)``: the shared-counter ticket is the
+        primary FIFO key, the per-reservation ``seq`` breaks ties if two tickets
+        ever collide (e.g. a counter-file read fallback), and the unique job
+        ``key`` is the final tiebreaker. Returning keys (not raw ticket ints)
+        means a colliding ticket can never put two jobs in the same admitted
+        prefix slot (issue #183, site 4).
+        """
+        entries: list[tuple[int, int, str]] = []
         try:
             for name in os.listdir(self.lock_dir):
                 if not name.startswith("queue_") or not name.endswith(".ticket"):
                     continue
-                parts = name.split("_", 2)
+                core = name[len("queue_"):-len(".ticket")]
+                parts = core.split("_", 2)
                 if len(parts) < 3:
                     continue
                 try:
-                    ticket = int(parts[1])
+                    ticket = int(parts[0])
+                    seq = int(parts[1])
                 except ValueError:
                     continue
-                tickets.append(ticket)
+                entries.append((ticket, seq, parts[2]))
         except OSError:
             return []
-        tickets.sort()
-        return tickets
+        entries.sort()
+        return [key for _, _, key in entries]
 
     def _next_ticket(self) -> int:
         try:
@@ -151,9 +179,18 @@ class ConcurrencyManager:
                 fh.flush()
                 os.fsync(fh.fileno())
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                # Track the high-water mark so the OSError fallback below stays
+                # strictly increasing and in the same numeric range.
+                self._fallback_ticket = max(self._fallback_ticket, next_ticket)
                 return next_ticket
         except OSError:
-            return int(os.times().elapsed * 1000)
+            # Counter file unreadable/unwritable: issue a strictly-increasing
+            # in-process ticket seeded above the last value seen on disk instead
+            # of a wall-clock number that could collide or sort out of range and
+            # mis-order FIFO admission (issue #183, site 4). MAX_CONCURRENT_JOBS
+            # concurrency lives in one process, so this counter is authoritative.
+            self._fallback_ticket += 1
+            return self._fallback_ticket
 
     def _create_ticket_file(self, ticket_path: str, ticket: int) -> None:
         tmp_path = f"{ticket_path}.tmp"

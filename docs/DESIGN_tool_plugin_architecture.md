@@ -274,7 +274,10 @@ class SubprocessRunner:
                   parse_progress, cancel_event=None, cwd=None,
                   start_message="Starting...") -> AsyncGenerator[dict, None]:
         """Spawn cmd, stream stdout, yield {"progress","message"}.
-        Handles: nice/ionice wrap, stdbuf, PID tracking, \\r/\\n line buffering,
+        Handles: nice/ionice wrap, stdbuf, PID tracking, deterministic \\r/\\n
+        line buffering (CRLF/CR normalized to LF in one pass via
+        `_split_stream_lines` so segmentation is a pure function of the byte
+        stream, not chunk boundaries -- issue #183),
         stall timeout via compute_progress_stall_timeout, cancel-watcher
         (terminate->kill, clean partial output), ConversionCancelled, non-zero
         exit -> RuntimeError(tail), final 100%.
@@ -555,8 +558,8 @@ class ToolRegistry:
     def for_mode(self, mode: str) -> ToolPlugin: return self._by_mode[mode]
     def spec(self, mode: str) -> ModeSpec: return self.for_mode(mode).spec(mode)
     def mode_specs(self) -> list[ModeSpec]: return [m for t in self._tools.values() for m in t.modes]
-    def convertible_extensions(self) -> frozenset[str]:
-        return frozenset().union(*(t.input_extensions for t in self._tools.values()))
+    def convertible_extensions(self) -> tuple[str, ...]:   # sorted (issue #183)
+        return tuple(sorted(set().union(*(t.input_extensions for t in self._tools.values()))))
     def tools_for_input(self, filename: str) -> list[ToolPlugin]:
         ext = Path(filename).suffix.lower()
         return [t for t in self._tools.values() if ext in t.input_extensions]
@@ -566,13 +569,21 @@ class ToolRegistry:
     # Discovery helpers (issue #131): the union of every tool's produced /
     # verifiable extensions drives the registry-driven library scan, so a new
     # tool's outputs become scannable for free.
-    def output_extensions(self) -> frozenset[str]:
-        return frozenset().union(*(t.output_extensions for t in self._tools.values()))
-    def verify_extensions(self) -> frozenset[str]:
-        return frozenset().union(*(t.verify_extensions for t in self._tools.values()))
-    def scannable_extensions(self) -> frozenset[str]:
-        return self.output_extensions() | self.verify_extensions()
+    def output_extensions(self) -> tuple[str, ...]:
+        return tuple(sorted(set().union(*(t.output_extensions for t in self._tools.values()))))
+    def verify_extensions(self) -> tuple[str, ...]:
+        return tuple(sorted(set().union(*(t.verify_extensions for t in self._tools.values()))))
+    def scannable_extensions(self) -> tuple[str, ...]:
+        return tuple(sorted(set(self.output_extensions()) | set(self.verify_extensions())))
 ```
+
+> **Ordering (issue #183):** the extension-union helpers return a **sorted
+> `tuple`**, not a `frozenset`. Hash-seeded set iteration order varies across
+> processes, so any consumer that serializes an extension list (or uses it as an
+> ordered filter) would churn run-to-run; sorting at the seam makes every
+> consumer deterministic for free. The few consumers that still need set algebra
+> (`registry.scannable_extensions() - ARCHIVE_EXTENSIONS`, the archive
+> listable/gate unions) wrap the result in `set(...)` / `frozenset(...)` locally.
 
 `__init__.py`:
 
