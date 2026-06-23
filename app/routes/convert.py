@@ -396,10 +396,13 @@ async def _plan_directory_job(
     ):
         raise SkipFile(SkipReason.PS3_OUTPUT_OUTSIDE_VOLUMES)
 
-    # check_output_conflicts is split-set aware for folder_to_iso (it probes the
-    # .0 part), so a prior split build counts as an existing output here and in
-    # the /jobs/check-duplicates preflight alike.
-    output_exists, is_locked = check_output_conflicts(mode, output_path)
+    # check_output_conflicts is split-set aware for folder_to_iso (its
+    # companion_outputs scans for numbered parts), so a prior split build counts
+    # as an existing output here and in the /jobs/check-duplicates preflight
+    # alike. Off the event loop because that companion lookup hits the disk.
+    output_exists, is_locked = await run_in_threadpool(
+        check_output_conflicts, mode, output_path,
+    )
     if output_exists or is_locked:
         if duplicate_action == DuplicateAction.SKIP:
             raise SkipFile(SkipReason.OUTPUT_EXISTS)
@@ -679,7 +682,9 @@ async def check_duplicates(request: CheckDuplicatesRequest):
             output_path = await run_in_threadpool(
                 _get_output_path, mode, actual_filename, effective_output_dir,
             )
-        exists, _ = check_output_conflicts(mode, output_path)
+        exists, _ = await run_in_threadpool(
+            check_output_conflicts, mode, output_path,
+        )
 
         results.append(
             DuplicateInfo(file_path=file_path, output_path=output_path, exists=exists),

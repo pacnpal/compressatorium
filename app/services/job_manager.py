@@ -1769,7 +1769,10 @@ class JobManager:
                 # build leaves no bare .iso, so the primary getsize simply misses
                 # and the numbered parts carry the whole total.
                 total_size = 0
-                companions = registry.for_mode(job.mode.value).companion_outputs(
+                # Off the event loop: a split folder_to_iso's companion lookup
+                # scans the output dir for numbered parts.
+                companions = await run_in_threadpool(
+                    registry.for_mode(job.mode.value).companion_outputs,
                     job.output_path, job.mode.value,
                 )
                 for path in [job.output_path, *companions]:
