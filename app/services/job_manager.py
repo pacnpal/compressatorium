@@ -20,8 +20,6 @@ from services.archive import archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
 from services.concurrency_manager import concurrency_manager
-from services.disc_id import embed_in_chd as disc_id_embed
-from services.disc_id import extract_from_source as disc_id_from_source
 from services.lock_manager import lock_manager
 from services.makeps3iso import makeps3iso_service
 from services.tools import registry
@@ -1782,41 +1780,19 @@ class JobManager:
                     else:
                         job.output_size = os.path.getsize(job.output_path)
 
-                # Embed game ID / title into CHD metadata after createcd/createdvd.
-                # Uses the source file (input_path) which is still available at this
-                # point, even when delete-on-verify is requested.
-                # GAME tag = normalized serial (emulator DB lookup key).
-                # NAME tag = human-readable title when available, serial otherwise.
-                if job.mode.value in {"createcd", "createdvd"} and os.path.exists(job.output_path):
-                    try:
-                        disc_info = await run_in_threadpool(disc_id_from_source, input_path)
-                        if disc_info and disc_info.get("game_id"):
-                            game_id = disc_info["game_id"]
-                            title = disc_info.get("title") or game_id
-                            embedded = await disc_id_embed(
-                                job.output_path,
-                                game_id,
-                                title,
-                                settings.chdman_path,
-                            )
-                            if embedded:
-                                logger.info(
-                                    "Job %s embedded disc ID %r in %s",
-                                    job_id,
-                                    game_id,
-                                    Path(job.output_path).name,
-                                )
-                            else:
-                                logger.debug(
-                                    "Job %s failed to embed disc ID %r in %s",
-                                    job_id,
-                                    game_id,
-                                    Path(job.output_path).name,
-                                )
-                    except Exception as e:
-                        logger.debug(
-                            "Job %s disc ID embed skipped: %s", job_id, e
-                        )
+                # Run the tool's post-convert hook. chdman uses it to embed
+                # disc-ID GAME/NAME tags into a freshly created CD/DVD CHD; the
+                # default is a no-op, so this is safe to call for every mode.
+                # The source (input_path) is still present here, even when
+                # delete-on-verify is requested (deletion happens after verify).
+                try:
+                    await registry.for_mode(job.mode.value).post_convert(
+                        input_path, job.output_path, job.mode.value,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "Job %s post-convert hook skipped: %s", job_id, e
+                    )
 
                 verified = False
                 source_deleted = False

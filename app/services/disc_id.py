@@ -1097,6 +1097,24 @@ async def embed_in_chd(
     return True
 
 
+async def read_embedded_game_id(
+    chd_path: str,
+    chdman_path: str = "chdman",
+) -> Optional[str]:
+    """Return the GAME serial already embedded in *chd_path*, or ``None``.
+
+    Reads only our own embedded GAME tag (no disc-sector / GDRO / companion-file
+    fallback, unlike :func:`extract_from_chd`), so callers can cheaply check
+    whether a CHD is *already* tagged before writing. This is what keeps the
+    conversion-time embed idempotent: re-running it on an already-tagged CHD
+    can be skipped instead of appending a duplicate GAME tag.
+    """
+    raw = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
+    if raw and raw.strip():
+        return raw.strip()
+    return None
+
+
 async def ensure_disc_id_embedded(
     chd_path: str,
     chdman_path: str = "chdman",

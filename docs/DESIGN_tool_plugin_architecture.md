@@ -205,8 +205,11 @@ class ToolPlugin(Protocol):
 
     def active_pids(self) -> list[int]: ...
 
-    # Optional post-processing hook (chdman uses it to embed disc-ID GAME/NAME
-    # tags after createcd/createdvd, today hardcoded at job_manager.py:1514).
+    # Post-convert hook, run once after a successful conversion. Default no-op
+    # (BaseTool); ChdmanTool overrides it to embed disc-ID GAME/NAME tags into a
+    # freshly created CD/DVD CHD. job_manager calls it generically for every
+    # mode, and ChainTool routes its final step through the same hook, so a
+    # cso_to_chd CHD is tagged exactly like a direct createdvd.
     async def post_convert(self, input_path: str, output_path: str, mode: str) -> None: ...
 ```
 
@@ -785,8 +788,9 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
   `registry.for_mode(job.mode.value)`.
 - Verify branch (`:1556`, `:1591`) → `plugin.verify(output_path)` uniformly
   (drops the z3ds special-case).
-- Move the disc-ID embed (`:1514`) into `ChdmanTool.post_convert`; job_manager
-  calls `plugin.post_convert(...)` generically.
+- Disc-ID embed now lives in `ChdmanTool.post_convert`; `_process_job` calls
+  `registry.for_mode(mode).post_convert(...)` generically (default no-op) and
+  `ChainTool` routes its final step through the same hook (done, #181).
 - **Tests:** job-pipeline tests (`test_external_job_api.py` neighbors), plus a
   conversion smoke test per tool with the binary stubbed.
 - Risk: medium (hot path). Ship behind close review; the behavior is a 1:1
