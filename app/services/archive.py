@@ -28,20 +28,12 @@ except ImportError:
 
 
 ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}
-# Fallback set of listable archive-member extensions, used only when the tool
-# registry can't be consulted. The authoritative list comes from the registry:
-# ``_listable_extensions()`` (browse) uses ``convertible_extensions()`` minus the
-# archive containers, every known source extension; ``_convert_gate_extensions()``
-# (search) uses ``archive_input_extensions()``. Historically this was hardcoded to
-# CHDMAN's sources, which silently hid 3DS members inside archives (issue #113)
-# and romz ROMs (the .zip "Empty folder" bug).
-CONVERTIBLE_EXTENSIONS = {
-    ".gdi", ".iso", ".cue", ".bin",          # chdman create modes
-    ".gcz", ".wia", ".rvz", ".wbfs",         # Dolphin (.iso shared above)
-    ".cci", ".cia", ".3ds", ".cxi", ".3dsx", # 3DS (z3ds compress)
-    ".zcci", ".zcia", ".z3ds", ".zcxi", ".z3dsx",  # 3DS (z3ds decompress)
-    ".gb", ".gbc", ".gba", ".nds",           # handheld ROMs (romz, listing only)
-}
+# The listable / convert-gate extension sets come *only* from the tool registry
+# (``_listable_extensions`` browse, ``_convert_gate_extensions`` search). There is
+# deliberately no hand-maintained fallback copy: a stale literal silently hid new
+# tools' members (3DS issue #113, romz's .zip "Empty folder" bug), so the registry
+# is the single source of truth and an empty union surfaces a real bug loudly
+# instead of being masked.
 
 logger = get_logger("archive")
 
@@ -148,24 +140,16 @@ class ArchiveService:
         that are visible-only — a romz ROM appears when you browse into its
         archive even though no mode will re-convert it in place (its
         ``convertible_by`` stays empty, see ``tools_accepting_archive_member``).
-        Falls back to the static set if the registry can't be imported
-        (defensive, it always loads).
+        The registry is the single source of truth (it always loads in-app), so
+        an empty union surfaces a registry bug loudly instead of being masked by
+        a stale hardcoded fallback.
         """
-        try:
-            from services.tools import registry
+        from services.tools import registry
 
-            exts = (
-                registry.convertible_extensions()
-                | registry.archive_input_extensions()
-            ) - ARCHIVE_EXTENSIONS
-            if exts:
-                return exts
-        except Exception:  # pragma: no cover - registry always loads in-app
-            logger.debug(
-                "Tool registry unavailable; using static convertible extensions",
-                exc_info=True,
-            )
-        return frozenset(CONVERTIBLE_EXTENSIONS)
+        return (
+            registry.convertible_extensions()
+            | registry.archive_input_extensions()
+        ) - ARCHIVE_EXTENSIONS
 
     @staticmethod
     def _convert_gate_extensions() -> frozenset:
@@ -177,18 +161,9 @@ class ArchiveService:
         browse listing — so list-only members (romz ROMs) never count toward the
         per-archive entry cap before a genuine convertible member is reached.
         """
-        try:
-            from services.tools import registry
+        from services.tools import registry
 
-            exts = registry.archive_input_extensions()
-            if exts:
-                return exts
-        except Exception:  # pragma: no cover - registry always loads in-app
-            logger.debug(
-                "Tool registry unavailable; using static convertible extensions",
-                exc_info=True,
-            )
-        return frozenset(CONVERTIBLE_EXTENSIONS)
+        return registry.archive_input_extensions()
 
     def list_archive_contents(
         self, archive_path: str, *, include_meta: bool = False,

@@ -125,19 +125,7 @@ class Z3dsTool(BaseTool):
         return await run_in_threadpool(self._service.info, path)
 
     def info_model(self, raw: dict, path: str) -> Z3DSInfo:
-        # Direct indexing is intentional: Z3DSInfo's fields are required and
-        # z3ds_compress_service.info() always populates them (mirrors the
-        # /z3ds-info route). Unlike CHDInfo/DolphinDiscInfo (all-optional),
-        # a bare .get() here would inject None for required fields.
-        return Z3DSInfo(
-            file=raw["file"],
-            size=raw["size"],
-            size_display=raw["size_display"],
-            format=raw.get("format"),
-            extension=raw["extension"],
-            compressed=raw["compressed"],
-            compression_type=raw.get("compression_type"),
-        )
+        return Z3DSInfo(**self._basic_info_fields(raw))
 
     def active_pids(self) -> list[int]:
         return self._service.active_pids()
