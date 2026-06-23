@@ -115,6 +115,10 @@ function swapExt(path, newExt) {
 export const TOOLS = [
   {
     id: 'chdman',
+    // Per-tool default compression seed (replaces the old defaultCompressionFor
+    // `if (toolId === ...)` ladder in conversion.svelte.js): the first selection
+    // when this tool becomes primary, before the user opens the codec picker.
+    defaultCompression: ['zlib'],
     label: 'CHDMAN',
     hint: 'Convert CD / DVD / LaserDisc images to and from CHD.',
     // chdman is the original endpoint set, so it has no URL prefix:
@@ -204,6 +208,7 @@ export const TOOLS = [
   },
   {
     id: 'dolphin',
+    defaultCompression: ['zstd'],
     label: 'Dolphin',
     hint: 'Compress GameCube / Wii discs to RVZ, WIA, or GCZ.',
     verifyPrefix: 'dolphin',
@@ -250,6 +255,7 @@ export const TOOLS = [
   },
   {
     id: 'z3ds',
+    defaultCompression: ['zlib'],
     label: '3DS',
     hint: 'Compress and decompress Nintendo 3DS ROMs (.3ds/.cci/.cia/.cxi/.3dsx ↔ Z3DS).',
     verifyPrefix: 'z3ds',
@@ -285,6 +291,7 @@ export const TOOLS = [
   },
   {
     id: 'nsz',
+    defaultCompression: ['solid'],
     label: 'Switch',
     hint: 'Compress and decompress Nintendo Switch dumps (NSP/XCI ↔ NSZ/XCZ). Needs your own prod.keys.',
     verifyPrefix: 'nsz',
@@ -330,6 +337,7 @@ export const TOOLS = [
   },
   {
     id: 'cso',
+    defaultCompression: ['max'],
     label: 'CSO',
     hint: 'Compress PSP / PS2 ISO images to CSO / CSO v2 / ZSO / DAX (and back).',
     verifyPrefix: 'cso',
@@ -404,6 +412,7 @@ export const TOOLS = [
   },
   {
     id: 'romz',
+    defaultCompression: ['max'],
     label: 'Handheld ROM',
     hint: 'Compress Game Boy / GBC / GBA / DS ROM dumps to .7z / .zip (and back).',
     verifyPrefix: 'romz',
@@ -458,6 +467,7 @@ export const TOOLS = [
   },
   {
     id: 'makeps3iso',
+    defaultCompression: ['zlib'],
     label: 'PS3 ISO',
     hint: 'Build a PS3 .iso from a decrypted disc/JB folder (a PS3_GAME/ root). No keys, no decryption.',
     // No verify endpoint: makeps3iso's only check is a backend PARAM.SFO
