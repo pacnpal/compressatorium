@@ -1,5 +1,29 @@
 # Release Notes
 
+## Unreleased
+
+Idempotency & re-run-safety hardening (issue #184, part of the #177 tech-debt epic).
+
+### Changed
+
+- **Re-running a job whose verified output already exists now completes as a
+  no-op** instead of failing with "Output CHD file already exists". When a job is
+  dispatched and its output file is already present *and* already integrity-verified
+  (reachable when two submissions of the same file race past the output-exists
+  precheck — the first converts and verifies, the second now finds the finished
+  artifact), the job is marked complete without re-spawning the converter. Overwrite
+  jobs (you asked to regenerate) and delete-on-verify jobs are unaffected — they
+  still run the full conversion / verify-and-delete path.
+- **CHD embedded-hash matching is hardened against a metadata-cache TOCTOU.** When a
+  CHD is matched against a DAT, its cached header/data SHA1 are now read and
+  freshness-checked as a single observation (read the row, then re-stat), so a CHD
+  rewritten mid-match can no longer yield hashes from the old file. On any staleness
+  the match falls back to a file-level SHA1 as before.
+- **Duplicate same-file/same-mode submissions keep an accurate in-progress count.**
+  An optimistic placeholder is now cleared only when its real job first arrives, not
+  on every later progress update, so submitting the same file in the same mode twice
+  no longer briefly under-counts the queue.
+
 ## 4.2.0 (2026-06-13)
 
 This release adds the first folder-input tool and the first cross-tool chain. PS3

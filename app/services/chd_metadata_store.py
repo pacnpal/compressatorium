@@ -210,9 +210,15 @@ class CHDMetadataStore:
     async def get_fresh_metadata(self, chd_path: str) -> Optional[dict]:
         """Return cached ``metadata_json`` only if it still describes the file.
 
-        Snapshots the file's current mtime and the row in a single threadpool
-        call — no ``await`` between the two — so the returned hashes and the
-        "is it stale?" verdict describe the same observation. ``get_metadata()``
+        Reads the row, then re-stats the file — both inside one threadpool
+        call, no ``await`` between — and returns the hashes only when the
+        file's current mtime still equals the row's captured mtime. The writer
+        (``_set_metadata_sync``) always stats then stores ``(metadata, mtime)``
+        together, so the row's mtime lags the file; reading the row *first* and
+        comparing against a *later* stat means a concurrent rewrite (new file,
+        row not yet re-scanned) shows ``mtime != row.mtime`` and we refuse the
+        stale hashes. Stat-then-read instead would re-use an old mtime that can
+        still match the old row for an already-replaced file. ``get_metadata()``
         + ``is_stale()`` instead read the row twice and stat separately across
         awaits, a TOCTOU where the hashes can reflect one mtime and the verdict
         another. Returns ``None`` when there is no row, the file is gone, or it
@@ -220,13 +226,17 @@ class CHDMetadataStore:
         """
         def _read() -> Optional[dict]:
             normalized = self._normalize_path(chd_path)
+            with self._session() as session:
+                row = session.get(_db.CHDMetadata, normalized)
+            if row is None or row.mtime is None:
+                return None
+            # Stat AFTER the row read so a rewrite that lands while we read the
+            # row moves the file's mtime away from the (now older) row mtime.
             try:
                 current_mtime = os.path.getmtime(normalized)
             except OSError:
                 return None
-            with self._session() as session:
-                row = session.get(_db.CHDMetadata, normalized)
-            if row is None or row.mtime is None or current_mtime != row.mtime:
+            if current_mtime != row.mtime:
                 return None
             return row.metadata_json
 

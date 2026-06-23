@@ -170,11 +170,15 @@ class JobsStore {
     } else {
       this.jobs.push(job);
       this._byId.set(job.id, job);
-    }
-    if (job.file_path) {
-      // Clear exactly one matching optimistic placeholder (the oldest), not
-      // every one — see _removeOptimistic.
-      this._removeOptimistic(job.file_path, job.mode);
+      if (job.file_path) {
+        // First arrival only: clear exactly one matching optimistic
+        // placeholder (the oldest). _applyJob also runs on every later SSE
+        // progress/status update for an already-known job; re-clearing then
+        // would drop a placeholder belonging to a *second* in-flight
+        // same-file/same-mode submission before its own job arrives — the
+        // under-count this guards against. See _removeOptimistic.
+        this._removeOptimistic(job.file_path, job.mode);
+      }
     }
   }
 
