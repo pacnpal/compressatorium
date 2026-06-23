@@ -396,6 +396,18 @@ _BAD_EXTENSION_REASON: dict[str, SkipReason] = {
 }
 
 
+# Dolphin modes that take no compression input, with their specific advisory
+# message. Collapsed from the former per-mode dolphin_iso / dolphin_gcz branches
+# via a data lookup (not a capability branch), so the exact wire detail is
+# preserved while the gate is driven by spec fields. Scoped to dolphin because
+# other tools that merely ignore compression (e.g. the cso_to_chd chain, whose
+# ChainTool drops a stale preset) historically queued rather than 400'd.
+_NO_COMPRESSION_DETAIL: dict[str, str] = {
+    "dolphin_iso": "Compression not applicable for ISO extraction",
+    "dolphin_gcz": "GCZ uses fixed internal compression",
+}
+
+
 async def _plan_directory_job(
     file_path: str,
     *,
@@ -789,12 +801,16 @@ async def create_job(request: JobCreateRequest):
             status_code=400,
             detail="Compression levels are only supported for Dolphin and Switch formats",
         )
-    if compression and not (
-        spec.supports_compression or spec.supports_compression_level
+    if (
+        compression
+        and spec.tool_id == "dolphin"
+        and not (spec.supports_compression or spec.supports_compression_level)
     ):
         raise HTTPException(
             status_code=400,
-            detail="Compression is not supported for this conversion mode",
+            detail=_NO_COMPRESSION_DETAIL.get(
+                mode, "Compression is not supported for this Dolphin mode"
+            ),
         )
     if compression and is_dolphin and "," in compression:
         raise HTTPException(
@@ -893,12 +909,16 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             status_code=400,
             detail="Compression levels are only supported for Dolphin and Switch formats",
         )
-    if compression and not (
-        spec.supports_compression or spec.supports_compression_level
+    if (
+        compression
+        and spec.tool_id == "dolphin"
+        and not (spec.supports_compression or spec.supports_compression_level)
     ):
         raise HTTPException(
             status_code=400,
-            detail="Compression is not supported for this conversion mode",
+            detail=_NO_COMPRESSION_DETAIL.get(
+                mode, "Compression is not supported for this Dolphin mode"
+            ),
         )
     if compression and is_dolphin and "," in compression:
         raise HTTPException(
