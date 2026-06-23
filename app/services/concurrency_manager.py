@@ -202,7 +202,16 @@ class ConcurrencyManager:
             with open(self._ticket_counter_path, "r+", encoding="utf-8") as fh:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
                 raw = fh.read().strip()
-                on_disk = int(raw) if raw else 0
+                try:
+                    on_disk = int(raw) if raw else 0
+                except ValueError:
+                    # Corrupt body (a partial write -> non-numeric content):
+                    # recover the high-water mark from the preserved ticket files
+                    # and let the truncate/write below REPAIR the counter in place
+                    # under the lock, so every process converges back on the
+                    # shared counter instead of each falling into its own
+                    # in-process counter (which would collide across processes).
+                    on_disk = self._highest_known_ticket()
                 # Resume above any tickets the in-process fallback handed out
                 # while the counter was transiently unavailable: a recovered
                 # counter still holds its pre-failure value, so without this it
@@ -220,14 +229,12 @@ class ConcurrencyManager:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
                 self._fallback_ticket = next_ticket
                 return next_ticket
-        except (OSError, ValueError):
-            # Counter file unreadable/unwritable, or its contents corrupted
-            # (a partial write -> non-numeric body that int() rejects): issue a
-            # strictly-increasing
-            # in-process ticket seeded above the last value seen on disk instead
-            # of a wall-clock number that could collide or sort out of range and
-            # mis-order FIFO admission (issue #183, site 4). MAX_CONCURRENT_JOBS
-            # concurrency lives in one process, so this counter is authoritative.
+        except OSError:
+            # Counter file unreadable/unwritable (the locked write path can't
+            # complete): issue a strictly-increasing in-process ticket seeded
+            # above the last value seen on disk instead of a wall-clock number
+            # that could collide or sort out of range and mis-order FIFO
+            # admission (issue #183, site 4).
             self._fallback_ticket += 1
             return self._fallback_ticket
 

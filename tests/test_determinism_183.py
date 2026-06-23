@@ -148,17 +148,21 @@ def test_counter_fallback_is_strictly_increasing_and_in_range(tmp_path, monkeypa
     assert fallbacks[0] > 2                       # seeded above the on-disk high-water mark
 
 
-def test_corrupted_counter_file_falls_back_without_crashing(tmp_path):
+def test_corrupted_counter_file_is_repaired_in_place(tmp_path):
     cm = _mk_cm(tmp_path)
     cm._next_ticket()  # advance to 1
-    # A partial write leaves a non-numeric body; int() would raise ValueError,
-    # which must be caught (like an OSError) and fall through to the fallback.
+    # A partial write leaves a non-numeric body; int() raises ValueError, which
+    # must be caught under the lock and the counter REPAIRED in place rather than
+    # leaving every process stuck in its own in-process counter.
     with open(cm._ticket_counter_path, "w", encoding="utf-8") as fh:
         fh.write("not-a-number")
 
     ticket = cm._next_ticket()  # must not raise
 
     assert ticket >= 2
+    # The corrupt body was healed to a valid integer the next read can use.
+    with open(cm._ticket_counter_path, encoding="utf-8") as fh:
+        assert int(fh.read().strip()) == ticket
 
 
 def test_recovered_counter_does_not_reissue_fallback_tickets(tmp_path):
@@ -205,6 +209,9 @@ def test_seed_considers_preserved_tickets_when_counter_corrupt(tmp_path):
         fh.write("{}")
 
     assert cm._highest_known_ticket() >= 100
+    # Exercise the actual reservation path, not just the helper: a corrupt
+    # counter recovers the high-water mark from the preserved ticket file.
+    assert cm._next_ticket() > 100
 
 
 def test_colliding_ticket_int_does_not_double_admit(tmp_path, monkeypatch):
