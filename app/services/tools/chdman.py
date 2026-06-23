@@ -24,12 +24,15 @@ _CREATE_MODES = {
     "createdvd": "Create DVD",
     "createld": "Create LD",
 }
+# mode -> (label, primary output ext, companion exts). extractcd is the only
+# multi-file extract: chdman writes the .cue track sheet plus a sibling .bin
+# data track, so its companion set is (".bin",). The rest produce one file.
 _EXTRACT_MODES = {
-    "extractraw": ("Extract Raw", ".raw"),
-    "extracthd": ("Extract HD", ".raw"),
-    "extractcd": ("Extract CD", ".cue"),
-    "extractdvd": ("Extract DVD", ".iso"),
-    "extractld": ("Extract LD", ".avi"),
+    "extractraw": ("Extract Raw", ".raw", ()),
+    "extracthd": ("Extract HD", ".raw", ()),
+    "extractcd": ("Extract CD", ".cue", (".bin",)),
+    "extractdvd": ("Extract DVD", ".iso", ()),
+    "extractld": ("Extract LD", ".avi", ()),
 }
 _CHD = frozenset({".chd"})
 
@@ -65,8 +68,9 @@ def _build_modes() -> list[ModeSpec]:
             # stays off below: recompressing a .chd straight out of an archive
             # is a pointless round trip.)
             allows_archive_input=True,
+            companion_exts=companions,
         )
-        for mode, (label, ext) in _EXTRACT_MODES.items()
+        for mode, (label, ext, companions) in _EXTRACT_MODES.items()
     ]
     modes.append(
         ModeSpec(

@@ -208,6 +208,13 @@ class ToolPlugin(Protocol):
     # Optional post-processing hook (chdman uses it to embed disc-ID GAME/NAME
     # tags after createcd/createdvd, today hardcoded at job_manager.py:1514).
     async def post_convert(self, input_path: str, output_path: str, mode: str) -> None: ...
+
+    # Sibling outputs a multi-file mode writes beside its primary output_path
+    # (extractcd's .cue + .bin data track; a split folder_to_iso's .iso.0/.1/…).
+    # The single source conflict-check, unique-name probing, overwrite-clear,
+    # size-sum and in-use tracking enumerate, instead of each re-encoding the
+    # per-mode suffix. output_path itself is never included.
+    def companion_outputs(self, output_path: str, mode: str) -> list[str]: ...
 ```
 
 `BaseTool(ABC)` provides shared defaults so concrete tools stay tiny:
@@ -246,6 +253,12 @@ class BaseTool:
 
     async def post_convert(self, *a, **k) -> None:
         return None
+
+    # Default: suffix-swap off output_path for each ModeSpec.companion_exts
+    # (extractcd .cue -> .bin). makeps3iso overrides with its disk-probed split
+    # parts; modes with no companion_exts return [].
+    def companion_outputs(self, output_path, mode) -> list[str]:
+        return [str(Path(output_path).with_suffix(e)) for e in self.spec(mode).companion_exts]
 
     # subclasses implement: output_path, convert (via self._runner.run),
     # verify_stream, info, info_model
@@ -516,17 +529,26 @@ The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
   summed size, `FileEntry.split_parts` = count, no convertible/verify
   affordances — it's a final deliverable, not a source). The recursive *search*
   path only emits convertible sources, so split parts never surface there.
-  Lifecycle completeness across the multi-file model:
-  - **Conflicts:** the split-set probe lives in `check_output_conflicts`
-    (mode `folder_to_iso`), so the `/jobs/check-duplicates` preflight and the
-    plan agree a set occupies the target.
+  Lifecycle completeness across the multi-file model — every site below
+  enumerates the extra files from the `companion_outputs` hook (§ the plugin
+  contract) rather than re-encoding the per-mode suffix, the same single source
+  extractcd's `.cue` + `.bin` flows through:
+  - **Conflicts:** `check_output_conflicts` enumerates the set via the owning
+    tool's `companion_outputs` (no per-mode `mode ==` branch), so the
+    `/jobs/check-duplicates` preflight and the plan agree a set occupies the
+    target; `get_unique_output_path(base, mode)` reuses it to step a rename past
+    the whole set.
   - **Overwrite:** `JobManager._clear_existing_output` removes the prior output
-    (single `.iso` **or** the whole split set, via `makeps3iso_service`'s
-    part-aware `remove_outputs`) **only when `allow_overwrite` was granted** — so
-    a set that appears after planning is never deleted out from under a
-    skip/rename decision (the per-path `acquire_lock` only sees the bare name).
-  - **Completed size:** the completion block sums `split_parts()` for directory
-    jobs, so a split build reports a real `output_size` instead of `None`.
+    (single `.iso` **or** the whole split set) **only when `allow_overwrite` was
+    granted** — so a set that appears after planning is never deleted out from
+    under a skip/rename decision (the per-path `acquire_lock` only sees the bare
+    name). makeps3iso's part-aware `remove_outputs` stays the directory-mode
+    cleanup primitive (it clears a mid-split base + parts that `split_parts`
+    would not), with `companion_outputs` clearing file-mode siblings.
+  - **Completed size:** the completion block sums `output_path` plus
+    `companion_outputs()`, so a split build (whose numbered parts replace the
+    bare `.iso`) and an extractcd `.cue` + `.bin` both report a real
+    `output_size` instead of `None`.
   - **Stall detection:** widened via `SubprocessRunner.run(output_growth_paths=…)`
     to the summed size of the set, so a split build isn't killed as stalled once
     the base is renamed away.

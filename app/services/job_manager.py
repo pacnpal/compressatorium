@@ -679,8 +679,15 @@ class JobManager:
             paths.extend(self._track_candidate_paths(file_path))
         if job.output_path:
             paths.append(job.output_path)
-            if job.mode == ConversionMode.EXTRACTCD:
-                paths.append(str(Path(job.output_path).with_suffix(".bin")))
+            # Companion outputs a mode writes beside its primary (extractcd's
+            # .bin). makeps3iso's split parts are queue-time-unknown and tracked
+            # by _split_output_blocks' prefix match instead, so this stays empty
+            # for it until the parts exist.
+            paths.extend(
+                registry.for_mode(job.mode.value).companion_outputs(
+                    job.output_path, job.mode.value,
+                )
+            )
         return paths
 
     def find_active_job_for_path(
@@ -792,10 +799,13 @@ class JobManager:
             raise RuntimeError("Output path exists and is not a file")
         os.remove(job.output_path)
         await verification_store.clear(job.output_path)
-        if job.mode.value == "extractcd":
-            bin_path = str(Path(job.output_path).with_suffix(".bin"))
-            if os.path.isfile(bin_path):
-                os.remove(bin_path)
+        # Clear any companion outputs the mode wrote beside the primary
+        # (extractcd's .bin), enumerated from the tool rather than re-derived.
+        for companion in registry.for_mode(job.mode.value).companion_outputs(
+            job.output_path, job.mode.value,
+        ):
+            if os.path.isfile(companion):
+                os.remove(companion)
 
     def _get_queued_and_processing_jobs(self) -> tuple[list[str], list[str]]:
         """Get lists of queued and processing job IDs.
@@ -1595,12 +1605,14 @@ class JobManager:
         # clears it in _clear_existing_output.)
         if job.input_kind == InputKind.DIRECTORY and not job.allow_overwrite:
             existing_parts = await run_in_threadpool(
-                makeps3iso_service.split_parts, job.output_path,
+                registry.for_mode(job.mode.value).companion_outputs,
+                job.output_path, job.mode.value,
             )
-            # split_parts returns [base] only when the bare file exists (already
-            # rejected by acquire_lock above); a real split set is the numbered
-            # parts, so treat that as an output collision.
-            if existing_parts and existing_parts != [job.output_path]:
+            # companion_outputs returns the numbered split parts only when a real
+            # -s split set exists (a bare .iso is the primary, not a companion,
+            # and is already rejected by acquire_lock above), so any companions
+            # mean a prior split build already occupies the target.
+            if existing_parts:
                 job.status = JobStatus.FAILED
                 job.error_message = "Output file already exists"
                 job.completed_at = datetime.now(timezone.utc)
@@ -1751,36 +1763,21 @@ class JobManager:
                 self._cancelled.discard(job_id)
                 job.progress = 100
 
-                # Get output file size
-                if job.input_kind == InputKind.DIRECTORY:
-                    # makeps3iso may finish as a single .iso OR a split set
-                    # (.0/.1/…) with no bare .iso, so sum whatever was produced
-                    # (split_parts returns [base] or the numbered parts).
-                    total_size = 0
-                    for part in makeps3iso_service.split_parts(job.output_path):
-                        try:
-                            total_size += os.path.getsize(part)
-                        except OSError:
-                            pass
-                    job.output_size = total_size if total_size > 0 else None
-                elif os.path.exists(job.output_path):
-                    if job.mode.value == "extractcd":
-                        cue_size = 0
-                        bin_size = 0
-                        try:
-                            cue_size = os.path.getsize(job.output_path)
-                        except OSError:
-                            pass
-                        try:
-                            bin_path = str(Path(job.output_path).with_suffix(".bin"))
-                            if os.path.exists(bin_path):
-                                bin_size = os.path.getsize(bin_path)
-                        except OSError:
-                            pass
-                        total_size = cue_size + bin_size
-                        job.output_size = total_size if total_size > 0 else None
-                    else:
-                        job.output_size = os.path.getsize(job.output_path)
+                # Output size = the primary plus every companion the mode wrote
+                # (extractcd's .bin, a split folder_to_iso's numbered .0/.1/…),
+                # enumerated from the tool instead of re-encoded per mode. A split
+                # build leaves no bare .iso, so the primary getsize simply misses
+                # and the numbered parts carry the whole total.
+                total_size = 0
+                companions = registry.for_mode(job.mode.value).companion_outputs(
+                    job.output_path, job.mode.value,
+                )
+                for path in [job.output_path, *companions]:
+                    try:
+                        total_size += os.path.getsize(path)
+                    except OSError:
+                        pass
+                job.output_size = total_size if total_size > 0 else None
 
                 # Embed game ID / title into CHD metadata after createcd/createdvd.
                 # Uses the source file (input_path) which is still available at this

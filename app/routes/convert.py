@@ -137,91 +137,55 @@ def _reject_rename_in_locked_dir(base_path: str) -> None:
         raise SkipFile(SkipReason.OUTPUT_LOCKED)
 
 
-def get_unique_output_path(base_path: str) -> str:
-    """Generate a unique output path by appending a number if the file exists."""
-    file_exists, is_locked = lock_manager.check_file_status(base_path)
-    if not file_exists and not is_locked:
-        return base_path
+def check_output_conflicts(mode: str, output_path: str) -> tuple:
+    """``(exists, locked)`` for an output path *and all of its companion outputs*.
 
-    _reject_rename_in_locked_dir(base_path)
-
-    path = Path(base_path)
-    stem = path.stem
-    suffix = path.suffix
-    parent = path.parent
-
-    counter = 1
-    while True:
-        new_path = parent / f"{stem}_{counter}{suffix}"
-        file_exists, is_locked = lock_manager.check_file_status(str(new_path))
-        if not file_exists and not is_locked:
-            return str(new_path)
-        counter += 1
-
-
-def _ps3_iso_output_taken(output_path: str) -> bool:
-    """Whether a PS3 ISO output path is occupied by a single file, a held lock,
-    *or* a prior split set (``<output>.iso.0``).
-
-    A ``-s`` build only writes ``<output>.iso.0``/``.1``/… (no plain
-    ``<output>.iso``) once it crosses 4 GB, so the bare-path check the other
-    tools use would miss it and silently clobber the set.
+    Companions (extractcd's ``.bin`` data-track sidecar, a split ``folder_to_iso``
+    build's numbered ``.iso.0``/``.1``/… parts) are enumerated from the owning
+    tool's ``companion_outputs`` hook rather than re-derived here, so every
+    duplicate/lock preflight agrees on the full set of files a mode occupies.
+    Touches the disk (a directory mode's companion lookup scans), so call it off
+    the event loop for ``folder_to_iso``.
     """
     file_exists, is_locked = lock_manager.check_file_status(output_path)
-    return file_exists or is_locked or os.path.exists(output_path + ".0")
+    exists = file_exists or is_locked
+    locked = is_locked
+    for companion in registry.for_mode(mode).companion_outputs(output_path, mode):
+        c_exists, c_locked = lock_manager.check_file_status(companion)
+        exists = exists or c_exists or c_locked
+        locked = locked or c_locked
+    return exists, locked
 
 
-def get_unique_ps3_iso_output_path(base_path: str) -> str:
-    """:func:`get_unique_output_path` that also steps past an existing split set."""
-    if not _ps3_iso_output_taken(base_path):
+def get_unique_output_path(base_path: str, mode: str | None = None) -> str:
+    """Unique output path, appending ``_N`` until the file — and, when ``mode``
+    is supplied, that mode's companion outputs — are all free.
+
+    ``mode=None`` checks the bare path only (the plain single-file case). A mode
+    routes the probe through :func:`check_output_conflicts`, so a sibling output
+    (extractcd's ``.bin``, a split ``folder_to_iso``'s numbered parts) can't be
+    silently clobbered by a rename. This subsumes the former per-mode
+    ``get_unique_*`` helpers — one companion-aware probe for every mode.
+    """
+    def _taken(candidate: str) -> bool:
+        if mode is None:
+            file_exists, is_locked = lock_manager.check_file_status(candidate)
+            return file_exists or is_locked
+        exists, _locked = check_output_conflicts(mode, candidate)
+        return exists
+
+    if not _taken(base_path):
         return base_path
+
     _reject_rename_in_locked_dir(base_path)
+
     path = Path(base_path)
     stem, suffix, parent = path.stem, path.suffix, path.parent
     counter = 1
     while True:
         candidate = str(parent / f"{stem}_{counter}{suffix}")
-        if not _ps3_iso_output_taken(candidate):
+        if not _taken(candidate):
             return candidate
-        counter += 1
-
-
-def check_output_conflicts(mode: str, output_path: str) -> tuple:
-    file_exists, is_locked = lock_manager.check_file_status(output_path)
-    exists = file_exists or is_locked
-    locked = is_locked
-
-    if mode == "extractcd":
-        bin_path = str(Path(output_path).with_suffix(".bin"))
-        bin_exists, bin_locked = lock_manager.check_file_status(bin_path)
-        exists = exists or bin_exists or bin_locked
-        locked = locked or bin_locked
-    elif mode == "folder_to_iso":
-        # A prior makeps3iso ``-s`` build over 4 GB leaves ``<output>.iso.0``
-        # (and ``.1``/…) with no plain ``<output>.iso``, so the bare-path check
-        # above would miss it. Probe the ``.0`` part so the duplicate preflight
-        # (/jobs/check-duplicates) and plan agree a split set already occupies
-        # the target.
-        if os.path.exists(output_path + ".0"):
-            exists = True
-
-    return exists, locked
-
-
-def get_unique_output_path_for_extractcd(base_path: str) -> str:
-    _reject_rename_in_locked_dir(base_path)
-    path = Path(base_path)
-    stem = path.stem
-    suffix = path.suffix or ".cue"
-    parent = path.parent
-
-    counter = 1
-    candidate = str(path)
-    while True:
-        exists, locked = check_output_conflicts("extractcd", candidate)
-        if not exists and not locked:
-            return candidate
-        candidate = str(parent / f"{stem}_{counter}{suffix}")
         counter += 1
 
 
@@ -443,8 +407,10 @@ async def _plan_directory_job(
             if is_locked:
                 raise SkipFile(SkipReason.OUTPUT_LOCKED)
         elif duplicate_action == DuplicateAction.RENAME:
+            # Companion-aware (steps past a split set's numbered parts); off the
+            # event loop because folder_to_iso's companion lookup scans the dir.
             output_path = await run_in_threadpool(
-                get_unique_ps3_iso_output_path, output_path,
+                get_unique_output_path, output_path, mode,
             )
 
     allow_overwrite = (
@@ -540,10 +506,7 @@ async def plan_job(
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
             elif duplicate_action == DuplicateAction.RENAME:
-                if mode == "extractcd":
-                    output_path = get_unique_output_path_for_extractcd(output_path)
-                else:
-                    output_path = get_unique_output_path(output_path)
+                output_path = get_unique_output_path(output_path, mode)
 
     if "::" not in file_path and not os.path.isfile(file_path):
         raise SkipFile(SkipReason.FILE_NOT_FOUND)
@@ -635,10 +598,7 @@ async def plan_job(
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
             elif duplicate_action == DuplicateAction.RENAME:
-                if mode == "extractcd":
-                    output_path = get_unique_output_path_for_extractcd(output_path)
-                else:
-                    output_path = get_unique_output_path(output_path)
+                output_path = get_unique_output_path(output_path, mode)
 
     if (
         is_dolphin

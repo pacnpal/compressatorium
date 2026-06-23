@@ -151,6 +151,16 @@ class ToolPlugin(Protocol):
     ) -> None:
         """Optional post-processing hook after a successful conversion."""
 
+    def companion_outputs(self, output_path: str, mode: str) -> list[str]:
+        """Sibling output paths this mode writes beside ``output_path``.
+
+        A mode that produces more than one file (extractcd's ``.cue`` + ``.bin``
+        sidecar, a split makeps3iso ``.iso.0``/``.1``/…) returns the *extra*
+        paths here so conflict detection, overwrite cleanup, size accounting and
+        in-use tracking enumerate them from one place instead of each re-encoding
+        the per-mode suffix. ``output_path`` itself is never included.
+        """
+
 
 class BaseTool:
     """Shared helpers so concrete tools stay tiny."""
@@ -201,3 +211,13 @@ class BaseTool:
         self, input_path: str, output_path: str, mode: str,
     ) -> None:
         return None
+
+    def companion_outputs(self, output_path: str, mode: str) -> list[str]:
+        # Default: derive the sibling paths from the mode's ``companion_exts``
+        # as suffix swaps off ``output_path`` (e.g. extractcd ``.cue`` -> the
+        # ``.bin`` data track). Pure path math, no disk I/O, returned regardless
+        # of on-disk existence — callers guard existence/lock as needed. Tools
+        # whose companion set is dynamic (makeps3iso's size-dependent split
+        # parts) override this with their own disk-aware probe.
+        exts = self.spec(mode).companion_exts
+        return [str(Path(output_path).with_suffix(ext)) for ext in exts]

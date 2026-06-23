@@ -49,11 +49,11 @@ def _call_with_watchdog(fn, *args, timeout: float = 4.0) -> dict:
     return box
 
 
-@pytest.mark.parametrize(
-    "helper_name",
-    ["get_unique_output_path", "get_unique_ps3_iso_output_path"],
-)
-def test_rename_inside_locked_subtree_rejected_not_looped(tmp_path, helper_name):
+# mode=None is the plain single-file probe; "folder_to_iso" exercises the
+# companion-aware path (a split set's numbered parts). After #182 both run
+# through the single ``get_unique_output_path`` helper.
+@pytest.mark.parametrize("mode", [None, "folder_to_iso"])
+def test_rename_inside_locked_subtree_rejected_not_looped(tmp_path, mode):
     folder = tmp_path / "MyGame"
     (folder / "PS3_GAME").mkdir(parents=True)
     lock_manager = convert_routes.lock_manager
@@ -63,9 +63,10 @@ def test_rename_inside_locked_subtree_rejected_not_looped(tmp_path, helper_name)
         # A per-file output (e.g. chdman create) that lands inside the locked
         # PS3 folder being packed.
         output_path = str(folder / "PS3_GAME" / "game.iso")
-        helper = getattr(convert_routes, helper_name)
 
-        box = _call_with_watchdog(helper, output_path)
+        box = _call_with_watchdog(
+            convert_routes.get_unique_output_path, output_path, mode,
+        )
 
         exc = box.get("exc")
         assert isinstance(exc, convert_routes.SkipFile), (
