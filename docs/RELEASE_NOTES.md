@@ -1,5 +1,21 @@
 # Release Notes
 
+## Unreleased
+
+### Changed
+
+- **Deterministic ordering across the registry, search, and runner (issue
+  #183).** The `ToolRegistry` extension-union helpers (`convertible_extensions`,
+  `archive_input_extensions`, `verify_extensions`, `output_extensions`,
+  `scannable_extensions`) now return a **sorted `tuple`** instead of a
+  `frozenset`, so any serialized extension list is byte-stable run-to-run.
+  Recursive `/api/files/search` results are sorted to match the directory
+  listing, the file browser keeps a stable order for rows with equal sort keys,
+  and subprocess progress-line segmentation no longer depends on read-chunk
+  boundaries. The cross-process FIFO job ticket is hardened against counter
+  fallback/recovery collisions and now preserves legacy ticket files across a
+  rolling restart. No wire-API change.
+
 ## 4.2.0 (2026-06-13)
 
 This release adds the first folder-input tool and the first cross-tool chain. PS3

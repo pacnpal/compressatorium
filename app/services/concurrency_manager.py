@@ -145,6 +145,12 @@ class ConcurrencyManager:
         ``key`` is the final tiebreaker. Returning keys (not raw ticket ints)
         means a colliding ticket can never put two jobs in the same admitted
         prefix slot (issue #183, site 4).
+
+        Both the current ``queue_<ticket>_<seq>_<key>.ticket`` shape and the
+        previous ``queue_<ticket>_<key>.ticket`` shape are parsed, so a rolling
+        restart that leaves a still-active legacy ticket on disk keeps its FIFO
+        position (legacy tickets predate the upgrade, so they sort ahead of new
+        ones at the same ticket via ``seq = 0``).
         """
         entries: list[tuple[int, int, str]] = []
         try:
@@ -153,14 +159,19 @@ class ConcurrencyManager:
                     continue
                 core = name[len("queue_"):-len(".ticket")]
                 parts = core.split("_", 2)
-                if len(parts) < 3:
+                if len(parts) < 2:
                     continue
                 try:
                     ticket = int(parts[0])
-                    seq = int(parts[1])
                 except ValueError:
                     continue
-                entries.append((ticket, seq, parts[2]))
+                if len(parts) >= 3 and parts[1].isdigit():
+                    seq, key = int(parts[1]), parts[2]
+                else:
+                    # Legacy pre-seq filename: reserved before the upgrade, so
+                    # sort it ahead of new (seq >= 1) tickets at the same ticket.
+                    seq, key = 0, "_".join(parts[1:])
+                entries.append((ticket, seq, key))
         except OSError:
             return []
         entries.sort()
@@ -171,7 +182,15 @@ class ConcurrencyManager:
             with open(self._ticket_counter_path, "r+", encoding="utf-8") as fh:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
                 raw = fh.read().strip()
-                current = int(raw) if raw else 0
+                on_disk = int(raw) if raw else 0
+                # Resume above any tickets the in-process fallback handed out
+                # while the counter was transiently unavailable: a recovered
+                # counter still holds its pre-failure value, so without this it
+                # would reissue a number the fallback already used. That
+                # collision would put two jobs on the same ticket in
+                # _list_tickets and disagree with job_manager's (ticket, job_id)
+                # PriorityQueue order, stalling the queue at MAX_CONCURRENT_JOBS=1.
+                current = max(on_disk, self._fallback_ticket)
                 next_ticket = current + 1
                 fh.seek(0)
                 fh.truncate()
@@ -179,9 +198,7 @@ class ConcurrencyManager:
                 fh.flush()
                 os.fsync(fh.fileno())
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-                # Track the high-water mark so the OSError fallback below stays
-                # strictly increasing and in the same numeric range.
-                self._fallback_ticket = max(self._fallback_ticket, next_ticket)
+                self._fallback_ticket = next_ticket
                 return next_ticket
         except (OSError, ValueError):
             # Counter file unreadable/unwritable, or its contents corrupted

@@ -161,6 +161,40 @@ def test_corrupted_counter_file_falls_back_without_crashing(tmp_path):
     assert ticket >= 2
 
 
+def test_recovered_counter_does_not_reissue_fallback_tickets(tmp_path):
+    cm = _mk_cm(tmp_path)
+    first = cm._next_ticket()  # from the on-disk counter
+
+    # Transient failure: the fallback issues tickets WITHOUT persisting to disk.
+    original = cm._ticket_counter_path
+    cm._ticket_counter_path = str(tmp_path / "gone" / "counter")
+    fb1 = cm._next_ticket()
+    fb2 = cm._next_ticket()
+
+    # Counter recovers, but on-disk still holds the stale pre-failure value.
+    cm._ticket_counter_path = original
+    recovered = cm._next_ticket()
+
+    issued = [first, fb1, fb2, recovered]
+    assert issued == sorted(issued)          # strictly increasing throughout
+    assert len(set(issued)) == 4             # recovery never reissues a fallback ticket
+    assert recovered > fb2
+
+
+def test_list_tickets_includes_legacy_filenames(tmp_path):
+    cm = _mk_cm(tmp_path)
+    # A pre-seq ticket left by an older version: queue_<ticket>_<key>.ticket.
+    legacy = os.path.join(cm.lock_dir, "queue_5_oldjob.ticket")
+    with open(legacy, "w", encoding="utf-8") as fh:
+        fh.write("{}")
+    cm.reserve_ticket("newjob")
+
+    keys = cm._list_tickets()
+
+    assert "oldjob" in keys   # legacy ticket is not silently dropped from FIFO
+    assert "newjob" in keys
+
+
 def test_colliding_ticket_int_does_not_double_admit(tmp_path, monkeypatch):
     # Force every ticket to the SAME integer (simulating a counter collision);
     # admission must still pick exactly the first max_concurrent by (seq, key),
