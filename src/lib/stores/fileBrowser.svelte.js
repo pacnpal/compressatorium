@@ -146,6 +146,13 @@ class FileBrowserStore {
       const bp = (b.path ?? '').toLowerCase();
       if (ap < bp) return -1 * order;
       if (ap > bp) return 1 * order;
+      // Case-sensitive final tiebreaker: on a case-sensitive volume /Foo.iso and
+      // /foo.iso are distinct rows that tie on the lowercased compare above, so
+      // fall through to the raw path for a total, stable order (issue #183).
+      const aps = a.path ?? '';
+      const bps = b.path ?? '';
+      if (aps < bps) return -1 * order;
+      if (aps > bps) return 1 * order;
       return 0;
     });
     return list;
