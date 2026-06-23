@@ -10,6 +10,9 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
+import main
 from main import get_version, health_check
 from routes.info import get_app_version
 
@@ -63,3 +66,41 @@ def test_api_version_endpoint_reports_real_version(monkeypatch):
     payload = asyncio.run(get_app_version())
 
     assert payload["version"] == _package_json_version()
+
+
+@pytest.mark.parametrize(
+    "bad_content",
+    [
+        "[]",                  # top-level array -> .get() would AttributeError
+        "null",                # top-level null
+        "42",                  # top-level number
+        '"4.2.0"',             # top-level string
+        "{ not valid json",    # unparseable
+        '{"version": 42}',     # non-string version
+        '{"version": ""}',     # empty version
+        "{}",                  # no version key
+    ],
+)
+def test_malformed_or_wrong_shape_package_json_degrades_to_dev(
+    monkeypatch, tmp_path, bad_content
+):
+    """A missing/malformed/wrong-shaped package.json degrades to 'dev', never raises.
+
+    get_version() runs while the FastAPI app is constructed, so a valid-but-
+    wrong-shaped file (e.g. a top-level array/null/number) must not raise at
+    startup -- it must fall through to the "dev" last resort.
+    """
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    bad = tmp_path / "package.json"
+    bad.write_text(bad_content, encoding="utf-8")
+    monkeypatch.setattr(main, "_PACKAGE_JSON", bad)
+
+    assert get_version() == "dev"
+
+
+def test_missing_package_json_degrades_to_dev(monkeypatch, tmp_path):
+    """An absent package.json (e.g. a slim container image) yields 'dev', not a crash."""
+    monkeypatch.delenv("APP_VERSION", raising=False)
+    monkeypatch.setattr(main, "_PACKAGE_JSON", tmp_path / "nope.json")
+
+    assert get_version() == "dev"

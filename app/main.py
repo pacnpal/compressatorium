@@ -19,17 +19,22 @@ _PACKAGE_JSON = Path(__file__).resolve().parent.parent / "package.json"
 
 
 def _version_from_package_json() -> str | None:
-    """Return ``version`` from the repo-root ``package.json``, or ``None``.
+    """Return the ``version`` string from the repo-root ``package.json``, or ``None``.
 
-    ``None`` when the file is missing or unparseable (e.g. a slim image that
-    does not ship ``package.json``), so the caller can fall back to ``"dev"``.
+    ``get_version()`` runs while the FastAPI app is constructed, so this never
+    raises: it returns ``None`` (caller falls back to ``"dev"``) when the file is
+    missing, unparseable, not a JSON object, or carries a missing / non-string /
+    empty ``version`` -- e.g. a slim image that does not ship ``package.json``, or
+    a top-level array/null/number that would otherwise ``AttributeError`` on
+    ``.get()``.
     """
     try:
         with _PACKAGE_JSON.open(encoding="utf-8") as fh:
-            version = json.load(fh).get("version")
+            data = json.load(fh)
     except (OSError, ValueError):
         return None
-    return version or None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) and version.strip() else None
 
 
 def get_version() -> str:
