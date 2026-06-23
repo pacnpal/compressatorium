@@ -134,6 +134,20 @@ def test_convert_gate_extensions_from_registry():
     assert ArchiveService._convert_gate_extensions() == registry.archive_input_extensions()
 
 
+def test_listable_extensions_fails_loudly_on_empty_registry(monkeypatch):
+    # A broken/unloaded registry (empty union) must raise, not silently return an
+    # empty set that renders as an "empty archive". (archive.py uses the
+    # no-app-prefix ``services.tools.registry``, so patch that one.)
+    from services.tools import registry as reg
+
+    monkeypatch.setattr(reg, "convertible_extensions", frozenset)
+    monkeypatch.setattr(reg, "archive_input_extensions", frozenset)
+    with pytest.raises(RuntimeError):
+        ArchiveService._listable_extensions()
+    with pytest.raises(RuntimeError):
+        ArchiveService._convert_gate_extensions()
+
+
 # --- Item 6: the single live-conversion predicate -----------------------------
 
 def _job(mode, status):

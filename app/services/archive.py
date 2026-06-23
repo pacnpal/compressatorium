@@ -146,10 +146,18 @@ class ArchiveService:
         """
         from services.tools import registry
 
-        return (
+        exts = (
             registry.convertible_extensions()
             | registry.archive_input_extensions()
         ) - ARCHIVE_EXTENSIONS
+        if not exts:
+            # An empty union means the registry is unloaded/broken, not that
+            # nothing is convertible. Fail loudly so the archive listing surfaces
+            # the bug rather than silently rendering an "empty archive".
+            raise RuntimeError(
+                "Tool registry produced no listable extensions — registry not loaded?"
+            )
+        return exts
 
     @staticmethod
     def _convert_gate_extensions() -> frozenset:
@@ -163,7 +171,12 @@ class ArchiveService:
         """
         from services.tools import registry
 
-        return registry.archive_input_extensions()
+        exts = registry.archive_input_extensions()
+        if not exts:
+            raise RuntimeError(
+                "Tool registry produced no archive-input extensions — registry not loaded?"
+            )
+        return exts
 
     def list_archive_contents(
         self, archive_path: str, *, include_meta: bool = False,

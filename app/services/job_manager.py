@@ -815,14 +815,15 @@ class JobManager:
         Returns:
             Tuple of (queued_job_ids, processing_job_ids)
         """
-        queued_job_ids = [
-            job.id for job in self.jobs.values()
-            if _is_conversion_job(job) and job.status == JobStatus.QUEUED
-        ]
-        processing_job_ids = [
-            job.id for job in self.jobs.values()
-            if _is_conversion_job(job) and job.status == JobStatus.PROCESSING
-        ]
+        queued_job_ids: list[str] = []
+        processing_job_ids: list[str] = []
+        for job in self.jobs.values():
+            if not _is_conversion_job(job):
+                continue
+            if job.status == JobStatus.QUEUED:
+                queued_job_ids.append(job.id)
+            elif job.status == JobStatus.PROCESSING:
+                processing_job_ids.append(job.id)
         return queued_job_ids, processing_job_ids
 
     def is_stuck(self) -> bool:
@@ -834,15 +835,16 @@ class JobManager:
         Returns:
             True if conversion jobs are queued but none are processing, False otherwise
         """
-        has_queued = any(
-            _is_conversion_job(job) and job.status == JobStatus.QUEUED
-            for job in self.jobs.values()
-        )
-        has_processing = any(
-            _is_conversion_job(job) and job.status == JobStatus.PROCESSING
-            for job in self.jobs.values()
-        )
-        return has_queued and not has_processing
+        has_queued = False
+        for job in self.jobs.values():
+            if not _is_conversion_job(job):
+                continue
+            if job.status == JobStatus.PROCESSING:
+                # Any processing conversion means the queue isn't stuck; bail early.
+                return False
+            if job.status == JobStatus.QUEUED:
+                has_queued = True
+        return has_queued
 
     def get_stuck_state_info(self) -> Dict[str, object]:
         """Get information about the stuck state.
