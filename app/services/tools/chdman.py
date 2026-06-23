@@ -183,7 +183,9 @@ class ChdmanTool(BaseTool):
         """
         if mode not in _DISC_ID_MODES:
             return
-        if Path(output_path).suffix.lower() != ".chd" or not os.path.exists(output_path):
+        if Path(output_path).suffix.lower() != ".chd":
+            return
+        if not await run_in_threadpool(os.path.exists, output_path):
             return
         try:
             disc_info = await run_in_threadpool(extract_from_source, input_path)
