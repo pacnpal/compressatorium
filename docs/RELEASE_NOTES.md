@@ -1,5 +1,21 @@
 # Release Notes
 
+## Unreleased
+
+Idempotency and robustness hardening (issue #184, part of the #177 tech-debt epic).
+
+### Changed
+
+- **CHD embedded-hash matching is hardened against a metadata-cache TOCTOU.** When a
+  CHD is matched against a DAT, its cached header/data SHA1 are now read and
+  freshness-checked as a single observation (read the row, then re-stat), so a CHD
+  rewritten mid-match can no longer yield hashes from the old file. On any staleness
+  the match falls back to a file-level SHA1 as before.
+- **Duplicate same-file/same-mode submissions keep an accurate in-progress count.**
+  An optimistic placeholder is now cleared only when its real job first arrives, not
+  on every later progress update, so submitting the same file in the same mode twice
+  no longer briefly under-counts the queue.
+
 ## 4.2.0 (2026-06-13)
 
 This release adds the first folder-input tool and the first cross-tool chain. PS3

@@ -540,6 +540,30 @@ The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
 makeps3iso (GPL-3.0) is built unmodified from a pinned `bucanero/ps3iso-utils`
 commit in the multi-stage `Dockerfile`, mirroring maxcso.
 
+### 3.3.5 Metadata freshness (`chd_metadata_store.get_fresh_metadata`)
+
+A consumer that reads cached CHD metadata to act on it — `ChdmanTool.embedded_hashes`
+matches a CHD's stored header/data SHA1 against a DAT without re-hashing the file —
+needs the hashes and the "is this still the current file?" verdict to describe **one**
+observation. `get_metadata()` followed by `is_stale()` does not: two separate awaits,
+each its own stat + row read, so the hashes can reflect one mtime while the staleness
+verdict reflects another (a conversion rewriting the CHD in between). That is the single
+seam every freshness-gated metadata read MUST go through instead.
+
+`get_fresh_metadata(path)` returns the cached `metadata_json` **only if it still
+describes the file**, in one `run_in_threadpool` call with no `await` between the row
+read and the stat. The ordering matters: it reads the **row first, then re-stats**, and
+returns the row only when the file's current mtime equals the row's captured mtime. The
+writer (`_set_metadata_sync`) always stats then stores `(metadata_json, mtime)` together,
+so the row's mtime lags the file; reading the row first and comparing against a *later*
+stat means a concurrent rewrite (new bytes on disk, row not yet re-scanned) shows
+`mtime != row.mtime` and the stale hashes are refused. A stat-**then**-read ordering would
+re-use an already-captured old mtime that can still match the old row for a file that was
+replaced in the window — the TOCTOU this seam exists to close. On any miss (no row, file
+gone, or changed) it returns `None`, and the caller falls back to a file-level SHA1, which
+is valid for any DAT that indexes the container bytes. New cache/tool code that needs
+freshness-gated metadata must call this rather than reintroducing the two-read pattern.
+
 ### 3.4 `registry.py`
 
 ```python
