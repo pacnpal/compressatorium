@@ -315,6 +315,13 @@ class SubprocessRunner:
         multithreaded process can deadlock the child before ``exec``).  ``env``
         is forwarded to the subprocess (nsz runs with a private keys-home env).
         """
+        # A job already cancelled before this run begins is a no-op: don't spawn
+        # the tool, so it can never write (and have a caller then delete) an
+        # output. Cancellation that arrives mid-run is handled by the watcher
+        # below; a process that finishes before cancellation is observed is
+        # reported complete (its output stands) rather than falsely cancelled.
+        if cancel_event is not None and cancel_event.is_set():
+            raise ConversionCancelled("Conversion cancelled")
         output_dir = os.path.dirname(output_path)
         if output_dir:
             await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
@@ -563,16 +570,12 @@ class SubprocessRunner:
             if stall_error:
                 raise RuntimeError(stall_error)
 
-            # Treat a set cancel_event as cancellation even when the child
-            # already exited 0 before the watcher marked the request: the
-            # watcher returns early once ``returncode`` is set, so on that race
-            # ``cancelled_by_request`` can stay False. Without this, a cancelled
-            # job whose process happened to finish first would be reported
-            # complete — publishing the output and skipping the caller's cancel
-            # cleanup — instead of raising ConversionCancelled.
-            if cancelled_by_request or (
-                cancel_event is not None and cancel_event.is_set()
-            ):
+            # Only raise when this run actually observed cancellation while the
+            # process was still running (the watcher sets the flag only if
+            # returncode was None when the event fired). A child that finished
+            # before cancellation took effect is reported complete — its output
+            # is valid and must not be deleted as a false cancellation.
+            if cancelled_by_request:
                 raise ConversionCancelled("Conversion cancelled")
 
             if process.returncode != 0:

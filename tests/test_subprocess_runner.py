@@ -114,21 +114,23 @@ def test_cancel_event_raises_conversion_cancelled(tmp_path):
     assert not runner.active_pids()
 
 
-def test_cancel_event_wins_even_if_process_exited_zero(tmp_path, monkeypatch):
-    """A set cancel_event raises ConversionCancelled even when the child already
-    exited 0 before the watcher ran (the cancel-vs-completion race).
+def test_cancel_event_preset_short_circuits_before_spawn(tmp_path, monkeypatch):
+    """A cancel_event already set when run() starts raises ConversionCancelled
+    without spawning the child.
 
-    The watcher returns early once ``returncode`` is set, so on this race
-    ``cancelled_by_request`` stays False; the runner must still honor the cancel
-    from ``cancel_event`` rather than report the job complete and publish output.
+    A job cancelled before it began must do no work, so it can never write (and
+    then have a caller delete) an output. Cancellation the run actually observes
+    mid-flight is covered by test_cancel_event_raises_conversion_cancelled.
     """
+    spawned = False
 
-    class _ExitedProcess:
-        """Child reporting returncode 0 from the start (already exited)."""
+    class _UnreachedChild:
+        """Returned only if the short-circuit fails to prevent spawning."""
 
-        def __init__(self, pid: int):
-            self.pid = pid
-            self.returncode = 0
+        pid = 4321
+        returncode = 0
+
+        def __init__(self):
             self.stdout = self
 
         async def read(self, _n: int) -> bytes:
@@ -144,7 +146,9 @@ def test_cancel_event_wins_even_if_process_exited_zero(tmp_path, monkeypatch):
             pass
 
     async def fake_exec(*_args, **_kwargs):
-        return _ExitedProcess(pid=4321)
+        nonlocal spawned
+        spawned = True
+        return _UnreachedChild()
 
     monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
     runner = SubprocessRunner(owner="test")
@@ -165,6 +169,7 @@ def test_cancel_event_wins_even_if_process_exited_zero(tmp_path, monkeypatch):
 
     with pytest.raises(ConversionCancelled):
         asyncio.run(_run())
+    assert spawned is False
     assert not runner.active_pids()
 
 
