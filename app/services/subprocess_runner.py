@@ -563,7 +563,16 @@ class SubprocessRunner:
             if stall_error:
                 raise RuntimeError(stall_error)
 
-            if cancelled_by_request:
+            # Treat a set cancel_event as cancellation even when the child
+            # already exited 0 before the watcher marked the request: the
+            # watcher returns early once ``returncode`` is set, so on that race
+            # ``cancelled_by_request`` can stay False. Without this, a cancelled
+            # job whose process happened to finish first would be reported
+            # complete — publishing the output and skipping the caller's cancel
+            # cleanup — instead of raising ConversionCancelled.
+            if cancelled_by_request or (
+                cancel_event is not None and cancel_event.is_set()
+            ):
                 raise ConversionCancelled("Conversion cancelled")
 
             if process.returncode != 0:

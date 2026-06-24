@@ -114,6 +114,60 @@ def test_cancel_event_raises_conversion_cancelled(tmp_path):
     assert not runner.active_pids()
 
 
+def test_cancel_event_wins_even_if_process_exited_zero(tmp_path, monkeypatch):
+    """A set cancel_event raises ConversionCancelled even when the child already
+    exited 0 before the watcher ran (the cancel-vs-completion race).
+
+    The watcher returns early once ``returncode`` is set, so on this race
+    ``cancelled_by_request`` stays False; the runner must still honor the cancel
+    from ``cancel_event`` rather than report the job complete and publish output.
+    """
+
+    class _ExitedProcess:
+        """Child reporting returncode 0 from the start (already exited)."""
+
+        def __init__(self, pid: int):
+            self.pid = pid
+            self.returncode = 0
+            self.stdout = self
+
+        async def read(self, _n: int) -> bytes:
+            return b""
+
+        async def wait(self) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+    async def fake_exec(*_args, **_kwargs):
+        return _ExitedProcess(pid=4321)
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+    runner = SubprocessRunner(owner="test")
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+
+    async def _run():
+        return await _drain(
+            runner.run(
+                _py_cmd("import sys"),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(tmp_path / "out.bin"),
+                parse_progress=_parse_pct,
+                cancel_event=cancel_event,
+                fail_label="testproc",
+            )
+        )
+
+    with pytest.raises(ConversionCancelled):
+        asyncio.run(_run())
+    assert not runner.active_pids()
+
+
 def test_stall_timeout_raises_runtimeerror(tmp_path, monkeypatch):
     # Force a short stall window; the child emits one line then goes silent and
     # never grows the output file, so the stall watchdog must fire.
