@@ -496,12 +496,14 @@ class SubprocessRunner:
                     )
                 except asyncio.TimeoutError:
                     if cancel_event and cancel_event.is_set():
-                        # Breaking because the event is set means this run
-                        # observed the cancellation; record it so the post-loop
-                        # check raises ConversionCancelled even if the child has
-                        # since exited 0 (the watcher skips marking the request
-                        # once returncode is set).
-                        cancelled_by_request = True
+                        # Stop reading once cancellation is requested. A child
+                        # that is still running is terminated by the watcher
+                        # (-> cancelled_by_request -> ConversionCancelled); a
+                        # child that has already exited 0 finished in that instant
+                        # and is reported complete. A cancel that races a clean
+                        # exit delivers the result rather than discarding it (a
+                        # deliberate product choice for this inherently ambiguous
+                        # race).
                         break
                     now = time.monotonic()
                     update = _size_update(now)

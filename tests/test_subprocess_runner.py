@@ -235,15 +235,17 @@ def test_cancel_watcher_survives_terminate_processlookuperror(tmp_path, monkeypa
     assert not runner.active_pids()
 
 
-def test_cancel_observed_at_read_timeout_raises_even_if_exited_zero(tmp_path, monkeypatch):
-    """If the loop breaks because cancel_event is set (on a read timeout) while
-    the child has already exited 0, the run observed the cancellation and must
-    raise ConversionCancelled rather than report success.
+def test_cancel_racing_clean_exit_reports_success(tmp_path, monkeypatch):
+    """When cancellation races a clean exit (the child already returned 0), the
+    conversion finished in that instant and is reported complete — a cancel that
+    races a successful completion delivers the result rather than discarding it
+    (a deliberate product choice). The still-running case is covered by
+    test_cancel_event_preset_terminates_and_raises.
     """
 
     class _TimeoutThenExitedProc:
-        """read() always times out and returncode is already 0, so the watcher
-        skips marking the cancel — the loop's event check has to."""
+        """read() times out (no more output) while returncode is already 0, so
+        the watcher skips marking the cancel and the run completes normally."""
 
         def __init__(self):
             self.pid = 555
@@ -270,8 +272,8 @@ def test_cancel_observed_at_read_timeout_raises_even_if_exited_zero(tmp_path, mo
     cancel_event = asyncio.Event()
     cancel_event.set()
 
-    async def _run():
-        return await _drain(
+    updates = asyncio.run(
+        _drain(
             runner.run(
                 _py_cmd("import sys"),
                 input_path=str(tmp_path / "in.bin"),
@@ -281,9 +283,9 @@ def test_cancel_observed_at_read_timeout_raises_even_if_exited_zero(tmp_path, mo
                 fail_label="testproc",
             )
         )
+    )
 
-    with pytest.raises(ConversionCancelled):
-        asyncio.run(_run())
+    assert updates[-1] == {"progress": 100, "message": "Conversion complete"}
     assert not runner.active_pids()
 
 
