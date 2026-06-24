@@ -107,7 +107,7 @@ async def test_convert_nonzero_exit_raises(tmp_path, monkeypatch):
 
     monkeypatch.setattr(maxcso_module.asyncio, "create_subprocess_exec", fake_exec)
 
-    with pytest.raises(RuntimeError, match="exit code 1"):
+    with pytest.raises(RuntimeError, match="return code 1"):
         await _drain(service.convert(str(src_path), str(out_path), "cso_compress"))
 
 
@@ -167,6 +167,50 @@ async def test_convert_cancel_removes_partial_output(tmp_path, monkeypatch):
                 str(src_path), str(out_path), "cso_compress", cancel_event=cancel_event,
             ),
         )
+    assert not out_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_convert_spawn_failure_preserves_existing_output(tmp_path, monkeypatch):
+    """A pre-spawn failure (e.g. missing binary) must NOT delete a pre-existing
+    output: maxcso never ran, so it wrote nothing to remove."""
+    src_path = tmp_path / "game.iso"
+    src_path.write_bytes(b"input")
+    out_path = tmp_path / "game.cso"
+    out_path.write_bytes(b"pre-existing valid output")
+
+    async def fake_exec(*_args, **_kwargs):
+        raise FileNotFoundError("maxcso binary missing")
+
+    monkeypatch.setattr(maxcso_module.asyncio, "create_subprocess_exec", fake_exec)
+
+    with pytest.raises(FileNotFoundError):
+        await _drain(service.convert(str(src_path), str(out_path), "cso_compress"))
+
+    assert out_path.read_bytes() == b"pre-existing valid output"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_convert_cleans_partial_on_generator_close(tmp_path, monkeypatch):
+    """Closing the generator mid-conversion (task cancellation / GeneratorExit)
+    removes the in-place partial — the writer cleans up on BaseException, not
+    only on ConversionCancelled."""
+    src_path = tmp_path / "game.iso"
+    src_path.write_bytes(b"input")
+    out_path = tmp_path / "game.cso"
+
+    async def fake_exec(*args, **_kwargs):
+        _write_output(list(args))  # partial written straight to the -o path
+        return _CancelProcess(pid=21, stop=asyncio.Event())
+
+    monkeypatch.setattr(maxcso_module.asyncio, "create_subprocess_exec", fake_exec)
+
+    gen = service.convert(str(src_path), str(out_path), "cso_compress")
+    assert (await gen.__anext__())["progress"] == 1  # "Starting..." preamble
+    await gen.__anext__()  # enters the runner: spawns (writes partial), reads a line
+    assert out_path.exists()
+
+    await gen.aclose()  # GeneratorExit -> in-place cleanup
     assert not out_path.exists()
 
 
