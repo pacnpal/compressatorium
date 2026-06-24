@@ -152,10 +152,33 @@ async def test_convert_nonzero_exit_raises(tmp_path, monkeypatch, keys_present):
 
     monkeypatch.setattr(nsz_module.asyncio, "create_subprocess_exec", fake_exec)
 
-    with pytest.raises(RuntimeError, match="exit code 1"):
+    with pytest.raises(RuntimeError, match="return code 1"):
         await _drain(
             nsz_module.nsz_service.convert(str(src_path), str(out_path), "nsz_compress"),
         )
+    assert not out_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_convert_missing_output_raises_with_tail(tmp_path, monkeypatch, keys_present):
+    """nsz exiting 0 without producing a file (e.g. a silent key problem) raises
+    via the runner's require_output guard, surfacing the printed reason in the
+    error rather than a bare "no output" message."""
+    src_path = tmp_path / "game.nsp"
+    src_path.write_bytes(b"input")
+    out_path = tmp_path / "game.nsz"
+
+    async def fake_exec(*_args, **_kwargs):
+        # Exits 0 but never writes the produced file into the work dir.
+        return _FakeProcess(pid=9, chunks=[b"title key missing\n"], returncode=0)
+
+    monkeypatch.setattr(nsz_module.asyncio, "create_subprocess_exec", fake_exec)
+
+    with pytest.raises(RuntimeError, match="produced no output file") as excinfo:
+        await _drain(
+            nsz_module.nsz_service.convert(str(src_path), str(out_path), "nsz_compress"),
+        )
+    assert "title key missing" in str(excinfo.value)
     assert not out_path.exists()
 
 
