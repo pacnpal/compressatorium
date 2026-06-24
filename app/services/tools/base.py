@@ -189,6 +189,26 @@ class BaseTool:
                 return m
         raise KeyError(mode)
 
+    @staticmethod
+    def _basic_info_fields(raw: dict) -> dict:
+        """The shared ``BasicFileInfo`` fields pulled from a tool's raw info dict.
+
+        The five "what is this file" tools (z3ds, nsz, cso, romz, makeps3iso)
+        build their info model from this, so the identical ``raw[...] -> field``
+        mapping lives in one place. Required fields are indexed directly (the
+        services always populate them); the optional pair uses ``.get`` so a
+        missing key becomes ``None`` rather than a KeyError.
+        """
+        return {
+            "file": raw["file"],
+            "size": raw["size"],
+            "size_display": raw["size_display"],
+            "format": raw.get("format"),
+            "extension": raw["extension"],
+            "compressed": raw["compressed"],
+            "compression_type": raw.get("compression_type"),
+        }
+
     def detect_output(self, input_path: str) -> OutputStatus | None:
         return None
 

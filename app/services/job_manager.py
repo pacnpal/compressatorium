@@ -20,13 +20,10 @@ from services.archive import archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
 from services.concurrency_manager import concurrency_manager
-from services.disc_id import embed_in_chd as disc_id_embed
-from services.disc_id import extract_from_source as disc_id_from_source
 from services.lock_manager import lock_manager
 from services.makeps3iso import makeps3iso_service
-from services.tools import registry
+from services.tools import ModeKind, registry
 from services.verification_store import verification_store
-from services.z3ds_compress import Z3DS_DECOMPRESS_FORMATS, Z3DS_OUTPUT_FORMATS
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
@@ -41,6 +38,23 @@ _EXTERNAL_JOB_MODES = frozenset({
     ConversionMode.METADATA_SCAN,
     ConversionMode.DAT_MATCH,
 })
+
+
+def _is_conversion_job(job) -> bool:
+    """A real conversion job, not external bookkeeping (metadata scan / DAT match).
+
+    The single definition of "counts toward the conversion queue", used by every
+    backpressure / queue-depth / stuck-detection surface so they can't drift.
+    """
+    return job.mode not in _EXTERNAL_JOB_MODES
+
+
+def _is_active_conversion(job) -> bool:
+    """A conversion job currently occupying the queue (queued or processing)."""
+    return (
+        job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+        and _is_conversion_job(job)
+    )
 
 
 def _paths_collide(path_a: str, path_b: str) -> bool:
@@ -122,10 +136,7 @@ class JobManager:
 
         needed = max(1, int(additional_jobs))
         current_depth = sum(
-            1
-            for job in self.jobs.values()
-            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
-            and job.mode not in _EXTERNAL_JOB_MODES
+            1 for job in self.jobs.values() if _is_active_conversion(job)
         )
         if current_depth + needed > max_depth:
             raise QueueBackpressureError(
@@ -158,19 +169,20 @@ class JobManager:
                 mode.value, file_path, output_dir,
             )
             # The HTTP routes validate inputs before passing an explicit
-            # output_path; direct service callers reach this fallback, so
-            # re-assert the guards the legacy per-tool fallback enforced.
-            if mode == ConversionMode.Z3DS_COMPRESS:
+            # output_path; direct service callers reach this fallback. Most
+            # tools' output_path() raises for an unsupported extension, but
+            # z3ds's does not, so keep its input-extension gate -- now read from
+            # the mode's declared input_extensions instead of the per-direction
+            # Z3DS_*_FORMATS constants.
+            spec = registry.spec(mode.value)
+            if spec.tool_id == "z3ds":
                 ext = Path(file_path).suffix.lower()
-                if ext not in Z3DS_OUTPUT_FORMATS:
+                if ext not in spec.input_extensions:
                     raise ValueError(f"Unsupported file extension: {ext}")
-            elif mode == ConversionMode.Z3DS_DECOMPRESS:
-                ext = Path(file_path).suffix.lower()
-                if ext not in Z3DS_DECOMPRESS_FORMATS:
-                    raise ValueError(f"Unsupported file extension: {ext}")
-            elif mode.value.startswith("dolphin_") and _paths_collide(
-                output_path, file_path,
-            ):
+            # Generic same-path guard: a non-copy mode must never write over its
+            # own source (chdman copy is an intentional in-place .chd recompress;
+            # every other mode changes the extension so output != input).
+            if spec.kind != ModeKind.COPY and _paths_collide(output_path, file_path):
                 raise ValueError(
                     "Output path matches input; refusing to overwrite source"
                 )
@@ -533,10 +545,7 @@ class JobManager:
         consume queue capacity or trigger false backpressure errors.
         """
         return sum(
-            1
-            for job in self.jobs.values()
-            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
-            and job.mode not in _EXTERNAL_JOB_MODES
+            1 for job in self.jobs.values() if _is_active_conversion(job)
         )
 
     def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
@@ -752,9 +761,7 @@ class JobManager:
         for job in self.jobs.values():
             if job.id == job_id:
                 continue
-            if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
-                continue
-            if job.mode in _EXTERNAL_JOB_MODES:
+            if not _is_active_conversion(job):
                 continue
             # Reject a delete that targets a path inside another active
             # directory job's source folder (its whole subtree is in use).
@@ -849,14 +856,15 @@ class JobManager:
         Returns:
             Tuple of (queued_job_ids, processing_job_ids)
         """
-        queued_job_ids = [
-            job.id for job in self.jobs.values()
-            if job.status == JobStatus.QUEUED and job.mode not in _EXTERNAL_JOB_MODES
-        ]
-        processing_job_ids = [
-            job.id for job in self.jobs.values()
-            if job.status == JobStatus.PROCESSING and job.mode not in _EXTERNAL_JOB_MODES
-        ]
+        queued_job_ids: list[str] = []
+        processing_job_ids: list[str] = []
+        for job in self.jobs.values():
+            if not _is_conversion_job(job):
+                continue
+            if job.status == JobStatus.QUEUED:
+                queued_job_ids.append(job.id)
+            elif job.status == JobStatus.PROCESSING:
+                processing_job_ids.append(job.id)
         return queued_job_ids, processing_job_ids
 
     def is_stuck(self) -> bool:
@@ -868,15 +876,16 @@ class JobManager:
         Returns:
             True if conversion jobs are queued but none are processing, False otherwise
         """
-        has_queued = any(
-            job.status == JobStatus.QUEUED and job.mode not in _EXTERNAL_JOB_MODES
-            for job in self.jobs.values()
-        )
-        has_processing = any(
-            job.status == JobStatus.PROCESSING and job.mode not in _EXTERNAL_JOB_MODES
-            for job in self.jobs.values()
-        )
-        return has_queued and not has_processing
+        has_queued = False
+        for job in self.jobs.values():
+            if not _is_conversion_job(job):
+                continue
+            if job.status == JobStatus.PROCESSING:
+                # Any processing conversion means the queue isn't stuck; bail early.
+                return False
+            if job.status == JobStatus.QUEUED:
+                has_queued = True
+        return has_queued
 
     def get_stuck_state_info(self) -> Dict[str, object]:
         """Get information about the stuck state.
@@ -1528,45 +1537,25 @@ class JobManager:
     def _compute_output_size(self, job: ConversionJob) -> Optional[int]:
         """Total bytes of a completed job's output (None if absent).
 
-        Single source of truth for the three output shapes: a makeps3iso
-        directory job (single .iso or a split .0/.1/… set), an extractcd job
-        (.cue + .bin sidecar), and the common single-file output.
+        Single source of truth for every output shape: the primary output plus
+        each companion the mode wrote (extractcd's .bin sidecar, a split
+        folder_to_iso's numbered .iso.0/.1/… parts), enumerated from the owning
+        tool's ``companion_outputs`` hook rather than re-encoded per mode. A
+        split build leaves no bare .iso, so the primary getsize simply misses
+        and the numbered parts carry the whole total. Synchronous (a directory
+        mode's companion lookup scans the output dir) — call via
+        ``run_in_threadpool`` off the event loop.
         """
-        if job.input_kind == InputKind.DIRECTORY:
-            # makeps3iso may finish as a single .iso OR a split set (.0/.1/…)
-            # with no bare .iso, so sum whatever was produced (split_parts
-            # returns [base] or the numbered parts).
-            total_size = 0
-            for part in makeps3iso_service.split_parts(job.output_path):
-                try:
-                    total_size += os.path.getsize(part)
-                except OSError:
-                    pass
-            return total_size if total_size > 0 else None
-        if os.path.exists(job.output_path):
-            if job.mode.value == "extractcd":
-                cue_size = 0
-                bin_size = 0
-                try:
-                    cue_size = os.path.getsize(job.output_path)
-                except OSError:
-                    pass
-                try:
-                    bin_path = str(Path(job.output_path).with_suffix(".bin"))
-                    if os.path.exists(bin_path):
-                        bin_size = os.path.getsize(bin_path)
-                except OSError:
-                    pass
-                total_size = cue_size + bin_size
-                return total_size if total_size > 0 else None
-            # Guard the stat like the branches above: the file can vanish
-            # between the exists() check and here, and "None if absent" must
-            # hold rather than failing an otherwise-complete job.
+        companions = registry.for_mode(job.mode.value).companion_outputs(
+            job.output_path, job.mode.value,
+        )
+        total_size = 0
+        for path in [job.output_path, *companions]:
             try:
-                return os.path.getsize(job.output_path)
+                total_size += os.path.getsize(path)
             except OSError:
-                return None
-        return None
+                pass
+        return total_size if total_size > 0 else None
 
     async def _run_job(self, job_id: str):
         try:
@@ -1839,65 +1828,34 @@ class JobManager:
                 self._cancelled.discard(job_id)
                 job.progress = 100
 
-                # Output size = the primary plus every companion the mode wrote
-                # (extractcd's .bin, a split folder_to_iso's numbered .0/.1/…),
-                # enumerated from the tool instead of re-encoded per mode. A split
-                # build leaves no bare .iso, so the primary getsize simply misses
-                # and the numbered parts carry the whole total.
-                total_size = 0
-                # Off the event loop: a split folder_to_iso's companion lookup
-                # scans the output dir for numbered parts.
-                companions = await run_in_threadpool(
-                    registry.for_mode(job.mode.value).companion_outputs,
-                    job.output_path, job.mode.value,
-                )
-                for path in [job.output_path, *companions]:
-                    try:
-                        total_size += os.path.getsize(path)
-                    except OSError:
-                        pass
-                job.output_size = total_size if total_size > 0 else None
+                # Run the tool's post-convert hook before sizing the output.
+                # chdman uses it to embed disc-ID GAME/NAME tags into a freshly
+                # created CD/DVD CHD; the default is a no-op, so this is safe to
+                # call for every mode. Running it first means the output_size
+                # computed below reflects the tagged file. The source
+                # (input_path) is still present here, even when delete-on-verify
+                # is requested (deletion happens after verify).
+                try:
+                    await registry.for_mode(job.mode.value).post_convert(
+                        input_path, job.output_path, job.mode.value,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "Job %s post-convert hook skipped: %s", job_id, e
+                    )
 
-                # Embed game ID / title into CHD metadata after createcd/createdvd.
-                # Uses the source file (input_path) which is still available at this
-                # point, even when delete-on-verify is requested.
-                # GAME tag = normalized serial (emulator DB lookup key).
-                # NAME tag = human-readable title when available, serial otherwise.
-                if job.mode.value in {"createcd", "createdvd"} and os.path.exists(job.output_path):
-                    try:
-                        disc_info = await run_in_threadpool(disc_id_from_source, input_path)
-                        if disc_info and disc_info.get("game_id"):
-                            game_id = disc_info["game_id"]
-                            title = disc_info.get("title") or game_id
-                            embedded = await disc_id_embed(
-                                job.output_path,
-                                game_id,
-                                title,
-                                settings.chdman_path,
-                            )
-                            if embedded:
-                                logger.info(
-                                    "Job %s embedded disc ID %r in %s",
-                                    job_id,
-                                    game_id,
-                                    Path(job.output_path).name,
-                                )
-                            else:
-                                logger.debug(
-                                    "Job %s failed to embed disc ID %r in %s",
-                                    job_id,
-                                    game_id,
-                                    Path(job.output_path).name,
-                                )
-                    except Exception as e:
-                        logger.debug(
-                            "Job %s disc ID embed skipped: %s", job_id, e
-                        )
+                # Output size = primary + companions (extractcd's .bin, a split
+                # folder_to_iso's numbered parts), via the shared companion-aware
+                # helper. Off the event loop: a split folder_to_iso's companion
+                # lookup scans the output dir.
+                job.output_size = await run_in_threadpool(
+                    self._compute_output_size, job,
+                )
 
                 verified = False
                 source_deleted = False
                 if job.delete_on_verify:
-                    if job.mode.value.startswith("extract"):
+                    if not registry.spec(job.mode.value).supports_delete_on_verify:
                         raise RuntimeError(
                             "Delete-on-verify is only supported for "
                             "create/copy/Dolphin/3DS/Switch-compress modes"
@@ -1906,11 +1864,7 @@ class JobManager:
                         raise ConversionCancelled("Conversion cancelled")
 
                     verified = False
-                    job.message = (
-                        "Verifying output (zstd -t)..."
-                        if job.mode.value == "z3ds_compress"
-                        else "Verifying output..."
-                    )
+                    job.message = "Verifying output..."
                     await self._notify_subscribers(
                         job_id,
                         {

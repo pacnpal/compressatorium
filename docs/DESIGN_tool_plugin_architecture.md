@@ -191,6 +191,11 @@ class ToolPlugin(Protocol):
     def verify_stream(self, path: str) -> AsyncGenerator[dict, None]: ...
     async def info(self, path: str) -> dict: ...                    # raw dict
     def info_model(self, raw: dict, path: str) -> BaseModel: ...    # typed model for the API
+    # The five simple "what is this file" models (z3ds/nsz/cso/romz/makeps3iso)
+    # subclass models.BasicFileInfo (file/size/size_display/format/extension/
+    # compressed/compression_type); their info_model() builds the shared fields
+    # via BaseTool._basic_info_fields(raw) and adds only their extras, so the
+    # raw->model mapping is defined once.
 
     # DAT-match fast path: (sha1, match_type) pairs the tool can report
     # cheaply (chdman header/data SHA1 from the metadata cache, dolphin disc
@@ -205,8 +210,11 @@ class ToolPlugin(Protocol):
 
     def active_pids(self) -> list[int]: ...
 
-    # Optional post-processing hook (chdman uses it to embed disc-ID GAME/NAME
-    # tags after createcd/createdvd, today hardcoded at job_manager.py:1514).
+    # Post-convert hook, run once after a successful conversion. Default no-op
+    # (BaseTool); ChdmanTool overrides it to embed disc-ID GAME/NAME tags into a
+    # freshly created CD/DVD CHD. job_manager calls it generically for every
+    # mode, and ChainTool routes its final step through the same hook, so a
+    # cso_to_chd CHD is tagged exactly like a direct createdvd.
     async def post_convert(self, input_path: str, output_path: str, mode: str) -> None: ...
 
     # Sibling outputs a multi-file mode writes beside its primary output_path
@@ -294,7 +302,10 @@ class SubprocessRunner:
                   nice_via_wrapper=False, env=None,
                   require_output=False) -> AsyncGenerator[dict, None]:
         """Spawn cmd, stream stdout, yield {"progress","message"}.
-        Handles: nice/ionice wrap, PID tracking, \\r/\\n line buffering,
+        Handles: nice/ionice wrap, stdbuf, PID tracking, deterministic \\r/\\n
+        line buffering (CRLF/CR normalized to LF in one pass via
+        `_split_stream_lines` so segmentation is a pure function of the byte
+        stream, not chunk boundaries -- issue #183),
         stall timeout via compute_progress_stall_timeout, cancel-watcher
         (terminate->kill), ConversionCancelled, non-zero exit -> RuntimeError(tail),
         final 100%. `parse_progress(line) -> int|None` is the only per-tool knob
@@ -629,8 +640,8 @@ class ToolRegistry:
     def for_mode(self, mode: str) -> ToolPlugin: return self._by_mode[mode]
     def spec(self, mode: str) -> ModeSpec: return self.for_mode(mode).spec(mode)
     def mode_specs(self) -> list[ModeSpec]: return [m for t in self._tools.values() for m in t.modes]
-    def convertible_extensions(self) -> frozenset[str]:
-        return frozenset().union(*(t.input_extensions for t in self._tools.values()))
+    def convertible_extensions(self) -> tuple[str, ...]:   # sorted (issue #183)
+        return tuple(sorted(set().union(*(t.input_extensions for t in self._tools.values()))))
     def tools_for_input(self, filename: str) -> list[ToolPlugin]:
         ext = Path(filename).suffix.lower()
         return [t for t in self._tools.values() if ext in t.input_extensions]
@@ -640,13 +651,21 @@ class ToolRegistry:
     # Discovery helpers (issue #131): the union of every tool's produced /
     # verifiable extensions drives the registry-driven library scan, so a new
     # tool's outputs become scannable for free.
-    def output_extensions(self) -> frozenset[str]:
-        return frozenset().union(*(t.output_extensions for t in self._tools.values()))
-    def verify_extensions(self) -> frozenset[str]:
-        return frozenset().union(*(t.verify_extensions for t in self._tools.values()))
-    def scannable_extensions(self) -> frozenset[str]:
-        return self.output_extensions() | self.verify_extensions()
+    def output_extensions(self) -> tuple[str, ...]:
+        return tuple(sorted(set().union(*(t.output_extensions for t in self._tools.values()))))
+    def verify_extensions(self) -> tuple[str, ...]:
+        return tuple(sorted(set().union(*(t.verify_extensions for t in self._tools.values()))))
+    def scannable_extensions(self) -> tuple[str, ...]:
+        return tuple(sorted(set(self.output_extensions()) | set(self.verify_extensions())))
 ```
+
+> **Ordering (issue #183):** the extension-union helpers return a **sorted
+> `tuple`**, not a `frozenset`. Hash-seeded set iteration order varies across
+> processes, so any consumer that serializes an extension list (or uses it as an
+> ordered filter) would churn run-to-run; sorting at the seam makes every
+> consumer deterministic for free. The few consumers that still need set algebra
+> (`registry.scannable_extensions() - ARCHIVE_EXTENSIONS`, the archive
+> listable/gate unions) wrap the result in `set(...)` / `frozenset(...)` locally.
 
 `__init__.py`:
 
@@ -859,8 +878,9 @@ at a time. Nothing here changes the wire API until Phase 9 (optional).
   `registry.for_mode(job.mode.value)`.
 - Verify branch (`:1556`, `:1591`) → `plugin.verify(output_path)` uniformly
   (drops the z3ds special-case).
-- Move the disc-ID embed (`:1514`) into `ChdmanTool.post_convert`; job_manager
-  calls `plugin.post_convert(...)` generically.
+- Disc-ID embed now lives in `ChdmanTool.post_convert`; `_process_job` calls
+  `registry.for_mode(mode).post_convert(...)` generically (default no-op) and
+  `ChainTool` routes its final step through the same hook (done, #181).
 - **Tests:** job-pipeline tests (`test_external_job_api.py` neighbors), plus a
   conversion smoke test per tool with the binary stubbed.
 - Risk: medium (hot path). Ship behind close review; the behavior is a 1:1

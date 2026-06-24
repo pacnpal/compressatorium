@@ -149,13 +149,7 @@ class MakePs3IsoTool(BaseTool):
 
     def info_model(self, raw: dict, path: str) -> Ps3IsoInfo:
         return Ps3IsoInfo(
-            file=raw["file"],
-            size=raw["size"],
-            size_display=raw["size_display"],
-            format=raw.get("format"),
-            extension=raw["extension"],
-            compressed=raw["compressed"],
-            compression_type=raw.get("compression_type"),
+            **self._basic_info_fields(raw),
             title=raw.get("title"),
             title_id=raw.get("title_id"),
         )

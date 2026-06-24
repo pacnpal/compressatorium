@@ -7,15 +7,33 @@ prefix checks across the codebase.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+from fastapi.concurrency import run_in_threadpool
+
+from logging_setup import get_logger
 from models import CHDInfo, OutputStatus
 from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
+from services.disc_id import (
+    clear_embedded_disc_id,
+    embed_in_chd,
+    extract_from_source,
+    read_embedded_game_id,
+)
 from services.lock_manager import lock_manager
 
 from .base import BaseTool
 from .spec import ModeKind, ModeSpec
+
+logger = get_logger()
+
+# Only CD/DVD images carry a readable disc serial: they hold an ISO 9660
+# filesystem with SYSTEM.CNF (PS1/PS2) or PSP_GAME/PARAM.SFO (PSP), or a
+# Dreamcast IP.BIN. createraw/createhd (hard-disk images) and createld
+# (laserdisc) have no such structure, so disc-ID tagging is scoped to these two.
+_DISC_ID_MODES = frozenset({"createcd", "createdvd"})
 
 _CREATE_MODES = {
     "createraw": "Create Raw",
@@ -152,6 +170,60 @@ class ChdmanTool(BaseTool):
             input_path, output_path, mode,
             compression=compression, cancel_event=cancel_event,
         )
+
+    async def post_convert(
+        self, input_path: str, output_path: str, mode: str,
+    ) -> None:
+        """Embed disc-ID GAME/NAME tags into a freshly created CD/DVD CHD.
+
+        This is the single home for conversion-time disc-ID tagging: a direct
+        ``createcd`` / ``createdvd`` job reaches it via
+        ``job_manager._process_job`` and a ``cso_to_chd`` chain reaches it via
+        ``ChainTool``'s final step, so both paths tag identically.
+
+        Only ``createcd`` / ``createdvd`` carry a disc serial, so every other
+        chdman mode is a no-op. Best-effort: a failure here never fails the job.
+        Idempotent: if the CHD already carries a GAME tag equal to the source's
+        serial the embed is skipped, so re-invoking the hook never appends a
+        duplicate tag.
+
+        ``GAME`` = normalized serial (emulator DB lookup key);
+        ``NAME`` = human-readable title when available, serial otherwise.
+        """
+        if mode not in _DISC_ID_MODES:
+            return
+        if Path(output_path).suffix.lower() != ".chd":
+            return
+        if not await run_in_threadpool(os.path.exists, output_path):
+            return
+        try:
+            disc_info = await run_in_threadpool(extract_from_source, input_path)
+            if not (disc_info and disc_info.get("game_id")):
+                return
+            game_id = disc_info["game_id"]
+            existing = await read_embedded_game_id(output_path, self.binary_path)
+            if existing == game_id:
+                return
+            if existing is not None:
+                # chdman addmeta appends rather than replaces, so a CHD that
+                # already carries a *different* serial must have the stale
+                # GAME/NAME stripped first — otherwise the old tag persists and
+                # the embed never converges. A freshly created CHD has no tag,
+                # so this is skipped in the normal path.
+                await clear_embedded_disc_id(output_path, self.binary_path)
+            title = disc_info.get("title") or game_id
+            embedded = await embed_in_chd(output_path, game_id, title, self.binary_path)
+            if embedded:
+                logger.info(
+                    "Embedded disc ID %r in %s", game_id, Path(output_path).name,
+                )
+            else:
+                logger.debug(
+                    "Failed to embed disc ID %r in %s",
+                    game_id, Path(output_path).name,
+                )
+        except Exception as exc:  # best effort; tagging never fails the job
+            logger.debug("Disc ID embed skipped for %s: %s", output_path, exc)
 
     async def verify(self, path: str) -> dict:
         return await self._service.verify(path)

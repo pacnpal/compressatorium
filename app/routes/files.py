@@ -518,7 +518,9 @@ async def search_files(
                 return
             visited_dirs.add(real_dir)
             try:
-                for item in os.listdir(dir_path):
+                # Sorted for deterministic search order, matching scan_directory's
+                # sorted walk above; raw readdir order varies by FS (issue #183).
+                for item in sorted(os.listdir(dir_path)):
                     if is_junk_entry(item):
                         continue
                     item_path = os.path.join(dir_path, item)

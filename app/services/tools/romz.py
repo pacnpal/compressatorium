@@ -167,13 +167,7 @@ class RomzTool(BaseTool):
 
     def info_model(self, raw: dict, path: str) -> RomzInfo:
         return RomzInfo(
-            file=raw["file"],
-            size=raw["size"],
-            size_display=raw["size_display"],
-            format=raw.get("format"),
-            extension=raw["extension"],
-            compressed=raw["compressed"],
-            compression_type=raw.get("compression_type"),
+            **self._basic_info_fields(raw),
             contained_name=raw.get("contained_name"),
             original_size=raw.get("original_size"),
             ratio=raw.get("ratio"),

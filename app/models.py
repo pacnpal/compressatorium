@@ -268,48 +268,37 @@ class DolphinDiscInfo(BaseModel):
     raw_data: str = ""
 
 
-class Z3DSInfo(BaseModel):
+class BasicFileInfo(BaseModel):
+    """Shared shape for the simple per-file info models: identity, size, and the
+    format/compression summary.
+
+    The five tools whose /info just reports "what is this file" (z3ds, nsz, cso,
+    romz, makeps3iso) return this exact shape; the two that add fields (romz's
+    archive ratio, makeps3iso's title) subclass it instead of repeating it.
+    """
+    file: str
+    size: int
+    size_display: str
+    format: str | None = None
+    extension: str
+    compressed: bool
+    compression_type: str | None = None
+
+
+class Z3DSInfo(BasicFileInfo):
     """Information about a Nintendo 3DS ROM file."""
-    file: str
-    size: int
-    size_display: str
-    format: str | None = None
-    extension: str
-    compressed: bool
-    compression_type: str | None = None
 
 
-class NszInfo(BaseModel):
+class NszInfo(BasicFileInfo):
     """Information about a Nintendo Switch NSP/XCI/NSZ/XCZ file."""
-    file: str
-    size: int
-    size_display: str
-    format: str | None = None
-    extension: str
-    compressed: bool
-    compression_type: str | None = None
 
 
-class CsoInfo(BaseModel):
+class CsoInfo(BasicFileInfo):
     """Information about a PSP/PS2 ISO/CSO/ZSO/DAX file."""
-    file: str
-    size: int
-    size_display: str
-    format: str | None = None
-    extension: str
-    compressed: bool
-    compression_type: str | None = None
 
 
-class RomzInfo(BaseModel):
+class RomzInfo(BasicFileInfo):
     """Information about a handheld ROM (GB/GBC/GBA/NDS) or its .7z/.zip archive."""
-    file: str
-    size: int
-    size_display: str
-    format: str | None = None
-    extension: str
-    compressed: bool
-    compression_type: str | None = None
     # Archive-only extras: the single ROM inside, its uncompressed size, and the
     # archive-to-original size ratio (None for a loose ROM source).
     contained_name: str | None = None
@@ -317,15 +306,8 @@ class RomzInfo(BaseModel):
     ratio: str | None = None
 
 
-class Ps3IsoInfo(BaseModel):
+class Ps3IsoInfo(BasicFileInfo):
     """Information about a decrypted PS3 disc/JB folder (makeps3iso source)."""
-    file: str
-    size: int
-    size_display: str
-    format: str | None = None
-    extension: str
-    compressed: bool
-    compression_type: str | None = None
     title: str | None = None
     title_id: str | None = None
 

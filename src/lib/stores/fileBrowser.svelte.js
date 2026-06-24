@@ -138,6 +138,21 @@ class FileBrowserStore {
       }
       if (av < bv) return -1 * order;
       if (av > bv) return 1 * order;
+      // Stable final tiebreaker: rows with equal primary keys keep a
+      // deterministic order across refreshes, so they don't jump when the
+      // [...files, ...archives] input order shifts (issue #183). Follows the
+      // sort direction so toggling asc/desc fully inverts the view.
+      const ap = (a.path ?? '').toLowerCase();
+      const bp = (b.path ?? '').toLowerCase();
+      if (ap < bp) return -1 * order;
+      if (ap > bp) return 1 * order;
+      // Case-sensitive final tiebreaker: on a case-sensitive volume /Foo.iso and
+      // /foo.iso are distinct rows that tie on the lowercased compare above, so
+      // fall through to the raw path for a total, stable order (issue #183).
+      const aps = a.path ?? '';
+      const bps = b.path ?? '';
+      if (aps < bps) return -1 * order;
+      if (aps > bps) return 1 * order;
       return 0;
     });
     return list;

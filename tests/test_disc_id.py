@@ -34,10 +34,12 @@ from app.services.disc_id import (
     _parse_ipbin,
     _parse_param_sfo,
     _parse_system_cnf,
+    clear_embedded_disc_id,
     embed_in_chd,
     ensure_disc_id_embedded,
     extract_from_chd,
     extract_from_source,
+    read_embedded_game_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -975,6 +977,52 @@ async def test_embed_in_chd_addmeta_failure():
         ok = await embed_in_chd("/fake/game.chd", "SLUS_20312", None, "chdman")
 
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# read_embedded_game_id
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_read_embedded_game_id_returns_trimmed_serial():
+    async def fake_dump(chd_path, tag, chdman_path):
+        assert tag == TAG_GAME
+        return "  SLUS-20312\n"
+
+    with patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dump):
+        result = await read_embedded_game_id("/fake/game.chd", "chdman")
+
+    assert result == "SLUS-20312"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [None, "", "   \n"])
+async def test_read_embedded_game_id_none_when_absent_or_blank(raw):
+    async def fake_dump(chd_path, tag, chdman_path):
+        return raw
+
+    with patch("app.services.disc_id._dumpmeta_text", side_effect=fake_dump):
+        assert await read_embedded_game_id("/fake/game.chd", "chdman") is None
+
+
+# ---------------------------------------------------------------------------
+# clear_embedded_disc_id
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_clear_embedded_disc_id_deletes_game_and_name():
+    deleted: list[str] = []
+
+    async def fake_delmeta(chd_path, tag, chdman_path):
+        deleted.append(tag)
+        return True
+
+    with patch("app.services.disc_id._delmeta", side_effect=fake_delmeta):
+        await clear_embedded_disc_id("/fake/game.chd", "chdman")
+
+    # Both GAME and NAME are stripped so a later addmeta converges on a single
+    # current pair instead of appending to a stale one (chdman addmeta appends).
+    assert deleted == [TAG_GAME, TAG_NAME]
 
 
 # ---------------------------------------------------------------------------

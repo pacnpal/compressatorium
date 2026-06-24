@@ -164,17 +164,7 @@ class MaxcsoTool(BaseTool):
         return await run_in_threadpool(self._service.info, path)
 
     def info_model(self, raw: dict, path: str) -> CsoInfo:
-        # Direct indexing mirrors z3ds/nsz: maxcso_service.info() always
-        # populates the required fields, so a bare .get() would inject None.
-        return CsoInfo(
-            file=raw["file"],
-            size=raw["size"],
-            size_display=raw["size_display"],
-            format=raw.get("format"),
-            extension=raw["extension"],
-            compressed=raw["compressed"],
-            compression_type=raw.get("compression_type"),
-        )
+        return CsoInfo(**self._basic_info_fields(raw))
 
     def active_pids(self) -> list[int]:
         return self._service.active_pids()

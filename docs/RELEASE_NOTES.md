@@ -2,11 +2,22 @@
 
 ## Unreleased
 
-Idempotency, robustness, and modularity hardening (issues #184 and #179, part of
-the #177 tech-debt epic).
+Idempotency, robustness, determinism, and modularity hardening (issues #184, #183
+and #179, part of the #177 tech-debt epic).
 
 ### Changed
 
+- **Deterministic ordering across the registry, search, and runner (issue
+  #183).** The `ToolRegistry` extension-union helpers (`convertible_extensions`,
+  `archive_input_extensions`, `verify_extensions`, `output_extensions`,
+  `scannable_extensions`) now return a **sorted `tuple`** instead of a
+  `frozenset`, so any serialized extension list is byte-stable run-to-run.
+  Recursive `/api/files/search` results are sorted to match the directory
+  listing, the file browser keeps a stable order for rows with equal sort keys,
+  and subprocess progress-line segmentation no longer depends on read-chunk
+  boundaries. The cross-process FIFO job ticket is hardened against counter
+  fallback/recovery collisions and now preserves legacy ticket files across a
+  rolling restart. No wire-API change.
 - **CHD embedded-hash matching is hardened against a metadata-cache TOCTOU.** When a
   CHD is matched against a DAT, its cached header/data SHA1 are now read and
   freshness-checked as a single observation (read the row, then re-stat), so a CHD

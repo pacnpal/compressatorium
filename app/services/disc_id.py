@@ -1097,6 +1097,41 @@ async def embed_in_chd(
     return True
 
 
+async def read_embedded_game_id(
+    chd_path: str,
+    chdman_path: str = "chdman",
+) -> Optional[str]:
+    """Return the GAME serial already embedded in *chd_path*, or ``None``.
+
+    Reads only our own embedded GAME tag (no disc-sector / GDRO / companion-file
+    fallback, unlike :func:`extract_from_chd`), so callers can cheaply check
+    whether a CHD is *already* tagged before writing. This is what keeps the
+    conversion-time embed idempotent: re-running it on an already-tagged CHD
+    can be skipped instead of appending a duplicate GAME tag.
+    """
+    raw = await _dumpmeta_text(chd_path, TAG_GAME, chdman_path)
+    if raw and raw.strip():
+        return raw.strip()
+    return None
+
+
+async def clear_embedded_disc_id(
+    chd_path: str,
+    chdman_path: str = "chdman",
+) -> None:
+    """Strip embedded GAME/NAME tags so a later :func:`embed_in_chd` converges.
+
+    ``chdman addmeta`` *appends* a new metadata item rather than replacing an
+    existing one, so re-tagging a CHD that already carries a *different* serial
+    would leave the stale GAME/NAME behind (and accumulate duplicates on repeat).
+    Callers that detect a serial mismatch call this first to delete the old pair
+    before writing the new one. Best-effort: a freshly created CHD has nothing
+    to delete (``delmeta`` simply reports the tag absent).
+    """
+    await _delmeta(chd_path, TAG_GAME, chdman_path)
+    await _delmeta(chd_path, TAG_NAME, chdman_path)
+
+
 async def ensure_disc_id_embedded(
     chd_path: str,
     chdman_path: str = "chdman",
@@ -1282,6 +1317,40 @@ async def _addmeta_text(
         return True
     except Exception as e:
         logger.warning("disc_id: addmeta tag=%s error: %s", tag, e)
+        return False
+
+
+async def _delmeta(chd_path: str, tag: str, chdman_path: str) -> bool:
+    """Delete a metadata tag from *chd_path* via chdman delmeta (best-effort).
+
+    Returns True on success. A missing tag (nothing to delete) reports a non-zero
+    exit, which is treated as a benign no-op by callers, the point is only to
+    guarantee the tag is absent before a fresh addmeta writes the current value.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            chdman_path,
+            "delmeta",
+            "-i", chd_path,
+            "-t", tag,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "disc_id: delmeta tag=%s not present or failed (rc=%s) in %s: %s",
+                    tag,
+                    proc.returncode,
+                    chd_path,
+                    stderr.decode(errors="replace").strip(),
+                )
+            return False
+        logger.debug("disc_id: delmeta tag=%s removed from %s", tag, chd_path)
+        return True
+    except Exception as e:
+        logger.warning("disc_id: delmeta tag=%s error: %s", tag, e)
         return False
 
 
