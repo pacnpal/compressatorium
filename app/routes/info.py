@@ -232,7 +232,7 @@ async def scan_metadata_task(
     # subsystem, never DAT-matchable as a whole, so the romz tool advertising
     # .7z/.zip outputs must not make the scan enumerate and hash every unrelated
     # archive under the configured volumes.
-    scan_extensions = registry.scannable_extensions() - ARCHIVE_EXTENSIONS
+    scan_extensions = frozenset(registry.scannable_extensions()) - ARCHIVE_EXTENSIONS
 
     def collect_scannable_paths():
         """Collect all scannable output paths from volumes (runs in thread pool)."""

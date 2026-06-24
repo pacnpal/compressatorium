@@ -35,7 +35,7 @@ def test_archive_input_extensions_cover_all_source_tools():
     # archive: chdman create sources, Dolphin sources, 3DS sources (issue #113),
     # Switch (nsz) sources, and .chd (chdman extract decompresses a .chd pulled
     # out of an archive back to a disc image).
-    exts = registry.archive_input_extensions()
+    exts = set(registry.archive_input_extensions())
     assert {".3ds", ".cci", ".cia"} <= exts          # 3DS (the reported gap)
     assert {".rvz", ".gcz", ".wia", ".wbfs"} <= exts  # Dolphin
     assert {".gdi", ".iso", ".cue", ".bin"} <= exts   # chdman create
@@ -52,7 +52,7 @@ def test_browse_listing_is_global_known_superset_of_convert_gate():
     # source extension shows (so romz ROMs aren't an "Empty folder"), and it's a
     # superset of the convert-gate set the search/conversion path uses.
     listable = archive_service._listable_extensions()
-    convertible = registry.archive_input_extensions()
+    convertible = set(registry.archive_input_extensions())
     assert convertible <= listable
     # Handheld ROMs surface in browse because they're known sources...
     assert {".gb", ".gbc", ".gba", ".nds"} <= listable

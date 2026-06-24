@@ -121,9 +121,11 @@ def test_tool_info_model_uses_shared_fields():
 # --- Item 5: registry-authoritative archive extensions (no static fallback) ---
 
 def test_listable_extensions_from_registry():
+    # Registry union helpers return sorted tuples (issue #183), so wrap them for
+    # set algebra — exactly as ArchiveService._listable_extensions does.
     expected = (
-        registry.convertible_extensions()
-        | registry.archive_input_extensions()
+        frozenset(registry.convertible_extensions())
+        | frozenset(registry.archive_input_extensions())
     ) - ARCHIVE_EXTENSIONS
     assert ArchiveService._listable_extensions() == expected
     # Archive containers are never listable members.
@@ -131,7 +133,9 @@ def test_listable_extensions_from_registry():
 
 
 def test_convert_gate_extensions_from_registry():
-    assert ArchiveService._convert_gate_extensions() == registry.archive_input_extensions()
+    assert ArchiveService._convert_gate_extensions() == frozenset(
+        registry.archive_input_extensions()
+    )
 
 
 def test_listable_extensions_fails_loudly_on_empty_registry(monkeypatch):

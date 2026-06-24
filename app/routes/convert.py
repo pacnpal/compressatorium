@@ -123,15 +123,15 @@ def _validate_request_compression(spec, mode: str, compression: str | None) -> N
             status_code=400,
             detail="Compression levels are only supported for Dolphin and Switch formats",
         )
-    if mode == "dolphin_iso":
+    if (
+        spec.tool_id == "dolphin"
+        and not (spec.supports_compression or spec.supports_compression_level)
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Compression not applicable for ISO extraction",
-        )
-    if mode == "dolphin_gcz":
-        raise HTTPException(
-            status_code=400,
-            detail="GCZ uses fixed internal compression",
+            detail=_NO_COMPRESSION_DETAIL.get(
+                mode, "Compression is not supported for this Dolphin mode"
+            ),
         )
     if spec.tool_id == "dolphin" and "," in compression:
         raise HTTPException(
@@ -441,6 +441,33 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
 }
 
 
+# Tools whose plan-time input validation is the generic "the input extension
+# must be one the mode declares" check (collapsed from the former per-tool
+# is_<tool> ladder, design §3.1). chdman is intentionally absent: it validates
+# by .chd presence (create needs non-.chd, extract/copy need .chd) because it
+# drops .chd from input_extensions. Each tool keeps its own skip reason/message.
+_BAD_EXTENSION_REASON: dict[str, SkipReason] = {
+    "dolphin": SkipReason.DOLPHIN_BAD_EXTENSION,
+    "z3ds": SkipReason.Z3DS_BAD_EXTENSION,
+    "nsz": SkipReason.NSZ_BAD_EXTENSION,
+    "cso": SkipReason.CSO_BAD_EXTENSION,
+    "chain": SkipReason.CHAIN_BAD_EXTENSION,
+    "romz": SkipReason.ROMZ_BAD_EXTENSION,
+}
+
+
+# Dolphin modes that take no compression input, with their specific advisory
+# message. Collapsed from the former per-mode dolphin_iso / dolphin_gcz branches
+# via a data lookup (not a capability branch), so the exact wire detail is
+# preserved while the gate is driven by spec fields. Scoped to dolphin because
+# other tools that merely ignore compression (e.g. the cso_to_chd chain, whose
+# ChainTool drops a stale preset) historically queued rather than 400'd.
+_NO_COMPRESSION_DETAIL: dict[str, str] = {
+    "dolphin_iso": "Compression not applicable for ISO extraction",
+    "dolphin_gcz": "GCZ uses fixed internal compression",
+}
+
+
 async def _plan_directory_job(
     file_path: str,
     *,
@@ -541,13 +568,6 @@ async def plan_job(
     backpressure, the cross-file archive multi-select guard, the batch dedup
     pass) stay in the endpoints, not here.
     """
-    is_dolphin = spec.tool_id == "dolphin"
-    is_z3ds = spec.tool_id == "z3ds"
-    is_nsz = spec.tool_id == "nsz"
-    is_cso = spec.tool_id == "cso"
-    is_romz = spec.tool_id == "romz"
-    is_chain = spec.tool_id == "chain"
-
     # Directory-as-input mode (makeps3iso folder->iso): a folder, not a file with
     # a suffix. Validate isdir + the tool's source-layout detector instead of
     # isfile + an extension match, and derive the output / display name from the
@@ -616,66 +636,38 @@ async def plan_job(
     if spec.kind == ModeKind.CREATE and file_path.lower().endswith(".chd"):
         raise SkipFile(SkipReason.CREATE_REQUIRES_NON_CHD)
 
-    if is_dolphin:
-        # Use the archive-aware extension (the member's, not the ".zip"
-        # container's) so archive members are validated against the real input.
+    # Generic input-extension gate (collapsed from the per-tool is_<tool>
+    # ladder, design §3.1): every non-chdman tool validates that the
+    # archive-aware input extension (the member's, not the ".zip" container's)
+    # is one its mode declares. spec.input_extensions is per-mode, so each
+    # direction is validated against the right set. chdman is handled above by
+    # the .chd create/extract checks (it drops .chd from input_extensions). The
+    # per-tool skip reason carries the tool-specific message.
+    bad_ext_reason = _BAD_EXTENSION_REASON.get(spec.tool_id)
+    if bad_ext_reason is not None:
         ext = _input_extension(file_path)
         if ext not in spec.input_extensions:
-            raise SkipFile(SkipReason.DOLPHIN_BAD_EXTENSION)
+            raise SkipFile(bad_ext_reason)
 
-    if is_z3ds:
-        ext = _input_extension(file_path)
-        if ext not in spec.input_extensions:
-            raise SkipFile(SkipReason.Z3DS_BAD_EXTENSION)
-
-    if is_nsz:
-        # spec.input_extensions is per-mode, so this validates the right set for
-        # whichever direction (compress: .nsp/.xci, decompress: .nsz/.xcz).
-        ext = _input_extension(file_path)
-        if ext not in spec.input_extensions:
-            raise SkipFile(SkipReason.NSZ_BAD_EXTENSION)
-
-    if is_cso:
-        # spec.input_extensions is per-mode: compress (.iso) vs decompress
-        # (.cso/.zso/.dax).
-        ext = _input_extension(file_path)
-        if ext not in spec.input_extensions:
-            raise SkipFile(SkipReason.CSO_BAD_EXTENSION)
-
-    if is_chain:
-        # Composite modes (tool_id="chain") match none of the legacy per-tool
-        # branches, so without this a direct API/batch submission would accept
-        # any non-.chd file and fail late in the worker. Validate the chain's
-        # declared source extensions (cso_to_chd: .cso/.zso/.dax).
-        ext = _input_extension(file_path)
-        if ext not in spec.input_extensions:
-            raise SkipFile(SkipReason.CHAIN_BAD_EXTENSION)
-
-    if is_romz:
-        # spec.input_extensions is per-mode: compress (.gb/.gbc/.gba/.nds) vs
-        # extract (.7z/.zip).
-        ext = _input_extension(file_path)
-        if ext not in spec.input_extensions:
-            raise SkipFile(SkipReason.ROMZ_BAD_EXTENSION)
-        if mode == "romz_extract":
-            # Validate the archive is a real single-ROM archive BEFORE planning
-            # an output / allowing overwrite. get_output_path_for_mode falls
-            # back to the suffix-stripped stem for unreadable/invalid archives,
-            # so without this an ordinary/corrupt/multi-ROM archive next to an
-            # existing same-stem file could drive duplicate_action=overwrite to
-            # delete that unrelated file before convert() ever validates.
-            try:
-                await run_in_threadpool(
-                    romz_service._single_rom_member, file_path,
-                )
-            except Exception as exc:
-                # Broad by design: corrupt/multi-ROM archives surface as
-                # ValueError, zipfile.BadZipFile, py7zr errors, OSError, … and
-                # all map to the same skip. Log the cause for troubleshooting.
-                logger.debug(
-                    "romz_extract validation failed for %s: %s", file_path, exc,
-                )
-                raise SkipFile(SkipReason.ROMZ_INVALID_ARCHIVE) from None
+    if mode == "romz_extract":
+        # romz-specific: validate the archive is a real single-ROM archive
+        # BEFORE planning an output / allowing overwrite. get_output_path_for_mode
+        # falls back to the suffix-stripped stem for unreadable/invalid archives,
+        # so without this an ordinary/corrupt/multi-ROM archive next to an
+        # existing same-stem file could drive duplicate_action=overwrite to
+        # delete that unrelated file before convert() ever validates.
+        try:
+            await run_in_threadpool(
+                romz_service._single_rom_member, file_path,
+            )
+        except Exception as exc:
+            # Broad by design: corrupt/multi-ROM archives surface as
+            # ValueError, zipfile.BadZipFile, py7zr errors, OSError, … and
+            # all map to the same skip. Log the cause for troubleshooting.
+            logger.debug(
+                "romz_extract validation failed for %s: %s", file_path, exc,
+            )
+            raise SkipFile(SkipReason.ROMZ_INVALID_ARCHIVE) from None
 
     # Calculate output path and handle duplicates
     # For archive files: use output_dir if specified, otherwise save next to archive
@@ -701,11 +693,14 @@ async def plan_job(
                     output_path = get_unique_output_path(output_path)
 
     if (
-        is_dolphin
+        spec.kind != ModeKind.COPY
         and duplicate_action == DuplicateAction.OVERWRITE
         and output_path
         and _is_same_path(output_path, file_path)
     ):
+        # Any non-copy mode writing over its own source would destroy it; only
+        # chdman copy (.chd -> .chd) is an intentional in-place recompress, and
+        # every other mode changes the extension so output never equals input.
         raise SkipFile(SkipReason.DOLPHIN_SAME_PATH)
 
     allow_overwrite = (

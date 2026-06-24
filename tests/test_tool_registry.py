@@ -349,7 +349,7 @@ def test_output_extensions_cover_mode_output_exts(tool_id):
 
 def test_output_extensions_union_covers_every_tool():
     """registry.output_extensions() is the union of all tools' outputs."""
-    union = registry.output_extensions()
+    union = set(registry.output_extensions())
     for tool in registry.all():
         assert tool.output_extensions <= union
     # Representative outputs from each tool.
@@ -358,8 +358,10 @@ def test_output_extensions_union_covers_every_tool():
 
 def test_scannable_extensions_are_output_plus_verify():
     """Discovery walks produced outputs *and* verifiable inputs (issue #131)."""
-    scannable = registry.scannable_extensions()
-    assert scannable == registry.output_extensions() | registry.verify_extensions()
+    scannable = set(registry.scannable_extensions())
+    assert scannable == set(registry.output_extensions()) | set(
+        registry.verify_extensions()
+    )
     # Non-CHD outputs that historically were never scanned are now eligible.
     assert {".chd", ".rvz", ".wia", ".gcz", ".nsz", ".xcz"} <= scannable
     # The extractcd .bin data-track sidecar (what Redump DATs index) is in too.

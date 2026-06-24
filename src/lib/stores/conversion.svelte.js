@@ -27,16 +27,11 @@ function defaultModeFor(toolId) {
 // submitted a Dolphin job without first opening the codec picker. Seed with
 // a tool-appropriate default so the first submission always works.
 function defaultCompressionFor(toolId) {
-  if (toolId === 'dolphin') return ['zstd'];
-  if (toolId === 'nsz') return ['solid'];
-  // CSO ships a strong default: the 'max' effort preset (extra Zopfli/libdeflate
-  // trials for CSO/CSO2/DAX, brute-forced lz4 for ZSO) for the smallest output.
-  // It's lossless either way, and the Reset-to-default button brings it back.
-  if (toolId === 'cso') return ['max'];
-  // Handheld ROM packer defaults to 'max' (the -mx9 -md=256m -mfb=273 LZMA2
-  // profile) for the smallest archive; lossless either way.
-  if (toolId === 'romz') return ['max'];
-  return ['zlib'];
+  // The per-tool default codec seed now lives on each registry descriptor
+  // (`defaultCompression`), so this is a lookup instead of an
+  // `if (toolId === ...)` ladder. Each tool's rationale (Dolphin zstd, Switch
+  // 'solid', CSO/romz 'max' effort preset) is documented inline in registry.js.
+  return registry.forTool(toolId)?.defaultCompression ?? ['zlib'];
 }
 
 const PREF_SAVE_DEBOUNCE_MS = 500;

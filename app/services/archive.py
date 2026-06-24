@@ -147,8 +147,8 @@ class ArchiveService:
         from services.tools import registry
 
         exts = (
-            registry.convertible_extensions()
-            | registry.archive_input_extensions()
+            frozenset(registry.convertible_extensions())
+            | frozenset(registry.archive_input_extensions())
         ) - ARCHIVE_EXTENSIONS
         if not exts:
             # An empty union means the registry is unloaded/broken, not that
@@ -171,7 +171,7 @@ class ArchiveService:
         """
         from services.tools import registry
 
-        exts = registry.archive_input_extensions()
+        exts = frozenset(registry.archive_input_extensions())
         if not exts:
             raise RuntimeError(
                 "Tool registry produced no archive-input extensions — registry not loaded?"
