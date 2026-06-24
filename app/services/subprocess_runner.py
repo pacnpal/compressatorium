@@ -36,7 +36,7 @@ import os
 import shutil
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 
 from config import settings
 from fastapi.concurrency import run_in_threadpool
@@ -128,6 +128,23 @@ def info_timeout(owner: str | None = None) -> int:
 def verify_timeout(owner: str | None = None) -> int:
     """Effective ``verify`` subprocess timeout in seconds (0 disables)."""
     return max(0, int(_resolve_policy("verify_timeout", owner) or 0))
+
+
+def output_size_progress(current: int, expected_size: int) -> int:
+    """Estimate a 5–95% progress value from output-file growth.
+
+    The shared progress estimate for tools whose subprocess draws a TTY
+    progress bar that falls silent on a pipe (``maxcso``, ``nsz``, ``z3ds``):
+    with no parseable percent in stdout, the growing output file *is* the
+    progress signal, scored against an expected size (the input size times a
+    per-direction ratio — roughly 0.5 for compress, 2.0 for decompress). The
+    ratio only smooths the bar, so an inexact guess affects perceived
+    smoothness, not correctness. Clamped to ``[5, 95]``; :meth:`SubprocessRunner.run`
+    emits the terminal 100% on a clean exit. ``expected_size`` is floored at 1
+    to avoid a divide-by-zero on a zero-byte input.
+    """
+    expected = expected_size if expected_size > 0 else 1
+    return min(95, max(1, int(current / expected * 90) + 5))
 
 
 class SubprocessRunner:
@@ -260,6 +277,9 @@ class SubprocessRunner:
         complete_message: str = "Conversion complete",
         cwd: str | None = None,
         output_growth_paths: Callable[[], list[str]] | None = None,
+        size_progress: Callable[[int], dict | None] | None = None,
+        nice_via_wrapper: bool = False,
+        env: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Spawn ``cmd``, stream stdout, and yield ``{"progress", "message"}``.
 
@@ -277,6 +297,20 @@ class SubprocessRunner:
         changes mid-run uses it so the probe keeps following the write — e.g.
         makeps3iso ``-s`` renames the base ``.iso`` to ``.iso.0`` and then writes
         ``.iso.1``/…, which the bare ``output_path`` probe would stop seeing.
+
+        ``size_progress(output_size) -> dict | None`` turns the measured output
+        size into a progress update for tools whose CLI prints no parseable
+        percent (its TTY bar goes silent on a pipe): on each output-growth tick
+        the runner calls it and yields its ``{"progress", "message"}`` (and
+        raises the progress floor so a later non-parseable line cannot reset the
+        bar). ``parse_progress`` still wins when it returns a percent. See
+        :func:`output_size_progress` for the shared estimate.
+
+        ``nice_via_wrapper`` skips the ``preexec_fn`` renice when the caller has
+        already prefixed ``cmd`` with ``nice``/``ionice`` command wrappers
+        (maxcso/nsz avoid ``preexec_fn``: forking a Python callable in this
+        multithreaded process can deadlock the child before ``exec``).  ``env``
+        is forwarded to the subprocess (nsz runs with a private keys-home env).
         """
         output_dir = os.path.dirname(output_path)
         if output_dir:
@@ -284,6 +318,14 @@ class SubprocessRunner:
 
         def _preexec():
             apply_nice(self._owner)
+
+        # nice/ionice: by default renice the forked child via ``preexec_fn``
+        # (ionice, when used, is folded into ``cmd`` by the caller's
+        # ``_build_command``). ``nice_via_wrapper`` callers have instead prefixed
+        # ``cmd`` with ``nice``/``ionice`` command wrappers and must NOT also be
+        # reniced via preexec — forking a Python callable in this multithreaded
+        # process can deadlock the child before ``exec``.
+        use_preexec = os.name == "posix" and not nice_via_wrapper
 
         # cmd is built from validated settings paths (no shell interpretation);
         # create_subprocess_exec passes the arg list directly (shell=False), so
@@ -294,8 +336,9 @@ class SubprocessRunner:
             cmd[0], *cmd[1:],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            preexec_fn=_preexec if os.name == "posix" else None,
+            preexec_fn=_preexec if use_preexec else None,
             cwd=cwd,
+            env=env,
         )
         self.track_pid(process.pid)
         # Everything below runs under try/finally so that if the caller stops
@@ -381,6 +424,30 @@ class SubprocessRunner:
                     last_output_size = size
                     last_activity_at = now
 
+            def _size_update(now: float) -> dict | None:
+                # Size-based progress for tools whose CLI prints no parseable
+                # percent (maxcso/nsz/z3ds): on each output-growth tick, refresh
+                # the stall clock, raise the progress floor so a later
+                # non-parseable line can't reset the bar, and return the tool's
+                # {"progress","message"} update to yield. No-op (returns None)
+                # for every existing caller, which leaves size_progress unset.
+                nonlocal last_output_size, last_activity_at, last_progress_value
+                if size_progress is None:
+                    return None
+                size = _measure_output()
+                if size is None:
+                    return None
+                if last_output_size is not None and size <= last_output_size:
+                    return None
+                last_output_size = size
+                last_activity_at = now
+                update = size_progress(size)
+                if update is not None:
+                    pct = update.get("progress")
+                    if isinstance(pct, int) and pct > last_progress_value:
+                        last_progress_value = pct
+                return update
+
             async def _check_stall(now: float) -> bool:
                 nonlocal stall_error
                 if stall_timeout <= 0:
@@ -410,6 +477,9 @@ class SubprocessRunner:
                     if cancel_event and cancel_event.is_set():
                         break
                     now = time.monotonic()
+                    update = _size_update(now)
+                    if update is not None:
+                        yield update
                     if await _check_stall(now):
                         break
                     if heartbeat and now - last_heartbeat_at >= 2:
@@ -447,7 +517,11 @@ class SubprocessRunner:
                             "message": line,
                         }
                     buffer = parts[-1]
-                if await _check_stall(time.monotonic()):
+                now = time.monotonic()
+                update = _size_update(now)
+                if update is not None:
+                    yield update
+                if await _check_stall(now):
                     break
 
             if buffer.strip():
@@ -464,6 +538,9 @@ class SubprocessRunner:
                     ),
                     "message": line,
                 }
+                update = _size_update(time.monotonic())
+                if update is not None:
+                    yield update
                 await _check_stall(time.monotonic())
 
             await process.wait()

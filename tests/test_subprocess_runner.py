@@ -9,6 +9,7 @@ CLIs are unavailable in the sandbox.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 
@@ -140,6 +141,102 @@ def test_stall_timeout_raises_runtimeerror(tmp_path, monkeypatch):
         )
 
     assert "Conversion stalled" in str(excinfo.value)
+    assert not runner.active_pids()
+
+
+def test_size_progress_emits_from_output_growth(tmp_path):
+    # A tool whose CLI prints no parseable percent: progress must come from the
+    # growing output file via the size_progress hook, ending at the runner's
+    # terminal 100%. The child writes the output file then a stdout line each
+    # step, so the post-line size tick fires without waiting on the read timeout.
+    out = tmp_path / "out.bin"
+    script = (
+        "import sys\n"
+        f"out = {str(out)!r}\n"
+        "with open(out, 'wb') as f:\n"
+        "    for i in range(3):\n"
+        "        f.write(b'x' * 100); f.flush()\n"
+        "        sys.stdout.write(f'step {i}\\n'); sys.stdout.flush()\n"
+    )
+    runner = SubprocessRunner(owner="test")
+
+    def _size_progress(size: int) -> dict:
+        return {
+            "progress": runner_module.output_size_progress(size, 1000),
+            "message": f"sz {size}",
+        }
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(out),
+                parse_progress=lambda _line: None,
+                size_progress=_size_progress,
+                fail_label="testproc",
+            )
+        )
+    )
+
+    size_updates = [u for u in updates if u["message"].startswith("sz ")]
+    assert size_updates, "expected at least one size-based progress update"
+    # The estimate matches the shared helper (100 B against expected 1000 -> 14%)
+    # and the emitted bar never goes backwards.
+    assert max(u["progress"] for u in size_updates) >= 14
+    progresses = [u["progress"] for u in updates]
+    assert progresses == sorted(progresses)
+    assert updates[-1] == {"progress": 100, "message": "Conversion complete"}
+    assert not runner.active_pids()
+
+
+def test_env_is_forwarded_to_subprocess(tmp_path):
+    script = (
+        "import os, sys\n"
+        "sys.stdout.write('VAL=' + os.environ.get('CMP_RUNNER_TEST', 'unset') + '\\n')\n"
+    )
+    runner = SubprocessRunner(owner="test")
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(tmp_path / "out.bin"),
+                parse_progress=lambda _line: None,
+                env={**os.environ, "CMP_RUNNER_TEST": "from-env"},
+                fail_label="testproc",
+            )
+        )
+    )
+
+    messages = " ".join(u["message"] for u in updates)
+    assert "VAL=from-env" in messages
+    assert not runner.active_pids()
+
+
+def test_nice_via_wrapper_runs_without_preexec(tmp_path):
+    # With nice_via_wrapper the renice is the caller's command-wrapper concern,
+    # so run() skips preexec_fn; the conversion must still complete normally.
+    out = tmp_path / "out.bin"
+    script = "import sys; sys.stdout.write('done 50%\\n')"
+    runner = SubprocessRunner(owner="test")
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(out),
+                parse_progress=_parse_pct,
+                nice_via_wrapper=True,
+                fail_label="testproc",
+            )
+        )
+    )
+
+    assert 50 in [u["progress"] for u in updates]
+    assert updates[-1] == {"progress": 100, "message": "Conversion complete"}
     assert not runner.active_pids()
 
 
