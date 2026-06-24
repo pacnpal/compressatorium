@@ -114,43 +114,15 @@ def test_cancel_event_raises_conversion_cancelled(tmp_path):
     assert not runner.active_pids()
 
 
-def test_cancel_event_preset_short_circuits_before_spawn(tmp_path, monkeypatch):
-    """A cancel_event already set when run() starts raises ConversionCancelled
-    without spawning the child.
+def test_cancel_event_preset_terminates_and_raises(tmp_path):
+    """A cancel_event already set when run() starts is honored by the watcher:
+    the child is spawned, terminated, and ConversionCancelled is raised.
 
-    A job cancelled before it began must do no work, so it can never write (and
-    then have a caller delete) an output. Cancellation the run actually observes
-    mid-flight is covered by test_cancel_event_raises_conversion_cancelled.
+    (The runner intentionally does not short-circuit before spawning, so that a
+    ConversionCancelled always implies the child ran — callers rely on that to
+    avoid deleting an output their conversion never wrote.)
     """
-    spawned = False
-
-    class _UnreachedChild:
-        """Returned only if the short-circuit fails to prevent spawning."""
-
-        pid = 4321
-        returncode = 0
-
-        def __init__(self):
-            self.stdout = self
-
-        async def read(self, _n: int) -> bytes:
-            return b""
-
-        async def wait(self) -> int:
-            return 0
-
-        def terminate(self) -> None:
-            pass
-
-        def kill(self) -> None:
-            pass
-
-    async def fake_exec(*_args, **_kwargs):
-        nonlocal spawned
-        spawned = True
-        return _UnreachedChild()
-
-    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+    script = "import time; time.sleep(30)"
     runner = SubprocessRunner(owner="test")
     cancel_event = asyncio.Event()
     cancel_event.set()
@@ -158,7 +130,7 @@ def test_cancel_event_preset_short_circuits_before_spawn(tmp_path, monkeypatch):
     async def _run():
         return await _drain(
             runner.run(
-                _py_cmd("import sys"),
+                _py_cmd(script),
                 input_path=str(tmp_path / "in.bin"),
                 output_path=str(tmp_path / "out.bin"),
                 parse_progress=_parse_pct,
@@ -169,7 +141,34 @@ def test_cancel_event_preset_short_circuits_before_spawn(tmp_path, monkeypatch):
 
     with pytest.raises(ConversionCancelled):
         asyncio.run(_run())
-    assert spawned is False
+    assert not runner.active_pids()
+
+
+def test_spawn_failure_propagates_without_masking(tmp_path, monkeypatch):
+    """A pre-spawn failure (create_subprocess_exec raising) surfaces as-is, with
+    no PID tracked — callers distinguish it from a post-spawn error to avoid
+    deleting an output the conversion never wrote.
+    """
+
+    async def fake_exec(*_args, **_kwargs):
+        raise FileNotFoundError("no such binary")
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+    runner = SubprocessRunner(owner="test")
+
+    async def _run():
+        return await _drain(
+            runner.run(
+                _py_cmd("import sys"),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(tmp_path / "out.bin"),
+                parse_progress=_parse_pct,
+                fail_label="testproc",
+            )
+        )
+
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(_run())
     assert not runner.active_pids()
 
 

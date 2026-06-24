@@ -176,26 +176,26 @@ class Z3DSCompressService:
         # bar (z3ds_compressor prints no parseable percent): compressed output is
         # ~50% of the source, a decompressed ROM ~2x the compressed container.
         expected_ratio = 2.0 if decompress else 0.5
+        input_size = (
+            os.path.getsize(input_path) if os.path.exists(input_path) else 0
+        )
+        expected_size = max(1, int(input_size * expected_ratio))
+
+        def _size_progress(size: int) -> dict:
+            return {
+                "progress": output_size_progress(size, expected_size),
+                "message": f"{verb_ing}... ({size // (1024 * 1024)} MB)",
+            }
+
+        cmd = self._build_command(input_path, output_path, mode)
+        yield {"progress": 5, "message": f"Starting 3DS {verb}..."}
+
+        # Delegate the streaming spawn / stall / cancel / PID loop to the shared
+        # runner. z3ds keeps preexec nice (owner "z3ds") and folds ionice into
+        # _build_command, so nice_via_wrapper stays False. parse_progress is a
+        # no-op — there is no parseable percent — so size_progress drives the bar
+        # from the growing output file.
         try:
-            input_size = (
-                os.path.getsize(input_path) if os.path.exists(input_path) else 0
-            )
-            expected_size = max(1, int(input_size * expected_ratio))
-
-            def _size_progress(size: int) -> dict:
-                return {
-                    "progress": output_size_progress(size, expected_size),
-                    "message": f"{verb_ing}... ({size // (1024 * 1024)} MB)",
-                }
-
-            cmd = self._build_command(input_path, output_path, mode)
-            yield {"progress": 5, "message": f"Starting 3DS {verb}..."}
-
-            # Delegate the streaming spawn / stall / cancel / PID loop to the
-            # shared runner. z3ds keeps preexec nice (owner "z3ds") and folds
-            # ionice into _build_command, so nice_via_wrapper stays False.
-            # parse_progress is a no-op — there is no parseable percent — so
-            # size_progress drives the bar from the growing output file.
             async for update in self._runner.run(
                 cmd,
                 input_path=input_path,
@@ -208,11 +208,15 @@ class Z3DSCompressService:
                 size_progress=_size_progress,
             ):
                 yield update
-        except ConversionCancelled:
-            # z3ds_compressor writes the container in place, so a cancel can
-            # leave a partial; drop it so a retry isn't blocked by a truncated
-            # file. (A non-zero exit / stall keeps the prior behavior of leaving
-            # the partial in place for inspection.)
+        except (ConversionCancelled, RuntimeError, asyncio.CancelledError, GeneratorExit):
+            # z3ds_compressor writes the container in place. These are the
+            # abnormal exits the runner can raise after it spawned the child — a
+            # mid-run cancel, a non-zero/stall RuntimeError, or a task-cancellation
+            # / generator close — so a partial may be on disk. Remove it
+            # synchronously so a retry isn't blocked by a truncated file. Setup
+            # (above this try) and pre-spawn failures are not caught here, so a
+            # pre-existing output is never deleted for a conversion that wrote
+            # nothing.
             with contextlib.suppress(OSError):
                 if os.path.exists(output_path):
                     os.remove(output_path)

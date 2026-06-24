@@ -315,13 +315,6 @@ class SubprocessRunner:
         multithreaded process can deadlock the child before ``exec``).  ``env``
         is forwarded to the subprocess (nsz runs with a private keys-home env).
         """
-        # A job already cancelled before this run begins is a no-op: don't spawn
-        # the tool, so it can never write (and have a caller then delete) an
-        # output. Cancellation that arrives mid-run is handled by the watcher
-        # below; a process that finishes before cancellation is observed is
-        # reported complete (its output stands) rather than falsely cancelled.
-        if cancel_event is not None and cancel_event.is_set():
-            raise ConversionCancelled("Conversion cancelled")
         output_dir = os.path.dirname(output_path)
         if output_dir:
             await run_in_threadpool(os.makedirs, output_dir, exist_ok=True)
@@ -532,18 +525,17 @@ class SubprocessRunner:
                             continue
                         _record_line(line)
                         now = time.monotonic()
+                        # Non-empty stdout is activity: refresh the stall clock so
+                        # a tool that logs status without yet growing its output
+                        # (the size-progress tools, whose parse_progress is a
+                        # no-op) is not killed as stalled.
+                        last_activity_at = now
                         progress = parse_progress(line)
                         if progress is not None and progress > last_progress_value:
                             last_progress_value = progress
-                            last_activity_at = now
-                        yield {
-                            "progress": (
-                                progress
-                                if progress is not None
-                                else last_progress_value
-                            ),
-                            "message": line,
-                        }
+                        # Clamp to the running floor (incl. initial_progress) so a
+                        # parsed value below it can't move the bar backward.
+                        yield {"progress": last_progress_value, "message": line}
                     buffer = parts[-1]
                 now = time.monotonic()
                 update = _size_update(now)
@@ -556,16 +548,11 @@ class SubprocessRunner:
                 line = buffer.strip()
                 _record_line(line)
                 now = time.monotonic()
+                last_activity_at = now
                 progress = parse_progress(line)
                 if progress is not None and progress > last_progress_value:
                     last_progress_value = progress
-                    last_activity_at = now
-                yield {
-                    "progress": (
-                        progress if progress is not None else last_progress_value
-                    ),
-                    "message": line,
-                }
+                yield {"progress": last_progress_value, "message": line}
                 update = _size_update(time.monotonic())
                 if update is not None:
                     yield update

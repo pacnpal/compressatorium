@@ -242,12 +242,16 @@ class MaxcsoService:
                 nice_via_wrapper=True,
             ):
                 yield update
-        except (ConversionCancelled, RuntimeError):
-            # maxcso writes straight to output_path, so a cancel or a runner-phase
-            # failure (non-zero exit / stall -> RuntimeError) can leave a partial.
-            # Drop it so a retry isn't blocked by, or silently trusts, a truncated
-            # file. Setup/spawn errors before maxcso writes propagate untouched,
-            # so a pre-existing output is never removed for a no-op failure.
+        except (ConversionCancelled, RuntimeError, asyncio.CancelledError, GeneratorExit):
+            # maxcso writes straight to output_path. These are exactly the
+            # abnormal exits the runner can raise *after* it spawned the child — a
+            # mid-run cancel, a non-zero/stall RuntimeError, or a task-cancellation
+            # / generator close — so a partial may be on disk. Remove it
+            # *synchronously* (a local unlink; awaiting during a cancellation could
+            # be re-cancelled and skip cleanup). A setup error (build_command,
+            # above this try) or a pre-spawn failure (FileNotFoundError from the
+            # runner) is NOT caught here, so a pre-existing output is never deleted
+            # for a conversion that wrote nothing.
             if os.path.exists(output_path):
                 with contextlib.suppress(OSError):
                     os.remove(output_path)
