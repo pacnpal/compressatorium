@@ -23,19 +23,21 @@ intact (the analog of nsz ``-V`` / z3ds ``zstd -t``).
 """
 import asyncio
 import contextlib
-import logging
 import os
 import struct
-import threading
-import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from config import settings
 from logging_setup import get_logger
 from services.chdman import ConversionCancelled
-from services.subprocess_runner import ioprio_prefix, nice_prefix, verify_timeout
-from services.timeout_policy import compute_progress_stall_timeout
+from services.subprocess_runner import (
+    SubprocessRunner,
+    ioprio_prefix,
+    nice_prefix,
+    output_size_progress,
+    verify_timeout,
+)
 
 # SubprocessRunner "owner" for the shared priority/timeout policy. An optional
 # COMPRESSATORIUM_MAXCSO_* override takes precedence over the tool-neutral
@@ -124,8 +126,10 @@ class MaxcsoService:
 
     def __init__(self):
         self.maxcso_path = settings.maxcso_path
-        self._active_pids: set[int] = set()
-        self._pid_lock = threading.Lock()
+        # convert() delegates its streaming loop to the runner; verify_stream()
+        # still spawns maxcso --crc directly but tracks its PID in the same set,
+        # so active_pids() reflects both.
+        self._runner = SubprocessRunner(owner=_OWNER)
 
     # ----- command ----------------------------------------------------------
 
@@ -156,17 +160,8 @@ class MaxcsoService:
         prefix = nice_prefix(_OWNER) + ioprio_prefix(_OWNER)
         return prefix + cmd
 
-    def _track_pid(self, pid: int):
-        with self._pid_lock:
-            self._active_pids.add(pid)
-
-    def _untrack_pid(self, pid: int):
-        with self._pid_lock:
-            self._active_pids.discard(pid)
-
     def active_pids(self) -> list[int]:
-        with self._pid_lock:
-            return list(self._active_pids)
+        return self._runner.active_pids()
 
     # ----- output paths -----------------------------------------------------
 
@@ -210,33 +205,8 @@ class MaxcsoService:
         decompress = mode == "cso_decompress"
         verb = "decompression" if decompress else "compression"
         try:
-            output_dir = os.path.dirname(output_path)
-            if output_dir:
-                await asyncio.to_thread(os.makedirs, output_dir, exist_ok=True)
-
             cmd = self._build_command(input_path, output_path, mode, compression)
 
-            # cmd is built from validated settings paths (no shell interpretation);
-            # args are a fixed list, never shell-expanded. nice/ionice are applied
-            # as command wrappers in _build_command, so there's no preexec_fn.
-            process = await asyncio.create_subprocess_exec(  # nosemgrep
-                cmd[0], *cmd[1:],
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            if process.stdout is None:
-                raise RuntimeError("maxcso stdout is not available")
-
-            self._track_pid(process.pid)
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("Starting maxcso pid=%s cmd=%s", process.pid, " ".join(cmd))
-
-            stall_timeout = compute_progress_stall_timeout(
-                input_path=input_path,
-                base_timeout=getattr(settings, "progress_timeout", 0),
-                timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
-                timeout_cap=getattr(settings, "progress_timeout_cap", 0),
-            )
             try:
                 input_size = os.path.getsize(input_path)
             except OSError:
@@ -244,117 +214,47 @@ class MaxcsoService:
             ratio = _DECOMPRESS_RATIO if decompress else _COMPRESS_RATIO
             expected_size = max(1, int(input_size * ratio))
 
-            last_output_size: int | None = None
-            last_activity_at = time.monotonic()
+            def _size_progress(size: int) -> dict:
+                return {
+                    "progress": output_size_progress(size, expected_size),
+                    "message": f"Working... ({size // (1024 * 1024)} MB)",
+                }
 
-            cancelled_by_request = False
-            cancel_task = None
-            if cancel_event:
+            yield {"progress": 1, "message": f"Starting CSO {verb}..."}
 
-                async def _cancel_watcher():
-                    nonlocal cancelled_by_request
-                    await cancel_event.wait()
-                    cancelled_by_request = True
-                    try:
-                        process.terminate()
-                        await asyncio.wait_for(process.wait(), timeout=5)
-                    except asyncio.TimeoutError:
-                        process.kill()
-                    except ProcessLookupError:
-                        pass
+            # maxcso applies nice/ionice as command wrappers in _build_command
+            # (nice_via_wrapper) to avoid preexec_fn, and prints no parseable
+            # percent (its TTY bar goes silent on a pipe), so size_progress
+            # estimates the bar from the growing -o file.
+            async for update in self._runner.run(
+                cmd,
+                input_path=input_path,
+                output_path=output_path,
+                parse_progress=lambda _line: None,
+                cancel_event=cancel_event,
+                fail_label="maxcso",
+                complete_message=f"CSO {verb} complete",
+                size_progress=_size_progress,
+                nice_via_wrapper=True,
+            ):
+                yield update
 
-                cancel_task = asyncio.create_task(_cancel_watcher())
-
-            output_tail: list[str] = []
-
-            try:
-                yield {"progress": 1, "message": f"Starting CSO {verb}..."}
-
-                while True:
-                    try:
-                        chunk = await asyncio.wait_for(process.stdout.read(256), timeout=2.0)
-                    except asyncio.TimeoutError:
-                        chunk = None
-
-                    if chunk == b"":
-                        break
-
-                    if chunk:
-                        text = chunk.decode("utf-8", errors="replace").strip()
-                        if text:
-                            output_tail.append(text)
-                            if len(output_tail) > 30:
-                                output_tail.pop(0)
-                        last_activity_at = time.monotonic()
-
-                    # Estimate progress from the growing output file.
-                    if os.path.exists(output_path):
-                        try:
-                            current = os.path.getsize(output_path)
-                        except OSError:
-                            current = None
-                        if current is not None and current != last_output_size:
-                            last_output_size = current
-                            last_activity_at = time.monotonic()
-                            pct = min(95, max(1, int(current / expected_size * 90) + 5))
-                            yield {
-                                "progress": pct,
-                                "message": f"Working... ({current // (1024 * 1024)} MB)",
-                            }
-
-                    if process.returncode is not None:
-                        break
-
-                    if stall_timeout > 0 and (time.monotonic() - last_activity_at) > stall_timeout:
-                        logger.warning(
-                            "maxcso pid=%s stalled (no progress for %ds), killing",
-                            process.pid, stall_timeout,
-                        )
-                        with contextlib.suppress(ProcessLookupError):
-                            process.kill()
-                        raise TimeoutError(
-                            f"Conversion stalled (no progress for {stall_timeout}s)",
-                        )
-
-                await process.wait()
-            finally:
-                if cancel_task:
-                    cancel_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await cancel_task
-                if process.returncode is None:
-                    with contextlib.suppress(ProcessLookupError):
-                        process.kill()
-                    with contextlib.suppress(Exception):
-                        await process.wait()
-                self._untrack_pid(process.pid)
-
-            if cancelled_by_request:
-                if os.path.exists(output_path):
-                    with contextlib.suppress(OSError):
-                        os.remove(output_path)
-                raise ConversionCancelled("Conversion cancelled by user")
-
-            if process.returncode != 0:
-                tail = "\n".join(output_tail[-10:]) if output_tail else "Unknown error"
-                raise RuntimeError(
-                    f"maxcso failed with exit code {process.returncode}: {tail}",
-                )
-
-            yield {"progress": 100, "message": f"CSO {verb} complete"}
-
-        except ConversionCancelled as e:
-            logger.info("maxcso conversion cancelled: %s", e)
-            raise
-        except Exception as e:
-            # Any failure (nonzero exit, stall timeout, etc.) leaves a partial
-            # output on disk because maxcso writes straight to output_path.
-            # Remove it so a retry isn't blocked by, or silently trusts, a
-            # truncated file. (The cancel path above already cleans up.)
+        except ConversionCancelled:
+            # maxcso writes straight to output_path, so a cancel can leave a
+            # partial; drop it so a retry isn't blocked by a truncated file.
+            logger.info("maxcso conversion cancelled")
             if os.path.exists(output_path):
                 with contextlib.suppress(OSError):
                     os.remove(output_path)
-            logger.exception("Error in maxcso.convert: %s", e)
+            raise
+        except Exception:
+            # Any other failure (non-zero exit, stall) likewise leaves a partial
+            # behind; remove it so a retry isn't blocked by, or silently trusts,
+            # a truncated file.
+            if os.path.exists(output_path):
+                with contextlib.suppress(OSError):
+                    os.remove(output_path)
+            logger.exception("Error in maxcso.convert")
             raise
 
     # ----- info -------------------------------------------------------------
@@ -450,7 +350,7 @@ class MaxcsoService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            self._track_pid(process.pid)
+            self._runner.track_pid(process.pid)
             try:
                 yield {"type": "progress", "progress": 0, "message": "Verifying integrity..."}
                 # Bound a hung/very-slow --crc by the shared verify timeout
@@ -502,7 +402,7 @@ class MaxcsoService:
                         process.kill()
                     with contextlib.suppress(Exception):
                         await process.wait()
-                self._untrack_pid(process.pid)
+                self._runner.untrack_pid(process.pid)
         except Exception as e:
             logger.exception("Error during CSO verification: %s", e)
             yield {"type": "error", "valid": False, "message": f"Verification error: {e}"}
