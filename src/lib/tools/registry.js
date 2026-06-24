@@ -111,6 +111,15 @@ function swapExt(path, newExt) {
   return path.replace(/\.[^./\\]+$/, newExt);
 }
 
+/**
+ * Fallback compression-level range for the slider when a tool declares no
+ * `compressionLevelRange`. Every level-capable tool sets its own (Dolphin
+ * default 19, nsz 18), so this is only a safety net — but it lives here once
+ * rather than re-inlined as `{ min: 1, max: 22, default: 19 }` in the
+ * conversion store and the CompressionPicker.
+ */
+export const DEFAULT_COMPRESSION_LEVEL_RANGE = { min: 1, max: 22, default: 19 };
+
 /** @type {ToolDescriptor[]} */
 export const TOOLS = [
   {

@@ -12,30 +12,3 @@ export function formatSize(bytes) {
   );
   return `${Number.parseFloat((bytes / k ** i).toFixed(2))} ${SIZE_UNITS.at(i)}`;
 }
-
-export function getFileIcon(entry) {
-  if (!entry) return '📄';
-  if (entry.type === 'directory') return '📁';
-  if (entry.type === 'archive') return '📦';
-  const ext = entry.extension?.toLowerCase();
-  if (ext === '.chd') return '💿';
-  if (['.rvz', '.wia', '.gcz', '.wbfs', '.3ds', '.cci', '.cia', '.cxi', '.3dsx', '.z3ds', '.zcci', '.zcia', '.zcxi', '.z3dsx'].includes(ext)) {
-    return '🎮';
-  }
-  if (['.iso', '.gdi', '.cue', '.bin'].includes(ext)) return '💽';
-  return '📄';
-}
-
-export const DOLPHIN_EXTENSIONS = ['.rvz', '.wia', '.gcz', '.wbfs'];
-
-export function isDolphinFile(path) {
-  if (!path) return false;
-  // Isolate the filename first: a directory name with a dot (e.g.
-  // `/games/dir.rvz/file`) would otherwise make split('.').pop() return
-  // `rvz/file` and wrongly classify the wrapping directory as the format.
-  const filename = path.split(/[/\\]/).pop() ?? '';
-  if (!filename.includes('.')) return false;
-  const ext = filename.split('.').pop();
-  if (!ext) return false;
-  return DOLPHIN_EXTENSIONS.includes(`.${ext.toLowerCase()}`);
-}

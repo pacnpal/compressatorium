@@ -11,6 +11,7 @@
   // (optionally) a level range; this file does not need editing.
 
   import { conversion } from '$lib/stores/conversion.svelte.js';
+  import { DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
   import { toast } from 'svelte-sonner';
   import Check from '@lucide/svelte/icons/check';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
@@ -20,9 +21,9 @@
   const codecs = $derived(tool?.compressionCodecs ?? []);
   const style = $derived(tool?.compressionStyle ?? 'none');
   const selection = $derived(conversion.compressionSelection);
-  const level = $derived(conversion.dolphinCompressionLevel);
+  const level = $derived(conversion.compressionLevel);
   const levelRange = $derived(
-    tool?.compressionLevelRange ?? { min: 1, max: 22, default: 19 },
+    tool?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE,
   );
   const supports = $derived(
     !!(spec?.supportsCompression || spec?.supportsCompressionLevel),
@@ -111,7 +112,7 @@
               max={levelRange.max}
               step="1"
               value={level}
-              oninput={(e) => conversion.setDolphinLevel(e.currentTarget.value)}
+              oninput={(e) => conversion.setCompressionLevel(e.currentTarget.value)}
               aria-label="Compression level"
             />
             <input
@@ -121,7 +122,7 @@
               max={levelRange.max}
               step="1"
               value={level}
-              oninput={(e) => conversion.setDolphinLevel(e.currentTarget.value)}
+              oninput={(e) => conversion.setCompressionLevel(e.currentTarget.value)}
               aria-label="Compression level value"
             />
           </div>
