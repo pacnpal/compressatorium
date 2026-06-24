@@ -118,7 +118,7 @@ function swapExt(path, newExt) {
  * rather than re-inlined as `{ min: 1, max: 22, default: 19 }` in the
  * conversion store and the CompressionPicker.
  */
-export const DEFAULT_COMPRESSION_LEVEL_RANGE = { min: 1, max: 22, default: 19 };
+export const DEFAULT_COMPRESSION_LEVEL_RANGE = Object.freeze({ min: 1, max: 22, default: 19 });
 
 /** @type {ToolDescriptor[]} */
 export const TOOLS = [

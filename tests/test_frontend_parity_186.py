@@ -10,9 +10,10 @@ fails loudly on any such drift.
 
 It evaluates ``registry.js`` with Node — the same engine the app uses, so the JS
 ext constants and spreads resolve exactly — and compares each mode row
-field-by-field to the backend spec. ``tool_id`` is deliberately NOT compared:
-the synthetic ``cso_to_chd`` chain mode is owned by the ``chain`` tool on the
-backend but grouped under ``cso`` in the UI. Skipped when Node is unavailable.
+field-by-field to the backend spec, including ``input_kinds`` (directory vs file
+input) and the owning ``tool_id``. The only ``tool_id`` exception is the
+synthetic ``cso_to_chd`` chain mode, owned by the ``chain`` tool on the backend
+but grouped under ``cso`` in the UI. Skipped when Node is unavailable.
 """
 from __future__ import annotations
 
@@ -29,16 +30,28 @@ from services.tools import registry
 _REGISTRY_JS = Path(__file__).resolve().parents[1] / "src" / "lib" / "tools" / "registry.js"
 
 # Fields whose drift would actually mis-route a job. Frontend camelCase is
-# normalized to these snake_case keys in the Node dump below.
+# normalized to these snake_case keys in the Node dump below. `input_kinds` is
+# what makes folder_to_iso a directory-input mode (fileBrowser offers folders,
+# not files), so it must be compared even though its extensions are empty on
+# both sides.
 _COMPARED_FIELDS = (
     "kind",
     "output_ext",
     "input_extensions",
+    "input_kinds",
     "supports_compression",
     "supports_compression_level",
     "supports_delete_on_verify",
     "allows_archive_input",
 )
+
+# `tool_id` is compared too — a mode filed under the wrong frontend tool
+# descriptor drives the wrong menu / compression style / verify bindings even
+# when its per-mode fields still match — EXCEPT for these modes, whose frontend
+# owner intentionally differs from the backend. `cso_to_chd` is the synthetic
+# chain mode: owned by the `chain` tool on the backend, grouped under `cso` in
+# the UI.
+_TOOL_ID_EXCEPTIONS = frozenset({"cso_to_chd"})
 
 
 def _find_node() -> str | None:
@@ -67,9 +80,11 @@ def _frontend_rows(tmp_path: Path) -> dict[str, dict]:
     src += (
         "\nconst __rows = TOOLS.flatMap((t) => t.modes.map((m) => ({"
         " mode: m.mode,"
+        " tool_id: t.id,"
         " kind: m.kind,"
         " output_ext: m.outputExt ?? null,"
         " input_extensions: [...m.inputExtensions].sort(),"
+        " input_kinds: [...(m.inputKinds ?? ['file'])].sort(),"
         " supports_compression: !!m.supportsCompression,"
         " supports_compression_level: !!m.supportsCompressionLevel,"
         " supports_delete_on_verify: !!m.supportsDeleteOnVerify,"
@@ -93,9 +108,11 @@ def _backend_rows() -> dict[str, dict]:
     for spec in registry.mode_specs():
         rows[spec.mode] = {
             "mode": spec.mode,
+            "tool_id": spec.tool_id,
             "kind": spec.kind.value,
             "output_ext": spec.output_ext,
             "input_extensions": sorted(spec.input_extensions),
+            "input_kinds": sorted(k.value for k in spec.input_kinds),
             "supports_compression": spec.supports_compression,
             "supports_compression_level": spec.supports_compression_level,
             "supports_delete_on_verify": spec.supports_delete_on_verify,
@@ -123,6 +140,11 @@ def test_frontend_registry_mirrors_backend_mode_specs(tmp_path):
                     f"  {mode}.{field}: registry.js={fe.get(field)!r} "
                     f"mode_specs()={be.get(field)!r}"
                 )
+        if mode not in _TOOL_ID_EXCEPTIONS and fe.get("tool_id") != be.get("tool_id"):
+            mismatches.append(
+                f"  {mode}.tool_id: registry.js={fe.get('tool_id')!r} "
+                f"mode_specs()={be.get('tool_id')!r}"
+            )
     assert not mismatches, (
         "registry.js ↔ registry.mode_specs() field drift "
         "(update src/lib/tools/registry.js or the backend ModeSpec to match):\n"

@@ -34,6 +34,16 @@ function defaultCompressionFor(toolId) {
   return registry.forTool(toolId)?.defaultCompression ?? ['zlib'];
 }
 
+// The slider level a tool boots / resets to: its registry range default, or the
+// shared fallback for tools that declare no range (they hide the slider). Used
+// at construction so the very first submit after a reload — before the async
+// `loadServerPrefs()` resolves — already matches the selected tool's default
+// (e.g. Switch's 18, not Dolphin's 19).
+function defaultLevelFor(toolId) {
+  const range = registry.forTool(toolId)?.compressionLevelRange ?? DEFAULT_COMPRESSION_LEVEL_RANGE;
+  return String(range.default ?? DEFAULT_COMPRESSION_LEVEL_RANGE.default);
+}
+
 const PREF_SAVE_DEBOUNCE_MS = 500;
 const isBrowser = typeof window !== 'undefined';
 
@@ -46,7 +56,7 @@ class ConversionStore {
   // wrong duplicate checks and compression flags before setPrimaryTool runs.
   mode = $state(defaultModeFor(INITIAL_TOOL));
   compressionSelection = $state(defaultCompressionFor(INITIAL_TOOL));
-  compressionLevel = $state('19');
+  compressionLevel = $state(defaultLevelFor(INITIAL_TOOL));
   outputDir = $state('');
   deleteOnVerify = $state(false);
   split = $state(false);
@@ -243,7 +253,7 @@ class ConversionStore {
     // previously selected single-with-level tool can't leak across (e.g.
     // Dolphin's 19 bleeding into Switch, which defaults to 18).
     if (isLevel) {
-      this.compressionLevel = String(tool?.compressionLevelRange?.default ?? DEFAULT_COMPRESSION_LEVEL_RANGE.default);
+      this.compressionLevel = defaultLevelFor(toolId);
     }
     if (!value) {
       this.compressionSelection = defaultCompressionFor(toolId);
@@ -350,7 +360,7 @@ class ConversionStore {
     const tool = registry.forTool(toolId);
     this.compressionSelection = defaultCompressionFor(toolId);
     if ((tool?.compressionStyle ?? 'none') === 'single-with-level') {
-      this.compressionLevel = String(tool?.compressionLevelRange?.default ?? DEFAULT_COMPRESSION_LEVEL_RANGE.default);
+      this.compressionLevel = defaultLevelFor(toolId);
     }
     this.#persistCompression();
   }
@@ -367,9 +377,7 @@ class ConversionStore {
     const sel = this.compressionSelection;
     if (sel.length !== def.length || !sel.every((v, i) => v === def[i])) return false;
     if (this.currentSpec?.supportsCompressionLevel) {
-      const tool = registry.forTool(toolId);
-      const defLevel = String(tool?.compressionLevelRange?.default ?? DEFAULT_COMPRESSION_LEVEL_RANGE.default);
-      return String(this.compressionLevel) === defLevel;
+      return String(this.compressionLevel) === defaultLevelFor(toolId);
     }
     return true;
   }
