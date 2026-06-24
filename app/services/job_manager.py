@@ -89,6 +89,10 @@ class JobManager:
         # Strong refs to in-flight requeue tasks so the event loop can't
         # garbage-collect them mid-`asyncio.sleep` (see _schedule_dir_lock_requeue).
         self._requeue_tasks: Set[asyncio.Task] = set()
+        # Same strong-ref guard for fire-and-forget notify/prune tasks: asyncio
+        # only keeps a weak ref to a bare create_task(), so it can be GC'd before
+        # it runs (a cancel notification or history prune silently dropped).
+        self._background_tasks: Set[asyncio.Task] = set()
         self._delete_plans: Dict[str, Dict[str, object]] = {}
         self._last_progress_at: Dict[str, float] = {}
         self._last_progress_log_at: Dict[str, float] = {}
@@ -389,7 +393,8 @@ class JobManager:
         # Enforce max_job_history for external jobs too (best-effort; only runs
         # when there is a running event loop, i.e. production, not sync tests).
         try:
-            asyncio.get_running_loop().create_task(self._prune_jobs())
+            asyncio.get_running_loop()
+            self._spawn_background(self._prune_jobs())
         except RuntimeError:
             pass
         return job
@@ -647,6 +652,19 @@ class JobManager:
         task = asyncio.create_task(_requeue())
         self._requeue_tasks.add(task)
         task.add_done_callback(self._requeue_tasks.discard)
+
+    def _spawn_background(self, coro) -> None:
+        """Fire-and-forget *coro*, retaining a strong ref until it completes.
+
+        asyncio holds only a weak reference to a task, so a bare
+        ``create_task(coro)`` can be garbage-collected before it runs — a cancel
+        notification or history prune may then silently never happen. Mirror
+        ``_schedule_dir_lock_requeue``: keep the task in ``_background_tasks`` and
+        drop it on completion.
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def _track_candidate_paths(self, file_path: str) -> List[str]:
         if "::" in file_path:
@@ -953,7 +971,7 @@ class JobManager:
             # the frontend's optimistic "Cancelling..." string, avoids a
             # render flicker when the SSE status event lands).
             job.message = "Cancelling..."
-            asyncio.create_task(
+            self._spawn_background(
                 self._notify_subscribers(
                     job_id,
                     {
@@ -975,7 +993,7 @@ class JobManager:
             if cancel_event:
                 cancel_event.set()
             concurrency_manager.release(job_id)
-            asyncio.create_task(
+            self._spawn_background(
                 self._notify_subscribers(
                     job_id,
                     {"type": "cancelled", "job_id": job_id, "status": job.status.value},
@@ -990,7 +1008,7 @@ class JobManager:
             if cancel_event:
                 cancel_event.set()
             job.message = "Cancelling..."
-            asyncio.create_task(
+            self._spawn_background(
                 self._notify_subscribers(
                     job_id,
                     {
@@ -1482,6 +1500,49 @@ class JobManager:
             finally:
                 self._queue.task_done()
 
+    def _compute_output_size(self, job: ConversionJob) -> Optional[int]:
+        """Total bytes of a completed job's output (None if absent).
+
+        Single source of truth for the three output shapes: a makeps3iso
+        directory job (single .iso or a split .0/.1/… set), an extractcd job
+        (.cue + .bin sidecar), and the common single-file output.
+        """
+        if job.input_kind == InputKind.DIRECTORY:
+            # makeps3iso may finish as a single .iso OR a split set (.0/.1/…)
+            # with no bare .iso, so sum whatever was produced (split_parts
+            # returns [base] or the numbered parts).
+            total_size = 0
+            for part in makeps3iso_service.split_parts(job.output_path):
+                try:
+                    total_size += os.path.getsize(part)
+                except OSError:
+                    pass
+            return total_size if total_size > 0 else None
+        if os.path.exists(job.output_path):
+            if job.mode.value == "extractcd":
+                cue_size = 0
+                bin_size = 0
+                try:
+                    cue_size = os.path.getsize(job.output_path)
+                except OSError:
+                    pass
+                try:
+                    bin_path = str(Path(job.output_path).with_suffix(".bin"))
+                    if os.path.exists(bin_path):
+                        bin_size = os.path.getsize(bin_path)
+                except OSError:
+                    pass
+                total_size = cue_size + bin_size
+                return total_size if total_size > 0 else None
+            # Guard the stat like the branches above: the file can vanish
+            # between the exists() check and here, and "None if absent" must
+            # hold rather than failing an otherwise-complete job.
+            try:
+                return os.path.getsize(job.output_path)
+            except OSError:
+                return None
+        return None
+
     async def _run_job(self, job_id: str):
         try:
             await self._process_job(job_id)
@@ -1751,36 +1812,8 @@ class JobManager:
                 self._cancelled.discard(job_id)
                 job.progress = 100
 
-                # Get output file size
-                if job.input_kind == InputKind.DIRECTORY:
-                    # makeps3iso may finish as a single .iso OR a split set
-                    # (.0/.1/…) with no bare .iso, so sum whatever was produced
-                    # (split_parts returns [base] or the numbered parts).
-                    total_size = 0
-                    for part in makeps3iso_service.split_parts(job.output_path):
-                        try:
-                            total_size += os.path.getsize(part)
-                        except OSError:
-                            pass
-                    job.output_size = total_size if total_size > 0 else None
-                elif os.path.exists(job.output_path):
-                    if job.mode.value == "extractcd":
-                        cue_size = 0
-                        bin_size = 0
-                        try:
-                            cue_size = os.path.getsize(job.output_path)
-                        except OSError:
-                            pass
-                        try:
-                            bin_path = str(Path(job.output_path).with_suffix(".bin"))
-                            if os.path.exists(bin_path):
-                                bin_size = os.path.getsize(bin_path)
-                        except OSError:
-                            pass
-                        total_size = cue_size + bin_size
-                        job.output_size = total_size if total_size > 0 else None
-                    else:
-                        job.output_size = os.path.getsize(job.output_path)
+                # Get output file size.
+                job.output_size = self._compute_output_size(job)
 
                 # Embed game ID / title into CHD metadata after createcd/createdvd.
                 # Uses the source file (input_path) which is still available at this

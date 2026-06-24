@@ -852,3 +852,55 @@ async def test_scan_phase2_caches_game_id_when_disc_id_found(scan_env, monkeypat
     assert update_calls[0] == ("SLUS-20312", "God of War", False)
     # CHD was marked as checked
     assert scan_env["marked_paths"] == [scan_env["chd_path"]]
+
+
+# ─── get_fresh_metadata: single-read freshness snapshot (issue #184 site 2) ──
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_metadata_returns_cached_when_unchanged(metadata_store, tmp_path):
+    """A row whose captured mtime still matches the file returns its metadata."""
+    path = str(tmp_path / "game.chd")
+    open(path, "w").close()
+    await metadata_store.set_metadata(
+        path, {"sha1": "abc", "data_sha1": "def"}, persist=True,
+    )
+
+    assert await metadata_store.get_fresh_metadata(path) == {
+        "sha1": "abc",
+        "data_sha1": "def",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_metadata_none_when_file_changed(metadata_store, tmp_path):
+    """A rewrite (newer mtime than the cached row) refuses the stale hashes."""
+    path = str(tmp_path / "game.chd")
+    open(path, "w").close()
+    await metadata_store.set_metadata(path, {"sha1": "abc"}, persist=True)
+
+    # Bump the file's mtime past the row's captured mtime.
+    orig = os.path.getmtime(path)
+    os.utime(path, (orig + 100, orig + 100))
+
+    assert await metadata_store.get_fresh_metadata(path) is None
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_metadata_none_when_file_missing(metadata_store, tmp_path):
+    """A deleted file (stat fails) returns None even with a cached row."""
+    path = str(tmp_path / "game.chd")
+    open(path, "w").close()
+    await metadata_store.set_metadata(path, {"sha1": "abc"}, persist=True)
+    os.remove(path)
+
+    assert await metadata_store.get_fresh_metadata(path) is None
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_metadata_none_when_no_row(metadata_store, tmp_path):
+    """A file with no cached row returns None (caller falls back to file SHA1)."""
+    path = str(tmp_path / "uncached.chd")
+    open(path, "w").close()
+
+    assert await metadata_store.get_fresh_metadata(path) is None

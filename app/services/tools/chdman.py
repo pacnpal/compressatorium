@@ -169,8 +169,11 @@ class ChdmanTool(BaseTool):
         # unused.
         from services.chd_metadata_store import chd_metadata_store
 
-        metadata = await chd_metadata_store.get_metadata(path)
-        if not metadata or await chd_metadata_store.is_stale(path):
+        # One atomic snapshot (row + current mtime in a single read) instead of
+        # get_metadata() + is_stale(), whose two separate reads could see the
+        # hashes at one mtime and judge staleness at another.
+        metadata = await chd_metadata_store.get_fresh_metadata(path)
+        if not metadata:
             # No cached metadata, or the file changed since it was cached so the
             # stored header/data SHA1 describe an older disc. Either way report
             # *no embedded candidates* (rather than raise): chdman is

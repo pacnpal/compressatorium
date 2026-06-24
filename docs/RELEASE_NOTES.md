@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+Idempotency, robustness, determinism, and modularity hardening (issues #184, #183
+and #179, part of the #177 tech-debt epic).
+
 ### Changed
 
 - **Deterministic ordering across the registry, search, and runner (issue
@@ -15,6 +18,25 @@
   boundaries. The cross-process FIFO job ticket is hardened against counter
   fallback/recovery collisions and now preserves legacy ticket files across a
   rolling restart. No wire-API change.
+- **CHD embedded-hash matching is hardened against a metadata-cache TOCTOU.** When a
+  CHD is matched against a DAT, its cached header/data SHA1 are now read and
+  freshness-checked as a single observation (read the row, then re-stat), so a CHD
+  rewritten mid-match can no longer yield hashes from the old file. On any staleness
+  the match falls back to a file-level SHA1 as before.
+- **Duplicate same-file/same-mode submissions keep an accurate in-progress count.**
+  An optimistic placeholder is now cleared only when its real job first arrives, not
+  on every later progress update, so submitting the same file in the same mode twice
+  no longer briefly under-counts the queue.
+- **All conversion tools now share one subprocess loop.** `z3ds`, `maxcso` and `nsz`
+  previously hand-rolled their own ~150-line spawn / stall-timeout / cancel / progress
+  loop; they now delegate to the shared `SubprocessRunner` like `chdman`/`dolphin`/
+  `romz`/`makeps3iso`, so a cancel, stall, or exit-code fix lands in one place instead
+  of drifting between three copies. Progress for these no-parseable-percent tools is
+  still estimated from output-file growth, now via a shared `size_progress` seam, so
+  the conversion bar is unchanged. Per-tool error parity is preserved too — when nsz
+  exits cleanly but produces no file, the failure still reports the reason nsz printed
+  (via a shared `require_output` seam) instead of a bare "no output" message. (issue
+  #179)
 
 ## 4.2.0 (2026-06-13)
 

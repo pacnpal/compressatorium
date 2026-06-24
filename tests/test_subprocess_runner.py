@@ -9,6 +9,7 @@ CLIs are unavailable in the sandbox.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 
@@ -86,6 +87,69 @@ def test_nonzero_exit_raises_runtimeerror_with_tail(tmp_path):
     assert not runner.active_pids()
 
 
+def test_require_output_missing_raises_with_tail(tmp_path):
+    """A clean exit (code 0) that leaves no file at output_path is a failure
+    when require_output=True, and the error carries the stdout tail so the
+    reason the tool printed before exiting isn't lost (nsz's prior behavior)."""
+    script = (
+        "import sys\n"
+        "sys.stdout.write('preparing\\n')\n"
+        "sys.stdout.write('keys file missing, nothing written\\n')\n"
+        "sys.exit(0)\n"
+    )
+    runner = SubprocessRunner(owner="test")
+    out = tmp_path / "out.bin"  # the child never creates this
+
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(
+            _drain(
+                runner.run(
+                    _py_cmd(script),
+                    input_path=str(tmp_path / "in.bin"),
+                    output_path=str(out),
+                    parse_progress=_parse_pct,
+                    fail_label="nsz",
+                    require_output=True,
+                )
+            )
+        )
+
+    message = str(excinfo.value)
+    assert "nsz produced no output file" in message
+    assert "keys file missing, nothing written" in message
+    assert not out.exists()
+    assert not runner.active_pids()
+
+
+def test_require_output_present_completes(tmp_path):
+    """When the child does produce output_path, require_output is satisfied and
+    the run finishes with the normal terminal 100%."""
+    out = tmp_path / "out.bin"
+    script = (
+        "import sys\n"
+        f"open({str(out)!r}, 'wb').write(b'data')\n"
+        "sys.stdout.write('done\\n')\n"
+    )
+    runner = SubprocessRunner(owner="test")
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(out),
+                parse_progress=_parse_pct,
+                fail_label="nsz",
+                require_output=True,
+            )
+        )
+    )
+
+    assert updates[-1] == {"progress": 100, "message": "Conversion complete"}
+    assert out.exists()
+    assert not runner.active_pids()
+
+
 def test_cancel_event_raises_conversion_cancelled(tmp_path):
     script = (
         "import sys, time\n"
@@ -110,6 +174,181 @@ def test_cancel_event_raises_conversion_cancelled(tmp_path):
 
     with pytest.raises(ConversionCancelled):
         asyncio.run(_run())
+    assert not runner.active_pids()
+
+
+def test_cancel_event_preset_terminates_and_raises(tmp_path):
+    """A cancel_event already set when run() starts is honored by the watcher:
+    the child is spawned, terminated, and ConversionCancelled is raised.
+
+    (The runner intentionally does not short-circuit before spawning, so that a
+    ConversionCancelled always implies the child ran — callers rely on that to
+    avoid deleting an output their conversion never wrote.)
+    """
+    script = "import time; time.sleep(30)"
+    runner = SubprocessRunner(owner="test")
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+
+    async def _run():
+        return await _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(tmp_path / "out.bin"),
+                parse_progress=_parse_pct,
+                cancel_event=cancel_event,
+                fail_label="testproc",
+            )
+        )
+
+    with pytest.raises(ConversionCancelled):
+        asyncio.run(_run())
+    assert not runner.active_pids()
+
+
+def test_spawn_failure_propagates_without_masking(tmp_path, monkeypatch):
+    """A pre-spawn failure (create_subprocess_exec raising) surfaces as-is, with
+    no PID tracked — callers distinguish it from a post-spawn error to avoid
+    deleting an output the conversion never wrote.
+    """
+
+    async def fake_exec(*_args, **_kwargs):
+        raise FileNotFoundError("no such binary")
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+    runner = SubprocessRunner(owner="test")
+
+    async def _run():
+        return await _drain(
+            runner.run(
+                _py_cmd("import sys"),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(tmp_path / "out.bin"),
+                parse_progress=_parse_pct,
+                fail_label="testproc",
+            )
+        )
+
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(_run())
+    assert not runner.active_pids()
+
+
+def test_cancel_watcher_survives_terminate_processlookuperror(tmp_path, monkeypatch):
+    """If the child exits between the watcher's returncode check and terminate(),
+    the resulting ProcessLookupError must not mask the cancellation.
+
+    Without the guard the watcher task ends in ProcessLookupError, which the
+    finally re-raises over the intended ConversionCancelled.
+    """
+
+    class _RaceProc:
+        """Child whose terminate() raises ProcessLookupError (already exited)."""
+
+        def __init__(self):
+            self.pid = 999
+            self.returncode = None
+            self._stop = asyncio.Event()
+            self.stdout = self
+            self._first = True
+
+        async def read(self, _n: int) -> bytes:
+            if self._first:
+                self._first = False
+                return b"working 10%\n"
+            await self._stop.wait()
+            return b""
+
+        async def wait(self) -> int:
+            await self._stop.wait()
+            if self.returncode is None:
+                self.returncode = 0
+            return self.returncode
+
+        def terminate(self) -> None:
+            self._stop.set()
+            raise ProcessLookupError
+
+        def kill(self) -> None:
+            self._stop.set()
+
+    async def fake_exec(*_args, **_kwargs):
+        return _RaceProc()
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+    runner = SubprocessRunner(owner="test")
+    cancel_event = asyncio.Event()
+
+    async def _run():
+        gen = runner.run(
+            _py_cmd("import sys"),
+            input_path=str(tmp_path / "in.bin"),
+            output_path=str(tmp_path / "out.bin"),
+            parse_progress=_parse_pct,
+            cancel_event=cancel_event,
+            fail_label="testproc",
+        )
+        async for update in gen:
+            if "10%" in update["message"]:
+                cancel_event.set()
+
+    with pytest.raises(ConversionCancelled):
+        asyncio.run(_run())
+    assert not runner.active_pids()
+
+
+def test_cancel_racing_clean_exit_reports_success(tmp_path, monkeypatch):
+    """When cancellation races a clean exit (the child already returned 0), the
+    conversion finished in that instant and is reported complete — a cancel that
+    races a successful completion delivers the result rather than discarding it
+    (a deliberate product choice). The still-running case is covered by
+    test_cancel_event_preset_terminates_and_raises.
+    """
+
+    class _TimeoutThenExitedProc:
+        """read() times out (no more output) while returncode is already 0, so
+        the watcher skips marking the cancel and the run completes normally."""
+
+        def __init__(self):
+            self.pid = 555
+            self.returncode = 0
+            self.stdout = self
+
+        async def read(self, _n: int) -> bytes:
+            raise asyncio.TimeoutError  # the runner wraps read in wait_for(timeout=2)
+
+        async def wait(self) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+    async def fake_exec(*_args, **_kwargs):
+        return _TimeoutThenExitedProc()
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+    runner = SubprocessRunner(owner="test")
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd("import sys"),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(tmp_path / "out.bin"),
+                parse_progress=_parse_pct,
+                cancel_event=cancel_event,
+                fail_label="testproc",
+            )
+        )
+    )
+
+    assert updates[-1] == {"progress": 100, "message": "Conversion complete"}
     assert not runner.active_pids()
 
 
@@ -140,6 +379,166 @@ def test_stall_timeout_raises_runtimeerror(tmp_path, monkeypatch):
         )
 
     assert "Conversion stalled" in str(excinfo.value)
+    assert not runner.active_pids()
+
+
+def test_size_progress_emits_from_output_growth(tmp_path):
+    """Progress for a no-parseable-percent tool comes from the size_progress hook.
+
+    The child writes the output file then a stdout line each step, so the
+    post-line size tick fires without waiting on the read timeout, and the
+    stream ends at the runner's terminal 100%.
+    """
+    out = tmp_path / "out.bin"
+    script = (
+        "import sys\n"
+        f"out = {str(out)!r}\n"
+        "with open(out, 'wb') as f:\n"
+        "    for i in range(3):\n"
+        "        f.write(b'x' * 100); f.flush()\n"
+        "        sys.stdout.write(f'step {i}\\n'); sys.stdout.flush()\n"
+    )
+    runner = SubprocessRunner(owner="test")
+
+    def _size_progress(size: int) -> dict:
+        return {
+            "progress": runner_module.output_size_progress(size, 1000),
+            "message": f"sz {size}",
+        }
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(out),
+                parse_progress=lambda _line: None,
+                size_progress=_size_progress,
+                fail_label="testproc",
+            )
+        )
+    )
+
+    size_updates = [u for u in updates if u["message"].startswith("sz ")]
+    assert size_updates, "expected at least one size-based progress update"
+    # The estimate matches the shared helper (100 B against expected 1000 -> 14%)
+    # and the emitted bar never goes backwards.
+    assert max(u["progress"] for u in size_updates) >= 14
+    progresses = [u["progress"] for u in updates]
+    assert progresses == sorted(progresses)
+    assert updates[-1] == {"progress": 100, "message": "Conversion complete"}
+    assert not runner.active_pids()
+
+
+def test_env_is_forwarded_to_subprocess(tmp_path):
+    """run(env=...) is passed through to the spawned subprocess's environment."""
+    script = (
+        "import os, sys\n"
+        "sys.stdout.write('VAL=' + os.environ.get('CMP_RUNNER_TEST', 'unset') + '\\n')\n"
+    )
+    runner = SubprocessRunner(owner="test")
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(tmp_path / "out.bin"),
+                parse_progress=lambda _line: None,
+                env={**os.environ, "CMP_RUNNER_TEST": "from-env"},
+                fail_label="testproc",
+            )
+        )
+    )
+
+    messages = " ".join(u["message"] for u in updates)
+    assert "VAL=from-env" in messages
+    assert not runner.active_pids()
+
+
+def test_nice_via_wrapper_omits_preexec_fn(tmp_path, monkeypatch):
+    """nice_via_wrapper=True must spawn with preexec_fn=None — the deadlock-
+    avoidance contract maxcso/nsz rely on — while still completing normally.
+
+    Asserting the spawn kwarg (not just completion) guards against a regression
+    that reintroduced a harmless-looking preexec_fn, which a completion-only
+    test would miss.
+    """
+    out = tmp_path / "out.bin"
+    script = "import sys; sys.stdout.write('done 50%\\n')"
+    runner = SubprocessRunner(owner="test")
+
+    captured = {}
+    real_exec = runner_module.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(out),
+                parse_progress=_parse_pct,
+                nice_via_wrapper=True,
+                fail_label="testproc",
+            )
+        )
+    )
+
+    assert captured.get("preexec_fn") is None
+    assert 50 in [u["progress"] for u in updates]
+    assert updates[-1] == {"progress": 100, "message": "Conversion complete"}
+    assert not runner.active_pids()
+
+
+def test_initial_progress_floor_keeps_bar_monotonic(tmp_path):
+    """A non-parseable early line must not drop the bar below the seeded floor.
+
+    The child emits a stdout line before the output file grows; with
+    parse_progress -> None that line would otherwise emit progress 0. With
+    initial_progress=5 it emits the floor instead, and size growth + the final
+    100% stay monotonic.
+    """
+    out = tmp_path / "out.bin"
+    script = (
+        "import sys\n"
+        f"out = {str(out)!r}\n"
+        "sys.stdout.write('warming up\\n'); sys.stdout.flush()\n"
+        "with open(out, 'wb') as f:\n"
+        "    f.write(b'x' * 100); f.flush()\n"
+        "    sys.stdout.write('step\\n'); sys.stdout.flush()\n"
+    )
+    runner = SubprocessRunner(owner="test")
+
+    def _size_progress(size: int) -> dict:
+        return {
+            "progress": runner_module.output_size_progress(size, 1000),
+            "message": f"sz {size}",
+        }
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(out),
+                parse_progress=lambda _line: None,
+                initial_progress=5,
+                size_progress=_size_progress,
+                fail_label="testproc",
+            )
+        )
+    )
+
+    progresses = [u["progress"] for u in updates]
+    assert min(progresses) >= 5            # never drops below the seeded floor
+    assert progresses == sorted(progresses)  # monotonic non-decreasing
+    assert updates[-1]["progress"] == 100
     assert not runner.active_pids()
 
 
