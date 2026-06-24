@@ -155,8 +155,8 @@ class ArchiveService:
             from services.tools import registry
 
             exts = (
-                registry.convertible_extensions()
-                | registry.archive_input_extensions()
+                frozenset(registry.convertible_extensions())
+                | frozenset(registry.archive_input_extensions())
             ) - ARCHIVE_EXTENSIONS
             if exts:
                 return exts
@@ -180,7 +180,7 @@ class ArchiveService:
         try:
             from services.tools import registry
 
-            exts = registry.archive_input_extensions()
+            exts = frozenset(registry.archive_input_extensions())
             if exts:
                 return exts
         except Exception:  # pragma: no cover - registry always loads in-app
