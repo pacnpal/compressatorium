@@ -152,7 +152,7 @@ async def test_convert_nonzero_exit_raises(tmp_path, monkeypatch, keys_present):
 
     monkeypatch.setattr(nsz_module.asyncio, "create_subprocess_exec", fake_exec)
 
-    with pytest.raises(RuntimeError, match="exit code 1"):
+    with pytest.raises(RuntimeError, match="return code 1"):
         await _drain(
             nsz_module.nsz_service.convert(str(src_path), str(out_path), "nsz_compress"),
         )

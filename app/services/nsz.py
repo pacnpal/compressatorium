@@ -21,20 +21,21 @@ keeps duplicate handling in the job layer where it belongs.
 """
 import asyncio
 import contextlib
-import logging
 from logging_setup import get_logger
 import os
 import shutil
 import tempfile
-import threading
-import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from config import settings
-from services.chdman import ConversionCancelled
-from services.subprocess_runner import ioprio_prefix, nice_prefix, verify_timeout
-from services.timeout_policy import compute_progress_stall_timeout
+from services.subprocess_runner import (
+    SubprocessRunner,
+    ioprio_prefix,
+    nice_prefix,
+    output_size_progress,
+    verify_timeout,
+)
 from utils.junk import is_junk_entry
 
 # Input -> output extension, both directions. The four extensions are distinct,
@@ -66,8 +67,10 @@ class NszService:
 
     def __init__(self):
         self.nsz_path = settings.nsz_path
-        self._active_pids: set[int] = set()
-        self._pid_lock = threading.Lock()
+        # _run_convert() delegates its streaming loop to the runner; verify_stream()
+        # still spawns nsz -V directly but tracks its PID in the same set, so
+        # active_pids() reflects both.
+        self._runner = SubprocessRunner(owner="nsz")
 
     # ----- keys -------------------------------------------------------------
 
@@ -258,17 +261,8 @@ class NszService:
         prefix = nice_prefix("nsz") + ioprio_prefix("nsz")
         return prefix + cmd
 
-    def _track_pid(self, pid: int):
-        with self._pid_lock:
-            self._active_pids.add(pid)
-
-    def _untrack_pid(self, pid: int):
-        with self._pid_lock:
-            self._active_pids.discard(pid)
-
     def active_pids(self) -> list[int]:
-        with self._pid_lock:
-            return list(self._active_pids)
+        return self._runner.active_pids()
 
     # ----- output paths -----------------------------------------------------
 
@@ -353,29 +347,6 @@ class NszService:
                            env, cancel_event, compression=None) -> AsyncGenerator[dict, None]:
         cmd = self._build_command(input_path, work_dir, mode, compression)
 
-        # cmd is built from validated settings paths (no shell interpretation);
-        # args are a fixed list, never shell-expanded. nice/ionice are applied
-        # as command wrappers in _build_command, so there's no preexec_fn.
-        process = await asyncio.create_subprocess_exec(  # nosemgrep
-            cmd[0], *cmd[1:],
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-        )
-        if process.stdout is None:
-            raise RuntimeError("nsz stdout is not available")
-
-        self._track_pid(process.pid)
-        if logger.isEnabledFor(logging.DEBUG):
-            # Log the argv only; never the keys path contents.
-            logger.debug("Starting nsz pid=%s cmd=%s", process.pid, " ".join(cmd))
-
-        stall_timeout = compute_progress_stall_timeout(
-            input_path=input_path,
-            base_timeout=getattr(settings, "progress_timeout", 0),
-            timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
-            timeout_cap=getattr(settings, "progress_timeout_cap", 0),
-        )
         try:
             input_size = os.path.getsize(input_path)
         except OSError:
@@ -383,101 +354,38 @@ class NszService:
         ratio = _DECOMPRESS_RATIO if mode == "nsz_decompress" else _COMPRESS_RATIO
         expected_size = max(1, int(input_size * ratio))
 
-        last_output_size: int | None = None
-        last_activity_at = time.monotonic()
+        def _size_progress(size: int) -> dict:
+            return {
+                "progress": output_size_progress(size, expected_size),
+                "message": f"Working... ({size // (1024 * 1024)} MB)",
+            }
 
-        cancelled_by_request = False
-        cancel_task = None
-        if cancel_event:
+        yield {"progress": 1, "message": f"Starting Switch {verb}..."}
 
-            async def _cancel_watcher():
-                nonlocal cancelled_by_request
-                await cancel_event.wait()
-                cancelled_by_request = True
-                try:
-                    process.terminate()
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-
-            cancel_task = asyncio.create_task(_cancel_watcher())
-
-        output_tail: list[str] = []
-
-        try:
-            yield {"progress": 1, "message": f"Starting Switch {verb}..."}
-
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(process.stdout.read(256), timeout=2.0)
-                except asyncio.TimeoutError:
-                    chunk = None
-
-                if chunk == b"":
-                    break
-
-                if chunk:
-                    text = chunk.decode("utf-8", errors="replace").strip()
-                    if text:
-                        output_tail.append(text)
-                        if len(output_tail) > 30:
-                            output_tail.pop(0)
-                    last_activity_at = time.monotonic()
-
-                # Estimate progress from the growing output file.
-                if os.path.exists(produced_path):
-                    try:
-                        current = os.path.getsize(produced_path)
-                    except OSError:
-                        current = None
-                    if current is not None and current != last_output_size:
-                        last_output_size = current
-                        last_activity_at = time.monotonic()
-                        pct = min(95, max(1, int(current / expected_size * 90) + 5))
-                        yield {
-                            "progress": pct,
-                            "message": f"Working... ({current // (1024 * 1024)} MB)",
-                        }
-
-                if process.returncode is not None:
-                    break
-
-                if stall_timeout > 0 and (time.monotonic() - last_activity_at) > stall_timeout:
-                    logger.warning(
-                        "nsz pid=%s stalled (no progress for %ds), killing",
-                        process.pid, stall_timeout,
-                    )
-                    with contextlib.suppress(ProcessLookupError):
-                        process.kill()
-                    raise TimeoutError(
-                        f"Conversion stalled (no progress for {stall_timeout}s)",
-                    )
-
-            await process.wait()
-        finally:
-            if cancel_task:
-                cancel_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await cancel_task
-            if process.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    process.kill()
-                with contextlib.suppress(Exception):
-                    await process.wait()
-            self._untrack_pid(process.pid)
-
-        if cancelled_by_request:
-            raise ConversionCancelled("Conversion cancelled by user")
-
-        if process.returncode != 0:
-            tail = "\n".join(output_tail[-10:]) if output_tail else "Unknown error"
-            raise RuntimeError(f"nsz failed with exit code {process.returncode}: {tail}")
+        # nsz names the file itself inside work_dir, so the runner watches
+        # produced_path for growth/stall. nice/ionice are command wrappers in
+        # _build_command (nice_via_wrapper) and the private keys-home env is
+        # forwarded; nsz prints no parseable percent, so size_progress drives the
+        # bar. The terminal 100% is held back — convert() emits it after the
+        # os.replace onto the real output_path.
+        async for update in self._runner.run(
+            cmd,
+            input_path=input_path,
+            output_path=produced_path,
+            parse_progress=lambda _line: None,
+            cancel_event=cancel_event,
+            fail_label="nsz",
+            complete_message=f"Switch {verb} complete",
+            size_progress=_size_progress,
+            nice_via_wrapper=True,
+            env=env,
+        ):
+            if update.get("progress", 0) >= 100:
+                continue
+            yield update
 
         if not os.path.exists(produced_path):
-            tail = "\n".join(output_tail[-10:]) if output_tail else ""
-            raise RuntimeError(f"nsz produced no output file. {tail}".strip())
+            raise RuntimeError("nsz produced no output file")
 
     # ----- info -------------------------------------------------------------
 
@@ -571,7 +479,7 @@ class NszService:
                     stderr=asyncio.subprocess.STDOUT,
                     env=env,
                 )
-                self._track_pid(process.pid)
+                self._runner.track_pid(process.pid)
                 overall_timeout = verify_timeout("nsz")
                 try:
                     yield {"type": "progress", "progress": 0, "message": "Verifying integrity..."}
@@ -618,7 +526,7 @@ class NszService:
                             process.kill()
                         with contextlib.suppress(Exception):
                             await process.wait()
-                    self._untrack_pid(process.pid)
+                    self._runner.untrack_pid(process.pid)
         except Exception as e:
             logger.exception("Error during Switch verification: %s", e)
             yield {"type": "error", "valid": False, "message": f"Verification error: {e}"}
