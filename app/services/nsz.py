@@ -373,6 +373,7 @@ class NszService:
             input_path=input_path,
             output_path=produced_path,
             parse_progress=lambda _line: None,
+            initial_progress=1,
             cancel_event=cancel_event,
             fail_label="nsz",
             complete_message=f"Switch {verb} complete",

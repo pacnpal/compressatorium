@@ -201,6 +201,7 @@ class Z3DSCompressService:
                 input_path=input_path,
                 output_path=output_path,
                 parse_progress=lambda _line: None,
+                initial_progress=5,
                 cancel_event=cancel_event,
                 fail_label="z3ds_compressor",
                 complete_message=f"3DS {verb} complete",

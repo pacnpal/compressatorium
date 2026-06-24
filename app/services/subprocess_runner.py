@@ -131,7 +131,7 @@ def verify_timeout(owner: str | None = None) -> int:
 
 
 def output_size_progress(current: int, expected_size: int) -> int:
-    """Estimate a 5–95% progress value from output-file growth.
+    """Estimate a 5-95% progress value from output-file growth.
 
     The shared progress estimate for tools whose subprocess draws a TTY
     progress bar that falls silent on a pipe (``maxcso``, ``nsz``, ``z3ds``):
@@ -271,6 +271,7 @@ class SubprocessRunner:
         input_path: str,
         output_path: str,
         parse_progress: Callable[[str], int | None],
+        initial_progress: int = 0,
         cancel_event: asyncio.Event | None = None,
         heartbeat: bool = False,
         fail_label: str = "process",
@@ -301,10 +302,12 @@ class SubprocessRunner:
         ``size_progress(output_size) -> dict | None`` turns the measured output
         size into a progress update for tools whose CLI prints no parseable
         percent (its TTY bar goes silent on a pipe): on each output-growth tick
-        the runner calls it and yields its ``{"progress", "message"}`` (and
-        raises the progress floor so a later non-parseable line cannot reset the
-        bar). ``parse_progress`` still wins when it returns a percent. See
-        :func:`output_size_progress` for the shared estimate.
+        the runner calls it and yields its ``{"progress", "message"}``, clamped
+        to never drop below the current floor. ``parse_progress`` still wins when
+        it returns a percent. See :func:`output_size_progress` for the shared
+        estimate. ``initial_progress`` seeds that floor with the caller's preamble
+        (e.g. a service's "Starting..." yield at 1/5%) so an early non-parseable
+        line cannot drop the bar below it.
 
         ``nice_via_wrapper`` skips the ``preexec_fn`` renice when the caller has
         already prefixed ``cmd`` with ``nice``/``ionice`` command wrappers
@@ -359,7 +362,11 @@ class SubprocessRunner:
                 timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
                 timeout_cap=getattr(settings, "progress_timeout_cap", 0),
             )
-            last_progress_value = 0
+            # Seed the progress floor with the caller's preamble (e.g. the
+            # service's "Starting..." yield at 1/5%) so an early non-parseable
+            # stdout line — which emits last_progress_value — can't drop the bar
+            # below it before the first size-growth tick.
+            last_progress_value = initial_progress
             last_output_size: int | None = None
             last_activity_at = time.monotonic()
             start = last_activity_at
@@ -427,10 +434,11 @@ class SubprocessRunner:
             def _size_update(now: float) -> dict | None:
                 # Size-based progress for tools whose CLI prints no parseable
                 # percent (maxcso/nsz/z3ds): on each output-growth tick, refresh
-                # the stall clock, raise the progress floor so a later
-                # non-parseable line can't reset the bar, and return the tool's
-                # {"progress","message"} update to yield. No-op (returns None)
-                # for every existing caller, which leaves size_progress unset.
+                # the stall clock, advance the progress floor, and return the
+                # tool's {"progress","message"} update to yield. The emitted
+                # progress is clamped to the floor so a size estimate can never
+                # drop the bar below a higher parsed/seeded value. No-op (returns
+                # None) for every existing caller, which leaves size_progress unset.
                 nonlocal last_output_size, last_activity_at, last_progress_value
                 if size_progress is None:
                     return None
@@ -444,8 +452,11 @@ class SubprocessRunner:
                 update = size_progress(size)
                 if update is not None:
                     pct = update.get("progress")
-                    if isinstance(pct, int) and pct > last_progress_value:
-                        last_progress_value = pct
+                    if isinstance(pct, int):
+                        if pct < last_progress_value:
+                            update = {**update, "progress": last_progress_value}
+                        elif pct > last_progress_value:
+                            last_progress_value = pct
                 return update
 
             async def _check_stall(now: float) -> bool:

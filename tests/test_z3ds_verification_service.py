@@ -242,6 +242,8 @@ class _ConvertStdout:
 
 
 class _ConvertProcess:
+    """Fake convert subprocess: streams preset stdout chunks, then exits."""
+
     def __init__(self, pid: int, chunks: list[bytes], returncode: int = 0):
         self.pid = pid
         self.stdout = _ConvertStdout(chunks)
@@ -263,6 +265,8 @@ class _ConvertProcess:
 
 
 class _CancelStdout:
+    """Stdout that yields one line, then blocks until the process is stopped."""
+
     def __init__(self, stop: asyncio.Event):
         self._stop = stop
         self._first = True
@@ -276,6 +280,8 @@ class _CancelStdout:
 
 
 class _CancelProcess:
+    """Fake subprocess that only exits once terminate()/kill() is called."""
+
     def __init__(self, pid: int, stop: asyncio.Event):
         self.pid = pid
         self._stop = stop
@@ -306,6 +312,7 @@ class _CancelProcess:
     ],
 )
 async def test_convert_happy_path(tmp_path, monkeypatch, mode, src, out):
+    """convert() streams the runner's updates and ends at 100% with output written."""
     src_path = tmp_path / src
     src_path.write_bytes(b"rom-bytes")
     out_path = tmp_path / out
@@ -328,6 +335,7 @@ async def test_convert_happy_path(tmp_path, monkeypatch, mode, src, out):
 
 @pytest.mark.asyncio
 async def test_convert_cancel_cleans_partial_output(tmp_path, monkeypatch):
+    """A cancel mid-convert raises ConversionCancelled and removes the partial."""
     src_path = tmp_path / "game.cci"
     src_path.write_bytes(b"rom")
     out_path = tmp_path / "game.zcci"

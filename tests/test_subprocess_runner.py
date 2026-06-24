@@ -145,10 +145,12 @@ def test_stall_timeout_raises_runtimeerror(tmp_path, monkeypatch):
 
 
 def test_size_progress_emits_from_output_growth(tmp_path):
-    # A tool whose CLI prints no parseable percent: progress must come from the
-    # growing output file via the size_progress hook, ending at the runner's
-    # terminal 100%. The child writes the output file then a stdout line each
-    # step, so the post-line size tick fires without waiting on the read timeout.
+    """Progress for a no-parseable-percent tool comes from the size_progress hook.
+
+    The child writes the output file then a stdout line each step, so the
+    post-line size tick fires without waiting on the read timeout, and the
+    stream ends at the runner's terminal 100%.
+    """
     out = tmp_path / "out.bin"
     script = (
         "import sys\n"
@@ -191,6 +193,7 @@ def test_size_progress_emits_from_output_growth(tmp_path):
 
 
 def test_env_is_forwarded_to_subprocess(tmp_path):
+    """run(env=...) is passed through to the spawned subprocess's environment."""
     script = (
         "import os, sys\n"
         "sys.stdout.write('VAL=' + os.environ.get('CMP_RUNNER_TEST', 'unset') + '\\n')\n"
@@ -215,12 +218,26 @@ def test_env_is_forwarded_to_subprocess(tmp_path):
     assert not runner.active_pids()
 
 
-def test_nice_via_wrapper_runs_without_preexec(tmp_path):
-    # With nice_via_wrapper the renice is the caller's command-wrapper concern,
-    # so run() skips preexec_fn; the conversion must still complete normally.
+def test_nice_via_wrapper_omits_preexec_fn(tmp_path, monkeypatch):
+    """nice_via_wrapper=True must spawn with preexec_fn=None — the deadlock-
+    avoidance contract maxcso/nsz rely on — while still completing normally.
+
+    Asserting the spawn kwarg (not just completion) guards against a regression
+    that reintroduced a harmless-looking preexec_fn, which a completion-only
+    test would miss.
+    """
     out = tmp_path / "out.bin"
     script = "import sys; sys.stdout.write('done 50%\\n')"
     runner = SubprocessRunner(owner="test")
+
+    captured = {}
+    real_exec = runner_module.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", spy)
 
     updates = asyncio.run(
         _drain(
@@ -235,8 +252,55 @@ def test_nice_via_wrapper_runs_without_preexec(tmp_path):
         )
     )
 
+    assert captured.get("preexec_fn") is None
     assert 50 in [u["progress"] for u in updates]
     assert updates[-1] == {"progress": 100, "message": "Conversion complete"}
+    assert not runner.active_pids()
+
+
+def test_initial_progress_floor_keeps_bar_monotonic(tmp_path):
+    """A non-parseable early line must not drop the bar below the seeded floor.
+
+    The child emits a stdout line before the output file grows; with
+    parse_progress -> None that line would otherwise emit progress 0. With
+    initial_progress=5 it emits the floor instead, and size growth + the final
+    100% stay monotonic.
+    """
+    out = tmp_path / "out.bin"
+    script = (
+        "import sys\n"
+        f"out = {str(out)!r}\n"
+        "sys.stdout.write('warming up\\n'); sys.stdout.flush()\n"
+        "with open(out, 'wb') as f:\n"
+        "    f.write(b'x' * 100); f.flush()\n"
+        "    sys.stdout.write('step\\n'); sys.stdout.flush()\n"
+    )
+    runner = SubprocessRunner(owner="test")
+
+    def _size_progress(size: int) -> dict:
+        return {
+            "progress": runner_module.output_size_progress(size, 1000),
+            "message": f"sz {size}",
+        }
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(out),
+                parse_progress=lambda _line: None,
+                initial_progress=5,
+                size_progress=_size_progress,
+                fail_label="testproc",
+            )
+        )
+    )
+
+    progresses = [u["progress"] for u in updates]
+    assert min(progresses) >= 5            # never drops below the seeded floor
+    assert progresses == sorted(progresses)  # monotonic non-decreasing
+    assert updates[-1]["progress"] == 100
     assert not runner.active_pids()
 
 

@@ -204,33 +204,37 @@ class MaxcsoService:
     ) -> AsyncGenerator[dict, None]:
         decompress = mode == "cso_decompress"
         verb = "decompression" if decompress else "compression"
+        # Build the argv and size estimate up front, outside the cleanup guard:
+        # a setup failure (e.g. _build_command rejecting the mode) must never
+        # delete a pre-existing output_path, since maxcso has written nothing.
+        cmd = self._build_command(input_path, output_path, mode, compression)
+
         try:
-            cmd = self._build_command(input_path, output_path, mode, compression)
+            input_size = os.path.getsize(input_path)
+        except OSError:
+            input_size = 0
+        ratio = _DECOMPRESS_RATIO if decompress else _COMPRESS_RATIO
+        expected_size = max(1, int(input_size * ratio))
 
-            try:
-                input_size = os.path.getsize(input_path)
-            except OSError:
-                input_size = 0
-            ratio = _DECOMPRESS_RATIO if decompress else _COMPRESS_RATIO
-            expected_size = max(1, int(input_size * ratio))
+        def _size_progress(size: int) -> dict:
+            return {
+                "progress": output_size_progress(size, expected_size),
+                "message": f"Working... ({size // (1024 * 1024)} MB)",
+            }
 
-            def _size_progress(size: int) -> dict:
-                return {
-                    "progress": output_size_progress(size, expected_size),
-                    "message": f"Working... ({size // (1024 * 1024)} MB)",
-                }
+        yield {"progress": 1, "message": f"Starting CSO {verb}..."}
 
-            yield {"progress": 1, "message": f"Starting CSO {verb}..."}
-
-            # maxcso applies nice/ionice as command wrappers in _build_command
-            # (nice_via_wrapper) to avoid preexec_fn, and prints no parseable
-            # percent (its TTY bar goes silent on a pipe), so size_progress
-            # estimates the bar from the growing -o file.
+        # maxcso applies nice/ionice as command wrappers in _build_command
+        # (nice_via_wrapper) to avoid preexec_fn, and prints no parseable percent
+        # (its TTY bar goes silent on a pipe), so size_progress estimates the bar
+        # from the growing -o file.
+        try:
             async for update in self._runner.run(
                 cmd,
                 input_path=input_path,
                 output_path=output_path,
                 parse_progress=lambda _line: None,
+                initial_progress=1,
                 cancel_event=cancel_event,
                 fail_label="maxcso",
                 complete_message=f"CSO {verb} complete",
@@ -238,23 +242,15 @@ class MaxcsoService:
                 nice_via_wrapper=True,
             ):
                 yield update
-
-        except ConversionCancelled:
-            # maxcso writes straight to output_path, so a cancel can leave a
-            # partial; drop it so a retry isn't blocked by a truncated file.
-            logger.info("maxcso conversion cancelled")
+        except (ConversionCancelled, RuntimeError):
+            # maxcso writes straight to output_path, so a cancel or a runner-phase
+            # failure (non-zero exit / stall -> RuntimeError) can leave a partial.
+            # Drop it so a retry isn't blocked by, or silently trusts, a truncated
+            # file. Setup/spawn errors before maxcso writes propagate untouched,
+            # so a pre-existing output is never removed for a no-op failure.
             if os.path.exists(output_path):
                 with contextlib.suppress(OSError):
                     os.remove(output_path)
-            raise
-        except Exception:
-            # Any other failure (non-zero exit, stall) likewise leaves a partial
-            # behind; remove it so a retry isn't blocked by, or silently trusts,
-            # a truncated file.
-            if os.path.exists(output_path):
-                with contextlib.suppress(OSError):
-                    os.remove(output_path)
-            logger.exception("Error in maxcso.convert")
             raise
 
     # ----- info -------------------------------------------------------------
