@@ -2,18 +2,10 @@
 
 ## Unreleased
 
-Idempotency & re-run-safety hardening (issue #184, part of the #177 tech-debt epic).
+Idempotency and robustness hardening (issue #184, part of the #177 tech-debt epic).
 
 ### Changed
 
-- **Re-running a job whose verified output already exists now completes as a
-  no-op** instead of failing with "Output CHD file already exists". When a job is
-  dispatched and its output file is already present *and* already integrity-verified
-  (reachable when two submissions of the same file race past the output-exists
-  precheck — the first converts and verifies, the second now finds the finished
-  artifact), the job is marked complete without re-spawning the converter. Overwrite
-  jobs (you asked to regenerate) and delete-on-verify jobs are unaffected — they
-  still run the full conversion / verify-and-delete path.
 - **CHD embedded-hash matching is hardened against a metadata-cache TOCTOU.** When a
   CHD is matched against a DAT, its cached header/data SHA1 are now read and
   freshness-checked as a single observation (read the row, then re-stat), so a CHD

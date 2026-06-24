@@ -1503,8 +1503,7 @@ class JobManager:
     def _compute_output_size(self, job: ConversionJob) -> Optional[int]:
         """Total bytes of a completed job's output (None if absent).
 
-        Single source of truth for the three output shapes, shared by the
-        normal completion path and the re-run fast path: a makeps3iso
+        Single source of truth for the three output shapes: a makeps3iso
         directory job (single .iso or a split .0/.1/… set), an extractcd job
         (.cue + .bin sidecar), and the common single-file output.
         """
@@ -1604,48 +1603,6 @@ class JobManager:
         # that folder job releases its subtree lock, like any queued job.
         if await run_in_threadpool(self._blocked_by_dir_lock, job):
             await self._defer_blocked_job(job_id, output_lock_held=False)
-            return
-
-        # ─── Idempotent re-run fast path ──────────────────────────────────
-        # A re-queued/retried job whose verified output already exists (e.g.
-        # two concurrent submissions of the same file race past the
-        # output-exists precheck: the first converts+verifies, the second now
-        # finds the finished artifact) recognizes prior success instead of
-        # re-spawning the converter — or, today, failing at acquire_lock with
-        # "Output CHD file already exists". Skipped for overwrite jobs (the
-        # user asked to regenerate) and delete-on-verify jobs (whose source
-        # deletion runs the full guarded path below). Cleanup mirrors the
-        # other pre-try early-returns.
-        if (
-            not job.allow_overwrite
-            and not job.delete_on_verify
-            # A verified output is always a regular file. Gating on isfile (not
-            # exists) skips a directory shadowing the output path or a bare
-            # split-set path with no plain file — those fall through to the
-            # existing rejection rather than spuriously consulting the store.
-            and os.path.isfile(job.output_path)
-            and await verification_store.is_verified(job.output_path)
-        ):
-            job.progress = 100
-            job.output_size = self._compute_output_size(job)
-            job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.now(timezone.utc)
-            await self._notify_subscribers(
-                job_id,
-                {
-                    "type": "complete",
-                    "job_id": job_id,
-                    "output_path": job.output_path,
-                    "output_size": job.output_size,
-                    "verified": True,
-                    "source_deleted": False,
-                },
-            )
-            await self._cleanup_temp_dir(job)
-            concurrency_manager.release(job_id)
-            if job_id in self._cancel_events:
-                del self._cancel_events[job_id]
-            await self._prune_jobs(exclude_id=job_id)
             return
 
         # Try to acquire lock for the output file (prevents race conditions)
@@ -1849,7 +1806,7 @@ class JobManager:
                 self._cancelled.discard(job_id)
                 job.progress = 100
 
-                # Get output file size (shared with the re-run fast path).
+                # Get output file size.
                 job.output_size = self._compute_output_size(job)
 
                 # Embed game ID / title into CHD metadata after createcd/createdvd.
