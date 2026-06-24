@@ -525,14 +525,10 @@ class SubprocessRunner:
                             continue
                         _record_line(line)
                         now = time.monotonic()
-                        # Non-empty stdout is activity: refresh the stall clock so
-                        # a tool that logs status without yet growing its output
-                        # (the size-progress tools, whose parse_progress is a
-                        # no-op) is not killed as stalled.
-                        last_activity_at = now
                         progress = parse_progress(line)
                         if progress is not None and progress > last_progress_value:
                             last_progress_value = progress
+                            last_activity_at = now
                         # Clamp to the running floor (incl. initial_progress) so a
                         # parsed value below it can't move the bar backward.
                         yield {"progress": last_progress_value, "message": line}
@@ -548,10 +544,10 @@ class SubprocessRunner:
                 line = buffer.strip()
                 _record_line(line)
                 now = time.monotonic()
-                last_activity_at = now
                 progress = parse_progress(line)
                 if progress is not None and progress > last_progress_value:
                     last_progress_value = progress
+                    last_activity_at = now
                 yield {"progress": last_progress_value, "message": line}
                 update = _size_update(time.monotonic())
                 if update is not None:
