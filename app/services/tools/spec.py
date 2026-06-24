@@ -37,6 +37,14 @@ class ModeSpec:
     supports_compression_level: bool = False  # dolphin rvz/wia only
     supports_delete_on_verify: bool = False
     allows_archive_input: bool = False         # chdman create modes only
+    # Sibling outputs this mode writes beside its primary output_path, expressed
+    # as suffix swaps off the primary (e.g. extractcd's ``.cue`` -> ``.bin``
+    # data-track sidecar). Read by ``BaseTool.companion_outputs`` so conflict
+    # detection, overwrite cleanup, size accounting and in-use tracking enumerate
+    # companions from one place instead of re-hardcoding the suffix per consumer.
+    # Modes whose companion set is dynamic (makeps3iso's size-dependent split
+    # parts) leave this empty and override ``companion_outputs`` instead.
+    companion_exts: tuple[str, ...] = ()
     # Default keeps every existing mode FILE-based (zero behavior change). A
     # directory mode (folder->iso) overrides to {InputKind.DIRECTORY}.
     input_kinds: frozenset[InputKind] = frozenset({InputKind.FILE})
@@ -81,3 +89,6 @@ class ChainSpec:
     input_kinds: frozenset[InputKind] = field(
         default_factory=lambda: frozenset({InputKind.FILE})
     )
+    # Structural parity with ModeSpec.companion_exts so BaseTool.companion_outputs
+    # works for chain modes too (cso_to_chd's single .chd has no companion).
+    companion_exts: tuple[str, ...] = ()

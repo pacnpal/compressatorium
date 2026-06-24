@@ -110,6 +110,22 @@ class MakePs3IsoTool(BaseTool):
             input_path, output_dir, treat_as_stem=treat_as_stem,
         )
 
+    def companion_outputs(
+        self, output_path: str, mode: str,  # noqa: ARG002 - single-mode tool
+    ) -> list[str]:
+        """The numbered split parts (``<iso>.0``/``.1``/…) beside ``output_path``.
+
+        A makeps3iso ``-s`` build only splits past 4 GB and the part names aren't
+        known until it finishes, so the set is disk-probed via the service's
+        ``split_parts`` (whose ordering is deterministic, a contiguous ``.0``
+        run). Empty for a bare sub-4 GB ``.iso`` — there ``split_parts`` returns
+        just the base, which is the primary output, not a companion.
+        """
+        return [
+            part for part in self._service.split_parts(output_path)
+            if part != output_path
+        ]
+
     def convert(
         self,
         input_path: str,

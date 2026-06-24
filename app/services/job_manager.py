@@ -706,8 +706,18 @@ class JobManager:
             paths.extend(self._track_candidate_paths(file_path))
         if job.output_path:
             paths.append(job.output_path)
-            if job.mode == ConversionMode.EXTRACTCD:
-                paths.append(str(Path(job.output_path).with_suffix(".bin")))
+            # Companion outputs a mode writes beside its primary (extractcd's
+            # .bin). Directory modes are skipped: makeps3iso's split parts are
+            # queue-time-unknown, disk-probed (companion_outputs scans the dir),
+            # and already covered by _split_output_blocks' I/O-free prefix match —
+            # so this stays a pure, event-loop-safe lookup (this helper is called
+            # synchronously from async route code).
+            if job.input_kind != InputKind.DIRECTORY:
+                paths.extend(
+                    registry.for_mode(job.mode.value).companion_outputs(
+                        job.output_path, job.mode.value,
+                    )
+                )
         return paths
 
     def find_active_job_for_path(
@@ -811,16 +821,31 @@ class JobManager:
             )
             await verification_store.clear(job.output_path)
             return
-        if not os.path.exists(job.output_path):
-            return
-        if not os.path.isfile(job.output_path):
-            raise RuntimeError("Output path exists and is not a file")
-        os.remove(job.output_path)
-        await verification_store.clear(job.output_path)
-        if job.mode.value == "extractcd":
-            bin_path = str(Path(job.output_path).with_suffix(".bin"))
-            if os.path.isfile(bin_path):
-                os.remove(bin_path)
+        # Clear the primary output and every companion the mode wrote beside it
+        # (enumerated from the tool, not re-derived). Companions are cleared even
+        # when the primary is already gone: a lone companion (e.g. a stray
+        # extractcd .bin whose .cue was deleted) is what made
+        # check_output_conflicts authorize the overwrite, so it must not be left
+        # to collide with the new output. Validate the whole set first — a
+        # non-file occupant (a directory squatting on the primary or a companion
+        # name) can't be unlinked, so reject before removing anything rather than
+        # deleting the primary and then failing against the stray occupant.
+        targets = [
+            job.output_path,
+            *registry.for_mode(job.mode.value).companion_outputs(
+                job.output_path, job.mode.value,
+            ),
+        ]
+        for target in targets:
+            if os.path.exists(target) and not os.path.isfile(target):
+                raise RuntimeError("Output path exists and is not a file")
+        primary_removed = False
+        for target in targets:
+            if os.path.isfile(target):
+                os.remove(target)
+                primary_removed = primary_removed or target == job.output_path
+        if primary_removed:
+            await verification_store.clear(job.output_path)
 
     def _get_queued_and_processing_jobs(self) -> tuple[list[str], list[str]]:
         """Get lists of queued and processing job IDs.
@@ -1512,45 +1537,25 @@ class JobManager:
     def _compute_output_size(self, job: ConversionJob) -> Optional[int]:
         """Total bytes of a completed job's output (None if absent).
 
-        Single source of truth for the three output shapes: a makeps3iso
-        directory job (single .iso or a split .0/.1/… set), an extractcd job
-        (.cue + .bin sidecar), and the common single-file output.
+        Single source of truth for every output shape: the primary output plus
+        each companion the mode wrote (extractcd's .bin sidecar, a split
+        folder_to_iso's numbered .iso.0/.1/… parts), enumerated from the owning
+        tool's ``companion_outputs`` hook rather than re-encoded per mode. A
+        split build leaves no bare .iso, so the primary getsize simply misses
+        and the numbered parts carry the whole total. Synchronous (a directory
+        mode's companion lookup scans the output dir) — call via
+        ``run_in_threadpool`` off the event loop.
         """
-        if job.input_kind == InputKind.DIRECTORY:
-            # makeps3iso may finish as a single .iso OR a split set (.0/.1/…)
-            # with no bare .iso, so sum whatever was produced (split_parts
-            # returns [base] or the numbered parts).
-            total_size = 0
-            for part in makeps3iso_service.split_parts(job.output_path):
-                try:
-                    total_size += os.path.getsize(part)
-                except OSError:
-                    pass
-            return total_size if total_size > 0 else None
-        if os.path.exists(job.output_path):
-            if job.mode.value == "extractcd":
-                cue_size = 0
-                bin_size = 0
-                try:
-                    cue_size = os.path.getsize(job.output_path)
-                except OSError:
-                    pass
-                try:
-                    bin_path = str(Path(job.output_path).with_suffix(".bin"))
-                    if os.path.exists(bin_path):
-                        bin_size = os.path.getsize(bin_path)
-                except OSError:
-                    pass
-                total_size = cue_size + bin_size
-                return total_size if total_size > 0 else None
-            # Guard the stat like the branches above: the file can vanish
-            # between the exists() check and here, and "None if absent" must
-            # hold rather than failing an otherwise-complete job.
+        companions = registry.for_mode(job.mode.value).companion_outputs(
+            job.output_path, job.mode.value,
+        )
+        total_size = 0
+        for path in [job.output_path, *companions]:
             try:
-                return os.path.getsize(job.output_path)
+                total_size += os.path.getsize(path)
             except OSError:
-                return None
-        return None
+                pass
+        return total_size if total_size > 0 else None
 
     async def _run_job(self, job_id: str):
         try:
@@ -1665,12 +1670,14 @@ class JobManager:
         # clears it in _clear_existing_output.)
         if job.input_kind == InputKind.DIRECTORY and not job.allow_overwrite:
             existing_parts = await run_in_threadpool(
-                makeps3iso_service.split_parts, job.output_path,
+                registry.for_mode(job.mode.value).companion_outputs,
+                job.output_path, job.mode.value,
             )
-            # split_parts returns [base] only when the bare file exists (already
-            # rejected by acquire_lock above); a real split set is the numbered
-            # parts, so treat that as an output collision.
-            if existing_parts and existing_parts != [job.output_path]:
+            # companion_outputs returns the numbered split parts only when a real
+            # -s split set exists (a bare .iso is the primary, not a companion,
+            # and is already rejected by acquire_lock above), so any companions
+            # mean a prior split build already occupies the target.
+            if existing_parts:
                 job.status = JobStatus.FAILED
                 job.error_message = "Output file already exists"
                 job.completed_at = datetime.now(timezone.utc)
@@ -1837,8 +1844,13 @@ class JobManager:
                         "Job %s post-convert hook skipped: %s", job_id, e
                     )
 
-                # Get output file size.
-                job.output_size = self._compute_output_size(job)
+                # Output size = primary + companions (extractcd's .bin, a split
+                # folder_to_iso's numbered parts), via the shared companion-aware
+                # helper. Off the event loop: a split folder_to_iso's companion
+                # lookup scans the output dir.
+                job.output_size = await run_in_threadpool(
+                    self._compute_output_size, job,
+                )
 
                 verified = False
                 source_deleted = False
