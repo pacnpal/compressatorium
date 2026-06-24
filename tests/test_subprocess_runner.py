@@ -173,6 +173,69 @@ def test_cancel_event_preset_short_circuits_before_spawn(tmp_path, monkeypatch):
     assert not runner.active_pids()
 
 
+def test_cancel_watcher_survives_terminate_processlookuperror(tmp_path, monkeypatch):
+    """If the child exits between the watcher's returncode check and terminate(),
+    the resulting ProcessLookupError must not mask the cancellation.
+
+    Without the guard the watcher task ends in ProcessLookupError, which the
+    finally re-raises over the intended ConversionCancelled.
+    """
+
+    class _RaceProc:
+        """Child whose terminate() raises ProcessLookupError (already exited)."""
+
+        def __init__(self):
+            self.pid = 999
+            self.returncode = None
+            self._stop = asyncio.Event()
+            self.stdout = self
+            self._first = True
+
+        async def read(self, _n: int) -> bytes:
+            if self._first:
+                self._first = False
+                return b"working 10%\n"
+            await self._stop.wait()
+            return b""
+
+        async def wait(self) -> int:
+            await self._stop.wait()
+            if self.returncode is None:
+                self.returncode = 0
+            return self.returncode
+
+        def terminate(self) -> None:
+            self._stop.set()
+            raise ProcessLookupError
+
+        def kill(self) -> None:
+            self._stop.set()
+
+    async def fake_exec(*_args, **_kwargs):
+        return _RaceProc()
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+    runner = SubprocessRunner(owner="test")
+    cancel_event = asyncio.Event()
+
+    async def _run():
+        gen = runner.run(
+            _py_cmd("import sys"),
+            input_path=str(tmp_path / "in.bin"),
+            output_path=str(tmp_path / "out.bin"),
+            parse_progress=_parse_pct,
+            cancel_event=cancel_event,
+            fail_label="testproc",
+        )
+        async for update in gen:
+            if "10%" in update["message"]:
+                cancel_event.set()
+
+    with pytest.raises(ConversionCancelled):
+        asyncio.run(_run())
+    assert not runner.active_pids()
+
+
 def test_stall_timeout_raises_runtimeerror(tmp_path, monkeypatch):
     # Force a short stall window; the child emits one line then goes silent and
     # never grows the output file, so the stall watchdog must fire.

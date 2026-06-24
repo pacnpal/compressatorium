@@ -392,11 +392,18 @@ class SubprocessRunner:
                         self._logger.debug(
                             "Cancelling %s pid=%s", self._owner, process.pid,
                         )
-                    process.terminate()
                     try:
+                        process.terminate()
                         await asyncio.wait_for(process.wait(), timeout=5)
                     except asyncio.TimeoutError:
-                        process.kill()
+                        with contextlib.suppress(ProcessLookupError):
+                            process.kill()
+                    except ProcessLookupError:
+                        # The child exited between the returncode check and
+                        # terminate(); the cancel is already recorded, so swallow
+                        # it. Otherwise the watcher task ends in an exception that
+                        # the finally re-raises, masking the run's real result.
+                        pass
 
                 cancel_task = asyncio.create_task(_cancel_watcher())
 
@@ -479,11 +486,14 @@ class SubprocessRunner:
                     f" output_size={last_output_size})"
                 )
                 if process.returncode is None:
-                    process.terminate()
                     try:
+                        process.terminate()
                         await asyncio.wait_for(process.wait(), timeout=5)
                     except asyncio.TimeoutError:
-                        process.kill()
+                        with contextlib.suppress(ProcessLookupError):
+                            process.kill()
+                    except ProcessLookupError:
+                        pass
                 return True
 
             while True:

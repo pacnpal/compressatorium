@@ -321,6 +321,10 @@ class NszService:
     ) -> AsyncGenerator[dict, None]:
         verb = "decompression" if mode == "nsz_decompress" else "compression"
         out_dir = os.path.dirname(output_path) or "."
+        # Resolve the produced filename before creating the temp dir, so an
+        # unexpected input extension (KeyError) surfaces here rather than
+        # orphaning an empty .nsz-* work dir.
+        produced_name = self._produced_name(input_path)
         await asyncio.to_thread(os.makedirs, out_dir, exist_ok=True)
 
         # Private temp dir on the same filesystem as the destination, so moving
@@ -328,7 +332,7 @@ class NszService:
         work_dir = await asyncio.to_thread(
             tempfile.mkdtemp, prefix=".nsz-", dir=out_dir,
         )
-        produced_path = os.path.join(work_dir, self._produced_name(input_path))
+        produced_path = os.path.join(work_dir, produced_name)
 
         try:
             with self._keys_home() as env:
