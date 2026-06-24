@@ -36,7 +36,7 @@ import os
 import shutil
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 
 from config import settings
 from fastapi.concurrency import run_in_threadpool
@@ -128,6 +128,23 @@ def info_timeout(owner: str | None = None) -> int:
 def verify_timeout(owner: str | None = None) -> int:
     """Effective ``verify`` subprocess timeout in seconds (0 disables)."""
     return max(0, int(_resolve_policy("verify_timeout", owner) or 0))
+
+
+def output_size_progress(current: int, expected_size: int) -> int:
+    """Estimate a 5-95% progress value from output-file growth.
+
+    The shared progress estimate for tools whose subprocess draws a TTY
+    progress bar that falls silent on a pipe (``maxcso``, ``nsz``, ``z3ds``):
+    with no parseable percent in stdout, the growing output file *is* the
+    progress signal, scored against an expected size (the input size times a
+    per-direction ratio — roughly 0.5 for compress, 2.0 for decompress). The
+    ratio only smooths the bar, so an inexact guess affects perceived
+    smoothness, not correctness. Clamped to ``[5, 95]``; :meth:`SubprocessRunner.run`
+    emits the terminal 100% on a clean exit. ``expected_size`` is floored at 1
+    to avoid a divide-by-zero on a zero-byte input.
+    """
+    expected = expected_size if expected_size > 0 else 1
+    return min(95, max(1, int(current / expected * 90) + 5))
 
 
 class SubprocessRunner:
@@ -254,12 +271,17 @@ class SubprocessRunner:
         input_path: str,
         output_path: str,
         parse_progress: Callable[[str], int | None],
+        initial_progress: int = 0,
         cancel_event: asyncio.Event | None = None,
         heartbeat: bool = False,
         fail_label: str = "process",
         complete_message: str = "Conversion complete",
         cwd: str | None = None,
         output_growth_paths: Callable[[], list[str]] | None = None,
+        size_progress: Callable[[int], dict | None] | None = None,
+        nice_via_wrapper: bool = False,
+        env: Mapping[str, str] | None = None,
+        require_output: bool = False,
     ) -> AsyncGenerator[dict, None]:
         """Spawn ``cmd``, stream stdout, and yield ``{"progress", "message"}``.
 
@@ -277,6 +299,29 @@ class SubprocessRunner:
         changes mid-run uses it so the probe keeps following the write — e.g.
         makeps3iso ``-s`` renames the base ``.iso`` to ``.iso.0`` and then writes
         ``.iso.1``/…, which the bare ``output_path`` probe would stop seeing.
+
+        ``size_progress(output_size) -> dict | None`` turns the measured output
+        size into a progress update for tools whose CLI prints no parseable
+        percent (its TTY bar goes silent on a pipe): on each output-growth tick
+        the runner calls it and yields its ``{"progress", "message"}``, clamped
+        to never drop below the current floor. ``parse_progress`` still wins when
+        it returns a percent. See :func:`output_size_progress` for the shared
+        estimate. ``initial_progress`` seeds that floor with the caller's preamble
+        (e.g. a service's "Starting..." yield at 1/5%) so an early non-parseable
+        line cannot drop the bar below it.
+
+        ``nice_via_wrapper`` skips the ``preexec_fn`` renice when the caller has
+        already prefixed ``cmd`` with ``nice``/``ionice`` command wrappers
+        (maxcso/nsz avoid ``preexec_fn``: forking a Python callable in this
+        multithreaded process can deadlock the child before ``exec``).  ``env``
+        is forwarded to the subprocess (nsz runs with a private keys-home env).
+
+        ``require_output`` makes a clean exit (return code 0) that left no file
+        at ``output_path`` a failure, raised as a ``RuntimeError`` carrying the
+        same stdout tail as the non-zero-exit path — so a tool that exits 0
+        without producing output still reports the reason it printed first,
+        rather than a bare "no output" message. Used by nsz, whose ``output_path``
+        is the temp file the runner already watches.
         """
         output_dir = os.path.dirname(output_path)
         if output_dir:
@@ -284,6 +329,14 @@ class SubprocessRunner:
 
         def _preexec():
             apply_nice(self._owner)
+
+        # nice/ionice: by default renice the forked child via ``preexec_fn``
+        # (ionice, when used, is folded into ``cmd`` by the caller's
+        # ``_build_command``). ``nice_via_wrapper`` callers have instead prefixed
+        # ``cmd`` with ``nice``/``ionice`` command wrappers and must NOT also be
+        # reniced via preexec — forking a Python callable in this multithreaded
+        # process can deadlock the child before ``exec``.
+        use_preexec = os.name == "posix" and not nice_via_wrapper
 
         # cmd is built from validated settings paths (no shell interpretation);
         # create_subprocess_exec passes the arg list directly (shell=False), so
@@ -294,8 +347,9 @@ class SubprocessRunner:
             cmd[0], *cmd[1:],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            preexec_fn=_preexec if os.name == "posix" else None,
+            preexec_fn=_preexec if use_preexec else None,
             cwd=cwd,
+            env=env,
         )
         self.track_pid(process.pid)
         # Everything below runs under try/finally so that if the caller stops
@@ -316,7 +370,11 @@ class SubprocessRunner:
                 timeout_per_gib=getattr(settings, "progress_timeout_per_gib", 0),
                 timeout_cap=getattr(settings, "progress_timeout_cap", 0),
             )
-            last_progress_value = 0
+            # Seed the progress floor with the caller's preamble (e.g. the
+            # service's "Starting..." yield at 1/5%) so an early non-parseable
+            # stdout line — which emits last_progress_value — can't drop the bar
+            # below it before the first size-growth tick.
+            last_progress_value = initial_progress
             last_output_size: int | None = None
             last_activity_at = time.monotonic()
             start = last_activity_at
@@ -335,11 +393,18 @@ class SubprocessRunner:
                         self._logger.debug(
                             "Cancelling %s pid=%s", self._owner, process.pid,
                         )
-                    process.terminate()
                     try:
+                        process.terminate()
                         await asyncio.wait_for(process.wait(), timeout=5)
                     except asyncio.TimeoutError:
-                        process.kill()
+                        with contextlib.suppress(ProcessLookupError):
+                            process.kill()
+                    except ProcessLookupError:
+                        # The child exited between the returncode check and
+                        # terminate(); the cancel is already recorded, so swallow
+                        # it. Otherwise the watcher task ends in an exception that
+                        # the finally re-raises, masking the run's real result.
+                        pass
 
                 cancel_task = asyncio.create_task(_cancel_watcher())
 
@@ -381,6 +446,34 @@ class SubprocessRunner:
                     last_output_size = size
                     last_activity_at = now
 
+            def _size_update(now: float) -> dict | None:
+                # Size-based progress for tools whose CLI prints no parseable
+                # percent (maxcso/nsz/z3ds): on each output-growth tick, refresh
+                # the stall clock, advance the progress floor, and return the
+                # tool's {"progress","message"} update to yield. The emitted
+                # progress is clamped to the floor so a size estimate can never
+                # drop the bar below a higher parsed/seeded value. No-op (returns
+                # None) for every existing caller, which leaves size_progress unset.
+                nonlocal last_output_size, last_activity_at, last_progress_value
+                if size_progress is None:
+                    return None
+                size = _measure_output()
+                if size is None:
+                    return None
+                if last_output_size is not None and size <= last_output_size:
+                    return None
+                last_output_size = size
+                last_activity_at = now
+                update = size_progress(size)
+                if update is not None:
+                    pct = update.get("progress")
+                    if isinstance(pct, int):
+                        if pct < last_progress_value:
+                            update = {**update, "progress": last_progress_value}
+                        elif pct > last_progress_value:
+                            last_progress_value = pct
+                return update
+
             async def _check_stall(now: float) -> bool:
                 nonlocal stall_error
                 if stall_timeout <= 0:
@@ -394,11 +487,14 @@ class SubprocessRunner:
                     f" output_size={last_output_size})"
                 )
                 if process.returncode is None:
-                    process.terminate()
                     try:
+                        process.terminate()
                         await asyncio.wait_for(process.wait(), timeout=5)
                     except asyncio.TimeoutError:
-                        process.kill()
+                        with contextlib.suppress(ProcessLookupError):
+                            process.kill()
+                    except ProcessLookupError:
+                        pass
                 return True
 
             while True:
@@ -408,8 +504,19 @@ class SubprocessRunner:
                     )
                 except asyncio.TimeoutError:
                     if cancel_event and cancel_event.is_set():
+                        # Stop reading once cancellation is requested. A child
+                        # that is still running is terminated by the watcher
+                        # (-> cancelled_by_request -> ConversionCancelled); a
+                        # child that has already exited 0 finished in that instant
+                        # and is reported complete. A cancel that races a clean
+                        # exit delivers the result rather than discarding it (a
+                        # deliberate product choice for this inherently ambiguous
+                        # race).
                         break
                     now = time.monotonic()
+                    update = _size_update(now)
+                    if update is not None:
+                        yield update
                     if await _check_stall(now):
                         break
                     if heartbeat and now - last_heartbeat_at >= 2:
@@ -438,16 +545,15 @@ class SubprocessRunner:
                         if progress is not None and progress > last_progress_value:
                             last_progress_value = progress
                             last_activity_at = now
-                        yield {
-                            "progress": (
-                                progress
-                                if progress is not None
-                                else last_progress_value
-                            ),
-                            "message": line,
-                        }
+                        # Clamp to the running floor (incl. initial_progress) so a
+                        # parsed value below it can't move the bar backward.
+                        yield {"progress": last_progress_value, "message": line}
                     buffer = parts[-1]
-                if await _check_stall(time.monotonic()):
+                now = time.monotonic()
+                update = _size_update(now)
+                if update is not None:
+                    yield update
+                if await _check_stall(now):
                     break
 
             if buffer.strip():
@@ -458,12 +564,10 @@ class SubprocessRunner:
                 if progress is not None and progress > last_progress_value:
                     last_progress_value = progress
                     last_activity_at = now
-                yield {
-                    "progress": (
-                        progress if progress is not None else last_progress_value
-                    ),
-                    "message": line,
-                }
+                yield {"progress": last_progress_value, "message": line}
+                update = _size_update(time.monotonic())
+                if update is not None:
+                    yield update
                 await _check_stall(time.monotonic())
 
             await process.wait()
@@ -475,6 +579,11 @@ class SubprocessRunner:
             if stall_error:
                 raise RuntimeError(stall_error)
 
+            # Only raise when this run actually observed cancellation while the
+            # process was still running (the watcher sets the flag only if
+            # returncode was None when the event fired). A child that finished
+            # before cancellation took effect is reported complete — its output
+            # is valid and must not be deleted as a false cancellation.
             if cancelled_by_request:
                 raise ConversionCancelled("Conversion cancelled")
 
@@ -488,6 +597,19 @@ class SubprocessRunner:
                 raise RuntimeError(
                     f"{fail_label} failed with return code {process.returncode}",
                 )
+
+            # A clean exit that left no file at output_path is an anomaly the
+            # caller asked us to enforce (require_output): surface it with the
+            # recorded stdout tail, since a tool that exits 0 without producing
+            # output usually printed the reason first (e.g. nsz, whose output is
+            # the temp file the runner already watches).
+            if require_output and not os.path.exists(output_path):
+                tail = "\n".join(output_lines[-6:])
+                if tail:
+                    raise RuntimeError(
+                        f"{fail_label} produced no output file.\nLast output:\n{tail}",
+                    )
+                raise RuntimeError(f"{fail_label} produced no output file")
 
             yield {"progress": 100, "message": complete_message}
         finally:

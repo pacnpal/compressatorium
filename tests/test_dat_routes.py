@@ -341,12 +341,11 @@ async def test_chd_header_match_hit(tmp_path, isolated_dat_store, monkeypatch):
     chd.write_bytes(b"fake chd")
     chd_path = str(chd)
 
-    # Mock chd_metadata_store.get_metadata to return sha1 matching the DAT entry.
-    # ChdmanTool.embedded_hashes imports chd_metadata_store at call time, so the
-    # patch on the module-level singleton applies.
+    # Mock chd_metadata_store.get_fresh_metadata to return sha1 matching the DAT
+    # entry. ChdmanTool.embedded_hashes imports chd_metadata_store at call time,
+    # so the patch on the module-level singleton applies.
     mock_metadata_store = MagicMock()
-    mock_metadata_store.is_stale = AsyncMock(return_value=False)
-    mock_metadata_store.get_metadata = AsyncMock(
+    mock_metadata_store.get_fresh_metadata = AsyncMock(
         return_value={"sha1": "aabbccddaabbccddaabbccddaabbccddaabbccdd", "data_sha1": ""}
     )
     monkeypatch.setattr(dat_routes, "is_within_configured_volumes", lambda p: True)
@@ -373,11 +372,10 @@ async def test_chd_hook_stale_metadata_suppresses_embedded_hashes(tmp_path):
     chd = tmp_path / "game.chd"
     chd.write_bytes(b"fake chd")
 
+    # A stale CHD: the atomic snapshot returns None (file changed since cached),
+    # so no embedded candidates are reported.
     mock_metadata_store = MagicMock()
-    mock_metadata_store.is_stale = AsyncMock(return_value=True)
-    mock_metadata_store.get_metadata = AsyncMock(
-        return_value={"sha1": "a" * 40, "data_sha1": ""}
-    )
+    mock_metadata_store.get_fresh_metadata = AsyncMock(return_value=None)
 
     with patch("services.chd_metadata_store.chd_metadata_store", mock_metadata_store):
         result = await registry.get("chdman").embedded_hashes(str(chd))
@@ -1799,15 +1797,19 @@ async def test_schedule_match_job_uses_create_task_without_background_tasks(
 
     assert isinstance(job_id, str) and job_id
     assert job_id in job_manager.jobs
-    assert len(created) == 1  # helper took the asyncio.create_task branch
-    # While the task is live, the strong-ref set holds it exactly once,
-    # this is what prevents GC mid-run and is the whole point of the set.
-    assert created[0] in dat_routes._background_match_tasks
+    # The helper took the asyncio.create_task branch and retained the task in its
+    # strong-ref set. (Registering the external job also spawns a job_manager
+    # prune task through the same asyncio.create_task, so identify the match task
+    # by the set it lives in rather than a raw count of created tasks.)
     assert len(dat_routes._background_match_tasks) == 1
-    await asyncio.wait_for(created[0], timeout=5)
+    match_task = next(iter(dat_routes._background_match_tasks))
+    assert match_task in created  # it was scheduled via create_task
+    await asyncio.wait_for(match_task, timeout=5)
     # The done-callback runs on the next loop tick; yield once to drain it.
     await asyncio.sleep(0)
     assert dat_routes._active_match_job_id is None
     # The done-callback should have removed the task from the set.
-    assert created[0] not in dat_routes._background_match_tasks
+    assert match_task not in dat_routes._background_match_tasks
     assert len(dat_routes._background_match_tasks) == 0
+    # Drain any incidental tasks (e.g. the prune) so none are left pending.
+    await asyncio.gather(*created, return_exceptions=True)

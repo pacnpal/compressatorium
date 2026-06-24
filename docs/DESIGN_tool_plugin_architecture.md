@@ -261,8 +261,12 @@ class BaseTool:
 
 ### 3.3 `runner.py`: shared subprocess orchestration
 
-This collapses ~150 near-identical lines now living in each of
-`chdman.py:96`–`334`, `dolphin_tool.py:109`–`356`, `z3ds_compress.py:137`–`347`.
+This collapses the ~150 near-identical lines that were duplicated in every
+tool's `convert()`. All seven conversion tools now delegate their streaming loop
+here: `chdman`, `dolphin_tool`, `romz`, `makeps3iso` directly, and
+`z3ds_compress`, `maxcso`, `nsz` via the size-based-progress seam below (their
+CLIs print no parseable percent, so the growing output file is the progress
+signal).
 
 ```python
 class SubprocessRunner:
@@ -274,17 +278,36 @@ class SubprocessRunner:
     def active_pids(self) -> list[int]: ...
 
     async def run(self, cmd: list[str], *, input_path: str, output_path: str,
-                  parse_progress, cancel_event=None, cwd=None,
-                  start_message="Starting...") -> AsyncGenerator[dict, None]:
+                  parse_progress, cancel_event=None, heartbeat=False,
+                  fail_label="process", complete_message="Conversion complete",
+                  cwd=None, output_growth_paths=None, size_progress=None,
+                  nice_via_wrapper=False, env=None,
+                  require_output=False) -> AsyncGenerator[dict, None]:
         """Spawn cmd, stream stdout, yield {"progress","message"}.
-        Handles: nice/ionice wrap, stdbuf, PID tracking, \\r/\\n line buffering,
+        Handles: nice/ionice wrap, PID tracking, \\r/\\n line buffering,
         stall timeout via compute_progress_stall_timeout, cancel-watcher
-        (terminate->kill, clean partial output), ConversionCancelled, non-zero
-        exit -> RuntimeError(tail), final 100%.
-        `parse_progress(line) -> int|None` is the only per-tool knob.
-        `cwd` (optional) sets the subprocess working directory — used by `romz`
-        to run `7z a` from the ROM's directory so the archive stores just the
-        basename, not the absolute volume path.
+        (terminate->kill), ConversionCancelled, non-zero exit -> RuntimeError(tail),
+        final 100%. `parse_progress(line) -> int|None` is the only per-tool knob
+        in the common path. `cwd` sets the working directory (romz runs `7z a`
+        from the ROM dir).
+
+        Opt-in seams, each defaulting off so the direct callers are unaffected:
+        - `heartbeat` — dolphin's 2s "Converting... (Ns)" keep-alive.
+        - `output_growth_paths()` — widen the stall probe to a set of files whose
+          summed size grows even as filenames change mid-run (makeps3iso split).
+        - `size_progress(output_size) -> dict|None` — turn output growth into the
+          emitted progress for tools with no parseable percent (maxcso/nsz/z3ds);
+          see `output_size_progress()` for the shared 5–95% estimate. Also raises
+          the progress floor so a later non-parseable line can't reset the bar.
+        - `nice_via_wrapper` — skip preexec_fn when the caller prefixed cmd with
+          nice/ionice command wrappers (maxcso/nsz avoid forking a Python callable
+          in this multithreaded process before exec). `env` — forwarded to the
+          subprocess (nsz's private keys-home).
+        - `require_output` — treat a clean exit (return code 0) that left no file
+          at `output_path` as a failure, raised as RuntimeError(tail) like the
+          non-zero-exit path, so a tool that exits 0 without producing output
+          still reports the reason it printed first (nsz, whose `output_path` is
+          the temp file the runner already watches).
         """
 
     async def run_capture(self, cmd: list[str], *, timeout=None,
@@ -303,10 +326,15 @@ class SubprocessRunner:
 
 Per-tool `convert()` becomes ~15 lines: build argv, then
 `async for u in self._runner.run(cmd, ..., parse_progress=self._parse_progress): yield u`.
-The dolphin/z3ds output-size heuristic and dolphin's heartbeat become opt-in
-flags on `run()`. One-shot subprocess work (info / header / embedded-hash
-extraction) shares `run_capture()` rather than re-implementing the
-spawn / cancel / timeout / terminate dance per tool.
+Tools with no parseable percent (maxcso/nsz/z3ds) pass `size_progress=` to drive
+the bar from output growth and `nice_via_wrapper=True` to keep their
+command-wrapper nice; nsz also forwards its keys-home `env=`, sets
+`require_output=True`, and writes into a private work dir, moving the result onto
+`output_path` after `run()` returns.
+dolphin's heartbeat and the makeps3iso split-stall probe are likewise opt-in
+flags. One-shot subprocess work (info / header / embedded-hash extraction)
+shares `run_capture()` rather than re-implementing the spawn / cancel / timeout /
+terminate dance per tool.
 
 ### 3.3.1 Shared archive-limit enforcement (`services/archive.py`)
 
@@ -542,6 +570,30 @@ The first user, **`MakePs3IsoTool`** (`folder_to_iso`, the only
 
 makeps3iso (GPL-3.0) is built unmodified from a pinned `bucanero/ps3iso-utils`
 commit in the multi-stage `Dockerfile`, mirroring maxcso.
+
+### 3.3.5 Metadata freshness (`chd_metadata_store.get_fresh_metadata`)
+
+A consumer that reads cached CHD metadata to act on it — `ChdmanTool.embedded_hashes`
+matches a CHD's stored header/data SHA1 against a DAT without re-hashing the file —
+needs the hashes and the "is this still the current file?" verdict to describe **one**
+observation. `get_metadata()` followed by `is_stale()` does not: two separate awaits,
+each its own stat + row read, so the hashes can reflect one mtime while the staleness
+verdict reflects another (a conversion rewriting the CHD in between). That is the single
+seam every freshness-gated metadata read MUST go through instead.
+
+`get_fresh_metadata(path)` returns the cached `metadata_json` **only if it still
+describes the file**, in one `run_in_threadpool` call with no `await` between the row
+read and the stat. The ordering matters: it reads the **row first, then re-stats**, and
+returns the row only when the file's current mtime equals the row's captured mtime. The
+writer (`_set_metadata_sync`) always stats then stores `(metadata_json, mtime)` together,
+so the row's mtime lags the file; reading the row first and comparing against a *later*
+stat means a concurrent rewrite (new bytes on disk, row not yet re-scanned) shows
+`mtime != row.mtime` and the stale hashes are refused. A stat-**then**-read ordering would
+re-use an already-captured old mtime that can still match the old row for a file that was
+replaced in the window — the TOCTOU this seam exists to close. On any miss (no row, file
+gone, or changed) it returns `None`, and the caller falls back to a file-level SHA1, which
+is valid for any DAT that indexes the container bytes. New cache/tool code that needs
+freshness-gated metadata must call this rather than reintroducing the two-read pattern.
 
 ### 3.4 `registry.py`
 

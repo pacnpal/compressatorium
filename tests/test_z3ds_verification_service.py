@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.services import z3ds_compress as z3ds_module
+from app.services.chdman import ConversionCancelled
 
 
 class _FakeStdin:
@@ -220,3 +221,140 @@ def test_info_flags_new_compressed_extensions(tmp_path, name, compressed):
     rom = tmp_path / name
     rom.write_bytes(b"\0" * 4096)
     assert service.info(str(rom))["compressed"] is compressed
+
+
+# ---------------------------------------------------------------------------
+# convert()  (now delegated to SubprocessRunner — spawn is intercepted via the
+# shared global asyncio.create_subprocess_exec the runner also calls)
+# ---------------------------------------------------------------------------
+
+
+class _ConvertStdout:
+    """Yields preset stdout chunks, then EOF."""
+
+    def __init__(self, chunks: list[bytes]):
+        self._chunks = list(chunks)
+
+    async def read(self, _n: int) -> bytes:
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+
+class _ConvertProcess:
+    """Fake convert subprocess: streams preset stdout chunks, then exits."""
+
+    def __init__(self, pid: int, chunks: list[bytes], returncode: int = 0):
+        self.pid = pid
+        self.stdout = _ConvertStdout(chunks)
+        self.returncode = None
+        self._final_rc = returncode
+        self.killed = False
+
+    async def wait(self) -> int:
+        if self.returncode is None:
+            self.returncode = -9 if self.killed else self._final_rc
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+
+class _CancelStdout:
+    """Stdout that yields one line, then blocks until the process is stopped."""
+
+    def __init__(self, stop: asyncio.Event):
+        self._stop = stop
+        self._first = True
+
+    async def read(self, _n: int) -> bytes:
+        if self._first:
+            self._first = False
+            return b"working\n"
+        await self._stop.wait()
+        return b""
+
+
+class _CancelProcess:
+    """Fake subprocess that only exits once terminate()/kill() is called."""
+
+    def __init__(self, pid: int, stop: asyncio.Event):
+        self.pid = pid
+        self._stop = stop
+        self.stdout = _CancelStdout(stop)
+        self.returncode = None
+
+    def terminate(self) -> None:
+        self.returncode = -15
+        self._stop.set()
+
+    def kill(self) -> None:
+        self.returncode = -9
+        self._stop.set()
+
+    async def wait(self) -> int:
+        await self._stop.wait()
+        if self.returncode is None:
+            self.returncode = -15
+        return self.returncode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "src", "out"),
+    [
+        ("z3ds_compress", "game.cci", "game.zcci"),
+        ("z3ds_decompress", "game.zcci", "game.cci"),
+    ],
+)
+async def test_convert_happy_path(tmp_path, monkeypatch, mode, src, out):
+    """convert() streams the runner's updates and ends at 100% with output written."""
+    src_path = tmp_path / src
+    src_path.write_bytes(b"rom-bytes")
+    out_path = tmp_path / out
+
+    async def fake_exec(*args, **_kwargs):
+        # z3ds_compressor writes the container to the last positional arg.
+        Path(list(args)[-1]).write_bytes(b"converted")
+        return _ConvertProcess(pid=4242, chunks=[b"working\n"])
+
+    monkeypatch.setattr(z3ds_module.asyncio, "create_subprocess_exec", fake_exec)
+
+    service = z3ds_module.z3ds_compress_service
+    updates = [u async for u in service.convert(str(src_path), str(out_path), mode)]
+
+    assert updates[0]["progress"] == 5  # the "Starting 3DS ..." preamble
+    assert updates[-1]["progress"] == 100
+    assert out_path.read_bytes() == b"converted"
+    assert not service.active_pids()
+
+
+@pytest.mark.asyncio
+async def test_convert_cancel_cleans_partial_output(tmp_path, monkeypatch):
+    """A cancel mid-convert raises ConversionCancelled and removes the partial."""
+    src_path = tmp_path / "game.cci"
+    src_path.write_bytes(b"rom")
+    out_path = tmp_path / "game.zcci"
+
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+
+    async def fake_exec(*args, **_kwargs):
+        Path(list(args)[-1]).write_bytes(b"partial")  # partial written in place
+        return _CancelProcess(pid=7, stop=asyncio.Event())
+
+    monkeypatch.setattr(z3ds_module.asyncio, "create_subprocess_exec", fake_exec)
+
+    service = z3ds_module.z3ds_compress_service
+    with pytest.raises(ConversionCancelled):
+        async for _ in service.convert(
+            str(src_path), str(out_path), "z3ds_compress", cancel_event=cancel_event,
+        ):
+            pass
+
+    assert not out_path.exists()
+    assert not service.active_pids()
