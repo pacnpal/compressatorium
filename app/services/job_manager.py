@@ -24,9 +24,8 @@ from services.disc_id import embed_in_chd as disc_id_embed
 from services.disc_id import extract_from_source as disc_id_from_source
 from services.lock_manager import lock_manager
 from services.makeps3iso import makeps3iso_service
-from services.tools import registry
+from services.tools import ModeKind, registry
 from services.verification_store import verification_store
-from services.z3ds_compress import Z3DS_DECOMPRESS_FORMATS, Z3DS_OUTPUT_FORMATS
 from utils.delete_plan import build_delete_plan
 from utils.path_utils import is_within_configured_volumes, strip_archive_path
 
@@ -158,19 +157,20 @@ class JobManager:
                 mode.value, file_path, output_dir,
             )
             # The HTTP routes validate inputs before passing an explicit
-            # output_path; direct service callers reach this fallback, so
-            # re-assert the guards the legacy per-tool fallback enforced.
-            if mode == ConversionMode.Z3DS_COMPRESS:
+            # output_path; direct service callers reach this fallback. Most
+            # tools' output_path() raises for an unsupported extension, but
+            # z3ds's does not, so keep its input-extension gate -- now read from
+            # the mode's declared input_extensions instead of the per-direction
+            # Z3DS_*_FORMATS constants.
+            spec = registry.spec(mode.value)
+            if spec.tool_id == "z3ds":
                 ext = Path(file_path).suffix.lower()
-                if ext not in Z3DS_OUTPUT_FORMATS:
+                if ext not in spec.input_extensions:
                     raise ValueError(f"Unsupported file extension: {ext}")
-            elif mode == ConversionMode.Z3DS_DECOMPRESS:
-                ext = Path(file_path).suffix.lower()
-                if ext not in Z3DS_DECOMPRESS_FORMATS:
-                    raise ValueError(f"Unsupported file extension: {ext}")
-            elif mode.value.startswith("dolphin_") and _paths_collide(
-                output_path, file_path,
-            ):
+            # Generic same-path guard: a non-copy mode must never write over its
+            # own source (chdman copy is an intentional in-place .chd recompress;
+            # every other mode changes the extension so output != input).
+            if spec.kind != ModeKind.COPY and _paths_collide(output_path, file_path):
                 raise ValueError(
                     "Output path matches input; refusing to overwrite source"
                 )
@@ -1854,7 +1854,7 @@ class JobManager:
                 verified = False
                 source_deleted = False
                 if job.delete_on_verify:
-                    if job.mode.value.startswith("extract"):
+                    if not registry.spec(job.mode.value).supports_delete_on_verify:
                         raise RuntimeError(
                             "Delete-on-verify is only supported for "
                             "create/copy/Dolphin/3DS/Switch-compress modes"
@@ -1863,11 +1863,7 @@ class JobManager:
                         raise ConversionCancelled("Conversion cancelled")
 
                     verified = False
-                    job.message = (
-                        "Verifying output (zstd -t)..."
-                        if job.mode.value == "z3ds_compress"
-                        else "Verifying output..."
-                    )
+                    job.message = "Verifying output..."
                     await self._notify_subscribers(
                         job_id,
                         {
