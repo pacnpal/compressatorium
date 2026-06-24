@@ -41,8 +41,17 @@ def chain_env(monkeypatch, tmp_path):
         return str(work)
 
     monkeypatch.setattr(chain_mod, "create_scratch_dir", _scratch)
-    # No real disc parsing/tagging: keep the embed a no-op.
-    monkeypatch.setattr(chain_mod, "extract_from_source", lambda p: None)
+
+    # The chain tags the final CHD by routing its last step through chdman's
+    # post_convert hook. Keep it a no-op here so the orchestration assertions
+    # don't depend on real disc parsing; the dedicated test below installs its
+    # own spy to assert how the hook is invoked.
+    async def _noop_post_convert(input_path, output_path, mode):
+        return None
+
+    monkeypatch.setattr(
+        registry.get("chdman"), "post_convert", _noop_post_convert,
+    )
 
     calls: list[dict] = []
 
@@ -113,6 +122,38 @@ def test_chain_orchestration_progress_and_intermediate(chain_env, tmp_path):
     # Final output produced; intermediate + work dir cleaned up.
     assert out.exists()
     assert not work.exists()
+
+
+def test_chain_tags_final_chd_via_post_convert(chain_env, tmp_path, monkeypatch):
+    """The chain drives the final step's ``post_convert`` with the intermediate
+    source and the final CHD — the same disc-ID path a direct ``createdvd`` job
+    takes. This is what replaces the old bespoke ``_embed_disc_id`` (#181)."""
+    _calls, work, install = chain_env
+    install()
+
+    seen: list[tuple[str, str, str]] = []
+
+    async def _spy(input_path, output_path, mode):
+        seen.append((input_path, output_path, mode))
+
+    monkeypatch.setattr(registry.get("chdman"), "post_convert", _spy)
+
+    src = tmp_path / "Game.cso"
+    src.write_bytes(b"x" * 1000)
+    out = tmp_path / "Game.chd"
+
+    _drain(
+        registry.for_mode("cso_to_chd").convert(str(src), str(out), "cso_to_chd")
+    )
+
+    # Exactly one post_convert call, for the final chdman step.
+    assert len(seen) == 1
+    in_path, out_path, mode = seen[0]
+    assert mode == "createdvd"
+    assert out_path == str(out)
+    # Tagged from the intermediate .iso in the work dir, not the original .cso.
+    assert in_path.endswith(".iso")
+    assert os.path.dirname(in_path) == str(work)
 
 
 def test_chain_propagates_cancel_and_cleans_up(chain_env, tmp_path):

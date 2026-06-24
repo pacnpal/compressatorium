@@ -29,7 +29,7 @@ registry.register(RomzTool(settings.sevenzip_path))
 registry.register(MakePs3IsoTool(settings.makeps3iso_path))
 # Composite/pipeline modes register last: ChainTool drives the component tools
 # above through the registry, so they must already be present.
-registry.register(ChainTool(registry, chdman_path=settings.chdman_path))
+registry.register(ChainTool(registry))
 
 __all__ = [
     "BaseTool",

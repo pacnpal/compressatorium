@@ -20,7 +20,6 @@ up. This is the regression guard for issue #113 across the whole matrix.
 from __future__ import annotations
 
 import os
-import sys
 import zipfile
 from pathlib import Path
 
@@ -80,11 +79,6 @@ def _e2e_env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(convert_routes.settings, "temp_dir", str(tmp_path / "temp"))
     monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
 
-    # createcd/createdvd would try to read a disc serial off the (junk) source;
-    # short-circuit it so the test stays deterministic and offline.
-    jm_mod = sys.modules[type(convert_routes.job_manager).__module__]
-    monkeypatch.setattr(jm_mod, "disc_id_from_source", lambda *a, **k: None)
-
     calls: list[dict] = []
 
     async def fake_convert(input_path, output_path, mode, *, compression=None,
@@ -105,9 +99,16 @@ def _e2e_env(tmp_path: Path, monkeypatch):
         yield {"progress": 50, "message": "working"}
         yield {"progress": 100, "message": "done"}
 
+    async def noop_post_convert(input_path, output_path, mode):
+        # createcd/createdvd would otherwise read a disc serial off the (junk)
+        # source via ChdmanTool.post_convert; stub the hook so the test stays
+        # deterministic and offline.
+        return None
+
     # registry is the shared singleton job_manager dispatches through.
     for tool in convert_routes.registry.all():
         monkeypatch.setattr(tool, "convert", fake_convert)
+        monkeypatch.setattr(tool, "post_convert", noop_post_convert)
 
     return {"tmp_path": tmp_path, "calls": calls}
 

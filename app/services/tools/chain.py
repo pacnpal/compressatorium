@@ -27,12 +27,8 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi.concurrency import run_in_threadpool
-
 from config import settings
-from logging_setup import get_logger
 from models import OutputStatus
-from services.disc_id import embed_in_chd, extract_from_source
 from services.disk import create_scratch_dir, ensure_headroom
 from services.lock_manager import lock_manager
 from services.maxcso import uncompressed_iso_size
@@ -44,8 +40,6 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from .registry import ToolRegistry
-
-logger = get_logger()
 
 # cso/zso/dax -> .iso (maxcso, lossless) -> .chd (chdman createdvd).
 # createdvd is pinned: a cso/zso/dax is an ISO/data-only image with no CD audio
@@ -85,11 +79,11 @@ class ChainTool(BaseTool):
     output_extensions = frozenset()
     verify_extensions = frozenset()
 
-    def __init__(self, registry: "ToolRegistry", *, chdman_path: str) -> None:
-        # No binary of its own; it drives the component tools via the registry.
+    def __init__(self, registry: "ToolRegistry") -> None:
+        # No binary of its own; it drives the component tools via the registry,
+        # including the final step's post_convert hook for disc-ID tagging.
         super().__init__("")
         self._registry = registry
-        self._chdman_path = chdman_path
 
     # ------------------------------------------------------------------ paths
     def output_path(
@@ -199,9 +193,13 @@ class ChainTool(BaseTool):
                 cumulative += weights[i]
                 current_in = step_out
 
-            # Carry disc-ID GAME/NAME tags onto the final CHD, the same as a
-            # direct createdvd job (job_manager only tags literal create modes).
-            await self._embed_disc_id(intermediate_source, output_path)
+            # Tag the final CHD via the last step's post_convert hook — the same
+            # disc-ID path a direct createdvd job takes — while the intermediate
+            # source still exists (work_dir is removed in the finally below).
+            final_step = spec.steps[-1]
+            await self._registry.for_mode(final_step.mode).post_convert(
+                intermediate_source, output_path, final_step.mode,
+            )
             yield {"progress": 100, "message": "Conversion complete"}
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -235,25 +233,6 @@ class ChainTool(BaseTool):
         if intermediate_bytes > 0:
             targets.append((work_dir, intermediate_bytes))
         ensure_headroom(targets, margin_bytes=margin)
-
-    async def _embed_disc_id(self, source_path: str, output_path: str) -> None:
-        if Path(output_path).suffix.lower() != ".chd":
-            return
-        try:
-            disc_info = await run_in_threadpool(extract_from_source, source_path)
-            if disc_info and disc_info.get("game_id"):
-                game_id = disc_info["game_id"]
-                title = disc_info.get("title") or game_id
-                embedded = await embed_in_chd(
-                    output_path, game_id, title, self._chdman_path,
-                )
-                if embedded:
-                    logger.info(
-                        "Chain embedded disc ID %r in %s",
-                        game_id, Path(output_path).name,
-                    )
-        except Exception as exc:  # best effort; tagging never fails the job
-            logger.debug("Chain disc ID embed skipped: %s", exc)
 
     # ------------------------------------------------------ verify / info
     def _final_tool(self):
