@@ -258,8 +258,12 @@ class BaseTool:
 
 ### 3.3 `runner.py`: shared subprocess orchestration
 
-This collapses ~150 near-identical lines now living in each of
-`chdman.py:96`–`334`, `dolphin_tool.py:109`–`356`, `z3ds_compress.py:137`–`347`.
+This collapses the ~150 near-identical lines that were duplicated in every
+tool's `convert()`. All seven conversion tools now delegate their streaming loop
+here: `chdman`, `dolphin_tool`, `romz`, `makeps3iso` directly, and
+`z3ds_compress`, `maxcso`, `nsz` via the size-based-progress seam below (their
+CLIs print no parseable percent, so the growing output file is the progress
+signal).
 
 ```python
 class SubprocessRunner:
@@ -271,17 +275,30 @@ class SubprocessRunner:
     def active_pids(self) -> list[int]: ...
 
     async def run(self, cmd: list[str], *, input_path: str, output_path: str,
-                  parse_progress, cancel_event=None, cwd=None,
-                  start_message="Starting...") -> AsyncGenerator[dict, None]:
+                  parse_progress, cancel_event=None, heartbeat=False,
+                  fail_label="process", complete_message="Conversion complete",
+                  cwd=None, output_growth_paths=None, size_progress=None,
+                  nice_via_wrapper=False, env=None) -> AsyncGenerator[dict, None]:
         """Spawn cmd, stream stdout, yield {"progress","message"}.
-        Handles: nice/ionice wrap, stdbuf, PID tracking, \\r/\\n line buffering,
+        Handles: nice/ionice wrap, PID tracking, \\r/\\n line buffering,
         stall timeout via compute_progress_stall_timeout, cancel-watcher
-        (terminate->kill, clean partial output), ConversionCancelled, non-zero
-        exit -> RuntimeError(tail), final 100%.
-        `parse_progress(line) -> int|None` is the only per-tool knob.
-        `cwd` (optional) sets the subprocess working directory — used by `romz`
-        to run `7z a` from the ROM's directory so the archive stores just the
-        basename, not the absolute volume path.
+        (terminate->kill), ConversionCancelled, non-zero exit -> RuntimeError(tail),
+        final 100%. `parse_progress(line) -> int|None` is the only per-tool knob
+        in the common path. `cwd` sets the working directory (romz runs `7z a`
+        from the ROM dir).
+
+        Opt-in seams, each defaulting off so the direct callers are unaffected:
+        - `heartbeat` — dolphin's 2s "Converting... (Ns)" keep-alive.
+        - `output_growth_paths()` — widen the stall probe to a set of files whose
+          summed size grows even as filenames change mid-run (makeps3iso split).
+        - `size_progress(output_size) -> dict|None` — turn output growth into the
+          emitted progress for tools with no parseable percent (maxcso/nsz/z3ds);
+          see `output_size_progress()` for the shared 5–95% estimate. Also raises
+          the progress floor so a later non-parseable line can't reset the bar.
+        - `nice_via_wrapper` — skip preexec_fn when the caller prefixed cmd with
+          nice/ionice command wrappers (maxcso/nsz avoid forking a Python callable
+          in this multithreaded process before exec). `env` — forwarded to the
+          subprocess (nsz's private keys-home).
         """
 
     async def run_capture(self, cmd: list[str], *, timeout=None,
@@ -300,10 +317,14 @@ class SubprocessRunner:
 
 Per-tool `convert()` becomes ~15 lines: build argv, then
 `async for u in self._runner.run(cmd, ..., parse_progress=self._parse_progress): yield u`.
-The dolphin/z3ds output-size heuristic and dolphin's heartbeat become opt-in
-flags on `run()`. One-shot subprocess work (info / header / embedded-hash
-extraction) shares `run_capture()` rather than re-implementing the
-spawn / cancel / timeout / terminate dance per tool.
+Tools with no parseable percent (maxcso/nsz/z3ds) pass `size_progress=` to drive
+the bar from output growth and `nice_via_wrapper=True` to keep their
+command-wrapper nice; nsz also forwards its keys-home `env=` and writes into a
+private work dir, moving the result onto `output_path` after `run()` returns.
+dolphin's heartbeat and the makeps3iso split-stall probe are likewise opt-in
+flags. One-shot subprocess work (info / header / embedded-hash extraction)
+shares `run_capture()` rather than re-implementing the spawn / cancel / timeout /
+terminate dance per tool.
 
 ### 3.3.1 Shared archive-limit enforcement (`services/archive.py`)
 

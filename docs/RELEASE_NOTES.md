@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-Idempotency and robustness hardening (issue #184, part of the #177 tech-debt epic).
+Idempotency, robustness, and modularity hardening (issues #184 and #179, part of
+the #177 tech-debt epic).
 
 ### Changed
 
@@ -15,6 +16,13 @@ Idempotency and robustness hardening (issue #184, part of the #177 tech-debt epi
   An optimistic placeholder is now cleared only when its real job first arrives, not
   on every later progress update, so submitting the same file in the same mode twice
   no longer briefly under-counts the queue.
+- **All conversion tools now share one subprocess loop.** `z3ds`, `maxcso` and `nsz`
+  previously hand-rolled their own ~150-line spawn / stall-timeout / cancel / progress
+  loop; they now delegate to the shared `SubprocessRunner` like `chdman`/`dolphin`/
+  `romz`/`makeps3iso`, so a cancel, stall, or exit-code fix lands in one place instead
+  of drifting between three copies. Progress for these no-parseable-percent tools is
+  still estimated from output-file growth, now via a shared `size_progress` seam, so
+  the conversion bar is unchanged. (issue #179)
 
 ## 4.2.0 (2026-06-13)
 
