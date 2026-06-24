@@ -1534,7 +1534,13 @@ class JobManager:
                     pass
                 total_size = cue_size + bin_size
                 return total_size if total_size > 0 else None
-            return os.path.getsize(job.output_path)
+            # Guard the stat like the branches above: the file can vanish
+            # between the exists() check and here, and "None if absent" must
+            # hold rather than failing an otherwise-complete job.
+            try:
+                return os.path.getsize(job.output_path)
+            except OSError:
+                return None
         return None
 
     async def _run_job(self, job_id: str):
