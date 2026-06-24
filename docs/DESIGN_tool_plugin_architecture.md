@@ -278,7 +278,8 @@ class SubprocessRunner:
                   parse_progress, cancel_event=None, heartbeat=False,
                   fail_label="process", complete_message="Conversion complete",
                   cwd=None, output_growth_paths=None, size_progress=None,
-                  nice_via_wrapper=False, env=None) -> AsyncGenerator[dict, None]:
+                  nice_via_wrapper=False, env=None,
+                  require_output=False) -> AsyncGenerator[dict, None]:
         """Spawn cmd, stream stdout, yield {"progress","message"}.
         Handles: nice/ionice wrap, PID tracking, \\r/\\n line buffering,
         stall timeout via compute_progress_stall_timeout, cancel-watcher
@@ -299,6 +300,11 @@ class SubprocessRunner:
           nice/ionice command wrappers (maxcso/nsz avoid forking a Python callable
           in this multithreaded process before exec). `env` — forwarded to the
           subprocess (nsz's private keys-home).
+        - `require_output` — treat a clean exit (return code 0) that left no file
+          at `output_path` as a failure, raised as RuntimeError(tail) like the
+          non-zero-exit path, so a tool that exits 0 without producing output
+          still reports the reason it printed first (nsz, whose `output_path` is
+          the temp file the runner already watches).
         """
 
     async def run_capture(self, cmd: list[str], *, timeout=None,
@@ -319,8 +325,9 @@ Per-tool `convert()` becomes ~15 lines: build argv, then
 `async for u in self._runner.run(cmd, ..., parse_progress=self._parse_progress): yield u`.
 Tools with no parseable percent (maxcso/nsz/z3ds) pass `size_progress=` to drive
 the bar from output growth and `nice_via_wrapper=True` to keep their
-command-wrapper nice; nsz also forwards its keys-home `env=` and writes into a
-private work dir, moving the result onto `output_path` after `run()` returns.
+command-wrapper nice; nsz also forwards its keys-home `env=`, sets
+`require_output=True`, and writes into a private work dir, moving the result onto
+`output_path` after `run()` returns.
 dolphin's heartbeat and the makeps3iso split-stall probe are likewise opt-in
 flags. One-shot subprocess work (info / header / embedded-hash extraction)
 shares `run_capture()` rather than re-implementing the spawn / cancel / timeout /

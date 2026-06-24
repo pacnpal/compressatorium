@@ -87,6 +87,69 @@ def test_nonzero_exit_raises_runtimeerror_with_tail(tmp_path):
     assert not runner.active_pids()
 
 
+def test_require_output_missing_raises_with_tail(tmp_path):
+    """A clean exit (code 0) that leaves no file at output_path is a failure
+    when require_output=True, and the error carries the stdout tail so the
+    reason the tool printed before exiting isn't lost (nsz's prior behavior)."""
+    script = (
+        "import sys\n"
+        "sys.stdout.write('preparing\\n')\n"
+        "sys.stdout.write('keys file missing, nothing written\\n')\n"
+        "sys.exit(0)\n"
+    )
+    runner = SubprocessRunner(owner="test")
+    out = tmp_path / "out.bin"  # the child never creates this
+
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(
+            _drain(
+                runner.run(
+                    _py_cmd(script),
+                    input_path=str(tmp_path / "in.bin"),
+                    output_path=str(out),
+                    parse_progress=_parse_pct,
+                    fail_label="nsz",
+                    require_output=True,
+                )
+            )
+        )
+
+    message = str(excinfo.value)
+    assert "nsz produced no output file" in message
+    assert "keys file missing, nothing written" in message
+    assert not out.exists()
+    assert not runner.active_pids()
+
+
+def test_require_output_present_completes(tmp_path):
+    """When the child does produce output_path, require_output is satisfied and
+    the run finishes with the normal terminal 100%."""
+    out = tmp_path / "out.bin"
+    script = (
+        "import sys\n"
+        f"open({str(out)!r}, 'wb').write(b'data')\n"
+        "sys.stdout.write('done\\n')\n"
+    )
+    runner = SubprocessRunner(owner="test")
+
+    updates = asyncio.run(
+        _drain(
+            runner.run(
+                _py_cmd(script),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(out),
+                parse_progress=_parse_pct,
+                fail_label="nsz",
+                require_output=True,
+            )
+        )
+    )
+
+    assert updates[-1] == {"progress": 100, "message": "Conversion complete"}
+    assert out.exists()
+    assert not runner.active_pids()
+
+
 def test_cancel_event_raises_conversion_cancelled(tmp_path):
     script = (
         "import sys, time\n"

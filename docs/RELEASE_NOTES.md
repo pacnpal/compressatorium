@@ -22,7 +22,10 @@ the #177 tech-debt epic).
   `romz`/`makeps3iso`, so a cancel, stall, or exit-code fix lands in one place instead
   of drifting between three copies. Progress for these no-parseable-percent tools is
   still estimated from output-file growth, now via a shared `size_progress` seam, so
-  the conversion bar is unchanged. (issue #179)
+  the conversion bar is unchanged. Per-tool error parity is preserved too — when nsz
+  exits cleanly but produces no file, the failure still reports the reason nsz printed
+  (via a shared `require_output` seam) instead of a bare "no output" message. (issue
+  #179)
 
 ## 4.2.0 (2026-06-13)
 

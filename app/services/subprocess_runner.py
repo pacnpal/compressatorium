@@ -281,6 +281,7 @@ class SubprocessRunner:
         size_progress: Callable[[int], dict | None] | None = None,
         nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
+        require_output: bool = False,
     ) -> AsyncGenerator[dict, None]:
         """Spawn ``cmd``, stream stdout, and yield ``{"progress", "message"}``.
 
@@ -314,6 +315,13 @@ class SubprocessRunner:
         (maxcso/nsz avoid ``preexec_fn``: forking a Python callable in this
         multithreaded process can deadlock the child before ``exec``).  ``env``
         is forwarded to the subprocess (nsz runs with a private keys-home env).
+
+        ``require_output`` makes a clean exit (return code 0) that left no file
+        at ``output_path`` a failure, raised as a ``RuntimeError`` carrying the
+        same stdout tail as the non-zero-exit path — so a tool that exits 0
+        without producing output still reports the reason it printed first,
+        rather than a bare "no output" message. Used by nsz, whose ``output_path``
+        is the temp file the runner already watches.
         """
         output_dir = os.path.dirname(output_path)
         if output_dir:
@@ -589,6 +597,19 @@ class SubprocessRunner:
                 raise RuntimeError(
                     f"{fail_label} failed with return code {process.returncode}",
                 )
+
+            # A clean exit that left no file at output_path is an anomaly the
+            # caller asked us to enforce (require_output): surface it with the
+            # recorded stdout tail, since a tool that exits 0 without producing
+            # output usually printed the reason first (e.g. nsz, whose output is
+            # the temp file the runner already watches).
+            if require_output and not os.path.exists(output_path):
+                tail = "\n".join(output_lines[-6:])
+                if tail:
+                    raise RuntimeError(
+                        f"{fail_label} produced no output file.\nLast output:\n{tail}",
+                    )
+                raise RuntimeError(f"{fail_label} produced no output file")
 
             yield {"progress": 100, "message": complete_message}
         finally:

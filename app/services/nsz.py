@@ -371,7 +371,9 @@ class NszService:
         # _build_command (nice_via_wrapper) and the private keys-home env is
         # forwarded; nsz prints no parseable percent, so size_progress drives the
         # bar. The terminal 100% is held back — convert() emits it after the
-        # os.replace onto the real output_path.
+        # os.replace onto the real output_path. require_output makes the runner
+        # raise (with the stdout tail) when nsz exits 0 but leaves no produced
+        # file, so the reason it printed isn't lost.
         async for update in self._runner.run(
             cmd,
             input_path=input_path,
@@ -384,13 +386,11 @@ class NszService:
             size_progress=_size_progress,
             nice_via_wrapper=True,
             env=env,
+            require_output=True,
         ):
             if update.get("progress", 0) >= 100:
                 continue
             yield update
-
-        if not os.path.exists(produced_path):
-            raise RuntimeError("nsz produced no output file")
 
     # ----- info -------------------------------------------------------------
 
