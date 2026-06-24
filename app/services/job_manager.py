@@ -42,6 +42,23 @@ _EXTERNAL_JOB_MODES = frozenset({
 })
 
 
+def _is_conversion_job(job) -> bool:
+    """A real conversion job, not external bookkeeping (metadata scan / DAT match).
+
+    The single definition of "counts toward the conversion queue", used by every
+    backpressure / queue-depth / stuck-detection surface so they can't drift.
+    """
+    return job.mode not in _EXTERNAL_JOB_MODES
+
+
+def _is_active_conversion(job) -> bool:
+    """A conversion job currently occupying the queue (queued or processing)."""
+    return (
+        job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+        and _is_conversion_job(job)
+    )
+
+
 def _paths_collide(path_a: str, path_b: str) -> bool:
     try:
         return os.path.realpath(path_a) == os.path.realpath(path_b)
@@ -121,10 +138,7 @@ class JobManager:
 
         needed = max(1, int(additional_jobs))
         current_depth = sum(
-            1
-            for job in self.jobs.values()
-            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
-            and job.mode not in _EXTERNAL_JOB_MODES
+            1 for job in self.jobs.values() if _is_active_conversion(job)
         )
         if current_depth + needed > max_depth:
             raise QueueBackpressureError(
@@ -533,10 +547,7 @@ class JobManager:
         consume queue capacity or trigger false backpressure errors.
         """
         return sum(
-            1
-            for job in self.jobs.values()
-            if job.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
-            and job.mode not in _EXTERNAL_JOB_MODES
+            1 for job in self.jobs.values() if _is_active_conversion(job)
         )
 
     def get_active_job_candidates(self) -> List[Tuple[str, List[str]]]:
@@ -742,9 +753,7 @@ class JobManager:
         for job in self.jobs.values():
             if job.id == job_id:
                 continue
-            if job.status not in (JobStatus.QUEUED, JobStatus.PROCESSING):
-                continue
-            if job.mode in _EXTERNAL_JOB_MODES:
+            if not _is_active_conversion(job):
                 continue
             # Reject a delete that targets a path inside another active
             # directory job's source folder (its whole subtree is in use).
@@ -824,14 +833,15 @@ class JobManager:
         Returns:
             Tuple of (queued_job_ids, processing_job_ids)
         """
-        queued_job_ids = [
-            job.id for job in self.jobs.values()
-            if job.status == JobStatus.QUEUED and job.mode not in _EXTERNAL_JOB_MODES
-        ]
-        processing_job_ids = [
-            job.id for job in self.jobs.values()
-            if job.status == JobStatus.PROCESSING and job.mode not in _EXTERNAL_JOB_MODES
-        ]
+        queued_job_ids: list[str] = []
+        processing_job_ids: list[str] = []
+        for job in self.jobs.values():
+            if not _is_conversion_job(job):
+                continue
+            if job.status == JobStatus.QUEUED:
+                queued_job_ids.append(job.id)
+            elif job.status == JobStatus.PROCESSING:
+                processing_job_ids.append(job.id)
         return queued_job_ids, processing_job_ids
 
     def is_stuck(self) -> bool:
@@ -843,15 +853,16 @@ class JobManager:
         Returns:
             True if conversion jobs are queued but none are processing, False otherwise
         """
-        has_queued = any(
-            job.status == JobStatus.QUEUED and job.mode not in _EXTERNAL_JOB_MODES
-            for job in self.jobs.values()
-        )
-        has_processing = any(
-            job.status == JobStatus.PROCESSING and job.mode not in _EXTERNAL_JOB_MODES
-            for job in self.jobs.values()
-        )
-        return has_queued and not has_processing
+        has_queued = False
+        for job in self.jobs.values():
+            if not _is_conversion_job(job):
+                continue
+            if job.status == JobStatus.PROCESSING:
+                # Any processing conversion means the queue isn't stuck; bail early.
+                return False
+            if job.status == JobStatus.QUEUED:
+                has_queued = True
+        return has_queued
 
     def get_stuck_state_info(self) -> Dict[str, object]:
         """Get information about the stuck state.

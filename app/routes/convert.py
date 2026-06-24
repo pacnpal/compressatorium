@@ -89,6 +89,66 @@ def supports_delete_on_verify(mode: str) -> bool:
         return False
 
 
+# Confirmation tokens for the destructive queue actions. The frontend mirrors
+# these in src/lib/api/client.js (CONFIRM); keeping one backend definition each
+# means a rename can't silently break the X-CHD-Action-Confirm guard.
+ACTION_CONFIRM_HEADER = "x-chd-action-confirm"
+CONFIRM_CANCEL_ALL_JOBS = "cancel-all-jobs"
+CONFIRM_CLEAR_COMPLETED_JOBS = "clear-completed-jobs"
+
+# Which modes support delete-on-verify is a registry fact
+# (spec.supports_delete_on_verify); this is the single human-readable
+# enumeration reused by every "unsupported" 400 (single create, batch, delete-plan).
+_DELETE_ON_VERIFY_UNSUPPORTED_DETAIL = (
+    "Delete-on-verify is only supported for "
+    "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress modes"
+)
+
+
+def _validate_request_compression(spec, mode: str, compression: str | None) -> None:
+    """Reject a compression request a mode can't honor (shared by single + batch).
+
+    Raises ``HTTPException(400)`` with the mode-specific message; a no-op when no
+    compression was requested or the mode accepts it.
+    """
+    if not compression:
+        return
+    if spec.tool_id == "chdman" and spec.kind == ModeKind.EXTRACT:
+        raise HTTPException(
+            status_code=400,
+            detail="Compression is only supported for CHD creation/copy",
+        )
+    if ":" in compression and not spec.supports_compression_level:
+        raise HTTPException(
+            status_code=400,
+            detail="Compression levels are only supported for Dolphin and Switch formats",
+        )
+    if (
+        spec.tool_id == "dolphin"
+        and not (spec.supports_compression or spec.supports_compression_level)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=_NO_COMPRESSION_DETAIL.get(
+                mode, "Compression is not supported for this Dolphin mode"
+            ),
+        )
+    if spec.tool_id == "dolphin" and "," in compression:
+        raise HTTPException(
+            status_code=400,
+            detail="Dolphin compression supports only one codec at a time",
+        )
+
+
+def _validate_delete_on_verify(spec, delete_on_verify: bool) -> None:
+    """Reject delete-on-verify on a mode that doesn't support it (single + batch)."""
+    if delete_on_verify and not spec.supports_delete_on_verify:
+        raise HTTPException(
+            status_code=400,
+            detail=_DELETE_ON_VERIFY_UNSUPPORTED_DETAIL,
+        )
+
+
 def _get_output_path(mode, input_path, output_dir, *, treat_as_stem=False):
     return registry.for_mode(mode).output_path(
         mode, input_path, output_dir, treat_as_stem=treat_as_stem,
@@ -733,10 +793,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
     if not supports_delete_on_verify(mode):
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Delete-on-verify is only supported for "
-                "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress modes"
-            ),
+            detail=_DELETE_ON_VERIFY_UNSUPPORTED_DETAIL,
         )
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -790,41 +847,8 @@ async def create_job(request: JobCreateRequest):
     mode = request.mode.value
     output_dir = normalize_output_dir(request.output_dir)
     spec = registry.spec(mode)
-    is_dolphin = spec.tool_id == "dolphin"
-    if compression and spec.tool_id == "chdman" and spec.kind == ModeKind.EXTRACT:
-        raise HTTPException(
-            status_code=400,
-            detail="Compression is only supported for CHD creation/copy",
-        )
-    if compression and ":" in compression and not spec.supports_compression_level:
-        raise HTTPException(
-            status_code=400,
-            detail="Compression levels are only supported for Dolphin and Switch formats",
-        )
-    if (
-        compression
-        and spec.tool_id == "dolphin"
-        and not (spec.supports_compression or spec.supports_compression_level)
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=_NO_COMPRESSION_DETAIL.get(
-                mode, "Compression is not supported for this Dolphin mode"
-            ),
-        )
-    if compression and is_dolphin and "," in compression:
-        raise HTTPException(
-            status_code=400,
-            detail="Dolphin compression supports only one codec at a time",
-        )
-    if request.delete_on_verify and not spec.supports_delete_on_verify:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Delete-on-verify is only supported for "
-                "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress modes"
-            ),
-        )
+    _validate_request_compression(spec, mode, compression)
+    _validate_delete_on_verify(spec, request.delete_on_verify)
     if not is_within_configured_volumes(request.file_path):
         raise HTTPException(
             status_code=403,
@@ -897,42 +921,9 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     compression = normalize_compression(request.compression)
     mode = request.mode.value
     spec = registry.spec(mode)
-    is_dolphin = spec.tool_id == "dolphin"
     output_dir = normalize_output_dir(request.output_dir)
-    if compression and spec.tool_id == "chdman" and spec.kind == ModeKind.EXTRACT:
-        raise HTTPException(
-            status_code=400,
-            detail="Compression is only supported for CHD creation/copy",
-        )
-    if compression and ":" in compression and not spec.supports_compression_level:
-        raise HTTPException(
-            status_code=400,
-            detail="Compression levels are only supported for Dolphin and Switch formats",
-        )
-    if (
-        compression
-        and spec.tool_id == "dolphin"
-        and not (spec.supports_compression or spec.supports_compression_level)
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=_NO_COMPRESSION_DETAIL.get(
-                mode, "Compression is not supported for this Dolphin mode"
-            ),
-        )
-    if compression and is_dolphin and "," in compression:
-        raise HTTPException(
-            status_code=400,
-            detail="Dolphin compression supports only one codec at a time",
-        )
-    if request.delete_on_verify and not spec.supports_delete_on_verify:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Delete-on-verify is only supported for "
-                "create/copy/Dolphin/3DS/Switch-compress/CSO/CSO2/ZSO/DAX-compress modes"
-            ),
-        )
+    _validate_request_compression(spec, mode, compression)
+    _validate_delete_on_verify(spec, request.delete_on_verify)
     if request.delete_on_verify:
         disallowed_archives = get_disallowed_archive_paths(request.file_paths)
         if disallowed_archives:
@@ -1152,8 +1143,8 @@ async def get_job(job_id: str):
 @router.delete("/jobs/completed")
 async def delete_completed_jobs(request: Request):
     """Delete all completed, failed, and cancelled jobs."""
-    confirmation = request.headers.get("x-chd-action-confirm", "")
-    if confirmation != "clear-completed-jobs":
+    confirmation = request.headers.get(ACTION_CONFIRM_HEADER, "")
+    if confirmation != CONFIRM_CLEAR_COMPLETED_JOBS:
         raise HTTPException(
             status_code=400,
             detail="Missing confirmation header for clear-completed action",
@@ -1176,8 +1167,8 @@ async def delete_completed_jobs(request: Request):
 @router.post("/jobs/cancel-all")
 async def cancel_all_jobs(request: Request):
     """Cancel all queued and processing jobs."""
-    confirmation = request.headers.get("x-chd-action-confirm", "")
-    if confirmation != "cancel-all-jobs":
+    confirmation = request.headers.get(ACTION_CONFIRM_HEADER, "")
+    if confirmation != CONFIRM_CANCEL_ALL_JOBS:
         raise HTTPException(
             status_code=400,
             detail="Missing confirmation header for cancel-all action",
