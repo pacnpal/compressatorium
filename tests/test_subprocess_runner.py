@@ -235,6 +235,58 @@ def test_cancel_watcher_survives_terminate_processlookuperror(tmp_path, monkeypa
     assert not runner.active_pids()
 
 
+def test_cancel_observed_at_read_timeout_raises_even_if_exited_zero(tmp_path, monkeypatch):
+    """If the loop breaks because cancel_event is set (on a read timeout) while
+    the child has already exited 0, the run observed the cancellation and must
+    raise ConversionCancelled rather than report success.
+    """
+
+    class _TimeoutThenExitedProc:
+        """read() always times out and returncode is already 0, so the watcher
+        skips marking the cancel — the loop's event check has to."""
+
+        def __init__(self):
+            self.pid = 555
+            self.returncode = 0
+            self.stdout = self
+
+        async def read(self, _n: int) -> bytes:
+            raise asyncio.TimeoutError  # the runner wraps read in wait_for(timeout=2)
+
+        async def wait(self) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+    async def fake_exec(*_args, **_kwargs):
+        return _TimeoutThenExitedProc()
+
+    monkeypatch.setattr(runner_module.asyncio, "create_subprocess_exec", fake_exec)
+    runner = SubprocessRunner(owner="test")
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+
+    async def _run():
+        return await _drain(
+            runner.run(
+                _py_cmd("import sys"),
+                input_path=str(tmp_path / "in.bin"),
+                output_path=str(tmp_path / "out.bin"),
+                parse_progress=_parse_pct,
+                cancel_event=cancel_event,
+                fail_label="testproc",
+            )
+        )
+
+    with pytest.raises(ConversionCancelled):
+        asyncio.run(_run())
+    assert not runner.active_pids()
+
+
 def test_stall_timeout_raises_runtimeerror(tmp_path, monkeypatch):
     # Force a short stall window; the child emits one line then goes silent and
     # never grows the output file, so the stall watchdog must fire.
