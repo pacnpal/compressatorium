@@ -815,6 +815,18 @@ export const TOOLS = [
 `CHDInfoModal` routing/verify-batch routing (all in `app.js`) become lookups
 into `TOOLS` instead of `if (tool === 'dolphin') …` chains.
 
+**Parity guard (`tests/test_frontend_parity_186.py`).** `registry.js` is a
+hand-maintained mirror of the backend `ModeSpec`s, and there is no shared build
+step, so a drift in `allows_archive_input` / `supports_delete_on_verify` /
+`input_extensions` / `output_ext` / `kind` would silently make the UI offer a
+job `plan_job` rejects ("0 queued") or fail on submit. The test evaluates
+`registry.js` with Node and asserts its mode rows match `registry.mode_specs()`
+field-by-field (skipped when Node is unavailable). `tool_id` is excluded: the
+synthetic `cso_to_chd` chain mode is owned by the `chain` tool on the backend
+but grouped under `cso` in the UI. The deliberate `.iso`-not-in-Dolphin-verify
+divergence lives on `verifyExts` (a verify-routing fact), not on a `ModeSpec`
+field, so it is outside the guard's scope.
+
 ---
 
 ## 4. The payoff: what a new tool looks like *after*

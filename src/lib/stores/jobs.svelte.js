@@ -7,10 +7,12 @@ import { api } from '$lib/api/endpoints.js';
 import { STORAGE_KEYS, readBool, writeBool } from '$lib/util/localStorage.js';
 import { verification } from './verification.svelte.js';
 import { ui } from './ui.svelte.js';
+import {
+  ACTIVE_STATUSES,
+  EXTERNAL_SCAN_MODES,
+  TERMINAL_STATUSES,
+} from './jobConstants.js';
 
-const EXTERNAL_SCAN_MODES = new Set(['metadata_scan', 'dat_match']);
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
-const ACTIVE_STATUSES = new Set(['queued', 'processing']);
 const MAX_OPTIMISTIC_PLACEHOLDERS = 100;
 
 class JobsStore {

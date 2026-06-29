@@ -11,14 +11,7 @@
 
 import { toast } from 'svelte-sonner';
 import { registry } from '$lib/tools/registry.js';
-
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
-// Mirror jobs.svelte.js: metadata_scan / dat_match are background
-// housekeeping jobs the queue hides by default. They run constantly as a
-// side-effect of browsing (FileList hydration kicks dat_match jobs), so
-// toasting them would flood the surface. They're only toasted when the
-// user has opted to show external-scan jobs in the queue.
-const EXTERNAL_SCAN_MODES = new Set(['metadata_scan', 'dat_match']);
+import { EXTERNAL_SCAN_MODES, TERMINAL_STATUSES } from './jobConstants.js';
 
 function filenameOf(job) {
   return job?.file_path?.split(/[/\\]/).pop() ?? job?.file_path ?? 'Job';
