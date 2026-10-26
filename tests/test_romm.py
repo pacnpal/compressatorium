@@ -5131,6 +5131,31 @@ def test_rom_at_path_mirrors_local_path(
         assert client.local_path(match) == os.path.realpath(output)
 
 
+def test_rom_at_path_follows_a_symlinked_platform_folder(tmp_path: Path) -> None:
+    """RomM spells the link; the output path is resolved. Both name one file.
+
+    With `roms/switch -> content/switch`, the record says
+    `roms/switch/Game.nsz` while the resolved output is under `content/`. A
+    purely lexical compare never matched, so the row waited out the abandon
+    period although `local_path` maps the record to the very same file.
+    """
+    (tmp_path / "content" / "switch").mkdir(parents=True)
+    (tmp_path / "roms").mkdir()
+    (tmp_path / "roms" / "switch").symlink_to(tmp_path / "content" / "switch")
+    output = tmp_path / "roms" / "switch" / "Game.nsz"
+    output.write_bytes(b"x")
+    record = {"id": 9, "full_path": "roms/switch/Game.nsz"}
+    client = RommClient(base_url="http://romm:8080", token="t")
+    with patch.object(RommClient, "library_root", str(tmp_path)):
+        assert client.local_path(record) == os.path.realpath(output)
+        match = client.rom_at_path(str(output), [record])
+        assert match is not None and match["id"] == 9
+        # Same name, different folder: still not this file.
+        assert client.rom_at_path(
+            str(output), [{"id": 10, "full_path": "roms/other/Game.nsz"}],
+        ) is None
+
+
 def test_rom_at_path_skips_missing_records_and_rebuilds_from_fs_name(
     tmp_path: Path,
 ) -> None:

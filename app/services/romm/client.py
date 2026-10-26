@@ -471,6 +471,13 @@ class RommClient:
         A record RomM marks ``missing_from_fs`` is skipped: it is RomM's memory
         of a file it could not find on its last scan, so it cannot have
         scanned the file sitting at *path* now.
+
+        The string compare is the fast path, not the definition. A symlinked
+        directory inside the library (``roms/switch -> content/switch``) makes
+        RomM's spelling differ from the resolved one, so a record with the
+        right file name that misses lexically is settled by :meth:`local_path`
+        itself -- one ``realpath`` for the one or two such records, not one per
+        ROM.
         """
         root = self.library_root
         if not root:
@@ -480,6 +487,7 @@ class RommClient:
         if not target.startswith(root_abs + os.sep):
             return None
         rel = os.path.relpath(target, root_abs).replace(os.sep, "/")
+        names = {os.path.basename(path), os.path.basename(target)}
         # The same directory-level layout decision `local_path` makes, so a
         # record maps here exactly when `local_path` would map it to *path*.
         strip = not os.path.isdir(os.path.join(root_abs, "roms"))
@@ -487,9 +495,13 @@ class RommClient:
             if rom.get("missing_from_fs") or not rom.get("id"):
                 continue
             candidate = _record_relpath(rom)
+            if not candidate:
+                continue
             if strip and candidate.startswith("roms/"):
                 candidate = candidate[len("roms/"):]
             if candidate == rel:
+                return rom
+            if candidate.rsplit("/", 1)[-1] in names and self.local_path(rom) == target:
                 return rom
         return None
 
