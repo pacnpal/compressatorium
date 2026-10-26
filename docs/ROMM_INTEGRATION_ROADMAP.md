@@ -287,6 +287,185 @@ nothing about compression. The RomM view already computes per-platform
 
 ---
 
+## Part 3 — Headline features: why a RomM user would want this
+
+Parts 1 and 2 make the integration work well. On their own they don't answer
+the RomM user who says "disk is cheap, and RomM converts now anyway". These
+features do. In each one, compression happens as a side effect of something
+the user actually wants. Each section has the demo moment, what already
+exists, what is new, and the smallest version worth shipping (MVP).
+
+### H0. Library health report — the no-risk first ten minutes
+
+> Connect RomM with a **read-only** token and get a report on the whole
+> library, before anything is converted: **2 discs are damaged, 6 dumps are
+> bad, 14 duplicates, 380 GB reclaimable on PS2 alone, and 97 ROMs RomM
+> couldn't identify that we can.**
+
+It is the answer to "I don't want anything touching my library": it needs
+only `roms.read` and changes nothing. It finds problems RomM can't see. RomM's
+`verified` filter means "the hash matched a DAT". A CHD whose sectors have
+rotted still matches, because its header hash doesn't change; only a
+container check catches it.
+
+| Report section | Built on |
+| --- | --- |
+| **Damaged files**: CHD/RVZ/archive internal checks fail | each tool's existing Verify, run in bulk |
+| **Bad and unknown dumps**: no match in Redump/No-Intro/TOSEC | DAT matching plus Hasheous (`DATMatch`) |
+| **Reclaimable space**: per platform, with the target format | the existing per-platform savings estimate (`SIZE_RATIOS`) |
+| **Duplicates**: same dump, different names | file hashes already computed for DAT matching |
+| **What RomM misses**: unidentified ROMs we can match; PS3, Wii U and NKit RomM's converter skips | Hasheous; per-platform tool matching |
+
+**Exists:** all of the checks above, one file at a time.
+**New:** a bulk scan with a time budget that runs as a job (it reads every
+file, so it is heavy-I/O-lane work and resumable), a report page, and a
+"Fix it" button per row that opens the existing convert or verify action.
+Later: a scheduled re-check that posts "2 discs went bad this month" to the
+RomM inbox (Phase 5.1).
+**MVP:** reclaimable space, bad and unknown dumps, and duplicates from data
+already in the database (fast). Container verification is a second pass the
+user starts.
+**Shared with H2:** both read `DATHash`/`DATMatch`, so they ship as one
+"Library" dashboard: health on one tab, set completion on the other.
+
+### H1. Drop zone — dump a messy pile, get a perfect library
+
+> Drag a downloads folder full of `.zip`, `.7z` and loose bin/cue sets onto a
+> watched folder. A minute later every game is in RomM: the right platform,
+> its official Redump/No-Intro name, converted to the best format, verified,
+> with its artwork. Anything that can't be identified waits in a tray with a
+> best guess.
+
+RomM's weakest step is getting files *in*. It has to be told the platform,
+and it shows names exactly as they were on disk. Compressatorium can work out
+both from the bytes.
+
+**Pipeline**, per arriving file, once it has stopped growing:
+
+1. Unpack archives (`services/archive.py`; its size limits stay in force).
+2. Hash it, then look it up in the local DATs, falling back to Hasheous
+   (`services/hasheous`). A hit gives the official game and ROM name, and the
+   platform: from the DAT's name (`Sony - PlayStation`) mapped to a RomM
+   slug, or straight from Hasheous's platform field.
+3. Pick the target format from that platform's automation rule, so the drop
+   zone obeys the rules the user already set up.
+4. Convert into the RomM library: platform folder from
+   `GET /api/platforms/filesystem`, filename from the DAT's `rom_name`.
+   Verify, then trigger a scan of that platform (Phase 1.1).
+5. Move the original to `processed/` (never deleted by default), or to
+   `needs-attention/` with a reason: unknown hash, ambiguous platform, bad
+   dump.
+
+**Exists:** archive listing and extraction, DAT and Hasheous matching, every
+converter, per-platform rules, verification, the job queue, path safety.
+**New:** a watcher on one configured volume (polling, since inotify is
+unreliable on NFS/SMB), a DAT-name → RomM-slug map, the needs-attention tray
+UI, and a "stable size for N seconds" gate.
+**MVP:** single files and zip/7z on disc platforms that have a DAT loaded.
+No tray UI yet: unidentified files just stay put, with a reason in a sidecar
+`.txt`.
+**Verify:** that Hasheous's platform names map cleanly onto RomM slugs.
+
+### H2. Complete the set — your library as a collection to finish
+
+> **PS1 (USA): 812 / 1,034 — 78 %.** Tap it: 222 missing, 6 bad dumps,
+> 14 duplicates, 31 files that are a different revision than the set
+> expects. Turn on "best version of each game" and 14,000 files collapse into
+> 3,200 entries in a RomM collection.
+
+This is what collectors use clrmamepro and RomVault for: powerful, but old
+desktop tools. Here it sits next to the library they browse, with their
+artwork.
+
+**Exists:** imported DATs keep every entry (`DATHash`: game name, ROM name,
+size) and every local match (`DATMatch`), so completion is a grouped count
+over tables that are already populated.
+**New:** per-DAT completion queries, a platform view, and a RomM **collection**
+holding the best version of each game (`collections.write`). It only lists
+which ROMs are in it, and never deletes or hides anything. The "best version"
+view needs the DAT parser to keep `cloneof`/`romof` and region tags, which it
+currently drops.
+**MVP:** completion % and the missing-games list per imported DAT, read-only.
+**Guardrail:** the missing list shows names and hashes only. It links to
+nothing and downloads nothing.
+
+### H3. Make games better, not just smaller
+
+> Convert your PS2 library, and every game that has a widescreen patch is
+> widescreen now. GameCube titles come with their recommended Dolphin
+> settings.
+
+Compressatorium already reads the disc serial out of CHDs and ISOs
+(`services/disc_id.py`, normalised the way PCSX2 does: `SLUS-20312`). That
+serial is the key the community enhancement databases use.
+
+**Exists:** serial extraction for PS1, PS2, PSP and Dreamcast; game IDs for
+GameCube and Wii via dolphin-tool.
+**New:** a source per emulator, starting with PCSX2's community patch
+repository (widescreen, no-interlace, 60 fps); patches stored next to the game
+so RomM files them as `PATCH` (RomM 5.x tags `patch/` subfolders); a per-game
+"Enhancements" panel.
+**MVP:** PCSX2 widescreen patches for PS2 only.
+**Verify:** PCSX2 names patch files `SERIAL_CRC.pnach`, where CRC is the boot
+ELF's CRC. So we must compute that CRC from the disc, which the existing
+CHD/ISO sector reader should be able to do. Also check licensing and
+attribution of each source before bundling or mirroring anything; prefer
+fetching on demand from the upstream repo.
+
+### H4. Device packs — fill my handheld with my favourites
+
+> "Fit my favourites on a 256 GB card" → 412 games instead of 290, ranked by
+> favourites, then recently played, then rating. In each device's preferred
+> formats, laid out for muOS, Knulli or RetroDECK. Re-run it and it syncs the
+> difference.
+
+RomM knows what the user loves (`favorite`, `last_played`, `statuses` and
+collection filters on `GET /api/roms`). Compressatorium knows how small each
+game gets and in which format. The pack is a **copy**, so the master library
+is never touched.
+
+**Exists:** converters, size estimates (`SIZE_RATIOS`), the RomM catalog, the
+job queue.
+**New:** device profiles (folder layout plus per-emulator formats), a
+"fit the most valuable games" planner, copy-and-convert jobs to a target
+volume, and incremental re-sync.
+**MVP:** one profile (RetroDECK on Steam Deck), favourites only, writing to a
+mounted volume.
+**Verify:** which compressed formats each firmware's cores accept (CSO and RVZ
+support varies).
+
+### H5. Multi-disc tidy — one game, one entry, disc swapping that works
+
+> Before: 247 files, 98 RomM entries. After: 61 games, half the space, and
+> RomM's player swaps discs.
+
+A loose PS1, Saturn or Sega CD library becomes one folder per game: one CHD
+per disc plus an `.m3u`. RomM shows a folder like that as a single game. This
+is the open RomM request
+[rommapp/romm#5082](https://github.com/rommapp/romm/issues/5082).
+
+**Exists:** cue/bin → CHD; DAT names that carry `(Disc N)`.
+**New:** grouping discs by DAT game name or filename, `.m3u` writing (shared
+with hardening H-8), and the folder move. Under Phase 3 it would keep the ROM
+id; without Phase 3 it re-pins.
+**MVP:** PS1 only, triggered by hand from the RomM view, with a preview.
+
+### H6. Library Wrapped — the shareable year in review
+
+> "Your library in 2026: 1.2 TB saved, 3 sets completed, PS2 now 100 %
+> widescreen, 41 hours in Final Fantasy IX." A good-looking card per user,
+> made to be screenshotted and posted.
+
+This turns the stats from the other features into something people want to
+show off, which is how a self-hosted tool gets discovered. Play time comes
+from RomM's play sessions (4.9+). Savings, completion and enhancements come
+from H1–H3 and the existing savings estimate.
+
+**MVP:** a single page from data that already exists (savings plus
+completion), with play time once RomM's play-session API is confirmed.
+
+---
+
 ## Phased delivery plan
 
 Each phase ships on its own and leaves the integration better than it found
@@ -410,6 +589,27 @@ see what it did without opening Compressatorium.
 
 *Done when:* a ROM dropped into the library is converted minutes after
 RomM's scan sees it, and the RomM inbox reports what was converted and saved.
+
+### Headline track — runs alongside Phases 0–5
+
+The Part 3 features are what make someone *want* the integration, so they are
+not left until after the plumbing. Each one starts as soon as its
+prerequisites are in:
+
+| # | Feature | Can start | Needs from the plumbing | Size (MVP) |
+| --- | --- | --- | --- | --- |
+| H0 | Library health report (read-only) | **now** | nothing; scheduled re-checks use 5.1 | S–M |
+| H2 | Complete the set (read-only completion) | **now**, with H0 | nothing | S |
+| H1 | Drop zone | **now** | uses 1.1 (scan trigger) once it lands; falls back to RomM's own watcher | M |
+| H5 | Multi-disc tidy | with 4.5 | `.m3u` writer (4.5); keeps the id once Phase 3 lands | M |
+| H3 | Make games better (PCSX2 widescreen) | after a short spike | serial extraction (exists); ELF CRC (new) | M |
+| H4 | Device packs | after 0.2 | capability model; RomM user-data filters | L |
+| H6 | Library Wrapped | after H1/H2 | their stats; RomM play sessions | S |
+
+**Suggested first sprint:** the Library dashboard (H0 health plus H2
+completion: read-only, nothing blocks it, and immediately impressive on a real
+library) alongside H1's MVP (the most compelling demo). Finish Phase 0.2 in the same sprint, since H4 and the
+capability gating both need it.
 
 ### Dependencies at a glance
 
