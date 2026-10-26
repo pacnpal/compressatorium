@@ -492,10 +492,10 @@ class RommClient:
 
         The string compare is the fast path, not the definition. A symlinked
         directory inside the library (``roms/switch -> content/switch``) makes
-        RomM's spelling differ from the resolved one, so a record with the
-        right file name that misses lexically is settled by :meth:`local_path`
-        itself -- one ``realpath`` for the one or two such records, not one per
-        ROM.
+        RomM's spelling differ from the resolved one, so a record named like
+        the output -- or like one of the folders it sits in -- that misses
+        lexically is settled by :meth:`local_path` itself: one ``realpath`` for
+        the handful of such records, not one per ROM.
         """
         root = self.library_root
         if not root:
@@ -505,11 +505,26 @@ class RommClient:
         if not target.startswith(root_abs + os.sep):
             return None
         rel = os.path.relpath(target, root_abs).replace(os.sep, "/")
+        # Names worth a `realpath`: the output's own, and every folder between
+        # it and the root, each as written and as resolved.
         names = {os.path.basename(path), os.path.basename(target)}
+        for spelling, base in (
+            (os.path.abspath(path), os.path.abspath(root)), (target, root_abs),
+        ):
+            inside = os.path.relpath(os.path.dirname(spelling), base)
+            if not inside.startswith(".."):
+                names.update(inside.split(os.sep))
         # The same directory-level layout decision `local_path` makes, so a
         # record maps here exactly when `local_path` would map it to *path*.
         strip = not os.path.isdir(os.path.join(root_abs, "roms"))
+        # (depth, record) for the deepest folder record containing the output.
         folder: tuple[int, dict] | None = None
+
+        def consider(depth: int, rom: dict) -> None:
+            nonlocal folder
+            if folder is None or depth > folder[0]:
+                folder = (depth, rom)
+
         for rom in roms:
             if rom.get("missing_from_fs") or not rom.get("id"):
                 continue
@@ -520,12 +535,18 @@ class RommClient:
                 candidate = candidate[len("roms/"):]
             if candidate == rel:
                 return rom
-            if candidate.rsplit("/", 1)[-1] in names and self.local_path(rom) == target:
+            if rel.startswith(candidate + "/"):
+                consider(candidate.count("/"), rom)
+                continue
+            if candidate.rsplit("/", 1)[-1] not in names:
+                continue
+            resolved = self.local_path(rom)
+            if resolved == target:
                 return rom
-            if rel.startswith(candidate + "/") and (
-                folder is None or len(candidate) > folder[0]
-            ):
-                folder = (len(candidate), rom)
+            if resolved and target.startswith(resolved + os.sep):
+                consider(
+                    os.path.relpath(resolved, root_abs).count(os.sep), rom,
+                )
         return folder[1] if folder else None
 
 

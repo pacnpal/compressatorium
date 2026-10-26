@@ -5426,3 +5426,30 @@ def test_record_keeps_a_slugless_platform_backfillable(repin_db) -> None:
     """An id without a slug must not be filed as "no platform" for good."""
     romm_repin.record({"id": 7, "platform_id": 12}, "/vol/Game.nsz", {"igdb_id": 1})
     assert romm_repin.pending_rows(10)[0][8:] == (12, None)
+
+
+def test_rom_at_path_matches_a_folder_record_under_a_symlinked_platform(
+    tmp_path: Path,
+) -> None:
+    """Folder records need the resolved comparison too, not just file records.
+
+    With `roms/switch -> content/switch`, the record says `roms/switch/Game`
+    while the resolved output is `content/switch/Game/Base.nsz`, and the
+    folder's name (`Game`) never equals the file's (`Base.nsz`).
+    """
+    (tmp_path / "content" / "switch" / "Game").mkdir(parents=True)
+    (tmp_path / "roms").mkdir()
+    (tmp_path / "roms" / "switch").symlink_to(tmp_path / "content" / "switch")
+    output = tmp_path / "roms" / "switch" / "Game" / "Base.nsz"
+    output.write_bytes(b"x")
+    roms = [
+        {"id": 1, "full_path": "roms/switch/Game"},
+        {"id": 2, "full_path": "roms/switch/Other"},
+    ]
+    client = RommClient(base_url="http://romm:8080", token="t")
+    with patch.object(RommClient, "library_root", str(tmp_path)):
+        match = client.rom_at_path(str(output), roms)
+        assert match is not None and match["id"] == 1
+        # An exact file record still beats the folder.
+        exact = {"id": 3, "full_path": "roms/switch/Game/Base.nsz"}
+        assert client.rom_at_path(str(output), [*roms, exact])["id"] == 3
