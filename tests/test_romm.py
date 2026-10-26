@@ -5095,3 +5095,241 @@ async def test_an_identity_change_during_the_inserts_records_nothing(
     locked = write_phase[write_phase.index("async with _settle_lock:"):]
     assert "identity_generation() != generation" in locked, locked[:400]
     assert "romm_repin.record" in locked, "the inserts moved out of the lock"
+
+
+# ----------------------------------------------------------------------
+# re-pin on platforms RomM does not hash (Switch, Wii U, PS3, ...)
+# ----------------------------------------------------------------------
+
+
+def test_unhashed_platforms_cover_the_tools_that_need_a_repin_there() -> None:
+    """NSZ, jwud and makeps3iso all emit formats RomM cannot hash-match."""
+    from services.romm import UNHASHED_PLATFORM_SLUGS
+
+    assert {"switch", "switch-2", "wiiu", "ps3"} <= UNHASHED_PLATFORM_SLUGS
+    # Disc platforms RomM does hash keep the SHA-1 join.
+    assert not {"ngc", "wii", "ps2", "psp", "3ds"} & UNHASHED_PLATFORM_SLUGS
+
+
+@pytest.mark.parametrize("layout_has_roms_dir", [True, False])
+def test_rom_at_path_mirrors_local_path(
+    tmp_path: Path, layout_has_roms_dir: bool,
+) -> None:
+    """A record matches exactly when `local_path` would map it to the file."""
+    base = tmp_path / "roms" if layout_has_roms_dir else tmp_path
+    (base / "switch").mkdir(parents=True)
+    output = base / "switch" / "Game.nsz"
+    output.write_bytes(b"x")
+    roms = [
+        {"id": 1, "full_path": "roms/switch/Other.nsz"},
+        {"id": 2, "full_path": "roms/switch/Game.nsz"},
+    ]
+    client = RommClient(base_url="http://romm:8080", token="t")
+    with patch.object(RommClient, "library_root", str(tmp_path)):
+        match = client.rom_at_path(str(output), roms)
+        assert match is not None and match["id"] == 2
+        assert client.local_path(match) == os.path.realpath(output)
+
+
+def test_rom_at_path_skips_missing_records_and_rebuilds_from_fs_name(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "roms" / "wiiu").mkdir(parents=True)
+    output = tmp_path / "roms" / "wiiu" / "Game.wux"
+    output.write_bytes(b"x")
+    client = RommClient(base_url="http://romm:8080", token="t")
+    with patch.object(RommClient, "library_root", str(tmp_path)):
+        # RomM's memory of a file it could not find is not this file.
+        assert client.rom_at_path(
+            str(output),
+            [{"id": 3, "full_path": "roms/wiiu/Game.wux", "missing_from_fs": True}],
+        ) is None
+        # No full_path: rebuilt from fs_path/fs_name, as local_path does.
+        match = client.rom_at_path(
+            str(output), [{"id": 4, "fs_path": "roms/wiiu", "fs_name": "Game.wux"}],
+        )
+        assert match is not None and match["id"] == 4
+        # Outside the library root nothing matches.
+        assert client.rom_at_path("/elsewhere/Game.wux", [{"id": 5}]) is None
+
+
+def test_record_repin_stores_the_source_platform(repin_db) -> None:
+    rom = {"id": 7, "platform_id": 12, "platform_slug": "switch"}
+    romm_repin.record(rom, "/vol/Game.nsz", {"igdb_id": 42})
+    row = romm_repin.pending_rows(10)[0]
+    assert row[8:] == (12, "switch")
+
+    # RomM not saying is "unknown", distinct from a pre-migration NULL.
+    romm_repin.record({"id": 8}, "/vol/Other.rvz", {"igdb_id": 43})
+    assert romm_repin.pending_rows(10)[1][8:] == (None, "")
+
+
+@pytest.mark.asyncio
+async def test_repin_on_an_unhashed_platform_joins_on_the_path(
+    repin_db, tmp_path: Path,
+) -> None:
+    """RomM never hashes Switch files, so by-hash can never find the output.
+
+    Every NSZ re-pin used to hash a multi-GB image, miss, and be retired after
+    `repin_abandon_days`. The path join settles it without hashing at all, and
+    one platform listing serves every row in the pass.
+    """
+    (tmp_path / "switch").mkdir()
+    outputs = [tmp_path / "switch" / f"Game{i}.nsz" for i in (1, 2)]
+    for i, output in enumerate(outputs, start=1):
+        romm_repin.record(
+            {"id": i, "platform_id": 12, "platform_slug": "switch"},
+            str(output), {"igdb_id": 40 + i},
+        )
+        output.write_bytes(b"x" * 8)
+    catalog = [
+        {"id": 101, "full_path": "roms/switch/Game1.nsz"},
+        {"id": 102, "full_path": "roms/switch/Game2.nsz"},
+    ]
+
+    hasher = AsyncMock(return_value="abc123")
+    with patch.object(RommClient, "base_url", "http://romm:8080"), \
+            patch.object(RommClient, "library_root", str(tmp_path)), \
+            patch.object(romm_routes, "run_detached", hasher), \
+            patch.object(
+                romm_routes.romm_client, "roms", return_value=catalog,
+            ) as listing, \
+            patch.object(romm_routes.romm_client, "rom_by_sha1") as by_hash, \
+            patch.object(romm_routes.romm_client, "update_rom_metadata") as update:
+        result = await romm_routes.settle_romm_repins()
+
+    assert result["repinned"] == 2, result
+    hasher.assert_not_awaited()
+    by_hash.assert_not_called()
+    listing.assert_called_once_with(12, with_files=False)
+    assert sorted(c.args for c in update.call_args_list) == [
+        (101, {"igdb_id": 41}), (102, {"igdb_id": 42}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unhashed_repin_waits_until_romm_has_scanned_the_output(
+    repin_db, tmp_path: Path,
+) -> None:
+    (tmp_path / "ps3").mkdir()
+    output = tmp_path / "ps3" / "Game.iso"
+    romm_repin.record(
+        {"id": 7, "platform_id": 3, "platform_slug": "ps3"},
+        str(output), {"igdb_id": 42},
+    )
+    output.write_bytes(b"x" * 8)
+
+    hasher = AsyncMock(return_value="abc123")
+    with patch.object(RommClient, "base_url", "http://romm:8080"), \
+            patch.object(RommClient, "library_root", str(tmp_path)), \
+            patch.object(romm_routes, "run_detached", hasher), \
+            patch.object(romm_routes.romm_client, "roms", return_value=[]), \
+            patch.object(romm_routes.romm_client, "update_rom_metadata") as update:
+        result = await romm_routes.settle_romm_repins()
+
+    assert result["waiting"] == 1 and result["pending"] == 1, result
+    hasher.assert_not_awaited()
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unhashed_repin_waits_when_the_library_stops_answering(
+    repin_db, tmp_path: Path,
+) -> None:
+    """A timeout mapping the path is "not yet", never grounds to retire."""
+    output = tmp_path / "Game.wux"
+    romm_repin.record(
+        {"id": 7, "platform_id": 4, "platform_slug": "wiiu"},
+        str(output), {"igdb_id": 42},
+    )
+    output.write_bytes(b"x" * 8)
+
+    real_check = romm_routes.bounded_path_check
+
+    async def check(func, *args, **kwargs):
+        if func == romm_routes.romm_client.rom_at_path:
+            raise asyncio.TimeoutError
+        return await real_check(func, *args, **kwargs)
+
+    with patch.object(RommClient, "base_url", "http://romm:8080"), \
+            patch.object(RommClient, "library_root", str(tmp_path)), \
+            patch.object(romm_routes, "bounded_path_check", check), \
+            patch.object(romm_routes.romm_client, "roms", return_value=[]), \
+            patch.object(romm_routes.romm_client, "update_rom_metadata") as update:
+        result = await romm_routes.settle_romm_repins()
+
+    assert result["waiting"] == 1 and result["abandoned"] == 0, result
+    update.assert_not_called()
+
+
+def _forget_platform(row_id: int) -> None:
+    """Make a row look like one written before rows carried their platform."""
+    with _db.SessionLocal() as session:
+        session.query(_db.RommRepin).filter(_db.RommRepin.id == row_id).update(
+            {"platform_id": None, "platform_slug": None},
+        )
+        session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_pre_migration_row_is_backfilled_and_rescued(
+    repin_db, tmp_path: Path,
+) -> None:
+    """Rows already pending for a Switch ROM at upgrade still settle."""
+    (tmp_path / "switch").mkdir()
+    output = tmp_path / "switch" / "Game.nsz"
+    romm_repin.record({"id": 7}, str(output), {"igdb_id": 42})
+    row_id = romm_repin.pending_rows(10)[0][5]
+    _forget_platform(row_id)
+    output.write_bytes(b"x" * 8)
+
+    hasher = AsyncMock(return_value="abc123")
+    with patch.object(RommClient, "base_url", "http://romm:8080"), \
+            patch.object(RommClient, "library_root", str(tmp_path)), \
+            patch.object(romm_routes, "run_detached", hasher), \
+            patch.object(
+                romm_routes.romm_client, "rom",
+                return_value={"id": 7, "platform_id": 12, "platform_slug": "switch"},
+            ) as source, \
+            patch.object(
+                romm_routes.romm_client, "roms",
+                return_value=[{"id": 108, "full_path": "roms/switch/Game.nsz"}],
+            ), \
+            patch.object(romm_routes.romm_client, "update_rom_metadata") as update:
+        result = await romm_routes.settle_romm_repins()
+
+    assert result["repinned"] == 1, result
+    source.assert_called_once_with(7)
+    hasher.assert_not_awaited()
+    update.assert_called_once_with(108, {"igdb_id": 42})
+
+
+@pytest.mark.asyncio
+async def test_a_pre_migration_row_whose_source_is_gone_keeps_the_sha1_join(
+    repin_db, tmp_path: Path,
+) -> None:
+    """Backfilled once: a 404 is stored as unknown, not re-asked every pass."""
+    output = tmp_path / "Game.rvz"
+    romm_repin.record({"id": 7}, str(output), {"igdb_id": 42})
+    row_id = romm_repin.pending_rows(10)[0][5]
+    _forget_platform(row_id)
+    output.write_bytes(b"x" * 8)
+
+    with patch.object(RommClient, "base_url", "http://romm:8080"), \
+            patch.object(RommClient, "library_root", str(tmp_path)), \
+            patch.object(
+                romm_routes, "run_detached", AsyncMock(return_value="abc123"),
+            ), \
+            patch.object(
+                romm_routes.romm_client, "rom",
+                side_effect=RommError("gone", status=404),
+            ) as source, \
+            patch.object(
+                romm_routes.romm_client, "rom_by_sha1", return_value={"id": 108},
+            ), \
+            patch.object(romm_routes.romm_client, "update_rom_metadata") as update:
+        result = await romm_routes.settle_romm_repins()
+
+    assert result["repinned"] == 1, result
+    source.assert_called_once_with(7)
+    update.assert_called_once_with(108, {"igdb_id": 42})

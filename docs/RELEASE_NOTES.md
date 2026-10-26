@@ -176,6 +176,17 @@ it or moving the schedule clock. Sections are newest-first.
 
 ### Fixed
 
+- **Converted Switch, Wii U and PS3 games now get their RomM metadata back.**
+  RomM never hashes files on those platforms (nor on PS4/PS5, Xbox 360/One,
+  Series X|S, PC and mobile), and re-matching looked the converted file up by
+  its SHA-1 alone. So every NSZ, WUX and PS3 ISO re-match hashed a
+  multi-gigabyte image on each pass, never found it, and was retired after
+  **Give up on a saved snapshot after** days, losing that game's metadata. On
+  those platforms the converted file is now found by its path in the
+  library, with no hashing at all, and RomM's listing is read once per pass
+  however many games are waiting. Re-matches already pending when you upgrade
+  look up their platform once and are rescued too.
+
 - **RomM path resolution: strip the `roms/` prefix automatically.** RomM's
   `full_path` always starts with `roms/` (its standard library layout), but
   many deployments mount the ROM content directly — no `roms/` subdirectory on

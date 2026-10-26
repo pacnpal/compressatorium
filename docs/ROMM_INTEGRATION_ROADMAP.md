@@ -223,11 +223,14 @@ nothing about compression. The RomM view already computes per-platform
      need re-pinning on those systems: NSZ, WUX and PS3 ISO. Each row is hashed
      locally (minutes for a multi-GB image), waits `repin_abandon_days`, then is
      retired as "RomM never matched this output".
-   - Fix: on those platforms, or whenever by-hash misses, match by **path**.
-     Compressatorium knows exactly where it wrote the output. List the platform
-     (`search_term=<file name>`) and compare each candidate's `full_path`,
-     mapped through `local_path()`, to the recorded output. Skip the local SHA-1
-     entirely on non-hashed platforms, and keep it as the tie-breaker elsewhere.
+   - **Fixed (Phase 0).** Each re-pin row now records its source platform
+     (migration `0008`). On a platform in `UNHASHED_PLATFORM_SLUGS` (a mirror of
+     RomM's list) the settle pass skips hashing and joins on the **path**: it
+     lists the platform once per pass (`with_files=false`) and picks the record
+     that `local_path()` would map to the output (`RommClient.rom_at_path`).
+     RomM's `search_term` is a full-text name search, so it is not used for
+     this. Rows pending at upgrade carry no platform; they read it from the
+     source ROM once and are rescued too.
 2. **The RomM version is never shown.**
    - What happens: `romm_status` and the connection test read
      `heartbeat["VERSION"]`, but RomM has nested it under `SYSTEM.VERSION` since
@@ -284,21 +287,142 @@ nothing about compression. The RomM view already computes per-platform
 
 ---
 
-## Suggested order
+## Phased delivery plan
 
-| # | Item | User impact | Effort | Needs |
-| --- | --- | --- | --- | --- |
-| 1 | Bug: path-based re-match on Switch/Wii U/PS3 | High (silent data loss today) | S | — |
-| 2 | Bug: read `SYSTEM.VERSION` + capability detection (hardening 1) | Low alone, unlocks the rest | XS | — |
-| 3 | Instant rescans via `POST /api/tasks/scan` | High | S–M | RomM 5.4, `tasks.run` |
-| 4 | Pairing code + scope report + path suggestion | High (first-run) | S | RomM 4.8 |
-| 5 | Covers + Open in RomM | High (look and feel) | S | — |
-| 6 | In-place conversion keeping the ROM id | Very high (saves, collections) | M–L | spike first |
-| 7 | Collection / favourite / region filters | Medium–high | M | — |
-| 8 | Notifications + provenance notes | Medium | S | RomM 5.4, `me.write` |
-| 9 | Inbound webhook → convert new arrivals | Medium | M | RomM 5.4 channel |
-| 10 | Coexist with RomM's built-in converter | Medium (avoids conflicts) | S–M | RomM 5.4 |
-| 11 | Hardening items 2–9 | Medium | S each | — |
+Each phase ships on its own and leaves the integration better than it found
+it. Inside a phase, every numbered item is one PR. Item references point at
+the sections above: **P1-n** is Part 1 item *n*, **H-n** is Part 2 hardening
+item *n*.
+
+### Rules that apply to every phase
+
+- **Gate on capability, never assume.** From Phase 0 on, every feature that
+  needs a newer RomM or an extra scope checks the capability model first, and
+  an older RomM gets today's behaviour, never an error. Each PR says which
+  RomM version and scopes it needs.
+- **Fall back silently, report loudly.** A missing scope or old RomM never
+  breaks a conversion. It shows up once, in Settings, as "X needs Y".
+- **Test against RomM's real shapes.** Fixtures copy response bodies from the
+  RomM version they target (heartbeat, `/api/roms` items, task responses).
+  The `SYSTEM.VERSION` bug came from a fixture in a shape RomM stopped sending
+  at 4.0.
+- **Keep docs and screenshots current** (CLAUDE.md): README for behaviour,
+  `docs/RELEASE_NOTES.md` for every user-visible change, and `shots.yml`
+  whenever a RomM view changes.
+- **Never write by probing.** Connection tests and capability checks are
+  read-only. Writes happen only as part of a feature the user turned on.
+
+### Phase 0 — Correctness and a capability model
+
+*Goal:* what exists today works on every platform and RomM version it claims,
+and later phases have a capability model to build on. No new UI.
+
+| # | Item | Needs | Size |
+| --- | --- | --- | --- |
+| 0.1 | ✅ Re-match on platforms RomM does not hash (bug 1) | — | S |
+| 0.2 | Read `SYSTEM.VERSION`; add a capability model to `/romm/status` (bug 2, H-1) | — | S |
+| 0.3 | Carry every provider id RomM accepts (H-3) | `roms.write` | XS |
+| 0.4 | Report RomM's `missing` records separately in the diagnostics (H-6) | — | XS |
+
+*Done when:* NSZ/WUX/PS3 ISO outputs re-pin; Settings shows the RomM version;
+`/romm/status` returns `{version, capabilities: {scan_task, pairing,
+title_id_reassoc, notifications, …}}` for the UI and later phases to read.
+
+### Phase 1 — Close the loop: no manual steps after converting
+
+*Goal:* convert, and the game reappears in RomM with its metadata, with
+nothing else to press.
+
+| # | Item | Needs | Size |
+| --- | --- | --- | --- |
+| 1.1 | Trigger a targeted RomM scan after a batch or sweep, debounced per platform (P1-2) | RomM 5.4, `tasks.run` | M |
+| 1.2 | Follow the scan task and settle re-pins when it finishes; "RomM is scanning…" in the header (P1-2) | 1.1 | S |
+| 1.3 | Cheaper catalog reads: `with_total=false`, per-platform `updated_after` cache (H-7) | RomM 5.2 | S |
+
+*Done when:* on RomM 5.4 with `tasks.run`, a converted RVZ/NSZ has its
+metadata back within one scan, with no button pressed. On older RomM or
+without the scope, behaviour is unchanged and Settings says what would turn
+this on. *Risk:* `409` (scan already running) needs a retry-after-current-scan
+path, not a dropped request.
+
+### Phase 2 — First-run and look-and-feel
+
+*Goal:* setup takes a minute, and the RomM view looks like the user's library.
+
+| # | Item | Needs | Size |
+| --- | --- | --- | --- |
+| 2.1 | Pair with an 8-digit code; store the scopes from the exchange (P1-3) | RomM 4.8 | S |
+| 2.2 | Per-feature scope report in Test connection, read-only (P1-3) | 0.2 | S |
+| 2.3 | Suggest the library path from heartbeat `FILESYSTEM` (P1-3) | — | S |
+| 2.4 | Cover art via a backend proxy, plus **Open in RomM** links (P1-4) | — | S–M |
+| 2.5 | Structure-aware path mapping (H-9) | RomM 5.3 | S |
+
+*Done when:* a new user pairs without copying a token; the library shows
+covers; Settings lists exactly which features the token unlocks. Screenshots
+are refreshed (`shots.yml` gains the paired-settings and cover views).
+
+### Phase 3 — Keep the game: preserve the RomM record
+
+*Goal:* converting never splits a game into a new entry and a "missing" ghost.
+Saves, states, notes, collections and play history stay attached.
+
+| # | Item | Needs | Size |
+| --- | --- | --- | --- |
+| 3.0 | **Spike** against a live RomM 5.4: does a `hashes` scan by `roms_ids` refresh size and hashes after an out-of-band swap? Which formats does sigil read the same title id from, before and after conversion? | test RomM | S |
+| 3.1 | In-place swap for single-file ROMs under delete-after-verify, with the persisted per-step recovery (P1-1) | 3.0, 1.1, `roms.write`, `tasks.run` | L |
+| 3.2 | Detect title-id reassociation and skip the swap and the re-pin where RomM already keeps the id (P1-1) | 3.0, 0.2 | S |
+| 3.3 | Ghost-record cleanup (opt-in) for setups where 3.1 can't run (H-2) | `roms.write` | M |
+| 3.4 | Make "DAT-safe" data-driven per platform, format and RomM version (H-4) | 3.0 | S |
+
+*Done when:* a delete-after-verify conversion leaves the same ROM id in RomM
+with its saves and collections, and a crash at any step resumes or surfaces
+the ROM for manual recovery. *Risk:* this is the only phase that changes
+RomM's own record. It ships behind an opt-in until it has run unattended for a
+release, the same caution 4.5.0's beta applied to delete-after-verify.
+
+### Phase 4 — Select by RomM's knowledge, and coexist with its converter
+
+*Goal:* rules and selections speak in RomM's terms, and two converters never
+fight over one library.
+
+| # | Item | Needs | Size |
+| --- | --- | --- | --- |
+| 4.1 | Library filter bar: collection, smart collection, favourites, region, matched (P1-7) | — | M |
+| 4.2 | Rule scopes: only collection X, skip favourites, only verified (P1-7) | 4.1 | M |
+| 4.3 | Detect RomM's converter: flag conflicting targets, offer to import them, skip `.romm_tmp_*` (P1-8) | RomM 5.4, 0.2 | S–M |
+| 4.4 | Warn when a target extension is excluded by RomM; refuse delete-source for it (H-5) | `GET /api/config` | S |
+| 4.5 | Rewrite multi-disc `.m3u` playlists on conversion, in shared infrastructure (H-8) | — | M |
+
+*Done when:* "convert my PS2 favourites to CHD" is one selection; a rule
+that conflicts with RomM's converter says so before it runs.
+
+### Phase 5 — Event-driven, and reporting back
+
+*Goal:* Compressatorium reacts to RomM instead of polling it, and RomM users
+see what it did without opening Compressatorium.
+
+| # | Item | Needs | Size |
+| --- | --- | --- | --- |
+| 5.1 | Sweep summaries posted to the RomM inbox, reaching its webhook/Apprise/email channels (P1-5) | RomM 5.4, `me.write` | S |
+| 5.2 | Per-ROM provenance notes, opt-in (P1-5) | `roms.user.write` (verify) | S |
+| 5.3 | Inbound RomM webhook with HMAC check → settle re-pins and run a **Convert new arrivals** sweep (P1-6) | RomM 5.4 channel, 1.1 | M |
+| 5.4 | Library-wide savings summary (P1-9) | — | S |
+
+*Done when:* a ROM dropped into the library is converted minutes after
+RomM's scan sees it, and the RomM inbox reports what was converted and saved.
+
+### Dependencies at a glance
+
+```text
+Phase 0 ──► Phase 1 ──► Phase 3 (needs 1.1's scan trigger)
+   │           └──────► Phase 5.3 (webhook reuses the scan/settle path)
+   ├──────► Phase 2 (2.2 reads the capability model)
+   └──────► Phase 4 (4.3 reads the capability model)
+```
+
+Phases 2 and 4 don't depend on each other or on Phase 1, so they can run in
+parallel with it. Phase 3 is the largest and riskiest; its spike (3.0) can
+start at any time, since its findings also decide 3.2 and 3.4.
 
 ## Sources
 

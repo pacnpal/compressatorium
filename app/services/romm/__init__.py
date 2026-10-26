@@ -20,6 +20,7 @@ single module.
 from .client import (
     DAT_SAFE_OUTPUT_EXTS,
     METADATA_ID_FIELDS,
+    UNHASHED_PLATFORM_SLUGS,
     RommClient,
     RommError,
     RommNotConfigured,
@@ -29,6 +30,7 @@ from .client import (
 __all__ = [
     "DAT_SAFE_OUTPUT_EXTS",
     "METADATA_ID_FIELDS",
+    "UNHASHED_PLATFORM_SLUGS",
     "RommClient",
     "RommError",
     "RommNotConfigured",

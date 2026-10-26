@@ -630,7 +630,10 @@ rule produces one ISO and re-pins normally.
 
 The match uses the converted file's SHA1, so it's exact and survives you renaming
 or moving the file in between — once the hash has been taken, where the file sits
-stops mattering. Re-matching is idempotent: already-restored ROMs are skipped, and
+stops mattering. The exception is the platforms RomM never hashes — Switch, Wii U,
+PS3 (and PS4/PS5, Xbox 360/One, PC) — where there is no SHA1 to match on: there
+the converted file is found by its path in the library instead, so leave it where
+the conversion wrote it until it has been re-matched. Re-matching is idempotent: already-restored ROMs are skipped, and
 anything RomM hasn't scanned yet just waits for the next attempt. A conversion
 that was planned and then never ran is recognised as such rather than re-pinned
 onto whatever it was going to overwrite, and its saved metadata is discarded

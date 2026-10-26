@@ -157,6 +157,10 @@ class RommRepin(Base):
     guessing, and correct even when the user renamed it in between.  It is
     cached here because hashing a multi-GB image is the expensive half of the
     settle pass and a row may be retried many times before RomM rescans.
+
+    The exception is a platform RomM never hashes (``platform_slug`` in
+    ``services.romm.UNHASHED_PLATFORM_SLUGS``): there the record has no SHA-1
+    to find, so the row joins on ``output_path`` and is never hashed.
     """
 
     __tablename__ = "romm_repin"
@@ -207,6 +211,14 @@ class RommRepin(Base):
     # 4 GB leaves `<name>.iso.0`, `.1`, ... and no bare `<name>.iso`, which
     # looks identical to "the conversion never ran" from the path alone.
     mode = Column(String, nullable=True)
+    # The RomM platform the source ROM was on, so the settle pass knows how to
+    # find the converted file. RomM never hashes some platforms (Switch, Wii U,
+    # PS3, ...), so a SHA-1 join can never succeed there and the row joins on
+    # the path instead -- see `services.romm.UNHASHED_PLATFORM_SLUGS`. A NULL
+    # slug marks a row written before these existed, which the settle pass
+    # backfills from the source ROM; "" means RomM did not say.
+    platform_id = Column(Integer, nullable=True)
+    platform_slug = Column(String, nullable=True)
     # "pending" -> "done" | "abandoned"
     state = Column(String, nullable=False, default="pending")
     detail = Column(String, nullable=True)
