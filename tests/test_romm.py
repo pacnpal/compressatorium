@@ -5226,7 +5226,9 @@ async def test_repin_on_an_unhashed_platform_joins_on_the_path(
     assert result["repinned"] == 2, result
     hasher.assert_not_awaited()
     by_hash.assert_not_called()
-    listing.assert_called_once_with(12, with_files=False)
+    listing.assert_called_once()
+    assert listing.call_args.args == (12,)
+    assert listing.call_args.kwargs["with_files"] is False
     assert sorted(c.args for c in update.call_args_list) == [
         (101, {"igdb_id": 41}), (102, {"igdb_id": 42}),
     ]
@@ -5358,3 +5360,43 @@ async def test_a_pre_migration_row_whose_source_is_gone_keeps_the_sha1_join(
     assert result["repinned"] == 1, result
     source.assert_called_once_with(7)
     update.assert_called_once_with(108, {"igdb_id": 42})
+
+
+def test_roms_stops_paging_at_the_deadline_rather_than_return_a_partial_list(
+    client: RommClient,
+) -> None:
+    """A truncated catalog would read as "not in the library"."""
+    full_page = {"items": [{"id": i} for i in range(romm_service.PAGE_SIZE)]}
+    clock = iter([0.0, 10.0])
+    with patch(
+        "services.romm.client._urlopen", return_value=_response(full_page),
+    ) as urlopen, patch("services.romm.client.time.monotonic", lambda: next(clock)):
+        with pytest.raises(TimeoutError):
+            client.roms(12, deadline=5.0)
+    # The first page was fetched in time; the second was never requested.
+    assert urlopen.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unhashed_repin_waits_when_the_catalog_read_runs_out_of_time(
+    repin_db, tmp_path: Path,
+) -> None:
+    """The request pass holds `_settle_lock`; a slow listing must not pin it."""
+    output = tmp_path / "Game.nsz"
+    romm_repin.record(
+        {"id": 7, "platform_id": 12, "platform_slug": "switch"},
+        str(output), {"igdb_id": 42},
+    )
+    output.write_bytes(b"x" * 8)
+
+    with patch.object(RommClient, "base_url", "http://romm:8080"), \
+            patch.object(RommClient, "library_root", str(tmp_path)), \
+            patch.object(
+                romm_routes.romm_client, "roms", side_effect=TimeoutError("slow"),
+            ) as listing, \
+            patch.object(romm_routes.romm_client, "update_rom_metadata") as update:
+        result = await romm_routes.settle_romm_repins()
+
+    assert result["waiting"] == 1 and result["abandoned"] == 0, result
+    assert listing.call_args.kwargs["deadline"] is not None
+    update.assert_not_called()

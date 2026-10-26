@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -317,7 +318,10 @@ class RommClient:
         result = self._request("GET", "/api/platforms")
         return result if isinstance(result, list) else []
 
-    def roms(self, platform_id: int, *, with_files: bool = True) -> list[dict]:
+    def roms(
+        self, platform_id: int, *, with_files: bool = True,
+        deadline: float | None = None,
+    ) -> list[dict]:
         """Return every ROM on *platform_id*, paging until exhausted.
 
         ``with_char_index`` / ``with_rom_id_index`` / ``with_filter_values``
@@ -325,10 +329,19 @@ class RommClient:
         virtual scroll and filter dropdowns; switching them off keeps the
         payload to the records we actually read. *with_files* can go too when
         the caller only needs each record's own path.
+
+        *deadline* (a ``time.monotonic()`` value) is checked before each page:
+        past it, this raises :class:`TimeoutError` rather than hand back a
+        partial catalog, because a caller reading "not in the list" off a
+        truncated list would conclude something false.
         """
         out: list[dict] = []
         offset = 0
         for _ in range(_MAX_PAGES):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"listing platform {platform_id} ran past its deadline",
+                )
             page = self._request(
                 "GET",
                 "/api/roms",

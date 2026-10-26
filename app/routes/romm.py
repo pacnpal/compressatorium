@@ -1092,7 +1092,7 @@ async def _settle_one_repin(
         # hashing the output would be minutes of I/O for nothing. The file is
         # exactly where the conversion wrote it, so join on that.
         return await _match_and_settle(
-            row_id, _by_path(output_path, platform_id, catalogs), ids,
+            row_id, _by_path(output_path, platform_id, catalogs, deadline), ids,
             output_path, created_at,
         )
 
@@ -1143,19 +1143,26 @@ def _by_sha1(sha1: str):
     return find
 
 
-def _by_path(output_path: str, platform_id: int, catalogs: dict | None):
+def _by_path(
+    output_path: str, platform_id: int, catalogs: dict | None,
+    deadline: float | None = None,
+):
     """The path join, for platforms RomM does not hash.
 
     Lists the platform once per pass (*catalogs* is the pass's cache) and asks
-    which record names the output. Mapping the path touches the library, so it
-    is bounded like every other stat here; a timeout surfaces to
-    :func:`_match_and_settle` as "not yet".
+    which record names the output. Both halves are bounded: the listing by the
+    pass *deadline*, since a large platform on a slow RomM can take many pages
+    and the pass holds `_settle_lock` throughout, and the path mapping like
+    every other stat here. Either timing out surfaces to
+    :func:`_match_and_settle` as "not yet"; a listing cut short is never
+    cached, so no later row reads "absent" off a partial catalog.
     """
     async def find() -> dict | None:
         roms = catalogs.get(platform_id) if catalogs is not None else None
         if roms is None:
             roms = await run_in_threadpool(
                 romm_client.roms, platform_id, with_files=False,
+                deadline=deadline,
             )
             if catalogs is not None:
                 catalogs[platform_id] = roms
@@ -1232,8 +1239,9 @@ async def _match_and_settle(
         try:
             match = await find()
         except (asyncio.TimeoutError, OSError):
-            # The library stopped answering while the path join mapped the
-            # output. That is "not yet", never grounds to retire the row.
+            # The pass ran out of time listing the platform, or the library
+            # stopped answering while the path join mapped the output. Either
+            # is "not yet", never grounds to retire the row.
             return _Outcome.WAITING
         if not match:
             # RomM may simply not have rescanned yet -- the normal case. But it
