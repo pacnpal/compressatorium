@@ -169,6 +169,13 @@ def _insert_pending(
         ),
         mode=mode,
         metadata_ids=ids,
+        platform_id=rom.get("platform_id"),
+        # "" when RomM gave no platform at all; NULL means "ask the source ROM"
+        # -- rows written before the column existed, and a record that names a
+        # platform id without its slug, which the settle pass backfills.
+        platform_slug=rom.get("platform_slug") or (
+            None if rom.get("platform_id") is not None else ""
+        ),
         state="pending",
         created_at=utcnow_iso(),
     )
@@ -413,9 +420,24 @@ def pending_rows(limit: int, *, after_id: int = 0) -> list[tuple]:
         # Detach into plain tuples: the session closes before the caller awaits.
         return [
             (r.output_path, r.output_sha1, r.source_rom_id, dict(r.metadata_ids or {}),
-             r.created_at, r.id, r.pre_fingerprint or "", r.mode or "")
+             r.created_at, r.id, r.pre_fingerprint or "", r.mode or "",
+             r.platform_id, r.platform_slug)
             for r in rows
         ]
+
+
+def store_platform(row_id: int, platform_id: int, platform_slug: str | None) -> None:
+    """Backfill the platform onto a row written before it was recorded.
+
+    Pending rows only, like :func:`store_sha1`: a row that settled or was
+    superseded meanwhile is history and stays as it was.
+    """
+    with _session() as session:
+        session.query(_db.RommRepin).filter(
+            _db.RommRepin.id == row_id,
+            _db.RommRepin.state == "pending",
+        ).update({"platform_id": platform_id, "platform_slug": platform_slug})
+        session.commit()
 
 
 def store_sha1(row_id: int, sha1: str) -> None:

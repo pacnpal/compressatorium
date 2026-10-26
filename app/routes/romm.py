@@ -47,6 +47,7 @@ from services.romm import (
     RommClient,
     RommError,
     RommNotConfigured,
+    UNHASHED_PLATFORM_SLUGS,
     romm_client,
 )
 from services.romm import (
@@ -963,15 +964,22 @@ def _destination_job_matches_source(
     return False
 
 
-async def _settle_one_repin(row: tuple, deadline: float | None = None) -> _Outcome:
+async def _settle_one_repin(
+    row: tuple,
+    deadline: float | None = None,
+    catalogs: dict[int, list[dict]] | None = None,
+) -> _Outcome:
     """Drive one pending re-pin row as far as it can go this pass.
 
     Extracted from the loop so the loop owns only paging and budgets: the
     exists/lock/hash/match/update/settle chain is a single state machine and
     reads as one.
+
+    *catalogs* is the pass's cache of platform listings for the path join, so
+    ten Switch rows cost one catalog read, not ten.
     """
-    (output_path, sha1, _rom_id, ids, created_at, row_id, pre_fingerprint,
-     mode) = row
+    (output_path, sha1, rom_id, ids, created_at, row_id, pre_fingerprint,
+     mode, platform_id, platform_slug) = row
 
     try:
         exists = await bounded_path_check(os.path.isfile, output_path)
@@ -1047,7 +1055,7 @@ async def _settle_one_repin(row: tuple, deadline: float | None = None) -> _Outco
             )
             return _Outcome.ABANDONED
         return await _match_and_settle(
-            row_id, sha1, ids, output_path, created_at,
+            row_id, _by_sha1(sha1), ids, output_path, created_at,
         )
 
     # Never hash a file a converter is still writing. An output becomes a
@@ -1071,6 +1079,23 @@ async def _settle_one_repin(row: tuple, deadline: float | None = None) -> _Outco
     if await _probe(_destination_has_pending_job, output_path, default=True):
         return _Outcome.WAITING
 
+    if platform_slug is None:
+        # Recorded before rows carried their platform (new rows store "" when
+        # RomM did not say), so ask RomM once.
+        try:
+            platform_id, platform_slug = await _backfill_platform(row_id, rom_id)
+        except RommError as exc:
+            logger.warning("romm: could not read source ROM %s: %s", rom_id, exc)
+            return _Outcome.UPSTREAM_ERROR
+    if platform_id is not None and platform_slug in UNHASHED_PLATFORM_SLUGS:
+        # RomM never hashes this platform, so there is no digest to join on and
+        # hashing the output would be minutes of I/O for nothing. The file is
+        # exactly where the conversion wrote it, so join on that.
+        return await _match_and_settle(
+            row_id, _by_path(output_path, platform_id, catalogs, deadline), ids,
+            output_path, created_at,
+        )
+
     try:
         if not sha1:
             sha1 = await _hash_output(output_path, deadline)
@@ -1084,7 +1109,65 @@ async def _settle_one_repin(row: tuple, deadline: float | None = None) -> _Outco
         logger.warning("romm: could not hash %s: %s", output_path, exc)
         return _Outcome.FAILED
 
-    return await _match_and_settle(row_id, sha1, ids, output_path, created_at)
+    return await _match_and_settle(
+        row_id, _by_sha1(sha1), ids, output_path, created_at,
+    )
+
+
+async def _backfill_platform(row_id: int, rom_id: int) -> tuple[int | None, str]:
+    """The source ROM's platform, for a row recorded before rows carried it.
+
+    Read once from RomM and stored, so a row costs at most one extra request
+    in its lifetime. A source RomM no longer has is stored as an unknown
+    platform (``""``) rather than asked about again every pass; such a row
+    keeps the SHA-1 join, which is what it would have had anyway.
+    """
+    try:
+        rom = await run_in_threadpool(romm_client.rom, rom_id)
+    except RommError as exc:
+        if exc.status != 404:
+            raise
+        rom = {}
+    platform_id = rom.get("platform_id")
+    platform_slug = rom.get("platform_slug") or ""
+    await run_in_threadpool(
+        romm_repin.store_platform, row_id, platform_id, platform_slug,
+    )
+    return platform_id, platform_slug
+
+
+def _by_sha1(sha1: str):
+    """The SHA-1 join: what RomM recorded for the output's own digest."""
+    async def find() -> dict | None:
+        return await run_in_threadpool(romm_client.rom_by_sha1, sha1)
+    return find
+
+
+def _by_path(
+    output_path: str, platform_id: int, catalogs: dict | None,
+    deadline: float | None = None,
+):
+    """The path join, for platforms RomM does not hash.
+
+    Lists the platform once per pass (*catalogs* is the pass's cache) and asks
+    which record names the output. Both halves are bounded: the listing by the
+    pass *deadline*, since a large platform on a slow RomM can take many pages
+    and the pass holds `_settle_lock` throughout, and the path mapping like
+    every other stat here. Either timing out surfaces to
+    :func:`_match_and_settle` as "not yet"; a listing cut short is never
+    cached, so no later row reads "absent" off a partial catalog.
+    """
+    async def find() -> dict | None:
+        roms = catalogs.get(platform_id) if catalogs is not None else None
+        if roms is None:
+            roms = await run_in_threadpool(
+                romm_client.roms, platform_id, with_files=False,
+                deadline=deadline,
+            )
+            if catalogs is not None:
+                catalogs[platform_id] = roms
+        return await bounded_path_check(romm_client.rom_at_path, output_path, roms)
+    return find
 
 
 async def _hash_output(output_path: str, deadline: float | None = None) -> str | None:
@@ -1145,11 +1228,21 @@ async def _hash_output(output_path: str, deadline: float | None = None) -> str |
 
 
 async def _match_and_settle(
-    row_id: int, sha1: str, ids: dict, output_path: str, created_at: str,
+    row_id: int, find, ids: dict, output_path: str, created_at: str,
 ) -> _Outcome:
-    """Ask RomM which ROM this digest is, and stamp the ids onto it."""
+    """Ask RomM which ROM the output is, and stamp the ids onto it.
+
+    *find* is the join -- :func:`_by_sha1` or :func:`_by_path` -- so both
+    share one claim/update/settle sequence rather than two copies of it.
+    """
     try:
-        match = await run_in_threadpool(romm_client.rom_by_sha1, sha1)
+        try:
+            match = await find()
+        except (asyncio.TimeoutError, OSError):
+            # The pass ran out of time listing the platform, or the library
+            # stopped answering while the path join mapped the output. Either
+            # is "not yet", never grounds to retire the row.
+            return _Outcome.WAITING
         if not match:
             # RomM may simply not have rescanned yet -- the normal case. But it
             # may also never index this file at all (scanning disabled for the
@@ -1256,6 +1349,8 @@ async def _settle_pass(*, bounded: bool = True) -> dict:
     cursor = await _load_settle_cursor()
     settled = 0
     examined = 0
+    # Platform listings for the path join, read at most once per pass.
+    catalogs: dict[int, list[dict]] = {}
     rows = await run_in_threadpool(romm_repin.pending_rows, _SETTLE_PAGE, after_id=cursor)
     if not rows and cursor:
         # Past the tail: wrap so rows added before the cursor are seen again.
@@ -1277,7 +1372,9 @@ async def _settle_pass(*, bounded: bool = True) -> dict:
                 romm_repin.pending_rows, _SETTLE_PAGE, after_id=cursor,
             )
 
-        outcome = await _settle_one_repin(row, deadline if bounded else None)
+        outcome = await _settle_one_repin(
+            row, deadline if bounded else None, catalogs,
+        )
         counts[outcome] += 1
         if outcome is _Outcome.UPSTREAM_ERROR:
             break

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -56,6 +57,19 @@ _MAX_PAGES = 200
 # pass in `routes.romm`. Single source of truth: the API hands this to the
 # frontend so the UI keeps no second copy.
 DAT_SAFE_OUTPUT_EXTS = frozenset({".chd", ".zip", ".7z"})
+
+# Platforms whose files RomM never hashes, mirroring its own
+# ``NON_HASHABLE_PLATFORMS`` (``handler/filesystem/roms_handler.py``, the same
+# set from 4.0 through 5.4). RomM identifies these by name and title id only,
+# so their records carry no SHA-1 and ``GET /api/roms/by-hash`` can never find
+# a converted file on them. A re-pin there joins on the path instead -- and
+# skips hashing a multi-GB image for a digest RomM will never have.
+UNHASHED_PLATFORM_SLUGS = frozenset({
+    "amazon-alexa", "amazon-fire-tv", "android", "gear-vr", "ios", "ipad",
+    "linux", "mac", "meta-quest-2", "meta-quest-3", "oculus-go",
+    "oculus-quest", "oculus-rift", "ps3", "ps4", "ps5", "psvr", "psvr2",
+    "series-x-s", "switch", "switch-2", "wiiu", "win", "xbox360", "xboxone",
+})
 
 # Provider id fields carried across a conversion. Captured from the source ROM
 # before it is converted and re-applied to the record RomM creates for the
@@ -304,23 +318,36 @@ class RommClient:
         result = self._request("GET", "/api/platforms")
         return result if isinstance(result, list) else []
 
-    def roms(self, platform_id: int) -> list[dict]:
+    def roms(
+        self, platform_id: int, *, with_files: bool = True,
+        deadline: float | None = None,
+    ) -> list[dict]:
         """Return every ROM on *platform_id*, paging until exhausted.
 
         ``with_char_index`` / ``with_rom_id_index`` / ``with_filter_values``
         default to true on RomM's side and exist only to drive its own web UI's
         virtual scroll and filter dropdowns; switching them off keeps the
-        payload to the records we actually read.
+        payload to the records we actually read. *with_files* can go too when
+        the caller only needs each record's own path.
+
+        *deadline* (a ``time.monotonic()`` value) is checked before each page:
+        past it, this raises :class:`TimeoutError` rather than hand back a
+        partial catalog, because a caller reading "not in the list" off a
+        truncated list would conclude something false.
         """
         out: list[dict] = []
         offset = 0
         for _ in range(_MAX_PAGES):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"listing platform {platform_id} ran past its deadline",
+                )
             page = self._request(
                 "GET",
                 "/api/roms",
                 params={
                     "platform_ids": platform_id,
-                    "with_files": "true",
+                    "with_files": "true" if with_files else "false",
                     "with_char_index": "false",
                     "with_rom_id_index": "false",
                     "with_filter_values": "false",
@@ -413,13 +440,9 @@ class RommClient:
         root = self.library_root
         if not root:
             return None
-        rel = (rom.get("full_path") or "").strip()
+        rel = _record_relpath(rom)
         if not rel:
-            fs_path = (rom.get("fs_path") or "").strip()
-            fs_name = (rom.get("fs_name") or "").strip()
-            if not fs_name:
-                return None
-            rel = f"{fs_path}/{fs_name}" if fs_path else fs_name
+            return None
         # realpath, not abspath: the library is usually reached through a
         # container bind mount, and a symlinked component would otherwise make
         # a contained path look like an escape (or the reverse).
@@ -448,6 +471,98 @@ class RommClient:
             logger.warning("romm: rejecting out-of-library path %r", rel)
             return None
         return candidate
+
+    def rom_at_path(self, path: str, roms: list[dict]) -> dict | None:
+        """Return the record in *roms* whose file is *path*, or None.
+
+        The re-pin join for platforms RomM does not hash, where
+        :meth:`rom_by_sha1` has nothing to match. It runs :meth:`local_path`
+        in reverse -- *path* is turned into the library-relative form RomM
+        records, once -- so a large platform costs string compares rather than
+        a ``realpath`` per ROM on what is often a network mount.
+
+        A record RomM marks ``missing_from_fs`` is skipped: it is RomM's memory
+        of a file it could not find on its last scan, so it cannot have
+        scanned the file sitting at *path* now.
+
+        A multi-file game is one record for its whole folder (a Switch base,
+        update and DLC together), so an output written inside that folder
+        belongs to the folder's record. An exact file match still wins; among
+        folders, the deepest one does.
+
+        The string compare is the fast path, not the definition. A symlinked
+        directory inside the library (``roms/switch -> content/switch``) makes
+        RomM's spelling differ from the resolved one, so a record named like
+        the output -- or like one of the folders it sits in -- that misses
+        lexically is settled by :meth:`local_path` itself: one ``realpath`` for
+        the handful of such records, not one per ROM.
+        """
+        root = self.library_root
+        if not root:
+            return None
+        root_abs = os.path.realpath(root)
+        target = os.path.realpath(path)
+        if not target.startswith(root_abs + os.sep):
+            return None
+        rel = os.path.relpath(target, root_abs).replace(os.sep, "/")
+        # Names worth a `realpath`: the output's own, and every folder between
+        # it and the root, each as written and as resolved.
+        names = {os.path.basename(path), os.path.basename(target)}
+        for spelling, base in (
+            (os.path.abspath(path), os.path.abspath(root)), (target, root_abs),
+        ):
+            inside = os.path.relpath(os.path.dirname(spelling), base)
+            if not inside.startswith(".."):
+                names.update(inside.split(os.sep))
+        # The same directory-level layout decision `local_path` makes, so a
+        # record maps here exactly when `local_path` would map it to *path*.
+        strip = not os.path.isdir(os.path.join(root_abs, "roms"))
+        # (depth, record) for the deepest folder record containing the output.
+        folder: tuple[int, dict] | None = None
+
+        def consider(depth: int, rom: dict) -> None:
+            nonlocal folder
+            if folder is None or depth > folder[0]:
+                folder = (depth, rom)
+
+        for rom in roms:
+            if rom.get("missing_from_fs") or not rom.get("id"):
+                continue
+            candidate = _record_relpath(rom).rstrip("/")
+            if not candidate:
+                continue
+            if strip and candidate.startswith("roms/"):
+                candidate = candidate[len("roms/"):]
+            if candidate == rel:
+                return rom
+            if rel.startswith(candidate + "/"):
+                consider(candidate.count("/"), rom)
+                continue
+            if candidate.rsplit("/", 1)[-1] not in names:
+                continue
+            resolved = self.local_path(rom)
+            if resolved == target:
+                return rom
+            if resolved and target.startswith(resolved + os.sep):
+                consider(
+                    os.path.relpath(resolved, root_abs).count(os.sep), rom,
+                )
+        return folder[1] if folder else None
+
+
+def _record_relpath(rom: dict) -> str:
+    """A RomM record's path relative to RomM's library root, or ``""``.
+
+    ``full_path`` when RomM sent one, else rebuilt from ``fs_path/fs_name``.
+    """
+    rel = (rom.get("full_path") or "").strip()
+    if rel:
+        return rel
+    fs_path = (rom.get("fs_path") or "").strip()
+    fs_name = (rom.get("fs_name") or "").strip()
+    if not fs_name:
+        return ""
+    return f"{fs_path}/{fs_name}" if fs_path else fs_name
 
 
 def _encode_multipart(fields: dict) -> tuple[bytes, str]:
