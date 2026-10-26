@@ -11,7 +11,7 @@ a spike against a live instance before it is relied on.
 Compressatorium talks to six RomM endpoints (`services/romm/client.py`):
 
 | Endpoint | Used for |
-|---|---|
+| --- | --- |
 | `GET /api/heartbeat` | Test connection / status |
 | `GET /api/platforms` | Platform picker, per-platform tool narrowing |
 | `GET /api/roms?platform_ids=…&with_files=true` | Library listing, automation sweeps |
@@ -45,8 +45,8 @@ Taken from the release notes and code of each tag.
   (`adapters/services/sigil.py`).
 - **5.4** — **`POST /api/tasks/scan`** (REST scan for token clients, scoped by
   `platforms` / `roms_ids` / `type`), **notifications** (`POST /api/notifications`)
-  with **webhook / Apprise / email channels** (HMAC-signed `X-RomM-Signature`),
-  audit log, and **built-in conversion via rom-converto** (`convert_library`
+  with **webhook / Apprise / email channels** (webhook deliveries carry an
+  HMAC `X-RomM-Signature` when the channel has a secret), audit log, and **built-in conversion via rom-converto** (`convert_library`
   task + convert-on-download `?format=`), off by default.
 
 RomM still has no plugin system. The notification webhook is the only event
@@ -78,8 +78,18 @@ the source (delete-after-verify):
 4. `POST /api/tasks/scan {type: "hashes", roms_ids: [id]}` so RomM re-hashes the
    new bytes. Scans of named `roms_ids` jump ahead of queued library scans.
 
-On failure, step 2 is undone with a second rename. Needs `roms.write` +
-`tasks.run`. **Verify:** that a `hashes` scan by `roms_ids` refreshes
+Failure handling, by step:
+
+- **Step 1 or 2 fails:** the source and the RomM record are untouched. Remove
+  the staged output.
+- **Step 3 fails:** undo step 2 with a second rename, so the record names the
+  original file again. Keep the staged output so a retry can run step 3 again.
+- **Step 4 fails:** do not undo. The swap is complete; retry the scan later.
+- **The undo rename itself fails, or the process dies between steps:** persist
+  which step was reached before each one starts, like the re-pin queue does,
+  so a restart either resumes or surfaces the ROM for manual recovery.
+
+Needs `roms.write` + `tasks.run`. **Verify:** that a `hashes` scan by `roms_ids` refreshes
 `fs_size_bytes` and the per-file hashes, and how folder (multi-file) ROMs behave,
 where `fs_name` is the folder. Ship single-file platforms first.
 
@@ -120,9 +130,13 @@ Two more setup wins, each one request:
 - **Scope report.** Test connection already separates *reachable / token
   accepted / mounted*. Add a row per feature showing which scopes the token
   enables: browse (`roms.read`, `platforms.read`), re-match (`roms.write`),
-  instant rescans (`tasks.run`), RomM notifications (`me.write`). Probe each
-  with a harmless call and report "feature X needs scope Y" instead of failing
-  later.
+  instant rescans (`tasks.run`), RomM notifications (`me.write`). Report
+  "feature X needs scope Y" instead of failing later. Keep the test free of side
+  effects: a paired token's scopes come back in the exchange response
+  (`ClientTokenCreateSchema.scopes`), so store them; for a pasted token, prove
+  the read scopes with the reads the test already makes, and show write scopes
+  as "unverified" until first use. Never probe a write scope by writing (a scan
+  or an inbox notification).
 - **Library path suggestion.** Heartbeat `FILESYSTEM.FS_PLATFORMS` lists RomM's
   platform folder names. Search the configured volumes for a directory that
   contains them (bounded, like every other path probe) and offer it as the
@@ -220,62 +234,62 @@ nothing about compression. The RomM view already computes per-platform
      4.0.0. The "Connected to RomM v…" text is always blank, and the test
      fixture uses the old flat shape.
    - Fix: read `SYSTEM.VERSION` first. This also unlocks capability gating
-     (next section).
+     (hardening item 1).
 
 ### Hardening and polish
 
-3. **Capability detection.** Parse the version and heartbeat flags once and
+1. **Capability detection.** Parse the version and heartbeat flags once and
    gate features on them (scan endpoint ≥ 5.4, pairing ≥ 4.8, title-id fallback
    ≥ 5.3, `with_total` ≥ 5.2). Show "RomM 5.4 unlocks: instant rescans,
    notifications" when the instance is older.
-4. **Clean up the ghost record.** Until item 1 lands, delete-after-verify leaves
+2. **Clean up the ghost record.** Until Part 1 item 1 lands, delete-after-verify leaves
    the old record in RomM as `missing`, so users see a duplicate. After a
    successful re-pin, offer (opt-in) to:
    - move collection memberships and notes across;
    - delete the old record with `POST /api/roms/delete {roms:[old],
      delete_from_fs:[]}`. That is never a filesystem delete, and only for a
      record RomM marks `missing_from_fs`.
-5. **Carry all provider ids.** `METADATA_ID_FIELDS` has 9 ids. RomM's
+3. **Carry all provider ids.** `METADATA_ID_FIELDS` has 9 ids. RomM's
    `PUT /api/roms/{id}` now also accepts `sgdb_id`, `libretro_id`, `steam_id`,
    `csdb_id`, `demozoo_id` and `pouet_id`. Add them, plus user-curated
    `name` / `url_cover` overrides when the user changed them in RomM.
-6. **Make "DAT-safe" data-driven.** `DAT_SAFE_OUTPUT_EXTS` is a hard-coded
+4. **Make "DAT-safe" data-driven.** `DAT_SAFE_OUTPUT_EXTS` is a hard-coded
    `{.chd, .zip, .7z}` based on pre-4.9 matching. RomM now does composite
    archive hashes, per-file `chd_sha1_hash`, native RA hashes for RVZ/CSO, and
    title-id reassociation. Decide per (platform, format, RomM version) whether a
    re-pin is needed, and serve that to the UI, which already reads it from
    `/romm/status`. **Verify** that zip/7z still keep the DAT match under
    composite hashing.
-7. **Respect RomM's exclusions.** `GET /api/config` returns
+5. **Respect RomM's exclusions.** `GET /api/config` returns
    `EXCLUDED_SINGLE_EXT` / `EXCLUDED_MULTI_*`. If a rule targets an extension
    RomM excludes, the converted game would disappear from RomM. Warn in the
    rule editor and refuse the delete-source option for it.
-8. **Show RomM's "missing" state.** Pass `missing=false` (or read
+6. **Show RomM's "missing" state.** Pass `missing=false` (or read
    `missing_from_fs`) and report "RomM marks N ROMs missing" separately in the
    diagnostics, instead of counting them as `not_found` path failures.
-9. **Cheaper catalog reads.** Add `with_total=false` (5.2), and cache per
+7. **Cheaper catalog reads.** Add `with_total=false` (5.2), and cache per
    platform with `updated_after` so a reload fetches only what changed. That
    matters on 5,000-ROM platforms over a remote link.
-10. **Folder ROMs and .m3u.** RomM groups multi-disc games as folders with an
-    `.m3u`. Converting the cue/bin discs inside to CHD leaves the `.m3u`
-    pointing at `.cue` files that no longer exist. Rewrite (or generate) the
-    `.m3u` as part of the conversion; RomM's own converter does. This belongs in
-    shared infrastructure, not in the RomM package, since it affects plain
-    volumes too.
-11. **Structure-aware path mapping.** RomM 5.3 made `filesystem.structure`
-    mandatory, and `{platform}/roms` (structure B) layouts are declared rather
-    than guessed. `local_path()` still strips a `roms/` prefix by heuristic.
-    Prefer what RomM reports (`GET /api/platforms/filesystem`, heartbeat
-    `FILESYSTEM`) and keep the heuristic as the fallback.
+8. **Folder ROMs and .m3u.** RomM groups multi-disc games as folders with an
+   `.m3u`. Converting the cue/bin discs inside to CHD leaves the `.m3u`
+   pointing at `.cue` files that no longer exist. Rewrite (or generate) the
+   `.m3u` as part of the conversion; RomM's own converter does. This belongs in
+   shared infrastructure, not in the RomM package, since it affects plain
+   volumes too.
+9. **Structure-aware path mapping.** RomM 5.3 made `filesystem.structure`
+   mandatory, and `{platform}/roms` (structure B) layouts are declared rather
+   than guessed. `local_path()` still strips a `roms/` prefix by heuristic.
+   Prefer what RomM reports (`GET /api/platforms/filesystem`, heartbeat
+   `FILESYSTEM`) and keep the heuristic as the fallback.
 
 ---
 
 ## Suggested order
 
 | # | Item | User impact | Effort | Needs |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 1 | Bug: path-based re-match on Switch/Wii U/PS3 | High (silent data loss today) | S | — |
-| 2 | Bug: read `SYSTEM.VERSION` + capability detection | Low alone, unlocks the rest | XS | — |
+| 2 | Bug: read `SYSTEM.VERSION` + capability detection (hardening 1) | Low alone, unlocks the rest | XS | — |
 | 3 | Instant rescans via `POST /api/tasks/scan` | High | S–M | RomM 5.4, `tasks.run` |
 | 4 | Pairing code + scope report + path suggestion | High (first-run) | S | RomM 4.8 |
 | 5 | Covers + Open in RomM | High (look and feel) | S | — |
@@ -284,12 +298,13 @@ nothing about compression. The RomM view already computes per-platform
 | 8 | Notifications + provenance notes | Medium | S | RomM 5.4, `me.write` |
 | 9 | Inbound webhook → convert new arrivals | Medium | M | RomM 5.4 channel |
 | 10 | Coexist with RomM's built-in converter | Medium (avoids conflicts) | S–M | RomM 5.4 |
-| 11 | Hardening items 4–11 | Medium | S each | — |
+| 11 | Hardening items 2–9 | Medium | S each | — |
 
 ## Sources
 
 - RomM releases: <https://github.com/rommapp/romm/releases> (4.8.0, 4.9.0, 5.0.0,
-  5.1.0, 5.3.0, 5.4.0)
+  5.1.0, 5.3.0, 5.4.0). 5.4.1 (2026-10-22) changed nothing
+  under `backend/endpoints` or `backend/handler/auth` relative to 5.4.0
 - Client API tokens / pairing:
   <https://docs.romm.app/latest/developers/client-api-tokens/>
 - WebSockets (scan events): <https://docs.romm.app/latest/developers/websockets/>
