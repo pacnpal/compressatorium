@@ -5400,3 +5400,29 @@ async def test_unhashed_repin_waits_when_the_catalog_read_runs_out_of_time(
     assert result["waiting"] == 1 and result["abandoned"] == 0, result
     assert listing.call_args.kwargs["deadline"] is not None
     update.assert_not_called()
+
+
+def test_rom_at_path_matches_an_output_inside_a_folder_record(tmp_path: Path) -> None:
+    """A multi-file game is one record for the folder; its outputs belong to it."""
+    game = tmp_path / "roms" / "switch" / "Game"
+    game.mkdir(parents=True)
+    output = game / "Game [base].nsz"
+    output.write_bytes(b"x")
+    roms = [
+        {"id": 1, "full_path": "roms/switch"},          # never a real record, but
+        {"id": 2, "full_path": "roms/switch/Game"},     # the deepest folder wins
+        {"id": 3, "full_path": "roms/switch/Gamer"},    # a prefix, not a parent
+    ]
+    client = RommClient(base_url="http://romm:8080", token="t")
+    with patch.object(RommClient, "library_root", str(tmp_path)):
+        match = client.rom_at_path(str(output), roms)
+        assert match is not None and match["id"] == 2
+        # An exact file record still beats its folder.
+        exact = {"id": 4, "full_path": "roms/switch/Game/Game [base].nsz"}
+        assert client.rom_at_path(str(output), [*roms, exact])["id"] == 4
+
+
+def test_record_keeps_a_slugless_platform_backfillable(repin_db) -> None:
+    """An id without a slug must not be filed as "no platform" for good."""
+    romm_repin.record({"id": 7, "platform_id": 12}, "/vol/Game.nsz", {"igdb_id": 1})
+    assert romm_repin.pending_rows(10)[0][8:] == (12, None)

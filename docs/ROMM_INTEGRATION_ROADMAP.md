@@ -21,8 +21,10 @@ Compressatorium talks to six RomM endpoints (`services/romm/client.py`):
 
 The flow for a format RomM cannot hash-match (RVZ/CSO/NSZ/WUX/Z3DS) is:
 snapshot provider ids → convert → *wait for RomM's own scan* → user presses
-**Re-match in RomM** (or it runs on page load) → SHA-1 lookup → write ids. RomM
-creates a **new** ROM record for the output; the old one is left behind.
+**Re-match in RomM** (or it runs on page load) → find the output's record →
+write ids. Finding the record means a SHA-1 lookup on platforms RomM hashes,
+and a path match on the ones it doesn't (Switch, Wii U, PS3, …; see bug 1).
+RomM creates a **new** ROM record for the output; the old one is left behind.
 
 ## What changed in RomM since this integration was designed
 
@@ -80,8 +82,12 @@ the source (delete-after-verify):
 
 Failure handling, by step:
 
-- **Step 1 or 2 fails:** the source and the RomM record are untouched. Remove
-  the staged output.
+- **Step 1 fails, or step 2 is cleanly refused (a 4xx):** the source and the
+  RomM record are untouched. Remove the staged output.
+- **Step 2's outcome is unknown** (a timeout or dropped connection, which RomM
+  may have committed before the reply was lost): persist an *ambiguous* state
+  and remove nothing. Re-read the record (`GET /api/roms/{id}`) and stat both
+  paths, then continue from whichever state that shows: renamed or not.
 - **Step 3 fails:** undo step 2 with a second rename, so the record names the
   original file again. Keep the staged output so a retry can run step 3 again.
 - **Step 4 fails:** do not undo. The swap is complete; retry the scan later.
@@ -229,8 +235,11 @@ nothing about compression. The RomM view already computes per-platform
      lists the platform once per pass (`with_files=false`) and picks the record
      that `local_path()` would map to the output (`RommClient.rom_at_path`).
      RomM's `search_term` is a full-text name search, so it is not used for
-     this. Rows pending at upgrade carry no platform; they read it from the
-     source ROM once and are rescued too.
+     this. A ROM stored as a folder (a multi-file game) matches an output
+     written inside that folder. Rows pending at upgrade carry no platform;
+     they read it from the source ROM once and are rescued too. If RomM no
+     longer has the source ROM (404), the platform is stored as unknown and the
+     row keeps the SHA-1 join, which on an unhashed platform cannot match.
 2. **The RomM version is never shown.**
    - What happens: `romm_status` and the connection test read
      `heartbeat["VERSION"]`, but RomM has nested it under `SYSTEM.VERSION` since
@@ -503,7 +512,8 @@ and later phases have a capability model to build on. No new UI.
 | 0.3 | Carry every provider id RomM accepts (H-3) | `roms.write` | XS |
 | 0.4 | Report RomM's `missing` records separately in the diagnostics (H-6) | — | XS |
 
-*Done when:* NSZ/WUX/PS3 ISO outputs re-pin; Settings shows the RomM version;
+*Done when:* NSZ, WUX and single-file PS3 ISO outputs re-pin (a PS3 build
+split into 4 GB parts still needs a manual re-match: there is no single file); Settings shows the RomM version;
 `/romm/status` returns `{version, capabilities: {scan_task, pairing,
 title_id_reassoc, notifications, …}}` for the UI and later phases to read.
 
@@ -627,7 +637,7 @@ start at any time, since its findings also decide 3.2 and 3.4.
 ## Sources
 
 - RomM releases: <https://github.com/rommapp/romm/releases> (4.8.0, 4.9.0, 5.0.0,
-  5.1.0, 5.3.0, 5.4.0). 5.4.1 (2026-10-22) changed nothing
+  5.1.0, 5.2.0, 5.3.0, 5.4.0). 5.4.1 (2026-10-22) changed nothing
   under `backend/endpoints` or `backend/handler/auth` relative to 5.4.0
 - Client API tokens / pairing:
   <https://docs.romm.app/latest/developers/client-api-tokens/>

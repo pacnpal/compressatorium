@@ -485,6 +485,11 @@ class RommClient:
         of a file it could not find on its last scan, so it cannot have
         scanned the file sitting at *path* now.
 
+        A multi-file game is one record for its whole folder (a Switch base,
+        update and DLC together), so an output written inside that folder
+        belongs to the folder's record. An exact file match still wins; among
+        folders, the deepest one does.
+
         The string compare is the fast path, not the definition. A symlinked
         directory inside the library (``roms/switch -> content/switch``) makes
         RomM's spelling differ from the resolved one, so a record with the
@@ -504,10 +509,11 @@ class RommClient:
         # The same directory-level layout decision `local_path` makes, so a
         # record maps here exactly when `local_path` would map it to *path*.
         strip = not os.path.isdir(os.path.join(root_abs, "roms"))
+        folder: tuple[int, dict] | None = None
         for rom in roms:
             if rom.get("missing_from_fs") or not rom.get("id"):
                 continue
-            candidate = _record_relpath(rom)
+            candidate = _record_relpath(rom).rstrip("/")
             if not candidate:
                 continue
             if strip and candidate.startswith("roms/"):
@@ -516,7 +522,11 @@ class RommClient:
                 return rom
             if candidate.rsplit("/", 1)[-1] in names and self.local_path(rom) == target:
                 return rom
-        return None
+            if rel.startswith(candidate + "/") and (
+                folder is None or len(candidate) > folder[0]
+            ):
+                folder = (len(candidate), rom)
+        return folder[1] if folder else None
 
 
 def _record_relpath(rom: dict) -> str:

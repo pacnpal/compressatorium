@@ -170,9 +170,12 @@ def _insert_pending(
         mode=mode,
         metadata_ids=ids,
         platform_id=rom.get("platform_id"),
-        # "" rather than NULL when RomM did not say: NULL is reserved for rows
-        # written before the column existed, which the settle pass backfills.
-        platform_slug=rom.get("platform_slug") or "",
+        # "" when RomM gave no platform at all; NULL means "ask the source ROM"
+        # -- rows written before the column existed, and a record that names a
+        # platform id without its slug, which the settle pass backfills.
+        platform_slug=rom.get("platform_slug") or (
+            None if rom.get("platform_id") is not None else ""
+        ),
         state="pending",
         created_at=utcnow_iso(),
     )
