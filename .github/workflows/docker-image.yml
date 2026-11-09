@@ -31,7 +31,7 @@ jobs:
       # commits since the previous v* tag. On failure it falls back to
       # GitHub's generated notes and the release still stands.
       - name: Generate release title and notes
-        uses: pacnpal/free-ai-release-notes@76e53c73233b9dfc37cb0aff5ed6359d139b4c7c # v1.0.0
+        uses: pacnpal/free-ai-release-notes@v1
         with:
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           create-release: true
