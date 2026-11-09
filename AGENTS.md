@@ -143,6 +143,7 @@ Schema changes use `scripts/new_migration.sh` (see README, "Schema changes"). Th
 - Name: `Build and Push Docker Image`.
 - Trigger: a published GitHub Release only. There is no push trigger, PR trigger, or manual dispatch.
 - It lints the Dockerfile with Hadolint, builds `linux/amd64` and `linux/arm64`, and pushes to Docker Hub and GHCR. The image tags, including the semver tags, come from the release tag.
+- Its `release-notes` job rewrites the published release's title and body with AI-written notes (`pacnpal/free-ai-release-notes`, free OpenRouter models, compared against the previous `v*` tag). It needs the `OPENROUTER_API_KEY` repository secret; if generation fails the release keeps GitHub's generated notes. Whatever body you typed when publishing is replaced.
 
 Watch the latest run:
 
