@@ -3,6 +3,16 @@ name: Build and Push Docker Image
 on:
   release:
     types: [published]
+  # Run workflow from the Actions tab with a version to cut the whole release
+  # in one go: tag + GitHub release (with AI notes) on the branch you run it
+  # from, then the image build. A version with a "-" (4.6.0-beta-1) is
+  # published as a pre-release.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, e.g. 4.5.1 or v4.6.0-beta-1
+        required: true
+        type: string
 
 # Prevent concurrent runs
 concurrency:
@@ -15,17 +25,103 @@ env:
   PLATFORMS: "linux/amd64,linux/arm64"
 
 jobs:
-  # Title and notes for the published release; release-notes.yml also runs by
-  # hand from the Actions tab to rewrite an existing release's notes.
+  # Normalises both triggers into one set of values every job reads, so no
+  # job needs to know whether it was started by a release or by hand.
+  release-info:
+    name: Resolve Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      target: ${{ steps.resolve.outputs.target }}
+    steps:
+      - name: Resolve tag, version and target branch
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TARGET: ${{ github.event.release.target_commitish }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            TAG="${RELEASE_TAG}"
+            PRERELEASE="${RELEASE_PRERELEASE}"
+            TARGET="${RELEASE_TARGET}"
+          else
+            if [[ "${GITHUB_REF_TYPE}" != "branch" ]]; then
+              echo "::error::Run this workflow from a branch (e.g. latest), not ${GITHUB_REF}."
+              exit 1
+            fi
+            TAG="v${INPUT_VERSION#v}"
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+              echo "::error::Tag ${TAG} already exists. To rebuild it, re-run that release's workflow run."
+              exit 1
+            fi
+            PRERELEASE=false
+            if [[ "${TAG}" == *-* ]]; then PRERELEASE=true; fi
+            TARGET="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag must be a semantic version, optionally prefixed with v: ${TAG}"
+            exit 1
+          fi
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "prerelease=${PRERELEASE}"
+            echo "target=${TARGET}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Release ${TAG} (version ${VERSION}, prerelease ${PRERELEASE}) on ${TARGET}"
+
+  # Writes the release's title and notes with AI (pacnpal/free-ai-release-notes,
+  # free OpenRouter models). On a published release it rewrites that release in
+  # place; on a manual run it creates the tag and release on the commit the
+  # run started from. Needs the OPENROUTER_API_KEY secret. If generation fails
+  # it falls back to GitHub's generated notes and the release still goes out.
   release-notes:
     name: AI Release Notes
+    runs-on: ubuntu-latest
+    needs: release-info
     permissions:
       contents: write
-    uses: ./.github/workflows/release-notes.yml
-    with:
-      version: ${{ github.event.release.tag_name }}
-    secrets:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A stable release covers everything since the previous stable release,
+      # not just since its last beta, so skip pre-release tags (any tag with a
+      # "-") when picking the previous tag. Pre-releases keep the default:
+      # the closest v* tag, beta or not.
+      - name: Find previous stable tag
+        id: previous
+        if: ${{ needs.release-info.outputs.prerelease != 'true' }}
+        run: |
+          PREVIOUS="$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' "${GITHUB_SHA}^" 2>/dev/null || true)"
+          echo "tag=${PREVIOUS}" >> "${GITHUB_OUTPUT}"
+          echo "Previous stable tag: ${PREVIOUS:-none}"
+
+      - name: Generate release title and notes
+        uses: pacnpal/free-ai-release-notes@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          tag: ${{ needs.release-info.outputs.tag }}
+          # Only used on a manual run, where the tag doesn't exist yet.
+          target: ${{ github.sha }}
+          prerelease: ${{ needs.release-info.outputs.prerelease }}
+          create-release: true
+          # Empty (pre-release, or no earlier stable tag) means auto-detect.
+          previous-tag: ${{ steps.previous.outputs.tag }}
+          # Skip the stray un-prefixed tag (3.7.10-beta-1) when picking the
+          # previous release automatically.
+          tag-pattern: 'v*'
 
   lint:
     name: Lint Dockerfile
@@ -46,7 +142,14 @@ jobs:
   build:
     name: Build and Push
     runs-on: ubuntu-latest
-    needs: lint
+    needs: [release-info, release-notes, lint]
+    # A published release builds even if the notes job failed. A manual run
+    # builds only once its release exists, so images never ship without one.
+    if: >-
+      ${{ !cancelled()
+          && needs.release-info.result == 'success'
+          && needs.lint.result == 'success'
+          && (github.event_name == 'release' || needs.release-notes.result == 'success') }}
     permissions:
       contents: read
       packages: write
@@ -57,7 +160,7 @@ jobs:
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       image-tags: ${{ steps.meta.outputs.tags }}
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ needs.release-info.outputs.version }}
 
     steps:
       - name: Checkout
@@ -91,21 +194,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from release tag
-        id: version
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must be a semantic version, optionally prefixed with v: ${GITHUB_REF_NAME}" >&2
-            exit 1
-          fi
-          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "Version from release tag: ${VERSION}"
-
       - name: Sync version to package.json
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          TARGET_COMMITISH: ${{ github.event.release.target_commitish }}
+          VERSION: ${{ needs.release-info.outputs.version }}
+          TARGET_COMMITISH: ${{ needs.release-info.outputs.target }}
           VERSION_SYNC_TOKEN: ${{ secrets.VERSION_SYNC_TOKEN }}
         run: |
           npm version "${VERSION}" --no-git-tag-version --allow-same-version
@@ -138,20 +230,20 @@ jobs:
             ${{ env.GHCR_IMAGE }}
           tags: |
             # Semantic version tags from the release tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=semver,pattern={{version}},value=${{ needs.release-info.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-info.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.release-info.outputs.tag }},enable=${{ !startsWith(needs.release-info.outputs.tag, 'v0.') }}
             # latest for non-prerelease
-            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+            type=raw,value=latest,enable=${{ needs.release-info.outputs.prerelease != 'true' }}
             # beta for prerelease only
-            type=raw,value=beta,enable=${{ github.event.release.prerelease }}
+            type=raw,value=beta,enable=${{ needs.release-info.outputs.prerelease == 'true' }}
             # Git short SHA
             type=sha,prefix=sha-,format=short
           labels: |
             org.opencontainers.image.title=Compressatorium
             org.opencontainers.image.description=Web UI for converting game images
             org.opencontainers.image.vendor=${{ github.repository_owner }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.version=${{ needs.release-info.outputs.version }}
           annotations: |
             org.opencontainers.image.title=Compressatorium
             org.opencontainers.image.description=Web UI for converting game images
@@ -167,7 +259,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          build-args: APP_VERSION=${{ steps.version.outputs.version }}
+          build-args: APP_VERSION=${{ needs.release-info.outputs.version }}
           # Two cache backends, both mode=max so EVERY stage's layers are cached
           # independently: the z3ds tool build, the npm/frontend stage, and the
           # pip/backend + apt/mame runtime layers. Because the Dockerfile copies
@@ -234,8 +326,8 @@ jobs:
   update-dockerhub-readme:
     name: Update Docker Hub README
     runs-on: ubuntu-latest
-    needs: build
-    if: ${{ !github.event.release.prerelease }}
+    needs: [release-info, build]
+    if: ${{ needs.release-info.outputs.prerelease != 'true' }}
     continue-on-error: true
     permissions:
       contents: read
@@ -256,15 +348,15 @@ jobs:
   summary:
     name: Build Summary
     runs-on: ubuntu-latest
-    needs: [build, scan]
+    needs: [release-info, build, scan]
     if: always()
     permissions: {}
 
     steps:
       - name: Generate summary
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ needs.release-info.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ needs.release-info.outputs.prerelease }}
           IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}
           IMAGE_TAGS: ${{ needs.build.outputs.image-tags }}
         run: |
