@@ -161,10 +161,13 @@ are newest-first.
 
   Compressatorium now saves each ROM's metadata *before* the conversion and
   re-applies it afterwards: convert, let RomM rescan, then press **Re-match in
-  RomM** (or leave it to run automatically when the view loads). The match uses
-  the converted file's SHA1, so it is exact and survives a rename. The view says
-  up front which target formats need this, so the trade-off is visible before you
-  queue anything rather than discovered afterwards.
+  RomM** (or leave it to run automatically when the view loads). Where RomM
+  hashes files, the match uses the converted file's SHA1, so it is exact and
+  survives a rename. On platforms RomM never hashes (Switch, Wii U, PS3 and the
+  others listed under Fixed) it finds the converted file by its path instead, so
+  leave the file where the conversion wrote it until the re-match has run. The
+  view says up front which target formats need this, so the trade-off is visible
+  before you queue anything rather than discovered afterwards.
 
 - **The RomM view reports library health.** Per platform: how much is already
   converted, how much is left, and an estimate of the space converting the rest
