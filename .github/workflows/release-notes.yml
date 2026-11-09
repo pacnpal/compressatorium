@@ -1,0 +1,89 @@
+name: Release Notes
+
+# Writes a release's title and notes with AI (pacnpal/free-ai-release-notes,
+# free OpenRouter models). docker-image.yml calls this when a release is
+# published; it can also be run by hand from the Actions tab to rewrite the
+# notes of a release that already exists (e.g. after adding the
+# OPENROUTER_API_KEY secret, or to regenerate notes).
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release tag, e.g. v4.5.0
+        required: true
+        type: string
+    secrets:
+      OPENROUTER_API_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published release to rewrite, e.g. v4.5.0 (4.5.0 also works)
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  release-notes:
+    name: AI Release Notes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Resolve the input to a published release ("4.5.0" also finds "v4.5.0").
+      # Only an existing release is accepted: creating one here would skip the
+      # Docker build, which runs on release events only.
+      - name: Resolve release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          for candidate in "${VERSION}" "v${VERSION}"; do
+            if PRERELEASE="$(gh release view "${candidate}" --repo "${GITHUB_REPOSITORY}" \
+                --json isPrerelease --jq .isPrerelease 2>/dev/null)"; then
+              echo "tag=${candidate}" >> "${GITHUB_OUTPUT}"
+              echo "prerelease=${PRERELEASE}" >> "${GITHUB_OUTPUT}"
+              echo "Release: ${candidate} (prerelease: ${PRERELEASE})"
+              exit 0
+            fi
+          done
+          echo "::error::No release found for '${VERSION}'. Publish the release first;" \
+            "this workflow only rewrites the notes of an existing release."
+          exit 1
+
+      # A stable release covers everything since the previous stable release,
+      # not just since its last beta, so skip pre-release tags (any tag with a
+      # "-") when picking the previous tag. Pre-releases keep the default:
+      # the closest v* tag, beta or not.
+      - name: Find previous stable tag
+        id: previous
+        if: ${{ steps.release.outputs.prerelease != 'true' }}
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          PREVIOUS="$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' "${TAG}^" 2>/dev/null || true)"
+          echo "tag=${PREVIOUS}" >> "${GITHUB_OUTPUT}"
+          echo "Previous stable tag: ${PREVIOUS:-none}"
+
+      # Rewrites the release's title and notes in place from the commits since
+      # the previous tag. On failure it falls back to GitHub's generated notes
+      # and the release still stands.
+      - name: Generate release title and notes
+        uses: pacnpal/free-ai-release-notes@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          tag: ${{ steps.release.outputs.tag }}
+          create-release: true
+          # Empty (pre-release, or no earlier stable tag) means auto-detect.
+          previous-tag: ${{ steps.previous.outputs.tag }}
+          # Skip the stray un-prefixed tag (3.7.10-beta-1) when picking the
+          # previous release automatically.
+          tag-pattern: 'v*'
