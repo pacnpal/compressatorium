@@ -1478,7 +1478,7 @@ The same file handles **PUID/PGID remap** and the privilege drop to `converter`
 
 | Workflow | Trigger | Relevance to a new tool |
 |----------|---------|-------------------------|
-| `docker-image.yml` | **release published** | Builds/pushes multi-arch image to Docker Hub + GHCR, runs **hadolint** (Dockerfile must pass), **Trivy** CRITICAL/HIGH scan (a vulnerable new dep can fail this), generates SBOM + provenance attestation, and **publishes `README.md` as the Docker Hub description**. Also syncs `package.json` from the release tag, and rewrites the release's title and notes with AI (needs the `OPENROUTER_API_KEY` secret). |
+| `docker-image.yml` | **release published** / manual with a version | Builds/pushes multi-arch image to Docker Hub + GHCR, runs **hadolint** (Dockerfile must pass), **Trivy** CRITICAL/HIGH scan (a vulnerable new dep can fail this), generates SBOM + provenance attestation, and **publishes `README.md` as the Docker Hub description**. Also syncs `package.json` from the release tag, and writes the release's title and notes with AI (needs the `OPENROUTER_API_KEY` secret). Run by hand with a version, it creates the tag and release first. |
 | *Codacy* — **not a workflow** | PR | Runs as a GitHub App check ("Codacy Static Code Analysis"): ruff, eslint, pylint, bandit, etc. New Python/JS must lint clean. Honors `pyproject.toml`, `.pylintrc`, `eslint.config.js`, `.codacy.yml`. Configured in the Codacy UI — there is no `.github/workflows/codacy.yml` to edit. |
 | `codeql.yml` | push, PR, weekly | CodeQL SAST. The matrix in this file is **python** and **javascript-typescript** only; the `Analyze (actions)` job you'll also see on PRs comes from the repo's code-scanning settings, not from here. New code is scanned automatically, no config change, but don't introduce flagged patterns (for example command injection, another reason for the no-`shell=True` rule). |
 | `label.yml` + `labeler.yml` | PR | Path-based auto-labels. Add a glob if you want your area labeled. |
@@ -1487,8 +1487,9 @@ The same file handles **PUID/PGID remap** and the privilege drop to `converter`
 | *Renovate* (`renovate.json`) | schedule (Mondays) | Dependency PRs, via the Renovate app — **not** Dependabot; there is no `.github/dependabot.yml`. Adjust only if you introduce a new manifest. |
 
 Key takeaways for a contributor:
-- **The image only builds on a GitHub Release.** There is no build-on-push. To
-  ship your tool you (or a maintainer) publish a release tagged `vX.Y.Z`; CI then
+- **The image only builds on a release.** There is no build-on-push. To
+  ship your tool you (or a maintainer) publish a release tagged `vX.Y.Z`, or run
+  the image workflow by hand with that version; CI then
   builds `linux/amd64,linux/arm64` and tags `latest`/`beta` accordingly.
 - **Trivy can block a release** if a new system/python package pulls a
   CRITICAL/HIGH CVE (`ignore-unfixed: true` softens this). Prefer pinned, patched

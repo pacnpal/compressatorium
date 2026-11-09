@@ -134,16 +134,16 @@ curl -s http://localhost:8080/api/chd-metadata/scan/status
 
 ### 5. Version and release
 
-The version lives in `package.json` (`version`). There is no `.version` file. A release means bumping `package.json`, updating `docs/RELEASE_NOTES.md` (Keep a Changelog format), and publishing a GitHub Release tagged `vX.Y.Z`. Publishing the release is what triggers the image build.
+The version lives in `package.json` (`version`). There is no `.version` file. A release means bumping `package.json`, updating `docs/RELEASE_NOTES.md` (Keep a Changelog format), and releasing `vX.Y.Z`, either by publishing a GitHub Release or by running the image workflow by hand with the version (see below). Either one builds the image.
 
 Schema changes use `scripts/new_migration.sh` (see README, "Schema changes"). That's the only script in `scripts/`.
 
 ### 6. CI (`docker-image.yml`)
 
 - Name: `Build and Push Docker Image`.
-- Trigger: a published GitHub Release only. There is no push trigger, PR trigger, or manual dispatch.
+- Triggers: a published GitHub Release, or by hand: Actions → **Build and Push Docker Image** → Run workflow on `latest` with a version (`4.5.1`, or `v4.6.0-beta-1`; a `-` makes it a pre-release). A manual run creates the tag and the GitHub release on the commit it runs from, then builds. It refuses a tag that already exists. There is no push or PR trigger.
 - It lints the Dockerfile with Hadolint, builds `linux/amd64` and `linux/arm64`, and pushes to Docker Hub and GHCR. The image tags, including the semver tags, come from the release tag.
-- Its `release-notes` job rewrites the published release's title and body with AI-written notes (`pacnpal/free-ai-release-notes`, free OpenRouter models, compared against the previous stable `v*` tag for a stable release, or the previous `v*` tag of any kind for a pre-release). It needs the `OPENROUTER_API_KEY` repository secret; if generation fails the release keeps GitHub's generated notes. Whatever body you typed when publishing is replaced.
+- Its `release-notes` job rewrites the published release's title and body with AI-written notes (`pacnpal/free-ai-release-notes`, free OpenRouter models, compared against the previous stable `v*` tag for a stable release, or the previous `v*` tag of any kind for a pre-release). It needs the `OPENROUTER_API_KEY` repository secret; if generation fails the release keeps GitHub's generated notes. Whatever body you typed when publishing is replaced. On a manual run this job creates the release, and the image is built only if that succeeded.
 
 Watch the latest run:
 

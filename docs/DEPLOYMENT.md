@@ -82,7 +82,7 @@ Volume precedence:
 - Async job queue with configurable concurrency, SSE progress, job cancellation, and per-job file locks.
 - Archive support (ZIP, 7z, RAR) through `py7zr`, `rarfile`, and the `p7zip-full` / `unrar-free` system packages, with temp extraction and cleanup.
 - Auto-generated API docs at `/docs` (OpenAPI/Swagger).
-- CI/CD in `.github/workflows/docker-image.yml`: builds `linux/amd64` and `linux/arm64` and pushes to Docker Hub and GHCR. It triggers on a published GitHub Release only (no push or tag trigger); the image tags come from the release tag.
+- CI/CD in `.github/workflows/docker-image.yml`: builds `linux/amd64` and `linux/arm64` and pushes to Docker Hub and GHCR. It triggers on a published GitHub Release, or by hand (Run workflow with a version, which creates the tag and release first); there is no push or tag trigger. The image tags come from the release tag.
 
 ## What you should add yourself
 
