@@ -27,16 +27,32 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # A stable release covers everything since the previous stable release,
+      # not just since its last beta, so skip pre-release tags (any tag with a
+      # "-") when picking the previous tag. Pre-releases keep the default:
+      # the closest v* tag, beta or not.
+      - name: Find previous stable tag
+        id: previous
+        if: ${{ !github.event.release.prerelease }}
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          PREVIOUS="$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' "${TAG}^" 2>/dev/null || true)"
+          echo "tag=${PREVIOUS}" >> "${GITHUB_OUTPUT}"
+          echo "Previous stable tag: ${PREVIOUS:-none}"
+
       # Rewrites the published release's title and notes in place from the
-      # commits since the previous v* tag. On failure it falls back to
-      # GitHub's generated notes and the release still stands.
+      # commits since the previous tag. On failure it falls back to GitHub's
+      # generated notes and the release still stands.
       - name: Generate release title and notes
         uses: pacnpal/free-ai-release-notes@v1
         with:
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           create-release: true
+          # Empty (pre-release, or no earlier stable tag) means auto-detect.
+          previous-tag: ${{ steps.previous.outputs.tag }}
           # Skip the stray un-prefixed tag (3.7.10-beta-1) when picking the
-          # previous release.
+          # previous release automatically.
           tag-pattern: 'v*'
 
   lint:

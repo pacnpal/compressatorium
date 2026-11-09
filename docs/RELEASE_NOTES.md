@@ -1,6 +1,6 @@
 # Release Notes
 
-## 4.5.0-beta-1 (2026-08-18)
+## 4.5.0 (2026-11-09)
 
 Compressatorium and [RomM](https://romm.app) look at the same files and know
 different things about them. RomM owns the platform, the game name and the DAT
@@ -16,12 +16,14 @@ file is offered Dolphin RVZ on GameCube and CHD/CSO on PS2. No ROM crosses the
 network — the catalog comes over RomM's API, the files are read from disk, and a
 remote RomM works by mounting its library over NFS/SMB/rclone.
 
-Tagged as a pre-release for two reasons. The scheduler has been exercised through
-forced runs and previews rather than across days of real unattended operation;
-and a rule that converts a library and deletes the sources once they verify has
-earned a beta's worth of scrutiny before it becomes the default advice. Start
-with **Preview**, which shows exactly what a sweep would queue without queueing
-it or moving the schedule clock. Sections are newest-first.
+This is the stable 4.5.0 release. It supersedes the `4.5.0-beta-1` through
+`4.5.0-beta-3` pre-releases; everything in those betas is rolled up here. The
+only change since `4.5.0-beta-3` is the re-match fix for platforms RomM doesn't
+hash (Switch, Wii U, PS3 and others; see Fixed), which adds one database
+migration, plus a dependency refresh. Before enabling a rule that deletes
+sources once they verify, start with **Preview**, which shows exactly what a
+sweep would queue without queueing it or moving the schedule clock. Sections
+are newest-first.
 
 ### Added
 
