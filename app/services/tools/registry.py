@@ -370,13 +370,22 @@ class ToolRegistry:
         return seen
 
     def tool_for_verify(self, path: str) -> ToolPlugin | None:
-        return next(
-            (
-                t for t in self._tools.values()
-                if match_extension(path, t.verify_extensions) is not None
-            ),
-            None,
-        )
+        """The tool whose verify claim on ``path`` is the most specific.
+
+        Ranked by the length of the matched declared extension, registration
+        order breaking ties — so for every single-suffix claim this is exactly
+        the first matching tool, as it always was. It matters for a compound
+        product: ``Game.xiso.iso`` ends with Dolphin's generic ``.iso`` too, and
+        handing an Xbox image to dolphin-tool for its embedded hashes can only
+        fail. Same rule as the frontend's ``infoToolsForPath`` (guide §18.3).
+        """
+        best: ToolPlugin | None = None
+        best_len = 0
+        for tool in self._tools.values():
+            matched = match_extension(path, tool.verify_extensions)
+            if matched is not None and len(matched) > best_len:
+                best, best_len = tool, len(matched)
+        return best
 
     def tools_verifying_path(self, path: str) -> list[ToolPlugin]:
         """Tools whose verify/info applies to a concrete file path.

@@ -2,11 +2,11 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A game image converter that wraps nine tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), and **JWUDTool** (Wii U WUD ↔ WUX). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), and **extract-xiso** (Xbox / Xbox 360 disc image → XISO). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
-* **Nine tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, handheld ROM (GB/GBC/GBA/DS), PS3 ISO (a decrypted PS3 folder packed to `.iso`), NKit (an NKit-shrunk GameCube/Wii image restored to a full `.iso`), or Wii U (WUD ↔ WUX), chosen per job.
+* **Ten tools in one.** CHDMAN, Dolphin, 3DS, Switch, CSO/ZSO, handheld ROM (GB/GBC/GBA/DS), PS3 ISO (a decrypted PS3 folder packed to `.iso`), NKit (an NKit-shrunk GameCube/Wii image restored to a full `.iso`), Wii U (WUD ↔ WUX), or Xbox (a full Xbox / Xbox 360 disc image trimmed to XISO), chosen per job.
 * **Web UI** for browsing files and converting them. The tool picker filters the whole interface down to the tool you chose.
 * **Nested directories and archives.** Browse subfolders and look inside ZIP, 7z, and RAR archives.
 * **Multiple volume mounts** so you can keep separate game libraries separate.
@@ -14,7 +14,7 @@ A game image converter that wraps nine tools: **CHDMAN** (MAME), **dolphin-tool*
 * **Existing-output detection** with skip, rename, or overwrite.
 * **Delete-on-verify.** Optionally remove the source after a conversion verifies. Off by default.
 * **Progress tracking** through a live job queue.
-* **File info** for CHD, Dolphin, 3DS, Switch, CSO, handheld ROM, NKit, and Wii U files.
+* **File info** for CHD, Dolphin, 3DS, Switch, CSO, handheld ROM, NKit, Wii U, and Xbox files.
 
 ### Supported Conversions
 
@@ -29,6 +29,7 @@ A game image converter that wraps nine tools: **CHDMAN** (MAME), **dolphin-tool*
 | **PS3 ISO** | Decrypted PS3 disc / JB folders | a folder containing `PS3_GAME/` (plus `PS3_DISC.SFB` for disc rips) | .iso (optional 4 GB FAT32 split) | None (fixed) | None | `makeps3iso` |
 | **Wii U** | Wii U disc images | .wud, .wux | .wux, .wud | None (fixed); a verify-after-conversion toggle | None | `JWUDTool` (Java) |
 | **NKit** | NKit-shrunk GameCube / Wii discs | .nkit.iso, .nkit.gcz | .iso, .rvz (via the `nkit_to_rvz` chain) | None (fixed) | None | `nkit2iso` (+ dolphin-tool for `nkit_to_rvz`) |
+| **Xbox** | Xbox / Xbox 360 disc images | .iso (only images holding an Xbox filesystem) | .xiso.iso | None (fixed) | None | `extract-xiso` |
 
 Most conversions above are lossless and fully reversible, including **3DS**, which
 now decompresses back to the original ROM as well. This uses
@@ -496,6 +497,7 @@ picking a tool tab. RomM's platform resolves it:
 | PlayStation 2 | CHDMAN (CHD), maxcso (CSO/ZSO/DAX) |
 | PSP | CHDMAN, maxcso |
 | PlayStation 3 | PS3 ISO |
+| Xbox / Xbox 360 | Xbox (XISO) |
 
 Narrowing is conservative on purpose: a tool that declares no platforms is never
 filtered out, and an unrecognised RomM platform falls back to plain
@@ -1484,6 +1486,58 @@ on a multi-gigabyte image.
 There is no verify endpoint for this tool, for the reason in the notes above.
 
 ---
+
+## Xbox Support (.iso → .xiso.iso)
+
+The Xbox tool trims a full Xbox or Xbox 360 disc image to an **XISO**, using
+[extract-xiso](https://github.com/XboxDev/extract-xiso).
+
+A Redump-style Xbox disc image is more than the game: it carries a video
+partition, a security-sector region, and a game partition padded out to the full
+size of the disc. An XISO keeps only the game partition's files, laid out
+contiguously. It is what [xemu](https://xemu.app),
+[Xenia](https://xenia.jp) (and its Android ports) and modded consoles load
+directly, and is typically 20-40% smaller than the source — Halo 3, for example,
+goes from 7.3 GB to 5.7 GB.
+
+- **Offered only on real Xbox images.** Every Xbox disc is an `.iso`, like PSP,
+  PS2 and GameCube discs. The app looks inside each `.iso` for the Xbox (XDVDFS)
+  filesystem, at the offsets extract-xiso itself checks — original Xbox (XGD1),
+  Xbox 360 (XGD2/XGD3), and already-trimmed images — and only offers the tool
+  when it is there. An image extract-xiso has already written is not offered
+  again. The probe is a few tiny reads, cached per file.
+- **The source is only ever read.** extract-xiso's rewrite mode renames its
+  input to `<name>.old` before reading it, and does not put it back if anything
+  fails. The app therefore gives the binary a symlink to your file in a private
+  scratch directory, so only the link is ever renamed, and writes the result into
+  a hidden work directory beside the output, moving it into place once
+  extract-xiso exits cleanly.
+- **Output is `Game.xiso.iso`**, beside the source or in the chosen output
+  directory. The compound extension keeps the product from ever being named after
+  its source, and keeps its Verify action from claiming every other `.iso`.
+- **Verify, but no delete-on-verify.** Verify walks the XISO's directory tables,
+  checks that every file lies inside the image, and has extract-xiso list it —
+  enough to catch a truncated or corrupt copy. XDVDFS carries no checksums, so it
+  is not a comparison with the source, and a trim discards partitions nothing can
+  rebuild. Keep (or delete) the original yourself.
+- **Real progress.** The app sums the game's file sizes from the directory tables
+  before starting, and extract-xiso reports each file as it writes it.
+- **Info** reads the filesystem directly: console, disc layout, file count, and
+  how much of the image is game data rather than padding.
+- **Not from archives**: the Xbox check needs the real file, and inflating a
+  7-8 GB image into scratch space just to look inside it is not worth it.
+
+### Xbox Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EXTRACT_XISO_PATH` | `/usr/local/bin/extract-xiso` | Path to the extract-xiso binary |
+| `COMPRESSATORIUM_XISO_NICE` | *(shared default)* | CPU priority override for extract-xiso |
+| `COMPRESSATORIUM_XISO_IOPRIO_CLASS` / `_LEVEL` | *(shared default)* | I/O priority override for extract-xiso |
+| `COMPRESSATORIUM_XISO_VERIFY_TIMEOUT` | *(shared default)* | Verify bound override for XISO files |
+
+extract-xiso is distributed under a modified BSD license; its license text ships
+in the image at `/usr/share/doc/extract-xiso/LICENSE.TXT`.
 
 ## CLI Mode (Batch Processing)
 

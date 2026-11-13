@@ -157,6 +157,19 @@ class ConversionStore {
     // the same way the other per-file plan rejections behave. A mode-aware
     // listing annotation would let this gate narrow correctly; that's a
     // listing-surface change, not a selection-store one.
+    //
+    // The one exception is a `contentRefined` tool (xiso): its claim on a
+    // generic extension (`.iso`) only means anything once the backend's content
+    // probe agreed, and it has no extract/copy mode for the disagreement above
+    // to bite. Without this, every PSP/PS2/CD `.iso` would be tickable (and
+    // swept up by select-all) in Xbox mode, only to be rejected on submit.
+    if (
+      this.currentTool?.contentRefined
+      && Array.isArray(entry.convertible_by)
+      && !entry.convertible_by.includes(this.currentTool.id)
+    ) {
+      return false;
+    }
     return this.allowsInput(entry.path);
   }
 

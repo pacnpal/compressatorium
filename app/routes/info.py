@@ -21,6 +21,7 @@ from models import (
     NkitInfo,
     NszInfo,
     RomzInfo,
+    XisoInfo,
     Z3DSInfo,
 )
 from services.archive import ARCHIVE_EXTENSIONS
@@ -34,6 +35,12 @@ from services.disc_id import (
 from services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
+)
+from services.extract_xiso import (
+    XISO_CONVERTIBLE_EXTENSIONS,
+    XISO_VERIFY_EXTENSIONS,
+    XisoImageError,
+    extract_xiso_service,
 )
 from services.jwudtool import (
     JWUD_COMPRESS_EXTENSIONS,
@@ -753,6 +760,15 @@ def _is_nkit_info_file(path: str) -> bool:
     return match_extension(path, NKIT2ISO_CONVERTIBLE_EXTENSIONS) is not None
 
 
+# Xbox images are plain ``.iso`` files; the product is the compound
+# ``.xiso.iso``. The route accepts both, and the service's own filesystem probe
+# (a 422 for anything that is not an Xbox image) is what really decides.
+def _is_xiso_info_file(path: str) -> bool:
+    return match_extension(
+        path, XISO_CONVERTIBLE_EXTENSIONS | XISO_VERIFY_EXTENSIONS,
+    ) is not None
+
+
 @router.get("/info", response_model=CHDInfo)
 async def get_chd_info(path: str = Query(..., description="Path to CHD file")):
     """Get information about a CHD file (cached with mtime-based invalidation)."""
@@ -1119,6 +1135,47 @@ async def get_nkit_info(
     return registry.get("nkit").info_model(info, path)
 
 
+@router.get("/xiso-info", response_model=XisoInfo)
+async def get_xiso_info(
+    path: str = Query(..., description="Path to an Xbox / Xbox 360 disc image or XISO"),
+):
+    """Describe an Xbox / Xbox 360 image from its own XDVDFS filesystem.
+
+    No subprocess: the volume descriptor and directory tables are read directly
+    (kilobytes, not the image), which answers the questions worth asking before
+    a trim — which console and disc layout, how many files, and how much of the
+    image is game data rather than padding.
+    """
+    if not await run_in_threadpool(
+        is_within_configured_volumes, path, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: path outside configured volumes",
+        )
+    if not await run_in_threadpool(os.path.isfile, path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not _is_xiso_info_file(path):
+        raise HTTPException(
+            status_code=400,
+            detail="Not an Xbox / Xbox 360 disc image (.iso, .xiso.iso)",
+        )
+
+    try:
+        info = await run_in_threadpool(extract_xiso_service.info, path)
+    except XisoImageError as e:
+        # An .iso for some other console: a client error about the file, so
+        # 422 — which is also what lets the Info modal move on to the next tool.
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    except Exception as e:
+        logger.exception("Failed to read Xbox image info for %s", path)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read Xbox image info: {e!s}",
+        ) from None
+    return registry.get("xiso").info_model(info, path)
+
+
 @router.get("/cso-info", response_model=CsoInfo)
 async def get_cso_info(
     path: str = Query(..., description="Path to PSP/PS2 ISO/CSO/ZSO/DAX file"),
@@ -1391,6 +1448,15 @@ _VERIFY_CONFIG: dict[str, _VerifyRouteConfig] = {
         bad_ext_detail="Not a supported ROM archive (.7z, .zip)",
         verify_error_prefix="Failed to verify ROM archive",
     ),
+    "xiso": _VerifyRouteConfig(
+        url_prefix="xiso-",
+        service=lambda: extract_xiso_service,
+        sync_name="verify_xiso",
+        events_name="verify_xiso_events",
+        batch_name="verify_xiso_batch_events",
+        bad_ext_detail="Not an XISO produced by this tool (.xiso.iso)",
+        verify_error_prefix="Failed to verify XISO",
+    ),
 }
 
 
@@ -1423,7 +1489,9 @@ async def _guard_verify_path(
             status_code=503,
             detail="Storage did not respond; the volume may be offline",
         ) from None
-    if os.path.splitext(path)[1].lower() not in tool.verify_extensions:
+    # Whole-filename suffix match, so a compound claim (`.xiso.iso`) is seen;
+    # `splitext` only ever returns the last component (`.iso`).
+    if match_extension(path, tool.verify_extensions) is None:
         raise HTTPException(status_code=400, detail=cfg.bad_ext_detail)
 
 
@@ -1902,7 +1970,7 @@ def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> tuple:
                         "started for any of the selected files."
                     ),
                 ) from exc
-            if os.path.splitext(path)[1].lower() not in tool.verify_extensions:
+            if match_extension(path, tool.verify_extensions) is None:
                 continue
             valid_paths.append(path)
 
@@ -1935,4 +2003,7 @@ verify_romz, verify_romz_events, verify_romz_batch_events = register_verify_rout
 )
 verify_jwud, verify_jwud_events, verify_jwud_batch_events = register_verify_routes(
     router, registry.get("jwud"),
+)
+verify_xiso, verify_xiso_events, verify_xiso_batch_events = register_verify_routes(
+    router, registry.get("xiso"),
 )

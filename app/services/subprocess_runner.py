@@ -898,6 +898,9 @@ SIZE_RATIOS: dict[str, float] = {
     "nsz_compress": 0.6, "nsz_decompress": 1.7,
     # z3ds: 3DS CIA/3DS <-> Z3DS.
     "z3ds_compress": 0.5, "z3ds_decompress": 2.0,
+    # extract-xiso: full Xbox / 360 disc image -> XISO. Prints its own per-file
+    # progress, so this only feeds savings estimates; real trims keep 60-80%.
+    "xiso_rewrite": 0.75,
 }
 
 

@@ -5,6 +5,7 @@
   import { chdMetadata } from '$lib/stores/chdMetadata.svelte.js';
   import { formatSize } from '$lib/api/format.js';
   import { iconForEntry } from '$lib/util/fileIcon.js';
+  import { registry } from '$lib/tools/registry.js';
   import CircleCheck from '@lucide/svelte/icons/circle-check';
   import BadgeCheck from '@lucide/svelte/icons/badge-check';
   import Badge from '$lib/components/ui/Badge.svelte';
@@ -155,7 +156,7 @@
     </button>
   </td>
   <td class="size">{isFile ? formatSize(entry?.size) : ''}</td>
-  <td class="ext">{entry?.extension ?? ''}</td>
+  <td class="ext">{registry.displayExtension(entry)}</td>
   <td class="badges">
     {#if mediaType === 'cd'}<Badge tone="cd">CD</Badge>{/if}
     {#if mediaType === 'dvd'}<Badge tone="dvd">DVD</Badge>{/if}

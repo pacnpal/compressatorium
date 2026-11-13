@@ -113,6 +113,41 @@ RUN make -C makeps3iso && \
     chmod +x makeps3iso/makeps3iso
 
 # ---------------------------------------------------------------------------
+# extract-xiso builder stage: compile extract-xiso (Xbox / Xbox 360 disc image
+# -> trimmed XISO) from source.
+#
+# XboxDev/extract-xiso is plain portable C with a CMake build and no
+# dependencies beyond libc, so it compiles per-arch under buildx exactly like
+# the maxcso and makeps3iso stages. Licensed under a modified BSD license that
+# requires binary redistributions to carry its copyright notice, so LICENSE.TXT
+# is copied into the runtime image alongside the binary. The source ref is
+# pinned for reproducible release images.
+# DL3008 ignored for the same reason as the other builders (generic build deps).
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS extract-xiso-builder
+ENV DEBIAN_FRONTEND=noninteractive
+# Pinned to an immutable commit (master @ 2026-09-11, v2.7.1). Override with
+# --build-arg EXTRACT_XISO_REF=<tag|sha> to update extract-xiso intentionally.
+ARG EXTRACT_XISO_REF=3f5b62cfe68f000b0e3c8a30104973f3a297948e
+# hadolint ignore=DL3008
+RUN apt-get update -o Acquire::Retries=3 && \
+    apt-get install -y --no-install-recommends \
+    git \
+    build-essential \
+    cmake \
+    ca-certificates && \
+    git clone https://github.com/XboxDev/extract-xiso.git /tmp/extract-xiso && \
+    git -C /tmp/extract-xiso checkout "${EXTRACT_XISO_REF}" && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/extract-xiso
+
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build && \
+    chmod +x build/extract-xiso && \
+    build/extract-xiso -v
+
+# ---------------------------------------------------------------------------
 # nkit2iso builder stage: compile nkit2iso (NKit-shrunk GameCube/Wii image ->
 # full .iso) from source.
 #
@@ -284,6 +319,11 @@ RUN wget -q "${JWUDTOOL_URL}" -O /tmp/jwudtool.jar && \
       > /usr/local/bin/jwudtool && \
     chmod +x /usr/local/bin/jwudtool && \
     jwudtool -help > /dev/null
+
+# Install extract-xiso from its builder stage (Xbox / Xbox 360 ISO -> XISO).
+# Modified-BSD: the license text ships with the binary, as it requires.
+COPY --from=extract-xiso-builder /tmp/extract-xiso/build/extract-xiso /usr/local/bin/extract-xiso
+COPY --from=extract-xiso-builder /tmp/extract-xiso/LICENSE.TXT /usr/share/doc/extract-xiso/LICENSE.TXT
 
 # Install nkit2iso from its builder stage (NKit-shrunk GC/Wii image -> .iso).
 # MIT, statically linked (CGO_ENABLED=0), so it needs no extra runtime libs.

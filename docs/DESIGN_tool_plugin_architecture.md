@@ -1772,7 +1772,10 @@ the job was started.
   **`OutputPathLocked`** when `base_path` sits inside a locked directory subtree:
   every numbered sibling it would try shares the same held parent, so probing on
   would spin with no sleep until the dir lock released and then return an
-  arbitrary name.
+  arbitrary name. When the mode's `output_ext` is compound (xiso's `.xiso.iso`)
+  the counter goes before the whole compound (`Game_1.xiso.iso`), never inside
+  it (`Game.xiso_1.iso`), so the renamed product still matches the tool's
+  verify claim.
 
 The *failure shape* stays a caller concern. `routes/convert.py` keeps a thin
 `get_unique_output_path` wrapper that translates `OutputPathLocked` into
@@ -2083,8 +2086,16 @@ class ToolRegistry:
         return [t for t in self._tools.values()
                 if match_extension(filename, t.input_extensions) is not None]
     def tool_for_verify(self, path: str) -> ToolPlugin | None:
-        return next((t for t in self._tools.values()
-                     if match_extension(path, t.verify_extensions) is not None), None)
+        # Most specific claim wins (longest matched extension; registration
+        # order breaks ties), so a compound product like `.xiso.iso` resolves
+        # to its own tool rather than Dolphin's generic `.iso`. Single-suffix
+        # paths resolve exactly as the old first-match did.
+        best, best_len = None, 0
+        for t in self._tools.values():
+            m = match_extension(path, t.verify_extensions)
+            if m is not None and len(m) > best_len:
+                best, best_len = t, len(m)
+        return best
     # Discovery helpers (issue #131): the union of every tool's produced /
     # verifiable extensions drives the registry-driven library scan, so a new
     # tool's outputs become scannable for free.

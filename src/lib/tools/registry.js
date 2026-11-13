@@ -95,6 +95,16 @@ const PS3_VERIFY_EXTS = [];
 const NKIT_SOURCE_EXTS = ['.nkit.iso', '.nkit.gcz'];
 const NKIT_VERIFY_EXTS = [];
 
+// extract-xiso (Xbox / Xbox 360 disc image -> trimmed XISO). Every Xbox image is
+// a plain `.iso`, which CHDMAN, Dolphin and CSO also claim, so the extension
+// alone can't tell an Xbox disc from a PSP one: the backend decides per file by
+// probing for the Xbox filesystem, and this tool only appears in an entry's
+// `convertible_by` when that probe matched (`contentRefined` below). The product
+// is the COMPOUND `.xiso.iso`, so its verify claim never matches a plain `.iso`.
+const XISO_COMPRESS_EXTS = ['.iso'];
+const XISO_VERIFY_EXTS = ['.xiso.iso'];
+const XISO_SOURCE_EXTS = [...XISO_COMPRESS_EXTS, ...XISO_VERIFY_EXTS];
+
 /**
  * @typedef {Object} ModeEntry
  * @property {string} mode
@@ -124,6 +134,8 @@ const NKIT_VERIFY_EXTS = [];
  * @property {string} defaultMode               wire-mode the workspace selects when this tool is activated
  * @property {string} [glyph]                   short text affordance for the sidebar / dashboard (1-2 chars)
  * @property {string} [accent]                  CSS color or token for badges / chips (falls back to --accent)
+ * @property {boolean} [contentRefined]        backend offers it only on files whose CONTENT matched
+ *                                            (its id in `convertible_by` outranks extension claims)
  * @property {ModeEntry[]} modes
  * @property {(path: string) => Promise<object>} getInfo
  * @property {(path: string, opts?: object) => Promise<object>} verify
@@ -644,6 +656,50 @@ export const TOOLS = [
       return path;
     },
   },
+  {
+    id: 'xiso',
+    label: 'Xbox',
+    hint: 'Trim Xbox / Xbox 360 disc images to XISO for xemu, Xenia and modded consoles.',
+    verifyPrefix: 'xiso',
+    sourceExts: XISO_SOURCE_EXTS,
+    verifyExts: XISO_VERIFY_EXTS,
+    // Offered only on files the backend's filesystem probe matched (see the
+    // XISO_* comment above). The Info modal also tries this tool first for such
+    // a row, since chdman/CSO would otherwise "describe" an Xbox disc as a
+    // generic ISO.
+    contentRefined: true,
+    modeGroups: ['xiso'],
+    groups: { xiso: 'Xbox ISO → XISO' },
+    defaultMode: 'xiso_rewrite',
+    glyph: 'XBX',
+    accent: 'var(--badge-dvd)',
+    // A trim has nothing to tune: the output is the game partition's files,
+    // laid out contiguously. No codec list, no level slider.
+    compressionCodecs: [],
+    compressionStyle: 'none',
+    modes: [
+      { mode: 'xiso_rewrite', kind: 'compress', label: 'Trim to XISO', group: 'xiso',
+        outputExt: '.xiso.iso', inputExtensions: XISO_COMPRESS_EXTS,
+        supportsCompression: false, supportsCompressionLevel: false,
+        // Verifiable but never deletable: verify walks the XISO's directory
+        // tables and has extract-xiso list it, which catches a truncated or
+        // corrupt product but is not a comparison with the source — and a
+        // trim discards partitions nothing can rebuild. Mirrors the backend
+        // ModeSpec (supports_verify without supports_delete_on_verify).
+        supportsDeleteOnVerify: false, supportsVerify: true,
+        // Not from archives: the Xbox probe needs the real file.
+        allowsArchiveInput: false },
+    ],
+    getInfo: (path) => api.getXisoInfo(path),
+    verify: (path, opts) => api.verifyXiso(path, opts),
+    verifyBatch: (paths, opts) => api.verifyBatchXiso(paths, opts),
+    // `Game.iso` -> `Game.xiso.iso`; a product maps to itself.
+    productPath: (path) => {
+      if (/\.xiso\.iso$/i.test(path)) return path;
+      if (/\.iso$/i.test(path)) return path.replace(/\.iso$/i, '.xiso.iso');
+      return path;
+    },
+  },
 ];
 
 const byId = new Map(TOOLS.map((t) => [t.id, t]));
@@ -699,6 +755,14 @@ function deriveVerifyUrl(tool, kind) {
   const seg = tool.verifyPrefix ? `${tool.verifyPrefix}-verify` : 'verify';
   return kind === 'batch' ? `/api/${seg}-batch/events` : `/api/${seg}/events`;
 }
+
+// Compound extensions any tool declares (`.nkit.iso`, `.nkit.gcz`, `.xiso.iso`),
+// longest first, for `displayExtension` below.
+const COMPOUND_EXTS = [...new Set(
+  TOOLS.flatMap((t) => [...t.sourceExts, ...t.verifyExts])
+    .map((e) => e.toLowerCase())
+    .filter((e) => e.lastIndexOf('.') > 0),
+)].sort((a, b) => b.length - a.length);
 
 export const registry = {
   /** All registered tools, in declared order. */
@@ -854,6 +918,26 @@ export const registry = {
       }
     }
     return out;
+  },
+
+  /**
+   * The extension to SHOW for a listing row: the longest declared compound
+   * extension the file's name ends with (`Game.xiso.iso` -> `.xiso.iso`),
+   * otherwise the row's own `extension`.
+   *
+   * Display only. The backend deliberately records just the trailing suffix
+   * (`.iso`) in `entry.extension`, and sorting, DAT-match gating and the file
+   * icons all key off that stored value, so they are unchanged by this.
+   */
+  displayExtension: (entry) => {
+    const ext = entry?.extension ?? '';
+    if (!ext || entry.type === 'directory' || entry.type === 'archive') return ext;
+    const name = String(entry.name ?? entry.path ?? '').toLowerCase();
+    const tail = ext.toLowerCase();
+    const hit = COMPOUND_EXTS.find(
+      (c) => c.endsWith(tail) && name.length > c.length && name.endsWith(c),
+    );
+    return hit ?? ext;
   },
 
   /**

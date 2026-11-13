@@ -120,6 +120,12 @@ def _cases():
         path.write_bytes(b"data")
         return str(path)
 
+    def xbox(tmp_path: Path, name: str) -> str:
+        """Smallest file the Xbox probe accepts: the XDVDFS magic at 0x10000."""
+        path = tmp_path / name
+        path.write_bytes(b"\0" * 0x10000 + b"MICROSOFT*XBOX*MEDIA" + b"\0" * 64)
+        return str(path)
+
     def _symlink_escape(tmp_path: Path, name: str) -> str:
         """A companion-named symlink pointing at a real file outside the volume.
 
@@ -212,7 +218,28 @@ def _cases():
             DuplicateAction.SKIP,
             "accept",
         ),
+        (
+            "xiso_rewrite_xbox_iso_accept",
+            lambda t: xbox(t, "game.iso"),
+            ConversionMode.XISO_REWRITE,
+            DuplicateAction.SKIP,
+            "accept",
+        ),
         # --- rejections / skips ---
+        (
+            "xiso_not_xbox_reject",  # XISO_NOT_XBOX_IMAGE: right suffix, no XDVDFS
+            lambda t: write(t, "game.iso"),
+            ConversionMode.XISO_REWRITE,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            "xiso_bad_ext_reject",  # XISO_BAD_EXTENSION
+            lambda t: write(t, "game.wud"),
+            ConversionMode.XISO_REWRITE,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
         (
             "createcd_chd_reject",  # CREATE_REQUIRES_NON_CHD
             lambda t: write(t, "game.chd"),

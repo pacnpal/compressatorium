@@ -173,6 +173,12 @@ class Settings(BaseSettings):
         default="none", alias="NKIT2ISO_RECOVERY",
         pattern="^(none|download)$",
     )
+    # extract-xiso binary path (Xbox / Xbox 360 disc image -> trimmed XISO).
+    # Built from source (XboxDev/extract-xiso) into the image at
+    # /usr/local/bin/extract-xiso; set EXTRACT_XISO_PATH to relocate/override.
+    extract_xiso_path: str = Field(
+        default="/usr/local/bin/extract-xiso", alias="EXTRACT_XISO_PATH",
+    )
 
     # Extra free space (MB) a chained conversion (e.g. cso->iso->chd) keeps
     # beyond its estimated peak before starting. A chain holds source + full
@@ -483,6 +489,20 @@ class Settings(BaseSettings):
     )
     nkit2iso_ioprio_level: int | None = Field(
         default=None, alias="COMPRESSATORIUM_NKIT2ISO_IOPRIO_LEVEL",
+    )
+    # extract-xiso (Xbox ISO -> XISO): one rewrite subprocess, plus a verify that
+    # walks the XISO's directory tables and runs `extract-xiso -l` on it.
+    xiso_nice: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_XISO_NICE",
+    )
+    xiso_ioprio_class: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_XISO_IOPRIO_CLASS",
+    )
+    xiso_ioprio_level: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_XISO_IOPRIO_LEVEL",
+    )
+    xiso_verify_timeout: int | None = Field(
+        default=None, alias="COMPRESSATORIUM_XISO_VERIFY_TIMEOUT",
     )
 
     # Logging

@@ -47,7 +47,7 @@ def test_match_extension(name, declared, expected):
 
 
 def test_every_other_tool_declares_only_single_component_extensions():
-    """nkit2iso is the only compound-extension tool today.
+    """nkit2iso and xiso are the only compound-extension tools today.
 
     If a second one appears, the sites that still record a plain
     ``Path.suffix`` for display (the archive listing's ``extension`` field, the
@@ -63,4 +63,7 @@ def test_every_other_tool_declares_only_single_component_extensions():
         ("nkit", ".nkit.iso"), ("nkit", ".nkit.gcz"),
         # The nkit_to_rvz chain declares step 1's inputs as its own.
         ("chain", ".nkit.iso"), ("chain", ".nkit.gcz"),
+        # xiso's product: the listing records it as ``.iso`` (disc icon, same as
+        # an NKit image), and verify/DAT routing match the whole compound.
+        ("xiso", ".xiso.iso"),
     }

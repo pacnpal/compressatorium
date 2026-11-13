@@ -1,5 +1,46 @@
 # Release Notes
 
+## Unreleased
+
+### Added
+
+- **Xbox / Xbox 360: trim disc images to XISO** with
+  [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
+  (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's
+  files — what xemu, Xenia and modded consoles load — typically 20-40% smaller.
+  Original Xbox (XGD1) and Xbox 360 (XGD2/XGD3) layouts are both handled.
+  - Offered only on `.iso` files that really contain an Xbox filesystem: the app
+    probes each one, so PSP/PS2/GameCube ISOs never show the option, and an image
+    extract-xiso already trimmed is not offered again.
+  - The source is never renamed or modified. (extract-xiso's own rewrite mode
+    renames its input to `.old` and leaves it that way on failure; the app hands
+    it a symlink instead.)
+  - Verify checks the XISO's structure and has extract-xiso list it. There is no
+    delete-on-verify: XISO carries no checksums and the trim is irreversible.
+  - Info shows console, disc layout, file count and game-data size.
+
+### Changed
+
+- `registry.tool_for_verify` now picks the **most specific** extension claim
+  (longest match, registration order breaking ties), so a compound product like
+  `.xiso.iso` resolves to its own tool instead of Dolphin's generic `.iso`.
+  Single-suffix paths resolve exactly as before.
+- A tool whose per-file `converts_path` refinement rejects a file can name its own
+  plan-time skip reason (`_NOT_CONVERTIBLE_REASON` in `routes/convert.py`),
+  instead of every tool sharing the split-Wii-U-dump message.
+- The verify routes' extension guards (single-file and batch) match the whole
+  filename suffix, like every other extension check, so a compound verify claim
+  (`.xiso.iso`) is accepted instead of being rejected as a plain `.iso`.
+- The **rename** duplicate policy keeps a compound output extension whole
+  (`Game_1.xiso.iso`, not `Game.xiso_1.iso`), so a renamed product can still be
+  verified.
+- The file list's **Extension** column shows a compound extension whole
+  (`.xiso.iso`, `.nkit.iso`) instead of just `.iso`. Display only: the stored
+  `extension` field, sorting, DAT matching and icons are unchanged.
+- In the Xbox tool, only `.iso` rows the backend identified as Xbox discs are
+  selectable (and picked up by select-all); other consoles' ISOs no longer tick
+  only to be rejected on submit. Driven by the descriptor's `contentRefined` flag.
+
 ## 4.5.0 (2026-11-09)
 
 Compressatorium and [RomM](https://romm.app) look at the same files and know

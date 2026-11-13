@@ -354,6 +354,11 @@ export const api = {
     return fetchJson(buildApiUrl('/jwud-info', params), undefined, 'Failed to get Wii U image info');
   },
 
+  getXisoInfo(path) {
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/xiso-info', params), undefined, 'Failed to get Xbox image info');
+  },
+
   // Which tools the UI should show. Switch is reported unavailable when no
   // prod.keys are configured, so the sidebar can hide it entirely.
   getTools() {
@@ -438,6 +443,17 @@ export const api = {
     return fetchJson(buildApiUrl('/jwud-verify', params), undefined, 'Failed to verify Wii U image');
   },
 
+  verifyXiso(path, { onProgress } = {}) {
+    if (onProgress) {
+      const params = new URLSearchParams({ path });
+      return verifyEventSource(buildApiUrl('/xiso-verify/events', params), onProgress, {
+        failureFallback: 'XISO verification failed',
+      });
+    }
+    const params = new URLSearchParams({ path });
+    return fetchJson(buildApiUrl('/xiso-verify', params), undefined, 'Failed to verify XISO');
+  },
+
   getVerifiedCHDs: () =>
     fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch verified CHDs'),
 
@@ -468,6 +484,10 @@ export const api = {
 
   verifyBatchJwud(paths, opts) {
     return runBatchVerify(`${API_BASE}/jwud-verify-batch/events`, paths, opts);
+  },
+
+  verifyBatchXiso(paths, opts) {
+    return runBatchVerify(`${API_BASE}/xiso-verify-batch/events`, paths, opts);
   },
 
   // ─── CHD metadata cache ───────────────────────────────────────────────

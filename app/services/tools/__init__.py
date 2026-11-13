@@ -19,6 +19,7 @@ from .nsz import NszTool
 from .registry import ToolRegistry
 from .romz import RomzTool
 from .spec import ChainSpec, ChainStep, InputKind, ModeKind, ModeSpec
+from .xiso import XisoTool
 from .z3ds import Z3dsTool
 
 registry = ToolRegistry()
@@ -31,6 +32,7 @@ registry.register(RomzTool(settings.sevenzip_path))
 registry.register(MakePs3IsoTool(settings.makeps3iso_path))
 registry.register(Nkit2IsoTool(settings.nkit2iso_path))
 registry.register(JwudTool(settings.jwudtool_path))
+registry.register(XisoTool(settings.extract_xiso_path))
 # Composite/pipeline modes register last: ChainTool drives the component tools
 # above through the registry, so they must already be present.
 registry.register(ChainTool(registry))
