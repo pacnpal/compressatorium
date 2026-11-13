@@ -92,6 +92,21 @@ def _dump(tmp_path: Path) -> dict:
         "   'Game.nkit.iso','Game.nkit.gcz','Game.iso','Game.gcz',"
         "   'out.chd','disc.rvz','Game.cso','Game.7z'"
         " ].map((p) => [p, registry.infoToolsForPath(p).map((t) => t.id)])),"
+        " display_ext: Object.fromEntries(["
+        "   ['Halo 3 (USA)-full.xiso.iso', '.iso', 'file'],"
+        "   ['Game.NKIT.ISO', '.iso', 'file'], ['Game.nkit.gcz', '.gcz', 'file'],"
+        "   ['Game.iso', '.iso', 'file'], ['nkit.iso', '.iso', 'file'],"
+        "   ['out.chd', '.chd', 'file'], ['Game.xiso.iso', '.iso', 'directory'],"
+        "   ['Game.zip', '.zip', 'archive'], ['noext', '', 'file']"
+        " ].map(([n, e, t]) => [`${t}:${n}`,"
+        "   registry.displayExtension({ name: n, extension: e, type: t })])),"
+        " content_refined: registry.all().filter((t) => t.contentRefined).map((t) => t.id),"
+        " content_claims: Object.fromEntries(["
+        "   ['xbox', ['chdman', 'xiso', 'dolphin']], ['psp', ['chdman', 'cso']],"
+        "   ['empty', []], ['missing', undefined]"
+        " ].map(([k, by]) => [k, (registry.contentClaimsFor("
+        "   by === undefined ? { path: 'g.iso' } : { path: 'g.iso', convertible_by: by }"
+        " ) ?? null)?.map((t) => t.id) ?? null])),"
         "};\n"
         "process.stdout.write(JSON.stringify(__out));\n"
     )
@@ -245,3 +260,44 @@ def test_info_tool_order_prefers_the_most_specific_claim(tmp_path):
     # A plain .iso/.gcz must never route Info at nkit.
     assert "nkit" not in order["Game.iso"]
     assert "nkit" not in order["Game.gcz"]
+
+
+def test_extension_column_shows_the_compound_extension(tmp_path):
+    """The Extension column shows ``.xiso.iso`` / ``.nkit.iso``, display only.
+
+    The row's stored ``extension`` stays the trailing suffix (sorting, DAT-match
+    gating and icons key off it); ``displayExtension`` only widens what is shown,
+    and only to an extension some tool actually declares.
+    """
+    shown = _dump(tmp_path)["display_ext"]
+
+    assert shown["file:Halo 3 (USA)-full.xiso.iso"] == ".xiso.iso"
+    assert shown["file:Game.NKIT.ISO"] == ".nkit.iso"
+    assert shown["file:Game.nkit.gcz"] == ".nkit.gcz"
+    # Plain names, a bare compound name with no stem, and non-file rows are
+    # shown exactly as stored.
+    assert shown["file:Game.iso"] == ".iso"
+    assert shown["file:nkit.iso"] == ".iso"
+    assert shown["file:out.chd"] == ".chd"
+    assert shown["directory:Game.xiso.iso"] == ".iso"
+    assert shown["archive:Game.zip"] == ".zip"
+    assert shown["file:noext"] == ""
+
+
+def test_content_claims_read_only_the_backend_probe(tmp_path):
+    """``contentClaimsFor`` is the one reading of a content-refined claim.
+
+    The selection gate and the Info modal both use it. A row whose
+    ``convertible_by`` names a content-refined tool claims it; a row whose list
+    leaves it out claims nothing (so Xbox mode can't tick a PSP ``.iso``); and a
+    row with no ``convertible_by`` at all is ``None`` -- unknown, not "no" --
+    so the selection gate falls back to the extension check.
+    """
+    dump = _dump(tmp_path)
+    claims = dump["content_claims"]
+
+    assert dump["content_refined"] == ["xiso"]
+    assert claims["xbox"] == ["xiso"]
+    assert claims["psp"] == []
+    assert claims["empty"] == []
+    assert claims["missing"] is None

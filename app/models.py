@@ -58,6 +58,7 @@ class ConversionMode(str, Enum):
     FOLDER_TO_ISO = "folder_to_iso"
     NKIT_RESTORE = "nkit_restore"
     NKIT_TO_RVZ = "nkit_to_rvz"
+    XISO_REWRITE = "xiso_rewrite"
     METADATA_SCAN = "metadata_scan"
     DAT_MATCH = "dat_match"
 
@@ -344,6 +345,24 @@ class NkitInfo(BasicFileInfo):
     restored_size_display: str | None = None
     crc32: str | None = None             # of the ORIGINAL image, stored by NKit
     ratio: str | None = None             # shrunk size as a % of the original
+
+
+class XisoInfo(BasicFileInfo):
+    """Information about an Xbox / Xbox 360 disc image (extract-xiso source/product).
+
+    Read from the image's own XDVDFS filesystem: which disc layout it uses,
+    how many files it holds, and how much of it is actual game data (roughly
+    what a trim keeps).
+    """
+    console: str | None = None           # "Xbox" | "Xbox 360"
+    layout: str | None = None            # "XGD1" | "XGD2" | "XGD3" | "XISO"
+    file_count: int | None = None
+    data_size: int | None = None         # sum of every file's size, in bytes
+    data_size_display: str | None = None
+    data_ratio: str | None = None        # game data as a % of the file
+    has_system_update: bool | None = None
+    trimmed: bool | None = None          # already an XISO (no disc padding)
+    optimized: bool | None = None        # written by extract-xiso
 
 
 class LayoutPreferences(BaseModel):

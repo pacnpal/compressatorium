@@ -51,6 +51,15 @@ _TOOLS = {
         "events": "verify_z3ds_events",
         "batch": "verify_z3ds_batch_events",
     },
+    # A compound verify claim: the route guards must match the whole suffix,
+    # not just the trailing ``.iso`` that ``os.path.splitext`` returns.
+    "xiso": {
+        "ext": ".xiso.iso",
+        "service_attr": "extract_xiso_service",
+        "sync": "verify_xiso",
+        "events": "verify_xiso_events",
+        "batch": "verify_xiso_batch_events",
+    },
 }
 
 

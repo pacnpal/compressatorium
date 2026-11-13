@@ -29,6 +29,11 @@
       }
     };
     if (target?._infoTool) add(registry.forTool(target._infoTool));
+    // A content-refined tool (xiso) is in the row's backend `convertible_by`
+    // only when its probe found its own format inside a generic extension, so
+    // that is a stronger claim than any extension match: try it before the
+    // generic `.iso` owners, which would otherwise describe the file blindly.
+    for (const t of registry.contentClaimsFor(target) ?? []) add(t);
     for (const t of registry.infoToolsForPath(p)) add(t);
     return list;
   });

@@ -157,6 +157,18 @@ class ConversionStore {
     // the same way the other per-file plan rejections behave. A mode-aware
     // listing annotation would let this gate narrow correctly; that's a
     // listing-surface change, not a selection-store one.
+    //
+    // The one exception is a `contentRefined` tool (xiso): its claim on a
+    // generic extension (`.iso`) only means anything once the backend's content
+    // probe agreed, and it has no extract/copy mode for the disagreement above
+    // to bite. Without this, every PSP/PS2/CD `.iso` would be tickable (and
+    // swept up by select-all) in Xbox mode, only to be rejected on submit.
+    // A row with no `convertible_by` at all (`null` claims) is left to the
+    // extension gate below and `plan_job`, as before.
+    if (this.currentTool?.contentRefined) {
+      const claims = registry.contentClaimsFor(entry);
+      if (claims && !claims.some((t) => t.id === this.currentTool.id)) return false;
+    }
     return this.allowsInput(entry.path);
   }
 

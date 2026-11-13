@@ -20,6 +20,10 @@ from app.services.dolphin_tool import (
     DOLPHIN_CONVERTIBLE_EXTENSIONS,
     dolphin_tool_service,
 )
+from app.services.extract_xiso import (
+    XISO_CONVERTIBLE_EXTENSIONS,
+    extract_xiso_service,
+)
 from app.services.jwudtool import (
     JWUD_COMPRESS_EXTENSIONS,
     JWUD_DECOMPRESS_EXTENSIONS,
@@ -85,12 +89,14 @@ def _legacy_tool_for_mode(mode: str) -> str:
         return "nkit"
     if mode.startswith("jwud_"):
         return "jwud"
+    if mode.startswith("xiso_"):
+        return "xiso"
     return "chdman"
 
 
 def test_every_conversion_mode_resolves_to_exactly_one_tool():
     resolved = {m.value: registry.for_mode(m.value).id for m in CONVERSION_MODES}
-    assert len(resolved) == 33
+    assert len(resolved) == 34
     # Each registered mode is owned by exactly one tool (no duplicates).
     assert sorted(s.mode for s in registry.mode_specs()) == sorted(resolved)
 
@@ -133,6 +139,8 @@ def test_kind_classification():
     assert spec("zso_compress").kind is ModeKind.COMPRESS
     assert spec("dax_compress").kind is ModeKind.COMPRESS
     assert spec("cso_decompress").kind is ModeKind.EXTRACT
+    # extract-xiso trims a disc image in one direction only
+    assert spec("xiso_rewrite").kind is ModeKind.COMPRESS
     # romz 7z/zip compress vs extract
     assert spec("romz_7z").kind is ModeKind.COMPRESS
     assert spec("romz_zip").kind is ModeKind.COMPRESS
@@ -202,15 +210,19 @@ def test_convertible_extensions_match_service_constants():
         | set(NKIT2ISO_CONVERTIBLE_EXTENSIONS)
         | set(JWUD_COMPRESS_EXTENSIONS)
         | set(JWUD_DECOMPRESS_EXTENSIONS)
+        | set(XISO_CONVERTIBLE_EXTENSIONS)
     )
     assert set(registry.convertible_extensions()) == expected
 
 
 def test_tools_for_input_representative():
+    # `.iso` by extension alone; xiso then narrows per file by content
+    # (``converts_path``), which this extension-level listing doesn't apply.
     assert sorted(t.id for t in registry.tools_for_input("game.iso")) == [
         "chdman",
         "cso",
         "dolphin",
+        "xiso",
     ]
     assert [t.id for t in registry.tools_for_input("rom.3ds")] == ["z3ds"]
     assert [t.id for t in registry.tools_for_input("game.nsp")] == ["nsz"]
@@ -242,6 +254,7 @@ def test_tools_for_input_representative():
         "cso",
         "dolphin",
         "nkit",
+        "xiso",
     ]
     assert sorted(t.id for t in registry.tools_for_input("game.nkit.gcz")) == [
         "chain",
@@ -263,6 +276,10 @@ def test_tool_for_verify_representative():
     assert registry.tool_for_verify("Game.7z").id == "romz"
     assert registry.tool_for_verify("Game.zip").id == "romz"
     assert registry.tool_for_verify("Game.wux").id == "jwud"
+    # A compound product outranks the generic `.iso` tail Dolphin claims...
+    assert registry.tool_for_verify("Game.xiso.iso").id == "xiso"
+    # ...while a plain `.iso` still resolves exactly as before.
+    assert registry.tool_for_verify("Game.iso").id == "dolphin"
     # A raw .wud carries nothing to check, so it is not a verify target.
     assert registry.tool_for_verify("Game.wud") is None
     assert registry.tool_for_verify("nope.txt") is None
@@ -318,6 +335,7 @@ def test_tools_verifying_path_refines_extension_match(tmp_path):
         ("nkit_restore", nkit2iso_service, "/data/Game.nkit.gcz"),
         ("jwud_compress", jwudtool_service, "/data/Game.wud"),
         ("jwud_decompress", jwudtool_service, "/data/Game.wux"),
+        ("xiso_rewrite", extract_xiso_service, "/data/Game.iso"),
     ],
 )
 def test_output_path_delegation_matches_service(

@@ -30,6 +30,7 @@ export const TOOL_MEDIA = {
   makeps3iso: 'disc', // PS3 disc images (folder → .iso; no file exts today)
   nkit: 'disc', // NKit-shrunk GameCube / Wii disc images
   jwud: 'disc', // Wii U disc images (.wud / .wux)
+  xiso: 'disc', // Xbox / Xbox 360 disc images (.iso / .xiso.iso)
   dolphin: 'game', // GameCube / Wii disc images, shown as game media
   z3ds: 'game', // 3DS ROMs
   nsz: 'game', // Switch dumps

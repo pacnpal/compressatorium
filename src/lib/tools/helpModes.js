@@ -85,6 +85,13 @@ export const MODE_BLURBS = {
     'Restore an NKit image and compress it straight to RVZ in one job (nkit2iso '
     + 'to a temp ISO, then dolphin-tool). The full-size ISO never lands in your '
     + 'library. Uses dolphin default compression.',
+  // Xbox
+  xiso_rewrite:
+    'Trim a full Xbox or Xbox 360 disc image to an XISO: only the game\'s files, '
+    + 'laid out contiguously, without the video partition and disc padding. '
+    + 'Usually 20-40% smaller. Writes Game.xiso.iso beside the source and never '
+    + 'modifies or deletes the original. Offered only on images that really hold '
+    + 'an Xbox filesystem.',
   // PS3
   folder_to_iso:
     'Pack a decrypted PS3 folder into an .iso RPCS3 mounts. An optional toggle '

@@ -120,6 +120,12 @@ def _cases():
         path.write_bytes(b"data")
         return str(path)
 
+    def xbox(tmp_path: Path, name: str) -> str:
+        """Smallest file the Xbox probe accepts: the XDVDFS magic at 0x10000."""
+        path = tmp_path / name
+        path.write_bytes(b"\0" * 0x10000 + b"MICROSOFT*XBOX*MEDIA" + b"\0" * 64)
+        return str(path)
+
     def _symlink_escape(tmp_path: Path, name: str) -> str:
         """A companion-named symlink pointing at a real file outside the volume.
 
@@ -212,7 +218,28 @@ def _cases():
             DuplicateAction.SKIP,
             "accept",
         ),
+        (
+            "xiso_rewrite_xbox_iso_accept",
+            lambda t: xbox(t, "game.iso"),
+            ConversionMode.XISO_REWRITE,
+            DuplicateAction.SKIP,
+            "accept",
+        ),
         # --- rejections / skips ---
+        (
+            "xiso_not_xbox_reject",  # XISO_NOT_XBOX_IMAGE: right suffix, no XDVDFS
+            lambda t: write(t, "game.iso"),
+            ConversionMode.XISO_REWRITE,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            "xiso_bad_ext_reject",  # XISO_BAD_EXTENSION
+            lambda t: write(t, "game.wud"),
+            ConversionMode.XISO_REWRITE,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
         (
             "createcd_chd_reject",  # CREATE_REQUIRES_NON_CHD
             lambda t: write(t, "game.chd"),
@@ -1012,3 +1039,36 @@ async def test_cancelling_during_that_probe_returns_now(monkeypatch) -> None:
         await asyncio.wait_for(
             manager._verify_target_bounded(tool, job, cancel), timeout=10,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("names", "mode", "reason"),
+    [
+        # A content-refined tool names its own reason via _NOT_CONVERTIBLE_REASON...
+        (("game.iso",), ConversionMode.XISO_REWRITE,
+         convert_routes.SkipReason.XISO_NOT_XBOX_IMAGE),
+        # ...and every other tool keeps the multi-file default.
+        (("game_part1.wud", "game_part2.wud"), ConversionMode.JWUD_COMPRESS,
+         convert_routes.SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE),
+    ],
+    ids=["xiso_content_reason", "jwud_default_reason"],
+)
+async def test_converts_path_rejection_names_the_tools_reason(
+    parity_env, names, mode, reason,
+):
+    """A file the tool claims by extension but its ``converts_path`` refuses is
+    reported with that tool's reason, not jwud's split-set message."""
+    tmp_path = parity_env["tmp_path"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"data")
+
+    result = await _run_single(
+        parity_env,
+        file_path=str(tmp_path / names[-1]),
+        mode=mode,
+        duplicate_action=DuplicateAction.SKIP,
+        delete_on_verify=False,
+    )
+
+    assert (result["status"], result["detail"]) == convert_routes._SKIP_HTTP[reason]

@@ -83,6 +83,15 @@ def get_unique_output_path(base_path: str, mode: str | None = None) -> str:
 
     path = Path(base_path)
     stem, suffix, parent = path.stem, path.suffix, path.parent
+    # A compound product extension (xiso's ``.xiso.iso``) must survive intact:
+    # ``Game.xiso_1.iso`` would no longer match the tool's verify claim, so the
+    # renamed output could never be verified. Number the stem before it instead.
+    output_ext = registry.spec(mode).output_ext if mode else None
+    if output_ext and output_ext.count(".") > 1 and path.name.lower().endswith(
+        output_ext.lower(),
+    ):
+        stem = path.name[: -len(output_ext)]
+        suffix = path.name[-len(output_ext):]
     for counter in range(1, MAX_RENAME_ATTEMPTS + 1):
         candidate = str(parent / f"{stem}_{counter}{suffix}")
         if not _taken(candidate):

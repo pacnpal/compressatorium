@@ -292,6 +292,8 @@ class SkipReason(Enum):
     ROMZ_INVALID_ARCHIVE = "romz_invalid_archive"
     NKIT_BAD_EXTENSION = "nkit_bad_extension"
     JWUD_BAD_EXTENSION = "jwud_bad_extension"
+    XISO_BAD_EXTENSION = "xiso_bad_extension"
+    XISO_NOT_XBOX_IMAGE = "xiso_not_xbox_image"
     SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE = "source_not_independently_convertible"
     DOLPHIN_SAME_PATH = "dolphin_same_path"
     CHAIN_BAD_EXTENSION = "chain_bad_extension"
@@ -383,6 +385,15 @@ _SKIP_HTTP: dict[SkipReason, tuple[int, str]] = {
         "jwud_compress requires a Wii U disc image (.wud); "
         "jwud_decompress requires a compressed image (.wux)",
     ),
+    SkipReason.XISO_BAD_EXTENSION: (
+        400,
+        "xiso_rewrite requires an Xbox / Xbox 360 disc image (.iso)",
+    ),
+    SkipReason.XISO_NOT_XBOX_IMAGE: (
+        400,
+        "File is not an untrimmed Xbox / Xbox 360 disc image (no XDVDFS volume "
+        "was found, or it is already an optimized XISO)",
+    ),
     SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE: (
         400,
         "File is one part of a multi-file source and cannot be converted on its "
@@ -440,6 +451,15 @@ _BAD_EXTENSION_REASON: dict[str, SkipReason] = {
     "romz": SkipReason.ROMZ_BAD_EXTENSION,
     "nkit": SkipReason.NKIT_BAD_EXTENSION,
     "jwud": SkipReason.JWUD_BAD_EXTENSION,
+    "xiso": SkipReason.XISO_BAD_EXTENSION,
+}
+
+# Why a file a tool claims by extension was still rejected by its per-file
+# ``converts_path`` refinement. The default describes the multi-file-source
+# case (jwud's split Wii U dumps); a tool that refines on *content* instead
+# names its own reason, so the user is told what is actually wrong.
+_NOT_CONVERTIBLE_REASON: dict[str, SkipReason] = {
+    "xiso": SkipReason.XISO_NOT_XBOX_IMAGE,
 }
 
 
@@ -662,7 +682,10 @@ async def plan_job(
         # very extension match above, so this is a no-op for every tool whose
         # source is one file. A tool whose source is a *set* (jwud's split Wii U
         # dumps) accepts only the primary member, so the others are rejected
-        # here rather than queued into a job that can only fail. Scoped to the
+        # here rather than queued into a job that can only fail. A tool can also
+        # refine on *content* — xiso only accepts an ``.iso`` that really holds
+        # an untrimmed Xbox filesystem — and `_NOT_CONVERTIBLE_REASON` lets it
+        # say so instead of borrowing jwud's multi-file message. Scoped to the
         # tools that opted into the generic gate: chdman drops `.chd` from its
         # `input_extensions` and validates by `.chd` presence above, so the
         # default extension-match refinement does not describe it. Runs off the
@@ -670,7 +693,9 @@ async def plan_job(
         if not await run_in_threadpool(
             registry.for_mode(mode).converts_path, file_path,
         ):
-            raise SkipFile(SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE)
+            raise SkipFile(_NOT_CONVERTIBLE_REASON.get(
+                spec.tool_id, SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE,
+            ))
 
     # A multi-file source drags in siblings the request never named, and the
     # converter opens them itself — JNUSLib enumerates a split set's parts from

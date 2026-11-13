@@ -67,6 +67,12 @@
       blurb: 'Wii U disc dumps to WUX and back, using JWUDTool. Every Wii U disc image is exactly 25 GB regardless of how much of it the game uses, so WUX deduplicates the repeated sectors and typically lands a fraction of that; Cemu reads the .wux directly. Lossless and fully reversible. No keys needed either — this only repacks the image, it never decrypts it, so a WUX stays as encrypted as the WUD it came from. JWUDTool compares the result against the source byte for byte before the job reports success, which is why a compress job takes about twice as long as the write itself; the dropdown can turn that off if you want the speed instead. Split dumps from wudump (game_part1.wud through game_part12.wud) work too — pick part 1 and the whole set converts as one image.',
       io: '.wud  ↔  .wux',
     },
+    {
+      glyph: 'XBX',
+      name: 'Xbox',
+      blurb: 'Full Xbox and Xbox 360 disc images trimmed to XISO, using extract-xiso. A Redump-style disc image carries a video partition, a security region and a game partition padded out to the size of the disc; an XISO keeps only the game\'s files, laid out contiguously, which is what xemu, Xenia (and its Android ports) and modded consoles load. Expect it to be 20-40% smaller. Every Xbox image is an .iso, like PSP and PS2 images, so the app looks inside each file for the Xbox filesystem and only offers this tool when it is there. The trimmed image is written as Game.xiso.iso beside the source; the original is only ever read, never renamed or deleted, and there is no delete-after-verify option, because a trim discards partitions nothing can rebuild. Verify checks that every file in the XISO lies inside it and that extract-xiso can list it — enough to catch a truncated copy, though XISO has no checksums to compare against the source. Info reads the filesystem directly: console, disc layout, file count, and how much of the image is game data.',
+      io: '.iso  →  .xiso.iso',
+    },
   ];
 
   // Per-tool mode reference. Generated from the registry (one section per
@@ -277,6 +283,13 @@
       <code>.bin</code>, and the whole archive if the source came from one.
     </p>
     <p>
+      How deep verify goes depends on the format. The Xbox XISO check is structural only:
+      it confirms every file lies inside the image and that extract-xiso can list it, but an
+      XISO has no checksums, so a pass does not prove the game data matches the source.
+      That is why XISO offers no delete-on-verify. Read a tool's own entry above before you
+      delete a source by hand.
+    </p>
+    <p>
       Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and
       CSO files. Verification status sticks around between sessions, so a file you verified last
       week still shows verified today. Long verifies can be given a timeout so a stalled one
@@ -467,7 +480,7 @@
     <h2 class="panel-title">FAQ and edge cases</h2>
     <dl class="qa">
       <dt>Will compression hurt the game?</dt>
-      <dd>No. Every format here is lossless. The data you get back after decompression is bit-for-bit identical to what went in. Smaller file, same game.</dd>
+      <dd>No. Every compressed format here is lossless. The data you get back after decompression is bit-for-bit identical to what went in. Smaller file, same game. There are two exceptions. The Xbox XISO trim keeps the game's files intact and plays the same, but the video partition and disc padding are discarded for good, so the original full disc image can't be rebuilt from it. And an NKit-shrunk Wii image whose update partition was removed at shrink time restores playable but not bit-exact, unless you set <code>NKIT2ISO_RECOVERY=download</code>. In both cases, keep the original if preserving the complete disc matters to you.</dd>
 
       <dt>Does converting touch my original file?</dt>
       <dd>No. The output is a new file and the source is left alone, unless you explicitly turn on delete-on-verify. Even then the source is only removed after the output passes verification.</dd>
