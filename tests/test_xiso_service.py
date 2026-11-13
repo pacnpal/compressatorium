@@ -419,11 +419,13 @@ async def test_cancel_during_workspace_setup_leaves_no_scratch_dirs(
     src = tmp_path / "g.iso"
     build_image(src, layout="XGD2")
     out = tmp_path / "g.xiso.iso"
+    entered = MODULE.threading.Event()
     release = MODULE.threading.Event()
     real_prepare = type(SERVICE)._prepare_workspace.__func__
     finished = MODULE.threading.Event()
 
     def slow_prepare(cls, *args):
+        entered.set()
         release.wait(5)
         try:
             return real_prepare(cls, *args)
@@ -440,11 +442,14 @@ async def test_cancel_during_workspace_setup_leaves_no_scratch_dirs(
             pass
 
     task = asyncio.create_task(run())
-    await asyncio.sleep(0.2)
-    cancel.set()
-    with pytest.raises(MODULE.ConversionCancelled):
-        await task
-    release.set()
+    try:
+        # Cancel only once setup is really running, not after a guessed delay.
+        assert await asyncio.to_thread(entered.wait, 5)
+        cancel.set()
+        with pytest.raises(MODULE.ConversionCancelled):
+            await task
+    finally:
+        release.set()  # never leave the worker blocked, even on a failure
     assert await asyncio.to_thread(finished.wait, 5)
 
     assert not _workdirs(tmp_path)

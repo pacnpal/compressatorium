@@ -283,6 +283,13 @@
       <code>.bin</code>, and the whole archive if the source came from one.
     </p>
     <p>
+      How deep verify goes depends on the format. The Xbox XISO check is structural only:
+      it confirms every file lies inside the image and that extract-xiso can list it, but an
+      XISO has no checksums, so a pass does not prove the game data matches the source.
+      That is why XISO offers no delete-on-verify. Read a tool's own entry above before you
+      delete a source by hand.
+    </p>
+    <p>
       Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and
       CSO files. Verification status sticks around between sessions, so a file you verified last
       week still shows verified today. Long verifies can be given a timeout so a stalled one
@@ -473,7 +480,7 @@
     <h2 class="panel-title">FAQ and edge cases</h2>
     <dl class="qa">
       <dt>Will compression hurt the game?</dt>
-      <dd>No. Every compressed format here is lossless. The data you get back after decompression is bit-for-bit identical to what went in. Smaller file, same game. The one exception is the Xbox XISO trim: the game's files are kept intact and it plays the same, but the video partition and disc padding are discarded for good, so the original full disc image can't be rebuilt from it. Keep the original if preserving the complete disc matters to you.</dd>
+      <dd>No. Every compressed format here is lossless. The data you get back after decompression is bit-for-bit identical to what went in. Smaller file, same game. There are two exceptions. The Xbox XISO trim keeps the game's files intact and plays the same, but the video partition and disc padding are discarded for good, so the original full disc image can't be rebuilt from it. And an NKit-shrunk Wii image whose update partition was removed at shrink time restores playable but not bit-exact, unless you set <code>NKIT2ISO_RECOVERY=download</code>. In both cases, keep the original if preserving the complete disc matters to you.</dd>
 
       <dt>Does converting touch my original file?</dt>
       <dd>No. The output is a new file and the source is left alone, unless you explicitly turn on delete-on-verify. Even then the source is only removed after the output passes verification.</dd>

@@ -2102,11 +2102,19 @@ correctly too. The shared paths already handle it, so declaring
 Add rows to `tests/test_compound_extension_matching.py` (its
 `test_every_other_tool_declares_only_single_component_extensions` is a tripwire
 that will fail the moment a second compound tool lands — update it deliberately,
-and re-read this section while you do). Then cover the usual matrices: a plain
-`.iso` must be **rejected** for your mode in
-`tests/test_single_batch_plan_parity.py`, and your compound extension needs a
-`tests/test_archive_conversion_e2e.py` MATRIX row proving the whole suffix is
-stripped from the output name.
+and re-read this section while you do).
+
+For a compound **input** (NKit), cover the usual matrices: a plain `.iso` must
+be **rejected** for your mode in `tests/test_single_batch_plan_parity.py`, and
+if your mode takes archive input, a `tests/test_archive_conversion_e2e.py`
+MATRIX row proving the whole suffix is stripped from the output name.
+
+For a compound **output** only (xiso), neither applies: xiso accepts a plain
+`.iso` and takes no archive input. Instead, add the tool to
+`tests/test_verify_routes_factory.py`'s table (the compound name must pass the
+verify routes), assert that `registry.tool_for_verify` resolves your product to
+your tool, and assert that the rename policy numbers the stem
+(`Game_1.xiso.iso`).
 
 ## 19. Tools that claim a shared extension by content (Xbox `.iso`)
 
