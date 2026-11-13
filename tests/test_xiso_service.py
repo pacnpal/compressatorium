@@ -680,3 +680,33 @@ async def test_a_hung_filesystem_walk_is_bounded(tmp_path, scratch, monkeypatch)
     finally:
         release.set()
     assert not _workdirs(tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raised", ["capacity", "os_timeout"])
+async def test_an_instant_timeout_keeps_its_own_cause(monkeypatch, raised):
+    """Only the bound's own expiry is reworded as "stopped responding"; a
+    TimeoutError that fails at once (the probe ceiling, an OS ETIMEDOUT) keeps
+    its type and message."""
+    runner_module = __import__(
+        MODULE.run_detached_within_stall_bound.__module__, fromlist=["settings"],
+    )
+    monkeypatch.setattr(runner_module.settings, "progress_timeout", 600)
+
+    if raised == "capacity":
+        def blocked(_func):
+            raise runner_module.ProbeCapacityExceeded("64 probes already blocked")
+
+        monkeypatch.setattr(runner_module, "_probe_in_daemon_thread", blocked)
+        expected, message = runner_module.ProbeCapacityExceeded, "64 probes already blocked"
+
+        def func():
+            return None
+    else:
+        expected, message = TimeoutError, "ETIMEDOUT from the mount"
+
+        def func():
+            raise TimeoutError(message)
+
+    with pytest.raises(expected, match=message):
+        await runner_module.run_detached_within_stall_bound(func, what="Reading")

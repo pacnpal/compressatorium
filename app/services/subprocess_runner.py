@@ -762,9 +762,18 @@ async def run_detached_within_stall_bound(
     if bound <= 0:
         return await read
     bound = max(bound, _MIN_STALL_TIMEOUT)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + bound
     try:
         return await asyncio.wait_for(read, timeout=bound)
     except asyncio.TimeoutError as exc:
+        # Only the bound's own expiry is "stopped responding". Other
+        # TimeoutErrors fail at once and carry their own cause: the probe
+        # ceiling (`ProbeCapacityExceeded` subclasses TimeoutError) and, on
+        # 3.11+, an OS-level ETIMEDOUT raised by ``func``. Rewording those as a
+        # full-bound wait would hide what an operator needs to act on.
+        if isinstance(exc, ProbeCapacityExceeded) or loop.time() < deadline:
+            raise
         raise RuntimeError(
             f"{what} stopped responding (no answer in {bound:.0f}s)",
         ) from exc
