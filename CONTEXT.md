@@ -42,6 +42,10 @@ _Avoid_: Mount, share, drive
 A set of Images that rules run against. It is either a RomM library or a folder library (one root folder the user registers), and it always sits inside a Volume.
 _Avoid_: Catalog, catalog source, collection
 
+**Inbox**:
+A watched folder that feeds one Library. Images dropped in it are converted into the Library, and the originals are moved aside, never deleted.
+_Avoid_: Drop zone, watch folder, import folder
+
 **Rule**:
 A standing instruction to convert or check the Images of one Platform in one Library.
 _Avoid_: Automation, job, task, schedule

@@ -11,6 +11,63 @@ RomM integration today when they should work on a plain folder.
 
 Anything marked **verify** needs a spike before it's relied on.
 
+Words with a capital (Image, Library, Rule, Referrer, Round-tripped, and so on)
+are defined in `CONTEXT.md`. The scope line is recorded in
+`docs/adr/0001-scope-image-bytes-and-referrers.md`.
+
+## Decisions this plan rests on
+
+These were settled by going through the plan one question at a time.
+
+1. **Standalone users come first.** People with a folder of Images and no RomM
+   get the first two steps. Every item in those steps also helps RomM users.
+2. **Scope.** The app changes or checks image bytes and keeps Referrers
+   pointing at the result. Set completion, "best version" lists and serving
+   files are out (ADR 0001).
+3. **Use this instead of RomM's converter.** We say so plainly. For the formats
+   only RomM has, we wrap the same rom-converto binary and put our checks
+   around it.
+4. **Round-trip is the default whenever a Source is deleted.** The weaker
+   container-only check is a named opt-out. Existing rules switch to Round-trip
+   on upgrade, with a one-time notice.
+5. **One unattended delete, ever:** a Source replaced by its Round-tripped
+   output, after every Referrer is updated. A Referrer that fails to update
+   blocks the delete and the Source is kept.
+6. **Three things run unattended:** converting, checking, and Inbox intake.
+   Rename, duplicate cleanup, multi-disc tidy and patching are manual, each
+   with a preview.
+7. **Platform comes from the bytes first.** Header, then the user's explicit
+   mapping, then the folder name. On a conflict the Image is skipped and gets
+   a Finding.
+8. **One scheduler per data directory.** The CLI's `run-rules` refuses to run
+   beside a live server.
+9. **The rule engine is extracted before folder Rules are built.** No second
+   engine.
+10. **Warn, never block,** when RomM's own converter is switched on.
+
+## The model
+
+```text
+Volume
+└── Library            a RomM library, or a folder the user registers
+    │                  (an Inbox feeds exactly one Library)
+    └── Platform       reported by RomM or worked out from the Image
+        │              (no Platform: Unsorted, and no Rule touches it)
+        └── Rule       convert, or check
+            └── Image  one disc, cartridge dump or PS3 folder
+                 │     one or more Images make a Title
+                 └── Referrers: RomM's ROM, .m3u, gamelist.xml, .lpl
+```
+
+A check proves one of three things, and the bare word "verified" is not used:
+**Intact** (the container reads back clean), **Round-tripped** (the output
+decoded to the same content as its Source), **Recognized** (the hash is in a
+DAT or Hasheous). The **Ledger** records every finished conversion. A
+**Finding** is something a person has to decide on.
+
+Browsing a Volume and converting by hand needs no Library. Libraries exist for
+Rules, checks and reports.
+
 ## The short version
 
 RomM converts ROMs now. It's off by default, it covers the popular disc
@@ -159,7 +216,7 @@ contract handles a tool that owns several unrelated modes.
 Each item says why RomM doesn't cover it, what already exists here, what's new,
 and the smallest version worth shipping.
 
-### A1. Safe replace: convert, verify, then swap under the same ROM id
+### A1. Round-trip check, and RomM as a Referrer
 
 **Why RomM doesn't cover it.** Its converter trusts an exit code. A truncated
 CHD from a full disk or a flaky SMB mount would replace a good dump.
@@ -167,23 +224,49 @@ CHD from a full disk or a flaky SMB mount would replace a good dump.
 **What exists.** Verify for every tool, delete-on-verify, the re-pin queue with
 persisted state.
 
-**What's new.** The in-place swap from the integration roadmap (P1-1), now
-framed as the headline. Order of operations:
+**What's new, part one: the Round-trip check.** Each tool gets a
+`content_digest(path)` on the plugin contract: a hash of the image content a
+file decodes to. A conversion is Round-tripped when the output's digest equals
+the Source's digest. It is a claim about content. Extracting a CD CHD gives one
+`.bin` where the Source may have been six track files, and a CSO → CHD chain
+never has the ISO on disk, so file equality can't be the test.
 
-1. Convert to a staging name beside the source.
-2. Verify the staged output with the tool's own check.
-3. Where the format allows, decompress-compare: hash the decompressed stream
-   and compare it to the source hash. chdman, dolphin-tool and maxcso can all
-   stream back out. This is the strongest check we can offer and nobody else
-   in this space does it.
+Each tool proves it the cheapest sound way. A starting point, each row to be
+confirmed when it's built:
+
+| Tool | How the output's content is obtained |
+| --- | --- |
+| chdman | Its verify recomputes the data SHA1 taken from the input at creation, so the output side is free. The extra cost is one independent read of the Source. **Verify** the CD frame layout so the Source side can be hashed without extracting; fall back to extract and compare. |
+| dolphin-tool | `verify --algorithm sha1` rebuilds the disc SHA1, which is compared to the Source ISO's SHA1 |
+| maxcso, z3ds, JWUDTool | decompress to a hashing stream, no temp file |
+| nsz | its verify already checks NCA hashes against the originals. **Verify** that this is enough. |
+| 7z / zip | member CRC from the archive against the CRC of the Source |
+| chains | the final output's digest against the digest of the first step's decoded Source |
+| PS3 folder → ISO, XISO trim | no round trip exists. Delete-source stays refused, as today. |
+
+Round-trip is the default whenever the Source is deleted. Container-only is a
+named opt-out ("faster, weaker"). When the Source is kept, the Intact check is
+enough and nothing changes. On upgrade, existing rules with delete-source
+switch to Round-trip and the rule editor says so once.
+
+The same digest is the duplicate finder's key (N10), so it's built once.
+
+**What's new, part two: RomM as a Referrer.** This is the in-place swap from
+the integration roadmap (P1-1), run from the same hook as every other Referrer:
+
+1. Convert to a staging name beside the Source.
+2. Verify the staged output is Intact, then Round-trip it.
+3. Update the file Referrers (`.m3u`, and any opted-in frontend files).
 4. `PUT /api/roms/{id}` with the new `fs_name`, `os.replace` the staged file
    over it, then `POST /api/tasks/scan {type: "hashes", roms_ids: [id]}`.
-5. Record every step so a crash resumes or surfaces the ROM for manual
+5. Record every step so a crash resumes or surfaces the Image for manual
    recovery.
 
-**MVP.** Single-file ROMs, behind an opt-in, with the check level as a
-per-rule setting. Round-trip compare is the default whenever the source is
-deleted. Container-only is a named opt-out ("faster, weaker").
+If RomM refuses the rename, the Source is kept, the output stays beside it and
+the job ends as "converted, source kept: RomM refused the rename".
+
+**MVP.** The Round-trip check ships first, by itself, for every Library. The
+RomM swap follows for single-file Images behind an opt-in.
 
 **Verify.** That a `hashes` scan by `roms_ids` refreshes size and hashes after
 an out-of-band swap. The scan code was rewritten since the last check, and
@@ -192,98 +275,113 @@ the mtime change is picked up.
 
 ### A2. Convert what RomM skips
 
-**Unidentified ROMs.** RomM won't convert them. We can do better than just
-converting them: identify first, then convert.
+**ROMs RomM hasn't identified.** RomM won't convert them. We can Recognize
+them first, then convert.
 
-1. Hash the source (already done for DAT matching).
+1. Hash the Source (already done for DAT matching).
 2. Look it up in local DATs, then Hasheous.
 3. On a hit, show the DAT name next to the row and convert.
-4. After conversion, the re-pin path writes provider ids if Hasheous returned
-   any. **Verify** which ids our Hasheous transport keeps; today it reads the
+4. Afterwards, the RomM Referrer writes provider ids if Hasheous returned any.
+   **Verify** which ids our Hasheous transport keeps; today it reads the
    signature, platform and publisher fields.
 
 New UI: an "Unidentified in RomM" filter on the RomM view with a count of how
-many we can name.
+many we Recognize.
 
 **Platforms with no RomM target.** Wii U, PS3, carts, GDI, original Xbox, the
-long tail of CD systems. No new code. This is a docs and UI job: when the
-connected RomM has its converter on, the rule editor should show per platform
-"RomM can't convert this, Compressatorium can". The detection is already
-specced as item 4.3 in the integration roadmap. Update that item's operation
-table from this doc.
+long tail of CD systems. No new code. The rule editor shows, per Platform,
+"RomM can't convert this, Compressatorium can" (see A7).
 
 **Archives as input.** RomM's converter takes loose files only. A PS2 library
 stored as `.7z` is invisible to it. We already convert from inside archives,
 so say so in the RomM view.
 
-### A3. Library health report and scheduled scrub
+### A3. Findings: health check and scheduled scrub
 
 RomM has no check that a file still reads correctly. Its `verified` flag means
-a hash matched once. A CHD with rotted hunks keeps its header SHA1.
+a hash matched once, which is our Recognized. A CHD with rotted hunks keeps its
+header SHA1 and stays Recognized while no longer being Intact.
 
-This is H0 in the integration roadmap. Two additions from this pass:
-
-- **Scheduled scrub** as a rule type: "verify N GB per night, oldest check
-  first". The `verifications` table already stores results. Add a
-  `verified_at` age and a sweep that picks the stalest files. Report failures
-  through notifications (N5) and, for RomM users, the RomM inbox.
+- **Check Rules.** A Rule with no target format: "check N GB per night,
+  stalest first". The `verifications` table already stores results. Add the
+  age of the last check and pick the stalest Images.
+- **Findings view.** One list of everything that needs a decision: not Intact,
+  Platform disagrees with its folder, not Recognized, duplicates. Each row
+  opens the existing action (convert, Verify, delete plan).
+- **Nothing acts on a Finding by itself.** A failed check sends a notification
+  (N5) and, for RomM users, a RomM inbox message. It never moves or deletes
+  the Image.
 - **Uncompressed size.** RomM issue #4347 asks to show extracted size next to
   compressed size. We read the logical size out of every container already.
-  Show it in the file inspector and the health report.
+  Show it in the file inspector and the Findings view.
 
-### A4. Offline identification with local DATs
+### A4. Rename to DAT name
 
-RomM declined this. We have it. What's missing is using it for more than a
-badge:
+RomM declined local DATs, and RomM issue #1865 (open, 11 upvotes) asks for a
+bulk rename admin tool. We have `/files/rename` and the DAT's canonical name.
 
-- **Rename to the DAT name.** RomM issue #1865 (open, 11 upvotes) asks for a
-  bulk rename admin tool. We have `/files/rename` and the DAT's canonical
-  name. Add "Rename to DAT name" as a bulk action with a preview. With RomM
-  connected, do the rename through `PUT /api/roms/{id}` with `fs_name` so RomM
-  keeps the record. Without RomM, rename on disk and update any sidecar
-  (N8, N9).
-- **Bad dump and wrong-revision report.** Part of A3.
-- **Parent/clone data.** The DAT parser drops `cloneof`/`romof` and region
-  tags. Keep them. That unlocks set completion and "best version" (H2).
+- **Whose name wins.** The user ranks their DATs once. The default is Redump
+  for discs and No-Intro for cartridges. An Image Recognized by two DATs that
+  the ranking doesn't order is not renamed and gets a Finding.
+- **What gets renamed.** The whole Image: cue, track files and folder, with
+  the cue rewritten to match.
+- **Referrers.** With RomM connected the rename goes through
+  `PUT /api/roms/{id}` with `fs_name`, so RomM keeps the ROM. File Referrers
+  are updated from the shared hook (N8, N9). A Referrer that fails blocks the
+  rename.
+- **Manual only**, as a bulk action with a preview.
 
-### A5. Savings ledger
+### A5. Savings in the RomM inbox
 
-RomM reports `bytes_saved` once, in the result of one task run. We only
-estimate, and only in the RomM view. See N6 for the shared design. For RomM
-users specifically: post the sweep summary to the RomM inbox (integration
+RomM reports `bytes_saved` once, in the result of one task run. See N6 for the
+Ledger. For RomM users, post the sweep summary to the RomM inbox (integration
 roadmap 5.1).
 
-### A6. Patch bench for compressed ROMs
+### A6. Patch bench for compressed Images
 
 **Demand.** RomM #5572 and #2942: people store carts as zip/7z and RomM's
 patcher rejects them.
 
 **What exists.** Archive extraction, the 7z/zip packer, the job queue.
 
-**What's new.** A "Patch" action: pick a ROM (loose or inside an archive) and
-a patch file, we unpack, apply, repack as `Name (Patched).7z` beside it. IPS
-and BPS are small enough to implement in Python. xdelta needs the `xdelta3`
-binary. UPS and PPF can follow.
+**What's new.** A "Patch" action: pick an Image (loose or inside an archive)
+and a patch file. We unpack, apply, and repack as `Name (Patched).7z` beside
+it. IPS and BPS are small enough to implement in Python. xdelta needs the
+`xdelta3` binary. UPS and PPF can follow.
 
-**MVP.** IPS and BPS on cartridge ROMs, output never overwrites the source.
+**What a patched Image is.** A new Image of the same Title. The original is
+never changed. The patched Image is not Recognized, and Rules treat it like any
+other Image that isn't. The Ledger records which Image and which patch file
+produced it.
+
+**MVP.** IPS and BPS on cartridge Images. Manual only.
 
 **Guardrail.** No patch downloads, no patch database. The user supplies the
 file.
 
-This one is useful with or without RomM, so it belongs to the shared tools.
+### A7. Beside RomM's converter
 
-### A7. The rest of the headline track
+The stance is "use this instead", and the app warns without blocking:
 
-Still right, order adjusted for what RomM has shipped:
+- A banner in RomM settings when the heartbeat reports `CONVERTO.ENABLED`:
+  RomM's converter is on, and it deletes sources without checking the output.
+- A conflict flag on each Rule whose Platform has an entry in RomM's
+  `converto.platform_formats`, with the two targets side by side.
+- Sweeps and listings ignore RomM's `.romm_tmp_*` staging files.
+- The rule editor marks Platforms RomM can't convert at all.
 
-| Feature | Status after this pass |
+This replaces item 4.3 of the integration roadmap. Its "import RomM's targets
+as rules" idea stays as a button on the banner.
+
+### A8. Later, and dropped
+
+| Feature | Status |
 | --- | --- |
-| H1 Drop zone | Unchanged. RomM still needs to be told the platform on upload. See N4 for the no-RomM version. |
-| H2 Complete the set | Unchanged. Depends on A4's parser change. |
-| H3 Make games better (PCSX2 patches) | Unchanged. |
-| H4 Device packs | Reposition. RomM now pushes single games to a device and converts on download. Our angle is the batch: "fit the most games on a 256 GB card", pre-converted, as one copy job. |
-| H5 Multi-disc tidy | Still open upstream as #5082. RomM added "promote one file to a folder" (`handler/rom_conversion.py`) but not grouping a flat multi-disc set. Use `PUT` rename for the move where possible. |
-| H6 Library Wrapped | Unchanged. Needs N6. |
+| Multi-disc tidy (H5) | Kept, late. Groups loose discs into one Title folder with an `.m3u`. Manual, with a preview. Still open upstream as #5082. |
+| Device packs (H4) | Kept, late. A batch copy that converts a chosen set onto a card. RomM pushes single games and converts on download; ours is the batch. |
+| Library Wrapped (H6) | Kept, late. Reads the Ledger. No set-completion numbers. |
+| Complete the set (H2), "best version" | **Dropped.** Outside ADR 0001. The DAT parser change to keep parent/clone data goes with it. |
+| Make games better (H3, PCSX2 patches) | **Dropped.** It downloads third-party content and never touches image bytes. |
 
 ## Part N: for people who don't use RomM
 
@@ -291,81 +389,91 @@ Most of these are extractions. The logic exists under `services/romm` and has
 to move onto shared infrastructure, which is what the modularity rule in
 `CLAUDE.md` asks for anyway.
 
-### N1. Rules for plain folders
+### N1. Rules for folder Libraries
 
 **The problem.** `services/romm/auto.py` is 2,000 lines of scheduling,
-filtering, preview and history that only runs against a RomM catalog. Someone
-with `/data/ps2` and no RomM gets a file browser and a convert button.
+filtering, preview and history that only runs against RomM. Someone with
+`/data/roms` and no RomM gets a file browser and a convert button.
 
-**Design.** Split the rule engine from where its ROM list comes from.
+**Design.** Move the rule engine out first, with no behaviour change, then add
+the folder Library as a second implementation of one interface.
 
 ```text
-services/automation/
-    rules.py      rule schema, normalize, validation (moved from romm/auto.py)
+services/rules/
+    rules.py      Rule schema, normalize, validation (moved from romm/auto.py)
     schedule.py   window, weekday mask, due check
     sweep.py      candidate inspection, queueing, converted-history
-    sources.py    CatalogSource protocol
+    library.py    Library protocol
 
-CatalogSource
-    id: str                      # "romm" | "volume:<name>"
-    scopes() -> [Scope]          # RomM platforms, or folders the user mapped
-    items(scope) -> [Item]       # {key, path, name, size, added_at,
-                                 #  platform_slug, identified}
-    capabilities                 # {identified_filter, collections, ...}
+Library
+    id: str                        # "romm" | "folder:<path>"
+    platforms() -> [Platform]
+    images(platform) -> [Image]    # {key, path, name, size, added_at,
+                                   #  recognized}
+    referrers(image) -> [Referrer]
+    capabilities                   # {recognized_filter, collections, ...}
 ```
 
-- `RommSource` wraps today's client. `key` is the RomM ROM id.
-- `FolderSource` walks a folder. `key` is the path relative to the volume.
-  `platform_slug` comes from N2. `identified` means "has a DAT match".
-- Rules are stored per `(source id, scope id)`. Migrate the existing
-  `romm.rules` and `romm.auto_state` preferences by prefixing their keys with the source id.
-- The converted-history memory moves with the rule. A folder rule is cleared
-  when its folder or target changes, the same way a RomM rule is cleared when
-  the instance changes.
+- `RommLibrary` wraps today's client. An Image's `key` is the RomM ROM id.
+- `FolderLibrary` is one root folder the user registers. Its Platforms come
+  from N2, so `/data/roms/{ps2,psx,gc}` shows up as three Platforms without
+  being told. An Image's `key` is its path relative to the root. Images with
+  no Platform are Unsorted and no Rule touches them.
+- A Rule belongs to a (Library, Platform) pair, the same shape RomM rules have
+  now. The stored `romm.rules` and `romm.auto_state` preferences are migrated
+  by prefixing their keys with the Library id.
+- The converted-history memory moves with the Rule. A folder Rule's history is
+  cleared when its Library root or target changes, the same way a RomM Rule's
+  is cleared when the instance changes.
 
-**UI.** `RommAutomation.svelte` becomes a generic `Automation` view with a
-source picker. The RomM view keeps its entry point. A volume gets "Add rule
-for this folder" in the browser.
+**UI.** `RommAutomation.svelte` becomes a generic Rules view with a Library
+picker. The RomM view keeps its entry point. A Volume folder gets "Register as
+a Library" in the browser.
 
-**MVP.** One folder, one rule, skip policy only (the filesystem is the state,
-so no history table is needed), preview and run-now.
+**MVP.** One folder Library, skip policy only (the filesystem is the state, so
+no history is needed), preview and run-now.
 
-**Size.** L, mostly moving code and its tests. No behaviour change for RomM
-users, which the existing test suite should prove.
+**Size.** L for the move, M for the folder Library. The move must leave every
+existing RomM test passing untouched.
 
-### N2. Work out the platform without being told
+### N2. Work out the Platform without being told
 
 **The problem.** A bare `.iso` could be PS2, PSP, GameCube, Wii or Xbox. With
 RomM we know. Without RomM the user sets an "ISO handling" toggle and picks a
 tool tab.
 
-**Design.** One `detect_platform(path) -> (slug, confidence, how)` in shared
-infrastructure, trying cheap things first:
+**Design.** One `detect_platform(image) -> (slug, how)` in shared
+infrastructure. Precedence is fixed:
 
-1. **Folder name.** Match path components against the slugs RomM, ES-DE and
-   Batocera use (`ps2`, `psx`, `gc`, `gamecube`, `dreamcast`, …). Tools already
-   declare `platform_slugs`.
-2. **Header sniff.** A few hundred bytes:
+1. **Header.** A few hundred bytes:
    - GameCube magic `C2339F3D` at 0x1C, Wii magic `5D1C9EA3` at 0x18.
    - PS1/PS2 from `SYSTEM.CNF` (`BOOT` vs `BOOT2`), PSP from `PARAM.SFO`.
      `services/disc_id.py` already parses all three, and Dreamcast `IP.BIN`.
    - Xbox: the XISO probe that shipped with the Xbox tool.
    - Saturn `SEGA SEGASATURN`, Sega CD `SEGADISCSYSTEM` at sector 0.
-3. **DAT match.** A hash hit names the DAT, and the DAT name names the system.
-   This is the slow path, so only use cached matches.
+2. **The user's mapping.** "This folder is PSP."
+3. **Folder name.** Path components matched against the slugs RomM, ES-DE and
+   Batocera use (`ps2`, `psx`, `gc`, `dreamcast`, …). Tools already declare
+   `platform_slugs`.
 
-Cache the result per file next to the existing metadata scan.
+A cached DAT match can fill in when all three are silent, since the DAT's name
+names the system.
+
+**Conflicts.** If the header says one Platform and the mapping or folder says
+another, the Image is skipped by Rules and gets a Finding ("in the ps2 folder,
+looks like GameCube"). It is never converted on a guess. If nothing answers,
+the Image is Unsorted.
 
 **What it unlocks.**
 
 - An **Auto** entry in the tool picker: select mixed files, press convert,
-  each goes to its platform's default format.
-- Folder rules (N1) that need no manual platform mapping.
-- The drop zone (N4).
+  each goes to its Platform's default format.
+- Folder Libraries (N1) that need no manual mapping.
+- The Inbox (N4).
 - The "ISO handling" toggle goes away.
 
-**MVP.** Folder name plus the GameCube/Wii and PlayStation sniffs. That covers
-the ambiguous `.iso` cases.
+**MVP.** The GameCube/Wii and PlayStation headers plus folder name. That
+covers the ambiguous `.iso` cases.
 
 **Size.** M.
 
@@ -379,128 +487,159 @@ volume.
 job manager without starting uvicorn.
 
 ```bash
-compressatorium convert /data/ps2 --to chd --verify --delete-source
+compressatorium convert /data/ps2 --to chd --delete-source
 compressatorium convert /data --auto --dry-run --json
 compressatorium verify /data/gamecube --since 30d
-compressatorium run-rules               # one pass over the stored rules, then exit
-compressatorium report                  # savings and health as JSON
+compressatorium run-rules               # one pass over the stored Rules, then exit
+compressatorium report                  # savings and Findings as JSON
 ```
 
 - `--to` takes an output format and resolves the mode through the registry, so
   it works for every tool, chains included.
 - `--auto` uses N2.
-- `run-rules` is N1 as a one-shot, for cron and Unraid User Scripts.
+- `--delete-source` implies the Round-trip check. `--container-only` is the
+  opt-out.
+- `convert` and `verify` run standalone and take a lock per output, so they
+  are safe beside a running server.
+- `run-rules` needs the data directory to itself. If a server holds it, the
+  CLI prints why, exits with its own exit code and does nothing. One
+  scheduler per data directory.
 - Exit code 0 when everything converted or was already done, 1 on any failure,
-  2 on bad arguments. `--json` prints one line per file.
-- Keep `CHD_MODE=cli` working as an alias for
+  2 on bad arguments, 3 when `run-rules` found a live server. `--json` prints
+  one line per Image.
+- `CHD_MODE=cli` keeps working as an alias for
   `convert <each volume> --to chd`.
 
 **MVP.** `convert` and `verify` with `--to`, `--dry-run`, `--json`.
 
 **Size.** M. The job manager already runs without a browser attached.
 
-### N4. Drop zone without RomM
+### N4. Inbox
 
-H1 from the integration roadmap, minus the RomM scan trigger. The output
-layout is the open question when there's no RomM to ask. Offer three: RomM
-style (`roms/{platform}/`), ES-DE/Batocera style (`{platform}/`), or flat.
-Platform comes from N2. Names come from the DAT when there's a match.
+A watched folder that feeds exactly one Library. It is not a Library itself.
 
-**Size.** M after N2.
+Per arriving Image, once it has stopped growing:
+
+1. Unpack archives (`services/archive.py`; its size limits stay in force).
+2. Work out the Platform (N2) and, where a DAT is loaded, Recognize it.
+3. Convert *into* the Library under that Platform's Rule, named from the DAT
+   when Recognized.
+4. Move the original to `processed/` beside the Inbox.
+
+Intake never deletes. An Unsorted Image stays where it is with a Finding that
+says why. The Library's layout decides where output goes: RomM style
+(`roms/{platform}/`), ES-DE/Batocera style (`{platform}/`), or flat. With a
+RomM Library, trigger a RomM scan of the Platform afterwards.
+
+Polling, since inotify is unreliable on NFS/SMB.
+
+**Size.** M after N1 and N2.
 
 ### N5. Notifications
 
 We have none. RomM has an inbox with webhook, Apprise and email channels.
 
 **Design.** A small `services/notify.py` with one `send(event, title, body,
-data)` and two transports to start: a generic JSON webhook, and
-[Apprise](https://github.com/caronc/apprise) URLs (which covers ntfy, Discord,
-Gotify, Pushover, email and most of the rest). Events: `sweep_done`,
-`job_failed`, `scrub_failed`, `disk_low`. Batch per sweep so a 400-file run
-sends one message.
+data)` and two transports: a plain JSON webhook with no extra dependency, and
+[Apprise](https://github.com/caronc/apprise) URLs, shipped in the Docker image
+(ntfy, Discord, Gotify, Pushover, email and most of the rest). Events:
+`sweep_done`, `job_failed`, `check_failed`, `disk_low`. Batch per sweep so a
+400-file run sends one message.
 
-Settings live in the app like the RomM settings do, with a Test button. Secrets
-never go back to the browser.
+Everything is off until the user adds a destination. Settings live in the app
+like the RomM settings do, with a Test button. Secrets never go back to the
+browser.
 
 For RomM users this is the fallback when the RomM token lacks `me.write`.
 
 **Size.** S.
 
-### N6. Conversion history and savings ledger
+### N6. The Ledger
 
 **The problem.** Job history is in memory, capped at 500, and gone on restart.
 Jobs record `output_size` but not the input size. So there's no "you've saved
-412 GB" anywhere, and no audit trail of what was converted or deleted.
+412 GB" anywhere, and no answer to "what happened to `Game.iso` in August".
 
-**Design.** A `conversions` table, written when a job reaches a terminal
-state:
+**Design.** A `ledger` table, one row per finished conversion:
 
 ```text
 id, finished_at, tool_id, mode, source_path, output_path,
 input_bytes, output_bytes, duration_s, status,
-verified (none|container|roundtrip), source_deleted (bool),
-catalog_source, catalog_key, platform_slug
+check (none|intact|round_tripped), source_deleted (bool),
+deleted_paths (json), referrers_updated (json),
+library_id, image_key, platform_slug, content_digest,
+patch_file (for a patched Image)
 ```
 
-`job_manager` calls one `record_conversion(job)` hook. The RomM re-pin path
-and N1's history can read from it later.
+`job_manager` calls one `record(job)` hook at the terminal state. Rows are
+kept forever by default, with a prune setting.
 
 **Surfaces.**
 
-- Dashboard card: total saved, by platform, by format, last 30 days.
-- History view with search and CSV export.
+- Dashboard card: total saved, by Platform, by format, last 30 days.
+- A Ledger view with search and CSV export.
 - `GET /api/stats/savings` and a Prometheus `/metrics` endpoint (jobs by
-  status, bytes in and out, queue depth). Home-lab users graph everything.
-- The source for Library Wrapped (H6).
+  status, bytes in and out, queue depth).
+- The source for the Findings view's history and for Library Wrapped.
 
 **MVP.** The table, the hook, the dashboard card.
 
 **Size.** S–M. One migration.
 
-### N7. Scheduled scrub
+### N7. Check Rules
 
-Same engine as A3, running against volumes. "Verify 50 GB a night, stalest
-first, tell me if anything fails." It's a rule type in N1's engine with no
-target format.
+The engine from A3 against folder Libraries. "Check 50 GB a night, stalest
+first, tell me if anything is no longer Intact." It's a Rule with no target
+format.
 
 **Size.** S after N1.
 
-### N8. Playlists and cue sheets that follow the conversion
+### N8. Referrers, starting with `.m3u`
 
 Converting `Disc 1.cue` to `Disc 1.chd` leaves any `.m3u` beside it pointing
-at files that are gone. RomM's converter rewrites them. We don't, and it bites
-plain-volume users of RetroArch and ES-DE just as hard.
+at files that are gone. RomM's converter rewrites them. We don't.
 
-**Design.** A shared `rewrite_references(folder, renames)` called from the job
-completion path when the source is deleted: rewrite `.m3u` entries, atomically,
-only for names that were actually replaced. Add "Create .m3u" for a selection
-of discs.
+The RomM swap, playlist rewriting and frontend files are one job, so they get
+one contract, registry-driven like tools:
+
+```text
+Referrer
+    detect(library, image) -> bool
+    plan(renames: {old_path: new_path}) -> Change      # shown in the preview
+    apply(change) -> Result                            # atomic, one .bak
+```
+
+One hook runs every Referrer for an Image when its Source is replaced or the
+Image is renamed. They run **before** the Source is removed. If any fails, the
+Source is kept, the output stays, and the job ends as "converted, source kept:
+couldn't update X".
+
+The `.m3u` Referrer is always on: it rewrites entries for names that were
+actually replaced, and it's the piece multi-disc tidy needs. "Create .m3u" for
+a selection of discs comes with it.
 
 **Size.** M. Already specced as H-8.
 
-### N9. Frontend metadata that survives conversion
+### N9. Frontend Referrers
 
-**The problem.** We tell RomM users "your metadata survives conversion". Users
+**The problem.** We tell RomM users their metadata survives conversion. Users
 of ES-DE, Batocera and RetroArch have the same problem and get nothing.
 `gamelist.xml` keys each game on `<path>./Game.iso</path>`. Convert to
 `Game.chd` and the entry is orphaned: artwork, description, favourite flag and
 play count all drop.
 
-**Design.** A `FrontendAdapter` contract, registry-driven like tools:
-
-```text
-detect(folder) -> bool
-rewrite(folder, renames: {old_name: new_name}) -> RewriteResult
-```
+Three more Referrers on the N8 contract:
 
 - **gamelist.xml** (EmulationStation, ES-DE, Batocera, Knulli, muOS variants):
-  rewrite `<path>` for renamed files. Write a `.bak` once per file.
+  rewrite `<path>` for renamed files.
 - **RetroArch `.lpl` playlists:** rewrite `path`, and blank the stale `crc32`.
 - **LaunchBox platform XML:** `ApplicationPath`. **Verify** format stability
   before shipping.
 
-It runs from the same hook as N8, only when the source is removed, and shows
-in the delete-plan confirmation: "will update gamelist.xml (3 entries)".
+These edit another app's files, so they are opt-in per Library ("this folder
+is used by ES-DE"). Each one is listed in the delete confirmation ("will update
+gamelist.xml, 3 entries") and takes a one-time backup. ES-DE rewrites its
+gamelist when it exits, so the opt-in text says to close it first.
 
 **MVP.** gamelist.xml only.
 
@@ -511,7 +650,8 @@ handheld firmware uses a gamelist.
 
 Find the same disc stored twice, including in two different containers. The
 hashes we cache today don't line up across formats on their own, so this needs
-one agreed content key per file before any query can group on it.
+one agreed content key per file before any query can group on it. That key is
+the `content_digest` from A1.
 
 What each cached hash actually covers:
 
@@ -543,23 +683,23 @@ So the content key is `(kind, sha1)`:
   this. Until then CD CHD against cue/bin is reported as "possibly the same
   disc" with no delete action.
 - Containers with no embedded image hash (CSO, NSZ, WUX, Z3DS) are left out at
-  first. The scrub (N7) already decompresses them to verify, and can record a
-  `raw:` key as a side effect later.
+  first. A Check Rule (N7) decompresses them anyway and can record a `raw:`
+  key as a side effect later.
 
 Never group on `chd_sha1`. `ChdmanTool.embedded_hashes` already returns the two
 CHD hashes with separate labels, so the key builder reads the label rather than
 guessing.
 
-Report groups with their sizes and a suggested keeper (verified, smallest,
-DAT-named). The action is the existing delete plan. Nothing is deleted without
-the confirmation list.
+Groups show up as Findings with their sizes and a suggested keeper (Intact,
+smallest, DAT-named). Cleanup is manual: the action is the existing delete
+plan, and nothing is deleted without the confirmation list.
 
 **MVP.** `raw:` keys only: ISO against Dolphin containers and DVD CHDs, plus
 exact file duplicates. A delete is offered only for a hash-equal group. A
 track file that belongs to a cue is never offered on its own.
 
-**Size.** M. A content-key column on the cached hashes, the key builder on the
-tool contract, then the query and view.
+**Size.** M. The content digest on the tool contract (shared with A1), then
+the query and view.
 
 ### N11. Emulator compatibility presets
 
@@ -569,7 +709,7 @@ only reads zlib CHDs. That's a lookup table the app should apply.
 A data file maps a target (PCSX2, NetherSX2, DuckStation, PPSSPP, Dolphin,
 RetroArch cores, MiSTer) to the formats and codecs it reads. The compression
 picker gains "Compatible with…" and warns when the chosen codec won't load.
-Device packs (H4) read the same file.
+Device packs read the same file.
 
 **Size.** S for the picker, data kept in one YAML.
 
@@ -579,75 +719,82 @@ What has to exist once, so nothing above is built twice:
 
 | Piece | Used by |
 | --- | --- |
-| `CatalogSource` + moved rule engine | N1, N3, N7, existing RomM rules |
+| `Library` protocol and the moved rule engine | N1, N3, N4, N7, existing RomM rules |
 | `detect_platform` | N1, N2, N3, N4 |
-| `conversions` ledger | N6, A5, H6, history view |
+| `content_digest` on the tool contract | Round-trip check (A1), duplicate finder (N10), Ledger |
+| Ledger | N6, A5, Findings view, Library Wrapped |
 | `notify` | N5, A3, N7 |
-| Post-conversion reference hook (`.m3u`, frontend adapters) | N8, N9, A4 rename |
-| Verify levels (container, round-trip) | A1, N1 rules, CLI |
-| DAT parser keeps clone and region data | A4, H2 |
+| `Referrer` contract and its one hook | A1 (RomM), N8, N9, A4 rename, multi-disc tidy |
+| Findings store | A3, N2 conflicts, A4 rename conflicts, N10 |
 
 All of these go in `docs/DESIGN_tool_plugin_architecture.md` as they land.
 
 ## Order of work
 
 Ranked by how many users feel it against how much it costs. Each row is one
-PR unless it says otherwise.
+PR unless it says otherwise. The Round-trip check sits in step 1 because it's
+the claim the whole pitch stands on, and folder Rules shouldn't ship a
+delete-source option without it. That placement is my call; move it if you'd
+rather have folder Rules sooner.
 
 ### Step 1: foundations both audiences need
 
 | # | Item | Size |
 | --- | --- | --- |
-| 1.1 | Conversion ledger and dashboard savings card (N6) | S–M |
+| 1.1 | Ledger and dashboard savings card (N6) | S–M |
 | 1.2 | Notifications: webhook and Apprise (N5) | S |
-| 1.3 | Platform detection: folder name and header sniff (N2) | M |
-| 1.4 | Shared `.m3u` rewriter (N8) | M |
+| 1.3 | Platform detection: headers and folder name, conflicts as Findings (N2) | M |
+| 1.4 | `content_digest` and the Round-trip check as the delete-source default, with the upgrade notice (A1 part one) | M |
+| 1.5 | Referrer contract with the `.m3u` Referrer (N8) | M |
 
-Done when: a restart keeps the history, a finished batch can ping a phone, and
-a mixed selection of `.iso` files converts without the ISO toggle.
-
-### Step 2: automation for everyone
-
-| # | Item | Size |
-| --- | --- | --- |
-| 2.1 | Move the rule engine out of `services/romm` behind `CatalogSource`, no behaviour change (N1) | L |
-| 2.2 | `FolderSource` and the generic Automation view (N1) | M |
-| 2.3 | CLI: `convert`, `verify`, `run-rules` (N3) | M |
-| 2.4 | Scrub as a rule type (N7, A3) | S |
-
-Done when: a user with no RomM sets "PS2 folder → CHD, nightly, verify, delete
-source" in the UI or runs it from cron.
-
-### Step 3: the safety story
-
-| # | Item | Size |
-| --- | --- | --- |
-| 3.1 | Round-trip verify level (A1) | M |
-| 3.2 | Spike, then in-place swap that keeps the RomM ROM id (A1, integration roadmap 3.0–3.1) | L |
-| 3.3 | gamelist.xml adapter (N9) | M |
-| 3.4 | Health report and duplicate finder (A3, N10) | M |
-
-Done when: converting never orphans a game in RomM or ES-DE, and the README
+Done when: a restart keeps the Ledger, a finished batch can ping a phone, a
+mixed selection of `.iso` files converts without the ISO toggle, and the README
 can say "with the round-trip check on, a source is deleted only after the
 output decodes back to the same disc image". That sentence is about image
 content. A `cso_to_chd` job compares the decompressed image, and the `.cso`
 container itself is not recoverable from the CHD. A rule set to the weaker
 container-only check doesn't get the claim.
 
+### Step 2: Rules for everyone
+
+| # | Item | Size |
+| --- | --- | --- |
+| 2.1 | Move the rule engine out of `services/romm` behind `Library`, no behaviour change (N1) | L |
+| 2.2 | `FolderLibrary` and the generic Rules view (N1) | M |
+| 2.3 | CLI: `convert`, `verify`, `run-rules` (N3) | M |
+| 2.4 | Check Rules and the Findings view (N7, A3) | S–M |
+
+Done when: a user with no RomM sets "PS2 → CHD, nightly, delete source" on a
+folder Library in the UI, or runs it from cron.
+
+### Step 3: Referrers and RomM
+
+| # | Item | Size |
+| --- | --- | --- |
+| 3.1 | Spike, then RomM as a Referrer: the in-place swap that keeps the ROM id (A1 part two, integration roadmap 3.0–3.1) | L |
+| 3.2 | gamelist.xml Referrer, opt-in per Library (N9) | M |
+| 3.3 | Duplicate finder, `raw:` keys (N10) | M |
+| 3.4 | RomM converter banner, conflict flags, ignore `.romm_tmp_*` (A7) | S–M |
+
+Done when: converting never orphans a game in RomM or ES-DE, and the README
+says to turn RomM's converter off.
+
 ### Step 4: reach
 
 | # | Item | Size |
 | --- | --- | --- |
 | 4.1 | rom-converto plugin for ZAR, PBP, CIA ↔ CCI (parity) | M |
-| 4.2 | Rename to DAT name, through RomM when connected (A4) | S–M |
-| 4.3 | Identify-then-convert for RomM's unidentified ROMs (A2) | M |
+| 4.2 | Rename to DAT name, with DAT ranking (A4) | S–M |
+| 4.3 | Recognize, then convert, RomM's unidentified ROMs (A2) | M |
 | 4.4 | Patch bench (A6) | M |
 | 4.5 | Compatibility presets (N11) | S |
-| 4.6 | Drop zone (N4, H1) | M |
+| 4.6 | Inbox (N4) | M |
+| 4.7 | Multi-disc tidy, device packs, Library Wrapped (A8) | M each |
 
-Steps 1 and 2 don't touch the RomM integration's behaviour, so the remaining
-phases of `ROMM_INTEGRATION_ROADMAP.md` (scan trigger, pairing, covers) can run
-alongside them.
+Steps 1 and 2 don't change how the RomM integration behaves, apart from the
+Round-trip default in 1.4, so the remaining phases of
+`ROMM_INTEGRATION_ROADMAP.md` (scan trigger, pairing, covers) can run alongside
+them.
 
 ## Corrections to the integration roadmap from this pass
 
@@ -667,6 +814,12 @@ alongside them.
   download. Keep the batch planner, drop the idea of being the delivery path.
 - H5's upstream issue (#5082) is still open. `promote_single_file_to_folder`
   exists for one file at a time.
+- H2 (complete the set) and H3 (make games better) are dropped. See ADR 0001
+  and A8 above.
+- Item 4.3 (coexist with RomM's converter) is replaced by A7: warn, never
+  block.
+- H-8 (`.m3u`) and the in-place swap (P1-1) are now two Referrers on one
+  contract. See N8.
 
 ## Sources
 

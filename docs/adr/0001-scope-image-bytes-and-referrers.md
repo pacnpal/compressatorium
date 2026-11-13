@@ -7,8 +7,8 @@ value-add roadmap was growing the app into a general library manager one
 reasonable feature at a time.
 
 In scope: converting, checking that an Image is Intact, health scrub, duplicate
-finder, rename to DAT name, patching, and a drop zone that sorts incoming
-files. Each one reads or writes image bytes, or renames an Image and fixes its
+finder, rename to DAT name, patching, and an Inbox that sorts incoming
+files into a Library. Each one reads or writes image bytes, or renames an Image and fixes its
 Referrers.
 
 Out of scope: set completion ("812 of 1,034"), missing-game lists, and "best
