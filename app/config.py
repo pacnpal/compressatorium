@@ -152,8 +152,9 @@ class Settings(BaseSettings):
         default="/usr/local/bin/jwudtool", alias="JWUDTOOL_PATH",
     )
     # nkit2iso binary path (NKit-shrunk GameCube/Wii image -> plain .iso). Built
-    # from source (DonMikone/nkit2iso, MIT) into the image at
-    # /usr/local/bin/nkit2iso; set NKIT2ISO_PATH to relocate/override.
+    # from the vendored source in third_party/nkit2iso (DonMikone/nkit2iso, MIT)
+    # into the image at /usr/local/bin/nkit2iso; set NKIT2ISO_PATH to
+    # relocate/override.
     nkit2iso_path: str = Field(
         default="/usr/local/bin/nkit2iso", alias="NKIT2ISO_PATH",
     )

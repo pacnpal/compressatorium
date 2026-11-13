@@ -11,6 +11,17 @@
   "labels": ["dependencies"],
   "minimumReleaseAge": "3 days",
   "internalChecksFilter": "strict",
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/examples/**",
+    "**/__tests__/**",
+    "**/test/**",
+    "**/tests/**",
+    "**/__fixtures__/**",
+    "third_party/**"
+  ],
   "platformAutomerge": true,
   "lockFileMaintenance": {
     "enabled": true,

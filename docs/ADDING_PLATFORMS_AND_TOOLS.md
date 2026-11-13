@@ -1375,7 +1375,7 @@ the sixth is the runtime:
 | `builder` | `debian:trixie-slim` | z3ds_compressor (from source) |
 | `maxcso-builder` | `debian:trixie-slim` | maxcso (from source) |
 | `makeps3iso-builder` | `debian:trixie-slim` | makeps3iso (from source) |
-| `nkit2iso-builder` | `golang:1.26-trixie` | nkit2iso (from source, Go) |
+| `nkit2iso-builder` | `golang:1.26-trixie` | nkit2iso (from vendored source in `third_party/`, Go) |
 | `frontend-builder` | `node:lts-slim` | the Svelte UI (`npm ci && npm run build`) |
 | *(runtime)* | `debian:trixie-slim` | the final image — no Node, no toolchain |
 
@@ -1388,6 +1388,24 @@ toolchain image needs its own stage regardless: `nkit2iso-builder` uses the
 official digest-pinned `golang` image because its `go.mod` wants a newer Go than
 Debian trixie packages, and builds with `CGO_ENABLED=0` so the result is static
 and adds nothing to the runtime stage's shared-library list.
+
+**Vendored source (`third_party/`).** Normally a builder stage `git clone`s
+upstream at a pinned commit. When upstream disappears (nkit2iso's GitHub repo
+went 404 after 4.5.0), vendor the pinned source into `third_party/<tool>/` and
+`COPY` it into the stage instead. The rules:
+
+- Copy upstream **byte for byte**, including its `LICENSE`. Take it from a
+  source you can verify, not from an arbitrary mirror. For a Go module, use the
+  module zip from `proxy.golang.org` checked against `sum.golang.org`.
+- Add a test that pins the tree's hash, so an edit can't slip through
+  unnoticed. `tests/test_vendored_nkit2iso.py` recomputes Go's `h1:` dirhash.
+- Record the provenance (upstream, commit, license, how it was verified) in
+  `third_party/README.md`.
+- `third_party/**` is already `-text` in `.gitattributes`, and is excluded from
+  Renovate (`ignorePaths`) and Codacy (`exclude_paths`), so nothing has to be
+  added there.
+- To update, re-vendor a new upstream version. Never patch the vendored copy
+  in place.
 
 **Build args & arch.** `ARG TARGETARCH` (set in the runtime stage) is
 `amd64`/`arm64`. A from-source build (g++) compiles per-arch automatically. A

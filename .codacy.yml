@@ -85,3 +85,6 @@ exclude_paths:
   # Generated lockfile — not source code.  Codacy's jackson JSON parser
   # chokes on comments / odd encoding inside large npm lockfiles.
   - "package-lock.json"
+  # Vendored upstream source, kept byte-for-byte (see third_party/README.md).
+  # Not ours to lint, and it must not be edited to satisfy a linter.
+  - "third_party/**"
