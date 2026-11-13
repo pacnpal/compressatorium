@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ctypes
 import errno
+import functools
 import os
 import stat
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional
@@ -27,16 +30,18 @@ def place_without_clobbering(src: str, dst: str) -> None:
 
     ``os.replace`` silently overwrites, and a move can block on a stuck mount
     and complete long after its caller gave up, replacing whatever has appeared
-    at ``dst`` by then. Placement here is a hard link, which is atomic and
-    no-replace (``FileExistsError`` if ``dst`` exists), followed by removing
-    ``src``. Nothing is created at ``dst`` before the link succeeds, so there
-    is no placeholder to leave behind or for anyone to swap out.
+    at ``dst`` by then. Every path here is an atomic no-replace operation, so a
+    file at ``dst`` raises ``FileExistsError`` and is never touched, however
+    late the move lands, and nothing is created at ``dst`` before it succeeds:
 
-    On a filesystem without hard links, it falls back to claiming ``dst`` with
-    an exclusive create and renaming onto that claim. That still never replaces
-    a file that existed when the claim was made, and a failed rename removes
-    the claim only while it is still this call's (same inode). Both paths must
-    be on one filesystem, as for ``os.replace``.
+    1. A hard link, then removing ``src``. Most filesystems.
+    2. Without hard links (FAT/exFAT), the kernel's no-replace rename:
+       ``renameat2(RENAME_NOREPLACE)`` on Linux, ``renamex_np(RENAME_EXCL)``
+       on macOS.
+    3. Neither available: refuse with ``OSError(ENOTSUP)`` rather than fall
+       back to a check-then-rename that could overwrite another file.
+
+    Both paths must be on one filesystem, as for ``os.replace``.
     """
     try:
         os.link(src, dst)
@@ -45,8 +50,15 @@ def place_without_clobbering(src: str, dst: str) -> None:
     except OSError as exc:
         if exc.errno not in _NO_HARDLINK_ERRNOS:
             raise
-        _place_via_exclusive_claim(src, dst)
-        return
+        if _rename_noreplace(src, dst):
+            return
+        raise OSError(
+            errno.ENOTSUP,
+            "the output filesystem supports neither hard links nor an atomic "
+            "no-replace rename, so the file can't be placed without risking "
+            "overwriting another one",
+            dst,
+        ) from exc
     # The move is complete once the link exists. Failing to remove the source
     # (already swept by the caller's cleanup while the link was stuck, or an
     # I/O error) must not be reported as a failed placement: the product is at
@@ -58,17 +70,58 @@ def place_without_clobbering(src: str, dst: str) -> None:
         pass
 
 
-def _place_via_exclusive_claim(src: str, dst: str) -> None:
-    fd = os.open(dst, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+# errnos meaning "this kernel/filesystem has no no-replace rename", as opposed
+# to a real failure of the rename itself.
+_NO_NOREPLACE_ERRNOS = frozenset({
+    errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP,
+})
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1  # Linux <linux/fs.h>
+_RENAME_EXCL = 0x00000004  # macOS <stdio.h>
+
+
+@functools.lru_cache(maxsize=1)
+def _noreplace_rename_call():
+    """The platform's no-replace rename as ``f(src_bytes, dst_bytes) -> int``,
+    or ``None`` where libc has none."""
     try:
-        claim = os.fstat(fd)
-    finally:
-        os.close(fd)
-    try:
-        os.replace(src, dst)
-    except BaseException:
-        remove_if_same_file(dst, claim)
-        raise
+        libc = ctypes.CDLL(None, use_errno=True)
+    except OSError:
+        return None
+    if sys.platform.startswith("linux"):
+        fn = getattr(libc, "renameat2", None)
+        if fn is None:
+            return None
+        fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+                       ctypes.c_uint]
+        fn.restype = ctypes.c_int
+        return lambda a, b: fn(_AT_FDCWD, a, _AT_FDCWD, b, _RENAME_NOREPLACE)
+    if sys.platform == "darwin":
+        fn = getattr(libc, "renamex_np", None)
+        if fn is None:
+            return None
+        fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        fn.restype = ctypes.c_int
+        return lambda a, b: fn(a, b, _RENAME_EXCL)
+    return None
+
+
+def _rename_noreplace(src: str, dst: str) -> bool:
+    """Atomically rename ``src`` to ``dst`` unless ``dst`` exists.
+
+    Returns ``False`` when no such rename exists here (no libc call, or the
+    kernel/filesystem rejects the flag); raises ``FileExistsError`` if ``dst``
+    exists and ``OSError`` for any other failure.
+    """
+    call = _noreplace_rename_call()
+    if call is None:
+        return False
+    if call(os.fsencode(src), os.fsencode(dst)) == 0:
+        return True
+    err = ctypes.get_errno()
+    if err in _NO_NOREPLACE_ERRNOS:
+        return False
+    raise OSError(err, os.strerror(err), src, None, dst)
 
 
 def is_same_file(path: str, ours: os.stat_result) -> bool:

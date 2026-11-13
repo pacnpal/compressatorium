@@ -634,12 +634,17 @@ no placeholder to leave behind or for anyone to swap out. It then removes
 `src`, and a source the caller's cleanup already swept doesn't count as a
 failure.
 
-On a filesystem without hard links (FAT/exFAT), it falls back to claiming
-`dst` with an exclusive create and renaming onto that claim. A failed rename
-removes the claim only while it is still the same inode. The worker of an
-abandoned job removes its late product the same way, through
-`remove_if_same_file`, so cleanup never deletes a file another process has
-since put at that name.
+On a filesystem without hard links (FAT/exFAT), it uses the kernel's own
+atomic no-replace rename instead: `renameat2(RENAME_NOREPLACE)` on Linux, which
+vfat and exfat support, or `renamex_np(RENAME_EXCL)` on macOS. Both are called
+through `ctypes`. Where neither is available, it refuses with
+`OSError(ENOTSUP)` rather than falling back to a check-then-rename. A
+claim-then-rename can overwrite a file another writer swapped in for the claim,
+so it is deliberately not used. The worker of an abandoned job removes its late
+product only while `output_path` is still that inode (`remove_if_same_file`),
+so cleanup never deletes a file another process has since put at that name.
+POSIX has no atomic "unlink if this inode", so the instant between that check
+and the unlink is the one window left.
 
 This is the right rule for every conversion, not only xiso:
 - An authorized overwrite already removed the old output before the conversion

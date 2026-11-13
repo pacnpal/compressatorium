@@ -980,12 +980,17 @@ def test_place_without_clobbering_links_and_refuses(tmp_path):
     assert dst.read_bytes() == b"NEW" and src.exists()
 
 
-def test_place_without_clobbering_falls_back_without_hard_links(tmp_path, monkeypatch):
-    """No hard links (FAT/exFAT): claim + rename still never replaces an
-    existing file, and a failed rename removes only its own claim."""
+def test_place_without_clobbering_without_hard_links_uses_a_no_replace_rename(
+    tmp_path, monkeypatch,
+):
+    """No hard links (FAT/exFAT): the kernel's atomic no-replace rename
+    (renameat2 / renamex_np) places the file and refuses an existing one."""
     import errno
 
     import utils.path_utils as pu
+
+    if pu._noreplace_rename_call() is None:
+        pytest.skip("no atomic no-replace rename on this platform")
 
     def no_links(_a, _b):
         raise OSError(errno.EPERM, "hard links not supported")
@@ -999,23 +1004,29 @@ def test_place_without_clobbering_falls_back_without_hard_links(tmp_path, monkey
     src.write_bytes(b"NEWER")
     with pytest.raises(FileExistsError):
         pu.place_without_clobbering(str(src), str(dst))
-    assert dst.read_bytes() == b"NEW"
+    assert dst.read_bytes() == b"NEW" and src.read_bytes() == b"NEWER"
 
-    other = tmp_path / "other"
-    real_replace = os.replace
 
-    def replaced_then_failing(_a, b):
-        # Someone swaps the claim for their own file, then the rename fails:
-        # cleanup must leave their file alone.
-        os.unlink(b)
-        Path(b).write_bytes(b"THEIRS")
-        raise OSError("rename failed")
+def test_place_without_clobbering_refuses_when_no_atomic_option_exists(
+    tmp_path, monkeypatch,
+):
+    """Neither hard links nor a no-replace rename: fail safely, touching
+    nothing, rather than fall back to a check-then-rename."""
+    import errno
 
-    monkeypatch.setattr(pu.os, "replace", replaced_then_failing)
-    with pytest.raises(OSError, match="rename failed"):
-        pu.place_without_clobbering(str(src), str(other))
-    assert other.read_bytes() == b"THEIRS"
-    monkeypatch.setattr(pu.os, "replace", real_replace)
+    import utils.path_utils as pu
+
+    def no_links(_a, _b):
+        raise OSError(errno.EPERM, "hard links not supported")
+
+    monkeypatch.setattr(pu.os, "link", no_links)
+    monkeypatch.setattr(pu, "_rename_noreplace", lambda _a, _b: False)
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.write_bytes(b"NEW")
+    with pytest.raises(OSError) as raised:
+        pu.place_without_clobbering(str(src), str(dst))
+    assert raised.value.errno == errno.ENOTSUP
+    assert src.read_bytes() == b"NEW" and not dst.exists()
 
 
 def test_a_failed_source_cleanup_after_linking_is_not_a_failed_placement(

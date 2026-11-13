@@ -548,6 +548,8 @@ class ExtractXisoService:
                     f"{output_path} appeared while the XISO was being written; "
                     "not overwriting it",
                 ) from exc
+            except OSError as exc:
+                raise RuntimeError(f"Could not place the XISO output: {exc}") from exc
             with placement_lock:
                 placement["done"] = True
                 abandoned_first = placement["abandoned"]
