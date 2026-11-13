@@ -279,11 +279,16 @@ def _probe_convertible(path: str, size: int, mtime_ns: int) -> bool:
     The listing calls ``converts_path`` for every ``.iso`` it shows, so this
     keeps a re-browse of a large library to one stat per file. ``size`` and
     ``mtime_ns`` are only cache keys: a replaced file re-probes.
+
+    Only a verdict about the *content* is cached. ``OSError`` (a transient EIO
+    on a network share, say) propagates, and ``lru_cache`` never stores an
+    exception, so the next call re-reads once storage recovers instead of
+    remembering the outage as "not an Xbox image".
     """
     try:
         detect_layout(path)
         return not is_optimized(path)
-    except (XisoImageError, OSError):
+    except XisoImageError:
         return False
 
 
@@ -317,9 +322,11 @@ class ExtractXisoService:
             return False
         try:
             st = os.stat(path)
+            return _probe_convertible(path, st.st_size, st.st_mtime_ns)
         except OSError:
+            # Unreadable right now: not convertible for this call, and not
+            # cached (see _probe_convertible), so it is re-probed next time.
             return False
-        return _probe_convertible(path, st.st_size, st.st_mtime_ns)
 
     @staticmethod
     def _output_stem(name: str) -> str:

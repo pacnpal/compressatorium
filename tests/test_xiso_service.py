@@ -1068,3 +1068,24 @@ def test_remove_if_same_file_leaves_a_replacement_alone(tmp_path):
     ours = os.stat(path)
     remove_if_same_file(str(path), ours)
     assert not path.exists()
+
+
+def test_a_transient_read_error_is_not_cached_as_not_xbox(tmp_path, monkeypatch):
+    """An I/O error during the header probe makes this call say "no", but is
+    not memoised: once storage recovers, the same unchanged file is accepted."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    MODULE._probe_convertible.cache_clear()
+    real_detect = MODULE.detect_layout
+    failing = {"on": True}
+
+    def flaky_detect(path):
+        if failing["on"]:
+            raise OSError(5, "Input/output error")
+        return real_detect(path)
+
+    monkeypatch.setattr(MODULE, "detect_layout", flaky_detect)
+    assert SERVICE.is_convertible(str(src)) is False
+    failing["on"] = False
+    assert SERVICE.is_convertible(str(src)) is True
+    MODULE._probe_convertible.cache_clear()
