@@ -594,6 +594,19 @@ Three pieces, none of them per-tool:
    out after Ns"}`, widened with `"type": "error"` on the SSE paths), not a 500:
    the file is not known bad, the check just did not finish.
 
+**A conversion's reads before its subprocess need a bound too.**
+`SubprocessRunner.run`'s stall watchdog only starts with the child, and a job
+has no outer deadline. So a blocking read a conversion does *first* (xiso's
+header probe, its filesystem walk, its workspace setup) would hold the job, and
+the single-slot queue behind it, for as long as a dead mount takes.
+`run_detached_within_stall_bound(func, *args, what=..., cancel_event=...)` is
+`run_detached` under the same no-progress limit the subprocess phase gets
+(`CHD_PROGRESS_TIMEOUT`, floored the same way, `0` disables). On expiry it
+raises a `RuntimeError` naming `what`. A cancel still raises `ReadCancelled`,
+which the conversion must translate to `ConversionCancelled`, or the job is
+recorded as failed rather than cancelled. Use it for small pre-flight reads; a
+whole-file pass belongs under a size-scaled bound instead.
+
 Three rules follow for any code that runs a verifier:
 
 - **Never offload a verify's blocking read to a shared pool** — including the

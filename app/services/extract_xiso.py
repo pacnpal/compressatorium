@@ -47,6 +47,7 @@ from services.subprocess_runner import (
     remove_partial_output,
     remove_partial_tree,
     run_detached,
+    run_detached_within_stall_bound,
     verify_preflight,
 )
 from utils.path_utils import match_extension
@@ -477,17 +478,28 @@ class ExtractXisoService:
         timeout through ``SubprocessRunner.run``.
         """
         # Re-checked here because the file may have changed since planning; off
-        # the event loop, like every other read of the source volume.
-        if not await run_detached(
-            self.is_convertible, input_path, cancel_event=cancel_event,
-        ):
+        # the event loop, like every other read of the source volume. These
+        # reads run before the subprocess's stall watchdog exists, so each is
+        # bounded by the same no-progress timeout, and a cancel during any of
+        # them is reported as a cancel, not a failed read.
+        try:
+            convertible = await run_detached_within_stall_bound(
+                self.is_convertible, input_path,
+                what="Reading the Xbox image header", cancel_event=cancel_event,
+            )
+        except ReadCancelled as exc:
+            raise ConversionCancelled("Conversion cancelled") from exc
+        if not convertible:
             raise ValueError(
                 f"Not an untrimmed Xbox / Xbox 360 disc image: {input_path}",
             )
 
         yield {"progress": 1, "message": "Reading the Xbox filesystem..."}
         try:
-            stats = await run_detached(walk_image, input_path, cancel_event=cancel_event)
+            stats = await run_detached_within_stall_bound(
+                walk_image, input_path,
+                what="Reading the Xbox filesystem", cancel_event=cancel_event,
+            )
         except ReadCancelled as exc:
             raise ConversionCancelled("Conversion cancelled") from exc
         total = max(int(stats["data_bytes"]), 1)
@@ -508,9 +520,9 @@ class ExtractXisoService:
             return 2 + min(96, written * 96 // total)
 
         try:
-            source_link = await run_detached(
+            source_link = await run_detached_within_stall_bound(
                 self._prepare_workspace, input_path, link_dir, out_dir, abandoned,
-                cancel_event=cancel_event,
+                what="Preparing the XISO work directory", cancel_event=cancel_event,
             )
             rewritten = os.path.join(out_dir, "source.iso")
             cmd = self._build_command(source_link, out_dir)

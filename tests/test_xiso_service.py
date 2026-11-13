@@ -618,3 +618,65 @@ def test_rename_on_duplicate_keeps_the_compound_extension(tmp_path):
     iso = tmp_path / "Game.cso"
     iso.write_bytes(b"x")
     assert get_unique_output_path(str(iso), "cso_compress") == str(tmp_path / "Game_1.cso")
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_the_initial_probe_is_a_cancel(tmp_path, scratch, monkeypatch):
+    """A cancel while the convertibility probe waits on storage must surface as
+    ``ConversionCancelled`` (a cancelled job), not a failed ``ReadCancelled``."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    entered = MODULE.threading.Event()
+    release = MODULE.threading.Event()
+
+    def stuck_probe(_path):
+        entered.set()
+        release.wait(5)
+        return True
+
+    monkeypatch.setattr(SERVICE, "is_convertible", stuck_probe)
+    cancel = asyncio.Event()
+
+    async def run():
+        async for _ in SERVICE.convert(
+            str(src), str(tmp_path / "g.xiso.iso"), "xiso_rewrite", cancel_event=cancel,
+        ):
+            pass
+
+    task = asyncio.create_task(run())
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        cancel.set()
+        with pytest.raises(MODULE.ConversionCancelled):
+            await task
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_hung_filesystem_walk_is_bounded(tmp_path, scratch, monkeypatch):
+    """The walk runs before the subprocess's stall watchdog exists, so the
+    conversion's no-progress timeout bounds it instead of waiting forever."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    runner_module = __import__(
+        MODULE.run_detached_within_stall_bound.__module__, fromlist=["settings"],
+    )
+    monkeypatch.setattr(runner_module, "_MIN_STALL_TIMEOUT", 0)
+    monkeypatch.setattr(runner_module.settings, "progress_timeout", 1)
+    release = MODULE.threading.Event()
+
+    def hung_walk(_path):
+        release.wait(10)
+        return {}
+
+    monkeypatch.setattr(MODULE, "walk_image", hung_walk)
+    try:
+        with pytest.raises(RuntimeError, match="Reading the Xbox filesystem stopped responding"):
+            async for _ in SERVICE.convert(
+                str(src), str(tmp_path / "g.xiso.iso"), "xiso_rewrite",
+            ):
+                pass
+    finally:
+        release.set()
+    assert not _workdirs(tmp_path)

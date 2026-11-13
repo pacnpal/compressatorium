@@ -735,6 +735,41 @@ async def run_detached(
             _note_abandoned("detached read")
 
 
+async def run_detached_within_stall_bound(
+    func: Callable,
+    *args: object,
+    what: str,
+    cancel_event: asyncio.Event | None = None,
+    **kwargs: object,
+) -> object:
+    """:func:`run_detached`, bounded by the conversion's no-progress timeout.
+
+    For a conversion's blocking reads *before* its subprocess starts (a header
+    probe, a filesystem walk, workspace setup). ``SubprocessRunner.run``'s stall
+    watchdog only starts with the child, and the job has no outer deadline, so
+    without this a source mount that stops answering during those reads holds
+    the job, and the single-slot queue behind it, indefinitely.
+
+    The bound is ``CHD_PROGRESS_TIMEOUT``, the same "no progress for this long"
+    limit the subprocess phase gets, floored like it and disabled by ``0``. It
+    is the baseline, not size-scaled: these reads are small (headers and
+    directory tables), never a pass over the whole file. On expiry the thread is
+    abandoned (as ``run_detached`` does for a cancel) and ``RuntimeError`` names
+    ``what``; ``ReadCancelled`` still propagates for a cancel.
+    """
+    bound = max(0, int(getattr(settings, "progress_timeout", 0) or 0))
+    read = run_detached(func, *args, cancel_event=cancel_event, **kwargs)
+    if bound <= 0:
+        return await read
+    bound = max(bound, _MIN_STALL_TIMEOUT)
+    try:
+        return await asyncio.wait_for(read, timeout=bound)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(
+            f"{what} stopped responding (no answer in {bound:.0f}s)",
+        ) from exc
+
+
 async def verify_preflight(
     path: str,
     extensions: frozenset[str] | set[str],
