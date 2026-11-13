@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import subprocess
 from pathlib import Path
 
 VENDOR_DIR = Path(__file__).resolve().parents[1] / "third_party" / "nkit2iso"
@@ -27,8 +28,29 @@ VERSION = "v0.1.1-0.20260718122450-b97129c157ed"
 EXPECTED_H1 = "h1:FDV/0eL7S5mpYiTNIh3yKmW5nS9U/8GijNONpQdn+Ro="
 
 
+def _vendored_files(root: Path) -> list[str]:
+    """Files git tracks under ``root`` (what was committed from the module zip).
+
+    Untracked and git-ignored files (a local ``go build`` output, ``.DS_Store``)
+    are not part of the vendored module, so they must not change the hash. Falls
+    back to every file on disk when git or the repository is unavailable (e.g. a
+    source tarball).
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--", "."],
+            cwd=root, check=True, capture_output=True,
+        ).stdout.decode()
+        files = sorted(name for name in out.split("\0") if name)
+        if files:
+            return files
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+
+
 def _go_dirhash_h1(root: Path, prefix: str) -> str:
-    files = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+    files = _vendored_files(root)
     summary = "".join(
         f"{hashlib.sha256((root / name).read_bytes()).hexdigest()}  {prefix}/{name}\n"
         for name in files
