@@ -127,7 +127,7 @@ serves that. So a library stored as RVZ can still hand a device an ISO.
 | Convert on download for a device | **yes** | no, we don't serve files |
 | Integrity check of existing files | no | yes, per tool, manual |
 | Local DAT matching (Redump, No-Intro, TOSEC) | no, declined | yes |
-| Duplicate detection by content hash | no (only name "clones") | hashes exist, no report yet |
+| Duplicate detection by content hash | no (only name "clones") | no report yet; cached hashes cover some formats (see N10) |
 | Savings reporting | one number in a task result | estimate in RomM view only |
 | Notifications | inbox, webhook, Apprise, email | **none** |
 | Persistent conversion history | the last task result | in-memory, last 500 jobs |
@@ -508,16 +508,48 @@ handheld firmware uses a gamelist.
 
 ### N10. Duplicate finder
 
-We already compute the hashes that make this possible: CHD header SHA1 and
-Dolphin's reconstructed disc SHA1 are container-independent, so `Game.iso`,
-`Game.chd` and `Game (1).rvz` of the same disc all resolve to one content
-hash.
+Find the same disc stored twice, including in two different containers. The
+hashes we cache today don't line up across formats on their own, so this needs
+one agreed content key per file before any query can group on it.
 
-Report groups of same-content files across volumes with their sizes and a
-suggested keeper (verified, smallest, DAT-named). The action is the existing
-delete plan. Nothing is deleted without the confirmation list.
+What each cached hash actually covers:
 
-**Size.** S–M. Mostly a query and a view.
+| File | Hash we have | Equals the raw image's SHA1? |
+| --- | --- | --- |
+| `.iso`, `.bin` | file SHA1 | yes, it is the raw image |
+| Dolphin RVZ/WIA/GCZ | disc SHA1 rebuilt by `dolphin-tool verify` | yes |
+| DVD or HD CHD (`createdvd`, `createhd`) | `chd_data_sha1` | yes, the logical data is the image. **Verify** on a real `createdvd` CHD. |
+| CD CHD (`createcd`) | `chd_data_sha1` | no. The data is 2448-byte frames (sector plus subcode) with tracks padded to a 4-frame boundary. |
+| any CHD | `chd_sha1` (overall) | no. It folds in the metadata hashes, so it never equals a raw file hash. |
+| CSO/ZSO/DAX, NSZ, WUX, Z3DS | file SHA1 of the container | no |
+
+So the content key is `(kind, sha1)`:
+
+- `raw:<sha1>` for `.iso`/`.bin`, Dolphin containers and DVD/HD CHDs. These
+  group across formats directly: `Game.iso`, `Game.rvz` and a `createdvd`
+  `Game.chd` of one disc share a key.
+- `chdcd:<chd_data_sha1>` for CD CHDs. Two CD CHDs of the same disc match each
+  other whatever codec they use. They don't match a cue/bin by hash.
+- CD CHD against cue/bin goes through the DAT instead: when both files have a
+  `DATMatch` to the same game, they're the same disc. Without a DAT match on
+  both sides we don't claim a duplicate.
+- Containers with no embedded image hash (CSO, NSZ, WUX, Z3DS) are left out at
+  first. The scrub (N7) already decompresses them to verify, and can record a
+  `raw:` key as a side effect later.
+
+Never group on `chd_sha1`. `ChdmanTool.embedded_hashes` already returns the two
+CHD hashes with separate labels, so the key builder reads the label rather than
+guessing.
+
+Report groups with their sizes and a suggested keeper (verified, smallest,
+DAT-named). The action is the existing delete plan. Nothing is deleted without
+the confirmation list.
+
+**MVP.** `raw:` keys only: ISO against Dolphin containers and DVD CHDs, plus
+exact file duplicates.
+
+**Size.** M. A content-key column on the cached hashes, the key builder on the
+tool contract, then the query and view.
 
 ### N11. Emulator compatibility presets
 
