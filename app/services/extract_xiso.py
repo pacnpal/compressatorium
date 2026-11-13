@@ -51,7 +51,7 @@ from services.subprocess_runner import (
     run_detached_within_stall_bound,
     verify_preflight,
 )
-from utils.path_utils import match_extension
+from utils.path_utils import match_extension, place_without_clobbering
 
 _OWNER = "xiso"
 # The scratch link dir and the hidden work dir hold paths into the user's
@@ -530,7 +530,18 @@ class ExtractXisoService:
         written = 0
 
         def place_output(src: str) -> None:
-            os.replace(src, output_path)
+            # Never os.replace onto an existing file: an overwrite job's old
+            # output was removed before conversion, and a non-overwrite job's
+            # destination was free when planned, so anything there now is not
+            # this job's. Refusing it also covers a rename that lands long
+            # after the job gave up.
+            try:
+                place_without_clobbering(src, output_path)
+            except FileExistsError as exc:
+                raise RuntimeError(
+                    f"{output_path} appeared while the XISO was being written; "
+                    "not overwriting it",
+                ) from exc
             with placement_lock:
                 placement["done"] = True
                 abandoned_first = placement["abandoned"]

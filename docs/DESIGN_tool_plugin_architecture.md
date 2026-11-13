@@ -625,6 +625,19 @@ on the event loop, set before or after the `await`, can't make this
 distinction. The lock is held only for those two assignments, never across I/O,
 so taking it on the event loop can't block.
 
+The rename itself must not overwrite anything either, because a rename that lands
+late replaces whatever is at the destination by then.
+`utils.path_utils.place_without_clobbering(src, dst)` first claims `dst` with an
+exclusive create (`O_EXCL`), then renames onto its own claim, and removes the
+claim if the rename fails. A file already at `dst` raises `FileExistsError` and
+is never touched. This is the right rule for every conversion, not only xiso:
+- An authorized overwrite already removed the old output before the conversion
+  ran (`JobManager._clear_existing_output`).
+- A non-overwrite job's destination was free when it was planned.
+
+So anything at the destination when the product is placed isn't the job's to
+replace. nsz's and JWUDTool's work-dir moves still use a plain `os.replace`.
+
 Three rules follow for any code that runs a verifier:
 
 - **Never offload a verify's blocking read to a shared pool** — including the

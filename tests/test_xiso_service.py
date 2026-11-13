@@ -815,28 +815,40 @@ async def test_a_cancel_before_the_rename_leaves_the_destination_alone(
     assert not _workdirs(tmp_path)
 
 
+
+async def _wait_until_gone(path: Path) -> None:
+    for _ in range(50):
+        if not path.exists():
+            return
+        await asyncio.sleep(0.02)
+
+
 @pytest.mark.asyncio
 async def test_a_hung_final_rename_is_bounded(tmp_path, scratch, monkeypatch):
     """The rename runs after the subprocess's stall watchdog has stopped, so the
-    no-progress bound covers it too. The rename never completed, so an existing
-    destination survives the cleanup."""
+    no-progress bound covers it too. When the rename lands after the timeout,
+    the worker removes its product: a failed job leaves nothing behind."""
     src = tmp_path / "g.iso"
     build_image(src, layout="XGD2")
     out = tmp_path / "g.xiso.iso"
-    out.write_bytes(b"PRECIOUS")
     runner_module = __import__(
         MODULE.run_detached_within_stall_bound.__module__, fromlist=["settings"],
     )
     monkeypatch.setattr(runner_module, "_MIN_STALL_TIMEOUT", 0)
     monkeypatch.setattr(runner_module.settings, "progress_timeout", 1)
     release = MODULE.threading.Event()
+    rename_done = MODULE.threading.Event()
 
     async def fake_run(cmd, *, output_path, complete_message, **_kw):
         Path(output_path).write_bytes(b"XISO")
         yield {"progress": 100, "message": complete_message}
 
-    def hung_replace(_src, _dst):
-        release.wait(10)
+    def hung_replace(_src, dst):
+        try:
+            release.wait(10)
+            Path(dst).write_bytes(b"XISO")  # the rename lands late
+        finally:
+            rename_done.set()
 
     monkeypatch.setattr(SERVICE._runner, "run", fake_run)
     monkeypatch.setattr(MODULE.os, "replace", hung_replace)
@@ -844,36 +856,33 @@ async def test_a_hung_final_rename_is_bounded(tmp_path, scratch, monkeypatch):
         with pytest.raises(RuntimeError, match="Placing the XISO output stopped responding"):
             async for _ in SERVICE.convert(str(src), str(out), "xiso_rewrite"):
                 pass
-        assert out.read_bytes() == b"PRECIOUS"
     finally:
         release.set()
+    assert await asyncio.to_thread(rename_done.wait, 5)
+    await _wait_until_gone(out)
+    assert not out.exists()
 
 
 @pytest.mark.asyncio
-async def test_a_cancel_during_a_stuck_rename_leaves_the_destination_alone(
+async def test_a_late_rename_after_a_cancel_leaves_nothing_behind(
     tmp_path, scratch, monkeypatch,
 ):
-    """The rename has started but not finished when the job is cancelled: the
-    destination it hasn't touched yet must survive the cleanup, and when the
-    rename does land later, the worker removes its own product."""
+    """Cancelled while the rename is stuck: the cleanup doesn't touch the
+    destination (only the worker knows how the rename ends), and when the
+    rename lands later the worker removes its own product."""
     src = tmp_path / "g.iso"
     build_image(src, layout="XGD2")
     out = tmp_path / "g.xiso.iso"
-    out.write_bytes(b"PRECIOUS")
     cancel = asyncio.Event()
     in_rename = MODULE.threading.Event()
     release = MODULE.threading.Event()
     rename_done = MODULE.threading.Event()
 
     def stuck_replace(_src, dst):
-        # Simulates a rename that lands late. (A real one may instead fail with
-        # its source gone, because the job's sweep already removed the work
-        # dir; that leaves the destination alone too. This covers the harder
-        # branch, where the product does appear after the job gave up.)
         try:
             in_rename.set()
             release.wait(10)
-            Path(dst).write_bytes(b"XISO")
+            Path(dst).write_bytes(b"XISO")  # the rename lands late
         finally:
             rename_done.set()
 
@@ -896,16 +905,58 @@ async def test_a_cancel_during_a_stuck_rename_leaves_the_destination_alone(
         cancel.set()
         with pytest.raises(MODULE.ConversionCancelled):
             await task
-        # Cleanup has run; the rename hasn't happened, so the file stays.
-        assert out.read_bytes() == b"PRECIOUS"
     finally:
         release.set()
     assert await asyncio.to_thread(rename_done.wait, 5)
-
-    # The late rename replaced the destination, and the worker then removed
-    # its own product rather than leaving an orphan from a cancelled job.
-    for _ in range(50):
-        if not out.exists():
-            break
-        await asyncio.sleep(0.02)
+    await _wait_until_gone(out)
     assert not out.exists()
+
+
+@pytest.mark.asyncio
+async def test_an_existing_destination_is_never_overwritten(tmp_path, scratch, monkeypatch):
+    """A file that appeared at output_path after planning is not this job's:
+    placement refuses it instead of replacing it, so its bytes survive the
+    worker's final outcome, and the job fails saying why."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    out = tmp_path / "g.xiso.iso"
+    out.write_bytes(b"PRECIOUS")
+
+    async def fake_run(cmd, *, output_path, complete_message, **_kw):
+        Path(output_path).write_bytes(b"XISO")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(SERVICE._runner, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="not overwriting it"):
+        async for _ in SERVICE.convert(str(src), str(out), "xiso_rewrite"):
+            pass
+
+    assert out.read_bytes() == b"PRECIOUS"
+    assert not _workdirs(tmp_path)
+
+
+def test_place_without_clobbering(tmp_path, monkeypatch):
+    """Claims the name exclusively, renames onto the claim, refuses an existing
+    destination untouched, and removes its claim if the rename fails."""
+    from utils.path_utils import place_without_clobbering
+
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.write_bytes(b"NEW")
+    place_without_clobbering(str(src), str(dst))
+    assert dst.read_bytes() == b"NEW" and not src.exists()
+
+    src.write_bytes(b"NEWER")
+    with pytest.raises(FileExistsError):
+        place_without_clobbering(str(src), str(dst))
+    assert dst.read_bytes() == b"NEW" and src.exists()
+
+    other = tmp_path / "other"
+
+    def failing_replace(_a, _b):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(OSError, match="rename failed"):
+        place_without_clobbering(str(src), str(other))
+    assert not other.exists()

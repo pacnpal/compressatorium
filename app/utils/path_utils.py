@@ -15,6 +15,30 @@ def strip_archive_path(path: str) -> str:
     return path.split("::", 1)[0] if "::" in path else path
 
 
+def place_without_clobbering(src: str, dst: str) -> None:
+    """Move ``src`` to ``dst``, never replacing anything already at ``dst``.
+
+    ``os.replace`` silently overwrites, and a rename can block on a stuck mount
+    and complete long after its caller gave up, replacing whatever has appeared
+    at ``dst`` by then. This claims the name first with an exclusive create
+    (``O_EXCL``), then renames onto its own claim, so a file already at ``dst``
+    raises ``FileExistsError`` and is never touched, however late the rename
+    lands. If the rename fails, the claim is removed.
+
+    Both paths must be on one filesystem, as for ``os.replace``.
+    """
+    fd = os.open(dst, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    os.close(fd)
+    try:
+        os.replace(src, dst)
+    except BaseException:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
+
+
 def match_extension(name: str, extensions: Iterable[str]) -> Optional[str]:
     """Return the longest declared extension ``name`` ends with, else ``None``.
 
