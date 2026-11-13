@@ -28,6 +28,10 @@ _Avoid_: System, console, core
 An Image whose Platform could not be worked out. No rule touches it.
 _Avoid_: Unknown, misc
 
+**Finding**:
+Something the app noticed about an Image that needs a person to decide: it is not Intact, its Platform disagrees with its folder, it duplicates another Image.
+_Avoid_: Error, warning, issue, alert
+
 ### Where images live
 
 **Volume**:
@@ -47,8 +51,12 @@ Anything that points at an Image by its path: RomM's ROM, an `.m3u` playlist, a 
 _Avoid_: Frontend, sidecar, integration
 
 **Source**:
-The input file of one conversion.
+The Image a conversion reads. It is the only thing the app ever deletes on its own, and only after its output is Round-tripped and every Referrer is updated.
 _Avoid_: Using "source" for where a list of images comes from (that is a Library)
+
+**Ledger**:
+The permanent record of finished conversions: what was read, what was written, what was deleted and which Referrers were updated.
+_Avoid_: History, job log, audit log
 
 ### What a check proves
 
