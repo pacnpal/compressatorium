@@ -114,34 +114,45 @@ RUN make -C makeps3iso && \
 
 # ---------------------------------------------------------------------------
 # nkit2iso builder stage: compile nkit2iso (NKit-shrunk GameCube/Wii image ->
-# full .iso) from source.
+# full .iso) from the vendored source in third_party/nkit2iso.
 #
-# DonMikone/nkit2iso is MIT, pure Go with no third-party modules (stdlib only:
-# crypto/aes, crypto/sha1, compress/zlib), so `go build` needs no network after
-# the clone and compiles per-arch automatically — linux/amd64 and linux/arm64
-# buildx both work, same as the C builder stages. It needs its own stage rather
-# than joining `builder` because it wants a Go toolchain (its go.mod requires
+# Why vendored: the upstream repository, github.com/DonMikone/nkit2iso, was
+# deleted or made private after release 4.5.0, so the old `git clone` here
+# returned 404 and every fresh build failed at this stage. The pinned commit
+# (b97129c) survives in the Go module proxy as
+# github.com/DonMikone/nkit2iso@v0.1.1-0.20260718122450-b97129c157ed, and
+# sum.golang.org's public transparency log records its hash. The vendored tree
+# is that module zip, byte for byte. tests/test_vendored_nkit2iso.py recomputes
+# the hash, and third_party/README.md records where the source came from and
+# how it was checked. Don't edit files under third_party/nkit2iso. To update
+# nkit2iso, re-vendor a new version and change NKIT2ISO_REF along with it.
+#
+# nkit2iso is MIT-licensed, pure Go with no third-party modules (stdlib only:
+# crypto/aes, crypto/sha1, compress/zlib), so `go build` needs no network and
+# compiles per-arch automatically. linux/amd64 and linux/arm64 buildx both
+# work, same as the C builder stages. It needs its own stage rather than
+# joining `builder` because it wants a Go toolchain (its go.mod requires
 # 1.26.5, newer than Debian trixie's golang package), so the official golang
 # image is used, digest-pinned like every other base here.
 #
 # The golang images set GOTOOLCHAIN=local, so the pinned image's own Go must
-# satisfy go.mod rather than a newer toolchain being fetched mid-build. That is
-# deliberate: if a future NKIT2ISO_REF raises the requirement past this base, the
-# build fails loudly here instead of silently reaching out to the network.
+# satisfy go.mod and no newer toolchain is fetched mid-build. That is
+# deliberate: if a re-vendored nkit2iso raises the requirement past this base,
+# the build fails loudly here instead of quietly reaching out to the network.
 #
 # CGO_ENABLED=0 yields a static binary: nothing to add to the runtime stage's
 # shared-library list.
 # ---------------------------------------------------------------------------
 FROM golang:1.26-trixie@sha256:87ffdb09b6a2e29ff910748b745395e8a0299aa80b7c0551cdca9b55e3fd2b3e AS nkit2iso-builder
 ENV DEBIAN_FRONTEND=noninteractive
-# Pinned to an immutable commit so release images are reproducible. main @
-# 2026-07-18 (ahead of the v0.1.0 tag). Override with
-# --build-arg NKIT2ISO_REF=<tag|sha> to update nkit2iso intentionally.
+# The upstream commit the vendored source was taken from (main @ 2026-07-18,
+# ahead of the v0.1.0 tag). It only feeds the version stamp below and does not
+# select the source. tests/test_vendored_nkit2iso.py keeps it in step with the
+# vendored module version.
 ARG NKIT2ISO_REF=b97129c157edf704da5bbf65e6d9e642c843b922
-RUN git clone https://github.com/DonMikone/nkit2iso.git /tmp/nkit2iso && \
-    git -C /tmp/nkit2iso checkout "${NKIT2ISO_REF}"
 
 WORKDIR /tmp/nkit2iso
+COPY third_party/nkit2iso/ ./
 
 # -ldflags stamps the pinned ref into `nkit2iso -version`; -s -w drops the debug
 # tables (the binary is shipped, not debugged, in the image).
@@ -285,8 +296,8 @@ RUN wget -q "${JWUDTOOL_URL}" -O /tmp/jwudtool.jar && \
     chmod +x /usr/local/bin/jwudtool && \
     jwudtool -help > /dev/null
 
-# Install nkit2iso from its builder stage (NKit-shrunk GC/Wii image -> .iso).
-# MIT, statically linked (CGO_ENABLED=0), so it needs no extra runtime libs.
+# Install nkit2iso from its builder stage (NKit-shrunk GC/Wii image -> .iso),
+# built from the vendored third_party/nkit2iso. MIT, statically linked (CGO_ENABLED=0), so it needs no extra runtime libs.
 COPY --from=nkit2iso-builder /tmp/nkit2iso/nkit2iso /usr/local/bin/nkit2iso
 
 # Copy application

@@ -1,0 +1,60 @@
+version: 2
+project_name: nkit2iso
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: nkit2iso
+    binary: nkit2iso
+    main: .
+    env: [CGO_ENABLED=0]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos: [linux, windows, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      # Linux/Windows ship amd64 only; macOS gets a universal binary (below).
+      - goos: linux
+        goarch: arm64
+      - goos: windows
+        goarch: arm64
+
+universal_binaries:
+  - id: nkit2iso
+    replace: true # merge darwin amd64+arm64 into one universal binary
+
+archives:
+  - id: default
+    ids: [nkit2iso]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macos_universal
+      {{- else }}{{ .Os }}_{{ .Arch }}{{ end }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [README.md, LICENSE]
+
+checksum:
+  name_template: checksums.txt
+
+brews:
+  - name: nkit2iso
+    repository:
+      owner: DonMikone
+      name: homebrew-tap
+      branch: master
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/DonMikone/nkit2iso"
+    description: "Restore GameCube/Wii .nkit.iso and .nkit.gcz disc images to bit-exact ISO"
+    license: "MIT"
+    install: |
+      bin.install "nkit2iso"
+    test: |
+      system "#{bin}/nkit2iso", "-version"
+
+release:
+  draft: false

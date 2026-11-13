@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Vendored third-party source is kept byte-for-byte as published, so its Go
+# module hash (checked in tests/test_vendored_nkit2iso.py) still matches. Never
+# convert its line endings on checkout.
+third_party/** -text

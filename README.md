@@ -1460,7 +1460,11 @@ on a multi-gigabyte image.
   touches the network, which is why it is opt-in. The tool's own interactive
   `ask` mode is never used — a job worker has no terminal to answer it on.
 - The nkit2iso binary (MIT, from `DonMikone/nkit2iso`) is a static Go binary built
-  into the Docker image for both `linux/amd64` and `linux/arm64`.
+  into the Docker image for both `linux/amd64` and `linux/arm64`. Upstream's
+  repository is no longer public, so the image builds from a verified copy of
+  the pinned commit vendored in `third_party/nkit2iso`. Prebuilt linux
+  amd64/arm64 binaries, with checksums, are in `third_party/nkit2iso-bin`. See
+  `third_party/README.md` for where both came from.
 
 ### NKit Environment Variables
 

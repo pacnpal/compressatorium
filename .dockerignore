@@ -208,6 +208,11 @@ azure-pipelines.yml
 bitbucket-pipelines.yml
 
 # ============ Application Specific ============
+# Prebuilt nkit2iso binaries kept for hosting (see third_party/README.md). The
+# image builds nkit2iso from third_party/nkit2iso, so they never need to enter
+# the build context.
+third_party/nkit2iso-bin/
+
 # CHD Converter images directory
 images/
 images/*
