@@ -206,6 +206,11 @@ def walk_image(path: str) -> dict:
             # a pathological tree shape cannot exhaust the stack.
             pending = [0]
             seen_offsets: set[int] = set()
+            # Child directories are walked after this table is released, so
+            # only one table is ever held: recursing from inside the loop would
+            # keep every ancestor's table alive, up to _MAX_DEPTH x
+            # _MAX_DIR_TABLE bytes for a crafted image.
+            children: list[tuple[int, int]] = []
             while pending:
                 pos = pending.pop()
                 if pos in seen_offsets:
@@ -238,7 +243,7 @@ def walk_image(path: str) -> dict:
                     if at_root and name.lower() == "$systemupdate":
                         stats["has_system_update"] = True
                     if f_size:
-                        walk_dir(f_sector, f_size, depth + 1, at_root=False)
+                        children.append((f_sector, f_size))
                     continue
 
                 stats["file_count"] += 1
@@ -247,6 +252,9 @@ def walk_image(path: str) -> dict:
                 stats["max_extent"] = max(stats["max_extent"], extent)
                 if at_root and name.lower() in {"default.xex", "default.xbe"}:
                     stats["root_executable"] = name
+            del table
+            for child_sector, child_size in children:
+                walk_dir(child_sector, child_size, depth + 1, at_root=False)
 
         walk_dir(root_sector, root_size, 0, at_root=True)
 
@@ -395,9 +403,12 @@ class ExtractXisoService:
         Options must precede the image path: extract-xiso stops parsing options
         at the first operand, so a trailing ``-d`` is silently ignored and the
         rewrite lands in the current directory instead. ``-D`` (delete the
-        source) is never passed.
+        source) is never passed. ``nice`` is a command wrapper rather than a
+        ``preexec_fn`` (the runner is told so via ``nice_via_wrapper``): this
+        process runs detached reader threads, and forking a Python callable in
+        a multithreaded process can deadlock the child before exec.
         """
-        return ioprio_prefix(_OWNER) + [
+        return nice_prefix(_OWNER) + ioprio_prefix(_OWNER) + [
             self.extract_xiso_path, "-r", "-d", out_dir, source_link,
         ]
 
@@ -507,8 +518,16 @@ class ExtractXisoService:
 
         link_dir, out_dir = self._workspace_paths(output_path)
         abandoned = threading.Event()
-        placing = False
+        # Set by the worker thread itself, immediately before it calls
+        # os.replace, so it is true only once this job has really begun
+        # writing output_path. A flag set here before the await could not tell
+        # a rename that started from a cancel that landed first.
+        renaming = threading.Event()
         written = 0
+
+        def place_output(src: str) -> None:
+            renaming.set()
+            os.replace(src, output_path)
 
         def parse_progress(line: str) -> int | None:
             nonlocal written
@@ -539,25 +558,32 @@ class ExtractXisoService:
                 complete_message="XISO written",
                 require_output=True,
                 mode=mode,
+                nice_via_wrapper=True,
             ):
                 if update.get("progress", 0) >= 100:
                     # Hold the bar short of done until the file is in place.
                     update = {**update, "progress": 98}
                 yield update
 
-            placing = True
-            await run_detached(os.replace, rewritten, output_path, cancel_event=cancel_event)
+            # Bounded like the reads before the subprocess: the child has exited,
+            # so its stall watchdog no longer covers this step, and the output
+            # volume is the one most likely to have just failed.
+            await run_detached_within_stall_bound(
+                place_output, rewritten,
+                what="Placing the XISO output", cancel_event=cancel_event,
+            )
         except (
             ConversionCancelled, ReadCancelled, RuntimeError,
             asyncio.CancelledError, GeneratorExit,
         ) as exc:
             # The rewrite only ever writes inside out_dir; output_path is touched
             # by the final rename alone, so it only needs sweeping if that rename
-            # was the step interrupted (an abandoned rename may still land after
-            # the job reports cancelled). Before that, output_path was never
-            # written, and anything already there is not this job's to delete.
+            # actually started (an abandoned rename may still land after the job
+            # reports cancelled). Until then output_path was never written, and
+            # anything already there is not this job's to delete, including on
+            # a cancel that arrives before the rename's thread runs.
             # The source is never written at all.
-            if placing:
+            if renaming.is_set():
                 await remove_partial_output(output_path, label="xiso output")
             if isinstance(exc, ReadCancelled):
                 raise ConversionCancelled("Conversion cancelled") from exc

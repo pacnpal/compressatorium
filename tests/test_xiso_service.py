@@ -710,3 +710,138 @@ async def test_an_instant_timeout_keeps_its_own_cause(monkeypatch, raised):
 
     with pytest.raises(expected, match=message):
         await runner_module.run_detached_within_stall_bound(func, what="Reading")
+
+
+class _TrackedRead(bytes):
+    """A read result that counts how many sizeable reads are alive at once."""
+
+    alive = 0
+    peak = 0
+
+    def __new__(cls, data):
+        obj = super().__new__(cls, data)
+        obj._counted = len(data) > 8  # skip the 8-byte root descriptor
+        if obj._counted:
+            cls.alive += 1
+            cls.peak = max(cls.peak, cls.alive)
+        return obj
+
+    def __del__(self):
+        if self._counted:
+            type(self).alive -= 1
+
+
+def test_walk_holds_one_directory_table_at_a_time(tmp_path, monkeypatch):
+    """A parent's table is released before its children are walked, so a deep
+    tree of large tables can't pile up ancestor tables in memory."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")  # root -> maps/, $SystemUpdate/
+    real_open = open
+
+    class _Handle:
+        def __init__(self, *args, **kwargs):
+            self._fh = real_open(*args, **kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._fh.close()
+
+        def seek(self, *args):
+            return self._fh.seek(*args)
+
+        def read(self, *args):
+            return _TrackedRead(self._fh.read(*args))
+
+    monkeypatch.setattr(MODULE, "open", _Handle, raising=False)
+    monkeypatch.setattr(_TrackedRead, "alive", 0)
+    monkeypatch.setattr(_TrackedRead, "peak", 0)
+
+    stats = MODULE.walk_image(str(src))
+
+    assert stats["dir_count"] == 2 and stats["file_count"] == 3
+    assert _TrackedRead.peak == 1
+
+
+@pytest.mark.asyncio
+async def test_convert_uses_wrapper_priority(tmp_path, scratch, monkeypatch):
+    """The rewrite is reniced by a ``nice`` wrapper, not a ``preexec_fn``: this
+    process runs detached reader threads, where a preexec fork can deadlock."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    monkeypatch.setattr(MODULE, "nice_prefix", lambda _o: ["nice", "-n", "10"])
+    monkeypatch.setattr(MODULE, "ioprio_prefix", lambda _o: ["ionice", "-c", "3"])
+    seen: dict = {}
+
+    async def fake_run(cmd, *, output_path, complete_message, **kw):
+        seen["cmd"], seen["kw"] = cmd, kw
+        Path(output_path).write_bytes(b"XISO")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(SERVICE._runner, "run", fake_run)
+    [u async for u in SERVICE.convert(str(src), str(tmp_path / "g.xiso.iso"), "xiso_rewrite")]
+
+    assert seen["kw"].get("nice_via_wrapper") is True
+    assert seen["cmd"][:5] == ["nice", "-n", "10", "ionice", "-c"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_before_the_rename_leaves_the_destination_alone(
+    tmp_path, scratch, monkeypatch,
+):
+    """A cancel that lands after extract-xiso exits but before the rename runs
+    must not delete whatever is already at output_path: this job never wrote it."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    out = tmp_path / "g.xiso.iso"
+    out.write_bytes(b"PRECIOUS")
+    cancel = asyncio.Event()
+
+    async def fake_run(cmd, *, output_path, complete_message, **_kw):
+        Path(output_path).write_bytes(b"XISO")
+        yield {"progress": 100, "message": complete_message}
+        cancel.set()  # the cancel arrives before the final rename
+
+    monkeypatch.setattr(SERVICE._runner, "run", fake_run)
+
+    with pytest.raises(MODULE.ConversionCancelled):
+        async for _ in SERVICE.convert(
+            str(src), str(out), "xiso_rewrite", cancel_event=cancel,
+        ):
+            pass
+
+    assert out.read_bytes() == b"PRECIOUS"
+    assert not _workdirs(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_a_hung_final_rename_is_bounded(tmp_path, scratch, monkeypatch):
+    """The rename runs after the subprocess's stall watchdog has stopped, so the
+    no-progress bound covers it too."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    runner_module = __import__(
+        MODULE.run_detached_within_stall_bound.__module__, fromlist=["settings"],
+    )
+    monkeypatch.setattr(runner_module, "_MIN_STALL_TIMEOUT", 0)
+    monkeypatch.setattr(runner_module.settings, "progress_timeout", 1)
+    release = MODULE.threading.Event()
+
+    async def fake_run(cmd, *, output_path, complete_message, **_kw):
+        Path(output_path).write_bytes(b"XISO")
+        yield {"progress": 100, "message": complete_message}
+
+    def hung_replace(_src, _dst):
+        release.wait(10)
+
+    monkeypatch.setattr(SERVICE._runner, "run", fake_run)
+    monkeypatch.setattr(MODULE.os, "replace", hung_replace)
+    try:
+        with pytest.raises(RuntimeError, match="Placing the XISO output stopped responding"):
+            async for _ in SERVICE.convert(
+                str(src), str(tmp_path / "g.xiso.iso"), "xiso_rewrite",
+            ):
+                pass
+    finally:
+        release.set()
