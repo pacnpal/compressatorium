@@ -24,7 +24,6 @@ place (same filesystem, so atomically) only once the binary has exited cleanly.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import re
 import shutil
@@ -51,7 +50,11 @@ from services.subprocess_runner import (
     run_detached_within_stall_bound,
     verify_preflight,
 )
-from utils.path_utils import match_extension, place_without_clobbering
+from utils.path_utils import (
+    match_extension,
+    place_without_clobbering,
+    remove_if_same_file,
+)
 
 _OWNER = "xiso"
 # The scratch link dir and the hidden work dir hold paths into the user's
@@ -535,6 +538,7 @@ class ExtractXisoService:
             # destination was free when planned, so anything there now is not
             # this job's. Refusing it also covers a rename that lands long
             # after the job gave up.
+            ours = os.stat(src)
             try:
                 place_without_clobbering(src, output_path)
             except FileExistsError as exc:
@@ -546,8 +550,9 @@ class ExtractXisoService:
                 placement["done"] = True
                 abandoned_first = placement["abandoned"]
             if abandoned_first:
-                with contextlib.suppress(OSError):
-                    os.unlink(output_path)
+                # Only while it is still our product: never a file someone else
+                # has put at the same name since.
+                remove_if_same_file(output_path, ours)
 
         def parse_progress(line: str) -> int | None:
             nonlocal written

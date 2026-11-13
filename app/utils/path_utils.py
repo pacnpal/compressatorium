@@ -15,28 +15,72 @@ def strip_archive_path(path: str) -> str:
     return path.split("::", 1)[0] if "::" in path else path
 
 
+# errnos meaning "this filesystem has no hard links" (FAT/exFAT, some network
+# shares), as opposed to a real failure of the link itself.
+_NO_HARDLINK_ERRNOS = frozenset({
+    errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EMLINK,
+})
+
+
 def place_without_clobbering(src: str, dst: str) -> None:
     """Move ``src`` to ``dst``, never replacing anything already at ``dst``.
 
-    ``os.replace`` silently overwrites, and a rename can block on a stuck mount
+    ``os.replace`` silently overwrites, and a move can block on a stuck mount
     and complete long after its caller gave up, replacing whatever has appeared
-    at ``dst`` by then. This claims the name first with an exclusive create
-    (``O_EXCL``), then renames onto its own claim, so a file already at ``dst``
-    raises ``FileExistsError`` and is never touched, however late the rename
-    lands. If the rename fails, the claim is removed.
+    at ``dst`` by then. Placement here is a hard link, which is atomic and
+    no-replace (``FileExistsError`` if ``dst`` exists), followed by removing
+    ``src``. Nothing is created at ``dst`` before the link succeeds, so there
+    is no placeholder to leave behind or for anyone to swap out.
 
-    Both paths must be on one filesystem, as for ``os.replace``.
+    On a filesystem without hard links, it falls back to claiming ``dst`` with
+    an exclusive create and renaming onto that claim. That still never replaces
+    a file that existed when the claim was made, and a failed rename removes
+    the claim only while it is still this call's (same inode). Both paths must
+    be on one filesystem, as for ``os.replace``.
     """
+    try:
+        os.link(src, dst)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if exc.errno not in _NO_HARDLINK_ERRNOS:
+            raise
+        _place_via_exclusive_claim(src, dst)
+        return
+    # The move is complete once the link exists. A source already gone (a
+    # caller's cleanup swept it while the link was stuck) is not a failure:
+    # raising here would hide that the product was placed.
+    try:
+        os.unlink(src)
+    except FileNotFoundError:
+        pass
+
+
+def _place_via_exclusive_claim(src: str, dst: str) -> None:
     fd = os.open(dst, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-    os.close(fd)
+    try:
+        claim = os.fstat(fd)
+    finally:
+        os.close(fd)
     try:
         os.replace(src, dst)
     except BaseException:
-        try:
-            os.unlink(dst)
-        except OSError:
-            pass
+        remove_if_same_file(dst, claim)
         raise
+
+
+def remove_if_same_file(path: str, ours: os.stat_result) -> None:
+    """Unlink ``path`` only if it is still the file ``ours`` describes.
+
+    For cleanup that must never remove something another process put at the
+    same name in the meantime. Errors are ignored: this is best-effort cleanup.
+    """
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) == (ours.st_dev, ours.st_ino):
+            os.unlink(path)
+    except OSError:
+        pass
 
 
 def match_extension(name: str, extensions: Iterable[str]) -> Optional[str]:

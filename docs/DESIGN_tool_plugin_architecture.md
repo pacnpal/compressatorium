@@ -625,18 +625,29 @@ on the event loop, set before or after the `await`, can't make this
 distinction. The lock is held only for those two assignments, never across I/O,
 so taking it on the event loop can't block.
 
-The rename itself must not overwrite anything either, because a rename that lands
-late replaces whatever is at the destination by then.
-`utils.path_utils.place_without_clobbering(src, dst)` first claims `dst` with an
-exclusive create (`O_EXCL`), then renames onto its own claim, and removes the
-claim if the rename fails. A file already at `dst` raises `FileExistsError` and
-is never touched. This is the right rule for every conversion, not only xiso:
+The placement itself must not overwrite anything either, because a move that
+lands late replaces whatever is at the destination by then.
+`utils.path_utils.place_without_clobbering(src, dst)` places the file with a
+hard link. That's atomic and never replaces anything (`FileExistsError` if
+`dst` exists), and it creates nothing at `dst` before it succeeds, so there's
+no placeholder to leave behind or for anyone to swap out. It then removes
+`src`, and a source the caller's cleanup already swept doesn't count as a
+failure.
+
+On a filesystem without hard links (FAT/exFAT), it falls back to claiming
+`dst` with an exclusive create and renaming onto that claim. A failed rename
+removes the claim only while it is still the same inode. The worker of an
+abandoned job removes its late product the same way, through
+`remove_if_same_file`, so cleanup never deletes a file another process has
+since put at that name.
+
+This is the right rule for every conversion, not only xiso:
 - An authorized overwrite already removed the old output before the conversion
   ran (`JobManager._clear_existing_output`).
 - A non-overwrite job's destination was free when it was planned.
 
-So anything at the destination when the product is placed isn't the job's to
-replace. nsz's and JWUDTool's work-dir moves still use a plain `os.replace`.
+So anything at the destination at placement time isn't the job's to replace.
+nsz's and JWUDTool's work-dir moves still use a plain `os.replace`.
 
 Three rules follow for any code that runs a verifier:
 
