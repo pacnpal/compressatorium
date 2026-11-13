@@ -324,7 +324,7 @@ the non-obvious rows is in §8 to §14.
 | 9 | `app/services/tools/<tool>.py` | The plugin: a `BaseTool` subclass with `id`, `display_name`, `modes` (`ModeSpec` rows), `output_extensions`, `verify_extensions`, delegating `convert`/`verify`/`info`/`output_path`/`detect_output` to the service. Optionally override `embedded_hashes` (DAT-match fast path) / `embedded_hash_is_exhaustive`; the default falls back to file-level SHA1. | New tool |
 | 10 | `app/services/tools/__init__.py` | One line: `registry.register(<Tool>(settings.<tool>_path))` (plus the import). This is the only dispatch wiring. | New tool |
 | 11 | `app/models.py` | Add `ConversionMode` value(s) and a `<Tool>Info` model. **No `FileEntry` change** — listings are tool-neutral (`convertible_by` / `outputs` / `verifiable_by`), see §5.8. | New mode and/or tool |
-| 12 | `app/routes/convert.py` | Add `SkipReason.<TOOL>_BAD_EXTENSION`, its `_SKIP_HTTP` message, and one `_BAD_EXTENSION_REASON["<tool>"]` entry. No `if`-block: validation is table-driven. | New tool |
+| 12 | `app/routes/convert.py` | Add `SkipReason.<TOOL>_BAD_EXTENSION`, its `_SKIP_HTTP` message, and one `_BAD_EXTENSION_REASON["<tool>"]` entry. No `if`-block: validation is table-driven. If your `converts_path` refines on file *content* (§19), also one `_NOT_CONVERTIBLE_REASON["<tool>"]` row naming your own reason. | New tool |
 | 13 | `app/routes/files.py` | **Nothing.** The directory scan and `search_files` loop over `registry.all()`; a registered tool is annotated automatically. | Never (registry-driven) |
 | 14 | `app/routes/info.py` | A `_VERIFY_CONFIG["<tool>"]` entry + one `register_verify_routes(router, registry.get("<tool>"))` call, and a hand-written `GET /<tool>-info` endpoint. Both are optional for a tool with no user-facing verify/info (makeps3iso registers neither). | New tool |
 | 15 | `app/services/job_manager.py` | Usually nothing: convert and verify dispatch through the registry. Touch only for special post-processing (disc-id tagging, multi-file sidecars). | Rare |
@@ -338,7 +338,7 @@ the non-obvious rows is in §8 to §14.
 | # | File | What you do | When |
 |---|------|-------------|------|
 | 20 | `src/lib/api/endpoints.js` | `get<Tool>Info`, `verify<Tool>`, `verifyBatch<Tool>` client methods alongside the existing ones. | New tool |
-| 21 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array. Everything downstream (sidebar, workspace, badges, modals, verify dispatch, SSE URL building, compression defaults, icons, Help) looks up this registry. | New mode and/or tool |
+| 21 | `src/lib/tools/registry.js` | **One new entry** in the `TOOLS` array. Everything downstream (sidebar, workspace, badges, modals, verify dispatch, SSE URL building, compression defaults, icons, Help) looks up this registry. A tool that claims a shared extension by content sets `contentRefined: true` (§19). | New mode and/or tool |
 | 22 | `src/styles/tokens.css` | Add a semantic token only if you need a new tool accent / badge color. Most tools reuse existing tokens via `accent: 'var(--badge-<token>)'`. Add it under **both** `:root` and `:root.dark`. | If new visual identity |
 | 22a | `src/lib/util/fileIcon.js` | **One `TOOL_MEDIA` entry** mapping your tool id to `'disc'` or `'game'`. The `DISC_EXTS`/`GAME_EXTS` sets are *derived* from the registry, so you never re-type extensions — you only say which bucket your media reads as. The coverage guard (`tests/test_frontend_registry_derives_186.py`) fails until every registered tool is classified. **If your tool writes an archive container other than `.7z`/`.zip`, also add it to `ARCHIVE_EXTS`** — that set is hard-coded and checked *first*, so otherwise your output renders with a disc/game icon. The guard won't catch it: the extension is classified, just in the wrong bucket. | New tool |
 | 22b | `src/lib/stores/conversion.svelte.js` | **Nothing.** `defaultCompressionFor()` / `defaultLevelFor()` read `defaultCompression` and `compressionLevelRange` off your registry descriptor. Declare them in `registry.js` (item 21) and the initial value, the slider default, and the shared **Reset to default** button in `CompressionPicker.svelte` all work for free. | Never (registry-driven) |
@@ -355,7 +355,7 @@ the non-obvious rows is in §8 to §14.
 | 26 | `tests/test_single_batch_plan_parity.py` | **This** is the single-vs-batch parity matrix: add your mode + a representative input to the `_cases()` table. `tests/test_mode_parity_fixes.py` has no per-mode matrix — it holds targeted regressions (delete-on-verify messages, external modes, the nsz level token), so touch it only if one of those applies to your tool. | New mode |
 | 26a | `tests/test_dispatch_routing.py` | Extend the convert/verify dispatch ladder (`_legacy_dispatch_id`) and the patched-tool tuple so your modes route to your service. | New tool |
 | 26b | `tests/test_files_outputs_parity.py` | **Usually nothing.** It asserts the *exact* tool-neutral `FileEntry` JSON surface (`convertible_by` / `outputs` / `verifiable_by` / …). Touch it only if you change that surface — adding a tool must not. | Rare |
-| 26c | `tests/test_frontend_registry_derives_186.py` | Runs the real JS under Node and fails if the registry-derived frontend facts drift: an unclassified tool in `TOOL_MEDIA`, an extension with no icon bucket, a mode with no `MODE_BLURBS` entry, a stale key, or a null-output mode with no `MODE_OUTPUT` override. Nothing to edit — it's the guard that tells you what you forgot. | New tool/mode (guard) |
+| 26c | `tests/test_frontend_registry_derives_186.py` | Runs the real JS under Node and fails if the registry-derived frontend facts drift: an unclassified tool in `TOOL_MEDIA`, an extension with no icon bucket, a mode with no `MODE_BLURBS` entry, a stale key, or a null-output mode with no `MODE_OUTPUT` override. Nothing to edit for a new tool or mode — it's the guard that tells you what you forgot. The one reason to edit it is a new shared query helper on `registry` (like `infoToolsForPath`, `displayExtension` or `contentClaimsFor`), whose behaviour test belongs beside the facts it reads. Never edit it to make a failing check pass. | New tool/mode (guard) |
 | 26d | `tests/test_archive_conversion_e2e.py` + `tests/test_archive_preference.py` | Add `MATRIX` rows per direction and assert your source exts are in `registry.archive_input_extensions()` (see §17.7). Make parametrize `ids` unique if an extension repeats across modes. | New archive-aware tool |
 | 26e | `tests/test_companion_outputs_182.py` | Assert `companion_outputs()` for your mode if it writes sidecars. | If `companion_exts` set |
 | 26f | `tests/test_verify_routes_factory.py` | Covers the generated verify trio generically; extend if your `_VERIFY_CONFIG` entry has unusual naming. | Rare |
@@ -905,6 +905,21 @@ because it drops `.chd` from its `input_extensions`. Write a bespoke check only
 if your tool has that kind of structural rule; otherwise the table entry is the
 whole job.
 
+**A fourth line, only for a content-refined tool.** After the extension check,
+`plan_job` asks the mode's tool `converts_path(file_path)`. When that returns
+`False`, the default reason is `SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE`, jwud's
+"one part of a split set" message. If your `converts_path` rejects on file
+*content* instead (§19), add your own `SkipReason` + `_SKIP_HTTP` message and
+map it here, so the user hears what is actually wrong:
+
+```python
+# 4. (content-refined tools only) name your converts_path rejection
+_NOT_CONVERTIBLE_REASON: dict[str, SkipReason] = {
+    ...
+    "xiso": SkipReason.XISO_NOT_XBOX_IMAGE,
+}
+```
+
 Everything else is spec-driven:
 
 - **Output path:** `_get_output_path` delegates to
@@ -1248,6 +1263,8 @@ MODE + MODELS (app/models.py)
 ROUTES
 [ ] convert.py: SkipReason.<TOOL>_BAD_EXTENSION + _SKIP_HTTP entry +
     _BAD_EXTENSION_REASON["<tool>"] entry (three data lines, no if-block)
+[ ] content-refined tool only (§19): its own SkipReason + _SKIP_HTTP entry +
+    _NOT_CONVERTIBLE_REASON["<tool>"] row
 [ ] files.py: NOTHING — the scan loops over registry.all()
 [ ] info.py (optional, skip if no user-facing verify/info):
     _VERIFY_CONFIG["<tool>"] entry + register_verify_routes(...) +
@@ -1267,14 +1284,16 @@ FRONTEND
     (skip if the tool has no info/verify routes)
 [ ] src/lib/tools/registry.js: one new entry in the TOOLS array — including
     defaultCompression / compressionStyle / compressionLevelRange if it has a
-    compression UI
+    compression UI; contentRefined: true for a content-refined tool (§19)
 [ ] src/lib/util/fileIcon.js: one TOOL_MEDIA entry ('disc' or 'game'),
     plus ARCHIVE_EXTS if you write a container beyond .7z/.zip
 [ ] src/lib/tools/helpModes.js: MODE_BLURBS line per mode (+ MODE_OUTPUT
     override for input-derived / companion-pair outputs)
 [ ] src/lib/components/views/HelpView.svelte: the curated tool blurb only
 [ ] src/lib/stores/conversion.svelte.js: NOTHING — reads the descriptor
+    (incl. contentRefined, via registry.contentClaimsFor)
 [ ] src/lib/components/panels/FileRow.svelte: NOTHING — reads convertible_by
+    and registry.displayExtension
 [ ] src/styles/tokens.css: --badge-<tool> (only if new accent), both :root + .dark
 
 TESTS + DOCS
@@ -1613,6 +1632,7 @@ app/utils/delete_plan.py            NOTHING (registry-driven source_companions)
 app/services/tools/__init__.py      registry.register(NszipTool(settings.nszip_path))
 app/models.py                       ConversionMode.NSZIP_COMPRESS; NszipInfo  (FileEntry: nothing)
 app/routes/convert.py               SkipReason + _SKIP_HTTP entry + _BAD_EXTENSION_REASON entry
+                                    (+ _NOT_CONVERTIBLE_REASON row if content-refined, §19)
 app/routes/files.py                 NOTHING (registry-driven scan)
 app/routes/info.py                  _VERIFY_CONFIG entry + register_verify_routes(get("nszip")) + /nszip-info + _is_nszip_info_file + service import
 app/services/job_manager.py         usually nothing (registry dispatches)
@@ -1622,14 +1642,14 @@ src/lib/util/fileIcon.js            one TOOL_MEDIA entry ('disc' or 'game');
                                     + ARCHIVE_EXTS for a new archive container
 src/lib/tools/helpModes.js          MODE_BLURBS line per mode (+ MODE_OUTPUT if needed)
 src/lib/components/views/HelpView.svelte   the curated tool blurb only
-src/lib/stores/conversion.svelte.js NOTHING (reads defaultCompression off the descriptor)
-src/lib/components/panels/FileRow.svelte   NOTHING (reads entry.convertible_by)
+src/lib/stores/conversion.svelte.js NOTHING (reads defaultCompression / contentRefined off the descriptor)
+src/lib/components/panels/FileRow.svelte   NOTHING (reads entry.convertible_by + registry.displayExtension)
 src/styles/tokens.css               (only if new badge classes; both :root + .dark)
 tests/test_nszip_routes.py          info+verify endpoint tests
 tests/test_nszip_service.py         convert/verify/cancel/bad-ext tests
 tests/test_tool_registry.py         mode resolves to nszip; counts + ext unions + matrices
 tests/test_dispatch_routing.py      extend convert/verify dispatch ladder
-tests/test_frontend_registry_derives_186.py  guard only — run it, don't edit it
+tests/test_frontend_registry_derives_186.py  guard only — run it, don't edit it (unless you add a registry helper, item 26c)
 tests/test_single_batch_plan_parity.py  add nszip_compress to the _cases() matrix
 tests/test_archive_conversion_e2e.py + test_archive_preference.py  archive matrix (if archive-aware)
 tests/conftest.py                   DB-only; no tool-binary stub (mocks live per-test-file)
@@ -2057,7 +2077,27 @@ One more consumer worth knowing about if you route your source through a
 (not the last step's tool), precisely so a compound source is stripped
 correctly. See design doc §3.3.3.
 
-### 18.5 Tests
+### 18.5 A compound *output* (`.xiso.iso`)
+
+NKit only *reads* a compound extension. xiso *writes* one (`Game.xiso.iso`, so
+the product can never be named after its `.iso` source, and its verify claim
+can't hijack plain `.iso` rows). That needs the finished file to resolve
+correctly too. The shared paths already handle it, so declaring
+`output_ext=".xiso.iso"` and `verify_extensions={".xiso.iso"}` is all you do:
+
+- `registry.tool_for_verify` takes the **longest** matching claim, so
+  `Game.xiso.iso` resolves to xiso, not to Dolphin's `.iso`.
+- The verify routes in `routes/info.py` (single, SSE and batch) gate with
+  `match_extension`, not `os.path.splitext`, so the compound name is accepted.
+  Add your tool to `tests/test_verify_routes_factory.py`'s table to keep that
+  covered.
+- The **rename** duplicate policy numbers in front of the whole compound
+  (`Game_1.xiso.iso`), never inside it.
+- The file list's Extension column shows `registry.displayExtension(entry)`,
+  the longest declared compound extension, while `entry.extension` stays the
+  trailing suffix (§18.4).
+
+### 18.6 Tests
 
 Add rows to `tests/test_compound_extension_matching.py` (its
 `test_every_other_tool_declares_only_single_component_extensions` is a tripwire
@@ -2067,3 +2107,60 @@ and re-read this section while you do). Then cover the usual matrices: a plain
 `tests/test_single_batch_plan_parity.py`, and your compound extension needs a
 `tests/test_archive_conversion_e2e.py` MATRIX row proving the whole suffix is
 stripped from the output name.
+
+## 19. Tools that claim a shared extension by content (Xbox `.iso`)
+
+Some formats can't be told apart by name at all. Every Xbox / Xbox 360 disc
+image is a plain `.iso`, the same extension chdman, Dolphin and maxcso claim.
+NKit's answer (§18), declaring a more specific extension, isn't available,
+because there is none. `xiso` is the reference; follow it if your format hides
+behind someone else's extension.
+
+### 19.1 Refine `converts_path` with a cheap, cached probe
+
+Declare the generic extension in `input_extensions`, then override
+`converts_path` to look inside the file. xiso's probe
+(`ExtractXisoService.is_convertible`) does at most five small reads, checking
+the volume descriptor at each known partition offset plus extract-xiso's
+"already trimmed" tag. It is `lru_cache`d on (path, size, mtime), because the
+listing calls `converts_path` for every `.iso` it shows. Keep yours that cheap:
+it runs once per candidate file across the whole library.
+
+That one override gives you most of the behaviour for free.
+`FileEntry.convertible_by` comes from `tools_converting_path`, so your tool
+shows up only on your own files, and `plan_job` rejects everything else.
+
+### 19.2 Say why a file was rejected
+
+`plan_job`'s default reason for a `converts_path` rejection is jwud's split-set
+message. Add a `SkipReason`, its `_SKIP_HTTP` message, and a
+`_NOT_CONVERTIBLE_REASON["<tool>"]` row (§5.7, line 4).
+
+### 19.3 Mark the descriptor `contentRefined: true`
+
+In `src/lib/tools/registry.js`. The frontend reads it in one place,
+`registry.contentClaimsFor(entry)`. That helper returns the content-refined
+tools in the row's `convertible_by`, or `null` when the row has no
+`convertible_by`. It has two consumers, and neither names a tool:
+
+- **Selection.** In your mode, `allowsInputEntry` only allows rows that claim
+  your tool, so select-all can't sweep up PSP/PS2 `.iso` files.
+- **Info.** The Info modal asks your tool before the generic `.iso` owners,
+  which would otherwise describe your file as an ordinary ISO. Have your info
+  route return 422 for a file that isn't yours, so the modal moves on to the
+  next candidate.
+
+### 19.4 Don't offer archive input
+
+The probe needs the real file. Inflating a multi-gigabyte archive member just
+to look inside it isn't worth it, so leave `allows_archive_input=False`.
+
+### 19.5 Tests
+
+- A parity row accepting a real (minimal) image of your format, and one
+  rejecting a plain file with the same extension
+  (`tests/test_single_batch_plan_parity.py`).
+- Extend `test_converts_path_rejection_names_the_tools_reason` with your
+  reason.
+- Service tests that build real headers at each layout offset, rather than
+  mocking the probe.

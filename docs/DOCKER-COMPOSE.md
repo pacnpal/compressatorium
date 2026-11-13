@@ -222,6 +222,7 @@ Volume behavior:
 | `MAKEPS3ISO_PATH` | `/usr/local/bin/makeps3iso` | Path to the makeps3iso binary (PS3 decrypted folder → ISO) |
 | `JWUDTOOL_PATH` | `/usr/local/bin/jwudtool` | Path to the JWUDTool launcher (Wii U `.wud` ↔ `.wux`). The image ships a launcher that execs the bundled jar with a headless JRE |
 | `NKIT2ISO_PATH` | `/usr/local/bin/nkit2iso` | Path to the nkit2iso binary (NKit-shrunk GameCube/Wii image → ISO) |
+| `EXTRACT_XISO_PATH` | `/usr/local/bin/extract-xiso` | Path to the extract-xiso binary (Xbox / Xbox 360 disc image → trimmed XISO) |
 | `NKIT2ISO_RECOVERY` | `none` | What nkit2iso does with a Wii image whose update partition was removed: `none` zero-fills it (fully offline; playable but not redump-verifiable), `download` fetches the publicly archived recovery partition for a bit-exact restore. `download` is the only path on which the tool uses the network. |
 | `SWITCH_KEYS` | *(unset)* | Directory holding your own Switch `prod.keys`. Source of truth for Switch (nsz); mount it read-only. When unset, the app best-effort checks `~/.switch` and your mounted volumes. No keys ship with the image. |
 | `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for Switch compression (1-22) |
@@ -235,7 +236,7 @@ Volume behavior:
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_PER_GIB` | `600` | Extra verify allowance in seconds per GiB of the verified file (0 makes the bound flat). |
 | `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT_CAP` | `86400` | Upper bound in seconds on the size-scaled verify timeout (0 uncapped). |
 | `COMPRESSATORIUM_TOOL_VERIFY_PROGRESS_TIMEOUT` | `600` | Timeout in seconds without any verify output, for the verifiers that stream progress (chdman, dolphin-tool); catches a wedged verify long before the overall bound. Independent of `COMPRESSATORIUM_TOOL_VERIFY_TIMEOUT` — it still applies when that is `0`. 0 disables. Legacy alias: `CHD_VERIFY_PROGRESS_TIMEOUT`. |
-| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | *(shared default)* | Optional per-tool overrides (`<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ`, `MAKEPS3ISO`, `NKIT2ISO`, `JWUD`) that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `NKIT2ISO` and `MAKEPS3ISO` have no `_VERIFY_TIMEOUT` (no verify step, and no reachable verify entry point, respectively); `JWUD` verifies without a subprocess, so its bound applies to the verify call itself. |
+| `COMPRESSATORIUM_<TOOL>_NICE` / `_IOPRIO_CLASS` / `_IOPRIO_LEVEL` / `_VERIFY_TIMEOUT` | *(shared default)* | Optional per-tool overrides (`<TOOL>` = `CHDMAN`, `DOLPHIN_TOOL`, `NSZ`, `Z3DS`, `MAXCSO`, `ROMZ`, `MAKEPS3ISO`, `NKIT2ISO`, `JWUD`, `XISO`) that fall back to the shared `COMPRESSATORIUM_TOOL_*` values. `NKIT2ISO` and `MAKEPS3ISO` have no `_VERIFY_TIMEOUT` (no verify step, and no reachable verify entry point, respectively); `JWUD` verifies without a subprocess, so its bound applies to the verify call itself. |
 | `COMPRESSATORIUM_<TOOL>_INFO_TIMEOUT` | *(shared default)* | Optional per-tool info-timeout override, only for `<TOOL>` = `CHDMAN` or `DOLPHIN_TOOL` (the only tools whose `info` runs a subprocess). |
 | `CHD_ARCHIVE_MAX_ENTRIES` | `5000` | Max archive members to list (0 disables limit) |
 | `CHD_ARCHIVE_MAX_MEMBER_SIZE` | `0` | Max size in bytes per archive member (0 disables limit) |

@@ -2441,6 +2441,29 @@ buckets. They want the generic tail. Convertibility for those rows is re-derived
 from the member's *name* via `registry.tools_accepting_archive_member(member)`,
 which takes a name-or-extension for exactly this reason.
 
+**Compound *outputs* (xiso's `.xiso.iso`).** NKit only *reads* a compound
+extension. xiso *writes* one, so the product's name also has to survive the
+paths that resolve a finished file:
+
+- **`registry.tool_for_verify`** picks the **longest** matching
+  `verify_extensions` entry, with registration order breaking ties (sketch
+  below). Under first-match, `Game.xiso.iso` resolved to Dolphin, which claims
+  `.iso`, in the DAT-match path. Single-suffix paths resolve exactly as before.
+- **The shared verify-route guards** in `routes/info.py` (`_guard_verify_path`
+  for the single and SSE routes, and the batch route's path filter) test
+  `match_extension(path, tool.verify_extensions)`. They used to test
+  `os.path.splitext(path)[1]`, which only ever sees `.iso`, so every
+  `.xiso.iso` was refused with a 400. `tests/test_verify_routes_factory.py`
+  includes xiso in its per-tool table so all three routes are exercised with a
+  compound name.
+- **The rename duplicate policy** numbers the stem in front of the whole
+  compound (`Game_1.xiso.iso`), as described in §3.3.8, so the renamed file
+  still matches the verify claim.
+- **The Extension column** shows `registry.displayExtension(entry)` (frontend),
+  the longest declared compound extension the row's name ends with. This is
+  display only: `FileEntry.extension` stays the trailing `.iso`, so sorting,
+  DAT-match gating and the file icons are unchanged.
+
 > **Ordering (issue #183):** the extension-union helpers return a **sorted
 > `tuple`**, not a `frozenset`. Hash-seeded set iteration order varies across
 > processes, so any consumer that serializes an extension list (or uses it as an
@@ -2699,6 +2722,54 @@ the wrong answer silently. Without it, an archive holding `game_part1.wud` next
 to a genuinely extracted set badges the set's `game.wux` while the planner
 targets `game_part1.wux`.
 
+#### Content-refined sources (xiso: `converts_path` reads the file)
+
+`converts_path` was added to tell a split set's parts apart by *name*. xiso
+uses the same hook to tell files apart by *content*: every Xbox / Xbox 360 disc
+image is a plain `.iso`, which chdman, Dolphin and cso also claim, so the
+extension can't say whether a file is an Xbox disc. `XisoTool.converts_path`
+runs a header probe (`ExtractXisoService.is_convertible`): at most five small
+reads, looking for the XDVDFS volume descriptor at the partition offsets
+extract-xiso itself checks, and rejecting an image that already carries
+extract-xiso's rewrite tag. The result is `lru_cache`d per (path, size, mtime),
+so the listing scan and `plan_job` don't re-read an unchanged file. Because the
+listing derives `FileEntry.convertible_by` from `tools_converting_path`, xiso
+shows up there only for real Xbox images, and PSP/PS2/CD `.iso` rows are
+unchanged.
+
+Three registry-driven seams carry that claim the rest of the way, with no
+`xiso` branch in shared code:
+
+- **The skip reason (`routes/convert.py::_NOT_CONVERTIBLE_REASON`).** When the
+  mode's tool rejects a file in `plan_job`'s `converts_path` gate, the reason
+  defaults to `SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE`, which describes jwud's
+  split sets. A tool that refines on content maps its id to its own
+  `SkipReason` here (xiso: `XISO_NOT_XBOX_IMAGE`), so the user is told the file
+  isn't an Xbox disc instead of being told it is one part of a set. Adding a
+  reason is a data row, not a branch.
+  `tests/test_single_batch_plan_parity.py::test_converts_path_rejection_names_the_tools_reason`
+  pins both the mapped reason and the default.
+- **The descriptor flag (`contentRefined: true` in `registry.js`).** It marks a
+  tool whose extension claim means nothing until the backend's probe agreed.
+- **One reader of that claim (`registry.contentClaimsFor(entry)`).** It returns
+  the content-refined tools named in the row's `convertible_by`, or `null` when
+  the row has no `convertible_by` at all ("unknown", not "no"). It has two
+  consumers:
+  - The selection gate, `ConversionStore.allowsInputEntry`, narrows a
+    content-refined mode to rows that claim the tool. This is the one place
+    that gate reads `convertible_by` for a file row: elsewhere that list is
+    mode-agnostic and would block CHDMAN extract/copy, but a content-refined
+    tool has no such modes. Without it, every PSP/PS2 `.iso` could be ticked
+    (and caught by select-all) in Xbox mode, only to be rejected on submit.
+  - The Info modal tries these tools before the extension owners from
+    `infoToolsForPath`, because the generic `.iso` owners would otherwise
+    describe an Xbox disc as an ordinary ISO.
+
+The `/xiso-info` route returns 422 for an image without an XDVDFS volume, so on
+a non-Xbox `.iso` the modal moves on to the next candidate. Archive input is
+deliberately not offered: the probe needs the real file, and inflating a 7–8 GB
+image only to look inside isn't worth it.
+
 #### Per-job delete-on-verify guard (`delete_on_verify_is_safe`)
 
 `ModeSpec.supports_delete_on_verify` answers "can this *mode* offer it?", which
@@ -2804,6 +2875,11 @@ A single Node-evaluated guard, `tests/test_frontend_registry_derives_186.py`,
 fails if either drifts: a filterable extension with no icon bucket, an
 unclassified tool, a mode with no blurb, a stale blurb/override key, or a mode
 that would render a blank Output cell.
+
+The same Node harness also pins the behaviour of the registry's own query
+helpers: `infoToolsForPath` ordering, `displayExtension`, and
+`contentClaimsFor`. A new shared helper on `registry` gets its test here, next
+to the facts it reads. A new *tool* still needs no edit to this file.
 
 ---
 
