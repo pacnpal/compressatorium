@@ -277,6 +277,11 @@ jobs:
           cache-to: |
             type=gha,mode=max
             type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+          # The runtime stage is always rebuilt (its apt-get upgrade/install and
+          # pip layers would otherwise come straight from cache release after
+          # release and ship stale, CVE-flagged packages). The builder stages
+          # still cache; only their output binaries reach the image.
+          no-cache-filters: runtime
           provenance: true
           sbom: true
 

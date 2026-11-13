@@ -1340,7 +1340,7 @@ have solved the awkward part.
 | …takes a **folder**, not a file | **makeps3iso** | `accepts_directory()`, `input_kinds={InputKind.DIRECTORY}`, a dynamic `companion_outputs()` for split parts, the `split` convert kwarg, and a tool that registers *no* info/verify routes at all. Design doc §3.3.4. Override `overwrite_targets()` too, so an authorized overwrite sweeps your artifacts rather than makeps3iso's split parts (§5.6). |
 | …writes sidecar files beside its output | **chdman** (`extractcd`) | `companion_exts` driving conflict detection, cleanup and size accounting from one place. |
 | …runs an existing tool's output through another tool | **chain** (`tools/chain.py`) | `ChainSpec` / `ChainStep`: a synthetic tool with no binary that drives registered tools in order. Design doc §3.3.3. |
-| …ships as a prebuilt release artifact that needs an interpreter (a .jar, a script) | **jwud** (JWUDTool) | A pinned, SHA256-checked release download plus a `/usr/local/bin/<tool>` launcher that `exec`s the interpreter (so the tracked PID is the real process), no builder stage, and `is_ready()` hiding the tool when the launcher is absent. Also the reference for a CLI that writes into an *output folder* under a name of its own choosing, one that **exits 0 on failure** (`require_output` plus a stdout marker scan), and the only **multi-file source** (`converts_path` / `source_companions` for a split `game_part1.wud` dump). |
+| …ships as a prebuilt release artifact that needs an interpreter (a .jar, a script) | **jwud** (JWUDTool) | A pinned, SHA256-checked release download (in its own `jwudtool-builder` stage, which also swaps the jar's shaded commons-io for a patched release; the pattern for fixing a CVE in a prebuilt fat jar whose upstream is unmaintained) plus a `/usr/local/bin/<tool>` launcher that `exec`s the interpreter (so the tracked PID is the real process), and `is_ready()` hiding the tool when the launcher is absent. Also the reference for a CLI that writes into an *output folder* under a name of its own choosing, one that **exits 0 on failure** (`require_output` plus a stdout marker scan), and the only **multi-file source** (`converts_path` / `source_companions` for a split `game_part1.wud` dump). |
 | …can report a content hash cheaply for DAT matching | **dolphin** | `embedded_hashes()` via `SubprocessRunner.run_capture()`, plus `embedded_hash_is_exhaustive=True` for recompressed containers. |
 | …shares a generic extension with other tools and must tell its files apart **by content** | **xiso** (`services/extract_xiso.py` + `tools/xiso.py`) | `converts_path()` running a cached header probe so the tool appears in `convertible_by` only for its own format, a `_NOT_CONVERTIBLE_REASON` row so plan-time rejection says why, `contentRefined: true` on the frontend descriptor so the Info modal asks it first, and a binary that **renames its input**: the service hands it a symlink in scratch space and moves the product into place itself. Also `supports_verify` without delete-on-verify for a structural-only check. |
 | …has a **compound** extension, or info-but-no-verify | **nkit** (`services/nkit2iso.py` + `tools/nkit2iso.py`) | Declaring `.nkit.iso`/`.nkit.gcz` against the shared suffix match (§18), a Go builder stage in the Dockerfile, a one-direction tool that registers an info route but `verify_extensions = frozenset()` (claiming a *shared* extension like `.iso` for verify would hijack every other tool's rows — see the plugin docstring), an `info()` that parses a header in Python because the binary has no info subcommand, and a service that rewrites the runner's terminal message when the tool reports a caveat. |
@@ -1388,17 +1388,32 @@ this respect however unusual their inputs or hashes are. Two notes on top:
 
 ## 8. The Docker image in depth: `Dockerfile`, `.dockerignore`, deps
 
-The image is a **six-stage** multi-arch build. Five stages build things and
-the sixth is the runtime:
+The image is an **eight-stage** multi-arch build. Seven stages build or fetch
+things and the eighth is the runtime:
 
 | Stage | Base | Builds |
 |-------|------|--------|
 | `builder` | `debian:trixie-slim` | z3ds_compressor (from source) |
 | `maxcso-builder` | `debian:trixie-slim` | maxcso (from source) |
 | `makeps3iso-builder` | `debian:trixie-slim` | makeps3iso (from source) |
+| `extract-xiso-builder` | `debian:trixie-slim` | extract-xiso (from source) |
 | `nkit2iso-builder` | `golang:1.26-trixie` | nkit2iso (from vendored source in `third_party/`, Go) |
+| `jwudtool-builder` | `debian:trixie-slim` | JWUDTool.jar (pinned release jar, bundled commons-io swapped for a patched one) |
 | `frontend-builder` | `node:lts-slim` | the Svelte UI (`npm ci && npm run build`) |
-| *(runtime)* | `debian:trixie-slim` | the final image — no Node, no toolchain |
+| `runtime` | `debian:trixie-slim` | the final image — no Node, no toolchain |
+
+**Keeping the image patched.** The digests pin each base's *starting point*;
+bump them (`docker buildx imagetools inspect <image:tag>`) when you touch the
+Dockerfile. Between bumps, the `runtime` stage runs `apt-get upgrade` before
+installing anything, and the release workflow builds it with
+`no-cache-filters: runtime`, so each release ships that day's Debian security
+updates and a fresh `pip` resolve instead of a cached layer from months ago.
+Builder stages still cache: only their output binaries reach the image, so the
+Go and Node versions they compile with come from their digests (Trivy flags the
+Go stdlib *inside* `nkit2iso`, so bump `golang` when it does). The runtime venv
+has `pip` uninstalled after the requirements install: nothing installs packages
+at runtime, and pip's vendored urllib3/certifi/msgpack would otherwise be
+scanned and flagged.
 
 Every base image is **pinned by digest** (`debian:trixie-slim@sha256:…`), so
 adding a stage means copying an existing `FROM` line verbatim rather than

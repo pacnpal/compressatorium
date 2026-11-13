@@ -4,8 +4,9 @@
 # rebuild. Pinning keeps the registry build cache effective and the build
 # reproducible. apt-get update inside the stages still pulls security patches;
 # bump these digests periodically (docker buildx imagetools inspect <img>).
-#   debian:trixie-slim and node:lts-slim digests captured 2026-06-02.
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS builder
+#   debian:trixie-slim, golang:1.26-trixie (Go 1.26.11) and node:lts-slim
+#   digests captured 2026-11-13.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS builder
 
 # Install build dependencies
 #
@@ -45,7 +46,7 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
 # reproducibility.
 # DL3008 ignored for the same reason as the z3ds builder (generic build deps).
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS maxcso-builder
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS maxcso-builder
 ENV DEBIAN_FRONTEND=noninteractive
 # Pinned to an immutable maxcso commit so release images are reproducible
 # (the build workflow passes only APP_VERSION). This is master @ 2024-01-26,
@@ -88,7 +89,7 @@ RUN make && \
 # PARAM.SFO readback, so extractps3iso (round-trip) isn't needed.
 # DL3008 ignored for the same reason as the other builders (generic build deps).
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS makeps3iso-builder
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS makeps3iso-builder
 ENV DEBIAN_FRONTEND=noninteractive
 # Pinned to an immutable commit so release images are reproducible. master @
 # 2022-03-09 (latest upstream; last tagged release predates it). Override with
@@ -124,7 +125,7 @@ RUN make -C makeps3iso && \
 # pinned for reproducible release images.
 # DL3008 ignored for the same reason as the other builders (generic build deps).
 # ---------------------------------------------------------------------------
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS extract-xiso-builder
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS extract-xiso-builder
 ENV DEBIAN_FRONTEND=noninteractive
 # Pinned to an immutable commit (master @ 2026-09-11, v2.7.1). Override with
 # --build-arg EXTRACT_XISO_REF=<tag|sha> to update extract-xiso intentionally.
@@ -178,7 +179,7 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
 # CGO_ENABLED=0 yields a static binary: nothing to add to the runtime stage's
 # shared-library list.
 # ---------------------------------------------------------------------------
-FROM golang:1.26-trixie@sha256:87ffdb09b6a2e29ff910748b745395e8a0299aa80b7c0551cdca9b55e3fd2b3e AS nkit2iso-builder
+FROM golang:1.26-trixie@sha256:19ce7a1fdc59527aa568805ea100c380900d059d251e914fb86e11fd0ce68952 AS nkit2iso-builder
 ENV DEBIAN_FRONTEND=noninteractive
 # The upstream commit the vendored source was taken from (main @ 2026-07-18,
 # ahead of the v0.1.0 tag). It only feeds the version stamp below and does not
@@ -197,6 +198,51 @@ RUN CGO_ENABLED=0 go build -trimpath \
     chmod +x nkit2iso
 
 # ---------------------------------------------------------------------------
+# JWUDTool stage: fetch the pinned upstream release jar (Wii U .wud <-> .wux,
+# GPL-3.0) and replace the commons-io it bundles.
+#
+# JWUDTool is a Maven fat jar that is architecture-independent, so it is
+# downloaded rather than built: one pinned, SHA256-checked asset serves amd64
+# and arm64 alike. The 0.4 release (2020, upstream unmaintained) shades in
+# commons-io 2.6, which carries CVE-2021-29425 and CVE-2024-47554. The only
+# commons-io call in the jar is FilenameUtils.getFullPathNoEndSeparator (from
+# JNUSLib's FSTUtils), an API commons-io has kept binary-compatible across 2.x,
+# so the bundled copy is swapped for a patched release from Maven Central (also
+# SHA256-pinned). The pom.properties is swapped too, so scanners see the real
+# version. `jwudtool -help` in the runtime stage smoke-tests the result.
+#
+# zip/unzip live only in this stage; the runtime image never needs them.
+# DL3008 ignored for the same reason as the other builders (generic deps).
+# ---------------------------------------------------------------------------
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS jwudtool-builder
+ENV DEBIAN_FRONTEND=noninteractive
+ARG JWUDTOOL_URL="https://github.com/Maschell/JWUDTool/releases/download/0.4/JWUDTool-0.4.jar"
+ARG JWUDTOOL_SHA256="5654889d722ea673c3582b620d866197115307914f93ad326a8f658e4d88ae83"
+ARG COMMONS_IO_VERSION="2.22.0"
+ARG COMMONS_IO_SHA256="2b9a7b1f726fb86216dbd2c8321eabe0221dbd5b1be81c18e1cb53811b104758"
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# hadolint ignore=DL3008
+RUN apt-get update -o Acquire::Retries=3 && \
+    apt-get install -y --no-install-recommends \
+    wget \
+    zip \
+    unzip \
+    ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/jwudtool
+RUN wget -q "${JWUDTOOL_URL}" -O JWUDTool.jar && \
+    echo "${JWUDTOOL_SHA256}  JWUDTool.jar" | sha256sum -c - && \
+    wget -q "https://repo1.maven.org/maven2/commons-io/commons-io/${COMMONS_IO_VERSION}/commons-io-${COMMONS_IO_VERSION}.jar" \
+      -O commons-io.jar && \
+    echo "${COMMONS_IO_SHA256}  commons-io.jar" | sha256sum -c - && \
+    zip -q -d JWUDTool.jar 'org/apache/commons/io/*' 'META-INF/maven/commons-io/*' && \
+    unzip -q commons-io.jar 'org/apache/commons/io/*' 'META-INF/maven/commons-io/*' && \
+    zip -q -r JWUDTool.jar org META-INF && \
+    unzip -p JWUDTool.jar META-INF/maven/commons-io/commons-io/pom.properties \
+      | grep -qx "version=${COMMONS_IO_VERSION}"
+
+# ---------------------------------------------------------------------------
 # Frontend builder stage: compile the Svelte 5 SPA with Vite.
 #
 # Output is emitted to /build/static via vite.config.js (build.outDir),
@@ -204,7 +250,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # node:lts-slim ships linux/amd64 and linux/arm64 manifests, and the SPA
 # has no native dependencies so QEMU emulation under buildx works.
 # ---------------------------------------------------------------------------
-FROM node:lts-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5 AS frontend-builder
+FROM node:lts-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS frontend-builder
 WORKDIR /build
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -214,7 +260,7 @@ ARG APP_VERSION=dev
 ENV VITE_APP_VERSION=${APP_VERSION}
 RUN npm run build
 
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime
 
 # ---------------------------------------------------------------------------
 # Immutable pin: mame-tools 0.285+dfsg1-1 from snapshot.debian.org
@@ -232,14 +278,6 @@ ARG MAME_TOOLS_VERSION="0.285+dfsg1-1"
 ARG MAME_TOOLS_SHA256_AMD64="d99e82887aab57d9a66b2f1ffd80210aabeb064808a6d05f69af1584049fd195"
 ARG MAME_TOOLS_SHA256_ARM64="6388bff0f6242dfd3a09c63c6e25ab94e0a64fe7cf2b3b0170f89ff7c13340a8"
 
-# JWUDTool (Wii U .wud <-> .wux), GPL-3.0. Shipped as the upstream release jar
-# rather than built from source: it is a Maven/Java project whose only artifact
-# is an architecture-independent fat jar, so one pinned download serves both
-# amd64 and arm64 and no builder stage is needed. Pinned to the 0.4 release
-# asset and checked by SHA256, like the mame-tools deb above.
-ARG JWUDTOOL_URL="https://github.com/Maschell/JWUDTool/releases/download/0.4/JWUDTool-0.4.jar"
-ARG JWUDTOOL_SHA256="5654889d722ea673c3582b620d866197115307914f93ad326a8f658e4d88ae83"
-
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install system dependencies, pinned mame-tools, create wrapper script, and prepare venv
@@ -248,12 +286,18 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # the snapshot.debian.org .deb downloaded inside the RUN below; the remaining
 # packages (python3, util-linux, gosu, etc.) are stable trixie security-tracked
 # dependencies where pinning would block routine CVE patches.
+#
+# `apt-get upgrade` patches the packages that come with the base image itself
+# (libc, perl-base, zlib, openssl...), which `apt-get install` would otherwise
+# leave at whatever the pinned digest shipped. The release workflow rebuilds this
+# stage without cache (no-cache-filters: runtime), so every release picks up the
+# current Debian security updates here instead of reusing a months-old layer.
 ENV DEBIAN_FRONTEND=noninteractive
-# hadolint ignore=DL3008
+# hadolint ignore=DL3008,DL3005
 RUN apt-get update -o Acquire::Retries=3 && \
+    apt-get upgrade -y --no-install-recommends && \
     apt-get install -y --no-install-recommends \
       python3 \
-      python3-pip \
       python3-venv \
       util-linux \
       unrar-free \
@@ -304,7 +348,13 @@ COPY requirements.txt /app/
 # This also installs `nsz` (Nintendo Switch NSP/XCI <-> NSZ/XCZ), which lands on
 # PATH at /opt/venv/bin/nsz. nsz needs the operator's own prod.keys mounted at
 # runtime (SWITCH_KEYS); no keys are baked into this image.
-RUN pip install --no-cache-dir -r /app/requirements.txt
+#
+# pip is uninstalled afterwards: nothing installs packages at runtime, and pip
+# vendors its own copies of urllib3, certifi, msgpack and setuptools'
+# pkg_resources that would otherwise ship in the image and be flagged by
+# scanners whenever pip's release lags theirs.
+RUN pip install --no-cache-dir -r /app/requirements.txt && \
+    pip uninstall -y pip
 
 # Install z3ds_compressor from builder stage (CMake emits it under build/)
 COPY --from=builder /tmp/z3ds/build/z3ds_compressor /usr/local/bin/z3ds_compressor
@@ -316,17 +366,14 @@ COPY --from=maxcso-builder /tmp/maxcso/maxcso /usr/local/bin/maxcso
 # GPL-3.0, shipped unmodified as a standalone binary (see the builder stage).
 COPY --from=makeps3iso-builder /tmp/ps3iso-utils/makeps3iso/makeps3iso /usr/local/bin/makeps3iso
 
-# Install JWUDTool (Wii U .wud <-> .wux) and a launcher that execs it, so the
+# Install JWUDTool (Wii U .wud <-> .wux) from its stage (the pinned release jar
+# with its bundled commons-io replaced) and a launcher that execs it, so the
 # app spawns one process it can signal/track like any other tool binary (the
 # `exec` matters: without it the shell, not the JVM, would be the tracked PID).
 # MaxRAMPercentage replaces the JVM's 25 %-of-RAM default heap, which is tight
 # for the ~760k-entry sector-hash map a full disc build allocates.
-RUN wget -q "${JWUDTOOL_URL}" -O /tmp/jwudtool.jar && \
-    echo "${JWUDTOOL_SHA256}  /tmp/jwudtool.jar" | sha256sum -c - && \
-    mkdir -p /usr/local/share/jwudtool && \
-    mv /tmp/jwudtool.jar /usr/local/share/jwudtool/JWUDTool.jar && \
-    chmod 644 /usr/local/share/jwudtool/JWUDTool.jar && \
-    printf '#!/bin/sh\nexec java -XX:MaxRAMPercentage=75.0 -jar /usr/local/share/jwudtool/JWUDTool.jar "$@"\n' \
+COPY --from=jwudtool-builder --chmod=644 /tmp/jwudtool/JWUDTool.jar /usr/local/share/jwudtool/JWUDTool.jar
+RUN printf '#!/bin/sh\nexec java -XX:MaxRAMPercentage=75.0 -jar /usr/local/share/jwudtool/JWUDTool.jar "$@"\n' \
       > /usr/local/bin/jwudtool && \
     chmod +x /usr/local/bin/jwudtool && \
     jwudtool -help > /dev/null
