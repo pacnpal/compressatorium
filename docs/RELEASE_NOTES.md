@@ -19,6 +19,26 @@
     delete-on-verify: XISO carries no checksums and the trim is irreversible.
   - Info shows console, disc layout, file count and game-data size.
 
+### Security
+
+- **Docker image: cleared the open Trivy findings.** Base images moved to
+  current digests (Debian trixie-slim, Go 1.26.11 for nkit2iso, Node LTS for
+  the UI build). The runtime stage now runs `apt-get upgrade` and the release
+  workflow always rebuilds it from scratch, so a release can no longer ship
+  months-old Debian packages from the build cache (openssl, perl, glibc, zlib,
+  OpenJDK, Python and the rest).
+- `pip` is removed from the image after the Python dependencies install; its
+  vendored urllib3, certifi, msgpack and setuptools copies are gone with it.
+  The unused Debian `python3-pip` package is no longer installed.
+- JWUDTool's jar bundles commons-io 2.6 (CVE-2021-29425, CVE-2024-47554); the
+  image now swaps in commons-io 2.22.0. JWUDTool calls a single commons-io
+  function, which behaves the same in both versions.
+- Frontend build dependencies updated (vite 8.3, devalue 5.9.4, source-map-js
+  1.2.2, brace-expansion 5.0.13, nanoid 3.3.20), and `minimatch` forced to 11.x
+  under ESLint. The remaining `deepmerge` advisory has no fixed release; it is a
+  build-time dependency of the Svelte Vite plugin and only ever merges this
+  project's own config.
+
 ### Changed
 
 - `registry.tool_for_verify` now picks the **most specific** extension claim
