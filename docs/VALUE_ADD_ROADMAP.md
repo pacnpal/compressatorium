@@ -181,8 +181,9 @@ framed as the headline. Order of operations:
 5. Record every step so a crash resumes or surfaces the ROM for manual
    recovery.
 
-**MVP.** Single-file ROMs, behind an opt-in, with verify levels "container
-check" and "round-trip compare" as a per-rule setting.
+**MVP.** Single-file ROMs, behind an opt-in, with the check level as a
+per-rule setting. Round-trip compare is the default whenever the source is
+deleted. Container-only is a named opt-out ("faster, weaker").
 
 **Verify.** That a `hashes` scan by `roms_ids` refreshes size and hashes after
 an out-of-band swap. The scan code was rewritten since the last check, and
@@ -530,9 +531,17 @@ So the content key is `(kind, sha1)`:
   `Game.chd` of one disc share a key.
 - `chdcd:<chd_data_sha1>` for CD CHDs. Two CD CHDs of the same disc match each
   other whatever codec they use. They don't match a cue/bin by hash.
-- CD CHD against cue/bin goes through the DAT instead: when both files have a
-  `DATMatch` to the same game, they're the same disc. Without a DAT match on
-  both sides we don't claim a duplicate.
+- CD CHD against cue/bin can't be grouped by hash, and a shared DAT game name
+  isn't enough either. The DAT parser gives every `<rom>`/`<disk>` child its
+  parent's `game_name`, so one track file matches the same game as the whole
+  disc does. Grouping on the name could offer a required track, or a different
+  disc, as a duplicate. The rule is disc-level: the cue/bin side counts only
+  when the cue's full track set matches every track entry of one DAT game
+  (compare `rom_name` per track, none missing, none extra), and the CHD side
+  matches that same disc's entry. **Verify** that MAME Redump's CHD entries
+  and Redump's track entries can be tied to one disc reliably before building
+  this. Until then CD CHD against cue/bin is reported as "possibly the same
+  disc" with no delete action.
 - Containers with no embedded image hash (CSO, NSZ, WUX, Z3DS) are left out at
   first. The scrub (N7) already decompresses them to verify, and can record a
   `raw:` key as a side effect later.
@@ -546,7 +555,8 @@ DAT-named). The action is the existing delete plan. Nothing is deleted without
 the confirmation list.
 
 **MVP.** `raw:` keys only: ISO against Dolphin containers and DVD CHDs, plus
-exact file duplicates.
+exact file duplicates. A delete is offered only for a hash-equal group. A
+track file that belongs to a cue is never offered on its own.
 
 **Size.** M. A content-key column on the cached hashes, the key builder on the
 tool contract, then the query and view.
@@ -618,8 +628,11 @@ source" in the UI or runs it from cron.
 | 3.4 | Health report and duplicate finder (A3, N10) | M |
 
 Done when: converting never orphans a game in RomM or ES-DE, and the README
-can say "the source is deleted only after the output decompresses back to the
-same bytes".
+can say "with the round-trip check on, a source is deleted only after the
+output decodes back to the same disc image". That sentence is about image
+content. A `cso_to_chd` job compares the decompressed image, and the `.cso`
+container itself is not recoverable from the CHD. A rule set to the weaker
+container-only check doesn't get the claim.
 
 ### Step 4: reach
 
