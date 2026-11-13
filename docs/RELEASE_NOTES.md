@@ -41,6 +41,25 @@
   selectable (and picked up by select-all); other consoles' ISOs no longer tick
   only to be rejected on submit. Driven by the descriptor's `contentRefined` flag.
 
+### Fixed
+
+- **The Docker image builds again.** nkit2iso's upstream repository
+  (`github.com/DonMikone/nkit2iso`) was deleted or made private, so the
+  Dockerfile's `git clone` returned 404 and every fresh `docker build` failed
+  at the `nkit2iso-builder` stage. The image now builds nkit2iso from a
+  vendored copy in `third_party/nkit2iso`. It is the same commit as before
+  (`b97129c`), so the tool's behavior doesn't change, and `nkit2iso -version`
+  still reports that commit. The copy is the Go module zip that
+  `proxy.golang.org` still serves for that commit, and its hash matches
+  `sum.golang.org`'s public log. A rebuild from it matches the binary in the
+  published 4.5.0-era image section for section, and the files match a Wayback
+  Machine capture of the upstream repo. A new test pins the vendored tree's
+  hash. `third_party/README.md` has the full provenance.
+- **Prebuilt nkit2iso binaries are hosted in the repo.** Upstream's release
+  downloads are gone too, so `third_party/nkit2iso-bin/` now carries the linux
+  amd64 and arm64 binaries shipped in the 4.5.0-era image, with
+  `SHA256SUMS`. Use them to run nkit2iso outside Docker (`NKIT2ISO_PATH`).
+
 ## 4.5.0 (2026-11-09)
 
 Compressatorium and [RomM](https://romm.app) look at the same files and know
