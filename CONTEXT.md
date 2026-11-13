@@ -6,6 +6,28 @@ not catalogue what a collection is missing.
 
 ## Language
 
+### What gets converted
+
+**Image**:
+One convertible unit: a disc, a cartridge dump or a PS3 game folder, made of one or more files. Rules, checks and the ledger work on Images.
+_Avoid_: ROM, file, game, dump
+
+**Title**:
+One game as a person thinks of it, made of one or more Images (a four-disc game is one Title).
+_Avoid_: Game, set, entry
+
+**ROM**:
+RomM's own record for a game. Used only when talking about RomM's data.
+_Avoid_: Using "ROM" for an Image or a file
+
+**Platform**:
+The console an Image belongs to, either reported by RomM or worked out from the Image itself.
+_Avoid_: System, console, core
+
+**Unsorted**:
+An Image whose Platform could not be worked out. No rule touches it.
+_Avoid_: Unknown, misc
+
 ### Where images live
 
 **Volume**:
@@ -13,8 +35,16 @@ A directory mounted into the app, the outer boundary of everything it may read o
 _Avoid_: Mount, share, drive
 
 **Library**:
-A set of game images that rules run against. It is either a RomM library or a folder library, and it always sits inside a Volume.
+A set of Images that rules run against. It is either a RomM library or a folder library (one root folder the user registers), and it always sits inside a Volume.
 _Avoid_: Catalog, catalog source, collection
+
+**Rule**:
+A standing instruction to convert or check the Images of one Platform in one Library.
+_Avoid_: Automation, job, task, schedule
+
+**Referrer**:
+Anything that points at an Image by its path: RomM's ROM, an `.m3u` playlist, a frontend gamelist. Referrers are updated when a Source is replaced.
+_Avoid_: Frontend, sidecar, integration
 
 **Source**:
 The input file of one conversion.
@@ -27,7 +57,7 @@ The file passed its own tool's container check, so it reads back without errors.
 _Avoid_: Verified, valid, OK
 
 **Round-tripped**:
-At conversion time, the output decoded back to the same content as its Source.
+At conversion time, the content decoded from the output equalled the content decoded from its Source. It is a claim about image content, never about container bytes.
 _Avoid_: Verified, lossless-checked
 
 **Recognized**:
