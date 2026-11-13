@@ -350,6 +350,89 @@ async def test_convert_failure_leaves_an_existing_output_alone(tmp_path, scratch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["symlink", "makedirs"])
+async def test_workspace_setup_failure_leaves_no_scratch_dirs(
+    tmp_path, scratch, monkeypatch, failing,
+):
+    """A setup step failing after the first dir exists still sweeps it."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    out = tmp_path / "out" / "g.xiso.iso"
+    real = getattr(MODULE.os, failing)
+
+    def boom(path, *args, **kwargs):
+        # Fail only the output-side makedirs, not the temp-dir one.
+        if failing == "makedirs" and str(scratch) in str(path):
+            return real(path, *args, **kwargs)
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(MODULE.os, failing, boom)
+
+    with pytest.raises(PermissionError):
+        async for _ in SERVICE.convert(str(src), str(out), "xiso_rewrite"):
+            pass
+
+    assert not os.path.exists(scratch) or not os.listdir(scratch)
+    assert not _workdirs(tmp_path)
+    assert src.exists()
+
+
+def test_abandoned_workspace_setup_undoes_its_own_work(tmp_path, scratch):
+    """A setup a cancel gave up on removes what it creates afterwards."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    link_dir, out_dir = SERVICE._workspace_paths(str(tmp_path / "g.xiso.iso"))
+    abandoned = MODULE.threading.Event()
+    abandoned.set()
+
+    SERVICE._prepare_workspace(str(src), link_dir, out_dir, abandoned)
+
+    assert not os.path.exists(link_dir)
+    assert not os.path.exists(out_dir)
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_workspace_setup_leaves_no_scratch_dirs(
+    tmp_path, scratch, monkeypatch,
+):
+    """Cancelled while setup is still running: convert sweeps, and the setup
+    finishing afterwards cleans up after itself."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    out = tmp_path / "g.xiso.iso"
+    release = MODULE.threading.Event()
+    real_prepare = type(SERVICE)._prepare_workspace.__func__
+    finished = MODULE.threading.Event()
+
+    def slow_prepare(cls, *args):
+        release.wait(5)
+        try:
+            return real_prepare(cls, *args)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(type(SERVICE), "_prepare_workspace", classmethod(slow_prepare))
+    cancel = asyncio.Event()
+
+    async def run():
+        async for _ in SERVICE.convert(
+            str(src), str(out), "xiso_rewrite", cancel_event=cancel,
+        ):
+            pass
+
+    task = asyncio.create_task(run())
+    await asyncio.sleep(0.2)
+    cancel.set()
+    with pytest.raises(MODULE.ConversionCancelled):
+        await task
+    release.set()
+    assert await asyncio.to_thread(finished.wait, 5)
+
+    assert not _workdirs(tmp_path)
+    assert not os.path.exists(scratch) or not os.listdir(scratch)
+
+
+@pytest.mark.asyncio
 async def test_convert_explains_an_already_optimized_skip(tmp_path, scratch, monkeypatch):
     src = tmp_path / "g.iso"
     build_image(src, layout="XGD2")

@@ -473,7 +473,7 @@
     <h2 class="panel-title">FAQ and edge cases</h2>
     <dl class="qa">
       <dt>Will compression hurt the game?</dt>
-      <dd>No. Every format here is lossless. The data you get back after decompression is bit-for-bit identical to what went in. Smaller file, same game.</dd>
+      <dd>No. Every compressed format here is lossless. The data you get back after decompression is bit-for-bit identical to what went in. Smaller file, same game. The one exception is the Xbox XISO trim: the game's files are kept intact and it plays the same, but the video partition and disc padding are discarded for good, so the original full disc image can't be rebuilt from it. Keep the original if preserving the complete disc matters to you.</dd>
 
       <dt>Does converting touch my original file?</dt>
       <dd>No. The output is a new file and the source is left alone, unless you explicitly turn on delete-on-verify. Even then the source is only removed after the output passes verification.</dd>

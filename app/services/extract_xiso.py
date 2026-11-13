@@ -26,8 +26,11 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import struct
 import tempfile
+import threading
+import uuid
 from collections.abc import AsyncGenerator
 from functools import lru_cache
 from pathlib import Path
@@ -395,34 +398,62 @@ class ExtractXisoService:
         ]
 
     @staticmethod
-    def _prepare_workspace(input_path: str, output_path: str) -> tuple[str, str, str]:
-        """Create the scratch symlink and the beside-the-output work dir.
+    def _workspace_paths(output_path: str) -> tuple[str, str]:
+        """Choose ``(link_dir, out_dir)`` before anything is created.
 
-        Returns ``(link_dir, source_link, out_dir)``. The symlink lives under
-        the app's temp dir (a container-local filesystem, where symlinks always
-        work); the rewritten image is written next to the final output so the
-        last step is a same-filesystem rename, never a multi-gigabyte copy.
+        Chosen up front, in the caller, so the caller can always sweep them --
+        even when the setup that creates them fails half-way or is abandoned
+        on a cancel. The scratch link dir lives under the app's temp dir (a
+        container-local filesystem, where symlinks always work); the work dir
+        sits beside the final output, hidden like nsz's / JWUDTool's
+        ``.nsz-*`` / ``.jwud-*`` dirs, so the last step is a same-filesystem
+        rename, never a multi-gigabyte copy.
         """
-        base = settings.temp_dir
-        if base:
-            os.makedirs(base, exist_ok=True)
-        link_dir = tempfile.mkdtemp(prefix="xiso_src_", dir=base or None)
+        token = uuid.uuid4().hex[:12]
+        base = settings.temp_dir or tempfile.gettempdir()
+        out_parent = os.path.dirname(os.path.abspath(output_path))
+        return (
+            os.path.join(base, f"xiso_src_{token}"),
+            os.path.join(out_parent, f".xiso-{token}"),
+        )
+
+    @staticmethod
+    def _remove_workspace(link_dir: str, out_dir: str) -> None:
+        for directory in (link_dir, out_dir):
+            shutil.rmtree(directory, ignore_errors=True)
+
+    @classmethod
+    def _prepare_workspace(
+        cls,
+        input_path: str,
+        link_dir: str,
+        out_dir: str,
+        abandoned: threading.Event,
+    ) -> str:
+        """Create the scratch symlink and the work dir; return the link path.
+
+        All or nothing: any failure removes whatever this call already created
+        before re-raising. Blocking, so the caller runs it detached, and if the
+        caller gives up on it (a cancel) it sets ``abandoned``: a call that
+        finishes after that undoes its own work, since the caller's sweep may
+        already have run.
+        """
         # extract-xiso derives the output name by stripping ".iso", so the link
         # must end in it; a fixed name also keeps odd characters in the user's
         # filename away from the binary entirely.
         source_link = os.path.join(link_dir, "source.iso")
-        os.symlink(os.path.abspath(input_path), source_link)
-        out_parent = os.path.dirname(os.path.abspath(output_path))
-        os.makedirs(out_parent, exist_ok=True)
         try:
-            # Hidden and private, the same convention as nsz's / JWUDTool's
-            # ``.nsz-*`` / ``.jwud-*`` work dirs beside their outputs.
-            out_dir = tempfile.mkdtemp(prefix=".xiso-", dir=out_parent)
+            os.makedirs(os.path.dirname(link_dir), exist_ok=True)
+            os.mkdir(link_dir)
+            os.symlink(os.path.abspath(input_path), source_link)
+            os.makedirs(os.path.dirname(out_dir), exist_ok=True)
+            os.mkdir(out_dir)
         except BaseException:
-            os.unlink(source_link)
-            os.rmdir(link_dir)
+            cls._remove_workspace(link_dir, out_dir)
             raise
-        return link_dir, source_link, out_dir
+        if abandoned.is_set():
+            cls._remove_workspace(link_dir, out_dir)
+        return source_link
 
     async def convert(
         self,
@@ -457,7 +488,8 @@ class ExtractXisoService:
         total = max(int(stats["data_bytes"]), 1)
         label = f"{stats['console'] or 'Xbox'} {stats['layout']}"
 
-        link_dir = out_dir = None
+        link_dir, out_dir = self._workspace_paths(output_path)
+        abandoned = threading.Event()
         placing = False
         written = 0
 
@@ -471,8 +503,8 @@ class ExtractXisoService:
             return 2 + min(96, written * 96 // total)
 
         try:
-            link_dir, source_link, out_dir = await run_detached(
-                self._prepare_workspace, input_path, output_path,
+            source_link = await run_detached(
+                self._prepare_workspace, input_path, link_dir, out_dir, abandoned,
                 cancel_event=cancel_event,
             )
             rewritten = os.path.join(out_dir, "source.iso")
@@ -524,11 +556,12 @@ class ExtractXisoService:
             # The shared bounded sweep nsz and JWUDTool use for their work dirs:
             # out_dir sits on the output volume, which may be exactly what the
             # run just died on, so a wedged rmtree leaves a stray hidden dir
-            # rather than a job that never finalises.
-            if out_dir:
-                await remove_partial_tree(out_dir, label="xiso work dir")
-            if link_dir:
-                await remove_partial_tree(link_dir, label="xiso source link dir")
+            # rather than a job that never finalises. Flag the setup first: if a
+            # cancel abandoned it mid-way, it removes what it creates after this
+            # sweep has run.
+            abandoned.set()
+            await remove_partial_tree(out_dir, label="xiso work dir")
+            await remove_partial_tree(link_dir, label="xiso source link dir")
 
         yield {"progress": 100, "message": f"Trimmed {label} image to XISO"}
 
