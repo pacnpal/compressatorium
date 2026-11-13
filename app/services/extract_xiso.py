@@ -51,6 +51,7 @@ from services.subprocess_runner import (
     verify_preflight,
 )
 from utils.path_utils import (
+    is_same_file,
     match_extension,
     place_without_clobbering,
     remove_if_same_file,
@@ -529,7 +530,7 @@ class ExtractXisoService:
         # If the job gives up first, the worker removes its own product once
         # the rename finally lands, so nothing is left behind either way.
         placement_lock = threading.Lock()
-        placement = {"done": False, "abandoned": False}
+        placement: dict = {"done": False, "abandoned": False, "ours": None}
         written = 0
 
         def place_output(src: str) -> None:
@@ -539,6 +540,7 @@ class ExtractXisoService:
             # this job's. Refusing it also covers a rename that lands long
             # after the job gave up.
             ours = os.stat(src)
+            placement["ours"] = ours
             try:
                 place_without_clobbering(src, output_path)
             except FileExistsError as exc:
@@ -611,8 +613,16 @@ class ExtractXisoService:
             with placement_lock:
                 placement["abandoned"] = True
                 placed = placement["done"]
+                ours = placement["ours"]
             if placed:
-                await remove_partial_output(output_path, label="xiso output")
+                # Bounded like any partial-output sweep, and only while the path
+                # is still the file this job placed (checked inside the worker).
+                await remove_partial_output(
+                    discover=lambda: (
+                        [output_path] if is_same_file(output_path, ours) else []
+                    ),
+                    label=f"xiso output {output_path}",
+                )
             if isinstance(exc, ReadCancelled):
                 raise ConversionCancelled("Conversion cancelled") from exc
             if isinstance(exc, RuntimeError) and _ALREADY_OPTIMIZED in str(exc):

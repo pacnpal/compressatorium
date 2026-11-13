@@ -47,12 +47,14 @@ def place_without_clobbering(src: str, dst: str) -> None:
             raise
         _place_via_exclusive_claim(src, dst)
         return
-    # The move is complete once the link exists. A source already gone (a
-    # caller's cleanup swept it while the link was stuck) is not a failure:
-    # raising here would hide that the product was placed.
+    # The move is complete once the link exists. Failing to remove the source
+    # (already swept by the caller's cleanup while the link was stuck, or an
+    # I/O error) must not be reported as a failed placement: the product is at
+    # dst, and a caller told otherwise would leave it orphaned there. A stray
+    # source sits in the caller's work dir, which the caller sweeps anyway.
     try:
         os.unlink(src)
-    except FileNotFoundError:
+    except OSError:
         pass
 
 
@@ -69,18 +71,29 @@ def _place_via_exclusive_claim(src: str, dst: str) -> None:
         raise
 
 
+def is_same_file(path: str, ours: os.stat_result) -> bool:
+    """True when ``path`` is still the file ``ours`` describes (device + inode)."""
+    try:
+        current = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    return (current.st_dev, current.st_ino) == (ours.st_dev, ours.st_ino)
+
+
 def remove_if_same_file(path: str, ours: os.stat_result) -> None:
     """Unlink ``path`` only if it is still the file ``ours`` describes.
 
     For cleanup that must never remove something another process put at the
-    same name in the meantime. Errors are ignored: this is best-effort cleanup.
+    same name in the meantime. POSIX has no atomic "unlink if this inode", so
+    a replacement in the instant between the check and the unlink can't be
+    excluded; everything slower than that is. Errors are ignored: this is
+    best-effort cleanup.
     """
-    try:
-        current = os.stat(path, follow_symlinks=False)
-        if (current.st_dev, current.st_ino) == (ours.st_dev, ours.st_ino):
+    if is_same_file(path, ours):
+        try:
             os.unlink(path)
-    except OSError:
-        pass
+        except OSError:
+            pass
 
 
 def match_extension(name: str, extensions: Iterable[str]) -> Optional[str]:

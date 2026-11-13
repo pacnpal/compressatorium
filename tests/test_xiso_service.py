@@ -1016,3 +1016,44 @@ def test_place_without_clobbering_falls_back_without_hard_links(tmp_path, monkey
         pu.place_without_clobbering(str(src), str(other))
     assert other.read_bytes() == b"THEIRS"
     monkeypatch.setattr(pu.os, "replace", real_replace)
+
+
+def test_a_failed_source_cleanup_after_linking_is_not_a_failed_placement(
+    tmp_path, monkeypatch,
+):
+    """Once the link exists the product is placed; an I/O error removing the
+    source must not be reported as a failure (the caller would orphan dst)."""
+    import errno
+
+    import utils.path_utils as pu
+
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.write_bytes(b"NEW")
+    real_unlink = os.unlink
+
+    def flaky_unlink(path, *a, **kw):
+        if str(path) == str(src):
+            raise OSError(errno.EIO, "I/O error")
+        return real_unlink(path, *a, **kw)
+
+    monkeypatch.setattr(pu.os, "unlink", flaky_unlink)
+    pu.place_without_clobbering(str(src), str(dst))
+    assert dst.read_bytes() == b"NEW"
+
+
+def test_remove_if_same_file_leaves_a_replacement_alone(tmp_path):
+    from utils.path_utils import is_same_file, remove_if_same_file
+
+    path = tmp_path / "out"
+    path.write_bytes(b"OURS")
+    ours = os.stat(path)
+    assert is_same_file(str(path), ours)
+
+    path.unlink()
+    path.write_bytes(b"THEIRS")  # someone else's file at the same name
+    remove_if_same_file(str(path), ours)
+    assert path.read_bytes() == b"THEIRS"
+
+    ours = os.stat(path)
+    remove_if_same_file(str(path), ours)
+    assert not path.exists()
