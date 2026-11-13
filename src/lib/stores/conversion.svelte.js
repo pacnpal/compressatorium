@@ -163,12 +163,11 @@ class ConversionStore {
     // probe agreed, and it has no extract/copy mode for the disagreement above
     // to bite. Without this, every PSP/PS2/CD `.iso` would be tickable (and
     // swept up by select-all) in Xbox mode, only to be rejected on submit.
-    if (
-      this.currentTool?.contentRefined
-      && Array.isArray(entry.convertible_by)
-      && !entry.convertible_by.includes(this.currentTool.id)
-    ) {
-      return false;
+    // A row with no `convertible_by` at all (`null` claims) is left to the
+    // extension gate below and `plan_job`, as before.
+    if (this.currentTool?.contentRefined) {
+      const claims = registry.contentClaimsFor(entry);
+      if (claims && !claims.some((t) => t.id === this.currentTool.id)) return false;
     }
     return this.allowsInput(entry.path);
   }

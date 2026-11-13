@@ -52,6 +52,9 @@ from services.subprocess_runner import (
 from utils.path_utils import match_extension
 
 _OWNER = "xiso"
+# The scratch link dir and the hidden work dir hold paths into the user's
+# library, so only the service user may list them (what ``mkdtemp`` gives).
+_PRIVATE_DIR_MODE = 0o700
 
 # Every Xbox / Xbox 360 disc image is an ``.iso``; content decides whether a
 # given ``.iso`` is one (see ``is_convertible``). CHDMAN, Dolphin and maxcso
@@ -444,10 +447,12 @@ class ExtractXisoService:
         source_link = os.path.join(link_dir, "source.iso")
         try:
             os.makedirs(os.path.dirname(link_dir), exist_ok=True)
-            os.mkdir(link_dir)
+            # 0o700, as ``mkdtemp`` would make them: the names are chosen up
+            # front (see `_workspace_paths`), so the mode is set here instead.
+            os.mkdir(link_dir, _PRIVATE_DIR_MODE)
             os.symlink(os.path.abspath(input_path), source_link)
             os.makedirs(os.path.dirname(out_dir), exist_ok=True)
-            os.mkdir(out_dir)
+            os.mkdir(out_dir, _PRIVATE_DIR_MODE)
         except BaseException:
             cls._remove_workspace(link_dir, out_dir)
             raise

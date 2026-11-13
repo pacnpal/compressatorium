@@ -100,6 +100,13 @@ def _dump(tmp_path: Path) -> dict:
         "   ['Game.zip', '.zip', 'archive'], ['noext', '', 'file']"
         " ].map(([n, e, t]) => [`${t}:${n}`,"
         "   registry.displayExtension({ name: n, extension: e, type: t })])),"
+        " content_refined: registry.all().filter((t) => t.contentRefined).map((t) => t.id),"
+        " content_claims: Object.fromEntries(["
+        "   ['xbox', ['chdman', 'xiso', 'dolphin']], ['psp', ['chdman', 'cso']],"
+        "   ['empty', []], ['missing', undefined]"
+        " ].map(([k, by]) => [k, (registry.contentClaimsFor("
+        "   by === undefined ? { path: 'g.iso' } : { path: 'g.iso', convertible_by: by }"
+        " ) ?? null)?.map((t) => t.id) ?? null])),"
         "};\n"
         "process.stdout.write(JSON.stringify(__out));\n"
     )
@@ -275,3 +282,22 @@ def test_extension_column_shows_the_compound_extension(tmp_path):
     assert shown["directory:Game.xiso.iso"] == ".iso"
     assert shown["archive:Game.zip"] == ".zip"
     assert shown["file:noext"] == ""
+
+
+def test_content_claims_read_only_the_backend_probe(tmp_path):
+    """``contentClaimsFor`` is the one reading of a content-refined claim.
+
+    The selection gate and the Info modal both use it. A row whose
+    ``convertible_by`` names a content-refined tool claims it; a row whose list
+    leaves it out claims nothing (so Xbox mode can't tick a PSP ``.iso``); and a
+    row with no ``convertible_by`` at all is ``None`` -- unknown, not "no" --
+    so the selection gate falls back to the extension check.
+    """
+    dump = _dump(tmp_path)
+    claims = dump["content_claims"]
+
+    assert dump["content_refined"] == ["xiso"]
+    assert claims["xbox"] == ["xiso"]
+    assert claims["psp"] == []
+    assert claims["empty"] == []
+    assert claims["missing"] is None

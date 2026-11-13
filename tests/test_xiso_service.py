@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 import struct
 from pathlib import Path
 
@@ -375,6 +376,24 @@ async def test_workspace_setup_failure_leaves_no_scratch_dirs(
     assert not os.path.exists(scratch) or not os.listdir(scratch)
     assert not _workdirs(tmp_path)
     assert src.exists()
+
+
+def test_workspace_dirs_are_private(tmp_path, scratch):
+    """Both scratch dirs are 0o700, as ``mkdtemp`` would have made them, even
+    though their names are chosen up front."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    link_dir, out_dir = SERVICE._workspace_paths(str(tmp_path / "g.xiso.iso"))
+    old_umask = os.umask(0o022)
+    try:
+        SERVICE._prepare_workspace(
+            str(src), link_dir, out_dir, MODULE.threading.Event(),
+        )
+        for directory in (link_dir, out_dir):
+            assert stat.S_IMODE(os.stat(directory).st_mode) == 0o700
+    finally:
+        os.umask(old_umask)
+        SERVICE._remove_workspace(link_dir, out_dir)
 
 
 def test_abandoned_workspace_setup_undoes_its_own_work(tmp_path, scratch):

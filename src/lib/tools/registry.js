@@ -941,6 +941,22 @@ export const registry = {
   },
 
   /**
+   * The `contentRefined` tools whose backend content probe claimed this row,
+   * i.e. those listed in its `convertible_by`, in registry order. Returns
+   * `null` (not `[]`) when the row carries no `convertible_by` at all, so a
+   * caller can tell "the probe said no" apart from "the listing didn't say".
+   *
+   * The one place this claim is read: the selection gate narrows a
+   * content-refined mode to these rows, and the Info modal tries these tools
+   * before the generic extension owners.
+   */
+  contentClaimsFor: (entry) => {
+    const by = entry?.convertible_by;
+    if (!Array.isArray(by)) return null;
+    return TOOLS.filter((t) => t.contentRefined && by.includes(t.id));
+  },
+
+  /**
    * Union of source + verify extensions, every extension the user
    * might want to filter by in a directory listing. Adding a tool
    * automatically surfaces its inputs and outputs in the filter

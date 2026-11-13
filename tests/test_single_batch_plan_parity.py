@@ -1039,3 +1039,36 @@ async def test_cancelling_during_that_probe_returns_now(monkeypatch) -> None:
         await asyncio.wait_for(
             manager._verify_target_bounded(tool, job, cancel), timeout=10,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("names", "mode", "reason"),
+    [
+        # A content-refined tool names its own reason via _NOT_CONVERTIBLE_REASON...
+        (("game.iso",), ConversionMode.XISO_REWRITE,
+         convert_routes.SkipReason.XISO_NOT_XBOX_IMAGE),
+        # ...and every other tool keeps the multi-file default.
+        (("game_part1.wud", "game_part2.wud"), ConversionMode.JWUD_COMPRESS,
+         convert_routes.SkipReason.SOURCE_NOT_INDEPENDENTLY_CONVERTIBLE),
+    ],
+    ids=["xiso_content_reason", "jwud_default_reason"],
+)
+async def test_converts_path_rejection_names_the_tools_reason(
+    parity_env, names, mode, reason,
+):
+    """A file the tool claims by extension but its ``converts_path`` refuses is
+    reported with that tool's reason, not jwud's split-set message."""
+    tmp_path = parity_env["tmp_path"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"data")
+
+    result = await _run_single(
+        parity_env,
+        file_path=str(tmp_path / names[-1]),
+        mode=mode,
+        duplicate_action=DuplicateAction.SKIP,
+        delete_on_verify=False,
+    )
+
+    assert (result["status"], result["detail"]) == convert_routes._SKIP_HTTP[reason]
