@@ -24,6 +24,7 @@ place (same filesystem, so atomically) only once the binary has exited cleanly.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import shutil
@@ -518,16 +519,24 @@ class ExtractXisoService:
 
         link_dir, out_dir = self._workspace_paths(output_path)
         abandoned = threading.Event()
-        # Set by the worker thread itself, immediately before it calls
-        # os.replace, so it is true only once this job has really begun
-        # writing output_path. A flag set here before the await could not tell
-        # a rename that started from a cancel that landed first.
-        renaming = threading.Event()
+        # The final rename's outcome, shared with its worker thread under a
+        # lock. Only a rename that has *completed* makes output_path this
+        # job's to remove: before that, whatever is there was not written by
+        # this job, even if the rename has started and is stuck on the mount.
+        # If the job gives up first, the worker removes its own product once
+        # the rename finally lands, so nothing is left behind either way.
+        placement_lock = threading.Lock()
+        placement = {"done": False, "abandoned": False}
         written = 0
 
         def place_output(src: str) -> None:
-            renaming.set()
             os.replace(src, output_path)
+            with placement_lock:
+                placement["done"] = True
+                abandoned_first = placement["abandoned"]
+            if abandoned_first:
+                with contextlib.suppress(OSError):
+                    os.unlink(output_path)
 
         def parse_progress(line: str) -> int | None:
             nonlocal written
@@ -577,13 +586,16 @@ class ExtractXisoService:
             asyncio.CancelledError, GeneratorExit,
         ) as exc:
             # The rewrite only ever writes inside out_dir; output_path is touched
-            # by the final rename alone, so it only needs sweeping if that rename
-            # actually started (an abandoned rename may still land after the job
-            # reports cancelled). Until then output_path was never written, and
-            # anything already there is not this job's to delete, including on
-            # a cancel that arrives before the rename's thread runs.
+            # by the final rename alone. Sweep it only if that rename completed.
+            # If it hasn't (not started, or stuck mid-call), anything at
+            # output_path is not this job's to delete, and the worker removes
+            # its own product should the rename land later. The lock is held by
+            # the worker only for two assignments, never across I/O.
             # The source is never written at all.
-            if renaming.is_set():
+            with placement_lock:
+                placement["abandoned"] = True
+                placed = placement["done"]
+            if placed:
                 await remove_partial_output(output_path, label="xiso output")
             if isinstance(exc, ReadCancelled):
                 raise ConversionCancelled("Conversion cancelled") from exc

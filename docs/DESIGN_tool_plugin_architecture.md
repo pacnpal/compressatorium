@@ -611,12 +611,19 @@ reworded: a `TimeoutError` that fails at once (`ProbeCapacityExceeded`, an OS
 directory tables, a rename); a whole-file pass belongs under a size-scaled
 bound instead.
 
-A step whose interruption decides what gets cleaned up must record *in the
-worker thread* that it began. xiso's rename sets an event immediately before
-`os.replace`, and the cleanup removes `output_path` only if that event is set.
-A flag set on the event loop before the `await` can't tell a rename that
-started from a cancel that arrived first, and would delete a file this job
-never wrote.
+If interrupting a step decides what gets cleaned up, base the cleanup on the
+step's *completed* outcome, recorded by the worker thread itself. xiso's final
+rename shares a small lock-guarded state with its worker:
+- The worker marks `done` after `os.replace` returns.
+- The handler marks `abandoned` when the job gives up.
+
+The handler removes `output_path` only if the rename was already done. If the
+rename hadn't finished (not started, or stuck on the mount), the handler leaves
+the destination alone, because this job didn't write whatever is there. A worker
+whose rename lands after the job gave up removes its own product instead. A flag
+on the event loop, set before or after the `await`, can't make this
+distinction. The lock is held only for those two assignments, never across I/O,
+so taking it on the event loop can't block.
 
 Three rules follow for any code that runs a verifier:
 

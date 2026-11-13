@@ -818,9 +818,12 @@ async def test_a_cancel_before_the_rename_leaves_the_destination_alone(
 @pytest.mark.asyncio
 async def test_a_hung_final_rename_is_bounded(tmp_path, scratch, monkeypatch):
     """The rename runs after the subprocess's stall watchdog has stopped, so the
-    no-progress bound covers it too."""
+    no-progress bound covers it too. The rename never completed, so an existing
+    destination survives the cleanup."""
     src = tmp_path / "g.iso"
     build_image(src, layout="XGD2")
+    out = tmp_path / "g.xiso.iso"
+    out.write_bytes(b"PRECIOUS")
     runner_module = __import__(
         MODULE.run_detached_within_stall_bound.__module__, fromlist=["settings"],
     )
@@ -839,9 +842,70 @@ async def test_a_hung_final_rename_is_bounded(tmp_path, scratch, monkeypatch):
     monkeypatch.setattr(MODULE.os, "replace", hung_replace)
     try:
         with pytest.raises(RuntimeError, match="Placing the XISO output stopped responding"):
-            async for _ in SERVICE.convert(
-                str(src), str(tmp_path / "g.xiso.iso"), "xiso_rewrite",
-            ):
+            async for _ in SERVICE.convert(str(src), str(out), "xiso_rewrite"):
                 pass
+        assert out.read_bytes() == b"PRECIOUS"
     finally:
         release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_a_stuck_rename_leaves_the_destination_alone(
+    tmp_path, scratch, monkeypatch,
+):
+    """The rename has started but not finished when the job is cancelled: the
+    destination it hasn't touched yet must survive the cleanup, and when the
+    rename does land later, the worker removes its own product."""
+    src = tmp_path / "g.iso"
+    build_image(src, layout="XGD2")
+    out = tmp_path / "g.xiso.iso"
+    out.write_bytes(b"PRECIOUS")
+    cancel = asyncio.Event()
+    in_rename = MODULE.threading.Event()
+    release = MODULE.threading.Event()
+    rename_done = MODULE.threading.Event()
+
+    def stuck_replace(_src, dst):
+        # Simulates a rename that lands late. (A real one may instead fail with
+        # its source gone, because the job's sweep already removed the work
+        # dir; that leaves the destination alone too. This covers the harder
+        # branch, where the product does appear after the job gave up.)
+        try:
+            in_rename.set()
+            release.wait(10)
+            Path(dst).write_bytes(b"XISO")
+        finally:
+            rename_done.set()
+
+    async def fake_run(cmd, *, output_path, complete_message, **_kw):
+        Path(output_path).write_bytes(b"XISO")
+        yield {"progress": 100, "message": complete_message}
+
+    monkeypatch.setattr(SERVICE._runner, "run", fake_run)
+    monkeypatch.setattr(MODULE.os, "replace", stuck_replace)
+
+    async def run():
+        async for _ in SERVICE.convert(
+            str(src), str(out), "xiso_rewrite", cancel_event=cancel,
+        ):
+            pass
+
+    task = asyncio.create_task(run())
+    try:
+        assert await asyncio.to_thread(in_rename.wait, 5)
+        cancel.set()
+        with pytest.raises(MODULE.ConversionCancelled):
+            await task
+        # Cleanup has run; the rename hasn't happened, so the file stays.
+        assert out.read_bytes() == b"PRECIOUS"
+    finally:
+        release.set()
+    assert await asyncio.to_thread(rename_done.wait, 5)
+
+    # The late rename replaced the destination, and the worker then removed
+    # its own product rather than leaving an orphan from a cancelled job.
+    for _ in range(50):
+        if not out.exists():
+            break
+        await asyncio.sleep(0.02)
+    assert not out.exists()
