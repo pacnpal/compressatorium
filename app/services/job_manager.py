@@ -2549,6 +2549,10 @@ class JobManager:
             and registry.mode_supports_round_trip(job.mode.value)
         ):
             return "intact", None
+        # The container check has passed. Record that now, so a Cancel during
+        # the comparison (which raises before this returns) still leaves the
+        # job and its Ledger row saying Intact; only a match upgrades it.
+        job.check_passed = "intact"
         job.message = "Output is Intact. Comparing its content with the Source..."
         await self._notify_subscribers(
             job.id,

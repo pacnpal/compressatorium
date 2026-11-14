@@ -26,6 +26,9 @@ class VerificationStore {
     // that's NOT in this baseline at completion time was added during
     // the in-flight request and must survive the replay.
     const baseline = new Set(this.statuses);
+    // Same for check values: a `complete` event during the request can add a
+    // check or upgrade one (intact -> round_tripped) for a path we already had.
+    const checksBaseline = new Map(this.checks);
     this._loadBaseline = baseline;
     try {
       const data = await api.getVerifiedCHDs();
@@ -39,6 +42,10 @@ class VerificationStore {
       for (const p of this.statuses) {
         if (!baseline.has(p)) addedSince[p] = true;
       }
+      const checksSince = Object.create(null);
+      for (const [p, check] of this.checks) {
+        if (checksBaseline.get(p) !== check) checksSince[p] = check;
+      }
       this.statuses.clear();
       for (const path of data?.verified ?? []) this.statuses.add(path);
       this.checks.clear();
@@ -46,6 +53,9 @@ class VerificationStore {
         this.checks.set(path, check);
       }
       for (const path of Object.keys(addedSince)) this.statuses.add(path);
+      for (const [path, check] of Object.entries(checksSince)) {
+        this.checks.set(path, check);
+      }
     } catch (_e) {
       // non-fatal, leave whatever we had
     } finally {
@@ -61,6 +71,32 @@ class VerificationStore {
   checkFor(path) {
     if (!this.isVerified(path)) return null;
     return this.checks.get(path) ?? 'intact';
+  }
+
+  // The only writers of `statuses` and `checks` outside a load: a path and
+  // its check always change together, so no badge keeps a check that belongs
+  // to another file or an earlier run.
+
+  /** Record that `path` passed `check`. A manual Verify is 'intact'. */
+  markChecked(path, check = 'intact') {
+    if (!path) return;
+    this.statuses.add(path);
+    this.checks.set(path, check);
+  }
+
+  /** Drop everything known about `path` (deleted, or no longer checked). */
+  forget(path) {
+    if (!path) return;
+    this.statuses.delete(path);
+    this.checks.delete(path);
+  }
+
+  /** Follow a rename. `keep` carries the check over (same-format rename). */
+  move(oldPath, newPath, { keep }) {
+    const had = this.isVerified(oldPath);
+    const check = this.checks.get(oldPath) ?? 'intact';
+    this.forget(oldPath);
+    if (had && keep) this.markChecked(newPath, check);
   }
 
   progressFor(path) {
@@ -99,7 +135,7 @@ class VerificationStore {
         },
       });
       this.progress.delete(path);
-      if (result?.valid) this.statuses.add(path);
+      if (result?.valid) this.markChecked(path);
       return result;
     } catch (e) {
       this.progress.delete(path);
@@ -133,7 +169,7 @@ class VerificationStore {
         signal: this._batchAbort.signal,
         onProgress: (evt) => this._handleBatchProgress(evt),
         onFileComplete: (data) => {
-          if (data?.path && data?.valid) this.statuses.add(data.path);
+          if (data?.path && data?.valid) this.markChecked(data.path);
         },
       });
       if (this.batchRun) {
