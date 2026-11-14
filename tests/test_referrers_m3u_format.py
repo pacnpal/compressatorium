@@ -349,6 +349,39 @@ async def test_a_new_entry_starting_with_hash_is_not_a_comment(tmp_path):
     assert playlist.read_text() == "./#CHD/Game.chd\n"
 
 
+@pytest.mark.asyncio
+async def test_a_new_entry_starting_with_a_space_survives_trimming(tmp_path):
+    """m3u readers trim entries, so a leading space must be protected by ./"""
+    _disc(tmp_path, "Game.cue")
+    (tmp_path / " CHD").mkdir()
+    out = _disc(tmp_path / " CHD", "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+
+    outcome = await referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+    )
+
+    assert outcome.ok, outcome.reason
+    assert playlist.read_text() == "./ CHD/Game.chd\n"
+
+
+@pytest.mark.asyncio
+async def test_a_new_entry_ending_in_a_space_keeps_the_source(tmp_path):
+    """A trailing space can't be protected, so the Source is kept."""
+    _disc(tmp_path, "Game.cue")
+    out = _disc(tmp_path, "Game.chd ")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+
+    outcome = await referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+    )
+
+    assert not outcome.ok
+    assert playlist.read_text() == "Game.cue\n"
+
+
 def _other_group(path: Path) -> int | None:
     current = path.stat().st_gid
     return next((g for g in os.getgroups() if g != current), None)
