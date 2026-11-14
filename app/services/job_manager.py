@@ -35,6 +35,7 @@ from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import lock_manager
 from services import referrers
+from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import ReadCancelled, run_detached
 from services.tools import ModeKind, registry
 from services.verification_store import verification_store
@@ -47,6 +48,10 @@ from utils.path_utils import (
 )
 
 logger = get_logger("job_manager")
+
+# The glossary names (CONTEXT.md) for each stored check, used in job messages so
+# "verified" never stands in for which check an output passed.
+_CHECK_LABELS = {"intact": "Intact", "round_tripped": "Round-tripped"}
 
 
 def _source_bytes(path: str) -> Optional[int]:
@@ -417,6 +422,7 @@ class JobManager:
         filename_override: Optional[str] = None,
         compression: Optional[str] = None,
         delete_on_verify: bool = False,
+        container_only: bool = False,
         verify_after: bool = False,
         split: bool = False,
         delete_snapshot: Optional[Dict[str, object]] = None,
@@ -454,6 +460,7 @@ class JobManager:
             allow_overwrite=allow_overwrite,
             compression=compression,
             delete_on_verify=delete_on_verify,
+            container_only=container_only,
             verify_after=verify_after,
             split=split,
             input_kind=input_kind,
@@ -494,6 +501,7 @@ class JobManager:
         filename_override: Optional[str] = None,
         compression: Optional[str] = None,
         delete_on_verify: bool = False,
+        container_only: bool = False,
         verify_after: bool = False,
         split: bool = False,
         delete_snapshot: Optional[Dict[str, object]] = None,
@@ -520,6 +528,7 @@ class JobManager:
                 filename_override=filename_override,
                 compression=compression,
                 delete_on_verify=delete_on_verify,
+                container_only=container_only,
                 verify_after=verify_after,
                 split=split,
                 delete_snapshot=delete_snapshot,
@@ -536,6 +545,7 @@ class JobManager:
         delete_on_verify: bool = False,
         split: bool = False,
         verify_after: bool = False,
+        container_only: bool = False,
     ) -> List[ConversionJob]:
         """Create multiple jobs atomically under a single backpressure check."""
         if not job_specs:
@@ -566,6 +576,7 @@ class JobManager:
                         ),
                         compression=compression,
                         delete_on_verify=delete_on_verify,
+                        container_only=container_only,
                         verify_after=verify_after,
                         split=split,
                         delete_snapshot=spec.get("delete_snapshot"),
@@ -588,6 +599,7 @@ class JobManager:
         verify_after: bool = False,
         output_paths: Optional[Dict[str, str]] = None,
         allow_overwrite: bool = False,
+        container_only: bool = False,
     ) -> List[ConversionJob]:
         """Create multiple conversion jobs.
 
@@ -617,6 +629,7 @@ class JobManager:
             delete_on_verify=delete_on_verify,
             split=split,
             verify_after=verify_after,
+            container_only=container_only,
         )
 
     @staticmethod
@@ -2516,6 +2529,56 @@ class JobManager:
         finally:
             self._semaphore.release()
 
+    async def _delete_check(
+        self, job, tool, source_path: str, output_path: str, cancel_event,
+    ) -> tuple[str, str | None]:
+        """Which check the output passed, and why the Source must stay, if it must.
+
+        Called once the container check has passed. Returns
+        ``(check_passed, keep_source_reason)``: ``("intact", None)`` when the
+        container check is all this job asks for, ``("round_tripped", None)``
+        when the output's content digest equalled the Source's, and
+        ``("intact", reason)`` when a Round-trip ran and did not pass.
+
+        The Round-trip runs only when it decides something: the Source is to be
+        deleted, the mode can round-trip, and the job did not take the
+        container-only opt-out. A job that keeps its Source reads nothing extra.
+        """
+        if not round_trip_applies(
+            job.mode.value,
+            delete_on_verify=job.delete_on_verify,
+            container_only=job.container_only,
+        ):
+            return "intact", None
+        # The container check has passed. Record that now, so a Cancel during
+        # the comparison (which raises before this returns) still leaves the
+        # job and its Ledger row saying Intact; only a match upgrades it.
+        job.check_passed = "intact"
+        job.message = "Output is Intact. Comparing its content with the Source..."
+        await self._notify_subscribers(
+            job.id,
+            {
+                "type": "progress",
+                "job_id": job.id,
+                "progress": job.progress,
+                "message": job.message,
+            },
+        )
+        # Reported as verifying, not stalled: it reads whole files and emits
+        # no progress, exactly like the container check before it.
+        self._verifying[job.id] = time.monotonic()
+        try:
+            outcome = await round_trip(
+                tool, source_path, output_path, cancel_event=cancel_event,
+            )
+        finally:
+            self._verifying.pop(job.id, None)
+        if outcome.cancelled:
+            raise ConversionCancelled("Conversion cancelled")
+        if outcome.passed:
+            return "round_tripped", None
+        return "intact", outcome.message
+
     async def _verify_target_bounded(self, tool, job, cancel_event) -> str | None:
         """What to verify, resolved without letting a dead mount keep the job.
 
@@ -2800,7 +2863,7 @@ class JobManager:
                 )
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
-                job.message = "Output already verified; skipped re-conversion."
+                job.message = "Output already Intact; skipped re-conversion."
                 await self._notify_subscribers(
                     job_id,
                     {
@@ -3115,7 +3178,22 @@ class JobManager:
                         )
 
                     verified = True
-                    job.check_passed = "intact"
+                    # The delete decision (#298): which check the output
+                    # passed, and, when it is not enough to delete the Source,
+                    # why. The job (and so the Ledger row) records the check
+                    # either way.
+                    check_passed, keep_source_reason = await self._delete_check(
+                        job, tool, input_path, verify_path, cancel_event,
+                    )
+                    job.check_passed = check_passed
+                    if keep_source_reason:
+                        # The Round-trip did not pass, so this output may not
+                        # hold the Source's content. Store nothing that would
+                        # present it as a checked result: no badge, no reuse
+                        # snapshot for the re-run fast path, and any record an
+                        # earlier run left for this path is dropped.
+                        await verification_store.clear(job.output_path)
+                        raise RuntimeError(keep_source_reason)
                     # Snapshot what produced this verified artifact (mode +
                     # output shaping + source/output fingerprints) so a later
                     # re-queue can recognize prior success and complete as a
@@ -3129,12 +3207,14 @@ class JobManager:
                         job.output_path,
                         source_path=job.file_path,
                         produced_meta=produced_meta,
+                        check=check_passed,
                     )
+                    check_label = _CHECK_LABELS[check_passed]
 
                     if not job.delete_on_verify:
                         # verify_after only: the source is kept by design, so
                         # the job is finished the moment the output checks out.
-                        job.message = "Verification complete."
+                        job.message = f"Output is {check_label}."
                         await self._notify_subscribers(
                             job_id,
                             {
@@ -3145,7 +3225,9 @@ class JobManager:
                             },
                         )
                     elif cancel_event.is_set():
-                        job.message = "Verification complete. Delete skipped (cancelled)."
+                        job.message = (
+                            f"Output is {check_label}. Delete skipped (cancelled)."
+                        )
                         await self._notify_subscribers(
                             job_id,
                             {
@@ -3162,7 +3244,7 @@ class JobManager:
                             else "source"
                         )
                         job.message = (
-                            f"Verification complete. Deleting {delete_label}..."
+                            f"Output is {check_label}. Deleting {delete_label}..."
                         )
                         await self._notify_subscribers(
                             job_id,
@@ -3335,6 +3417,7 @@ class JobManager:
                         "output_path": job.output_path,
                         "output_size": job.output_size,
                         "verified": verified,
+                        "check_passed": job.check_passed,
                         "source_deleted": source_deleted,
                     },
                 )

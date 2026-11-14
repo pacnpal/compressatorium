@@ -160,6 +160,10 @@ class ConversionJob(BaseModel):
     allow_overwrite: bool = False
     compression: str | None = None
     delete_on_verify: bool = False
+    # The named opt-out from the Round-trip check (#298): delete the Source on
+    # the container check alone ("faster, weaker"). Only read when
+    # delete_on_verify is set and the mode can round-trip.
+    container_only: bool = False
     # Verify the output and keep the source. Independent of delete_on_verify,
     # which verifies as a precondition for deleting; this asks for the check on
     # its own, so an unattended conversion can prove its result without the
@@ -177,7 +181,9 @@ class ConversionJob(BaseModel):
     # Ledger bookkeeping (#292). Source bytes are read before the converter
     # runs, so a row written after the Source was deleted still has them.
     input_bytes: int | None = None
-    # "intact" once the tool's own container check passed; None if no check ran.
+    # Which check the output passed: "intact" (its tool's container check) or
+    # "round_tripped" (its content digest equalled the Source's, #298). None if
+    # no check ran.
     check_passed: str | None = None
     deleted_paths: list[str] = []
     # What the Referrer hook did before the Source was to be removed (#295):
@@ -195,6 +201,8 @@ class JobCreateRequest(BaseModel):
     )  # What to do if output exists
     compression: str | None = None  # Comma-separated list (e.g. "zlib,lzma")
     delete_on_verify: bool = False
+    # Skip the Round-trip check and delete on the container check alone.
+    container_only: bool = False
     split: bool = False  # makeps3iso folder->iso: split output into 4 GB parts
 
 
@@ -207,6 +215,8 @@ class BatchJobCreateRequest(BaseModel):
     )  # What to do if output exists
     compression: str | None = None  # Comma-separated list (e.g. "zlib,lzma")
     delete_on_verify: bool = False
+    # Skip the Round-trip check and delete on the container check alone.
+    container_only: bool = False
     split: bool = False  # makeps3iso folder->iso: split output into 4 GB parts
 
 

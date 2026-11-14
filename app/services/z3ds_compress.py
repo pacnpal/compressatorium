@@ -573,7 +573,7 @@ class Z3DSCompressService:
                     yield {
                         "type": "complete",
                         "valid": True,
-                        "message": "File verified successfully"
+                        "message": "File is Intact"
                     }
                 else:
                     stderr_text = stderr.decode("utf-8", errors="replace").strip()

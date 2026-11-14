@@ -392,7 +392,7 @@ class Nkit2IsoService:
                 initial_progress=1,
                 cancel_event=cancel_event,
                 fail_label="nkit2iso",
-                complete_message="NKit restore complete (CRC32 verified)",
+                complete_message="NKit restore complete (CRC32 check passed)",
                 require_output=True,
                 mode=mode,
             ):
@@ -425,8 +425,8 @@ class Nkit2IsoService:
                     "NKit restore complete — playable, but NOT bit-exact: the "
                     "Wii update partition was removed at shrink time and was "
                     "zero-filled. Set NKIT2ISO_RECOVERY=download to splice in "
-                    "the archived recovery partition for a redump-verified "
-                    "restore."
+                    "the archived recovery partition for a bit-exact restore "
+                    "that matches Redump."
                 ),
             }
 
