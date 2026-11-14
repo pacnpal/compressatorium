@@ -234,8 +234,9 @@ class AutoTarget:
 def default_mode(path: str, platform: str, tools_registry) -> str | None:
     """The default target mode for an Image of ``platform`` at ``path``.
 
-    The first create-direction mode the registry lists for the Platform that
-    takes this file. When several take it, the most specific input extension
+    The first create-direction mode the registry lists for the Platform that is
+    an Auto default (``ModeSpec.auto_target``) and whose command can read this
+    file (``ToolRegistry.mode_reads_extensions``). When several take it, the most specific input extension
     wins (``.nkit.iso`` over ``.iso``), registration order breaking ties: the
     same rule as ``ToolRegistry.tool_for_verify``. None when no mode serves
     the Platform for this file type.
@@ -244,6 +245,8 @@ def default_mode(path: str, platform: str, tools_registry) -> str | None:
     best: str | None = None
     best_len = 0
     for spec in tools_registry.mode_specs():
+        if not spec.auto_target:
+            continue
         if getattr(spec.kind, "value", spec.kind) not in _TARGET_KINDS:
             continue
         claimed = {
@@ -252,7 +255,7 @@ def default_mode(path: str, platform: str, tools_registry) -> str | None:
         if platform not in claimed:
             continue
         name = path.split("::", 1)[1] if member else disk_path
-        matched = match_extension(name, spec.input_extensions)
+        matched = match_extension(name, tools_registry.mode_reads_extensions(spec.mode))
         if matched is None or len(matched) <= best_len:
             continue
         if member and not spec.allows_archive_input:

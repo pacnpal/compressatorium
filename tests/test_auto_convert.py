@@ -14,6 +14,7 @@ from app.routes import convert as convert_routes
 from services import platform_detect
 from services.platform_detect import plan_auto
 
+from .test_disc_id import _make_iso
 from .test_platform_detect import _blank, _gamecube, _ps1, _ps2, _psp, _wii, _write
 from .test_xiso_service import build_image
 
@@ -53,6 +54,61 @@ def test_default_target_is_the_first_create_mode_for_the_platform(
     [entry] = plan_auto([path])
 
     assert (entry.mode, entry.skip_reason) == (mode, None)
+
+
+def _raw_ps2_cd(folder: Path) -> tuple[str, str]:
+    """A PS2 CD-ROM title as a redump cue/bin: a raw 2352-byte Mode 2 track."""
+    cooked = _make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_200.71;1\n"})
+    raw = bytearray()
+    for start in range(0, len(cooked), 2048):
+        sector = bytearray(2352)
+        sector[24:24 + 2048] = cooked[start:start + 2048]
+        raw += sector
+    track = _write(folder / "game.bin", bytes(raw))
+    cue = _write(folder / "game.cue", b'FILE "game.bin" BINARY\n  TRACK 01 MODE2/2352\n')
+    return cue, track
+
+
+def test_ps2_cd_cue_bin_never_gets_the_dvd_command(tmp_path):
+    cue, track = _raw_ps2_cd(tmp_path / "downloads")
+
+    plan = _by_path(plan_auto([cue, track]))
+
+    assert plan["game.cue"].detection.platform == "ps2"
+    # createdvd reads a flat 2048-byte image; a track sheet or raw track is
+    # not one, so there is no PS2 target for these files.
+    assert plan["game.cue"].mode is None
+    assert plan["game.bin"].mode is None
+    assert "ps2" in plan["game.cue"].skip_reason
+
+
+@pytest.mark.parametrize("folder", ["arcade", "mame"])
+@pytest.mark.parametrize("name", ["game.gdi", "game.cue", "game.iso"])
+def test_arcade_cd_images_never_get_a_hard_disk_command(tmp_path, folder, name):
+    path = _blank(tmp_path / folder / name)
+
+    [entry] = plan_auto([path])
+
+    assert entry.mode not in {"createraw", "createhd"}
+    assert entry.mode == "createcd"
+
+
+def test_a_modes_read_set_never_widens_what_it_accepts():
+    # reads_extensions narrows input_extensions for Auto only; a read set that
+    # names something plan_job would refuse would plan jobs that never queue.
+    from services.tools import registry
+
+    for spec in registry.mode_specs():
+        assert spec.reads_extensions <= spec.input_extensions, spec.mode
+
+
+def test_manual_chdman_create_modes_keep_their_inputs():
+    # Manual selection reads input_extensions, which the Auto read set leaves
+    # alone: every chdman create mode still takes all four source extensions.
+    from services.tools import registry
+
+    for mode in ("createraw", "createhd", "createcd", "createdvd", "createld"):
+        assert registry.spec(mode).input_extensions == {".iso", ".cue", ".bin", ".gdi"}
 
 
 def test_xbox_goes_to_the_xbox_tool(tmp_path):
