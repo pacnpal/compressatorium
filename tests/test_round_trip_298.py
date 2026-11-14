@@ -334,6 +334,34 @@ async def test_a_mismatched_output_is_not_stored_as_a_checked_result(e2e):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("stdout", "rc"), [
+    (f"{'0' * 40}\n".encode(), 0),   # mismatch
+    (b"", 1),                        # unreadable digest
+])
+async def test_a_failed_round_trip_drops_a_record_left_by_an_earlier_run(
+    e2e, stdout, rc,
+):
+    """No overwrite here, so nothing else clears the store first: the
+    Round-trip failure itself must drop the earlier record."""
+    from services.verification_store import verification_store
+
+    iso, _ = _source_iso(e2e)
+    output = iso.with_suffix(".rvz")
+    await verification_store.mark_verified(
+        str(output), source_path=str(iso), produced_meta={"mode": "dolphin_rvz"},
+        check="round_tripped",
+    )
+    e2e["stdout"], e2e["rc"] = stdout, rc
+
+    job = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
+
+    assert job.status.value == "failed"
+    assert job.output_path == str(output)
+    assert iso.exists()
+    assert await verification_store.get_record(str(output)) is None
+
+
+@pytest.mark.asyncio
 async def test_a_digest_that_cannot_be_read_keeps_the_source(e2e):
     iso, _ = _source_iso(e2e)
     e2e["rc"] = 1
