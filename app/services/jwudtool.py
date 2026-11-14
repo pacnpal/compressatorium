@@ -707,7 +707,7 @@ class JwudToolService:
                 "type": "complete",
                 "valid": True,
                 "message": (
-                    f"WUX container verified: {header['entry_count']} sector index "
+                    f"WUX container is Intact: {header['entry_count']} sector index "
                     f"entries over {highest + 1} stored sectors"
                 ),
             }

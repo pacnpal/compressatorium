@@ -23,6 +23,31 @@
     Source was deleted, split by Platform and by output format.
   - **Recent conversions** now reads from the Ledger, so it is no longer empty
     after a restart.
+- **Round-trip check before a Dolphin job deletes its Source** (#298). With
+  delete-source on, a GameCube/Wii conversion now proves the output holds the
+  same disc before removing anything: the Source ISO's SHA1 is compared with
+  the disc SHA1 `dolphin-tool verify` rebuilds from the output (a container
+  Source such as RVZ is rebuilt the same way). On a mismatch, or when a hash
+  can't be read, the Source is kept and the job says why.
+  - **Container check only (faster, weaker)** in the convert panel skips the
+    comparison and deletes once the output passes its own container check.
+  - Other tools keep the container check for now. A job that keeps its Source
+    reads nothing extra.
+  - The job, the Ledger row, Verify results and the file badge now say **Intact** (passed its
+    container check) or **Round-tripped** (decoded to the same content as its
+    Source) instead of "verified". Existing checked files show as Intact.
+  - Delete-source runs on Dolphin modes take longer: the Source and the output
+    are each read once more.
+  - **RomM Rules:** delete-source Rules on Dolphin modes now Round-trip by
+    default, so their sweeps take longer for the same reason.
+- **Each Rule now says which check runs before it deletes a Source** (#302).
+  Next to delete-source, the rule editor offers **Container check only
+  (faster, weaker)**; left unticked, the Rule Round-trips (the default).
+  Sweeps hand the Rule's setting to every job they queue, and Preview shows it.
+  - **On upgrade, every stored Rule with delete-source on is set to
+    Round-trip**, so sweeps on formats that support it read each file once
+    more and take longer. The rule editor says so once, with how to opt out;
+    dismissing the notice is remembered.
 - **Xbox / Xbox 360: trim disc images to XISO** with
   [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
   (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's

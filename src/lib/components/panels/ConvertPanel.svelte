@@ -28,6 +28,7 @@
   const incompatibleCount = $derived(selectedCount - convertibleCount);
   const tool = $derived(conversion.currentTool);
   const supportsDeleteOnVerify = $derived(conversion.supportsDeleteOnVerify);
+  const supportsRoundTrip = $derived(conversion.supportsRoundTrip);
   const supportsSplit = $derived(conversion.supportsSplit);
   const converting = $derived(conversion.converting);
 
@@ -194,9 +195,18 @@
       {#if supportsDeleteOnVerify}
         <Checkbox
           bind:checked={conversion.deleteOnVerify}
-          label="Delete sources after successful verification"
-          description="The created output is verified before sources are deleted. Skipped if verify fails."
+          label="Delete sources once the output checks out"
+          description={supportsRoundTrip
+            ? 'The output must be Round-tripped (it decodes to the same content as the source) before sources are deleted. Sources are kept if it is not.'
+            : 'The output must be Intact (it passes its own container check) before sources are deleted. Sources are kept if it is not.'}
         />
+        {#if conversion.deleteOnVerify && supportsRoundTrip}
+          <Checkbox
+            bind:checked={conversion.containerOnly}
+            label="Container check only (faster, weaker)"
+            description="Skips the content comparison and deletes once the output is Intact. It proves the file reads back cleanly, not that it holds the same disc."
+          />
+        {/if}
       {/if}
 
       {#if supportsSplit}

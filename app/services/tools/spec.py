@@ -44,6 +44,11 @@ class ModeSpec:
     # of that is not something to offer. Gating "verify each result" on the
     # delete flag made that check unreachable for exactly those modes.
     supports_verify: bool = False
+    # Whether a delete-source job in this mode can be Round-tripped: the tool's
+    # ``content_digest`` covers both this mode's inputs and its output, so the
+    # job compares the two before deleting the Source. False keeps the
+    # container check alone, and such a job says Intact (#298).
+    supports_round_trip: bool = False
     allows_archive_input: bool = False         # chdman create modes only
     # Sibling outputs this mode writes beside its primary output_path, expressed
     # as suffix swaps off the primary (e.g. extractcd's ``.cue`` -> ``.bin``
@@ -106,6 +111,9 @@ class ChainSpec:
     # output, and its delete flag already implies that, so this stays False and
     # `registry.mode_supports_verify` reads them together.
     supports_verify: bool = False
+    # Structural parity with ModeSpec. No chain round-trips yet: it needs the
+    # first step's decoded Source compared with the final output (#301).
+    supports_round_trip: bool = False
     allows_archive_input: bool = True        # == step 1's
     input_kinds: frozenset[InputKind] = field(
         default_factory=lambda: frozenset({InputKind.FILE})

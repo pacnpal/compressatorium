@@ -118,7 +118,7 @@
       if (result?.valid) {
         toast.success(name, {
           id: toastId,
-          description: 'Verified',
+          description: 'Intact',
           duration: 4000,
         });
       } else {
