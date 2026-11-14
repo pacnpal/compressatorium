@@ -9,11 +9,14 @@
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { ledger } from '$lib/stores/ledger.svelte.js';
 
-  // One refresh of the Ledger cards per terminal job (and on mount).
+  // Refresh the Ledger cards whenever the set of terminal jobs changes (and
+  // on mount). Keyed on identity, not count: once history hits its cap a new
+  // finished job replaces an evicted one and the count stays flat.
   const finished = $derived(
-    jobs.jobs.filter(
-      (j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled',
-    ).length,
+    jobs.jobs
+      .filter((j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled')
+      .map((j) => j.id)
+      .join(','),
   );
 
   $effect(() => {
