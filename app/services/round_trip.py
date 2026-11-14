@@ -15,9 +15,26 @@ import os
 from dataclasses import dataclass
 
 from logging_setup import get_logger
+from services.tools import registry
 from services.tools.base import ContentDigest, ContentDigestUnavailable, ToolPlugin
 
 logger = get_logger("round_trip")
+
+
+def round_trip_applies(mode: str, *, delete_on_verify: bool, container_only: bool) -> bool:
+    """Whether a job with these settings runs the Round-trip before deleting.
+
+    The one answer for every caller: the job pipeline's delete check, and what
+    a Rule's Preview says will run (#302). Only a job that deletes its Source,
+    in a mode whose tool has a digest, without the ``container_only`` opt-out.
+    The capability is read from the registry, so a mode that gains a digest
+    changes the answer everywhere at once.
+    """
+    return (
+        delete_on_verify
+        and not container_only
+        and registry.mode_supports_round_trip(mode)
+    )
 
 
 @dataclass(frozen=True)

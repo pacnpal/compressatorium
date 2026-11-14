@@ -864,6 +864,12 @@ Per-platform automation — target format, schedule, queueing limits and selecti
 |-------|------|
 | ![RomM automation, light](docs/screenshots/romm-automation-light.png) | ![RomM automation, dark](docs/screenshots/romm-automation-dark.png) |
 
+A Rule open in the editor. A Rule that deletes its source Round-trips the new file first unless *Container check only* is ticked:
+
+| Light | Dark |
+|-------|------|
+| ![RomM rule editor, light](docs/screenshots/romm-rule-editor-light.png) | ![RomM rule editor, dark](docs/screenshots/romm-rule-editor-dark.png) |
+
 #### DAT Library
 
 Import or sync No-Intro / Redump / MAMERedump datasets and match converted files against known-good hashes.
