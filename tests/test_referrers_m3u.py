@@ -177,3 +177,17 @@ async def test_delete_confirmation_follows_the_output_folder(volume):
     assert change["edits"] == [
         {"old": "Game (Disc 1).cue", "new": os.path.join("chd", "Game (Disc 1).chd")},
     ]
+
+
+_SRC = Path(__file__).resolve().parents[1] / "src" / "lib"
+
+
+def test_confirmation_modal_shows_referrer_changes():
+    """Static check: the modal renders each item's planned Referrer edits, and
+    the store asks for the plan with the chosen output folder."""
+    modal = (_SRC / "components" / "modals" / "DeletePlanModal.svelte").read_text()
+    assert "referrer_changes" in modal
+    endpoints = (_SRC / "api" / "endpoints.js").read_text()
+    assert "output_dir" in endpoints.split("getDeletePlan", 1)[1].split("},", 1)[0]
+    store = (_SRC / "stores" / "conversion.svelte.js").read_text()
+    assert "getDeletePlan(filePaths, this.mode, this.outputDir" in store

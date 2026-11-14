@@ -442,7 +442,7 @@ class ConversionStore {
   async fetchDeletePlan(filePaths) {
     if (!filePaths?.length) return null;
     try {
-      this.deletePlan = await api.getDeletePlan(filePaths, this.mode);
+      this.deletePlan = await api.getDeletePlan(filePaths, this.mode, this.outputDir || null);
       return this.deletePlan;
     } catch (e) {
       toast.error(e?.message ?? 'Failed to build delete plan');

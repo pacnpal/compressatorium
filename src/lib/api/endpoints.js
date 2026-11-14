@@ -231,10 +231,10 @@ export const api = {
     );
   },
 
-  getDeletePlan(filePaths, mode = 'createcd') {
+  getDeletePlan(filePaths, mode = 'createcd', outputDir = null) {
     return jsonPost(
       `${API_BASE}/jobs/delete-plan`,
-      { file_paths: filePaths, mode },
+      { file_paths: filePaths, mode, output_dir: outputDir },
       {},
       'Failed to build delete plan',
     );

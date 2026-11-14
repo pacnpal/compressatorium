@@ -22,6 +22,10 @@
   const items = $derived(Array.isArray(plan?.items) ? plan.items : []);
   const totalDelete = $derived(plan?.total_delete_count ?? 0);
   const blocked = $derived(!!plan?.blocked);
+  // Referrers (.m3u playlists) the job will rewrite before deleting (#295).
+  const hasReferrerChanges = $derived(
+    items.some((item) => (item.referrer_changes?.length ?? 0) > 0),
+  );
   const disallowedArchives = $derived(
     Array.isArray(plan?.disallowed_archives) ? plan.disallowed_archives : [],
   );
@@ -74,6 +78,12 @@
       conversion{items.length === 1 ? '' : 's'}, but only after each
       output is verified. This cannot be undone.
     </p>
+    {#if hasReferrerChanges}
+      <p class="dp-note">
+        Playlists that name a source are pointed at the output first. If one
+        can't be updated, that source is kept.
+      </p>
+    {/if}
 
     {#if blocked}
       <div class="dp-block" role="alert">
@@ -132,6 +142,14 @@
               {/if}
             </div>
           {/if}
+          {#each item.referrer_changes ?? [] as change (change.target)}
+            <div class="dp-referrer" title={change.target}>
+              <span class="dp-referrer-file">updates {shortName(change.target)}:</span>
+              {#each change.edits ?? [] as edit, i (i)}
+                <span class="dp-target">{edit.old} → {edit.new}</span>
+              {/each}
+            </div>
+          {/each}
         </li>
       {/each}
       {#if items.length > 20}
@@ -162,5 +180,8 @@
   .dp-targets { display: flex; gap: var(--space-1); align-items: center; flex-wrap: wrap; color: var(--text-3); font-size: var(--text-xs); font-family: var(--font-mono); }
   .dp-target { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
   .dp-more { color: var(--text-3); font-size: var(--text-xs); }
+  .dp-note { margin: 0; font-size: var(--text-xs); color: var(--text-2); }
+  .dp-referrer { display: flex; gap: var(--space-1); align-items: center; flex-wrap: wrap; color: var(--text-3); font-size: var(--text-xs); font-family: var(--font-mono); }
+  .dp-referrer-file { color: var(--text-2); }
   .dp-more-row { padding: 4px var(--space-2); color: var(--text-3); font-size: var(--text-xs); font-style: italic; }
 </style>
