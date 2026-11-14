@@ -2159,9 +2159,13 @@ forever. Recording never raises: a failure is logged and the job is unaffected.
 A Referrer is anything that points at an Image by its path: an `.m3u`
 playlist today, `gamelist.xml` and the RomM in-place swap later. When
 delete-on-verify replaces a Source, every Referrer is moved to the output
-**before** the Source is removed, so nothing ever points at a missing file.
-Referrers are plugins on one contract, registered like tools, and the job
-pipeline never branches on which ones exist.
+**before** the Source is removed. What is guaranteed: every reference a
+registered Referrer finds is either rewritten to the output before the Source
+goes, or the Source is kept. A reference no Referrer looks at is not covered;
+for `.m3u` that is a playlist outside the replaced file's folder and its
+ancestors up to the Volume root (a sibling folder's `../other/Game.cue`, or
+another Volume). Referrers are plugins on one contract, registered like tools,
+and the job pipeline never branches on which ones exist.
 
 ```python
 class Referrer(ABC):                          # services/referrers/base.py
@@ -2193,32 +2197,58 @@ The package exposes the registry and two entry points:
   becomes a warning on the item ("the source will be kept").
 - `update_before_source_removal(image_path, renames)` is the **one hook** in
   `_process_job`. It runs after the output passed its check and the delete
-  plan's safety checks, immediately before the `os.remove` loop. It plans and
-  applies every Referrer off the event loop, stops at the first failure and
-  never raises. It returns a `ReferrerOutcome`: `updated` (a list of
-  `{referrer, target}`, copied to `ConversionJob.referrers_updated` and the
-  Ledger's `referrers_updated`) and `failed`. On a failure the job skips the
-  delete, keeps the Source and the output, ends `completed` with the message
-  `converted, source kept: couldn't update <file>`, and `deleted_paths` stays
-  empty. Changes already applied before the failure stay: they point at the
-  output, which exists.
+  plan's safety checks, immediately before the `os.remove` loop. Off the event
+  loop it plans every Referrer first, then applies each change; the first
+  failure stops it, and it never raises. It returns a `ReferrerOutcome` whose
+  `records` hold one entry per target, `{referrer, target, status}` with
+  `status` `updated`, `failed` or `skipped` (not attempted after a failure) and
+  a `reason` for the last two. The records are copied to
+  `ConversionJob.referrers_updated` and the Ledger's `referrers_updated` JSON
+  column, so a row says which Referrer kept the Source and why. On a failure
+  the job skips the delete, keeps the Source and the output, ends `completed`
+  with the message `converted, source kept: couldn't update <file> (<reason>)`,
+  and `deleted_paths` stays empty. `JobRow.svelte` shows that message on a
+  completed delete-on-verify job that deleted nothing. Changes already applied
+  before the failure stay: they point at the output, which exists.
 
 `atomic_write_bytes(path, data)` (in `base.py`) is the shared writer for file
 Referrers and anything else that writes a playlist: a temp file in the same
 directory, fsync, `os.replace`, keeping the old file's permission bits. A crash
 leaves the old file or the new one, never half of one.
 
-**The `.m3u` Referrer** (`m3u.py`) is always on. `detect` is true when the
-Image's folder holds any `*.m3u`. `plan` reads each playlist in the folder of
-each renamed file and rewrites the entries that resolve to a renamed file,
-matched by `(st_dev, st_ino)` so any spelling of the path matches (relative,
-absolute, other case on a case-insensitive volume). Everything else is kept
-byte for byte: `#` lines, other entries, blank lines, line endings, a UTF-8
-BOM, and non-UTF-8 bytes (entries decode with `surrogateescape`). A rewritten
-entry keeps its style: relative stays relative to the playlist, absolute stays
-absolute, backslashes stay backslashes. `apply` refuses a read-only or
-symlinked playlist, and one whose bytes changed since it was planned. It writes
-`<name>.m3u.bak` once, only if no backup exists, then the new playlist.
+**The `.m3u` Referrer** (`m3u.py`) is always on.
+
+- *Where it looks.* The replaced file's resolved folder and each folder above
+  it up to and including its Volume root (`utils.path_utils.volume_root_for`,
+  innermost Volume wins). Only the `*.m3u` files directly in those folders,
+  no recursive walk, so the cost is one `scandir` per level. This covers a
+  playlist beside the discs and the Batocera / ES-DE layout (`psx/Game.m3u`
+  naming `.discs/Game (Disc 1).cue`). `detect` looks at the same folders.
+- *What it rewrites.* Only entries that resolve exactly to a replaced file,
+  matched by `(st_dev, st_ino)` so any spelling that reaches the file counts
+  (relative, absolute, `./`, other case on a case-insensitive volume).
+  Everything else is kept byte for byte: `#` lines, other entries, blank
+  lines, line endings, a UTF-8 BOM, and non-UTF-8 bytes (entries decode with
+  `surrogateescape`).
+- *Fail safe.* An entry that does not resolve but whose file name matches a
+  replaced file's name (after dropping a `|label` suffix and quotes, splitting
+  on `/` or `\`, ignoring case) is not guessed at: `plan` raises
+  `ReferrerError` naming the playlist and line (`line 2 names game.cue but
+  doesn't point at it`), so the Source is kept. That catches RetroArch
+  `path|label` entries, absolute paths in the emulator's own path space, mixed
+  separators, quoted names and case differences on case-sensitive volumes.
+  An unresolved entry for some other file does not block anything.
+- *Entry style.* The new entry is the entry's own folder part plus the path
+  from the replaced file's resolved folder to the resolved output, so both
+  sides use the same path form (a symlinked folder does not turn `Game.cue`
+  into `../link/Game.chd`), `./` and absolute prefixes are kept, and a
+  backslash entry stays backslashed.
+- *Concurrency.* Each playlist (by resolved path) has a `threading.Lock`.
+  `apply` holds it while it re-reads the playlist, re-runs the rewrite on what
+  is there now and writes, so two jobs updating one playlist both land, and an
+  edit made after planning is kept.
+- *Writing.* `apply` refuses a read-only or symlinked playlist. It writes
+  `<name>.m3u.bak` once, only if no backup exists, then the new playlist.
 
 To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 `id`, and `registry.register(...)` it in `services/referrers/__init__.py`.

@@ -5,12 +5,14 @@
 ### Added
 
 - **`.m3u` playlists follow a converted disc** (#295). With delete-on-verify,
-  an `.m3u` beside the Source that names it is rewritten to the output before
-  the Source is deleted. Only replaced entries change, the write is atomic, and
-  the original is kept once as `<name>.m3u.bak`. The delete confirmation lists
-  each playlist edit. If a playlist can't be updated, the Source is kept and the
-  job ends as "converted, source kept: couldn't update <file>". Ledger rows list
-  the playlists updated.
+  an `.m3u` that names the Source, in its folder or any folder above it up to
+  the volume root, is rewritten to the output before the Source is deleted.
+  Only replaced entries change, the write is atomic, and the original is kept
+  once as `<name>.m3u.bak`. The delete confirmation lists each playlist edit.
+  If a playlist can't be updated, or names the Source in a form the app can't
+  follow, the Source is kept and the job ends as "converted, source kept:
+  couldn't update <file> (<reason>)", shown on the finished job. Ledger rows
+  list the playlists updated, or the one that kept the Source and why.
 - **Ledger: a permanent record of every finished job** (#292). Each job that
   completes, fails or is cancelled writes one row (finish time, tool, mode,
   Source and output paths, input and output bytes, duration, status, the check
