@@ -42,6 +42,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import ConversionMode, JobStatus
+from services import notifications
 from services.job_manager import (
     OutputClaimedError,
     QueueBackpressureError,
@@ -1869,6 +1870,7 @@ async def _sweep_locked(
                     output_paths=destinations,
                     allow_overwrite=rule["duplicate_action"] == "overwrite",
                 )
+                notifications.sweep_jobs_queued(jobs)  # sync, before any await
                 summary["queued"] = len(jobs)
                 result["queued"] += len(jobs)
 
@@ -2019,6 +2021,7 @@ async def _sweep_locked(
     # than stacking one, so a sweep that re-records a retried conversion adds
     # rows without changing the total.
     result["pending_repins"] = await run_in_threadpool(romm_repin.count_pending)
+    notifications.sweep_finished(result, dry_run=dry_run)
     return result
 
 

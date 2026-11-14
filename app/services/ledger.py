@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
-from models import ConversionJob
+from models import ConversionJob, JobStatus
 from services import db as _db
 from services.preferences_store import preferences_store
 from services.tools import registry
@@ -83,6 +83,17 @@ def row_from_job(job: ConversionJob) -> dict:
         "platform": platform,
         "error": job.error_message,
     }
+
+
+def job_saved_bytes(job: ConversionJob) -> int:
+    """Space this job reclaimed: the Ledger's definition (a completed job that
+    replaced its Source), for callers that report it without a database read."""
+    if (
+        job.status != JobStatus.COMPLETED or not job.deleted_paths
+        or job.input_bytes is None or job.output_size is None
+    ):
+        return 0
+    return job.input_bytes - job.output_size
 
 
 def _session():

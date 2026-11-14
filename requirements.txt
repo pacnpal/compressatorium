@@ -11,3 +11,6 @@ alembic>=1.18.5
 # nsz: Nintendo Switch NSP/XCI <-> NSZ/XCZ (de)compressor. Pulls zstandard +
 # pycryptodome itself. Ships NO keys; the operator supplies their own prod.keys.
 nsz>=4.6.1
+# Apprise: optional notification destinations (Discord, Telegram, ntfy, ...). Imported
+# lazily; webhooks need nothing. Nothing is sent until a destination is configured.
+apprise>=1.9.0
