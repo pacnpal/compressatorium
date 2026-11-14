@@ -511,6 +511,12 @@ class JobsStore {
     }
   }
 
+  /** Add jobs another endpoint created (Auto) to the live list. */
+  adopt(created) {
+    if (!Array.isArray(created)) return;
+    for (const job of created) this._applyJob(job);
+  }
+
   // ─── Cancellation / cleanup ──────────────────────────────────────────
   async cancel(jobId) {
     const result = await api.cancelJob(jobId);

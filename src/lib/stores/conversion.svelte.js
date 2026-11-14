@@ -5,7 +5,9 @@
 import { toast } from 'svelte-sonner';
 import { api } from '$lib/api/endpoints.js';
 import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
-import { STORAGE_KEYS, readString, writeString } from '$lib/util/localStorage.js';
+import {
+  STORAGE_KEYS, readBool, readString, writeBool, writeString,
+} from '$lib/util/localStorage.js';
 import { jobs } from './jobs.svelte.js';
 
 function loadPrimaryTool() {
@@ -64,6 +66,21 @@ class ConversionStore {
   containerOnly = $state(false);
   split = $state(false);
   customFilterMode = $state(false);
+  // Auto: the backend works out each selected Image's Platform and sends it to
+  // that Platform's default target with the saved compression, instead of the
+  // mode picked here. The plan it returns is shown before anything is queued.
+  #auto = $state(readBool(STORAGE_KEYS.AUTO_CONVERT, false));
+  autoPlan = $state(null);
+
+  get auto() {
+    return this.#auto;
+  }
+
+  set auto(on) {
+    this.#auto = !!on;
+    writeBool(STORAGE_KEYS.AUTO_CONVERT, this.#auto);
+    this.autoPlan = null;
+  }
 
   // How many re-pin rows the last submit recorded, for the caller to surface.
   lastRepinRecorded = $state(0);
@@ -144,6 +161,9 @@ class ConversionStore {
    */
   allowsInputEntry(entry) {
     if (!entry) return false;
+    // Auto decides per file on the backend; any file can be offered, and the
+    // plan reports the ones it leaves alone.
+    if (this.auto) return entry.type !== 'directory' && entry.type !== 'archive';
     if (this.isDirectoryMode) {
       return (
         entry.type === 'directory'
@@ -324,6 +344,52 @@ class ConversionStore {
       this.#saveTimer = null;
       api.putConversionPrefs(snapshot).catch(() => {});
     }, PREF_SAVE_DEBOUNCE_MS);
+  }
+
+  /** Ask the backend where each Image would go. Sets and returns `autoPlan`. */
+  async fetchAutoPlan(filePaths) {
+    if (!filePaths?.length) return null;
+    try {
+      this.autoPlan = await api.getAutoPlan(filePaths, this.outputDir || null);
+      return this.autoPlan;
+    } catch (e) {
+      toast.error(e?.message ?? 'Failed to plan Auto conversion');
+      this.autoPlan = null;
+      throw e;
+    }
+  }
+
+  clearAutoPlan() {
+    this.autoPlan = null;
+  }
+
+  /** Queue each Image for its Platform's default target. */
+  async submitAuto(filePaths) {
+    if (!filePaths?.length) return null;
+    this.converting = true;
+    try {
+      const result = await api.createAutoJobs(filePaths, this.outputDir || null, 'skip');
+      const created = Array.isArray(result?.jobs) ? result.jobs : [];
+      jobs.adopt(created);
+      const skipped = (result?.plan ?? []).filter((row) => row.skip_reason).length;
+      if (created.length === 0) {
+        toast.warning(`No jobs queued (all ${filePaths.length} skipped)`);
+      } else if (created.length < filePaths.length) {
+        toast.success(
+          `Queued ${created.length} of ${filePaths.length} job(s); `
+          + `${filePaths.length - created.length} skipped`
+          + (skipped ? ` (${skipped} with no Platform)` : ''),
+        );
+      } else {
+        toast.success(`Queued ${created.length} job(s)`);
+      }
+      return result;
+    } catch (e) {
+      toast.error(e?.message ?? 'Failed to create Auto jobs');
+      throw e;
+    } finally {
+      this.converting = false;
+    }
   }
 
   setMode(mode) {

@@ -10,6 +10,7 @@
   import CompressionPicker from './CompressionPicker.svelte';
   import DuplicateModal from '$lib/components/modals/DuplicateModal.svelte';
   import DeletePlanModal from '$lib/components/modals/DeletePlanModal.svelte';
+  import AutoPlanModal from '$lib/components/modals/AutoPlanModal.svelte';
   import Settings2 from '@lucide/svelte/icons/settings-2';
   import Play from '@lucide/svelte/icons/play';
   import Loader from '@lucide/svelte/icons/loader-circle';
@@ -27,9 +28,10 @@
   const convertibleCount = $derived(selectedPaths.length);
   const incompatibleCount = $derived(selectedCount - convertibleCount);
   const tool = $derived(conversion.currentTool);
-  const supportsDeleteOnVerify = $derived(conversion.supportsDeleteOnVerify);
-  const supportsRoundTrip = $derived(conversion.supportsRoundTrip);
-  const supportsSplit = $derived(conversion.supportsSplit);
+  const auto = $derived(conversion.auto);
+  const supportsDeleteOnVerify = $derived(!auto && conversion.supportsDeleteOnVerify);
+  const supportsRoundTrip = $derived(!auto && conversion.supportsRoundTrip);
+  const supportsSplit = $derived(!auto && conversion.supportsSplit);
   const converting = $derived(conversion.converting);
 
   // Delete-on-verify is validated by the backend against a snapshot of
@@ -84,8 +86,43 @@
     });
   }
 
+  // Auto plan preview: same resolver pattern as the two modals above.
+  let autoPlanPrompt = $state(null);
+  const autoPlanModalOpen = $derived(!!autoPlanPrompt);
+
+  function resolveAutoPlan(proceed) {
+    if (autoPlanPrompt) {
+      const resolver = autoPlanPrompt;
+      autoPlanPrompt = null;
+      resolver(proceed);
+    }
+  }
+
+  async function handleAutoSubmit() {
+    try {
+      await conversion.fetchAutoPlan(selectedPaths);
+    } catch (_e) {
+      return; // toast already raised
+    }
+    const proceed = await new Promise((resolve) => {
+      autoPlanPrompt = resolve;
+    });
+    conversion.clearAutoPlan();
+    if (!proceed) return;
+    try {
+      await conversion.submitAuto(selectedPaths);
+      fileBrowser.clearSelection();
+    } catch (_e) {
+      // toast already raised in conversion.submitAuto
+    }
+  }
+
   async function handleSubmit() {
     if (submitDisabled) return;
+    if (auto) {
+      await handleAutoSubmit();
+      return;
+    }
     try {
       const check = await conversion.checkDuplicates(selectedPaths);
       const conflicts = Array.isArray(check) ? check.filter((d) => d?.exists) : [];
@@ -165,7 +202,7 @@
 <section class="panel" aria-label="Conversion configuration">
   <h2 class="panel-title">
     <Settings2 size={14} aria-hidden="true" />
-    Convert with {tool?.label ?? '…'}
+    {#if auto}Convert with Auto{:else}Convert with {tool?.label ?? '…'}{/if}
   </h2>
 
   {#if !tool}
@@ -176,8 +213,15 @@
     />
   {:else}
     <div class="fields">
-      <ModeSelect />
-      <CompressionPicker />
+      <Checkbox
+        bind:checked={conversion.auto}
+        label="Auto: pick the format from each Image's Platform"
+        description="Reads each Image's header (or its folder name) and uses that Platform's default format with your saved compression. Images whose Platform is unclear are skipped and listed."
+      />
+      {#if !auto}
+        <ModeSelect />
+        <CompressionPicker />
+      {/if}
 
       <label class="field">
         <span class="label">Output directory</span>
@@ -251,6 +295,7 @@
 
 <DuplicateModal open={duplicateModalOpen} onResolve={resolveDuplicate} />
 <DeletePlanModal open={deletePlanModalOpen} onResolve={resolveDeletePlan} />
+<AutoPlanModal open={autoPlanModalOpen} onResolve={resolveAutoPlan} />
 
 <style>
   .panel {

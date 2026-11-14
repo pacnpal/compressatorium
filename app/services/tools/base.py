@@ -184,6 +184,17 @@ class ToolPlugin(Protocol):
         next consolidation.
         """
 
+    def header_platform(self, path: str) -> str | None:
+        """The Platform this tool reads from ``path``'s own header, or None.
+
+        How a tool recognises its Images. ``services.platform_detect`` asks
+        every tool whose ``input_extensions`` match the file and maps the
+        answer onto a Platform slug, so a new console is taught to detection
+        by its tool, not by a central list. None means "not mine, or I cannot
+        tell", never a guess. Reads a few bytes from disk; call it off the
+        event loop.
+        """
+
     def verifies_path(self, path: str) -> bool:
         """Whether this tool's verify/info applies to a concrete file.
 
@@ -515,6 +526,11 @@ class BaseTool:
         return await resolve_verify_timeout(
             path, self.policy_owner, cancel_event=cancel_event,
         )
+
+    def header_platform(self, path: str) -> str | None:
+        # Default: no header probe. Tools that can tell their consoles apart
+        # from the image bytes (chdman, dolphin, xiso) override it.
+        return None
 
     def verifies_path(self, path: str) -> bool:
         # Default: a declared-extension match (suffix-based, so a compound

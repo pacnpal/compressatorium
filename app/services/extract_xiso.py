@@ -272,6 +272,22 @@ def walk_image(path: str) -> dict:
     return stats
 
 
+def detect_console(path: str) -> str | None:
+    """``"Xbox"`` or ``"Xbox 360"`` for an Xbox disc image, else None.
+
+    The layout names the console for a full disc image. A trimmed XISO has no
+    layout to go on, so its boot executable decides (``walk_image``). Never
+    raises: a file that is not an Xbox image, or cannot be read, is None.
+    """
+    try:
+        _offset, _layout, console = detect_layout(path)
+        if console:
+            return console
+        return walk_image(path)["console"]
+    except (XisoImageError, OSError):
+        return None
+
+
 @lru_cache(maxsize=4096)
 def _probe_convertible(path: str, size: int, mtime_ns: int) -> bool:
     """Content check behind ``is_convertible``, cached on (path, size, mtime).
