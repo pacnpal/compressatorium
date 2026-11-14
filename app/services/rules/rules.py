@@ -30,6 +30,12 @@ logger = get_logger("romm_auto")
 
 ORDERS = ("name", "size_desc", "size_asc", "id", "newest")
 DUPLICATE_ACTIONS = ("skip", "overwrite", "rename")
+# The check that must pass before a delete-source job removes its Source (#302).
+# `round_trip` compares decoded content (§3.3.12) where the mode supports it;
+# `container_only` is the named opt-out the convert routes take as
+# `container_only`. First is the default, and the fallback for a value nobody
+# can read: the stronger check, never the weaker one.
+CHECK_LEVELS = ("round_trip", "container_only")
 # 0 = Monday, matching datetime.weekday().
 ALL_DAYS = (0, 1, 2, 3, 4, 5, 6)
 
@@ -393,6 +399,9 @@ def default_rule(
         "duplicate_action": "skip",
         "delete_on_verify": bool(cfg["delete_on_verify"]),
         "verify_after": bool(cfg["verify_after"]),
+        # Read only when delete_on_verify is on. Kept while it is off, so
+        # switching delete-source off and on again keeps the operator's choice.
+        "check_level": CHECK_LEVELS[0],
         "split": False,
         # scheduling
         "interval_minutes": _clamp(
@@ -559,6 +568,8 @@ def normalize_rule(
             out["unsafe_delete_on_verify"] = True
     else:
         out["delete_on_verify"] = False
+    if raw.get("check_level") in CHECK_LEVELS:
+        out["check_level"] = raw["check_level"]
     out["split"] = bool(raw.get("split", False))
 
     # `out[...]` as the fallback, not a literal: `default_rule()` already seeded
@@ -622,6 +633,15 @@ def normalize_rule(
     if out["only_matched"] and out["only_unmatched"]:
         out["only_matched"] = out["only_unmatched"] = False
     return out
+
+
+def takes_container_only(rule: Mapping[str, Any]) -> bool:
+    """Whether jobs this Rule queues take the convert routes' ``container_only`` opt-out.
+
+    Only a Rule that deletes its Source has a check to opt out of; a Rule that
+    keeps it reads nothing extra whatever its level says.
+    """
+    return bool(rule.get("delete_on_verify")) and rule.get("check_level") == "container_only"
 
 
 def normalize_rules(

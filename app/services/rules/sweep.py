@@ -58,6 +58,7 @@ from services.rules.rules import (
     _output_identity,
     _validation_paused,
     normalize_rules,
+    takes_container_only,
 )
 from services.rules.schedule import _is_due
 from services.subprocess_runner import bounded_path_check, run_detached
@@ -1099,6 +1100,10 @@ async def _sweep_locked(
             **library.summary_fields(),
             "considered": considered,
         }
+        if rule["delete_on_verify"]:
+            # What Preview shows: the check that must pass before this batch
+            # deletes a Source. Absent when nothing is deleted.
+            summary["check_level"] = rule["check_level"]
 
         if batch and not dry_run:
             try:
@@ -1152,6 +1157,9 @@ async def _sweep_locked(
                     output_dir=rule["output_dir"],
                     compression=_compression_arg(rule),
                     delete_on_verify=rule["delete_on_verify"],
+                    # The Rule's check level, as the same opt-out a manual
+                    # convert takes, so `_delete_check` decides both alike.
+                    container_only=takes_container_only(rule),
                     delete_snapshots=snapshots,
                     split=rule["split"],
                     # delete_on_verify already verifies as a precondition, so
