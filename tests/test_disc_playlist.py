@@ -407,3 +407,13 @@ async def test_preview_route_keeps_selection_errors_as_plain_text(vol: Path):
             PlaylistPreviewRequest(paths=_discs(vol, "Game (Disc 1).cue")),
         )
     assert isinstance(exc.value.detail, str)
+
+
+def test_create_validates_only_the_requested_name_not_the_derived_default(vol: Path):
+    long = "x" * 246  # a derived default title this long is refused, a given name is not
+    paths = _discs(vol, f"{long}.iso", f"{long}b.iso")
+    with pytest.raises(disc_playlist.PlaylistNameError):
+        disc_playlist.plan_playlist(paths)
+    assert disc_playlist.plan_playlist(paths, title="Short").file_name == "Short.m3u"
+    disc_playlist.create_playlist(paths, "Short.m3u")
+    assert (vol / "Short.m3u").read_bytes() == f"{long}.iso\n{long}b.iso\n".encode()
