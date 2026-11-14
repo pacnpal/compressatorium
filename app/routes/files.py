@@ -19,7 +19,13 @@ from models import (
 )
 from services.archive import ARCHIVE_EXTENSIONS, archive_service
 from services.chd_metadata_store import chd_metadata_store
-from services.disc_playlist import PlaylistError, PlaylistNameTaken, create_playlist, plan_playlist
+from services.disc_playlist import (
+    PlaylistError,
+    PlaylistNameError,
+    PlaylistNameTaken,
+    create_playlist,
+    plan_playlist,
+)
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.tools import registry
@@ -962,6 +968,13 @@ async def playlist_preview(payload: PlaylistPreviewRequest) -> dict:
     """
     try:
         plan = await run_in_threadpool(plan_playlist, payload.paths, payload.title)
+    except PlaylistNameError as exc:
+        # Apart from selection errors (plain text) so the UI keeps the name
+        # field, prefilled with the refused title, for the user to fix.
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "code": "invalid_name", "title": exc.title},
+        ) from None
     except PlaylistError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return plan.to_dict()

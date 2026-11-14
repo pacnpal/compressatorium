@@ -374,8 +374,8 @@ def test_a_title_one_byte_over_the_limit_is_refused(vol: Path):
 
 
 def test_an_invalid_derived_title_is_a_name_error_that_carries_the_title(vol: Path):
-    long = "x" * 250
-    paths = _discs(vol, f"{long} (Disc 1).cue", f"{long} (Disc 2).cue")
+    long = "x" * 246  # the longest title a 255-byte file name can derive is 251
+    paths = _discs(vol, f"{long}.cue", f"{long}b.cue")
     with pytest.raises(disc_playlist.PlaylistNameError) as exc:
         disc_playlist.plan_playlist(paths)
     assert exc.value.title == long
@@ -390,8 +390,8 @@ def test_a_selection_error_is_not_a_name_error(vol: Path):
 
 @pytest.mark.asyncio
 async def test_preview_route_reports_a_name_error_with_a_code_and_the_title(vol: Path):
-    long = "x" * 250
-    paths = _discs(vol, f"{long} (Disc 1).cue", f"{long} (Disc 2).cue")
+    long = "x" * 246  # the longest title a 255-byte file name can derive is 251
+    paths = _discs(vol, f"{long}.cue", f"{long}b.cue")
     with pytest.raises(HTTPException) as exc:
         await files_routes.playlist_preview(PlaylistPreviewRequest(paths=paths))
     assert exc.value.status_code == 400

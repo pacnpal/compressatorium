@@ -46,6 +46,15 @@ class PlaylistError(Exception):
     """The selection or name can't make a playlist. ``str(exc)`` is user-facing."""
 
 
+class PlaylistNameError(PlaylistError):
+    """The playlist *name* is not valid (as opposed to the selection). ``title``
+    is the name that was refused, so a UI can offer it for editing."""
+
+    def __init__(self, message: str, title: str):
+        super().__init__(message)
+        self.title = title
+
+
 class PlaylistNameTaken(PlaylistError):
     """The file name is taken. ``suggested_name`` is the next free one."""
 
@@ -99,13 +108,13 @@ def _order_key(name: str) -> tuple:
 
 def _check_file_name_part(value: str, what: str, max_bytes: int = _MAX_TITLE_BYTES) -> None:
     if not value or value in (".", ".."):
-        raise PlaylistError(f"{what} can't be empty")
+        raise PlaylistNameError(f"{what} can't be empty", value)
     if "/" in value or "\\" in value:
-        raise PlaylistError(f"{what} can't contain a path separator")
+        raise PlaylistNameError(f"{what} can't contain a path separator", value)
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
-        raise PlaylistError(f"{what} can't contain control characters")
+        raise PlaylistNameError(f"{what} can't contain control characters", value)
     if len(value.encode("utf-8", "surrogateescape")) > max_bytes:
-        raise PlaylistError(f"{what} is too long")
+        raise PlaylistNameError(f"{what} is too long", value)
 
 
 def _clean_title(title: str) -> str:

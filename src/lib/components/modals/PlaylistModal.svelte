@@ -2,7 +2,7 @@
   import { ui } from '$lib/stores/ui.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { api } from '$lib/api/endpoints.js';
-  import { canCreate } from '$lib/util/playlistDialog.js';
+  import { canCreate, classifyPreviewError } from '$lib/util/playlistDialog.js';
   import { toast } from 'svelte-sonner';
   import BaseModal from './BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -18,6 +18,8 @@
   let previewedTitle = $state('');
   // Selection refused before any preview exists: only Cancel makes sense.
   let selectionError = $state('');
+  // The input is shown once a name was refused, even with no preview yet.
+  let nameEditable = $state(false);
   // The typed name was refused: shown under the input, which stays editable.
   let titleError = $state('');
   let title = $state('');
@@ -40,14 +42,16 @@
       previewedTitle = requestedTitle ?? result.title;
     } catch (e) {
       if (mine !== token) return;
-      const message = e?.message ?? 'Failed to preview the playlist';
-      // A refused name keeps the field and the last good preview; a refused
-      // selection has nothing to edit.
-      if (requestedTitle == null) {
-        preview = null;
-        selectionError = message;
+      // A refused name keeps the field (prefilled with the derived or typed
+      // title) and any last good preview; a refused selection has nothing to edit.
+      const failure = classifyPreviewError(e, requestedTitle);
+      if (failure.kind === 'name') {
+        titleError = failure.message;
+        if (requestedTitle == null) title = failure.title;
+        nameEditable = true;
       } else {
-        titleError = message;
+        preview = null;
+        selectionError = failure.message;
       }
     } finally {
       if (mine === token) loading = false;
@@ -58,6 +62,7 @@
   $effect(() => {
     if (open) {
       preview = null;
+      nameEditable = false;
       previewedTitle = '';
       selectionError = '';
       titleError = '';
@@ -132,7 +137,7 @@
         <TriangleAlert size={14} aria-hidden="true" />
         <div>{selectionError}</div>
       </div>
-    {:else if preview}
+    {:else if preview || nameEditable}
       <label class="pl-label">
         <span class="pl-text">Playlist name</span>
         <span class="pl-name">
@@ -153,27 +158,31 @@
       {#if titleError}
         <p class="pl-error" role="alert">{titleError}</p>
       {/if}
+      {#if preview}
       <p class="pl-file" title={preview.directory}>
         Will be saved as <strong>{preview.file_name}</strong> in {preview.directory}
       </p>
-      {#if preview.name_taken}
+      {/if}
+      {#if preview?.name_taken}
         <div class="pl-warn" role="status">
           <TriangleAlert size={14} aria-hidden="true" />
           <div>{preview.requested_name} already exists and is left alone. This one gets a different name.</div>
         </div>
       {/if}
-      {#each preview.warnings as w (w)}
+      {#each preview?.warnings ?? [] as w (w)}
         <div class="pl-warn" role="status">
           <TriangleAlert size={14} aria-hidden="true" />
           <div>{w}</div>
         </div>
       {/each}
-      <span class="pl-text">Entries ({preview.entries.length})</span>
-      <ol class="pl-list" aria-label="Playlist entries">
-        {#each preview.entries as entry (entry)}
-          <li class="pl-row" title={entry}>{entry}</li>
-        {/each}
-      </ol>
+      {#if preview}
+        <span class="pl-text">Entries ({preview.entries.length})</span>
+        <ol class="pl-list" aria-label="Playlist entries">
+          {#each preview.entries as entry (entry)}
+            <li class="pl-row" title={entry}>{entry}</li>
+          {/each}
+        </ol>
+      {/if}
     {:else}
       <p class="pl-file">Checking the selection…</p>
     {/if}

@@ -77,7 +77,10 @@ def test_client_uses_optional_chaining_for_the_error_body():
 
 
 def test_a_name_error_keeps_the_input_and_prefills_the_derived_title(tmp_path):
-    err = "{ message: 'The playlist name is too long', detail: { code: 'invalid_name', title: 'LONG' } }"
+    err = (
+        "{ message: 'The playlist name is too long',"
+        " detail: { code: 'invalid_name', title: 'LONG' } }"
+    )
     assert _run_dialog(tmp_path, f"classifyPreviewError({err}, null)") == {
         "kind": "name", "message": "The playlist name is too long", "title": "LONG",
     }

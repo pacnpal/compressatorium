@@ -293,11 +293,7 @@ def playlist_bytes(entries: list[str]) -> bytes:
     """
     lines = [protect_entry(entry) for entry in entries]
     data = "".join(line + "\n" for line in lines).encode(*_ENC)
-    read_back = [
-        parsed[0] if (parsed := _parse_line(raw.decode(*_ENC))) else None
-        for raw in data.splitlines()
-    ]
-    if read_back != lines:
+    if _entries(data) != lines:
         raise ValueError("an entry would not read back as written")
     return data
 
