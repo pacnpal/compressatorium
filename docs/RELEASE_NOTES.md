@@ -4,6 +4,16 @@
 
 ### Added
 
+- **`compressatorium convert` and `compressatorium verify`** (#306). A command
+  line for shells and cron that covers every tool, recurses into subfolders and
+  archives, and uses the web UI's planner, delete checks and Ledger.
+  `convert PATH --to chd` (any format or mode id) or `--auto`, with
+  `--delete-source` (Round-trip where the mode has it, `--container-only` to opt
+  out), `--dry-run` and `--json`. `verify PATH --since 30d` checks Images not
+  checked in that window. Exit 0 when done or nothing to do, 1 on a failure, 2
+  on bad arguments. Safe beside a running server: both take the same output
+  locks. `CHD_MODE=cli` now runs `convert <each Volume> --to $CHDMAN_MODE`, so
+  it also finds Images in subfolders and archives.
 - **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
   panel, select a mix of files, and each Image goes to its Platform's default
   format with your saved compression. The Platform comes from the Image's own

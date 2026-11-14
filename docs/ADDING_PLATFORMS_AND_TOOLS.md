@@ -1509,24 +1509,20 @@ from `PATH` and need no override.
 
 ---
 
-## 9. Headless CLI mode: `entrypoint.sh`
+## 9. Headless CLI: `compressatorium` (`app/cli.py`)
 
-`entrypoint.sh` supports `CHD_MODE=cli` (batch-convert a volume with no web UI;
-see `docker-compose.cli.yml`). This path is **independent of the Python app**: it
-shells out to `chdman` directly and currently only knows `createcd`/`createdvd`
-over `*.gdi *.iso *.cue`, validating `CHDMAN_MODE` against that allow-list with a
-`case` statement.
+`compressatorium convert|verify` (#306) runs the Python pipeline without a web
+server, so a registered tool is usable headlessly with **no CLI changes**:
+`--to <format>` resolves through `platform_detect.format_route` (your mode's
+`output_path` and read set decide whether it is picked), `--auto` through
+`plan_auto`, and `verify` through `registry.tools_verifying_path`. Check your
+tool with `compressatorium convert <dir> --to <your format> --dry-run --json`.
+See DESIGN §3.3.13.
 
-If your new tool/platform should be usable headlessly:
-- Extend the `CHDMAN_MODE` case statement (or add a parallel `CONVERT_TOOL` env)
-  to accept your mode.
-- Add a globbing loop for your input extensions and invoke your binary, mirroring
-  the existing `for i in *.gdi *.iso *.cue` block.
-- Skip-if-output-exists logic (`[[ -e "${i%.*}.<ext>" ]]`) should match your
-  output suffix.
-
-If headless mode is out of scope, skip this: the web UI path (`exec uvicorn
-main:app …`) already dispatches your tool via the Python pipeline.
+`CHD_MODE=cli` in `entrypoint.sh` is an alias for
+`compressatorium convert <each Volume> --to $CHDMAN_MODE`; its `case` statement
+still only accepts `createcd`/`createdvd`, which is today's contract for that
+variable. Nothing to change there for a new tool.
 
 The same file handles **PUID/PGID remap** and the privilege drop to `converter`
 (`exec gosu converter`). No changes needed there.

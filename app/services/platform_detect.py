@@ -490,6 +490,24 @@ def format_route(
     return best.mode, None
 
 
+def auto_reads(path: str, tools_registry) -> bool:
+    """Whether any mode Auto may pick reads ``path``'s extension.
+
+    A cheap, name-only test for walking a tree: a ``.bin`` beside its ``.cue``
+    or a finished ``.chd`` is not an Image Auto would plan, so the CLI does
+    not report it (#306).
+    """
+    for spec in tools_registry.mode_specs():
+        if not spec.auto_target:
+            continue
+        if getattr(spec.kind, "value", spec.kind) not in _TARGET_KINDS:
+            continue
+        reads = tools_registry.mode_reads_extensions(spec.mode)
+        if _extension_match(spec, path, reads) is not None:
+            return True
+    return False
+
+
 def auto_route(path: str, platform: str, tools_registry) -> tuple[str | None, str | None]:
     """``(mode, None)`` for where Auto sends this Image, or ``(None, reason)``.
 

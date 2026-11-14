@@ -1,0 +1,7 @@
+#!/bin/sh
+# The `compressatorium` command: the CLI module (app/cli.py) on the image's
+# venv, with app/ on PYTHONPATH the way the server runs. Paths stay relative
+# to the caller's working directory.
+APP_DIR="${COMPRESSATORIUM_APP_DIR:-/app}"
+PYTHON="${COMPRESSATORIUM_PYTHON:-/opt/venv/bin/python3}"
+PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON" -m cli "$@"

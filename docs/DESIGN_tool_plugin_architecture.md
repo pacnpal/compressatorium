@@ -2328,8 +2328,8 @@ files" when the file is the problem.
 
 `POST /api/jobs/auto-plan` returns the plan without queueing.
 `POST /api/jobs/auto` groups the planned Images by (mode, compression). The
-batch route is split into `_prepare_batch` (validate and `plan_job` every file,
-queue nothing) and `_queue_prepared` (one atomic `create_jobs_atomic` call);
+batch route is split into `prepare_batch` (validate and `plan_job` every file,
+queue nothing) and `queue_prepared` (one atomic `create_jobs_atomic` call);
 `create_batch_jobs` is the two in sequence. Auto prepares every group first, so
 a planning error queues nothing, then checks the whole batch against
 `max_queue_depth`, then queues the groups. Each group is its own atomic call,
@@ -2344,6 +2344,55 @@ delete-on-verify), so nothing is lost either way.
 The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;
 its values were tool ids, so a value left from it still loads as a tab.
+
+### 3.3.13 The headless CLI (`app/cli.py`, #306)
+
+`compressatorium convert|verify` runs the pipeline with no web server. It is a
+caller of the same seams the routes use, not a second conversion path:
+
+| Step | Shared seam |
+| --- | --- |
+| Find Images | `routes.files.scan_tree`: the `GET /files/search` walk (subfolders, convertible folders, archive members as `archive::member`) |
+| `--to <format>` | `platform_detect.format_route` / `format_candidates` (below) |
+| `--auto` | `routes.convert.plan_auto_targets` (`plan_auto` plus `checked_compression`), the Auto route's planner |
+| Plan | `routes.convert.prepare_batch`: `plan_job` per file, duplicate handling, delete snapshots. `PreparedBatch.skipped` lists each file it left out with the reason (`_SKIP_HTTP` text, or "Same output as X"), which the CLI reports and the routes ignore |
+| Queue and run | `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()` and stopped with `JobManager.shutdown()` |
+| Delete | `JobManager._delete_check`, so `--delete-source` gets the Round-trip check where the mode has one and `--container-only` is the job's `container_only` |
+| Ledger | `ledger.record` as a terminal listener, as in `main.py` |
+| Verify | `ToolPlugin.verify` bounded by `verify_timeout`, then `verification_store.mark_verified` (or `clear` on a failure) |
+
+**`format_route(path, target, platform, registry)`** returns `(mode, None)` or
+`(None, reason)`. `target` is a format (`chd`, `.rvz`) or a mode id. For a
+format, the candidates are the Auto-eligible modes (`ModeSpec.auto_target`)
+whose read set (`mode_reads_extensions`) matches the Image and whose
+`output_path` for it ends in the format, kind regardless (so `--to iso` reaches
+`dolphin_iso` and `nkit_restore`, `--to cue` reaches `extractcd`). A decided
+Platform keeps the modes that claim it (`platform_slugs` or
+`auto_platform_slugs`, canonicalised; a mode with none, or a Platform no mode
+claims, rules nothing out). The rest are ranked by `_best_reader`, the same
+ranking `default_mode` uses. When the winner's matched read extension is the
+target format the Image is left alone ("Already CHD"). A mode id is used as
+given once it accepts the Image and serves its Platform. `target_formats`
+lists every format some mode writes, read from `output_path`, for argument
+checking. `_can_read` asks a tool's `converts_path` only about files its own
+`input_extensions` cover, so chdman's `.chd` readers are not refused by a tool
+that leaves `.chd` out of its tool-wide inputs.
+
+**Locks beside a server.** Output locks were already `flock` files in
+`CHD_CONCURRENCY_LOCK_DIR`, and the conversion slots and FIFO tickets live
+there too, so a CLI process and the server contend for the same outputs and
+slots. `LockManager._still_linked` closes the one gap: `release_lock` unlinks
+the lock file, so a process could lock a file the holder had just unlinked and
+a third process would then lock a new file at the same path. After every
+`flock` the held inode is compared with the path's, and a stale handle is
+dropped (file locks retry, directory locks defer). A separate container shares
+the locks only when both mount the same lock directory.
+
+**`JobManager.shutdown()`** stops the dispatcher and maintenance loops, awaits
+the listener tasks still running (Ledger writes) and makes the queue, its
+semaphore and the create lock new, because asyncio binds them to the loop that
+first waits on them. `add_terminal_listener` ignores a callback already
+registered; `remove_terminal_listener` drops one.
 
 ### 3.4 `registry.py`
 

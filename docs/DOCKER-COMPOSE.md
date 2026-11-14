@@ -56,12 +56,13 @@ docker-compose -f docker-compose.cli.yml up
 ```
 
 **Behavior:**
-- Converts top-level `.gdi`, `.iso`, `.cue` files in mounted volumes
-- Exits after completion (no restart)
+- Runs `compressatorium convert <each volume> --to $CHDMAN_MODE` and exits (no restart)
+- Searches subfolders and archives, like the Web UI's search
+- Skips Images whose output already exists
 - No web interface
-- CHDMAN-only (no Dolphin modes in CLI)
 
-**Note:** CLI mode only processes files in the top level of each mounted volume. For files in subdirectories, use the Web UI mode which supports recursive directory browsing.
+For other tools and formats, run the `compressatorium` command directly (see the
+README's "Command line" section).
 
 **To change conversion mode:**
 Edit `CHDMAN_MODE` in the file:

@@ -128,7 +128,7 @@ discover_volumes() {
 VOLUMES_EFFECTIVE="$(discover_volumes "$MOUNT_ROOT" "$EXPLICIT_VOLUMES")"
 
 if [[ "$MODE" == "cli" ]]; then
-    # Original CLI behavior - convert all files in volumes
+    # CHD_MODE=cli: convert every Volume to CHD, then exit
     CHDMAN_MODE="${CHDMAN_MODE:-createcd}"
 
     case "$CHDMAN_MODE" in
@@ -146,7 +146,11 @@ if [[ "$MODE" == "cli" ]]; then
         echo "Discovered volumes: $VOLUMES_EFFECTIVE"
     fi
 
+    # Alias for `compressatorium convert <each Volume> --to $CHDMAN_MODE`: the
+    # same planner, job queue, locks and Ledger as the web UI. Existing outputs
+    # are skipped, as before; folders and archives are now searched too.
     IFS=',' read -r -a volume_list <<< "$VOLUMES_EFFECTIVE"
+    existing=()
     for volume in "${volume_list[@]}"; do
         # Trim incidental whitespace around comma-separated entries.
         volume="${volume#"${volume%%[![:space:]]*}"}"
@@ -154,23 +158,16 @@ if [[ "$MODE" == "cli" ]]; then
         [[ -z "$volume" ]] && continue
         if [[ -d "$volume" ]]; then
             echo "Processing volume: $volume"
-            cd "$volume"
-            shopt -s nullglob
-            for i in *.gdi *.iso *.cue; do
-                [[ -e "$i" ]] || continue
-                [[ -e "${i%.*}.chd" ]] && { echo "Skipping '$i' (CHD exists)."; continue; }
-                echo "Converting '$i' using chdman ${CHDMAN_MODE} ..."
-                if [[ "$CHDMAN_MODE" == "createdvd" ]]; then
-                    chdman createdvd -hs 2048 -f -i "$i" -o "${i%.*}.chd"
-                else
-                    chdman createcd -f -i "$i" -o "${i%.*}.chd"
-                fi
-            done
+            existing+=("$volume")
         else
             echo "Warning: Volume '$volume' does not exist, skipping."
         fi
     done
-    echo "CLI conversion complete."
+    if [[ ${#existing[@]} -eq 0 ]]; then
+        echo "No volumes to convert."
+        exit 0
+    fi
+    exec compressatorium convert "${existing[@]}" --to "$CHDMAN_MODE"
 else
     # Web UI mode (default)
     echo "Starting CHD Converter Web UI..."

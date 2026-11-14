@@ -481,6 +481,161 @@ async def archive_summary_batch(request: MetadataBatchRequest) -> dict:
     return await run_in_threadpool(_compute)
 
 
+def scan_tree(
+    root_path: str, recursive_scan: bool = True, include_archive_scan: bool = True,
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Every convertible thing under ``root_path``: the recursive search walk.
+
+    Returns ``(files, archive_members, truncated_archives)``. ``files`` holds
+    convertible files, convertible folders (a PS3 disc folder is one job and is
+    not walked into) and archive containers; ``archive_members`` holds each
+    convertible member as ``archive::member``. Shared by ``GET /files/search``
+    and the CLI (#306), so both find the same Images. Blocking; call it off the
+    event loop.
+    """
+    files = []
+    archives = []
+    visited_dirs = set()
+    archives_truncated = set()
+
+    def _scan(dir_path: str):
+        real_dir = os.path.realpath(dir_path)
+        if real_dir in visited_dirs:
+            return
+        visited_dirs.add(real_dir)
+        try:
+            # Sorted for deterministic search order, matching scan_directory's
+            # sorted walk above; raw readdir order varies by FS (issue #183).
+            for item in sorted(os.listdir(dir_path)):
+                if is_junk_entry(item):
+                    continue
+                item_path = os.path.join(dir_path, item)
+                ext = Path(item).suffix.lower()
+
+                try:
+                    if os.path.isdir(item_path):
+                        # A convertible folder (PS3 disc/JB folder) is itself
+                        # a job unit: emit it as a selectable directory row so
+                        # it's discoverable in search / batch-select, and do
+                        # NOT recurse past it (its inner files aren't separate
+                        # jobs). scan_directory alone would leave it invisible
+                        # to recursive search. A plain folder still recurses.
+                        dir_convertible_by, dir_outputs = (
+                            detect_directory_outputs(item_path)
+                        )
+                        if dir_convertible_by:
+                            files.append(
+                                {
+                                    "name": item,
+                                    "path": item_path,
+                                    "type": "directory",
+                                    "size": None,
+                                    "extension": "",
+                                    "in_archive": False,
+                                    "convertible_by": dir_convertible_by,
+                                    "outputs": dir_outputs,
+                                    "verifiable_by": [],
+                                },
+                            )
+                        elif recursive_scan and not os.path.islink(item_path):
+                            _scan(item_path)
+                    elif os.path.isfile(item_path):
+                        is_archive = ext in ARCHIVE_EXTENSIONS
+                        if is_archive:
+                            convertible_by, outputs = [], []
+                        else:
+                            convertible_by, outputs, _ = detect_file_outputs(
+                                item_path,
+                            )
+                        if convertible_by:
+                            files.append(
+                                {
+                                    "name": item,
+                                    "path": item_path,
+                                    "size": os.path.getsize(item_path),
+                                    "extension": ext,
+                                    "in_archive": False,
+                                    "convertible_by": convertible_by,
+                                    "outputs": outputs,
+                                    "verifiable_by": verifiable_tools(item_path),
+                                },
+                            )
+                        elif include_archive_scan and is_archive:
+                            # Emit the archive container itself so modes that
+                            # take an archive directly (e.g. romz_extract on
+                            # .7z/.zip) can select it from recursive search;
+                            # the frontend gates selectability on the active
+                            # mode, so it stays browse-only for member-input
+                            # tools. Members are still flattened below for
+                            # archive-member modes. The dict mirrors the
+                            # on-disk file shape (so the JSON contract stays
+                            # uniform) plus a ``type`` marker; archives never
+                            # emit tool outputs, so every flag is empty/false.
+                            files.append(
+                                {
+                                    "name": item,
+                                    "path": item_path,
+                                    "type": "archive",
+                                    "size": os.path.getsize(item_path),
+                                    "extension": ext,
+                                    "in_archive": False,
+                                    "convertible_by": [],
+                                    "outputs": [],
+                                    # Per-archive gate: romz Verify/Info only
+                                    # surface on single-ROM .7z/.zip, not on
+                                    # every archive container.
+                                    "verifiable_by": verifiable_tools(item_path),
+                                },
+                            )
+                            # List archive contents. Search surfaces
+                            # convertible hits, so gate to the convert-gate
+                            # subset (not the wider browse listing): that
+                            # both drops list-only members (a romz ROM is
+                            # browse-only) and keeps them from consuming the
+                            # per-archive entry cap ahead of a genuine
+                            # convertible member.
+                            archive_result = archive_service.list_archive_contents(
+                                item_path, include_meta=True,
+                                convertible_only=True,
+                            )
+                            archive_contents = archive_result["entries"]
+                            if archive_result["truncated"]:
+                                archives_truncated.add(item_path)
+                            archive_dir = os.path.dirname(item_path)
+                            for entry in archive_contents:
+                                (
+                                    output_stem,
+                                    member_convertible_by,
+                                    member_outputs,
+                                    _,
+                                ) = _detect_archive_member_outputs(
+                                    entry, archive_dir,
+                                )
+                                archives.append(
+                                    {
+                                        "name": entry["name"],
+                                        "path": f"{item_path}::{entry['internal_path']}",
+                                        "archive_path": item_path,
+                                        "internal_path": entry["internal_path"],
+                                        "size": entry["size"],
+                                        "extension": entry["extension"],
+                                        "output_stem": output_stem,
+                                        "in_archive": True,
+                                        "convertible_by": member_convertible_by,
+                                        "outputs": member_outputs,
+                                    },
+                                )
+                except OSError:
+                    # Skip archive entries that cannot be accessed
+                    continue
+        except (PermissionError, FileNotFoundError, OSError):
+            # Directory is not accessible or disappeared during scanning; skip it.
+            pass
+
+    _scan(root_path)
+    return files, archives, sorted(archives_truncated)
+
+
 @router.get("/files/search")
 async def search_files(
     path: str = Query(..., description="Root path to search"),
@@ -499,153 +654,8 @@ async def search_files(
     if not os.path.isdir(resolved_str):
         raise HTTPException(status_code=404, detail="Directory not found")
 
-    def scan_directory(
-        root_path: str, recursive_scan: bool, include_archive_scan: bool,
-    ):
-        files = []
-        archives = []
-        visited_dirs = set()
-        archives_truncated = set()
-
-        def _scan(dir_path: str):
-            real_dir = os.path.realpath(dir_path)
-            if real_dir in visited_dirs:
-                return
-            visited_dirs.add(real_dir)
-            try:
-                # Sorted for deterministic search order, matching scan_directory's
-                # sorted walk above; raw readdir order varies by FS (issue #183).
-                for item in sorted(os.listdir(dir_path)):
-                    if is_junk_entry(item):
-                        continue
-                    item_path = os.path.join(dir_path, item)
-                    ext = Path(item).suffix.lower()
-
-                    try:
-                        if os.path.isdir(item_path):
-                            # A convertible folder (PS3 disc/JB folder) is itself
-                            # a job unit: emit it as a selectable directory row so
-                            # it's discoverable in search / batch-select, and do
-                            # NOT recurse past it (its inner files aren't separate
-                            # jobs). scan_directory alone would leave it invisible
-                            # to recursive search. A plain folder still recurses.
-                            dir_convertible_by, dir_outputs = (
-                                detect_directory_outputs(item_path)
-                            )
-                            if dir_convertible_by:
-                                files.append(
-                                    {
-                                        "name": item,
-                                        "path": item_path,
-                                        "type": "directory",
-                                        "size": None,
-                                        "extension": "",
-                                        "in_archive": False,
-                                        "convertible_by": dir_convertible_by,
-                                        "outputs": dir_outputs,
-                                        "verifiable_by": [],
-                                    },
-                                )
-                            elif recursive_scan and not os.path.islink(item_path):
-                                _scan(item_path)
-                        elif os.path.isfile(item_path):
-                            is_archive = ext in ARCHIVE_EXTENSIONS
-                            if is_archive:
-                                convertible_by, outputs = [], []
-                            else:
-                                convertible_by, outputs, _ = detect_file_outputs(
-                                    item_path,
-                                )
-                            if convertible_by:
-                                files.append(
-                                    {
-                                        "name": item,
-                                        "path": item_path,
-                                        "size": os.path.getsize(item_path),
-                                        "extension": ext,
-                                        "in_archive": False,
-                                        "convertible_by": convertible_by,
-                                        "outputs": outputs,
-                                        "verifiable_by": verifiable_tools(item_path),
-                                    },
-                                )
-                            elif include_archive_scan and is_archive:
-                                # Emit the archive container itself so modes that
-                                # take an archive directly (e.g. romz_extract on
-                                # .7z/.zip) can select it from recursive search;
-                                # the frontend gates selectability on the active
-                                # mode, so it stays browse-only for member-input
-                                # tools. Members are still flattened below for
-                                # archive-member modes. The dict mirrors the
-                                # on-disk file shape (so the JSON contract stays
-                                # uniform) plus a ``type`` marker; archives never
-                                # emit tool outputs, so every flag is empty/false.
-                                files.append(
-                                    {
-                                        "name": item,
-                                        "path": item_path,
-                                        "type": "archive",
-                                        "size": os.path.getsize(item_path),
-                                        "extension": ext,
-                                        "in_archive": False,
-                                        "convertible_by": [],
-                                        "outputs": [],
-                                        # Per-archive gate: romz Verify/Info only
-                                        # surface on single-ROM .7z/.zip, not on
-                                        # every archive container.
-                                        "verifiable_by": verifiable_tools(item_path),
-                                    },
-                                )
-                                # List archive contents. Search surfaces
-                                # convertible hits, so gate to the convert-gate
-                                # subset (not the wider browse listing): that
-                                # both drops list-only members (a romz ROM is
-                                # browse-only) and keeps them from consuming the
-                                # per-archive entry cap ahead of a genuine
-                                # convertible member.
-                                archive_result = archive_service.list_archive_contents(
-                                    item_path, include_meta=True,
-                                    convertible_only=True,
-                                )
-                                archive_contents = archive_result["entries"]
-                                if archive_result["truncated"]:
-                                    archives_truncated.add(item_path)
-                                archive_dir = os.path.dirname(item_path)
-                                for entry in archive_contents:
-                                    (
-                                        output_stem,
-                                        member_convertible_by,
-                                        member_outputs,
-                                        _,
-                                    ) = _detect_archive_member_outputs(
-                                        entry, archive_dir,
-                                    )
-                                    archives.append(
-                                        {
-                                            "name": entry["name"],
-                                            "path": f"{item_path}::{entry['internal_path']}",
-                                            "archive_path": item_path,
-                                            "internal_path": entry["internal_path"],
-                                            "size": entry["size"],
-                                            "extension": entry["extension"],
-                                            "output_stem": output_stem,
-                                            "in_archive": True,
-                                            "convertible_by": member_convertible_by,
-                                            "outputs": member_outputs,
-                                        },
-                                    )
-                    except OSError:
-                        # Skip archive entries that cannot be accessed
-                        continue
-            except (PermissionError, FileNotFoundError, OSError):
-                # Directory is not accessible or disappeared during scanning; skip it.
-                pass
-
-        _scan(root_path)
-        return files, archives, sorted(archives_truncated)
-
     files, archives, archives_truncated = await run_in_threadpool(
-        scan_directory, path, recursive, include_archives,
+        scan_tree, path, recursive, include_archives,
     )
 
     return {

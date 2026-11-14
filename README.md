@@ -1576,32 +1576,55 @@ goes from 7.3 GB to 5.7 GB.
 extract-xiso is distributed under a modified BSD license; its license text ships
 in the image at `/usr/share/doc/extract-xiso/LICENSE.TXT`.
 
-## CLI Mode (Batch Processing)
+## Command line (`compressatorium`)
 
-For automated/headless conversion, use CLI mode. CLI mode runs CHDMAN only and processes
-files in the **top level** of each mounted volume (no recursive scanning, no archives). See
-`DOCKER-COMPOSE.md` for CLI behavior details.
-
-### CD Conversion (Default)
-
-```bash
-docker run --rm \
-  -e CHD_MODE=cli \
-  -v "$(pwd)/isofiles:/data/games:rw" \
-  pacnpal/compressatorium
-```
-
-### DVD Conversion (PSP, PS2)
+The image ships a `compressatorium` command for shells and cron. It drives the
+same planner, job queue, delete checks and Ledger as the web UI, for every tool,
+and recurses into subfolders and archives the way the UI's search does. Paths
+must sit inside the configured Volumes.
 
 ```bash
-docker run --rm \
-  -e CHD_MODE=cli \
-  -e CHDMAN_MODE=createdvd \
-  -v "$(pwd)/isofiles:/data/games:rw" \
-  pacnpal/compressatorium
+compressatorium convert /data/ps2 --to chd --delete-source
+compressatorium convert /data --auto --dry-run --json
+compressatorium verify /data/gamecube --since 30d
 ```
 
-### Multiple Volumes in CLI Mode
+**`convert PATH... (--to FORMAT | --auto)`**
+
+- `--to` takes an output format (`chd`, `rvz`, `wia`, `gcz`, `iso`, `cue`, `cso`,
+  `zso`, `nsz`, `z3ds`, `wux`, `7z`, `zip`, ...) or a mode id (`createdvd`,
+  `nkit_to_rvz`). A format is resolved per Image through the tool registry,
+  chains included: a PS2 `.iso` goes to `createdvd`, a PS1 `.cue` to
+  `createcd`, an NKit image to `nkit_to_rvz`. The Image's Platform narrows the
+  choice, so a GameCube `.iso` is never sent to chdman. An Image already in the
+  format is reported and left alone.
+- `--auto` sends each Image to its Platform's default format. Conflicted and
+  Unsorted Images are skipped and reported.
+- `--delete-source` deletes each Source once its output passes the strongest
+  check its mode has: the Round-trip check where the tool has one, else the
+  container check. `--container-only` deletes on the container check alone.
+- `--duplicate skip|overwrite|rename` (default `skip`), `--output-dir DIR`.
+
+**`verify PATH... [--since AGE]`** checks each Image is Intact and stores the
+result. `--since 30d` (also `12h`, `2w`) skips Images checked within that window.
+
+Both commands take `--dry-run` (print the plan, change nothing on disk or in
+the database) and `--json` (one JSON line per Image on stdout; logs go to stderr
+with `-v`). Exit status: `0` when everything finished or there was nothing to
+do, `1` when any Image failed, `2` on bad arguments.
+
+It is safe beside a running server: each job holds a file lock on its output in
+`CHD_CONCURRENCY_LOCK_DIR` (default `$TMPDIR/chd-locks`), and both share the
+conversion slots there. Run it inside the server's container
+(`docker exec compressatorium compressatorium convert ...`); a separate
+container needs the same lock directory mounted at the same path.
+
+### `CHD_MODE=cli`
+
+`CHD_MODE=cli` runs `compressatorium convert <each Volume> --to $CHDMAN_MODE`
+and exits. `CHDMAN_MODE` is `createcd` (default) or `createdvd`. Outputs that
+already exist are skipped, as before; subfolders and archives are now searched
+too.
 
 ```bash
 docker run --rm \
@@ -1610,6 +1633,14 @@ docker run --rm \
   -v /home/user/psp:/data/psp:rw \
   -v /home/user/ps2:/data/ps2:rw \
   pacnpal/compressatorium
+```
+
+To run any other command in a one-off container:
+
+```bash
+docker run --rm -v /home/user/gc:/data/gc:rw -v ./config:/config \
+  --entrypoint compressatorium pacnpal/compressatorium \
+  convert /data/gc --to rvz --json
 ```
 
 ---

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import inspect
 import logging
 from logging_setup import get_logger
@@ -932,8 +933,17 @@ class JobManager:
         The callback may be sync or async (a coroutine is scheduled on the
         loop). It runs after the status is final; exceptions are logged and
         swallowed, because a listener must never fail a conversion.
+
+        Registering the same callback twice keeps one registration, so a
+        caller that sets itself up on every run (the CLI) is told once per job.
         """
-        self._terminal_listeners.append(callback)
+        if callback not in self._terminal_listeners:
+            self._terminal_listeners.append(callback)
+
+    def remove_terminal_listener(self, callback: Callable[[ConversionJob], object]) -> None:
+        """Stop calling *callback*; a no-op when it is not registered."""
+        if callback in self._terminal_listeners:
+            self._terminal_listeners.remove(callback)
 
     def _notify_terminal(self, job: ConversionJob) -> None:
         """Tell every listener that *job* is finished. Never raises."""
@@ -2017,6 +2027,31 @@ class JobManager:
                     debug_interval,
                 )
         await self._dispatcher_task
+
+    async def shutdown(self) -> None:
+        """Stop processing and finish the work listeners started.
+
+        For a caller that owns the event loop and leaves it once its jobs are
+        done (the CLI, #306): the dispatcher and maintenance loops stop, and the
+        listener tasks still running (a Ledger write) are awaited so nothing a
+        finished job reported is lost when the loop closes. The queue, its
+        semaphore and the create lock are made new, because asyncio binds them
+        to the loop that first waits on them, so the manager can be started
+        again under another loop. Call it with no job queued or running.
+        """
+        self._running = False
+        for task in (self._dispatcher_task, self._debug_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._dispatcher_task = None
+        self._debug_task = None
+        while self._background_tasks:
+            await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
+        self._queue = asyncio.PriorityQueue()
+        self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        self._create_lock = asyncio.Lock()
 
     async def _handle_background_maintenance(self, cleanup_counter: int) -> int:
         """Handle stuck state detection and periodic lock cleanup.
