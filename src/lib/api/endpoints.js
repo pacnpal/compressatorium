@@ -599,6 +599,18 @@ export const api = {
       'Failed to save RomM rules',
     ),
 
+  // One-time notices any rule editor shows (#302). Not RomM-specific.
+  getRuleNotices: () =>
+    fetchJson(`${API_BASE}/rules/notices`, undefined, 'Failed to load rule notices'),
+
+  dismissCheckLevelNotice: () =>
+    jsonPost(
+      `${API_BASE}/rules/notices/check-level/dismiss`,
+      {},
+      {},
+      'Failed to dismiss the notice',
+    ),
+
   // Clears the "already converted by this rule" history that stops overwrite
   // and rename rules from reconverting the same sources every interval.
   forgetRommConverted: (platformIds = null) =>

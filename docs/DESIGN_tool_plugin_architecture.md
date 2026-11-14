@@ -1960,7 +1960,7 @@ back unable to prove ownership.
 ### 3.3.9 Re-pin queue and conversion provenance (`services/romm/repin.py`)
 
 Two questions the filesystem cannot answer on its own, both owned here so the
-manual submit (`routes/romm.py`) and the unattended sweep (`services/romm/auto.py`)
+manual submit (`routes/romm.py`) and the unattended sweep (`services/rules/sweep.py`)
 give the same answer.
 
 **"Has the conversion actually produced this output yet?"** A re-pin row is
@@ -2068,7 +2068,8 @@ occupied destination as queueable, and `rename` always finds a free suffix. Both
 would therefore reconvert the whole library every interval.
 
 What is recorded is **production, not queueing**. `converted` on the platform's
-`romm.auto_state` entry maps each RomM id to `{path, pre}` — the destination the
+`rules.state` entry (key `romm:<platform id>`, see §3.3.11) maps each Image key
+(for RomM, the ROM id) to `{path, pre}` — the destination the
 rule chose and a fingerprint of whatever occupied it at planning time — and
 `_was_produced()` answers it in three steps, strongest evidence first: the
 verdict written down when the job ended (`done`), then the job's live status if
@@ -2137,7 +2138,7 @@ ended. The job carries what the row needs and the in-memory history would lose:
   `utils.delete_plan.build_delete_plan` would remove (CUE/GDI tracks, registry
   source companions, the archive holding a member).
 - `ConversionJob.check_passed` -- `"intact"` once the tool's own verify passed,
-  `"round_tripped"` once the Round-trip check passed too (§3.3.11).
+  `"round_tripped"` once the Round-trip check passed too (§3.3.12).
 - `ConversionJob.deleted_paths` -- each path the delete-on-verify step removed;
   `source_deleted` is derived from it.
 
@@ -2153,7 +2154,137 @@ a short settle delay, since the row is written after the completion event. A `re
 in the `ledger` preference prunes older rows on each write; unset keeps them
 forever. Recording never raises: a failure is logged and the job is unaffected.
 
-### 3.3.11 The Round-trip check (`ToolPlugin.content_digest`, `services/round_trip.py`)
+### 3.3.11 The Rule engine and the Library interface (`services/rules/`)
+
+A Rule converts the Images of one Platform in one Library. The engine that runs
+Rules is shared; where the Images come from is behind a `Library`
+(`services/rules/library.py`). RomM is the first Library
+(`services/romm/library.py`, `romm_library`). A folder Library (#303) is the
+second: one root folder inside a Volume.
+
+| Module | Holds |
+| --- | --- |
+| `rules/rules.py` | Rule schema, `default_rule`, `normalize_rule(s)`, filter-pattern checks, `OUTPUT_IDENTITY_FIELDS` |
+| `rules/schedule.py` | `_in_window` (weekday mask, time window, time zone), `_is_due` (interval) |
+| `rules/store.py` | the `rules` and `rules.state` preference rows, keyed `"<library id>:<platform id>"`, the legacy-key move, the one-time upgrade to Round-trip and the notice it leaves |
+| `rules/sweep.py` | `get_rules` / `set_rules` / `get_state` / `forget_converted`, the sweep, the converted history, `note_job_finished`, `run_forever` |
+| `rules/library.py` | `Library`, `Image`, `Platform`, `QueuedImage`, `LibraryUnreadable`, capability names |
+
+**The interface.** A Library has an `id` (`"romm"`; a folder Library will use
+`"folder:<root>"`), `capabilities`, and:
+
+- `platforms()` and `images(platform_id)`, both blocking (the sweep calls them
+  in a worker thread). `images` raises `LibraryUnreadable`, which the sweep
+  reports as `unreadable` for that Platform and moves on.
+- `Image`: `key` (RomM: the ROM id; folder: the path relative to the root),
+  `name` (file name, what name filters match), `title` (what the `name` order
+  sorts by), `size`, `added_at` (any number that grows as Images are added;
+  RomM uses the ROM id, so `newest` keeps its order), `recognized` (True,
+  False, or None when unknown; see below), `platform` (the console slug checked against
+  `registry.mode_allows_platform`), `path`, and `record` (the Library's own
+  record, for its hooks). `path` may be lazy: RomM passes `resolve_path`
+  because mapping a record onto the mount stats it, and the sweep reads
+  `path` only inside the bounded candidate probe.
+- `canonical_platform_id(raw)` validates a stored or submitted Rule key
+  (RomM: an integer, written back as a canonical string), and
+  `platform_value(id)` is how the API reports it and how Rules sort (RomM: the
+  integer, so summaries and errors still say `"platform_id": 7`).
+- `rule_defaults()`, `max_per_sweep()`, `schedule_enabled()`: the Library's
+  settings. RomM reads them from its in-app settings, as before.
+- `configured()`: when false the sweep stops with `not_configured`.
+- `legacy_preference_keys`: rows an earlier release used for this Library's
+  Rules and state, unprefixed.
+
+**Hooks for steps only one Library performs.**
+
+- `sweep_blocked()` returns an error code to refuse the sweep. RomM refuses
+  with `identity_cleanup_pending` while a change of instance is half cleaned up.
+- `summary_fields()` seeds every per-Platform summary and the result (RomM:
+  `repins_recorded: 0`).
+- `after_queue(rule, spec, queued, summary, result)` runs once a Platform's
+  batch is accepted by the queue, inside the same error handling. RomM records
+  the metadata snapshot for re-pin here, so the re-pin bookkeeping stays in
+  `services/romm`.
+- `sweep_extras()` adds keys when a sweep ends (RomM: `pending_repins`).
+
+Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`) say what a Library
+supports. The engine does not gate on them yet; a Rules editor and the folder
+Library use them to offer only what applies.
+
+**What `recognized` means.** It is the Library's own identification of the
+Image, and it is what the Rule filters `only_matched` / `only_unmatched` read.
+RomM fills it with RomM's "identified" status (`is_identified`, else any
+metadata-provider id), which is how `only_matched` has always behaved. That is
+a metadata match, often by file name, not Recognized in the glossary sense (a
+DAT or Hasheous hash match). The field is a stand-in until DAT-based
+recognition lands; code that needs a hash match must not read it as one.
+
+**Storage.** Rules live in the `rules` preference row and run state in
+`rules.state`, one entry per `"<library id>:<platform id>"`. Callers read and
+write one Library's view keyed by bare Platform id. RomM's pre-#296 rows,
+`romm.rules` and `romm.auto_state`, are copied under `romm:` keys on the first
+read or write, and then `romm` is recorded in the `rules.migrated` row (written
+last, so a crash mid-copy repeats it from the same rows). The old rows are
+never written or deleted. They stay as a copy of the Rules and history at
+upgrade time, so a downgrade still finds them, and anything a downgraded
+release writes to them is ignored after the next upgrade. The first read can
+therefore write, so a read-only or locked database fails that first request.
+
+**Check level (#302).** Every Rule has `check_level`, `round_trip` (the
+default, and the fallback for an unreadable value) or `container_only`
+(`rules.CHECK_LEVELS`). It is part of the shared schema, so every Library has
+it, and it is kept while delete-source is off. A sweep passes it to
+`create_batch_jobs` as the job's existing `container_only` flag
+(`rules.takes_container_only`: true only when the Rule deletes its Source and
+says `container_only`), so `JobManager._delete_check` (§3.3.12) decides a
+sweep's job and a manual one the same way. A delete-source Rule's
+per-Platform sweep summary carries `check_level`, which is what Preview shows;
+a Rule that keeps its Source gets no such key. It is the check that will run,
+not the stored preference: `rules.effective_check_level` asks
+`round_trip.round_trip_applies(mode, delete_on_verify=, container_only=)`, the
+same helper `_delete_check` asks, so a stored `round_trip` on a mode with no
+digest shows `container_only`, and a mode that gains a digest (#300) changes
+both answers at once.
+
+**The upgrade to Round-trip.** `store._upgrade_check_level` runs once, in
+`_load` after the Library's legacy copy and under `store._lock`, before any
+read or write. It sets `check_level: round_trip` on every entry of the
+`rules` row with `delete_on_verify` on, for every Library, and then writes
+`rules.check_level_upgrade` (`{upgraded_at, switched: [keys]}`) last, so a
+crash before the marker repeats the pass with the same result. Rules saved
+afterwards are never touched. RomM's pre-#296 rows predate the field too, so
+`_copy_legacy` applies the same switch to the Rules it copies, and adds them
+to `switched` when the pass already ran (another Library was read first).
+
+**One-time notices.** `GET /api/rules/notices` returns
+`{"check_level": {"show", "switched", "container_check"}}`. Before counting it
+runs the legacy copy of each of the app's Libraries (`routes/rules._libraries`)
+and the upgrade pass, so the first read sees Rules still under pre-#296 keys.
+`switched` counts the switched Rules whose mode can Round-trip now (registry),
+`container_check` the rest, which keep the container check until their tool
+gains a digest. `show` is true while `switched` is not zero and nobody has
+dismissed it.
+`POST /api/rules/notices/check-level/dismiss` records the dismissal in the
+`rules.notices` row. The routes are not RomM's, so a folder Library's editor
+uses the same ones; the front end reads them through
+`stores/ruleNotices.svelte.js`.
+
+**Locks.** `_sweep_lock` is process-wide, not per Library: the active-source
+snapshot and claimed destinations are shared by every sweep. `paused()` takes
+it. `store._lock` serialises each read-modify-write of the shared rows, and is
+always taken inside `_sweep_lock`, never around it.
+
+**Where a sweep ends.** `sweep()` returns through one line after the lock is
+released, with `result["dry_run"]` telling a preview from a run. That is the
+place for anything that reports a finished sweep.
+
+**RomM's binding.** `services/romm/auto.py` keeps the names and arguments the
+RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
+`run_forever()`, ...) and passes `romm_library` to each, so the HTTP API did
+not change. `run_forever(libraries)` takes a callable returning the Libraries to
+sweep on each tick.
+
+### 3.3.12 The Round-trip check (`ToolPlugin.content_digest`, `services/round_trip.py`)
 
 A container check proves the output reads back cleanly. It does not prove the
 output holds the same disc as the Source the job is about to delete. The
@@ -2191,8 +2322,9 @@ after the container check passes and returns `(check_passed,
 keep_source_reason)`. The Round-trip runs only when it decides something:
 `delete_on_verify` is set, the mode supports it, and the job did not take the
 named opt-out `ConversionJob.container_only` (`container_only` on
-`POST /api/jobs` and `/api/jobs/batch`). Otherwise the answer is
-`("intact", None)` with no extra reads, which is what every `verify_after` job
+`POST /api/jobs` and `/api/jobs/batch`, and a Rule's `check_level`, §3.3.11).
+That test is `round_trip.round_trip_applies`, shared with Rule Preview.
+Otherwise the answer is `("intact", None)` with no extra reads, which is what every `verify_after` job
 and every mode without a digest gets. `ConversionJob.check_passed` carries the
 result to the Ledger and to the job's `complete` event. On a pass,
 `verification_store.mark_verified(..., check=check_passed)` writes it to
@@ -2229,7 +2361,7 @@ an earlier run left for that path is dropped. `ConversionJob.check_passed`
 (and so the Ledger row) still says `"intact"`, because the container check did
 pass.
 
-### 3.3.12 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
+### 3.3.13 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
 
 `detect_platform(path) -> Detection` is the one place an Image's Platform is
 worked out without a library manager. The convert panel's Auto choice uses it
@@ -2345,7 +2477,7 @@ The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;
 its values were tool ids, so a value left from it still loads as a tab.
 
-### 3.3.13 The headless CLI (`app/cli.py`, #306)
+### 3.3.14 The headless CLI (`app/cli.py`, #306)
 
 `compressatorium convert|verify` runs the pipeline with no web server. It is a
 caller of the same seams the routes use, not a second conversion path:
@@ -2683,7 +2815,7 @@ may be sync or async, exceptions are logged and swallowed (a listener must
 never fail a conversion), and the same job may be announced twice — listeners
 are required to be idempotent.
 
-The RomM automation is the first consumer: `romm.auto.note_job_finished` writes
+The Rule engine is the first consumer: `rules.sweep.note_job_finished` writes
 the verdict into the rule's converted-history record (`done: true|false`), and
 `_was_produced` reads that first. Without it, provenance fell back to "the
 destination changed since planning", which a *failed* overwrite produces just
@@ -2720,7 +2852,7 @@ second case, so the resolution stays a per-tool declaration instead of an
 if-ladder on tool identity at the call site.
 `registry.default_compression(mode)` applies it *only* to codec-offering modes,
 returning `None` elsewhere so nsz's meaningful empty part survives. The RomM
-sweep (`services/romm/auto._compression_arg`) is the current consumer: with no
+sweep (`services/rules/sweep._compression_arg`) is the current consumer: with no
 declared default it drops the level and logs, rather than queue a job the tool
 will reject or invent a codec the operator did not choose.
 

@@ -48,8 +48,15 @@
   - Delete-source runs on Dolphin modes take longer: the Source and the output
     are each read once more.
   - **RomM Rules:** delete-source Rules on Dolphin modes now Round-trip by
-    default, so their sweeps take longer for the same reason. A per-Rule
-    container-only setting comes later.
+    default, so their sweeps take longer for the same reason.
+- **Each Rule now says which check runs before it deletes a Source** (#302).
+  Next to delete-source, the rule editor offers **Container check only
+  (faster, weaker)**; left unticked, the Rule Round-trips (the default).
+  Sweeps hand the Rule's setting to every job they queue, and Preview shows it.
+  - **On upgrade, every stored Rule with delete-source on is set to
+    Round-trip**, so sweeps on formats that support it read each file once
+    more and take longer. The rule editor says so once, with how to opt out;
+    dismissing the notice is remembered.
 - **Xbox / Xbox 360: trim disc images to XISO** with
   [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
   (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's
@@ -64,6 +71,14 @@
   - Verify checks the XISO's structure and has extract-xiso list it. There is no
     delete-on-verify: XISO carries no checksums and the trim is irreversible.
   - Info shows console, disc layout, file count and game-data size.
+
+### Changed
+
+- **RomM Rules run on a shared Rule engine** (#296). Nothing changes in the
+  app or the API. Stored Rules and their state are copied to new keys prefixed
+  with the Library id (`romm:7`) the first time they are read. The old
+  `romm.rules` and `romm.auto_state` rows are kept and no longer written, so a
+  downgrade gets the Rules and history as they were at upgrade time.
 
 ### Security
 
