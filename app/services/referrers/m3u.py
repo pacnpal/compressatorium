@@ -201,6 +201,8 @@ def _rewrite(
         return data, []
     out: list[bytes] = []
     edits: list[tuple[str, str]] = []
+    rewritten: dict[int, _Target] = {}  # entry position -> where it must point
+    position = -1
     for number, line in enumerate(data.splitlines(keepends=True), start=1):
         prefix = b""
         if number == 1 and line.startswith(_BOM):
@@ -213,6 +215,7 @@ def _rewrite(
             out.append(prefix + line)
             continue
         entry, posix_entry, backslashed = parsed
+        position += 1
         key = _file_key(os.path.join(playlist_dir, posix_entry))
         target = renames.by_key.get(key) if key else None
         if target is None:
@@ -228,7 +231,10 @@ def _rewrite(
         new_line = None
         for candidate in _new_entry(posix_entry, target):
             styled = candidate.replace("/", "\\") if backslashed else candidate
-            # Read the line back the way a reader will; it must reach the output.
+            # A control character (CR, LF, NUL, VT, ...) can't sit in one
+            # playlist line; the line read back must still reach the output.
+            if any(unicodedata.category(ch) == "Cc" for ch in styled):
+                continue
             read_back = _parse_line(lead + styled + trail)
             if read_back and _points_at(playlist_dir, read_back[1], target):
                 new_entry, new_line = styled, lead + styled + trail
@@ -239,7 +245,39 @@ def _rewrite(
             )
         out.append(prefix + new_line.encode(*_ENC) + ending)
         edits.append((entry, new_entry))
-    return b"".join(out), edits
+        rewritten[position] = target
+    result = b"".join(out)
+    _check_read_back(playlist, playlist_dir, data, result, rewritten)
+    return result, edits
+
+
+def _entries(data: bytes) -> list[str]:
+    """The entries a reader sees in *data*, as posix paths, in order."""
+    entries = []
+    for number, line in enumerate(data.splitlines(), start=1):
+        if number == 1 and line.startswith(_BOM):
+            line = line[len(_BOM):]
+        parsed = _parse_line(line.decode(*_ENC))
+        if parsed is not None:
+            entries.append(parsed[1])
+    return entries
+
+
+def _check_read_back(
+    playlist: str, playlist_dir: str, before: bytes, after: bytes,
+    rewritten: dict[int, _Target],
+) -> None:
+    """Parse the bytes about to be written the way _rewrite reads them: the
+    same number of entries, every untouched one unchanged, and every rewritten
+    one, at its position, reaching the output. Anything else keeps the Source."""
+    old, new = _entries(before), _entries(after)
+    ok = len(old) == len(new) and all(
+        _points_at(playlist_dir, new[i], rewritten[i]) if i in rewritten
+        else new[i] == old[i]
+        for i in range(len(new))
+    )
+    if not ok:
+        raise ReferrerError(playlist, "the rewritten playlist wouldn't read back to the output")
 
 
 def playlist_bytes(entries: list[str]) -> bytes:

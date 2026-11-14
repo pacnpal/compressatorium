@@ -382,6 +382,64 @@ async def test_a_new_entry_ending_in_a_space_keeps_the_source(tmp_path):
     assert playlist.read_text() == "Game.cue\n"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("folder", ["CHD\nextra", "CHD\rextra"])
+async def test_an_output_path_with_a_line_break_keeps_the_source(tmp_path, folder):
+    """A path that can't be one playlist line is never written."""
+    _disc(tmp_path, "Game.cue")
+    (tmp_path / folder).mkdir()
+    out = _disc(tmp_path / folder, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+
+    outcome = await referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+    )
+
+    assert not outcome.ok
+    assert playlist.read_text() == "Game.cue\n"
+
+
+AWKWARD_FOLDERS = [
+    " CHD", "CHD ", "#CHD", ";CHD", "\tCHD", "CHD\t", "a#b", "Pokémon",
+    unicodedata.normalize("NFD", "Pokémon"), "CHD\nextra", "CHD\rextra",
+    "CHD\x0bextra", "CHD\x1fextra", " ", "#",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("folder", AWKWARD_FOLDERS, ids=repr)
+async def test_awkward_output_folders_round_trip_or_keep_the_source(tmp_path, folder):
+    """Whatever the output folder is called, the playlist either reads back
+    (as a reader would: split into lines, trimmed, # skipped) to the output,
+    or the Source is kept and the playlist is untouched."""
+    _disc(tmp_path, "Game.cue")
+    _disc(tmp_path, "Other.cue")
+    try:
+        (tmp_path / folder).mkdir()
+    except OSError:
+        pytest.skip("the filesystem refuses this name")
+    out = _disc(tmp_path / folder, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    original = "#EXTM3U\nGame.cue\nOther.cue\n"
+    playlist.write_text(original)
+
+    outcome = await referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+    )
+
+    if not outcome.ok:
+        assert playlist.read_text() == original
+        return
+    entries = [
+        line.strip() for line in playlist.read_bytes().decode().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert len(entries) == 2
+    assert os.path.samefile(tmp_path / entries[0], out)
+    assert entries[1] == "Other.cue"
+
+
 def _other_group(path: Path) -> int | None:
     current = path.stat().st_gid
     return next((g for g in os.getgroups() if g != current), None)
