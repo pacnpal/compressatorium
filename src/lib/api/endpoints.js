@@ -181,6 +181,7 @@ export const api = {
     compression = null,
     deleteOnVerify = false,
     split = false,
+    containerOnly = false,
   ) {
     return jsonPost(
       `${API_BASE}/jobs`,
@@ -190,6 +191,7 @@ export const api = {
         output_dir: outputDir,
         compression,
         delete_on_verify: deleteOnVerify,
+        container_only: containerOnly,
         split,
       },
       {},
@@ -205,6 +207,7 @@ export const api = {
     compression = null,
     deleteOnVerify = false,
     split = false,
+    containerOnly = false,
   ) {
     return jsonPost(
       `${API_BASE}/jobs/batch`,
@@ -215,6 +218,7 @@ export const api = {
         duplicate_action: duplicateAction,
         compression,
         delete_on_verify: deleteOnVerify,
+        container_only: containerOnly,
         split,
       },
       {},
@@ -480,7 +484,7 @@ export const api = {
   },
 
   getVerifiedCHDs: () =>
-    fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch verified CHDs'),
+    fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch check results'),
 
   // ─── Batch verify (POST + ReadableStream SSE) ─────────────────────────
   verifyBatchCHDs(paths, opts) {
@@ -593,6 +597,18 @@ export const api = {
         body: JSON.stringify({ rules }),
       },
       'Failed to save RomM rules',
+    ),
+
+  // One-time notices any rule editor shows (#302). Not RomM-specific.
+  getRuleNotices: () =>
+    fetchJson(`${API_BASE}/rules/notices`, undefined, 'Failed to load rule notices'),
+
+  dismissCheckLevelNotice: () =>
+    jsonPost(
+      `${API_BASE}/rules/notices/check-level/dismiss`,
+      {},
+      {},
+      'Failed to dismiss the notice',
     ),
 
   // Clears the "already converted by this rule" history that stops overwrite

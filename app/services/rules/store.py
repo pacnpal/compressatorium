@@ -21,10 +21,13 @@ downgrade. Anything written to them later is ignored.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from services.preferences_store import preferences_store
+from services.rules.rules import CHECK_LEVELS
+from services.tools import registry
 
 if TYPE_CHECKING:
     from services.rules.library import Library
@@ -34,6 +37,14 @@ STATE_KEY = "rules.state"
 # ``{library id: when its legacy rows were copied}``. Written last, so a crash
 # part way through the copy repeats it from the same unchanged rows.
 MIGRATED_KEY = "rules.migrated"
+
+# ``{"upgraded_at": ..., "switched": [full keys]}``: the one-time move of every
+# stored delete-source Rule to the Round-trip check (#302). Like
+# ``MIGRATED_KEY`` it is written last, so a crash part way repeats the pass,
+# which sets the same values again.
+CHECK_LEVEL_UPGRADE_KEY = "rules.check_level_upgrade"
+# ``{notice id: when it was dismissed}``.
+NOTICES_KEY = "rules.notices"
 
 _SEPARATOR = ":"
 
@@ -78,6 +89,7 @@ async def _copy_legacy(library: Library) -> None:
     if library.id in migrated:
         return
     prefix = _prefix(library)
+    switched: list[str] = []
     for kind, legacy_key in legacy_keys.items():
         legacy = await preferences_store.get(legacy_key)
         if not isinstance(legacy, dict) or not legacy:
@@ -86,15 +98,109 @@ async def _copy_legacy(library: Library) -> None:
         blob = dict(blob) if isinstance(blob, dict) else {}
         for platform_id, value in legacy.items():
             blob[f"{prefix}{platform_id}"] = value
+        if kind == RULES_KEY:
+            # These rows predate the check level. If the upgrade pass already
+            # ran (another Library was read first) it did not see them.
+            switched = _switch_to_round_trip(blob, [f"{prefix}{p}" for p in legacy])
         await preferences_store.put(kind, blob)
-    migrated[library.id] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    upgrade = await preferences_store.get(CHECK_LEVEL_UPGRADE_KEY)
+    if switched and isinstance(upgrade, dict):
+        upgrade = {**upgrade, "switched": sorted({*upgrade.get("switched", []), *switched})}
+        await preferences_store.put(CHECK_LEVEL_UPGRADE_KEY, upgrade)
+    migrated[library.id] = _now()
     await preferences_store.put(MIGRATED_KEY, migrated)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _switch_to_round_trip(blob: dict, keys) -> list[str]:
+    """Set every delete-source Rule among *keys* of *blob* to Round-trip, in place.
+
+    Returns the keys it set. A Rule that keeps its Source is left as it was.
+    """
+    switched = []
+    for key in keys:
+        rule = blob.get(key)
+        if isinstance(rule, dict) and rule.get("delete_on_verify"):
+            blob[key] = {**rule, "check_level": CHECK_LEVELS[0]}
+            switched.append(key)
+    return sorted(switched)
+
+
+async def _upgrade_check_level() -> dict:
+    """Move every stored delete-source Rule to the Round-trip check, once (#302).
+
+    Every Library's Rules, in one pass over the shared row. Called with
+    ``_lock`` held, after the Library's legacy copy and before any read or
+    write, so nothing an operator saves afterwards is overwritten. Returns
+    the marker.
+    """
+    upgrade = await preferences_store.get(CHECK_LEVEL_UPGRADE_KEY)
+    if isinstance(upgrade, dict):
+        return upgrade
+    blob = await preferences_store.get(RULES_KEY)
+    blob = dict(blob) if isinstance(blob, dict) else {}
+    switched = _switch_to_round_trip(blob, list(blob))
+    if switched:
+        await preferences_store.put(RULES_KEY, blob)
+    upgrade = {"upgraded_at": _now(), "switched": switched}
+    await preferences_store.put(CHECK_LEVEL_UPGRADE_KEY, upgrade)
+    return upgrade
 
 
 async def _load(kind: str, library: Library) -> dict:
     await _copy_legacy(library)
+    await _upgrade_check_level()
     blob = await preferences_store.get(kind)
     return dict(blob) if isinstance(blob, dict) else {}
+
+
+async def check_level_notice(libraries: Iterable[Library] = ()) -> dict:
+    """The one-time notice about the upgrade: ``{"show", "switched", "container_check"}``.
+
+    *libraries* are the app's Libraries. Their legacy copies run first, so the
+    count includes Rules an earlier release stored under old keys even when
+    the editor asks before anything has read them.
+
+    ``switched`` counts the switched Rules that now Round-trip (their mode has
+    a digest, read from the registry); ``container_check`` the switched Rules
+    whose mode has none, which keep the container check for now. Shown only
+    when ``switched`` is not zero and nobody has dismissed it.
+    """
+    async with _lock:
+        for library in libraries:
+            await _copy_legacy(library)
+        upgrade = await _upgrade_check_level()
+        rules = await preferences_store.get(RULES_KEY)
+        notices = await preferences_store.get(NOTICES_KEY)
+    rules = rules if isinstance(rules, dict) else {}
+    switched = container_check = 0
+    for key in upgrade.get("switched") or []:
+        rule = rules.get(key)
+        if not isinstance(rule, dict):
+            continue
+        if registry.mode_supports_round_trip(str(rule.get("mode") or "")):
+            switched += 1
+        else:
+            container_check += 1
+    dismissed = isinstance(notices, dict) and bool(notices.get("check_level"))
+    return {
+        "show": bool(switched) and not dismissed,
+        "switched": switched,
+        "container_check": container_check,
+    }
+
+
+async def dismiss_check_level_notice(libraries: Iterable[Library] = ()) -> dict:
+    """Remember that the notice was dismissed. Returns the notice as it now stands."""
+    async with _lock:
+        notices = await preferences_store.get(NOTICES_KEY)
+        notices = dict(notices) if isinstance(notices, dict) else {}
+        notices.setdefault("check_level", _now())
+        await preferences_store.put(NOTICES_KEY, notices)
+    return await check_level_notice(libraries)
 
 
 async def read(kind: str, library: Library) -> dict:

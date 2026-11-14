@@ -117,6 +117,7 @@ const XISO_SOURCE_EXTS = [...XISO_COMPRESS_EXTS, ...XISO_VERIFY_EXTS];
  * @property {boolean} supportsCompression
  * @property {boolean} supportsCompressionLevel
  * @property {boolean} supportsDeleteOnVerify
+ * @property {boolean} [supportsRoundTrip] delete-source compares content digests (Round-trip)
  * @property {boolean} allowsArchiveInput
  * @property {boolean} [supportsSplit] makeps3iso -s 4 GB FAT32 split (opt-in)
  */
@@ -285,19 +286,23 @@ export const TOOLS = [
       { mode: 'dolphin_rvz', kind: 'compress', label: 'Dolphin RVZ', group: 'dolphin',
         outputExt: '.rvz', inputExtensions: DOLPHIN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: true,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true,
+        allowsArchiveInput: true },
       { mode: 'dolphin_wia', kind: 'compress', label: 'Dolphin WIA', group: 'dolphin',
         outputExt: '.wia', inputExtensions: DOLPHIN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: true,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true,
+        allowsArchiveInput: true },
       { mode: 'dolphin_gcz', kind: 'compress', label: 'Dolphin GCZ', group: 'dolphin',
         outputExt: '.gcz', inputExtensions: DOLPHIN_SOURCE_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true,
+        allowsArchiveInput: true },
       { mode: 'dolphin_iso', kind: 'extract', label: 'Dolphin ISO', group: 'dolphin',
         outputExt: '.iso', inputExtensions: DOLPHIN_SOURCE_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true,
+        allowsArchiveInput: true },
     ],
     getInfo: (path) => api.getDolphinInfo(path),
     verify: (path, opts) => api.verifyDolphin(path, opts),

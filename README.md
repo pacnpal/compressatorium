@@ -12,7 +12,7 @@ A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool**
 * **Multiple volume mounts** so you can keep separate game libraries separate.
 * **File detection** that works out which files each tool can convert.
 * **Existing-output detection** with skip, rename, or overwrite.
-* **Delete-on-verify.** Optionally remove the source after a conversion verifies. Off by default.
+* **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. For GameCube/Wii the output must be Round-tripped (it decodes to the same disc as the source); other tools need it Intact (it passes its own container check).
 * **Progress tracking** through a live job queue.
 * **File info** for CHD, Dolphin, 3DS, Switch, CSO, handheld ROM, NKit, Wii U, and Xbox files.
 
@@ -463,8 +463,12 @@ the totals as JSON.
 
 Converting never deletes anything on its own — the safe order is convert, verify,
 then delete the source. Verify reads the whole output back and checks it against
-the file's own hashes/CRC; with **delete-on-verify** the source is removed only
-after the output passes, and never if it fails. You get a confirmation list of
+the file's own hashes/CRC; a file that passes is **Intact**. With
+**delete-on-verify** the source is removed only after the output passes, and
+never if it fails. For Dolphin modes the bar is higher by default: the output
+must be **Round-tripped**, meaning the disc it decodes to has the same SHA1 as
+the source disc. **Container check only (faster, weaker)** in the convert panel
+drops back to the Intact check for that job. You get a confirmation list of
 everything to be deleted first, including the `.cue`/`.gdi` track files that ride
 with a `.bin`, and the whole archive if the source came from one. **Bulk Verify**
 checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and CSO;
@@ -823,6 +827,12 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 |-------|------|
 | ![Dolphin tool, light](docs/screenshots/workspace-dolphin-light.png) | ![Dolphin tool, dark](docs/screenshots/workspace-dolphin-dark.png) |
 
+**Delete the source only once it's Round-tripped.** With delete-source on, a Dolphin job compares the disc it wrote with the source disc before deleting anything. **Container check only** skips that comparison.
+
+| Light | Dark |
+|-------|------|
+| ![Dolphin delete-source, light](docs/screenshots/workspace-dolphin-delete-light.png) | ![Dolphin delete-source, dark](docs/screenshots/workspace-dolphin-delete-dark.png) |
+
 **3DS.** Compress `.cci`, `.cia`, and `.3ds` ROMs with z3ds_compressor.
 
 | Light | Dark |
@@ -856,6 +866,12 @@ Per-platform automation — target format, schedule, queueing limits and selecti
 | Light | Dark |
 |-------|------|
 | ![RomM automation, light](docs/screenshots/romm-automation-light.png) | ![RomM automation, dark](docs/screenshots/romm-automation-dark.png) |
+
+A Rule open in the editor. A Rule that deletes its source Round-trips the new file first unless *Container check only* is ticked:
+
+| Light | Dark |
+|-------|------|
+| ![RomM rule editor, light](docs/screenshots/romm-rule-editor-light.png) | ![RomM rule editor, dark](docs/screenshots/romm-rule-editor-dark.png) |
 
 #### DAT Library
 
