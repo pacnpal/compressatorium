@@ -98,3 +98,54 @@ def test_digests_of_different_kinds_are_never_equal():
         a.same_content(b)
     assert a.same_content(ContentDigest(kind="gc_wii_disc_sha1", value="ab" * 20))
     assert not a.same_content(ContentDigest(kind="gc_wii_disc_sha1", value="cd" * 20))
+
+
+# ---------------------------------------------------------------------------
+# The stored verification says which check passed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stored_verification_records_which_check_passed(db_path, reset_db_engine):
+    from services import db as _db
+    from services.verification_store import verification_store
+
+    _db.init_engine(db_path)
+    try:
+        await verification_store.mark_verified("/data/gc/a.rvz", check="round_tripped")
+        await verification_store.mark_verified("/data/gc/b.rvz")
+        a = await verification_store.get_record("/data/gc/a.rvz")
+        b = await verification_store.get_record("/data/gc/b.rvz")
+        assert a["check_passed"] == "round_tripped"
+        # A manual Verify (and every caller that names no check) is Intact.
+        assert b["check_passed"] == "intact"
+    finally:
+        reset_db_engine()
+
+
+def test_migration_backfills_existing_verifications_as_intact(db_path, reset_db_engine):
+    from alembic import command
+    from services import db as _db
+    from sqlalchemy import text
+
+    engine = _db.init_engine(db_path, create_schema=False)
+    try:
+        cfg = _db._alembic_config(engine)
+        with engine.connect() as conn:
+            cfg.attributes["connection"] = conn
+            command.upgrade(cfg, "0009")
+        with engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO verifications (chd_path, source_path, verified_at) "
+                "VALUES ('/data/old.chd', NULL, '2026-01-01T00:00:00Z')"
+            ))
+
+        _db.apply_migrations()
+
+        with engine.connect() as conn:
+            value = conn.execute(text(
+                "SELECT check_passed FROM verifications WHERE chd_path = '/data/old.chd'"
+            )).scalar_one()
+        assert value == "intact"
+    finally:
+        reset_db_engine()
