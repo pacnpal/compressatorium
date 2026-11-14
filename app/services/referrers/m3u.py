@@ -123,9 +123,9 @@ def _new_entry(posix_entry: str, target: _Target) -> list[str]:
     folder, sep, _ = posix_entry.rpartition("/")
     step = os.path.relpath(target.new, target.old_dir)
     literal = folder + sep + step
-    if "/" not in step:
-        return [literal]
-    return [os.path.normpath(literal), literal]
+    candidates = [literal] if "/" not in step else [os.path.normpath(literal), literal]
+    # A line starting with "#" is a comment to every m3u reader.
+    return [f"./{c}" if c.startswith("#") else c for c in candidates]
 
 
 def _points_at(playlist_dir: str, entry: str, target: _Target) -> bool:

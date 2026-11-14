@@ -2257,7 +2257,9 @@ never half of one.
   into `../link/Game.chd`), `./` and absolute prefixes are kept, and a
   backslash entry stays backslashed. When the output is in another folder the
   normalised form is tried first, then the literal one (`link/../out/G.chd`
-  still resolves through a symlinked `link`). Every candidate is checked: read
+  still resolves through a symlinked `link`). A candidate that would start
+  with `#` gets a `./` prefix, since m3u readers treat such a line as a
+  comment (an output folder named `#CHD`). Every candidate is checked: read
   from the playlist's folder it must reach the output (same `(st_dev,
   st_ino)`, or the same resolved path while the delete confirmation plans
   before the output exists). If no candidate does, `plan` raises and the
