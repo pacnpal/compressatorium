@@ -517,7 +517,7 @@ def notify(event: Event) -> None:
     try:
         _submit(event)
     except RuntimeError:
-        return  # no loop (a synchronous harness): nothing to send on
+        pass  # no loop (a synchronous harness): nothing to send on
 
 
 async def drain() -> None:
