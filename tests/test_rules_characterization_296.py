@@ -7,7 +7,6 @@ rows, never through a module the move touched, so a pass on both sides of the
 move means the API shapes, the stored data and the scheduler behave the same.
 """
 
-# ruff: noqa: S101
 
 from __future__ import annotations
 
@@ -17,11 +16,12 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
-from config import settings as app_settings
 from routes import romm as romm_routes
 from services import db as _db
 from services.job_manager import job_manager
 from services.preferences_store import preferences_store
+
+from config import settings as app_settings
 
 # The keys RomM Rules were stored under before #296. Written as literals on
 # purpose: a database from an older release holds exactly these strings.
@@ -307,9 +307,8 @@ async def test_the_scheduler_follows_the_master_switch(romm_env, switch_on) -> N
     await romm_routes.put_romm_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
     queued: list = []
     with _catalog(), _idle_queue(), _accepting_queue(queued), \
-            patch("asyncio.sleep", _ticks(1)):
-        with pytest.raises(asyncio.CancelledError):
-            await romm_auto.run_forever()
+            patch("asyncio.sleep", _ticks(1)), pytest.raises(asyncio.CancelledError):
+        await romm_auto.run_forever()
 
     state = (await romm_routes.get_romm_rules())["state"]
     if switch_on:
