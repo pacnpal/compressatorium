@@ -2142,8 +2142,9 @@ ended. The job carries what the row needs and the in-memory history would lose:
   `source_deleted` is derived from it.
 
 `tool` comes from `registry.for_mode`; `platform` is filled only when the mode
-serves exactly one Platform slug until detection lands (#294). `library_id`,
-`image_key` and `referrers_updated` are written empty for later tickets to fill.
+serves exactly one Platform slug until detection lands (#294). `referrers_updated`
+comes from `ConversionJob.referrers_updated` (see 3.3.11). `library_id` and
+`image_key` are written empty for later tickets to fill.
 Savings count only completed rows whose Source was deleted, and can be
 negative (an RVZ replaced by its larger ISO). A job announced terminal twice
 (a queued cancel) writes one row: `(job_id, finished_at)` is unique and the
@@ -2152,6 +2153,77 @@ insert is `ON CONFLICT DO NOTHING`. The dashboard reads the Ledger through
 a short settle delay, since the row is written after the completion event. A `retention_days`
 in the `ledger` preference prunes older rows on each write; unset keeps them
 forever. Recording never raises: a failure is logged and the job is unaffected.
+
+### 3.3.11 Referrers (`services/referrers/`)
+
+A Referrer is anything that points at an Image by its path: an `.m3u`
+playlist today, `gamelist.xml` and the RomM in-place swap later. When
+delete-on-verify replaces a Source, every Referrer is moved to the output
+**before** the Source is removed, so nothing ever points at a missing file.
+Referrers are plugins on one contract, registered like tools, and the job
+pipeline never branches on which ones exist.
+
+```python
+class Referrer(ABC):                          # services/referrers/base.py
+    id: str                                   # stable; lands in the Ledger
+    label: str
+    def detect(self, image_path) -> bool      # could it point at this Image?
+    def plan(self, renames) -> list[ReferrerChange]   # writes nothing
+    def apply(self, change) -> None           # atomic, one-time backup; raises ReferrerError
+
+@dataclass(frozen=True)
+class ReferrerChange:
+    referrer: str                             # Referrer id
+    target: str                               # the file/record rewritten
+    edits: tuple[tuple[str, str], ...]        # (old, new) as shown to the user
+    payload: Any                              # Referrer-private, never serialized
+```
+
+`renames` is `{old_path: new_path}`: every file the delete will remove, mapped
+to the output that replaces it (a `.cue` and its `.bin` tracks all map to the
+`.chd`; an archive maps to the output extracted from it).
+
+The package exposes the registry and two entry points:
+
+- `plan_changes(image_path, renames)` runs `detect` + `plan` on every
+  registered Referrer. `POST /api/jobs/delete-plan` calls it per item (with the
+  request's `output_dir`, so the planned output path is the real one) and
+  returns `referrer_changes: [{referrer, target, edits: [{old, new}]}]`, which
+  `DeletePlanModal.svelte` lists under each source. A plan that can't be made
+  becomes a warning on the item ("the source will be kept").
+- `update_before_source_removal(image_path, renames)` is the **one hook** in
+  `_process_job`. It runs after the output passed its check and the delete
+  plan's safety checks, immediately before the `os.remove` loop. It plans and
+  applies every Referrer off the event loop, stops at the first failure and
+  never raises. It returns a `ReferrerOutcome`: `updated` (a list of
+  `{referrer, target}`, copied to `ConversionJob.referrers_updated` and the
+  Ledger's `referrers_updated`) and `failed`. On a failure the job skips the
+  delete, keeps the Source and the output, ends `completed` with the message
+  `converted, source kept: couldn't update <file>`, and `deleted_paths` stays
+  empty. Changes already applied before the failure stay: they point at the
+  output, which exists.
+
+`atomic_write_bytes(path, data)` (in `base.py`) is the shared writer for file
+Referrers and anything else that writes a playlist: a temp file in the same
+directory, fsync, `os.replace`, keeping the old file's permission bits. A crash
+leaves the old file or the new one, never half of one.
+
+**The `.m3u` Referrer** (`m3u.py`) is always on. `detect` is true when the
+Image's folder holds any `*.m3u`. `plan` reads each playlist in the folder of
+each renamed file and rewrites the entries that resolve to a renamed file,
+matched by `(st_dev, st_ino)` so any spelling of the path matches (relative,
+absolute, other case on a case-insensitive volume). Everything else is kept
+byte for byte: `#` lines, other entries, blank lines, line endings, a UTF-8
+BOM, and non-UTF-8 bytes (entries decode with `surrogateescape`). A rewritten
+entry keeps its style: relative stays relative to the playlist, absolute stays
+absolute, backslashes stay backslashes. `apply` refuses a read-only or
+symlinked playlist, and one whose bytes changed since it was planned. It writes
+`<name>.m3u.bak` once, only if no backup exists, then the new playlist.
+
+To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
+`id`, and `registry.register(...)` it in `services/referrers/__init__.py`.
+Nothing in the job pipeline, the delete-plan route or the modal changes. The
+existing RomM re-pin (3.3.9) is not a Referrer yet.
 
 ### 3.4 `registry.py`
 

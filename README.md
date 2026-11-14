@@ -471,6 +471,16 @@ checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and CSO;
 verification status persists between sessions, and a long verify can be given a
 timeout so a stalled one doesn't block the queue.
 
+**Multi-disc playlists follow the conversion.** Before a source is deleted, any
+`.m3u` in the same folder that names it is rewritten to the new file, so disc
+swapping keeps working. Only the entries for replaced files change; other
+lines, line endings and encoding are left as they were, and the first rewrite
+keeps a copy of the original as `<name>.m3u.bak`. The delete confirmation lists
+each playlist edit. If a playlist can't be written (read-only, say), the source
+is kept, the output stays beside it, and the job ends as `converted, source
+kept: couldn't update <playlist>`. The Ledger row records which playlists were
+updated.
+
 ### File info
 
 Click a file to open the inspector — it shows the format/version, compression,
@@ -1704,7 +1714,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | POST | `/api/jobs` | Create a single conversion job |
 | POST | `/api/jobs/batch` | Create multiple conversion jobs |
 | POST | `/api/jobs/check-duplicates` | Check for existing output files |
-| POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list |
+| POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list, with each planned `.m3u` edit (`referrer_changes`) |
 | GET | `/api/jobs` | List all jobs |
 | GET | `/api/jobs/{id}` | Get a specific job |
 | DELETE | `/api/jobs/{id}` | Cancel a job |
