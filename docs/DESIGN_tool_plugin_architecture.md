@@ -1960,7 +1960,7 @@ back unable to prove ownership.
 ### 3.3.9 Re-pin queue and conversion provenance (`services/romm/repin.py`)
 
 Two questions the filesystem cannot answer on its own, both owned here so the
-manual submit (`routes/romm.py`) and the unattended sweep (`services/romm/auto.py`)
+manual submit (`routes/romm.py`) and the unattended sweep (`services/rules/sweep.py`)
 give the same answer.
 
 **"Has the conversion actually produced this output yet?"** A re-pin row is
@@ -2068,7 +2068,8 @@ occupied destination as queueable, and `rename` always finds a free suffix. Both
 would therefore reconvert the whole library every interval.
 
 What is recorded is **production, not queueing**. `converted` on the platform's
-`romm.auto_state` entry maps each RomM id to `{path, pre}` — the destination the
+`rules.state` entry (key `romm:<platform id>`, see §3.3.11) maps each Image key
+(for RomM, the ROM id) to `{path, pre}` — the destination the
 rule chose and a fingerprint of whatever occupied it at planning time — and
 `_was_produced()` answers it in three steps, strongest evidence first: the
 verdict written down when the job ended (`done`), then the job's live status if
@@ -2143,7 +2144,7 @@ ended. The job carries what the row needs and the in-memory history would lose:
 
 `tool` comes from `registry.for_mode`; `platform` is filled only when the mode
 serves exactly one Platform slug until detection lands (#294). `referrers_updated`
-comes from `ConversionJob.referrers_updated` (see 3.3.11). `library_id` and
+comes from `ConversionJob.referrers_updated` (see 3.3.12). `library_id` and
 `image_key` are written empty for later tickets to fill.
 Savings count only completed rows whose Source was deleted, and can be
 negative (an RVZ replaced by its larger ISO). A job announced terminal twice
@@ -2154,7 +2155,98 @@ a short settle delay, since the row is written after the completion event. A `re
 in the `ledger` preference prunes older rows on each write; unset keeps them
 forever. Recording never raises: a failure is logged and the job is unaffected.
 
-### 3.3.11 Referrers (`services/referrers/`)
+### 3.3.11 The Rule engine and the Library interface (`services/rules/`)
+
+A Rule converts the Images of one Platform in one Library. The engine that runs
+Rules is shared; where the Images come from is behind a `Library`
+(`services/rules/library.py`). RomM is the first Library
+(`services/romm/library.py`, `romm_library`). A folder Library (#303) is the
+second: one root folder inside a Volume.
+
+| Module | Holds |
+| --- | --- |
+| `rules/rules.py` | Rule schema, `default_rule`, `normalize_rule(s)`, filter-pattern checks, `OUTPUT_IDENTITY_FIELDS` |
+| `rules/schedule.py` | `_in_window` (weekday mask, time window, time zone), `_is_due` (interval) |
+| `rules/store.py` | the `rules` and `rules.state` preference rows, keyed `"<library id>:<platform id>"`, and the legacy-key move |
+| `rules/sweep.py` | `get_rules` / `set_rules` / `get_state` / `forget_converted`, the sweep, the converted history, `note_job_finished`, `run_forever` |
+| `rules/library.py` | `Library`, `Image`, `Platform`, `QueuedImage`, `LibraryUnreadable`, capability names |
+
+**The interface.** A Library has an `id` (`"romm"`; a folder Library will use
+`"folder:<root>"`), `capabilities`, and:
+
+- `platforms()` and `images(platform_id)`, both blocking (the sweep calls them
+  in a worker thread). `images` raises `LibraryUnreadable`, which the sweep
+  reports as `unreadable` for that Platform and moves on.
+- `Image`: `key` (RomM: the ROM id; folder: the path relative to the root),
+  `name` (file name, what name filters match), `title` (what the `name` order
+  sorts by), `size`, `added_at` (any number that grows as Images are added;
+  RomM uses the ROM id, so `newest` keeps its order), `recognized` (True,
+  False, or None when unknown; see below), `platform` (the console slug checked against
+  `registry.mode_allows_platform`), `path`, and `record` (the Library's own
+  record, for its hooks). `path` may be lazy: RomM passes `resolve_path`
+  because mapping a record onto the mount stats it, and the sweep reads
+  `path` only inside the bounded candidate probe.
+- `canonical_platform_id(raw)` validates a stored or submitted Rule key
+  (RomM: an integer, written back as a canonical string), and
+  `platform_value(id)` is how the API reports it and how Rules sort (RomM: the
+  integer, so summaries and errors still say `"platform_id": 7`).
+- `rule_defaults()`, `max_per_sweep()`, `schedule_enabled()`: the Library's
+  settings. RomM reads them from its in-app settings, as before.
+- `configured()`: when false the sweep stops with `not_configured`.
+- `legacy_preference_keys`: rows an earlier release used for this Library's
+  Rules and state, unprefixed.
+
+**Hooks for steps only one Library performs.**
+
+- `sweep_blocked()` returns an error code to refuse the sweep. RomM refuses
+  with `identity_cleanup_pending` while a change of instance is half cleaned up.
+- `summary_fields()` seeds every per-Platform summary and the result (RomM:
+  `repins_recorded: 0`).
+- `after_queue(rule, spec, queued, summary, result)` runs once a Platform's
+  batch is accepted by the queue, inside the same error handling. RomM records
+  the metadata snapshot for re-pin here, so the re-pin bookkeeping stays in
+  `services/romm`.
+- `sweep_extras()` adds keys when a sweep ends (RomM: `pending_repins`).
+
+Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`) say what a Library
+supports. The engine does not gate on them yet; a Rules editor and the folder
+Library use them to offer only what applies.
+
+**What `recognized` means.** It is the Library's own identification of the
+Image, and it is what the Rule filters `only_matched` / `only_unmatched` read.
+RomM fills it with RomM's "identified" status (`is_identified`, else any
+metadata-provider id), which is how `only_matched` has always behaved. That is
+a metadata match, often by file name, not Recognized in the glossary sense (a
+DAT or Hasheous hash match). The field is a stand-in until DAT-based
+recognition lands; code that needs a hash match must not read it as one.
+
+**Storage.** Rules live in the `rules` preference row and run state in
+`rules.state`, one entry per `"<library id>:<platform id>"`. Callers read and
+write one Library's view keyed by bare Platform id. RomM's pre-#296 rows,
+`romm.rules` and `romm.auto_state`, are copied under `romm:` keys on the first
+read or write, and then `romm` is recorded in the `rules.migrated` row (written
+last, so a crash mid-copy repeats it from the same rows). The old rows are
+never written or deleted. They stay as a copy of the Rules and history at
+upgrade time, so a downgrade still finds them, and anything a downgraded
+release writes to them is ignored after the next upgrade. The first read can
+therefore write, so a read-only or locked database fails that first request.
+
+**Locks.** `_sweep_lock` is process-wide, not per Library: the active-source
+snapshot and claimed destinations are shared by every sweep. `paused()` takes
+it. `store._lock` serialises each read-modify-write of the shared rows, and is
+always taken inside `_sweep_lock`, never around it.
+
+**Where a sweep ends.** `sweep()` returns through one line after the lock is
+released, with `result["dry_run"]` telling a preview from a run. That is the
+place for anything that reports a finished sweep.
+
+**RomM's binding.** `services/romm/auto.py` keeps the names and arguments the
+RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
+`run_forever()`, ...) and passes `romm_library` to each, so the HTTP API did
+not change. `run_forever(libraries)` takes a callable returning the Libraries to
+sweep on each tick.
+
+### 3.3.12 Referrers (`services/referrers/`)
 
 A Referrer is anything that points at an Image by its path: an `.m3u`
 playlist today, `gamelist.xml` and the RomM in-place swap later. When
@@ -2190,7 +2282,9 @@ to the output that replaces it (a `.cue` and its `.bin` tracks all map to the
 The package exposes the registry and two entry points:
 
 - `plan_changes(image_path, renames)` runs `detect` + `plan` on every
-  registered Referrer. `POST /api/jobs/delete-plan` calls it per item (with the
+  registered Referrer. Both entry points ask `detect` about the Image *and*
+  every path in `renames`, so a companion that is deleted too (a cue's track
+  in a subfolder) gates planning as well. `POST /api/jobs/delete-plan` calls it per item (with the
   request's `output_dir`, so the planned output path is the real one) and
   returns `referrer_changes: [{referrer, target, edits: [{old, new}]}]`, which
   `DeletePlanModal.svelte` lists under each source. A plan that can't be made
@@ -2213,8 +2307,12 @@ The package exposes the registry and two entry points:
 
 `atomic_write_bytes(path, data)` (in `base.py`) is the shared writer for file
 Referrers and anything else that writes a playlist: a temp file in the same
-directory, fsync, `os.replace`, keeping the old file's permission bits. A crash
-leaves the old file or the new one, never half of one.
+directory, fsync, `os.replace`, keeping the old file's permission bits and
+group (and its owner when running as root). Readers that reach a shared
+playlist through its group would otherwise lose access, so a group that can't
+be set on the temp file aborts the write (`PermissionError` "can't keep its
+group"), which keeps the Source. A crash leaves the old file or the new one,
+never half of one.
 
 `write_new_bytes(path, data)` is its no-overwrite sibling: the same temp file
 and fsync, then `utils.path_utils.place_without_clobbering` (a hard link or a
@@ -2260,16 +2358,21 @@ free one if it was taken since, never picking a different name on its own.
   `path|label` entries, absolute paths in the emulator's own path space, mixed
   separators, quoted names and case differences on case-sensitive volumes.
   An unresolved entry for some other file does not block anything. A playlist
-  that isn't 8-bit text (a UTF-16 BOM, or NUL bytes) is never rewritten: if its
-  decoded text contains a replaced file's name the Source is kept, otherwise it
-  is left alone.
+  that isn't 8-bit text (a UTF-16 BOM, or NUL bytes) is never rewritten. It is
+  decoded as UTF-16 for checking only: the BOM names the byte order, or without
+  one the NULs of ASCII text do (odd offsets little-endian, even offsets
+  big-endian). If the decoded text contains a replaced file's name, or the
+  file can't be decoded reliably, the Source is kept; otherwise it is left
+  alone.
 - *Entry style.* The new entry is the entry's own folder part plus the path
   from the replaced file's resolved folder to the resolved output, so both
   sides use the same path form (a symlinked folder does not turn `Game.cue`
   into `../link/Game.chd`), `./` and absolute prefixes are kept, and a
   backslash entry stays backslashed. When the output is in another folder the
   normalised form is tried first, then the literal one (`link/../out/G.chd`
-  still resolves through a symlinked `link`). Every candidate is checked: read
+  still resolves through a symlinked `link`). A candidate that would start
+  with `#` gets a `./` prefix, since m3u readers treat such a line as a
+  comment (an output folder named `#CHD`). Every candidate is checked: read
   from the playlist's folder it must reach the output (same `(st_dev,
   st_ino)`, or the same resolved path while the delete confirmation plans
   before the output exists). If no candidate does, `plan` raises and the
@@ -2575,7 +2678,7 @@ may be sync or async, exceptions are logged and swallowed (a listener must
 never fail a conversion), and the same job may be announced twice — listeners
 are required to be idempotent.
 
-The RomM automation is the first consumer: `romm.auto.note_job_finished` writes
+The Rule engine is the first consumer: `rules.sweep.note_job_finished` writes
 the verdict into the rule's converted-history record (`done: true|false`), and
 `_was_produced` reads that first. Without it, provenance fell back to "the
 destination changed since planning", which a *failed* overwrite produces just
@@ -2612,7 +2715,7 @@ second case, so the resolution stays a per-tool declaration instead of an
 if-ladder on tool identity at the call site.
 `registry.default_compression(mode)` applies it *only* to codec-offering modes,
 returning `None` elsewhere so nsz's meaningful empty part survives. The RomM
-sweep (`services/romm/auto._compression_arg`) is the current consumer: with no
+sweep (`services/rules/sweep._compression_arg`) is the current consumer: with no
 declared default it drops the level and logs, rather than queue a job the tool
 will reject or invent a codec the operator did not choose.
 

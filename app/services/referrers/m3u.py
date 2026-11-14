@@ -123,9 +123,9 @@ def _new_entry(posix_entry: str, target: _Target) -> list[str]:
     folder, sep, _ = posix_entry.rpartition("/")
     step = os.path.relpath(target.new, target.old_dir)
     literal = folder + sep + step
-    if "/" not in step:
-        return [literal]
-    return [os.path.normpath(literal), literal]
+    candidates = [literal] if "/" not in step else [os.path.normpath(literal), literal]
+    # A line starting with "#" is a comment to every m3u reader.
+    return [f"./{c}" if c.startswith("#") else c for c in candidates]
 
 
 def _points_at(playlist_dir: str, entry: str, target: _Target) -> bool:
@@ -138,28 +138,50 @@ def _points_at(playlist_dir: str, entry: str, target: _Target) -> bool:
     return os.path.realpath(path) == target.new
 
 
-def _undecodable_mention(data: bytes, renames: _Renames) -> str | None:
-    """For a playlist that isn't 8-bit text (UTF-16, NUL bytes): the replaced
-    file name its text seems to mention, "" if none. None for a normal playlist."""
+def _decode_wide(data: bytes) -> str | None:
+    """Decode a playlist with NUL bytes as UTF-16, or None if that isn't reliable.
+
+    A BOM names the byte order. Without one, the NULs of ASCII text fall on odd
+    offsets in little-endian and even offsets in big-endian.
+    """
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
-        text = data.decode("utf-16", errors="replace")
-    elif b"\x00" in data:
-        text = data.replace(b"\x00", b"").decode("utf-8", errors="replace")
+        encoding = "utf-16"
     else:
+        even, odd = data[0::2].count(0), data[1::2].count(0)
+        if odd == even:
+            return None
+        encoding = "utf-16-le" if odd > even else "utf-16-be"
+    try:
+        return data.decode(encoding)
+    except UnicodeDecodeError:
         return None
+
+
+def _wide_text_check(playlist: str, data: bytes, renames: _Renames) -> bool:
+    """For a playlist that isn't 8-bit text (UTF-16, NUL bytes): raise if its
+    text names a replaced file or can't be decoded, so the Source is kept, and
+    return True (leave it alone) if it is unrelated. False for a normal playlist.
+    """
+    if not data.startswith((b"\xff\xfe", b"\xfe\xff")) and b"\x00" not in data:
+        return False
+    text = _decode_wide(data)
+    if text is None:
+        raise ReferrerError(
+            playlist, "isn't plain text (NUL bytes) and can't be decoded to check it",
+        )
     folded = _fold(text)
-    return next((name for name in sorted(renames.names) if name in folded), "")
+    mention = next((name for name in sorted(renames.names) if name in folded), None)
+    if mention:
+        raise ReferrerError(
+            playlist, f"isn't plain text (UTF-16) and may name {mention}",
+        )
+    return True
 
 
 def _rewrite(
     playlist: str, data: bytes, playlist_dir: str, renames: _Renames,
 ) -> tuple[bytes, list[tuple[str, str]]]:
-    mention = _undecodable_mention(data, renames)
-    if mention:
-        raise ReferrerError(
-            playlist, f"isn't plain text (UTF-16 or NUL bytes) and may name {mention}",
-        )
-    if mention is not None:
+    if _wide_text_check(playlist, data, renames):
         return data, []
     out: list[bytes] = []
     edits: list[tuple[str, str]] = []

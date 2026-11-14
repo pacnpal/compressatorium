@@ -76,11 +76,31 @@ class Referrer(ABC):
         """Write *change* atomically with a one-time backup, or raise ReferrerError."""
 
 
+def _keep_owner(tmp: str, original: os.stat_result) -> None:
+    """Give *tmp* the replaced file's group (and owner, when running as root).
+
+    Readers that reach a shared playlist through its group would lose access
+    if the replacement took the writer's group, so a group that can't be kept
+    aborts the write.
+    """
+    uid = original.st_uid if hasattr(os, "geteuid") and os.geteuid() == 0 else -1
+    current = os.stat(tmp)
+    if current.st_gid == original.st_gid and uid in (-1, current.st_uid):
+        return
+    try:
+        os.chown(tmp, uid, original.st_gid)
+    except OSError as exc:
+        raise PermissionError(
+            exc.errno, f"can't keep its group ({exc.strerror or exc})",
+        ) from exc
+
+
 def atomic_write_bytes(path: str, data: bytes) -> None:
     """Replace *path* with *data* so a crash leaves the old file or the new one.
 
     Writes a temp file in the same directory, fsyncs it and renames it over
-    *path*. An existing file's permission bits are kept.
+    *path*. An existing file's permission bits and group are kept (its owner
+    too when running as root); a group that can't be kept aborts the write.
     """
     directory = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(
@@ -92,10 +112,12 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
             f.flush()
             os.fsync(f.fileno())
         try:
-            mode = os.stat(path).st_mode & 0o7777
+            original = os.stat(path)
         except FileNotFoundError:
-            mode = 0o644
-        os.chmod(tmp, mode)
+            original = None
+        if original is not None:
+            _keep_owner(tmp, original)
+        os.chmod(tmp, original.st_mode & 0o7777 if original is not None else 0o644)
         os.replace(tmp, path)
     except BaseException:
         with suppress(OSError):

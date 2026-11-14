@@ -149,6 +149,22 @@ def remove_if_same_file(path: str, ours: os.stat_result) -> None:
             pass
 
 
+def path_fingerprint(path: str) -> str:
+    """``"size:mtime_ns"`` for whatever is at *path*, or ``""`` if nothing is.
+
+    Cheap enough to take on every recorded row (one stat), and precise enough
+    for the only question asked of it: is the file here still the one that was
+    here before the conversion ran? Not a content hash -- it never needs to be,
+    because a converter that rewrites a path always changes both fields, and a
+    false "changed" only costs one hash that then fails to match.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ""
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
 def match_extension(name: str, extensions: Iterable[str]) -> Optional[str]:
     """Return the longest declared extension ``name`` ends with, else ``None``.
 
