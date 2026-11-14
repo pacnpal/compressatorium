@@ -23,7 +23,7 @@
     comparison and deletes once the output passes its own container check.
   - Other tools keep the container check for now. A job that keeps its Source
     reads nothing extra.
-  - The job, the Ledger row and the file badge now say **Intact** (passed its
+  - The job, the Ledger row, Verify results and the file badge now say **Intact** (passed its
     container check) or **Round-tripped** (decoded to the same content as its
     Source) instead of "verified". Existing checked files show as Intact.
   - Delete-source runs on Dolphin modes take longer: the Source and the output

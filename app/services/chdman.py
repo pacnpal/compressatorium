@@ -196,7 +196,7 @@ class ChdmanService:
             [self.chdman_path, "verify", "-i", chd_path],
             path=chd_path,
             parse_progress=self._parse_progress,
-            success_message="CHD file verified successfully",
+            success_message="CHD file is Intact",
             failure_message="CHD verification failed",
             cancel_event=cancel_event,
         )

@@ -273,7 +273,7 @@ class DolphinToolService:
             self._wrap_with_stdbuf([self.dolphin_tool_path, "verify", "-i", path]),
             path=path,
             parse_progress=self._parse_progress,
-            success_message="Disc image verified successfully",
+            success_message="Disc image is Intact",
             failure_message="Disc verification failed",
             cancel_event=cancel_event,
         )
