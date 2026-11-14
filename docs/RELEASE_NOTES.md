@@ -48,18 +48,19 @@
     more.
   - Cue flags (DCP, PRE), CATALOG, ISRC and INDEX 02+ are not compared: a CHD
     does not store them, with or without this check.
-  - Many GD-ROM (Dreamcast) sets, especially Redump-style cue/bin ones, and cues
-    with WAVE audio files will be kept with "content differs", because chdman
-    does not write them back in the same layout. Use Container check only for
-    those.
+  - These Sources are always kept with "content differs", because chdman does
+    not write them back in the same layout: Redump-style GD-ROM (Dreamcast)
+    cue/bin sets, cues with `CDI/2352` tracks, and cues with WAVE audio files.
+    Use Container check only for those.
   - **RomM Rules:** delete-source Rules on Create CD and Create DVD now
     Round-trip too, with no per-Rule opt-out yet, so their sweeps need the
     scratch space and take longer.
 - **chdman verify is stricter** (#300). chdman reports a data SHA1 mismatch, and
   a CHD with no checksum, while still exiting with success. Verify now passes a
-  CHD only when chdman says the raw SHA1 was verified, and fails on any error
-  line. This applies to every chdman Verify and to the Intact check of every
-  chdman delete-source job.
+  CHD only when chdman says the raw SHA1 matched, and fails on any error line.
+  This applies to every chdman Verify and to the Intact check of every chdman
+  delete-source job. An uncompressed CHD, or one with no checksum, is now shown
+  as "This CHD carries no checksum, so it can't be checked" instead of passing.
 - **Xbox / Xbox 360: trim disc images to XISO** with
   [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
   (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's
