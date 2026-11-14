@@ -13,10 +13,13 @@ from models import (
     FileEntry,
     MetadataBatchRequest,
     OutputStatus,
+    PlaylistCreateRequest,
+    PlaylistPreviewRequest,
     Volume,
 )
 from services.archive import ARCHIVE_EXTENSIONS, archive_service
 from services.chd_metadata_store import chd_metadata_store
+from services.disc_playlist import PlaylistError, PlaylistNameTaken, create_playlist, plan_playlist
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.tools import registry
@@ -948,3 +951,38 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
         "failed": failed_count,
         "results": results,
     }
+
+
+@router.post("/files/playlist/preview")
+async def playlist_preview(payload: PlaylistPreviewRequest) -> dict:
+    """The ``.m3u`` the selected discs would make: name, folder, ordered entries.
+
+    Writes nothing. If ``<title>.m3u`` is taken, ``file_name`` is the next free
+    name and ``name_taken`` is true.
+    """
+    try:
+        plan = await run_in_threadpool(plan_playlist, payload.paths, payload.title)
+    except PlaylistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return plan.to_dict()
+
+
+@router.post("/files/playlist")
+async def playlist_create(payload: PlaylistCreateRequest) -> dict:
+    """Write the previewed ``.m3u`` beside the discs. Never overwrites a file:
+    a taken name is a 409 whose ``detail.suggested_name`` is the next free one."""
+    try:
+        plan = await run_in_threadpool(create_playlist, payload.paths, payload.file_name)
+    except PlaylistNameTaken as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "suggested_name": exc.suggested_name},
+        ) from None
+    except PlaylistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except OSError as exc:
+        logger.warning("Playlist write failed: %s", exc)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to write playlist: {exc.strerror or exc}",
+        ) from None
+    return {**plan.to_dict(), "path": os.path.join(plan.directory, plan.file_name)}

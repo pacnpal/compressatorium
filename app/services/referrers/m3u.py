@@ -203,6 +203,15 @@ def _rewrite(
     return b"".join(out), edits
 
 
+def playlist_bytes(entries: list[str]) -> bytes:
+    """A fresh playlist: one entry per line, ``\\n`` endings, no BOM, UTF-8
+    (``surrogateescape``, the same encoding the Referrer reads and rewrites with).
+
+    The shared way to build a new ``.m3u``; write it with ``write_new_bytes``.
+    """
+    return "".join(entry + "\n" for entry in entries).encode(*_ENC)
+
+
 def _read(path: str) -> bytes:
     try:
         with open(path, "rb") as f:

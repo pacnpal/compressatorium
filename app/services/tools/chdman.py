@@ -153,6 +153,8 @@ class ChdmanTool(BaseTool):
     # verify only applies to finished CHDs.
     output_extensions = frozenset({".chd", ".cue", ".bin", ".iso", ".raw", ".avi"})
     verify_extensions = frozenset({".chd"})
+    # One disc each. A .bin is a track of a disc, never the disc itself.
+    disc_extensions = frozenset({".cue", ".gdi", ".iso", ".chd"})
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

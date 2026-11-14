@@ -1,0 +1,247 @@
+"""Create an .m3u from selected discs (#299).
+
+Service functions for title, order and name choice, and the two routes
+(preview, create) against a temp Volume. The writer is the shared one from
+the .m3u Referrer package.
+"""
+from __future__ import annotations
+
+import os
+import threading
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
+
+from app.models import PlaylistCreateRequest, PlaylistPreviewRequest
+from app.routes import files as files_routes
+from app.services import disc_playlist
+from app.services.referrers import write_new_bytes
+from app.services.tools import registry
+
+
+@pytest.fixture(name="vol")
+def _vol(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(files_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(files_routes.settings, "data_mount_root", str(tmp_path))
+    return tmp_path
+
+
+def _discs(folder: Path, *names: str) -> list[str]:
+    folder.mkdir(parents=True, exist_ok=True)
+    out = []
+    for n in names:
+        (folder / n).write_bytes(b"x")
+        out.append(str(folder / n))
+    return out
+
+
+@pytest.mark.parametrize(
+    ("name", "title", "number"),
+    [
+        ("Final Quest (Disc 1).cue", "Final Quest", 1),
+        ("Final Quest (Disc 2 of 3).chd", "Final Quest", 2),
+        ("Final Quest Disc 3.iso", "Final Quest", 3),
+        ("Final Quest - CD2.cue", "Final Quest", 2),
+        ("Final Quest [CD 1].gdi", "Final Quest", 1),
+        ("Final Quest (Disc 1) (USA).cue", "Final Quest (USA)", 1),
+        ("Final Quest (USA) (Disc 1).cue", "Final Quest (USA)", 1),
+        ("Final Quest, Disc 1.cue", "Final Quest", 1),
+        ("Final Quest.cue", "Final Quest", None),
+        ("Discworld (Disc 2).cue", "Discworld", 2),
+    ],
+)
+def test_title_and_disc_number(name, title, number):
+    assert disc_playlist.disc_title(name) == title
+    assert disc_playlist.disc_number(name) == number
+
+
+def test_preview_orders_by_disc_number_not_selection_order(vol: Path):
+    paths = _discs(
+        vol / "psx",
+        "Game (Disc 10).cue", "Game (Disc 2).cue", "Game (Disc 1).cue",
+    )
+    plan = disc_playlist.plan_playlist(paths)
+    assert plan.file_name == "Game.m3u"
+    assert plan.entries == ["Game (Disc 1).cue", "Game (Disc 2).cue", "Game (Disc 10).cue"]
+
+
+def test_unnumbered_discs_fall_back_to_name_order(vol: Path):
+    paths = _discs(vol, "Game B.cue", "Game A.cue")
+    assert disc_playlist.plan_playlist(paths).entries == ["Game A.cue", "Game B.cue"]
+
+
+def test_numbered_discs_come_before_unnumbered(vol: Path):
+    paths = _discs(vol, "Game.cue", "Game (Disc 2).cue", "Game (Disc 1).cue")
+    assert disc_playlist.plan_playlist(paths).entries == [
+        "Game (Disc 1).cue", "Game (Disc 2).cue", "Game.cue",
+    ]
+
+
+def test_title_override_wins(vol: Path):
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    assert disc_playlist.plan_playlist(paths, title="My Game").file_name == "My Game.m3u"
+
+
+def test_existing_playlist_offers_next_free_name(vol: Path):
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    (vol / "Game.m3u").write_text("keep me")
+    (vol / "Game (2).m3u").write_text("keep me too")
+    plan = disc_playlist.plan_playlist(paths)
+    assert plan.requested_name == "Game.m3u"
+    assert plan.file_name == "Game (3).m3u"
+    assert plan.name_taken is True
+
+
+def test_disc_extensions_come_from_the_registry(vol: Path):
+    assert {".cue", ".chd", ".iso", ".gdi"} <= set(registry.disc_extensions())
+    paths = _discs(vol, "a.nsz", "b.nsz")
+    with pytest.raises(disc_playlist.PlaylistError, match="disc"):
+        disc_playlist.plan_playlist(paths)
+
+
+def test_bin_tracks_are_not_disc_images(vol: Path):
+    paths = _discs(vol, "Game (Disc 1).bin", "Game (Disc 2).bin")
+    with pytest.raises(disc_playlist.PlaylistError):
+        disc_playlist.plan_playlist(paths)
+
+
+def test_needs_two_or_more(vol: Path):
+    with pytest.raises(disc_playlist.PlaylistError, match="two"):
+        disc_playlist.plan_playlist(_discs(vol, "Game (Disc 1).cue"))
+
+
+def test_one_folder_only(vol: Path):
+    paths = _discs(vol / "a", "Game (Disc 1).cue") + _discs(vol / "b", "Game (Disc 2).cue")
+    with pytest.raises(disc_playlist.PlaylistError, match="one folder"):
+        disc_playlist.plan_playlist(paths)
+
+
+def test_outside_volumes_refused(vol: Path, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("elsewhere")
+    paths = _discs(outside, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    with pytest.raises(disc_playlist.PlaylistError, match="volume"):
+        disc_playlist.plan_playlist(paths)
+
+
+def test_missing_file_and_archive_members_refused(vol: Path):
+    paths = _discs(vol, "Game (Disc 1).cue")
+    with pytest.raises(disc_playlist.PlaylistError):
+        disc_playlist.plan_playlist([*paths, str(vol / "Game (Disc 2).cue")])
+    with pytest.raises(disc_playlist.PlaylistError):
+        disc_playlist.plan_playlist([*paths, str(vol / "x.zip") + "::Game (Disc 2).cue"])
+
+
+def test_duplicate_selection_is_not_two_discs(vol: Path):
+    paths = _discs(vol, "Game (Disc 1).cue")
+    with pytest.raises(disc_playlist.PlaylistError, match="two"):
+        disc_playlist.plan_playlist(paths + paths)
+
+
+@pytest.mark.parametrize("bad", ["", "..", "a/b", "a\\b", "x\nint", "CON\x00"])
+def test_bad_titles_refused(vol: Path, bad):
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    with pytest.raises(disc_playlist.PlaylistError):
+        disc_playlist.plan_playlist(paths, title=bad)
+
+
+@pytest.mark.asyncio
+async def test_preview_route_writes_nothing(vol: Path):
+    paths = _discs(vol, "Game (Disc 2).cue", "Game (Disc 1).cue")
+    before = sorted(os.listdir(vol))
+    out = await files_routes.playlist_preview(PlaylistPreviewRequest(paths=paths))
+    assert sorted(os.listdir(vol)) == before
+    assert out["file_name"] == "Game.m3u"
+    assert out["entries"] == ["Game (Disc 1).cue", "Game (Disc 2).cue"]
+    assert out["name_taken"] is False
+    assert out["directory"] == str(vol)
+
+
+@pytest.mark.asyncio
+async def test_preview_route_maps_errors_to_400(vol: Path):
+    with pytest.raises(HTTPException) as exc:
+        await files_routes.playlist_preview(
+            PlaylistPreviewRequest(paths=_discs(vol, "Game (Disc 1).cue")),
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_route_writes_the_previewed_playlist(vol: Path):
+    paths = _discs(vol, "Game (Disc 2).cue", "Game (Disc 1).cue")
+    preview = await files_routes.playlist_preview(PlaylistPreviewRequest(paths=paths))
+    out = await files_routes.playlist_create(
+        PlaylistCreateRequest(paths=paths, file_name=preview["file_name"]),
+    )
+    written = (vol / "Game.m3u").read_bytes()
+    assert written == b"Game (Disc 1).cue\nGame (Disc 2).cue\n"
+    assert out["path"] == str(vol / "Game.m3u")
+    assert out["entries"] == preview["entries"]
+
+
+@pytest.mark.asyncio
+async def test_create_never_overwrites_and_suggests_another_name(vol: Path):
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    (vol / "Game.m3u").write_bytes(b"precious")
+    with pytest.raises(HTTPException) as exc:
+        await files_routes.playlist_create(
+            PlaylistCreateRequest(paths=paths, file_name="Game.m3u"),
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail["suggested_name"] == "Game (2).m3u"
+    assert (vol / "Game.m3u").read_bytes() == b"precious"
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_a_symlink_at_the_target(vol: Path):
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    victim = vol / "victim.txt"
+    victim.write_bytes(b"precious")
+    os.symlink(victim, vol / "Game.m3u")
+    with pytest.raises(HTTPException) as exc:
+        await files_routes.playlist_create(
+            PlaylistCreateRequest(paths=paths, file_name="Game.m3u"),
+        )
+    assert exc.value.status_code == 409
+    assert victim.read_bytes() == b"precious"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["../Game.m3u", "a/Game.m3u", "Game.txt", "Game", ".m3u", ""])
+async def test_create_rejects_unsafe_file_names(vol: Path, bad):
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    with pytest.raises(HTTPException) as exc:
+        await files_routes.playlist_create(PlaylistCreateRequest(paths=paths, file_name=bad))
+    assert exc.value.status_code == 400
+    assert sorted(p.name for p in vol.iterdir() if p.suffix == ".m3u") == []
+
+
+def test_exclusive_write_has_one_winner_under_a_race(tmp_path: Path):
+    target = str(tmp_path / "Game.m3u")
+    results: list[str] = []
+    barrier = threading.Barrier(8)
+
+    def attempt(i: int) -> None:
+        barrier.wait()
+        try:
+            write_new_bytes(target, f"writer {i}\n".encode())
+            results.append("won")
+        except FileExistsError:
+            results.append("lost")
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count("won") == 1
+    assert results.count("lost") == 7
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["Game.m3u"]  # no temp litter
+
+
+def test_playlist_bytes_use_the_referrer_encoding():
+    from app.services.referrers.m3u import playlist_bytes
+
+    assert playlist_bytes(["A (Disc 1).cue", "é (Disc 2).cue"]) == (
+        "A (Disc 1).cue\né (Disc 2).cue\n".encode()
+    )

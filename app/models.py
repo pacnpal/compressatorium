@@ -263,6 +263,20 @@ class MetadataBatchRequest(BaseModel):
     paths: list[str]
 
 
+class PlaylistPreviewRequest(BaseModel):
+    """Disc Images (full paths, one folder) to list in a new .m3u."""
+
+    paths: list[str]
+    # Playlist title without ".m3u"; omitted, it comes from the disc names.
+    title: str | None = None
+
+
+class PlaylistCreateRequest(BaseModel):
+    paths: list[str]
+    # The file name the preview showed, so what is written is what was shown.
+    file_name: str
+
+
 class DeletePlanRequest(BaseModel):
     file_paths: list[str]
     mode: ConversionMode = ConversionMode.CREATECD

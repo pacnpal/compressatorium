@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 
-from .base import Referrer, ReferrerChange, ReferrerError, atomic_write_bytes
+from .base import Referrer, ReferrerChange, ReferrerError, atomic_write_bytes, write_new_bytes
 from .m3u import M3uReferrer
 
 logger = get_logger("referrers")
@@ -142,4 +142,5 @@ __all__ = [
     "plan_changes",
     "registry",
     "update_before_source_removal",
+    "write_new_bytes",
 ]

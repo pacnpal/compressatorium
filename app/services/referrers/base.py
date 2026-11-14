@@ -26,6 +26,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
+from utils.path_utils import place_without_clobbering
+
 
 class ReferrerError(Exception):
     """A Referrer could not be planned or applied. ``target`` names what failed."""
@@ -99,3 +101,29 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
         with suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def write_new_bytes(path: str, data: bytes) -> None:
+    """Create *path* holding *data*, or raise ``FileExistsError`` if anything is there.
+
+    The no-overwrite sibling of ``atomic_write_bytes``. It writes and fsyncs a
+    temp file in the same directory, then places it with
+    ``place_without_clobbering`` (a hard link or a no-replace rename), so the
+    existence check and the creation are one atomic step: two writers racing
+    for one name have exactly one winner, and a file or symlink already at
+    *path* is never touched. The new file has the default ``0o644`` mode.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(
+        dir=directory, prefix=f".{os.path.basename(path)}.", suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        place_without_clobbering(tmp, path)
+    finally:
+        with suppress(OSError):
+            os.unlink(tmp)
