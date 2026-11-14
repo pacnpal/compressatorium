@@ -2557,6 +2557,31 @@ class JobManager:
                 "(the storage holding the output stopped responding)"
             ) from None
 
+    async def _source_bytes_bounded(
+        self, job: ConversionJob, cancel_event: Optional[asyncio.Event],
+    ) -> Optional[int]:
+        """Size the job's Source set for the Ledger, without risking the queue.
+
+        Optional bookkeeping, so a timeout leaves the size unknown rather than
+        failing the job; a Cancel returns now and is a cancellation. Same
+        detached, bounded probe as `_verify_target_bounded`, for the same
+        reason: the job already holds its slot and locks.
+        """
+        try:
+            return await asyncio.wait_for(
+                run_detached(_source_bytes, job.file_path, cancel_event=cancel_event),
+                timeout=_CANONICAL_PROBE_SECONDS,
+            )
+        except ReadCancelled:
+            raise ConversionCancelled("Conversion cancelled") from None
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Sizing the source of job %s did not finish in %.0fs; "
+                "the Ledger row will have no input size",
+                job.id, _CANONICAL_PROBE_SECONDS,
+            )
+            return None
+
     async def _process_job(self, job_id: str):
         """Process a single conversion job."""
         job = self.jobs.get(job_id)
@@ -2720,8 +2745,6 @@ class JobManager:
 
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.now(timezone.utc)
-        if job.input_bytes is None:
-            job.input_bytes = await run_in_threadpool(_source_bytes, job.file_path)
         # Restart the progress clock at the moment work actually begins. It was
         # last set when the job was created, so a job that waited in the queue
         # longer than debug_progress_timeout -- routine on a deep queue -- would
@@ -2751,6 +2774,14 @@ class JobManager:
         )
 
         try:
+            # Ledger bookkeeping (#292): size the Source set before anything can
+            # delete it. Inside the cleanup-protected region, on a detached
+            # thread, bounded and cancellable like the verify-target probe: a
+            # mount that stops answering must not strand this job's slot and
+            # locks. Optional data, so a timeout just leaves it unknown.
+            if job.input_bytes is None:
+                job.input_bytes = await self._source_bytes_bounded(job, cancel_event)
+
             # Fast path: a re-queued job whose verified artifact already exists
             # completes as a no-op rather than re-spawning the converter (issue
             # #184, site 1). Checked before extraction / _clear_existing_output

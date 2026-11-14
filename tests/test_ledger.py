@@ -90,3 +90,39 @@ def test_source_bytes_counts_cue_tracks(tmp_path):
         'FILE "Game (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n'
     )
     assert _source_bytes(str(cue)) == 1000 + cue.stat().st_size
+
+
+def _wedged(_path: str) -> int:
+    import time
+    time.sleep(30)
+    return 0
+
+
+@pytest.mark.asyncio
+async def test_a_hung_source_probe_is_bounded(monkeypatch):
+    from types import SimpleNamespace
+
+    from services import job_manager as jm
+
+    monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 0.05)
+    monkeypatch.setattr(jm, "_source_bytes", _wedged)
+    manager = jm.JobManager(max_concurrent=1, max_job_history=10)
+    job = SimpleNamespace(id="j", file_path="/vol/game.iso")
+    assert await manager._source_bytes_bounded(job, None) is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_source_probe_returns_now(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from services import job_manager as jm
+
+    monkeypatch.setattr(jm, "_CANONICAL_PROBE_SECONDS", 30)
+    monkeypatch.setattr(jm, "_source_bytes", _wedged)
+    manager = jm.JobManager(max_concurrent=1, max_job_history=10)
+    job = SimpleNamespace(id="j", file_path="/vol/game.iso")
+    cancel = asyncio.Event()
+    cancel.set()
+    with pytest.raises(jm.ConversionCancelled):
+        await asyncio.wait_for(manager._source_bytes_bounded(job, cancel), timeout=10)
