@@ -2175,36 +2175,64 @@ Precedence is fixed and never guesses:
    layout, or a trimmed image's boot executable). A probe that raises is
    treated as no answer. A new console is taught to detection by its tool's
    override, not by an edit here.
-2. **Folder name.** The nearest parent folder whose name is a slug some tool
-   declares in `platform_slugs`, or an alias in `_ALIASES` (the names RomM,
-   ES-DE and Batocera use: `psx`, `gc`, `megacd`, `dreamcast`, ...). Archive
-   members (`a.zip::disc.iso`) skip the header and use the archive's folder.
+2. **Folder name.** The nearest parent folder whose name is a key or alias in
+   `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
+   name for it (the tools' own spellings and the folder names ES-DE and
+   Batocera use: `psx`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
+   `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
+   header and use the archive's folder.
 
 Every answer goes through `canonical_slug`, which maps aliases and the tools'
-own vocabulary (`ps1`, `gamecube`, `dreamcast`) onto RomM's slugs (`ps`, `ngc`,
-`dc`). A header that disagrees with the folder, or two headers that disagree,
+own vocabulary (`ps1`, `gamecube`, `neogeocd`, `genesis`) onto RomM's slugs
+(`ps`, `ngc`, `neo-geo-cd`, `genesis-slash-megadrive`). A test fails when a
+tool declares a slug the table does not cover, so a new Platform brings its
+folder names with it. A header that disagrees with the folder, or two headers that disagree,
 is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
 changes; `clear_cache()` exists for tests.
 
 **Auto targets** (`plan_auto`, `default_mode`). An Image with a Platform goes to
 the first create-direction mode (`ModeKind.CREATE` / `COMPRESS`) whose
-`registry.mode_platform_slugs` claims that Platform and which takes the file
-(`match_extension` plus the tool's `converts_path`). When several do, the most
-specific extension wins (`.nkit.iso` over `.iso`), registration order breaking
-ties, the same rule as `tool_for_verify`. So a PS2 `.iso` gets `createdvd`, a
-PS1 `.cue` `createcd`, a GameCube `.iso` `dolphin_rvz`, a `.nkit.iso`
-`nkit_to_rvz`. The compression is the saved per-tool value (the `conversion`
+`registry.mode_platform_slugs` claims that Platform, that may be an Auto
+default (`ModeSpec.auto_target`), and whose command can read the file
+(`registry.mode_reads_extensions` plus the tool's `converts_path`). When several
+do, the most specific extension wins (`.nkit.iso` over `.iso`), registration
+order breaking ties, the same rule as `tool_for_verify`. So a PS2 `.iso` gets
+`createdvd`, a PS1 `.cue` `createcd`, a GameCube `.iso` `dolphin_rvz`, a
+`.nkit.iso` `nkit_to_rvz`, a CD image in an `arcade` folder `createcd`.
+
+`ModeSpec.reads_extensions` is the mode's real input domain when it is
+narrower than `input_extensions`; empty means "every input extension". It must
+be a subset of `input_extensions`, which keeps gating manual selection and
+`plan_job` exactly as before. chdman uses it because its five create modes all
+accept `.iso/.cue/.bin/.gdi` by hand while the commands differ: `createcd`
+reads a track sheet or a single-track `.iso`, `createdvd` a flat 2048-byte
+`.iso`. So a PS2 CD-ROM title as cue/bin gets no target (`ps2` is claimed only
+by `createdvd`) and is skipped with a reason, instead of being sent to the DVD
+command. `ModeSpec.auto_target` is false for chdman's `createraw`, `createhd`
+and `createld`: they claim the arcade Platforms, but are never the right
+default for an Image.
+
+Two Images whose targets would write the same output (`game.iso` and
+`game.nkit.iso` both to `game.rvz`, or two `game.iso` into one output
+directory) cannot both convert: `plan_auto` keeps the first in the selection
+and skips the later one with a reason naming the output. The compression is the saved per-tool value (the `conversion`
 preference) when the mode takes one, else the tool default; a saved value the
 mode would refuse also falls back to the tool default. Conflicted and Unsorted
 Images, and a Platform with no mode for the file type, get a `skip_reason`.
 
 `POST /api/jobs/auto-plan` returns the plan without queueing.
-`POST /api/jobs/auto` groups the planned Images by (mode, compression) and
-sends each group through `create_batch_jobs`, so planning, duplicate handling
-and backpressure are the ordinary batch path; it checks the whole batch against
-`max_queue_depth` first so a later group cannot be refused after an earlier one
-queued. Auto never deletes a Source (no delete-on-verify).
+`POST /api/jobs/auto` groups the planned Images by (mode, compression). The
+batch route is split into `_prepare_batch` (validate and `plan_job` every file,
+queue nothing) and `_queue_prepared` (one atomic `create_jobs_atomic` call);
+`create_batch_jobs` is the two in sequence. Auto prepares every group first, so
+a planning error queues nothing, then checks the whole batch against
+`max_queue_depth`, then queues the groups. Each group is its own atomic call,
+so a later group can still be refused at queue time (409 when another job took
+a destination, 503 when a volume stops answering). When that happens the route
+cancels the jobs this request already queued and returns the error, so the
+client never has to adopt half a batch. Auto never deletes a Source (no
+delete-on-verify).
 
 The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;

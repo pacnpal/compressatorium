@@ -9,10 +9,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from app.models import AutoJobCreateRequest, AutoPlanRequest
-from app.routes import convert as convert_routes
 from services import platform_detect
 from services.platform_detect import plan_auto
+
+from app.models import AutoJobCreateRequest, AutoPlanRequest
+from app.routes import convert as convert_routes
 
 from .test_disc_id import _make_iso
 from .test_platform_detect import _blank, _gamecube, _ps1, _ps2, _psp, _wii, _write
@@ -266,6 +267,93 @@ async def test_auto_plan_previews_without_queueing(route_env):
     assert rows["ps2.iso"].mode == "createdvd"
     assert rows["clash.iso"].how == "conflict"
     assert rows["clash.iso"].mode is None
+
+
+def test_two_images_with_one_output_keep_the_first_and_say_why(tmp_path):
+    first = _gamecube(tmp_path / "pile" / "game.iso")
+    second = _gamecube(tmp_path / "pile" / "game.nkit.iso")
+
+    plan = _by_path(plan_auto([first, second]))
+
+    assert plan["game.iso"].mode == "dolphin_rvz"
+    assert plan["game.nkit.iso"].mode is None
+    assert "game.rvz" in plan["game.nkit.iso"].skip_reason
+    assert "game.iso" in plan["game.nkit.iso"].skip_reason
+
+
+def test_output_collisions_follow_the_output_directory(tmp_path):
+    # Different folders, one output directory: both would write out/game.rvz.
+    first = _gamecube(tmp_path / "a" / "game.iso")
+    second = _wii(tmp_path / "b" / "game.iso")
+
+    plan = plan_auto([first, second], output_dir=str(tmp_path / "out"))
+
+    assert [entry.mode for entry in plan] == ["dolphin_rvz", None]
+
+
+@pytest.mark.asyncio
+async def test_auto_route_queues_one_job_for_two_images_with_one_output(route_env):
+    tmp = route_env["tmp_path"]
+    paths = [_gamecube(tmp / "pile" / "game.iso"), _gamecube(tmp / "pile" / "game.nkit.iso")]
+
+    result = await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+
+    assert route_env["queued"] == [
+        {"mode": "dolphin_rvz", "files": ["game.iso"], "compression": "zstd:19"},
+    ]
+    rows = {Path(p.file_path).name: p for p in result.plan}
+    assert rows["game.nkit.iso"].skip_reason
+
+
+@pytest.mark.asyncio
+async def test_auto_route_queues_nothing_when_a_later_group_fails_planning(
+    route_env, monkeypatch,
+):
+    paths = _mixed_selection(route_env["tmp_path"])
+    real_plan_job = convert_routes.plan_job
+
+    async def plan_job(file_path, **kwargs):
+        if file_path.endswith("gc.iso"):
+            raise convert_routes.DeleteSnapshotError("source vanished")
+        return await real_plan_job(file_path, **kwargs)
+
+    monkeypatch.setattr(convert_routes, "plan_job", plan_job)
+
+    with pytest.raises(convert_routes.HTTPException) as exc:
+        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+
+    assert exc.value.status_code == 400
+    assert route_env["queued"] == []
+
+
+@pytest.mark.asyncio
+async def test_auto_route_cancels_what_it_queued_when_a_later_group_fails(
+    route_env, monkeypatch,
+):
+    paths = _mixed_selection(route_env["tmp_path"])
+    queued_ids: list[str] = []
+    cancelled: list[str] = []
+
+    async def fake_atomic(job_specs, mode, **_kwargs):
+        if mode.value == "dolphin_rvz":
+            raise convert_routes.OutputClaimedError("taken by another job")
+        job_id = f"job-{mode.value}"
+        queued_ids.append(job_id)
+        return [type("Job", (), {"id": job_id})()]
+
+    async def fake_cancel(job_id):
+        cancelled.append(job_id)
+        return True
+
+    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
+    monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
+
+    with pytest.raises(convert_routes.HTTPException) as exc:
+        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+
+    assert exc.value.status_code == 409
+    assert queued_ids, "the failing group must not be the first one queued"
+    assert sorted(cancelled) == sorted(queued_ids)
 
 
 @pytest.mark.asyncio

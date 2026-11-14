@@ -991,9 +991,85 @@ async def create_job(request: JobCreateRequest):
     return job
 
 
+@dataclass
+class PreparedBatch:
+    """A batch planned to the last detail and not yet queued."""
+
+    request: BatchJobCreateRequest
+    compression: str | None
+    plans: list[JobPlan]
+
+    @property
+    def job_specs(self) -> list[dict]:
+        return [
+            {
+                "file_path": plan.file_path,
+                "output_path": plan.output_path,
+                "allow_overwrite": plan.allow_overwrite,
+                "filename_override": plan.display_filename,
+                "delete_snapshot": plan.delete_snapshot,
+            }
+            for plan in self.plans
+        ]
+
+
+def _check_queue_room(adding: int) -> None:
+    """429 when ``adding`` more jobs would push the queue past its depth."""
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    if max_depth > 0 and job_manager.get_queue_depth() + adding > max_depth:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Conversion queue would exceed capacity "
+                f"({max_depth} jobs). Retry later."
+            ),
+        )
+
+
+async def _queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
+    """Queue a prepared batch as one atomic job-manager call."""
+    try:
+        return await job_manager.create_jobs_atomic(
+            batch.job_specs,
+            batch.request.mode,
+            compression=batch.compression,
+            delete_on_verify=batch.request.delete_on_verify,
+            split=batch.request.split,
+        )
+    except OutputClaimedError as exc:
+        # A concurrency outcome, not a malformed request: another live job took
+        # this destination between planning and queueing. 409 so the caller can
+        # retry or skip; a 500 said "server broke" for something working
+        # exactly as designed.
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except DestinationUnresolvableError as exc:
+        # Transient and on the storage's side, not the caller's: the volume
+        # holding the destination did not answer inside the probe bound, so the
+        # collision check could not be made and nothing was queued. 503 says
+        # "come back", which is the truth -- a 500 would read as a bug and a
+        # 400 as a bad request.
+        raise HTTPException(status_code=503, detail=exc.detail) from exc
+    except QueueBackpressureError as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
+
+
 @router.post("/jobs/batch", response_model=list[ConversionJob])
 async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
+    batch = await _prepare_batch(request)
+    # Proactive batch backpressure: reject before enqueuing any jobs if
+    # accepting the batch would push the queue past ``max_queue_depth``.
+    # Keeps single-job and batch submission behaviour consistent.
+    _check_queue_room(len(batch.plans))
+    return await _queue_prepared(batch)
+
+
+async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
+    """Validate and plan every file of a batch, queueing nothing.
+
+    Raises the same HTTP errors ``create_batch_jobs`` always has. Split out so
+    Auto can prepare every group before it queues any of them.
+    """
     if request.mode in (ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH):
         raise HTTPException(
             status_code=400,
@@ -1080,59 +1156,11 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if plan.priority > existing.priority:
             selected[key] = plan
 
-    job_specs = []
-    for key in order:
-        plan = selected[key]
-        job_specs.append(
-            {
-                "file_path": plan.file_path,
-                "output_path": plan.output_path,
-                "allow_overwrite": plan.allow_overwrite,
-                "filename_override": plan.display_filename,
-                "delete_snapshot": plan.delete_snapshot,
-            },
-        )
-
-    # Proactive batch backpressure: reject before enqueuing any jobs if
-    # accepting the batch would push the queue past ``max_queue_depth``.
-    # Keeps single-job and batch submission behaviour consistent.
-    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
-    if max_depth > 0:
-        projected = job_manager.get_queue_depth() + len(job_specs)
-        if projected > max_depth:
-            raise HTTPException(
-                status_code=429,
-                detail=(
-                    f"Conversion queue would exceed capacity "
-                    f"({max_depth} jobs). Retry later."
-                ),
-            )
-
-    try:
-        jobs = await job_manager.create_jobs_atomic(
-            job_specs,
-            request.mode,
-            compression=compression,
-            delete_on_verify=request.delete_on_verify,
-            split=request.split,
-        )
-    except OutputClaimedError as exc:
-        # A concurrency outcome, not a malformed request: another live job took
-        # this destination between planning and queueing. 409 so the caller can
-        # retry or skip; a 500 said "server broke" for something working
-        # exactly as designed.
-        raise HTTPException(status_code=409, detail=exc.detail) from exc
-    except DestinationUnresolvableError as exc:
-        # Transient and on the storage's side, not the caller's: the volume
-        # holding the destination did not answer inside the probe bound, so the
-        # collision check could not be made and nothing was queued. 503 says
-        # "come back", which is the truth -- a 500 would read as a bug and a
-        # 400 as a bad request.
-        raise HTTPException(status_code=503, detail=exc.detail) from exc
-    except QueueBackpressureError as exc:
-        raise HTTPException(status_code=429, detail=exc.detail) from exc
-
-    return jobs
+    return PreparedBatch(
+        request=request,
+        compression=compression,
+        plans=[selected[key] for key in order],
+    )
 
 
 def _auto_compression(target) -> str | None:
@@ -1163,8 +1191,10 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
                 detail="Access denied: path outside configured volumes",
             )
     prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
+    output_dir = normalize_output_dir(request.output_dir)
     plan = await run_in_threadpool(
-        plan_auto, list(request.file_paths), compression_prefs=prefs,
+        plan_auto, list(request.file_paths),
+        compression_prefs=prefs, output_dir=output_dir,
     )
     return [
         replace(target, compression=_auto_compression(target)) if target.mode else target
@@ -1196,9 +1226,16 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     """Queue each Image for its Platform's default target (the Auto choice).
 
     Images are grouped by target mode and each group goes through the ordinary
-    batch path, so planning, duplicate handling and backpressure are the same as
-    a hand-picked batch. Conflicted and Unsorted Images are left alone and
+    batch planning, so validation, duplicate handling and backpressure are the
+    same as a hand-picked batch. Conflicted and Unsorted Images, and an Image
+    whose output another one in the plan already writes, are left alone and
     reported in the plan.
+
+    All or nothing: every group is prepared before any is queued, so a planning
+    error queues nothing. Each group is still its own atomic queue call, so if a
+    later group is refused at queue time (another job took a destination, a
+    volume stopped answering) the jobs this request already queued are
+    cancelled and the error is returned.
     """
     plan = await _plan_auto(request)
     groups: dict[tuple[str, str | None], list[str]] = {}
@@ -1208,24 +1245,35 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
                 target.file_path,
             )
 
-    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
-    planned = sum(len(paths) for paths in groups.values())
-    if 0 < max_depth < job_manager.get_queue_depth() + planned:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Conversion queue would exceed capacity ({max_depth} jobs). Retry later.",
-        )
-
-    jobs: list[ConversionJob] = []
-    for (mode, compression), paths in groups.items():
-        jobs += await create_batch_jobs(BatchJobCreateRequest(
+    prepared = [
+        await _prepare_batch(BatchJobCreateRequest(
             file_paths=paths,
             mode=ConversionMode(mode),
             output_dir=request.output_dir,
             duplicate_action=request.duplicate_action,
             compression=compression,
         ))
+        for (mode, compression), paths in groups.items()
+    ]
+    _check_queue_room(sum(len(batch.plans) for batch in prepared))
+
+    jobs: list[ConversionJob] = []
+    for batch in prepared:
+        try:
+            jobs += await _queue_prepared(batch)
+        except HTTPException:
+            await _cancel_queued(jobs)
+            raise
     return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)
+
+
+async def _cancel_queued(jobs: list) -> None:
+    """Withdraw jobs an Auto request queued before a later group failed."""
+    for job in jobs:
+        try:
+            await job_manager.cancel_job(job.id)
+        except Exception:  # keep withdrawing the rest
+            logger.warning("Could not cancel Auto job %s", job.id, exc_info=True)
 
 
 @router.get("/jobs", response_model=list[ConversionJob])

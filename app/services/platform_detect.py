@@ -25,7 +25,7 @@ import os
 import threading
 from collections import OrderedDict
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePath
 
 from logging_setup import get_logger
@@ -308,10 +308,35 @@ def _skip_reason(detection: Detection) -> str:
     return f"Unsorted: {detection.reason}"
 
 
+def _target_output(path: str, mode: str, output_dir: str | None, tools_registry) -> str | None:
+    """Where ``mode`` would write ``path``'s output, before duplicate handling.
+
+    The same resolution ``plan_job`` makes: an archive member is named from
+    its flattened member name and lands beside the archive. None when the tool
+    cannot say (the Image is then not checked for a collision).
+    """
+    tool = tools_registry.for_mode(mode)
+    try:
+        if "::" in path:
+            from services.archive import archive_service
+
+            archive, member = path.split("::", 1)
+            name = archive_service._output_name_for_member(member)
+            out = tool.output_path(
+                mode, name, output_dir or os.path.dirname(archive), treat_as_stem=True,
+            )
+        else:
+            out = tool.output_path(mode, path, output_dir)
+    except (KeyError, ValueError, OSError):
+        return None
+    return os.path.normcase(os.path.abspath(out))
+
+
 def plan_auto(
     paths: Iterable[str],
     *,
     compression_prefs: dict | None = None,
+    output_dir: str | None = None,
     tools_registry=None,
 ) -> list[AutoTarget]:
     """Work out each Image's Platform and default target, without queueing.
@@ -319,11 +344,34 @@ def plan_auto(
     ``compression_prefs`` is the saved per-tool compression (the convert
     panel's remembered setting, keyed by tool id). A mode that takes no
     compression gets None, and so does a tool with nothing saved, which means
-    the tool's own default. Blocking; call it off the event loop.
+    the tool's own default. Two Images whose targets would write the same
+    output (``game.iso`` and ``game.nkit.iso`` both to ``game.rvz``) cannot
+    both convert: the first in ``paths`` keeps it and the later one is skipped
+    with a reason. Blocking; call it off the event loop.
     """
     if tools_registry is None:
         from services.tools import registry as tools_registry
-    prefs = compression_prefs or {}
+    plan = _plan_targets(paths, compression_prefs or {}, tools_registry)
+    claimed: dict[str, str] = {}
+    for index, target in enumerate(plan):
+        if not target.mode:
+            continue
+        out = _target_output(target.file_path, target.mode, output_dir, tools_registry)
+        if out is None:
+            continue
+        holder = claimed.setdefault(out, target.file_path)
+        if holder != target.file_path:
+            plan[index] = replace(
+                target, mode=None, tool_id=None, compression=None,
+                skip_reason=(
+                    f"Same output as {os.path.basename(holder.split('::')[-1])} "
+                    f"({os.path.basename(out)})"
+                ),
+            )
+    return plan
+
+
+def _plan_targets(paths, prefs: dict, tools_registry) -> list[AutoTarget]:
     tools = tools_registry.all()
     plan: list[AutoTarget] = []
     for path in paths:
