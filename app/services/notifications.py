@@ -24,7 +24,9 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import logging
 import os
+import re
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -89,7 +91,14 @@ class NotificationError(Exception):
 
 
 def _check_http_url(url: str) -> None:
-    parts = urlparse.urlsplit(url)
+    # Whitespace and control characters make urllib raise InvalidURL, whose
+    # message echoes the path and query (the token).
+    if any(c.isspace() or ord(c) < 32 for c in url):
+        raise NotificationError("The URL must not contain spaces or control characters")
+    try:
+        parts = urlparse.urlsplit(url)
+    except ValueError:
+        raise NotificationError("That is not a valid URL") from None
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise NotificationError("A webhook URL must start with http:// or https://")
 
@@ -126,8 +135,24 @@ def _send_apprise(url: str, event: Event) -> None:
     notifier = apprise.Apprise()
     if not notifier.add(url):
         raise NotificationError("Apprise does not recognise that URL")
-    if not notifier.notify(title=event.title, body=event.body):
-        raise NotificationError("Apprise could not deliver the message")
+    # Apprise reports why a send failed only through its log; capture the last
+    # warning so Test can say "error=401" or "connection error", not just "failed".
+    with apprise.LogCapture(level=logging.WARNING) as capture:
+        delivered = notifier.notify(title=event.title, body=event.body)
+        captured = capture.getvalue()
+    if not delivered:
+        reason = _apprise_reason(captured, url)
+        raise NotificationError(
+            f"Apprise could not deliver the message: {reason}" if reason
+            else "Apprise could not deliver the message",
+        )
+
+
+def _apprise_reason(captured: str, url: str) -> str:
+    lines = [ln for ln in captured.splitlines() if " - WARNING - " in ln or " - ERROR - " in ln]
+    if not lines:
+        return ""
+    return _redact(lines[-1].split(" - ", 2)[-1].strip(), url)[:200]
 
 
 _APPRISE_MISSING = (
@@ -266,14 +291,26 @@ async def test_destination(
         await _send_one(kind, url, event)
     except NotificationError as exc:
         return {"ok": False, "error": str(exc)}
-    except Exception as exc:  # noqa: BLE001  a transport's own error text
+    except Exception as exc:  # noqa: BLE001  never leak what an exception echoes
         logger.warning("Notification test failed (%s): %s", kind, type(exc).__name__)
-        return {"ok": False, "error": _scrub(str(exc), url) or type(exc).__name__}
+        return {"ok": False, "error": f"The send failed ({type(exc).__name__})"}
     return {"ok": True, "error": None}
 
 
-def _scrub(text: str, url: str | None) -> str:
-    return text.replace(url, "<url>") if url else text
+_URL_SPLIT = re.compile(r"[/?#@:&=;,]+")
+
+
+def _redact(text: str, url: str | None) -> str:
+    """Remove the destination URL, and any piece of it that could be a secret,
+    from *text*. Pieces shorter than 4 characters (a scheme, a port) stay."""
+    if not url:
+        return text
+    text = text.replace(url, "<url>")
+    rest = url.split("://", 1)[-1]
+    pieces = {p for p in _URL_SPLIT.split(rest) if len(p) >= 4}
+    for piece in sorted(pieces, key=len, reverse=True):
+        text = text.replace(piece, "<redacted>")
+    return text
 
 
 # ----------------------------------------------------------------------
@@ -297,10 +334,15 @@ async def deliver(event: Event) -> None:
         try:
             await _send_one(dest["kind"], dest["url"], event)
         except Exception as exc:  # noqa: BLE001  one destination never fails the rest
-            # Not exc_info and not the URL: both can carry the secret.
+            # Not exc_info and not str(exc) of a foreign exception: both can
+            # carry the URL. Our own NotificationError texts are redacted too.
+            reason = (
+                _redact(str(exc), dest["url"]) if isinstance(exc, NotificationError)
+                else type(exc).__name__
+            )
             logger.warning(
                 "Notification to %s destination %s failed: %s",
-                dest["kind"], dest["id"], _scrub(str(exc), dest["url"]) or type(exc).__name__,
+                dest["kind"], dest["id"], reason,
             )
 
     await asyncio.gather(*(one(d) for d in dests))
@@ -362,12 +404,14 @@ class _Sweep:
         self.jobs: list[ConversionJob] = []
         self.closed = False
         self.errors: list[dict] = []
+        # False when every error was already reported by an earlier sweep.
+        self.has_new_errors = False
 
     def event(self) -> Event | None:
         done = [j for j in self.jobs if j.status == JobStatus.COMPLETED]
         failed = [j for j in self.jobs if j.status == JobStatus.FAILED]
         cancelled = [j for j in self.jobs if j.status == JobStatus.CANCELLED]
-        if not self.jobs and not self.errors:
+        if not self.jobs and not self.has_new_errors:
             return None
         saved = sum(ledger.job_saved_bytes(j) for j in done)
         failures = [{"file": _file(j), "error": _short(j.error_message)} for j in failed]
@@ -399,6 +443,8 @@ class _Sweep:
 
 
 _open_sweep: _Sweep | None = None
+_reported_errors: set[tuple] = set()
+_TERMINAL = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
 _job_sweeps: dict[str, _Sweep] = {}
 
 
@@ -409,9 +455,13 @@ def sweep_jobs_queued(jobs: list[ConversionJob]) -> None:
     if _open_sweep is None:
         _open_sweep = _Sweep()
     for job in jobs:
-        _open_sweep.pending.add(job.id)
         _open_sweep.jobs.append(job)
-        _job_sweeps[job.id] = _open_sweep
+        # A job can end before this hook runs (the queue awaits after accepting
+        # a batch). Nothing would ever discard it from `pending`, so it is
+        # counted but not waited on.
+        if getattr(job, "status", None) not in _TERMINAL:
+            _open_sweep.pending.add(job.id)
+            _job_sweeps[job.id] = _open_sweep
 
 
 def sweep_finished(result: dict, *, dry_run: bool = False) -> None:
@@ -423,6 +473,13 @@ def sweep_finished(result: dict, *, dry_run: bool = False) -> None:
     sweep = sweep or _Sweep()
     sweep.closed = True
     sweep.errors = [e for e in result.get("errors") or [] if isinstance(e, dict)]
+    # A failing platform is due again every scheduler tick and records the same
+    # error each time. Report an error once per (platform, reason); a sweep
+    # without it forgets it, so a later recurrence is news again.
+    global _reported_errors
+    keys = {(e.get("platform_id"), str(e.get("error"))) for e in sweep.errors}
+    sweep.has_new_errors = bool(keys - _reported_errors)
+    _reported_errors = keys
     _maybe_send(sweep)
 
 
@@ -436,7 +493,7 @@ def _maybe_send(sweep: _Sweep) -> None:
 
 async def on_job_finished(job: ConversionJob) -> None:
     """``JobManager`` terminal listener. Cheap for anything that is not news."""
-    if job.status not in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+    if job.status not in _TERMINAL:
         return
     sweep = _job_sweeps.pop(job.id, None)
     if sweep is not None:
@@ -447,7 +504,8 @@ async def on_job_finished(job: ConversionJob) -> None:
 
 
 def _reset_for_tests() -> None:
-    global _open_sweep
+    global _open_sweep, _reported_errors
     _open_sweep = None
+    _reported_errors = set()
     _job_sweeps.clear()
     _tasks.clear()

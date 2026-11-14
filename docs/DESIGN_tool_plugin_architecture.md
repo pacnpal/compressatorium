@@ -2169,6 +2169,11 @@ never see a transport:
   `ledger.job_saved_bytes`), and the failures listed inside it. `sweep_jobs_queued`
   runs before any await so a job that ends instantly is already claimed. A sweep
   that queued nothing and hit no error sends nothing; a preview sends nothing.
+  A platform that keeps failing is due again every scheduler tick, so an error
+  is reported once per `(platform, reason)`: repeats stay quiet, a different
+  reason sends again, and a sweep without the error forgets it (no recovery
+  message). A job already terminal when `sweep_jobs_queued` runs is counted but
+  not waited on.
 
 Events are a registry: `register_event(key, title)` adds one, `event_list()`
 feeds Settings. A later ticket (check failed, with check Rules) registers its own
@@ -2180,7 +2185,9 @@ inside the function; without the package `validate` refuses Apprise URLs with a
 clear message). Tests replace entries in `TRANSPORTS` with a recorder. Every send
 runs in a private thread pool under `SEND_TIMEOUT_S`, so a hung destination is
 abandoned and logged, never awaited by a job. Errors are scrubbed: a destination
-URL is a secret and appears in no log line, no API response and no error text.
+URL is a secret and appears in no log line, no API response and no error text. Foreign exceptions are logged by type name only; our own error texts pass
+`_redact`, which strips the URL and each piece of it. An Apprise failure reason is
+taken from Apprise's own log (`LogCapture`) and redacted the same way.
 
 Destinations live in the `notifications` preference (`{"destinations": [{id,
 kind, url, label}]}`). The API (`routes/notifications.py`) returns only

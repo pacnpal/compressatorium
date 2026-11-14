@@ -1,0 +1,132 @@
+"""Notifications (#293) through the real ``romm_auto.sweep()``: the two hook lines.
+
+The unit tests in test_notifications.py call the hooks directly; these prove the
+sweep itself calls them, with RomM and the queue stubbed the way test_romm.py
+does.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from models import JobStatus
+from routes import romm as romm_routes
+from services import db as _db
+from services import notifications
+from services.romm import settings as romm_settings
+from services.tools import registry
+
+
+@pytest.fixture(autouse=True)
+def _env(tmp_path: Path):
+    if _db.engine is not None:
+        _db.engine.dispose()
+    _db.init_engine(str(tmp_path / "compressatorium.db"), create_schema=True)
+    romm_settings.reset_for_tests()
+    notifications._reset_for_tests()
+    yield
+    romm_settings.reset_for_tests()
+    if _db.engine is not None:
+        _db.engine.dispose()
+    _db.engine = None
+    _db.SessionLocal = None
+
+
+class _Job:
+    def __init__(self, path: str, job_id: str) -> None:
+        self.file_path, self.id = path, job_id
+        self.filename = Path(path).name
+        self.status = JobStatus.PROCESSING
+        self.mode = "dolphin_rvz"
+        self.error_message = None
+        self.input_bytes = self.output_size = None
+        self.deleted_paths: list[str] = []
+
+
+@pytest.fixture
+def sent(monkeypatch):
+    out: list[notifications.Event] = []
+    monkeypatch.setitem(notifications.TRANSPORTS, "webhook", lambda url, ev: out.append(ev))
+    return out
+
+
+async def _setup(tmp_path: Path):
+    from services.preferences_store import preferences_store
+    from services.romm import auto as romm_auto
+
+    lib = tmp_path / "library" / "roms" / "gc"
+    lib.mkdir(parents=True)
+    (lib / "Game.iso").write_bytes(b"\0" * 32)
+    await romm_settings.save({
+        "url": "http://romm:8080", "library_root": str(tmp_path / "library"),
+    })
+    await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
+    await preferences_store.put(notifications.PREF_KEY, {"destinations": [
+        {"id": "d1", "kind": "webhook", "url": "https://hooks.example/t", "label": ""}]})
+    return [{
+        "id": 1, "name": "Game", "full_path": "roms/gc/Game.iso",
+        "fs_name": "Game.iso", "fs_size_bytes": 32, "platform_slug": "ngc",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_sends_one_message_once_its_jobs_end(tmp_path, sent):
+    from services.romm import auto as romm_auto
+
+    roms = await _setup(tmp_path)
+    made: list[_Job] = []
+
+    async def _batch(paths, mode, **kwargs):
+        made.extend(_Job(p, f"job-{i}") for i, p in enumerate(paths))
+        return list(made)
+
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
+            patch.object(romm_auto.job_manager, "create_batch_jobs", _batch), \
+            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+        result = await romm_auto.sweep(ignore_schedule=True)
+    assert result["queued"] == 1
+
+    await notifications.drain()
+    assert sent == []  # the job is still running: nothing to report yet
+
+    made[0].status = JobStatus.COMPLETED
+    await notifications.on_job_finished(made[0])
+    await notifications.drain()
+    assert [e.kind for e in sent] == ["sweep_finished"]
+    assert sent[0].data["queued"] == 1 and sent[0].data["completed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_preview_sends_nothing(tmp_path, sent):
+    from services.romm import auto as romm_auto
+
+    roms = await _setup(tmp_path)
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
+            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+        await romm_auto.sweep(ignore_schedule=True, dry_run=True)
+    await notifications.drain()
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_platform_that_keeps_failing_sends_one_message_over_many_ticks(
+    tmp_path, sent,
+):
+    """The error path skips the schedule clock, so every tick re-runs it."""
+    from services.romm import auto as romm_auto
+
+    roms = await _setup(tmp_path)
+    tool = registry.for_mode("dolphin_rvz")
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
+            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(type(tool), "is_ready", AsyncMock(return_value=False)), \
+            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+        for _ in range(10):
+            result = await romm_auto.sweep()
+            assert result["errors"] == [{"platform_id": 7, "error": "tool_not_ready"}]
+    await notifications.drain()
+    assert len(sent) == 1 and "tool_not_ready" in sent[0].body

@@ -7,8 +7,7 @@ import threading
 from datetime import datetime, timezone
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from models import ConversionJob, ConversionMode, JobStatus
 from routes import notifications as notification_routes
 from services import db as _db
@@ -47,11 +46,43 @@ def rec(monkeypatch):
     return r
 
 
+class Api:
+    """The notification routes, called as plain functions (no HTTP client)."""
+
+    async def _call(self, fn, *args):
+        try:
+            return 200, await fn(*args)
+        except HTTPException as exc:
+            return exc.status_code, {"detail": exc.detail}
+
+    async def get(self):
+        return (await self._call(notification_routes.get_notifications))[1]
+
+    async def add(self, kind, url, label=None):
+        return await self._call(
+            notification_routes.add_destination,
+            notification_routes.NewDestination(kind=kind, url=url, label=label))
+
+    async def edit(self, dest_id, **body):
+        return await self._call(
+            notification_routes.edit_destination, dest_id,
+            notification_routes.DestinationEdit(**body))
+
+    async def delete(self, dest_id):
+        return await self._call(notification_routes.delete_destination, dest_id)
+
+    async def test_saved(self, dest_id):
+        return (await self._call(notification_routes.test_saved_destination, dest_id))[1]
+
+    async def test_draft(self, kind, url):
+        return (await self._call(
+            notification_routes.test_draft,
+            notification_routes.DraftTest(kind=kind, url=url)))[1]
+
+
 @pytest.fixture
 def client():
-    app = FastAPI()
-    app.include_router(notification_routes.router, prefix="/api")
-    return TestClient(app)
+    return Api()
 
 
 def _job(status=JobStatus.FAILED, jid="j1", name="Game.iso", **kw) -> ConversionJob:
@@ -63,11 +94,11 @@ def _job(status=JobStatus.FAILED, jid="j1", name="Game.iso", **kw) -> Conversion
     )
 
 
-def _add(client, url="https://hooks.example/abc?token=SECRET", kind="webhook", label="Phone"):
-    r = client.post("/api/notifications/destinations",
-                    json={"kind": kind, "url": url, "label": label})
-    assert r.status_code == 200, r.text
-    return r.json()
+async def _add(client, url="https://hooks.example/abc?token=SECRET", kind="webhook",
+               label="Phone"):
+    status, body = await client.add(kind, url, label)
+    assert status == 200, body
+    return body
 
 
 def _event():
@@ -79,62 +110,131 @@ def _event():
 
 @pytest.mark.asyncio
 async def test_add_edit_remove_and_never_return_the_url(client, rec):
-    dest = _add(client)
+    dest = await _add(client)
     assert "url" not in dest and "SECRET" not in str(dest)
-    listing = client.get("/api/notifications").json()
+    listing = await client.get()
     assert [d["label"] for d in listing["destinations"]] == ["Phone"]
     assert "SECRET" not in str(listing)
     assert {e["key"] for e in listing["events"]} >= {"sweep_finished", "job_failed"}
 
-    edited = client.put(f"/api/notifications/destinations/{dest['id']}",
-                        json={"label": "Tablet"}).json()
+    _, edited = await client.edit(dest["id"], label="Tablet")
     assert edited["label"] == "Tablet" and "url" not in edited
     # Omitting the url keeps the stored one.
     await notifications.deliver(_event())
     assert rec.sent[-1][1] == "https://hooks.example/abc?token=SECRET"
 
-    client.put(f"/api/notifications/destinations/{dest['id']}",
-               json={"url": "https://other.example/x"})
+    await client.edit(dest["id"], url="https://other.example/x")
     await notifications.deliver(_event())
     assert rec.sent[-1][1] == "https://other.example/x"
 
-    assert client.delete(f"/api/notifications/destinations/{dest['id']}").status_code == 200
-    assert client.get("/api/notifications").json()["destinations"] == []
-    assert client.delete(f"/api/notifications/destinations/{dest['id']}").status_code == 404
+    assert (await client.delete(dest["id"]))[0] == 200
+    assert (await client.get())["destinations"] == []
+    assert (await client.delete(dest["id"]))[0] == 404
 
 
-@pytest.mark.parametrize("url", ["", "ftp://x/y", "file:///etc/passwd", "not a url"])
-def test_webhook_url_must_be_http(client, rec, url):
-    r = client.post("/api/notifications/destinations", json={"kind": "webhook", "url": url})
-    assert r.status_code in (400, 422)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", [
+    "", "ftp://x/y", "file:///etc/passwd", "not a url",
+    "https://h/a b?token=X", "http://[abc/x", "https://h/\x00x",
+])
+async def test_webhook_url_must_be_http(client, rec, url):
+    status, _ = await client.add("webhook", url)
+    assert status == 400
 
 
-def test_apprise_is_refused_with_a_clear_message_when_not_installed(client, monkeypatch):
+@pytest.mark.asyncio
+async def test_apprise_is_refused_with_a_clear_message_when_not_installed(client, monkeypatch):
     monkeypatch.setattr(notifications, "apprise_available", lambda: False)
-    r = client.post("/api/notifications/destinations",
-                    json={"kind": "apprise", "url": "discord://id/token"})
-    assert r.status_code == 400 and "Apprise is not installed" in r.json()["detail"]
-    assert client.get("/api/notifications").json()["apprise_available"] is False
+    status, body = await client.add("apprise", "discord://id/token")
+    assert status == 400 and "Apprise is not installed" in body["detail"]
+    assert (await client.get())["apprise_available"] is False
     # Webhooks still work.
     monkeypatch.setitem(notifications.TRANSPORTS, "webhook", lambda u, e: None)
-    _add(client)
+    await _add(client)
 
 
-def test_test_button_reports_success_and_error(client, rec):
-    dest = _add(client)
-    ok = client.post(f"/api/notifications/destinations/{dest['id']}/test").json()
-    assert ok == {"ok": True, "error": None}
+@pytest.mark.asyncio
+async def test_test_button_reports_success_and_error(client, rec):
+    dest = await _add(client)
+    assert await client.test_saved(dest["id"]) == {"ok": True, "error": None}
     assert rec.sent[-1][2].kind == "test"
 
-    rec.fail_with = RuntimeError("HTTP 500")
-    bad = client.post(f"/api/notifications/destinations/{dest['id']}/test").json()
+    rec.fail_with = notifications.NotificationError("The webhook answered HTTP 500")
+    bad = await client.test_saved(dest["id"])
     assert bad["ok"] is False and "HTTP 500" in bad["error"]
 
     # An unsaved draft can be tested too.
     rec.fail_with = None
-    draft = client.post("/api/notifications/test",
-                        json={"kind": "webhook", "url": "https://x.example/h"}).json()
+    draft = await client.test_draft("webhook", "https://x.example/h")
     assert draft["ok"] is True and rec.sent[-1][1] == "https://x.example/h"
+
+
+@pytest.mark.asyncio
+async def test_urls_never_reach_the_log_or_the_test_response(client, rec, caplog):
+    secret = "https://h.example/path/TOKEN123?k=SECRETQ"
+    await _add(client, secret)
+
+    def boom(url, event):
+        # What urllib's InvalidURL and friends do: echo a piece of the URL.
+        raise ValueError(f"bad url {url.split('h.example')[1]}")
+
+    notifications.TRANSPORTS["webhook"] = boom
+    await notifications.deliver(_event())
+    bad = await client.test_draft("webhook", secret)
+    for text in (caplog.text, str(bad)):
+        assert "TOKEN123" not in text and "SECRETQ" not in text
+    assert bad["ok"] is False and "ValueError" in bad["error"]
+
+    # A NotificationError that quotes the URL is redacted piece by piece.
+    def quoting(url, event):
+        raise notifications.NotificationError(f"cannot POST {url}")
+
+    notifications.TRANSPORTS["webhook"] = quoting
+    caplog.clear()
+    await notifications.deliver(_event())
+    assert "TOKEN123" not in caplog.text and "SECRETQ" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_apprise_test_failure_names_the_reason_without_the_token(
+        client, monkeypatch):
+    """The real Apprise reports why only through its log; Test surfaces it."""
+    import logging
+    import sys
+    import types
+
+    class FakeApprise:
+        def add(self, url):
+            return url.startswith("json://")
+
+        def notify(self, title, body):
+            logging.getLogger("apprise-fake").warning(
+                "Failed to send JSON POST notification to /SECRETPATH: "
+                "Verification Failed., error=401.")
+            return False
+
+    class FakeCapture:
+        def __init__(self, level):
+            self.handler = logging.StreamHandler(__import__("io").StringIO())
+            self.handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+            self.handler.setLevel(level)
+
+        def __enter__(self):
+            logging.getLogger("apprise-fake").addHandler(self.handler)
+            return self
+
+        def __exit__(self, *a):
+            logging.getLogger("apprise-fake").removeHandler(self.handler)
+
+        def getvalue(self):
+            return self.handler.stream.getvalue()
+
+    fake = types.SimpleNamespace(Apprise=FakeApprise, LogCapture=FakeCapture)
+    monkeypatch.setitem(sys.modules, "apprise", fake)
+    monkeypatch.setattr(notifications, "apprise_available", lambda: True)
+    result = await client.test_draft("apprise", "json://host.example/SECRETPATH")
+    assert result["ok"] is False
+    assert "401" in result["error"] and "SECRETPATH" not in result["error"]
 
 
 # --- sending --------------------------------------------------------------
@@ -150,8 +250,8 @@ async def test_nothing_is_sent_without_a_destination(rec):
 
 @pytest.mark.asyncio
 async def test_a_failing_destination_does_not_stop_the_others(client, rec, caplog):
-    _add(client, "https://a.example/1", label="A")
-    _add(client, "discord://x/y", kind="apprise", label="B")
+    await _add(client, "https://a.example/1", label="A")
+    await _add(client, "discord://x/y", kind="apprise", label="B")
     calls = []
 
     def flaky(url, event):
@@ -166,7 +266,7 @@ async def test_a_failing_destination_does_not_stop_the_others(client, rec, caplo
 
 @pytest.mark.asyncio
 async def test_a_hanging_destination_times_out_and_never_blocks(client, rec, monkeypatch):
-    _add(client)
+    await _add(client)
     gate = threading.Event()
     monkeypatch.setitem(notifications.TRANSPORTS, "webhook", lambda u, e: gate.wait(5))
     monkeypatch.setattr(notifications, "SEND_TIMEOUT_S", 0.05)
@@ -178,7 +278,7 @@ async def test_a_hanging_destination_times_out_and_never_blocks(client, rec, mon
 
 @pytest.mark.asyncio
 async def test_notify_returns_at_once_and_sends_in_the_background(client, rec):
-    _add(client)
+    await _add(client)
     gate = threading.Event()
     sent = threading.Event()
 
@@ -196,7 +296,7 @@ async def test_notify_returns_at_once_and_sends_in_the_background(client, rec):
 
 @pytest.mark.asyncio
 async def test_failed_manual_job_sends_one_message(client, rec):
-    _add(client)
+    await _add(client)
     await notifications.on_job_finished(_job(error_message="chdman exited 1"))
     await notifications.on_job_finished(_job(JobStatus.COMPLETED, jid="ok"))
     await notifications.on_job_finished(_job(JobStatus.CANCELLED, jid="c"))
@@ -209,17 +309,19 @@ async def test_failed_manual_job_sends_one_message(client, rec):
 
 @pytest.mark.asyncio
 async def test_sweep_sends_one_message_with_counts_bytes_and_failures(client, rec):
-    _add(client)
-    jobs = [_job(JobStatus.COMPLETED, f"s{i}", f"G{i}.iso") for i in range(2)]
-    bad = _job(JobStatus.FAILED, "sf", "Bad.iso", error_message="disc read error")
+    await _add(client)
+    jobs = [_job(JobStatus.PROCESSING, f"s{i}", f"G{i}.iso") for i in range(2)]
+    bad = _job(JobStatus.PROCESSING, "sf", "Bad.iso", error_message="disc read error")
     notifications.sweep_jobs_queued(jobs + [bad])
     notifications.sweep_finished({"queued": 3, "errors": [
         {"platform_id": 9, "error": "queue_failed"}]})
     for j in jobs:
+        j.status = JobStatus.COMPLETED
         j.input_bytes, j.output_size, j.deleted_paths = 1000, 400, ["/x"]
         await notifications.on_job_finished(j)
     await notifications.drain()
     assert rec.sent == []  # still waiting on the last job
+    bad.status = JobStatus.FAILED
     await notifications.on_job_finished(bad)
     await notifications.drain()
 
@@ -235,7 +337,7 @@ async def test_sweep_sends_one_message_with_counts_bytes_and_failures(client, re
 
 @pytest.mark.asyncio
 async def test_sweep_that_queued_nothing_stays_quiet(client, rec):
-    _add(client)
+    await _add(client)
     notifications.sweep_finished({"queued": 0, "errors": []})
     notifications.sweep_finished({"queued": 0, "errors": []}, dry_run=True)
     await notifications.drain()
@@ -244,7 +346,7 @@ async def test_sweep_that_queued_nothing_stays_quiet(client, rec):
 
 @pytest.mark.asyncio
 async def test_sweep_with_only_queue_errors_still_reports(client, rec):
-    _add(client)
+    await _add(client)
     notifications.sweep_finished({"queued": 0, "errors": [
         {"platform_id": 1, "error": "sources_unreadable"}]})
     await notifications.drain()
@@ -253,9 +355,10 @@ async def test_sweep_with_only_queue_errors_still_reports(client, rec):
 
 @pytest.mark.asyncio
 async def test_job_that_finishes_before_the_sweep_closes_is_still_counted(client, rec):
-    _add(client)
-    job = _job(JobStatus.FAILED, "early", "Early.iso")
+    await _add(client)
+    job = _job(JobStatus.PROCESSING, "early", "Early.iso")
     notifications.sweep_jobs_queued([job])
+    job.status = JobStatus.FAILED
     await notifications.on_job_finished(job)  # ends before the sweep returns
     await notifications.drain()
     assert rec.sent == []  # a sweep job never gets a lone failure message
@@ -264,7 +367,56 @@ async def test_job_that_finishes_before_the_sweep_closes_is_still_counted(client
     assert len(rec.sent) == 1 and rec.sent[0][2].data["failed"] == 1
 
 
-def test_events_are_a_shared_registry():
+@pytest.mark.asyncio
+async def test_job_already_terminal_when_queued_does_not_hang_the_sweep(client, rec):
+    """The queue awaits after accepting a batch, so a job can end first."""
+    await _add(client)
+    quick = _job(JobStatus.FAILED, "quick", "Quick.iso", error_message="no disc")
+    notifications.sweep_jobs_queued([quick])
+    notifications.sweep_finished({"queued": 1, "errors": []})
+    await notifications.drain()
+    assert len(rec.sent) == 1 and rec.sent[0][2].data["failed"] == 1
+    assert not notifications._job_sweeps  # nothing left waiting in memory
+
+
+@pytest.mark.asyncio
+async def test_a_repeating_error_is_reported_once_until_it_changes(client, rec):
+    await _add(client)
+    err = [{"platform_id": 7, "error": "tool_not_ready"}]
+    for _ in range(10):  # ten scheduler ticks hitting the same failure
+        notifications.sweep_finished({"queued": 0, "errors": list(err)})
+    await notifications.drain()
+    assert len(rec.sent) == 1 and "tool_not_ready" in rec.sent[0][2].body
+
+    notifications.sweep_finished({"queued": 0, "errors": [
+        {"platform_id": 7, "error": "unreadable"}]})
+    await notifications.drain()
+    assert len(rec.sent) == 2 and "unreadable" in rec.sent[1][2].body
+
+    # A clean sweep sends nothing (no recovery message) but forgets the error,
+    # so a recurrence is news again.
+    notifications.sweep_finished({"queued": 0, "errors": []})
+    await notifications.drain()
+    assert len(rec.sent) == 2
+    notifications.sweep_finished({"queued": 0, "errors": [
+        {"platform_id": 7, "error": "unreadable"}]})
+    await notifications.drain()
+    assert len(rec.sent) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_second_platform_failing_is_new_even_if_the_first_repeats(client, rec):
+    await _add(client)
+    a = {"platform_id": 1, "error": "tool_not_ready"}
+    b = {"platform_id": 2, "error": "tool_not_ready"}
+    notifications.sweep_finished({"queued": 0, "errors": [a]})
+    notifications.sweep_finished({"queued": 0, "errors": [a, b]})
+    await notifications.drain()
+    assert len(rec.sent) == 2
+
+
+def test_events_are_a_shared_registry(monkeypatch):
+    monkeypatch.setattr(notifications, "_EVENTS", dict(notifications._EVENTS))
     notifications.register_event("check_failed", "A check failed")
     assert "check_failed" in {e["key"] for e in notifications.event_list()}
 
