@@ -459,6 +459,25 @@ curl -X PUT http://localhost:8080/api/ledger/settings \
 `GET /api/ledger/recent?limit=N` and `GET /api/ledger/savings` return the rows and
 the totals as JSON.
 
+### Notifications
+
+Open **Settings** and add a webhook URL or an [Apprise](https://github.com/caronc/apprise)
+URL (Discord, Telegram, ntfy, email and many more) to hear about finished work.
+Nothing leaves the server until you add a destination. You get:
+
+- one message when a sweep finishes, with its counts and the space it saved;
+  anything that failed inside the sweep is listed in that message, not sent
+  separately;
+- one message when a job you started by hand fails.
+
+A webhook gets a JSON `POST` with `event`, `title`, `message` and `data`. Use
+**Test** to send a sample message and see the error if it fails. Saved URLs are
+never sent back to the browser, since they often hold a token, and sends have a
+10 second timeout and run in the background, so a slow or broken destination
+never delays or fails a job. Webhooks need nothing extra. Apprise ships in the
+Docker image; without it, Apprise URLs are refused with a message and webhooks
+still work. The same destinations are available at `/api/notifications`.
+
 ### Verifying and deleting safely
 
 Converting never deletes anything on its own — the safe order is convert, verify,
@@ -857,6 +876,14 @@ Import or sync No-Intro / Redump / MAMERedump datasets and match converted files
 | Light | Dark |
 |-------|------|
 | ![DAT Library, light](docs/screenshots/dat-light.png) | ![DAT Library, dark](docs/screenshots/dat-dark.png) |
+
+#### Settings
+
+Notification destinations for finished sweeps and failed jobs.
+
+| Light | Dark |
+|-------|------|
+| ![Settings, light](docs/screenshots/settings-light.png) | ![Settings, dark](docs/screenshots/settings-dark.png) |
 
 #### Help
 

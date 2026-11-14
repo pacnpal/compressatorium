@@ -9,6 +9,7 @@
   import WorkArea from '$lib/components/views/WorkArea.svelte';
   import RommView from '$lib/components/views/RommView.svelte';
   import DATView from '$lib/components/views/DATView.svelte';
+  import SettingsView from '$lib/components/views/SettingsView.svelte';
   import HelpView from '$lib/components/views/HelpView.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -183,6 +184,7 @@
         {:else if ui.activeView === 'workspace'}<WorkArea />
         {:else if ui.activeView === 'romm'}<RommView />
         {:else if ui.activeView === 'dat'}<DATView />
+        {:else if ui.activeView === 'settings'}<SettingsView />
         {:else if ui.activeView === 'help'}<HelpView />
         {/if}
         {#snippet failed(error, reset)}

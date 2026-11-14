@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Notifications: webhook and Apprise** (#293). Add a webhook URL or an Apprise
+  URL under the new **Settings** page and get one message when a sweep finishes
+  (counts, space saved, and the failures inside it) and one when a job you
+  started by hand fails. **Test** sends a sample and shows the error if it fails.
+  Nothing is sent until a destination is added. Saved URLs are never sent back
+  to the browser, and a destination that errors or hangs never fails or delays a
+  job. Apprise is bundled in the Docker image and imported only when used;
+  webhooks need no extra package.
 - **Ledger: a permanent record of every finished job** (#292). Each job that
   completes, fails or is cancelled writes one row (finish time, tool, mode,
   Source and output paths, input and output bytes, duration, status, the check
