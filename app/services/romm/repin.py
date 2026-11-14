@@ -27,6 +27,7 @@ from services.romm import DAT_SAFE_OUTPUT_EXTS, METADATA_ID_FIELDS, romm_client
 from services.tools import registry
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
+from utils.path_utils import path_fingerprint
 
 logger = get_logger("romm_repin")
 
@@ -135,22 +136,6 @@ def _supersede_pending(session, output_path: str) -> int:
             },
         )
     )
-
-
-def path_fingerprint(path: str) -> str:
-    """``"size:mtime_ns"`` for whatever is at *path*, or ``""`` if nothing is.
-
-    Cheap enough to take on every recorded row (one stat), and precise enough
-    for the only question asked of it: is the file here still the one that was
-    here before the conversion ran? Not a content hash -- it never needs to be,
-    because a converter that rewrites a path always changes both fields, and a
-    false "changed" only costs one hash that then fails to match.
-    """
-    try:
-        st = os.stat(path)
-    except OSError:
-        return ""
-    return f"{st.st_size}:{st.st_mtime_ns}"
 
 
 def _insert_pending(
