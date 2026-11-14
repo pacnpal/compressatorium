@@ -257,6 +257,31 @@ async def test_export_reads_one_snapshot_while_a_prune_commits(monkeypatch):
     assert await ledger.recent(10) == []
 
 
+@pytest.mark.asyncio
+async def test_a_cancelled_export_still_releases_its_snapshot(monkeypatch):
+    import anyio
+
+    monkeypatch.setattr(ledger, "_CSV_PAGE", 2)
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    for i in range(5):
+        await ledger.record(_done(f"j{i}", base + timedelta(days=i)))
+    closed = []
+    real_open = ledger._open_snapshot
+
+    def tracking_open():
+        session = real_open()
+        real_close = session.close
+        session.close = lambda: (closed.append(True), real_close())[1]
+        return session
+
+    monkeypatch.setattr(ledger, "_open_snapshot", tracking_open)
+    gen = ledger.export_csv(ledger.LedgerFilter())
+    with anyio.CancelScope() as scope:
+        async for _ in gen:
+            scope.cancel()  # the next page fetch runs inside a cancelled scope
+    assert closed == [True]
+
+
 def test_migration_0010_seeds_counters_from_the_ledger(tmp_path):
     from sqlalchemy import create_engine, text
 

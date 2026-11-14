@@ -18,6 +18,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+import anyio
 from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import ConversionJob
@@ -353,7 +354,10 @@ async def export_csv(flt: LedgerFilter):
                 return
             after = (rows[-1]["finished_at"], rows[-1]["id"])
     finally:
-        await run_in_threadpool(session.close)
+        # Shielded: a cancelled download must still release its read
+        # transaction, or the snapshot pins the WAL until garbage collection.
+        with anyio.CancelScope(shield=True):
+            await run_in_threadpool(session.close)
 
 
 def _metrics_sync() -> tuple[dict[str, int], int, int]:
