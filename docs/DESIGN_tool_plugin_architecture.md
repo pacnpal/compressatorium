@@ -2137,8 +2137,8 @@ ended. The job carries what the row needs and the in-memory history would lose:
   job starts, before anything can be deleted: a directory tree, or every file
   `utils.delete_plan.build_delete_plan` would remove (CUE/GDI tracks, registry
   source companions, the archive holding a member).
-- `ConversionJob.check_passed` -- `"intact"` once the tool's own verify passed.
-  `"round_tripped"` is reserved for the Round-trip check (#298).
+- `ConversionJob.check_passed` -- `"intact"` once the tool's own verify passed,
+  `"round_tripped"` once the Round-trip check passed too (§3.3.12).
 - `ConversionJob.deleted_paths` -- each path the delete-on-verify step removed;
   `source_deleted` is derived from it.
 
@@ -2166,7 +2166,7 @@ second: one root folder inside a Volume.
 | --- | --- |
 | `rules/rules.py` | Rule schema, `default_rule`, `normalize_rule(s)`, filter-pattern checks, `OUTPUT_IDENTITY_FIELDS` |
 | `rules/schedule.py` | `_in_window` (weekday mask, time window, time zone), `_is_due` (interval) |
-| `rules/store.py` | the `rules` and `rules.state` preference rows, keyed `"<library id>:<platform id>"`, and the legacy-key move |
+| `rules/store.py` | the `rules` and `rules.state` preference rows, keyed `"<library id>:<platform id>"`, the legacy-key move, the one-time upgrade to Round-trip and the notice it leaves |
 | `rules/sweep.py` | `get_rules` / `set_rules` / `get_state` / `forget_converted`, the sweep, the converted history, `note_job_finished`, `run_forever` |
 | `rules/library.py` | `Library`, `Image`, `Platform`, `QueuedImage`, `LibraryUnreadable`, capability names |
 
@@ -2230,6 +2230,45 @@ upgrade time, so a downgrade still finds them, and anything a downgraded
 release writes to them is ignored after the next upgrade. The first read can
 therefore write, so a read-only or locked database fails that first request.
 
+**Check level (#302).** Every Rule has `check_level`, `round_trip` (the
+default, and the fallback for an unreadable value) or `container_only`
+(`rules.CHECK_LEVELS`). It is part of the shared schema, so every Library has
+it, and it is kept while delete-source is off. A sweep passes it to
+`create_batch_jobs` as the job's existing `container_only` flag
+(`rules.takes_container_only`: true only when the Rule deletes its Source and
+says `container_only`), so `JobManager._delete_check` (§3.3.12) decides a
+sweep's job and a manual one the same way. A delete-source Rule's
+per-Platform sweep summary carries `check_level`, which is what Preview shows;
+a Rule that keeps its Source gets no such key. It is the check that will run,
+not the stored preference: `rules.effective_check_level` asks
+`round_trip.round_trip_applies(mode, delete_on_verify=, container_only=)`, the
+same helper `_delete_check` asks, so a stored `round_trip` on a mode with no
+digest shows `container_only`, and a mode that gains a digest (#300) changes
+both answers at once.
+
+**The upgrade to Round-trip.** `store._upgrade_check_level` runs once, in
+`_load` after the Library's legacy copy and under `store._lock`, before any
+read or write. It sets `check_level: round_trip` on every entry of the
+`rules` row with `delete_on_verify` on, for every Library, and then writes
+`rules.check_level_upgrade` (`{upgraded_at, switched: [keys]}`) last, so a
+crash before the marker repeats the pass with the same result. Rules saved
+afterwards are never touched. RomM's pre-#296 rows predate the field too, so
+`_copy_legacy` applies the same switch to the Rules it copies, and adds them
+to `switched` when the pass already ran (another Library was read first).
+
+**One-time notices.** `GET /api/rules/notices` returns
+`{"check_level": {"show", "switched", "container_check"}}`. Before counting it
+runs the legacy copy of each of the app's Libraries (`routes/rules._libraries`)
+and the upgrade pass, so the first read sees Rules still under pre-#296 keys.
+`switched` counts the switched Rules whose mode can Round-trip now (registry),
+`container_check` the rest, which keep the container check until their tool
+gains a digest. `show` is true while `switched` is not zero and nobody has
+dismissed it.
+`POST /api/rules/notices/check-level/dismiss` records the dismissal in the
+`rules.notices` row. The routes are not RomM's, so a folder Library's editor
+uses the same ones; the front end reads them through
+`stores/ruleNotices.svelte.js`.
+
 **Locks.** `_sweep_lock` is process-wide, not per Library: the active-source
 snapshot and claimed destinations are shared by every sweep. `paused()` takes
 it. `store._lock` serialises each read-modify-write of the shared rows, and is
@@ -2244,6 +2283,83 @@ RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
 `run_forever()`, ...) and passes `romm_library` to each, so the HTTP API did
 not change. `run_forever(libraries)` takes a callable returning the Libraries to
 sweep on each tick.
+
+### 3.3.12 The Round-trip check (`ToolPlugin.content_digest`, `services/round_trip.py`)
+
+A container check proves the output reads back cleanly. It does not prove the
+output holds the same disc as the Source the job is about to delete. The
+Round-trip check does (#298): the output is Round-tripped when the content it
+decodes to equals the content its Source decodes to. It is a claim about image
+content, never container bytes: `Game.iso` and the `Game.rvz` made from it have
+different file hashes and the same digest.
+
+**The contract.** One optional method and one mode flag:
+
+```python
+@dataclass(frozen=True)
+class ContentDigest:
+    kind: str    # shape of what was hashed, e.g. "gc_wii_disc_sha1"
+    value: str   # lowercase hex
+    def same_content(self, other) -> bool: ...   # ValueError on a kind mismatch
+
+async def content_digest(self, path, *, cancel_event=None) -> ContentDigest | None
+```
+
+- `content_digest(path)` hashes what `path` decodes to. `None` means the tool
+  has no digest for this kind of file; `ContentDigestUnavailable` means it
+  should have one and could not get it. `BaseTool` returns `None`.
+- `kind` keeps digests of different shapes apart. `same_content` raises
+  `ValueError` rather than answer "different" for, say, a CD track hash against
+  a disc-image hash, and the check treats that as "not proven".
+- `ModeSpec.supports_round_trip` (mirrored as `supportsRoundTrip` in
+  `registry.js`, parity-tested) says the mode's tool has a digest for both its
+  inputs and its output. `registry.mode_supports_round_trip(mode)` reads it.
+  `ChainSpec` carries it as `False` until chains compare the first step's
+  decoded Source with the final output (#301).
+
+**Where it runs.** `JobManager._delete_check` is the one decision point. It runs
+after the container check passes and returns `(check_passed,
+keep_source_reason)`. The Round-trip runs only when it decides something:
+`delete_on_verify` is set, the mode supports it, and the job did not take the
+named opt-out `ConversionJob.container_only` (`container_only` on
+`POST /api/jobs` and `/api/jobs/batch`, and a Rule's `check_level`, §3.3.11).
+That test is `round_trip.round_trip_applies`, shared with Rule Preview.
+Otherwise the answer is `("intact", None)` with no extra reads, which is what every `verify_after` job
+and every mode without a digest gets. `ConversionJob.check_passed` carries the
+result to the Ledger and to the job's `complete` event. On a pass,
+`verification_store.mark_verified(..., check=check_passed)` writes it to
+`verifications.check_passed` (migration `0010`, existing rows backfilled
+`"intact"`). A mismatch or an unavailable digest leaves
+`check_passed="intact"`, stores nothing for the output (see below), keeps the
+Source and fails the job with the reason.
+
+**`services/round_trip.round_trip(tool, source, output)`** owns everything a
+tool should not repeat: one side at a time (both are usually on the same
+volume), each bounded by `tool.verify_timeout(path)`, any exception folded into
+"could not run", and a fired `cancel_event` reported as cancelled (no verdict,
+no delete) rather than as a failure. `source` is the file the converter read,
+so an archive member is hashed from its extracted copy. The job marks the step
+in `_verifying` so the stall reporter treats it like the container check.
+
+**Per tool.** Each tool proves content the cheapest sound way it has:
+
+| Tool | Source side | Output side |
+| --- | --- | --- |
+| dolphin | `.iso`: SHA1 of the file (detached read, no subprocess). `.rvz`/`.wia`/`.gcz`/`.wbfs`: `dolphin-tool verify --algorithm sha1` | same rule by extension |
+
+Every other tool returns `None` today and its modes keep the container check;
+chdman (#300) and the rest (#301) add rows here. What the check guarantees
+does not depend on the input format: only identical digests allow a delete,
+and any mismatch keeps the Source. An NKit `.nkit.iso` Source is hashed as a
+file; whether that equals the digest of its output depends on what
+`dolphin-tool` writes, and either way the guarantee holds.
+
+**A failed Round-trip stores nothing.** On a mismatch or an unreadable digest
+the output's verification record is cleared, not written: the output gets no
+check badge, no `produced_meta` for the re-run fast path (§3.3.6), and a record
+an earlier run left for that path is dropped. `ConversionJob.check_passed`
+(and so the Ledger row) still says `"intact"`, because the container check did
+pass.
 
 ### 3.4 `registry.py`
 

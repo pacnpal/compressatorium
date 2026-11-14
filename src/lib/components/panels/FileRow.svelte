@@ -65,17 +65,20 @@
 
   const outputs = $derived(Array.isArray(entry?.outputs) ? entry.outputs : []);
 
-  // OK badge surfaces when EITHER this file itself is verified OR
-  // any of its declared outputs (entry.outputs[].path) is verified.
+  // The check badge surfaces when EITHER this file itself passed a check OR
+  // any of its declared outputs (entry.outputs[].path) did.
   // The verification store is keyed by output paths, so a source
   // .cue / .gdi row would otherwise lose the badge even though the
   // backend listing already reports its .chd as verified.
-  const verified = $derived.by(() => {
-    if (verification.isVerified(path)) return true;
+  // Which check passed: 'round_tripped' outranks 'intact' when this row and
+  // its outputs disagree. Null when nothing has passed a check.
+  const check = $derived.by(() => {
+    const found = [verification.checkFor(path)];
     for (const out of outputs) {
-      if (out?.path && verification.isVerified(out.path)) return true;
+      if (out?.path) found.push(verification.checkFor(out.path));
     }
-    return false;
+    if (found.includes('round_tripped')) return 'round_tripped';
+    return found.includes('intact') ? 'intact' : null;
   });
 
   // Shared file-type icon map (src/lib/util/fileIcon.js) so new formats only
@@ -161,9 +164,15 @@
     {#if mediaType === 'cd'}<Badge tone="cd">CD</Badge>{/if}
     {#if mediaType === 'dvd'}<Badge tone="dvd">DVD</Badge>{/if}
     {#if isArchive}<Badge tone="archive">ARC</Badge>{/if}
-    {#if verified}
-      <Badge tone="verified" title="Verified">
-        <CircleCheck size={11} aria-hidden="true" /> OK
+    {#if check}
+      <Badge
+        tone="verified"
+        title={check === 'round_tripped'
+          ? 'Round-tripped: decoded to the same content as its source when converted'
+          : 'Intact: passed its own container check'}
+      >
+        <CircleCheck size={11} aria-hidden="true" />
+        {check === 'round_tripped' ? 'Round-tripped' : 'Intact'}
       </Badge>
     {/if}
     {#if datMatch && datMatch.matched}
