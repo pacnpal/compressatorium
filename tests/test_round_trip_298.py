@@ -311,8 +311,9 @@ async def test_mismatched_digests_keep_the_source_and_say_the_content_differs(e2
 async def test_a_mismatched_output_is_not_stored_as_a_checked_result(e2e):
     """A Round-trip mismatch must not leave the output recorded as checked:
     a later keep-Source overwrite job re-converts instead of reusing it."""
-    from app.models import ConversionMode
     from services.verification_store import verification_store
+
+    from app.models import ConversionMode
 
     iso, _ = _source_iso(e2e)
     e2e["stdout"] = f"{'0' * 40}\n".encode()
