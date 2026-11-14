@@ -26,10 +26,9 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from config import settings
 from models import OutputStatus
 from fastapi.concurrency import run_in_threadpool
-from services.disk import create_scratch_dir, ensure_headroom
+from services.disk import create_scratch_dir, ensure_headroom, scratch_margin_bytes
 from services.lock_manager import lock_manager
 from services.subprocess_runner import remove_partial_tree
 from utils.path_utils import match_extension
@@ -363,11 +362,10 @@ class ChainTool(BaseTool):
                 input_size * sum(s.output_ratio for s in spec.steps[: n - 1])
             )
             final_bytes = int(input_size * spec.steps[-1].output_ratio)
-        margin = int(getattr(settings, "chain_disk_margin_mb", 512)) * 1024 * 1024
         targets: list[tuple[str, int]] = [(output_path, final_bytes)]
         if intermediate_bytes > 0:
             targets.append((work_dir, intermediate_bytes))
-        ensure_headroom(targets, margin_bytes=margin)
+        ensure_headroom(targets, margin_bytes=scratch_margin_bytes())
 
     # ------------------------------------------------------ verify / info
     def _spec_for_output(self, path: str):

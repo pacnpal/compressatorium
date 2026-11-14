@@ -10,6 +10,12 @@ It is **multi-volume aware**: Compressatorium routinely has the per-job work dir
 requirements are grouped by mount (``st_dev``) and each mount is checked once.
 The output dir may not exist yet (``SubprocessRunner`` mkdirs it later), so the
 mount is resolved from the nearest existing ancestor of each target.
+
+It also owns scratch dirs: ``create_scratch_dir`` makes one on the configured
+scratch volume, ``scratch_margin_bytes`` is the cushion every headroom check on
+one keeps free, and ``headroom_scratch_dir`` is the whole lifecycle (create,
+check, remove on every exit) for a step that decodes into a private dir, such
+as the CD Round-trip check (#300).
 """
 from __future__ import annotations
 
