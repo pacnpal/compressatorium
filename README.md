@@ -443,6 +443,22 @@ laptop) doesn't stop them; reopen the page and it reconnects. The queue has
 active / completed / failed tabs, plus **Cancel All** and **Clear Done** (both
 confirm first).
 
+### The Ledger
+
+Every job that finishes, fails or is cancelled is written to the Ledger in the
+app database, so the history survives restarts. The dashboard's **Space saved**
+card totals the bytes reclaimed by conversions whose Source was deleted, by
+Platform and by output format, and **Recent conversions** lists the latest rows.
+Rows are kept forever by default; to prune, set a retention in days:
+
+```bash
+curl -X PUT http://localhost:8080/api/ledger/settings \
+  -H 'Content-Type: application/json' -d '{"retention_days": 365}'
+```
+
+`GET /api/ledger/recent?limit=N` and `GET /api/ledger/savings` return the rows and
+the totals as JSON.
+
 ### Verifying and deleting safely
 
 Converting never deletes anything on its own — the safe order is convert, verify,

@@ -2125,6 +2125,34 @@ verified at all") and `ToolPlugin.delete_on_verify_is_safe(mode, compression)`
 because that is where the source is unlinked and a job can arrive there without
 having passed either plan-time check.
 
+### 3.3.10 The Ledger (`services/ledger.py`)
+
+`ledger.record` is a `JobManager.add_terminal_listener` callback (registered in
+`main.py` beside the RomM one), so every runner outcome writes one `ledger` row
+(`db.LedgerEntry`, migration `0009`) while the job object still says how it
+ended. The job carries what the row needs and the in-memory history would lose:
+
+- `ConversionJob.input_bytes` -- size of the whole Source set, read when the
+  job starts, before anything can be deleted: a directory tree, or every file
+  `utils.delete_plan.build_delete_plan` would remove (CUE/GDI tracks, registry
+  source companions, the archive holding a member).
+- `ConversionJob.check_passed` -- `"intact"` once the tool's own verify passed.
+  `"round_tripped"` is reserved for the Round-trip check (#298).
+- `ConversionJob.deleted_paths` -- each path the delete-on-verify step removed;
+  `source_deleted` is derived from it.
+
+`tool` comes from `registry.for_mode`; `platform` is filled only when the mode
+serves exactly one Platform slug until detection lands (#294). `library_id`,
+`image_key` and `referrers_updated` are written empty for later tickets to fill.
+Savings count only completed rows whose Source was deleted, and can be
+negative (an RVZ replaced by its larger ISO). A job announced terminal twice
+(a queued cancel) writes one row: `(job_id, finished_at)` is unique and the
+insert is `ON CONFLICT DO NOTHING`. The dashboard reads the Ledger through
+`stores/ledger.svelte.js`, refreshed on each terminal job and once more after
+a short settle delay, since the row is written after the completion event. A `retention_days`
+in the `ledger` preference prunes older rows on each write; unset keeps them
+forever. Recording never raises: a failure is logged and the job is unaffected.
+
 ### 3.4 `registry.py`
 
 ```python

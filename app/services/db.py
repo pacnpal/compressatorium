@@ -257,6 +257,41 @@ class Verification(Base):
     produced_meta = Column(JSON, nullable=True)
 
 
+class LedgerEntry(Base):
+    """One row per job that reached a terminal status (#292).
+
+    Permanent by default; ``services.ledger`` prunes by age only when a
+    retention is set. Timestamps are ISO-8601 UTC strings like the rest of
+    the schema, so they sort lexically.
+    """
+
+    __tablename__ = "ledger"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(String, nullable=False)
+    finished_at = Column(String, nullable=False)
+    tool = Column(String, nullable=True)
+    mode = Column(String, nullable=False)
+    source_path = Column(String, nullable=False)
+    output_path = Column(String, nullable=True)
+    input_bytes = Column(Integer, nullable=True)
+    output_bytes = Column(Integer, nullable=True)
+    duration_s = Column(Float, nullable=True)
+    status = Column(String, nullable=False)
+    # none | intact | round_tripped
+    check_passed = Column(String, nullable=False, default="none")
+    source_deleted = Column(Boolean, nullable=False, default=False)
+    deleted_paths = Column(JSON, nullable=False, default=list)
+    referrers_updated = Column(JSON, nullable=False, default=list)
+    library_id = Column(String, nullable=True)
+    image_key = Column(String, nullable=True)
+    platform = Column(String, nullable=True)
+    error = Column(String, nullable=True)
+    __table_args__ = (
+        Index("ix_ledger_finished_at", "finished_at"),
+        Index("ux_ledger_job_finished", "job_id", "finished_at", unique=True),
+    )
+
+
 class Preference(Base):
     """Generic key/value store for app preferences (UI layout, etc.).
 

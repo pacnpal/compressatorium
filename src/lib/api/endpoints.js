@@ -64,6 +64,12 @@ export const api = {
   // ─── Version ──────────────────────────────────────────────────────────
   getVersion: () => fetchJson(`${API_BASE}/version`, undefined, 'Failed to fetch version'),
 
+  // ─── Ledger (permanent record of finished jobs) ────────────────────────
+  getLedgerRecent: (limit = 5) =>
+    fetchJson(buildApiUrl('/ledger/recent', { limit }), undefined, 'Failed to fetch ledger'),
+  getLedgerSavings: () =>
+    fetchJson(`${API_BASE}/ledger/savings`, undefined, 'Failed to fetch savings'),
+
   // ─── Volumes ──────────────────────────────────────────────────────────
   getVolumes: () => fetchJson(`${API_BASE}/volumes`, undefined, 'Failed to fetch volumes'),
 

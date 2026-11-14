@@ -5,6 +5,8 @@ const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
 export function formatSize(bytes) {
   if (bytes == null) return '';
   if (bytes === 0) return '0 B';
+  // Negative sizes are real (a delta that grew), and Math.log can't take them.
+  if (bytes < 0) return `-${formatSize(-bytes)}`;
   const k = 1024;
   const i = Math.max(
     0,

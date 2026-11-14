@@ -2,9 +2,27 @@
   import QueueSummaryCard from '$lib/components/dashboard/QueueSummaryCard.svelte';
   import VolumeOverviewCard from '$lib/components/dashboard/VolumeOverviewCard.svelte';
   import RecentConversionsCard from '$lib/components/dashboard/RecentConversionsCard.svelte';
+  import SavingsCard from '$lib/components/dashboard/SavingsCard.svelte';
   import VerificationStatusCard from '$lib/components/dashboard/VerificationStatusCard.svelte';
   import QuickToolsCard from '$lib/components/dashboard/QuickToolsCard.svelte';
   import MetadataScanCard from '$lib/components/dashboard/MetadataScanCard.svelte';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { ledger } from '$lib/stores/ledger.svelte.js';
+
+  // Refresh the Ledger cards whenever the set of terminal jobs changes (and
+  // on mount). Keyed on identity, not count: once history hits its cap a new
+  // finished job replaces an evicted one and the count stays flat.
+  const finished = $derived(
+    jobs.jobs
+      .filter((j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled')
+      .map((j) => j.id)
+      .join(','),
+  );
+
+  $effect(() => {
+    void finished;
+    ledger.refresh();
+  });
 </script>
 
 <section class="view" aria-labelledby="dashboard-title">
@@ -17,6 +35,7 @@
     <QueueSummaryCard />
     <VerificationStatusCard />
     <VolumeOverviewCard />
+    <SavingsCard />
     <RecentConversionsCard />
     <MetadataScanCard />
     <QuickToolsCard />

@@ -47,6 +47,31 @@ from utils.path_utils import (
 
 logger = get_logger("job_manager")
 
+
+def _source_bytes(path: str) -> Optional[int]:
+    """Size of a job's whole Source set: a directory tree, or every file the
+    shared delete plan would remove (CUE/GDI tracks, registry companions such
+    as split parts, the archive holding a member). None when unreadable."""
+    real = strip_archive_path(path) if "::" in path else path
+    if os.path.isdir(real):
+        files = (
+            os.path.join(root, name)
+            for root, _dirs, names in os.walk(real) for name in names
+        )
+    else:
+        try:
+            files = build_delete_plan(path).get("delete_paths", []) or [real]
+        except Exception:
+            files = [real]
+    total, seen = 0, False
+    for f in files:
+        try:
+            total += os.path.getsize(f)
+            seen = True
+        except OSError:
+            pass
+    return total if seen else None
+
 # Modes for externally-managed jobs that bypass the conversion queue,
 # they are driven by callers via create/update/finish_external_job and
 # must NOT count against max_queue_depth backpressure, stuck-detection,
@@ -2532,6 +2557,31 @@ class JobManager:
                 "(the storage holding the output stopped responding)"
             ) from None
 
+    async def _source_bytes_bounded(
+        self, job: ConversionJob, cancel_event: Optional[asyncio.Event],
+    ) -> Optional[int]:
+        """Size the job's Source set for the Ledger, without risking the queue.
+
+        Optional bookkeeping, so a timeout leaves the size unknown rather than
+        failing the job; a Cancel returns now and is a cancellation. Same
+        detached, bounded probe as `_verify_target_bounded`, for the same
+        reason: the job already holds its slot and locks.
+        """
+        try:
+            return await asyncio.wait_for(
+                run_detached(_source_bytes, job.file_path, cancel_event=cancel_event),
+                timeout=_CANONICAL_PROBE_SECONDS,
+            )
+        except ReadCancelled:
+            raise ConversionCancelled("Conversion cancelled") from None
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Sizing the source of job %s did not finish in %.0fs; "
+                "the Ledger row will have no input size",
+                job.id, _CANONICAL_PROBE_SECONDS,
+            )
+            return None
+
     async def _process_job(self, job_id: str):
         """Process a single conversion job."""
         job = self.jobs.get(job_id)
@@ -2724,6 +2774,14 @@ class JobManager:
         )
 
         try:
+            # Ledger bookkeeping (#292): size the Source set before anything can
+            # delete it. Inside the cleanup-protected region, on a detached
+            # thread, bounded and cancellable like the verify-target probe: a
+            # mount that stops answering must not strand this job's slot and
+            # locks. Optional data, so a timeout just leaves it unknown.
+            if job.input_bytes is None:
+                job.input_bytes = await self._source_bytes_bounded(job, cancel_event)
+
             # Fast path: a re-queued job whose verified artifact already exists
             # completes as a no-op rather than re-spawning the converter (issue
             # #184, site 1). Checked before extraction / _clear_existing_output
@@ -3056,6 +3114,7 @@ class JobManager:
                         )
 
                     verified = True
+                    job.check_passed = "intact"
                     # Snapshot what produced this verified artifact (mode +
                     # output shaping + source/output fingerprints) so a later
                     # re-queue can recognize prior success and complete as a
@@ -3236,6 +3295,7 @@ class JobManager:
 
                         for path in delete_order:
                             await run_in_threadpool(os.remove, path)
+                            job.deleted_paths.append(path)
 
                         source_deleted = True
 
