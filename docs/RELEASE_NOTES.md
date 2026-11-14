@@ -29,8 +29,7 @@
   - Delete-source runs on Dolphin modes take longer: the Source and the output
     are each read once more.
   - **RomM Rules:** delete-source Rules on Dolphin modes now Round-trip by
-    default, so their sweeps take longer for the same reason. A per-Rule
-    container-only setting comes later.
+    default, so their sweeps take longer for the same reason.
 - **Each Rule now says which check runs before it deletes a Source** (#302).
   Next to delete-source, the rule editor offers **Container check only
   (faster, weaker)**; left unticked, the Rule Round-trips (the default).
