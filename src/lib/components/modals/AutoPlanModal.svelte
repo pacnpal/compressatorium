@@ -48,8 +48,11 @@
         <li class="row" class:skip={!row.mode}>
           <span class="name" title={row.file_path}>{baseName(row.file_path)}</span>
           <span class="platform" title={row.reason}>
-            {row.platform ?? (row.how === 'conflict' ? 'Conflict' : 'Unsorted')}
-            <span class="how">{row.how}</span>
+            {#if row.platform}
+              {row.platform}<span class="how">{row.how}</span>
+            {:else}
+              {row.how === 'conflict' ? 'Conflict' : 'Unsorted'}
+            {/if}
           </span>
           {#if row.mode}
             <span class="target">{targetLabel(row)}</span>
