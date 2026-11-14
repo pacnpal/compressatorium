@@ -27,7 +27,7 @@ def _run_dialog(tmp_path: Path, expr: str):
         pytest.skip("node not available")
     script = tmp_path / "dialog_eval.mjs"
     script.write_text(
-        f"import {{ canCreate }} from {json.dumps(_DIALOG.as_uri())};\n"
+        f"import {{ canCreate, classifyPreviewError }} from {json.dumps(_DIALOG.as_uri())};\n"
         f"process.stdout.write(JSON.stringify({expr}));\n",
         encoding="utf-8",
     )
@@ -74,3 +74,18 @@ def test_client_uses_optional_chaining_for_the_error_body():
     src = (_SRC / "api" / "client.js").read_text(encoding="utf-8")
     assert "body && body.detail" not in src
     assert "body && typeof body.detail" not in src
+
+
+def test_a_name_error_keeps_the_input_and_prefills_the_derived_title(tmp_path):
+    err = "{ message: 'The playlist name is too long', detail: { code: 'invalid_name', title: 'LONG' } }"
+    assert _run_dialog(tmp_path, f"classifyPreviewError({err}, null)") == {
+        "kind": "name", "message": "The playlist name is too long", "title": "LONG",
+    }
+    # A typed name that is refused keeps what the user typed.
+    assert _run_dialog(tmp_path, f"classifyPreviewError({err}, 'typed')")["title"] == "typed"
+
+
+def test_other_errors_are_selection_errors(tmp_path):
+    assert _run_dialog(
+        tmp_path, "classifyPreviewError({ message: 'Select two or more discs' }, null)",
+    ) == {"kind": "selection", "message": "Select two or more discs", "title": None}

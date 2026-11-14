@@ -368,3 +368,42 @@ def test_a_title_one_byte_over_the_limit_is_refused(vol: Path):
     paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
     with pytest.raises(disc_playlist.PlaylistError, match="too long"):
         disc_playlist.plan_playlist(paths, title="x" * (_TITLE_MAX + 1))
+
+
+# --- PR review: name errors are reported apart from selection errors --------
+
+
+def test_an_invalid_derived_title_is_a_name_error_that_carries_the_title(vol: Path):
+    long = "x" * 250
+    paths = _discs(vol, f"{long} (Disc 1).cue", f"{long} (Disc 2).cue")
+    with pytest.raises(disc_playlist.PlaylistNameError) as exc:
+        disc_playlist.plan_playlist(paths)
+    assert exc.value.title == long
+    assert "too long" in str(exc.value)
+
+
+def test_a_selection_error_is_not_a_name_error(vol: Path):
+    with pytest.raises(disc_playlist.PlaylistError) as exc:
+        disc_playlist.plan_playlist(_discs(vol, "Game (Disc 1).cue"))
+    assert not isinstance(exc.value, disc_playlist.PlaylistNameError)
+
+
+@pytest.mark.asyncio
+async def test_preview_route_reports_a_name_error_with_a_code_and_the_title(vol: Path):
+    long = "x" * 250
+    paths = _discs(vol, f"{long} (Disc 1).cue", f"{long} (Disc 2).cue")
+    with pytest.raises(HTTPException) as exc:
+        await files_routes.playlist_preview(PlaylistPreviewRequest(paths=paths))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "invalid_name"
+    assert exc.value.detail["title"] == long
+    assert "too long" in exc.value.detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_preview_route_keeps_selection_errors_as_plain_text(vol: Path):
+    with pytest.raises(HTTPException) as exc:
+        await files_routes.playlist_preview(
+            PlaylistPreviewRequest(paths=_discs(vol, "Game (Disc 1).cue")),
+        )
+    assert isinstance(exc.value.detail, str)
