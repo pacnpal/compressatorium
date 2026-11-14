@@ -330,6 +330,92 @@ async def test_too_little_space_to_extract_is_unavailable_without_extracting(
 
 
 # ---------------------------------------------------------------------------
+# chdman verify passes only on its success line (the Intact check, and what
+# makes the DVD header Data SHA1 a proven digest)
+# ---------------------------------------------------------------------------
+
+_RAW_OK = "Raw SHA1 verification successful!"
+_OVERALL_OK = "Overall SHA1 verification successful!"
+
+
+def _fake_verifier(tmp_path, stdout: str, stderr: str = "", rc: int = 0) -> str:
+    """A stand-in chdman binary that prints like ``chdman verify`` and exits ``rc``."""
+    script = tmp_path / "fake_chdman.py"
+    script.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        f"sys.stdout.write({stdout!r})\nsys.stdout.flush()\n"
+        f"sys.stderr.write({stderr!r})\nsys.stderr.flush()\n"
+        f"sys.exit({rc})\n"
+    )
+    script.chmod(0o755)
+    return str(script)
+
+
+async def _verify_with(tmp_path, monkeypatch, stdout, stderr="", rc=0):
+    service = _chdman()._service
+    monkeypatch.setattr(
+        service, "chdman_path", _fake_verifier(tmp_path, stdout, stderr, rc),
+    )
+    chd = tmp_path / "Game.chd"
+    chd.write_bytes(b"x")
+    return await service.verify(str(chd))
+
+
+@pytest.mark.asyncio
+async def test_chdman_verify_passes_on_its_success_lines(tmp_path, monkeypatch):
+    result = await _verify_with(
+        tmp_path, monkeypatch,
+        f"Verifying, 100.0% complete... \r{_RAW_OK}\n{_OVERALL_OK}\n",
+    )
+    assert result["valid"] is True, result
+
+
+@pytest.mark.asyncio
+async def test_a_raw_sha1_mismatch_fails_verify_although_chdman_exits_0(
+    tmp_path, monkeypatch,
+):
+    # MAME's do_verify prints the raw SHA1 mismatch to stderr and exits 0.
+    result = await _verify_with(
+        tmp_path, monkeypatch,
+        "Verifying, 100.0% complete... \n",
+        stderr=f"Error: Raw SHA1 in header = {'ab' * 20}\n"
+               f"              actual SHA1 = {'cd' * 20}\n",
+    )
+    assert result["valid"] is False
+    assert "Raw SHA1" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_an_overall_sha1_mismatch_fails_verify(tmp_path, monkeypatch):
+    result = await _verify_with(
+        tmp_path, monkeypatch, f"{_RAW_OK}\n",
+        stderr=f"Error: Overall SHA1 in header = {'ab' * 20}\n"
+               f"                  actual SHA1 = {'cd' * 20}\n",
+    )
+    assert result["valid"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stdout", [
+    "No verification to be done; CHD has no checksum\n",
+    "No verification to be done; CHD is uncompressed\n",
+    "",
+    "Verifying, 100.0% complete... \n",
+])
+async def test_verify_without_the_success_line_fails_although_chdman_exits_0(
+    tmp_path, monkeypatch, stdout,
+):
+    result = await _verify_with(tmp_path, monkeypatch, stdout)
+    assert result["valid"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_nonzero_exit_still_fails_verify(tmp_path, monkeypatch):
+    result = await _verify_with(tmp_path, monkeypatch, f"{_RAW_OK}\n", rc=1)
+    assert result["valid"] is False
+
+
+# ---------------------------------------------------------------------------
 # Which modes Round-trip
 # ---------------------------------------------------------------------------
 

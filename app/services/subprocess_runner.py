@@ -1331,8 +1331,14 @@ class SubprocessRunner:
         success_message: str,
         failure_message: str,
         cancel_event: asyncio.Event | None = None,
+        judge_output: Callable[[list[str]], str | None] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Stream a verifier's output, yielding this tool's verify events.
+
+        ``judge_output`` is for a verifier whose exit code is not the whole
+        verdict: it gets every output line (stderr folded in) after an exit 0
+        and returns ``None`` to pass or a reason to fail. Without it, exit 0
+        passes.
 
         The streaming counterpart to :meth:`capture_verify`, and the shared
         replacement for the two near-identical read loops chdman and
@@ -1504,7 +1510,16 @@ class SubprocessRunner:
                 yield terminal
                 return
 
-            if process.returncode == 0:
+            # A verifier that reports a mismatch but still exits 0 (chdman)
+            # names the reason in its output; the tool's judge reads it.
+            rejected = (
+                judge_output(output_lines)
+                if process.returncode == 0 and judge_output is not None
+                else None
+            )
+            if rejected:
+                yield self._verify_error(rejected)
+            elif process.returncode == 0:
                 yield {"type": "complete", "valid": True, "message": success_message}
             else:
                 output = "\n".join(output_lines[-20:]).strip()

@@ -226,6 +226,7 @@ class ChdmanService:
             success_message="CHD file is Intact",
             failure_message="CHD verification failed",
             cancel_event=cancel_event,
+            judge_output=_judge_verify_output,
         )
 
 
@@ -322,6 +323,31 @@ class ChdmanService:
         if output_dir:
             return str(Path(output_dir) / filename)
         return str(input_p.parent / filename)
+
+
+def _judge_verify_output(lines: list[str]) -> str | None:
+    """Why a ``chdman verify`` that exited 0 still failed, or None if it passed.
+
+    chdman's ``do_verify`` (unchanged from MAME 0.146 to master) prints a raw
+    or overall SHA1 mismatch to stderr as ``Error: ... SHA1 in header = ...``
+    and exits 0, and also exits 0 with ``No verification to be done; ...`` when
+    the CHD carries no checksum. So the exit code alone would call a CHD whose
+    hunks no longer decode to the data it was made from Intact. It passes only
+    when it printed ``Raw SHA1 verification successful!`` and no error line.
+    """
+    text = [line.strip() for line in lines]
+    errors = [
+        line for line in text
+        if line.lower().startswith("error") or "actual sha1" in line.lower()
+    ]
+    if errors:
+        return "\n".join(errors)
+    skipped = next((line for line in text if "No verification to be done" in line), None)
+    if skipped:
+        return skipped
+    if not any("Raw SHA1 verification successful" in line for line in text):
+        return "chdman verify did not report the raw SHA1 as verified"
+    return None
 
 
 chdman_service = ChdmanService()
