@@ -77,7 +77,7 @@ def row_from_job(job: ConversionJob) -> dict:
         "check_passed": job.check_passed or "none",
         "source_deleted": bool(job.deleted_paths),
         "deleted_paths": list(job.deleted_paths),
-        "referrers_updated": [],
+        "referrers_updated": list(job.referrers_updated),
         "library_id": None,
         "image_key": None,
         "platform": platform,

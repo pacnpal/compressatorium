@@ -180,6 +180,9 @@ class ConversionJob(BaseModel):
     # "intact" once the tool's own container check passed; None if no check ran.
     check_passed: str | None = None
     deleted_paths: list[str] = []
+    # Referrers moved to the output before the Source was removed (#295):
+    # {"referrer": id, "target": what was rewritten}.
+    referrers_updated: list[dict] = []
 
 
 class JobCreateRequest(BaseModel):

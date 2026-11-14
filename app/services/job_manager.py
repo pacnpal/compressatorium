@@ -34,6 +34,7 @@ from services.chdman import ConversionCancelled, chdman_service
 from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import lock_manager
+from services import referrers
 from services.subprocess_runner import ReadCancelled, run_detached
 from services.tools import ModeKind, registry
 from services.verification_store import verification_store
@@ -3293,17 +3294,36 @@ class JobManager:
                                     "Delete path fingerprint mismatch; refusing to delete"
                                 )
 
-                        for path in delete_order:
-                            await run_in_threadpool(os.remove, path)
-                            job.deleted_paths.append(path)
+                        # Referrers (.m3u, ...) move to the output before the
+                        # Source goes; if any can't, the Source stays (#295).
+                        referrer_outcome = await referrers.update_before_source_removal(
+                            source_for_delete,
+                            {path: job.output_path for path in delete_order},
+                        )
+                        job.referrers_updated = referrer_outcome.updated
+                        if not referrer_outcome.ok:
+                            job.message = referrer_outcome.kept_message
+                            await self._notify_subscribers(
+                                job_id,
+                                {
+                                    "type": "progress",
+                                    "job_id": job_id,
+                                    "progress": job.progress,
+                                    "message": job.message,
+                                },
+                            )
+                        else:
+                            for path in delete_order:
+                                await run_in_threadpool(os.remove, path)
+                                job.deleted_paths.append(path)
 
-                        source_deleted = True
+                            source_deleted = True
 
-                        ext = os.path.splitext(job.file_path)[1].lower()
-                        if ext in registry.verify_extensions():
-                            await verification_store.clear(job.file_path)
-                        if ext == ".chd":
-                            await chd_metadata_store.clear(job.file_path)
+                            ext = os.path.splitext(job.file_path)[1].lower()
+                            if ext in registry.verify_extensions():
+                                await verification_store.clear(job.file_path)
+                            if ext == ".chd":
+                                await chd_metadata_store.clear(job.file_path)
 
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
