@@ -7,8 +7,9 @@ Four concerns, one package, in the order a conversion meets them:
 * :mod:`~services.romm.client` — the HTTP surface: the bounded, redirect-safe
   opener, the path mapper that turns a RomM record into a local path, and the
   multipart writer that pushes metadata back;
-* :mod:`~services.romm.auto` — the unattended sweep: per-platform rules, their
-  schedules and filters, and the provenance that makes a rule idempotent;
+* :mod:`~services.romm.library` and :mod:`~services.romm.auto` — RomM as a
+  Library for the shared Rule engine in :mod:`services.rules`, and the
+  RomM-bound Rule functions the routes call;
 * :mod:`~services.romm.repin` — the metadata queue: what was recorded before a
   conversion, and how it is re-applied once RomM rescans.
 
