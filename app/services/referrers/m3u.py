@@ -32,7 +32,7 @@ import os
 import re
 import threading
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from utils.path_utils import volume_root_for
@@ -123,25 +123,93 @@ def _new_entry(posix_entry: str, target: _Target) -> list[str]:
     folder, sep, _ = posix_entry.rpartition("/")
     step = os.path.relpath(target.new, target.old_dir)
     literal = folder + sep + step
-    candidates = [literal] if "/" not in step else [os.path.normpath(literal), literal]
-    # A trailing space can't be protected; _rewrite rejects such a candidate.
-    return [protect_entry(c) for c in candidates]
-
-
-def protect_entry(entry: str) -> str:
-    """*entry* as written on a line. Readers trim each line and treat "#" as a
-    comment, so a leading "#", space or control character gets a "./" prefix."""
-    return f"./{entry}" if entry[:1] == "#" or entry[:1].isspace() else entry
+    return [literal] if "/" not in step else [os.path.normpath(literal), literal]
 
 
 def _parse_line(text: str) -> tuple[str, str, bool] | None:
-    """How a reader (and _rewrite) reads one line: None for a blank or "#"
-    line, else ``(entry, posix_entry, backslashed)``."""
+    """How a reader (and _rewrite) reads one decoded line, BOM already
+    removed: None for a blank or "#" line, else ``(entry, posix_entry,
+    backslashed)``."""
     entry = text.strip()
     if not entry or entry.startswith("#"):
         return None
     backslashed = "\\" in entry and "/" not in entry
     return entry, (entry.replace("\\", "/") if backslashed else entry), backslashed
+
+
+def _split_bom(line: bytes, first: bool) -> tuple[bytes, bytes]:
+    """A reader drops a UTF-8 BOM at the very start of the file."""
+    if first and line.startswith(_BOM):
+        return _BOM, line[len(_BOM):]
+    return b"", line
+
+
+def _read_line(line: bytes, first: bool) -> tuple[str, str, bool] | None:
+    """How a reader reads one raw line (no line ending): the single parser
+    used for planning, rewriting and every read-back check."""
+    return _parse_line(_split_bom(line, first)[1].decode(*_ENC))
+
+
+def entries(data: bytes) -> list[str]:
+    """The entries a reader sees in playlist *data*, as posix paths, in order."""
+    found = []
+    for index, line in enumerate(data.splitlines()):
+        parsed = _read_line(line, first=index == 0)
+        if parsed is not None:
+            found.append(parsed[1])
+    return found
+
+
+def _variants(candidate: str, backslashed: bool) -> list[str]:
+    """Ways to write *candidate*, preferred first: in the entry's own style,
+    then protected by "./" (against a leading "#", whitespace, a BOM
+    character, or a backslash a reader would split on), then forward-slash
+    forms if the entry's backslash style can't carry it."""
+    plain = [candidate]
+    if not candidate.startswith(("/", "./")):
+        plain.append(f"./{candidate}")
+    forms = [c.replace("/", "\\") for c in plain] if backslashed else []
+    return list(dict.fromkeys(forms + plain))
+
+
+def _choose_entry(
+    candidates: list[str], backslashed: bool, playlist_dir: str, target: _Target,
+    render: Callable[[str], bytes], first: bool,
+) -> str | None:
+    """The first way of writing a candidate that a reader reads back, from its
+    rendered line, as an entry reaching *target*; None if there is none."""
+    for candidate in candidates:
+        for written in _variants(candidate, backslashed):
+            # A control character (CR, LF, NUL, VT, ...) can't sit in one line.
+            if any(unicodedata.category(ch) == "Cc" for ch in written):
+                continue
+            parsed = _read_line(render(written), first)
+            if parsed is not None and _points_at(playlist_dir, parsed[1], target):
+                return written
+    return None
+
+
+def entry_for(playlist_dir: str, path: str, *, first_line: bool) -> str | None:
+    """A playlist entry, relative to *playlist_dir*, that a reader reads back
+    to *path*, or None if it can't be written as one line. For code that
+    writes new playlists, so they encode entries exactly as the Referrer does."""
+    real_dir = os.path.realpath(playlist_dir)
+    target = _Target(real_dir, os.path.realpath(path))
+    step = os.path.relpath(target.new, real_dir)
+    return _choose_entry(
+        [step], False, real_dir, target, lambda e: e.encode(*_ENC), first_line,
+    )
+
+
+def playlist_bytes(lines: list[str]) -> bytes:
+    """Render a fresh playlist from entries made by ``entry_for``: one per line,
+    ``\\n`` endings, no BOM, UTF-8 with ``surrogateescape``. The rendered file
+    is read back with ``entries``; a ``ValueError`` is raised unless that gives
+    exactly *lines*. Write it with ``write_new_bytes``."""
+    data = "".join(line + "\n" for line in lines).encode(*_ENC)
+    if entries(data) != lines:
+        raise ValueError("an entry would not read back as written")
+    return data
 
 
 def _points_at(playlist_dir: str, entry: str, target: _Target) -> bool:
@@ -204,13 +272,12 @@ def _rewrite(
     rewritten: dict[int, _Target] = {}  # entry position -> where it must point
     position = -1
     for number, line in enumerate(data.splitlines(keepends=True), start=1):
-        prefix = b""
-        if number == 1 and line.startswith(_BOM):
-            prefix, line = _BOM, line[len(_BOM):]
+        first = number == 1
+        prefix, line = _split_bom(line, first)
         body = line.rstrip(b"\r\n")
         ending = line[len(body):]
         text = body.decode(*_ENC)
-        parsed = _parse_line(text)
+        parsed = _read_line(prefix + body, first)
         if parsed is None:
             out.append(prefix + line)
             continue
@@ -228,39 +295,20 @@ def _rewrite(
             continue
         lead = text[: len(text) - len(text.lstrip())]
         trail = text[len(text.rstrip()):]
-        new_line = None
-        for candidate in _new_entry(posix_entry, target):
-            styled = candidate.replace("/", "\\") if backslashed else candidate
-            # A control character (CR, LF, NUL, VT, ...) can't sit in one
-            # playlist line; the line read back must still reach the output.
-            if any(unicodedata.category(ch) == "Cc" for ch in styled):
-                continue
-            read_back = _parse_line(lead + styled + trail)
-            if read_back and _points_at(playlist_dir, read_back[1], target):
-                new_entry, new_line = styled, lead + styled + trail
-                break
-        if new_line is None:
+        new_entry = _choose_entry(
+            _new_entry(posix_entry, target), backslashed, playlist_dir, target,
+            lambda e, p=prefix, a=lead, z=trail: p + (a + e + z).encode(*_ENC), first,
+        )
+        if new_entry is None:
             raise ReferrerError(
                 playlist, f"line {number}: can't write a path that reaches the output",
             )
-        out.append(prefix + new_line.encode(*_ENC) + ending)
+        out.append(prefix + (lead + new_entry + trail).encode(*_ENC) + ending)
         edits.append((entry, new_entry))
         rewritten[position] = target
     result = b"".join(out)
     _check_read_back(playlist, playlist_dir, data, result, rewritten)
     return result, edits
-
-
-def _entries(data: bytes) -> list[str]:
-    """The entries a reader sees in *data*, as posix paths, in order."""
-    entries = []
-    for number, line in enumerate(data.splitlines(), start=1):
-        if number == 1 and line.startswith(_BOM):
-            line = line[len(_BOM):]
-        parsed = _parse_line(line.decode(*_ENC))
-        if parsed is not None:
-            entries.append(parsed[1])
-    return entries
 
 
 def _check_read_back(
@@ -270,7 +318,7 @@ def _check_read_back(
     """Parse the bytes about to be written the way _rewrite reads them: the
     same number of entries, every untouched one unchanged, and every rewritten
     one, at its position, reaching the output. Anything else keeps the Source."""
-    old, new = _entries(before), _entries(after)
+    old, new = entries(before), entries(after)
     ok = len(old) == len(new) and all(
         _points_at(playlist_dir, new[i], rewritten[i]) if i in rewritten
         else new[i] == old[i]
@@ -278,24 +326,6 @@ def _check_read_back(
     )
     if not ok:
         raise ReferrerError(playlist, "the rewritten playlist wouldn't read back to the output")
-
-
-def playlist_bytes(entries: list[str]) -> bytes:
-    """A fresh playlist: one entry per line, ``\\n`` endings, no BOM, UTF-8
-    (``surrogateescape``, the same encoding the Referrer reads and rewrites with).
-
-    Entries go through ``protect_entry``. The rendered file is then read back
-    line by line the way a reader (and ``_rewrite``) parses it, and a
-    ``ValueError`` is raised unless that gives exactly the entries written
-    (a trailing space or a line break inside an entry would not survive).
-
-    The shared way to build a new ``.m3u``; write it with ``write_new_bytes``.
-    """
-    lines = [protect_entry(entry) for entry in entries]
-    data = "".join(line + "\n" for line in lines).encode(*_ENC)
-    if _entries(data) != lines:
-        raise ValueError("an entry would not read back as written")
-    return data
 
 
 def _read(path: str) -> bytes:

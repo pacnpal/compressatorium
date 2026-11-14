@@ -330,23 +330,26 @@ def test_an_entry_that_would_not_resolve_to_the_selected_file_is_refused(vol, mo
         disc_playlist.plan_playlist(paths)
 
 
-def test_entries_starting_with_whitespace_or_control_chars_are_protected(vol: Path):
-    paths = _discs(vol, " Game (Disc 1).cue", "\x1fGame (Disc 2).cue")
+def test_entries_starting_with_whitespace_are_protected_by_the_shared_encoder(vol: Path):
+    paths = _discs(vol, " Game (Disc 1).cue", "Game (Disc 2).cue")
     plan = disc_playlist.plan_playlist(paths)
-    assert plan.entries == ["./\x1fGame (Disc 2).cue", "./ Game (Disc 1).cue"] or plan.entries == [
-        "./ Game (Disc 1).cue", "./\x1fGame (Disc 2).cue",
-    ]
+    assert plan.entries == ["./ Game (Disc 1).cue", "Game (Disc 2).cue"]
     disc_playlist.create_playlist(paths, plan.file_name)
-    written = (vol / plan.file_name).read_bytes().decode().splitlines()
-    assert sorted(written) == sorted(plan.entries)
+    assert (vol / plan.file_name).read_text().splitlines() == plan.entries
+
+
+def test_a_name_no_line_can_carry_is_refused(vol: Path):
+    paths = _discs(vol, "\x1fGame (Disc 1).cue", "Game (Disc 2).cue")
+    with pytest.raises(disc_playlist.PlaylistError, match="can't be written"):
+        disc_playlist.plan_playlist(paths)
 
 
 def test_playlist_bytes_reads_the_rendered_file_back():
     from app.services.referrers.m3u import playlist_bytes
 
-    assert playlist_bytes([" a.cue", "#b.cue"]) == b"./ a.cue\n./#b.cue\n"
+    assert playlist_bytes(["./ a.cue", "./#b.cue"]) == b"./ a.cue\n./#b.cue\n"
     with pytest.raises(ValueError):
-        playlist_bytes(["trailing space.cue "])  # a reader would trim it
+        playlist_bytes([" a.cue"])  # a reader would trim it
     with pytest.raises(ValueError):
         playlist_bytes(["two\nlines.cue"])
 

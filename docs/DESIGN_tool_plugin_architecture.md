@@ -2486,20 +2486,31 @@ free one if it was taken since, never picking a different name on its own.
   into `../link/Game.chd`), `./` and absolute prefixes are kept, and a
   backslash entry stays backslashed. When the output is in another folder the
   normalised form is tried first, then the literal one (`link/../out/G.chd`
-  still resolves through a symlinked `link`). A candidate that would start
-  with `#` or whitespace gets a `./` prefix, since m3u readers treat such a
-  line as a comment or trim it (an output folder named `#CHD` or ` CHD`). A
-  candidate holding a control character (CR, LF, NUL, VT, any Unicode `Cc`)
-  is rejected, since it can't sit in one playlist line. After the whole
-  playlist is rendered, the bytes about to be written are parsed again with
-  the same `_parse_line` `_rewrite` uses: the entry count must be unchanged,
-  every untouched entry must read back as it was, and every rewritten entry,
-  at its position, must reach the output. Anything else raises and keeps the
-  Source (a trailing space, a line split in two). Every candidate is checked: read
-  from the playlist's folder it must reach the output (same `(st_dev,
-  st_ino)`, or the same resolved path while the delete confirmation plans
-  before the output exists). If no candidate does, `plan` raises and the
-  Source is kept.
+  still resolves through a symlinked `link`).
+- *One reader.* `_read_line(raw_line, first)` is the only parser: it drops a
+  UTF-8 BOM on the file's first line, trims, skips blank and `#` lines, and
+  reads a slash-free entry with backslashes as backslash-separated.
+  Planning, rewriting, `entries(data)` and every read-back check call it.
+- *Choosing what to write* (`_choose_entry`). Each candidate is tried as
+  written in the entry's style, then with a `./` prefix, then (for a
+  backslash entry) in forward slashes. A form holding a control character (CR,
+  LF, NUL, VT, any Unicode `Cc`) is skipped. Each remaining form is rendered
+  into its full line (BOM prefix, leading and trailing whitespace) and read
+  back with `_read_line`; the first whose entry, read from the playlist's
+  folder, reaches the output (same `(st_dev, st_ino)`, or the same resolved
+  path while the delete confirmation plans before the output exists) is used.
+  So `./` protects a leading `#`, whitespace, a U+FEFF that a reader would
+  take for a BOM, and a literal backslash in a Linux file name. If no form
+  works (a trailing space, a line break), `plan` raises and the Source is
+  kept.
+- *Read-back of the whole file.* After rendering, the bytes about to be
+  written go through `entries()`: the entry count must be unchanged, every
+  untouched entry must read back as it was, and every rewritten entry, at its
+  position, must reach the output. Anything else raises and keeps the Source.
+- *For new playlists.* `entry_for(playlist_dir, path, first_line=...)` uses
+  the same `_choose_entry` and reader, so code that creates a playlist
+  (#299) encodes entries exactly as the Referrer reads them, or gets `None`
+  for a path that can't be one entry.
 - *Concurrency.* Each playlist (by resolved path) has a `threading.Lock`.
   `apply` holds it while it re-reads the playlist, re-runs the rewrite on what
   is there now and writes, so two jobs updating one playlist both land, and an

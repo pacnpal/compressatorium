@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from services.referrers import write_new_bytes
-from services.referrers.m3u import PLAYLIST_EXT, playlist_bytes, protect_entry
+from services.referrers.m3u import PLAYLIST_EXT, entry_for, playlist_bytes
 from services.tools import registry
 from utils.delete_plan import _parse_cue_tracks, _parse_gdi_tracks
 from utils.path_utils import is_within_configured_volumes, match_extension
@@ -250,9 +250,17 @@ def _check_selection(paths: list[str]) -> _Selection:
         )
     if len({disc_title(n).casefold() for n in names}) > 1:
         warnings.append("These names don't share one title; check the playlist name.")
-    entries = [protect_entry(n) for n in names]
+    # Entries are encoded by the Referrer's own encoder, so a reader reads each
+    # one back to the selected file (a leading "#" or space gets "./", a name no
+    # line can carry is refused).
+    entries = []
+    for index, name in enumerate(names):
+        entry = entry_for(directory, files[name], first_line=index == 0)
+        if entry is None:
+            raise PlaylistError(f"{name} can't be written as a playlist entry")
+        entries.append(entry)
     try:
-        playlist_bytes(entries)  # must be a playlist that can be written
+        playlist_bytes(entries)
     except ValueError as exc:
         raise PlaylistError(f"These names can't go in a playlist: {exc}") from None
     return _Selection(directory, names, entries, warnings)
