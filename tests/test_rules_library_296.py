@@ -125,30 +125,70 @@ def test_romm_declares_its_capabilities() -> None:
 
 
 @pytest.mark.asyncio
-async def test_old_romm_keys_are_read_once_and_rewritten(romm_lib: Path) -> None:
+async def test_old_romm_keys_are_copied_once_and_kept(romm_lib: Path) -> None:
+    """The pre-#296 rows stay as they were, so a downgrade can still read them."""
     rule = {"mode": "dolphin_rvz", "enabled": True}
+    old_state = {"7": {"last_queued": 2, "converted": {"1": {"path": "/x", "pre": ""}}}}
     await preferences_store.put("romm.rules", {"7": rule})
-    await preferences_store.put("romm.auto_state", {"7": {"last_queued": 2}})
+    await preferences_store.put("romm.auto_state", old_state)
 
     got = await romm_routes.get_romm_rules()
     assert got["rules"]["7"]["mode"] == "dolphin_rvz"
-    assert got["state"] == {"7": {"last_queued": 2}}
+    assert got["state"] == old_state
 
-    assert await preferences_store.get("romm.rules") is None
-    assert await preferences_store.get("romm.auto_state") is None
     assert await preferences_store.get("rules") == {"romm:7": rule}
-    assert await preferences_store.get("rules.state") == {"romm:7": {"last_queued": 2}}
-
-    # Read again: nothing left to migrate, same answer.
-    assert (await romm_routes.get_romm_rules())["rules"] == got["rules"]
+    assert await preferences_store.get("rules.state") == {"romm:7": old_state["7"]}
+    # Kept, untouched: a copy as of the upgrade.
+    assert await preferences_store.get("romm.rules") == {"7": rule}
+    assert await preferences_store.get("romm.auto_state") == old_state
 
 
 @pytest.mark.asyncio
-async def test_saving_rules_writes_the_prefixed_keys(romm_lib: Path) -> None:
+async def test_old_romm_keys_are_not_read_a_second_time(romm_lib: Path) -> None:
+    await preferences_store.put("romm.rules", {"7": {"mode": "dolphin_rvz"}})
+    await romm_routes.get_romm_rules()
+
+    # Something writes the old row again (a downgraded release, say). The
+    # move already happened, so it is not merged in.
+    await preferences_store.put("romm.rules", {"8": {"mode": "dolphin_rvz"}})
+    await preferences_store.put("romm.auto_state", {"7": {"converted": {"1": {}}}})
+    got = await romm_routes.get_romm_rules()
+    assert list(got["rules"]) == ["7"]
+    assert got["state"] == {}
+
+
+@pytest.mark.asyncio
+async def test_saving_rules_writes_only_the_prefixed_keys(romm_lib: Path) -> None:
+    await preferences_store.put("romm.rules", {"7": {"mode": "dolphin_rvz"}})
+    await romm_routes.put_romm_rules({"9": {"mode": "dolphin_rvz"}})
+    assert list(await preferences_store.get("rules")) == ["romm:9"]
+    assert await preferences_store.get("romm.rules") == {"7": {"mode": "dolphin_rvz"}}
+    # Nothing to copy on a fresh install, and nothing is ever written to the
+    # old keys.
+    assert await preferences_store.get("romm.auto_state") is None
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_install_writes_no_old_keys(romm_lib: Path) -> None:
     await romm_routes.put_romm_rules({"7": {"mode": "dolphin_rvz"}})
-    stored = await preferences_store.get("rules")
-    assert list(stored) == ["romm:7"]
+    assert list(await preferences_store.get("rules")) == ["romm:7"]
     assert await preferences_store.get("romm.rules") is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_reads_copy_the_same_data(romm_lib: Path) -> None:
+    import asyncio
+
+    from services.romm import auto as romm_auto
+
+    await preferences_store.put("romm.rules", {"7": {"mode": "dolphin_rvz"}})
+    await preferences_store.put("romm.auto_state", {"7": {"last_queued": 1}})
+    results = await asyncio.gather(
+        *(romm_auto.get_rules() for _ in range(5)),
+        *(romm_auto.get_state() for _ in range(5)),
+    )
+    assert all(list(r) == ["7"] for r in results)
+    assert await preferences_store.get("rules.state") == {"romm:7": {"last_queued": 1}}
 
 
 # ----------------------------------------------------------------------
@@ -242,17 +282,3 @@ async def test_a_second_library_runs_through_the_same_engine(romm_lib: Path) -> 
     assert list(await rules_sweep.get_rules(folder)) == ["gc"]
     assert list((await romm_routes.get_romm_rules())["rules"]) == ["7"]
     assert set(await preferences_store.get("rules")) == {"romm:7", "folder:/test:gc"}
-
-
-# ----------------------------------------------------------------------
-# the preference store
-# ----------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_a_preference_can_be_deleted(db: Path) -> None:
-    await preferences_store.put("scratch", {"a": 1})
-    await preferences_store.delete("scratch")
-    assert await preferences_store.get("scratch") is None
-    # Deleting what is not there is not an error.
-    await preferences_store.delete("scratch")

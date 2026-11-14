@@ -94,16 +94,5 @@ class PreferencesStore:
         """Upsert *value* under *key*, stamping updated_at. Returns value."""
         return await run_in_threadpool(self._put_sync, key, value)
 
-    def _delete_sync(self, key: str) -> None:
-        with self._session() as session:
-            row = session.get(_db.Preference, key)
-            if row is not None:
-                session.delete(row)
-                session.commit()
-
-    async def delete(self, key: str) -> None:
-        """Remove *key*. Deleting a key that is not stored is a no-op."""
-        await run_in_threadpool(self._delete_sync, key)
-
 
 preferences_store = PreferencesStore()

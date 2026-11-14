@@ -31,10 +31,10 @@
 ### Changed
 
 - **RomM Rules run on a shared Rule engine** (#296). Nothing changes in the
-  app or the API. Stored Rules and their state move to new keys prefixed with
-  the Library id (`romm:7`) the first time they are read, and the old
-  `romm.rules` and `romm.auto_state` rows are removed. Downgrading to an
-  earlier release after that starts with no RomM Rules.
+  app or the API. Stored Rules and their state are copied to new keys prefixed
+  with the Library id (`romm:7`) the first time they are read. The old
+  `romm.rules` and `romm.auto_state` rows are kept and no longer written, so a
+  downgrade gets the Rules and history as they were at upgrade time.
 
 ### Security
 

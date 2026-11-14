@@ -43,6 +43,11 @@ def image_from_rom(rom: dict) -> Image:
     ``title`` is RomM's display name (what the ``name`` order sorts by), and
     ``name`` the file name (what the name filters match). RomM numbers ROMs as
     it adds them, so the ROM id is its added order.
+
+    ``recognized`` carries RomM's own "identified" status, which is what the
+    ``only_matched`` filter has always read. It is a stand-in: RomM identifies
+    by metadata provider, often by file name, while Recognized in the glossary
+    means a DAT or Hasheous hash match. See ``Image``.
     """
     # RomM reports identification two ways depending on version; treat either
     # as authoritative and fall back to "unknown" rather than filtering blind.

@@ -2180,7 +2180,7 @@ second: one root folder inside a Volume.
   `name` (file name, what name filters match), `title` (what the `name` order
   sorts by), `size`, `added_at` (any number that grows as Images are added;
   RomM uses the ROM id, so `newest` keeps its order), `recognized` (True,
-  False, or None when unknown), `platform` (the console slug checked against
+  False, or None when unknown; see below), `platform` (the console slug checked against
   `registry.mode_allows_platform`), `path`, and `record` (the Library's own
   record, for its hooks). `path` may be lazy: RomM passes `resolve_path`
   because mapping a record onto the mount stats it, and the sweep reads
@@ -2211,12 +2211,24 @@ Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`) say what a Library
 supports. The engine does not gate on them yet; a Rules editor and the folder
 Library use them to offer only what applies.
 
+**What `recognized` means.** It is the Library's own identification of the
+Image, and it is what the Rule filters `only_matched` / `only_unmatched` read.
+RomM fills it with RomM's "identified" status (`is_identified`, else any
+metadata-provider id), which is how `only_matched` has always behaved. That is
+a metadata match, often by file name, not Recognized in the glossary sense (a
+DAT or Hasheous hash match). The field is a stand-in until DAT-based
+recognition lands; code that needs a hash match must not read it as one.
+
 **Storage.** Rules live in the `rules` preference row and run state in
 `rules.state`, one entry per `"<library id>:<platform id>"`. Callers read and
 write one Library's view keyed by bare Platform id. RomM's pre-#296 rows,
-`romm.rules` and `romm.auto_state`, are read on the first access, rewritten
-under `romm:` keys and deleted. A legacy row that reappears later (a downgrade
-that wrote it, then an upgrade) is moved again, and its entries win.
+`romm.rules` and `romm.auto_state`, are copied under `romm:` keys on the first
+read or write, and then `romm` is recorded in the `rules.migrated` row (written
+last, so a crash mid-copy repeats it from the same rows). The old rows are
+never written or deleted. They stay as a copy of the Rules and history at
+upgrade time, so a downgrade still finds them, and anything a downgraded
+release writes to them is ignored after the next upgrade. The first read can
+therefore write, so a read-only or locked database fails that first request.
 
 **Locks.** `_sweep_lock` is process-wide, not per Library: the active-source
 snapshot and claimed destinations are shared by every sweep. `paused()` takes

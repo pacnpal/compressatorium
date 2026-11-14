@@ -362,8 +362,9 @@ def _passes_filters(image: Image, rule: dict) -> bool:
         return False
     if rule["exclude_pattern"] and re.search(rule["exclude_pattern"], name, re.IGNORECASE):
         return False
-    # Recognized as the Library reports it. One that cannot say counts as not
-    # Recognized, which is what RomM's own answer reduces to when it has none.
+    # The Library's own identification (`Image.recognized`; for RomM, its
+    # "identified" status). One that cannot say counts as unmatched, which is
+    # what RomM's own answer reduces to when it has none.
     identified = bool(image.recognized)
     if rule["only_matched"] and not identified:
         return False
