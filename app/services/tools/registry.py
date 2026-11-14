@@ -131,6 +131,16 @@ class ToolRegistry:
         spec = self.spec(mode)
         return spec.supports_delete_on_verify or spec.supports_verify
 
+    def mode_supports_round_trip(self, mode: str) -> bool:
+        """Whether a delete-source job in this mode is Round-tripped by default.
+
+        Unknown modes answer False, so they keep the container check.
+        """
+        try:
+            return bool(self.spec(mode).supports_round_trip)
+        except KeyError:
+            return False
+
     def mode_is_automatable(self, mode: str) -> bool:
         """May an unattended rule run this mode repeatedly over a library?
 

@@ -255,6 +255,12 @@ class Verification(Base):
     # current request before completing as a no-op. See
     # docs/DESIGN_tool_plugin_architecture.md §3.3.6.
     produced_meta = Column(JSON, nullable=True)
+    # Which check this output passed: "intact" (its tool's container check) or
+    # "round_tripped" (its content digest equalled the Source's at conversion
+    # time, #298). Rows from before migration 0010 were all container checks.
+    check_passed = Column(
+        String, nullable=False, default="intact", server_default="intact",
+    )
 
 
 class LedgerEntry(Base):

@@ -282,7 +282,7 @@ async def test_a_cancelled_export_still_releases_its_snapshot(monkeypatch):
     assert closed == [True]
 
 
-def test_migration_0010_seeds_counters_from_the_ledger(tmp_path):
+def test_migration_0011_seeds_counters_from_the_ledger(tmp_path):
     from sqlalchemy import create_engine, text
 
     engine = create_engine(f"sqlite:///{tmp_path}/m.db")
@@ -302,7 +302,7 @@ def test_migration_0010_seeds_counters_from_the_ledger(tmp_path):
     import pathlib
 
     path = pathlib.Path(__file__).resolve().parent.parent / "migrations/versions"
-    spec = importlib.util.spec_from_file_location("m10", next(path.glob("0010_*.py")))
+    spec = importlib.util.spec_from_file_location("m10", next(path.glob("0011_*.py")))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     with engine.begin() as c:
@@ -313,7 +313,39 @@ def test_migration_0010_seeds_counters_from_the_ledger(tmp_path):
     assert rows["failed"] == (1, 0, 0)
 
 
-def _run_0010_upgrade(engine):
+def test_migrations_have_a_single_head():
+    from alembic.script import ScriptDirectory
+
+    cfg = _db._alembic_config(_db.make_engine(":memory:"))
+    heads = ScriptDirectory.from_config(cfg).get_heads()
+    assert heads == ["0011"]
+
+
+def test_upgrade_from_0010_seeds_totals_from_populated_ledger(tmp_path):
+    from alembic import command
+    from sqlalchemy import text
+
+    engine = _db.make_engine(str(tmp_path / "up.db"))
+    cfg = _db._alembic_config(engine)
+    command.upgrade(cfg, "0010")
+    with engine.begin() as c:
+        for i, (st, inb, outb) in enumerate(
+            [("completed", 10, 4), ("completed", 20, 5), ("cancelled", 3, None)]
+        ):
+            c.execute(text(
+                "insert into ledger (job_id, finished_at, mode, source_path, status, "
+                "check_passed, source_deleted, deleted_paths, referrers_updated, "
+                "input_bytes, output_bytes) values (:j, :f, 'm', '/p', :s, 'none', 0, "
+                "'[]', '[]', :i, :o)"
+            ), {"j": f"j{i}", "f": f"2026-01-0{i + 1}", "s": st, "i": inb, "o": outb})
+    command.upgrade(cfg, "head")
+    with engine.connect() as c:
+        rows = {r[0]: tuple(r[1:]) for r in c.execute(text(
+            "select status, jobs, input_bytes, output_bytes from ledger_totals"))}
+    assert rows == {"completed": (2, 30, 9), "cancelled": (1, 0, 0)}
+
+
+def _run_0011_upgrade(engine):
     import importlib.util
     import pathlib
 
@@ -321,7 +353,7 @@ def _run_0010_upgrade(engine):
     from alembic.operations import Operations
 
     path = pathlib.Path(__file__).resolve().parent.parent / "migrations/versions"
-    spec = importlib.util.spec_from_file_location("m10u", next(path.glob("0010_*.py")))
+    spec = importlib.util.spec_from_file_location("m10u", next(path.glob("0011_*.py")))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     with engine.begin() as conn, Operations.context(MigrationContext.configure(conn)):
@@ -344,24 +376,24 @@ def _ledger_db(tmp_path):
     return engine
 
 
-def test_0010_seeds_a_precreated_empty_totals_table(tmp_path):
+def test_0011_seeds_a_precreated_empty_totals_table(tmp_path):
     from sqlalchemy import text
 
     engine = _ledger_db(tmp_path)
-    _run_0010_upgrade(engine)
+    _run_0011_upgrade(engine)
     with engine.connect() as c:
         rows = {r[0]: r[1:] for r in c.execute(text(
             "select status, jobs, input_bytes, output_bytes from ledger_totals"))}
     assert rows == {"completed": (1, 10, 4), "failed": (1, 0, 0)}
 
 
-def test_0010_never_overwrites_existing_counters(tmp_path):
+def test_0011_never_overwrites_existing_counters(tmp_path):
     from sqlalchemy import text
 
     engine = _ledger_db(tmp_path)
     with engine.begin() as c:
         c.execute(text("insert into ledger_totals values ('completed', 99, 5, 6)"))
-    _run_0010_upgrade(engine)
+    _run_0011_upgrade(engine)
     with engine.connect() as c:
         rows = c.execute(text("select * from ledger_totals")).all()
     assert [tuple(r) for r in rows] == [("completed", 99, 5, 6)]

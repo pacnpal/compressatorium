@@ -212,7 +212,7 @@ async def test_convert_streams_progress_and_completes(tmp_path, monkeypatch):
     assert captured["cmd"][-1] in {"none", "download"}
     assert updates[0] == {"progress": 1, "message": "Starting NKit restore..."}
     assert [u["progress"] for u in updates] == [1, 1, 10, 100, 100, 100]
-    assert "CRC32 verified" in updates[-1]["message"]
+    assert "CRC32 check passed" in updates[-1]["message"]
     assert Path(out_iso).exists()
 
 

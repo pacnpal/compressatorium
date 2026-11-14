@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -32,6 +33,37 @@ class EmbeddedHashUnavailable(Exception):
     than collapsing to a meaningless file-level hash and caching a false
     "unmatched" result. Tools that legitimately have no embedded hash for a
     file (so a file-level SHA1 fallback is correct) return ``[]`` instead.
+    """
+
+
+@dataclass(frozen=True)
+class ContentDigest:
+    """A hash of the image content a file decodes to (the Round-trip check).
+
+    ``kind`` names the shape of what was hashed (``"gc_wii_disc_sha1"``: SHA1
+    of the whole GameCube/Wii disc image). Two digests are only comparable
+    when their kinds agree: a CD's track hash and a disc-image hash can never
+    prove anything about each other, so :meth:`same_content` refuses to answer
+    rather than report a mismatch.
+    """
+
+    kind: str
+    value: str
+
+    def same_content(self, other: ContentDigest) -> bool:
+        if self.kind != other.kind:
+            raise ValueError(
+                f"cannot compare a {self.kind} digest with a {other.kind} digest",
+            )
+        return self.value == other.value
+
+
+class ContentDigestUnavailable(Exception):
+    """A tool should have a content digest for this file but could not get one.
+
+    The Round-trip check treats it as "not proven": the Source is kept. Distinct
+    from ``content_digest`` returning ``None``, which means the tool has no
+    digest for this kind of file at all.
     """
 
 
@@ -260,6 +292,25 @@ class ToolPlugin(Protocol):
         instead of blocking until the current file finishes.
         """
 
+    async def content_digest(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> ContentDigest | None:
+        """Hash of the image content ``path`` decodes to, for the Round-trip check.
+
+        Called on both sides of a conversion whose mode declares
+        ``ModeSpec.supports_round_trip``: once on the Source and once on the
+        output. The job deletes the Source only when the two digests have the
+        same ``kind`` and value. A claim about content, never container bytes:
+        an ``.iso`` and the ``.rvz`` made from it have different file hashes but
+        the same digest.
+
+        Return ``None`` when this tool has no digest for this kind of file.
+        Raise :class:`ContentDigestUnavailable` when it should have one but the
+        attempt failed; the Source is then kept. A cancelled ``cancel_event``
+        may surface as either; the caller checks the event itself. The caller
+        bounds the call with ``verify_timeout(path)``.
+        """
+
     async def is_ready(self) -> bool:
         """Whether this tool's runtime prerequisites are met.
 
@@ -483,6 +534,14 @@ class BaseTool:
     ) -> list[tuple[str, str]]:
         # Default: no embedded hash; callers fall back to file-level SHA1.
         return []
+
+    async def content_digest(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> ContentDigest | None:
+        # Default: no content digest. Such a tool's modes leave
+        # ModeSpec.supports_round_trip False, so their jobs keep the container
+        # check and say Intact.
+        return None
 
     async def is_ready(self) -> bool:
         # Default: nothing to check. Tools gated on a user-supplied secret or

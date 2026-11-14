@@ -266,7 +266,7 @@ class MakePs3IsoService:
             return "ISO build complete"
         if source_id and built_id:
             if source_id == built_id:
-                return f"ISO build complete (verified TITLE_ID {built_id})"
+                return f"ISO build complete (TITLE_ID {built_id} read back from the ISO)"
             logger.warning(
                 "makeps3iso TITLE_ID mismatch for %s: source=%s built=%s",
                 iso_path, source_id, built_id,
