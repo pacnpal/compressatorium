@@ -105,3 +105,37 @@ process.stdout.write(JSON.stringify({
 def test_a_check_recorded_during_a_load_survives_the_replay(tmp_path):
     out = _run(tmp_path, _MID_FLIGHT)
     assert out == {"old": "intact", "fresh": "round_tripped", "redone": "round_tripped"}
+
+
+_STATUS_AND_CHECK_MOVE_TOGETHER = """
+const store = new VerificationStore();
+store.markChecked('/v/a.rvz', 'round_tripped');
+store.markChecked('/v/b.rvz', 'round_tripped');
+store.markChecked('/v/c.rvz', 'round_tripped');
+
+// A same-format rename keeps the check that passed.
+store.move('/v/a.rvz', '/v/renamed.rvz', { keep: true });
+// A cross-format rename drops it.
+store.move('/v/b.rvz', '/v/b.iso', { keep: false });
+// A deleted file forgets its check, so nothing stale is inherited later.
+store.forget('/v/c.rvz');
+// A manual Verify is a container check: the backend stores intact.
+store.markChecked('/v/c.rvz');
+
+process.stdout.write(JSON.stringify({
+  oldA: store.checkFor('/v/a.rvz'),
+  renamed: store.checkFor('/v/renamed.rvz'),
+  oldB: store.checkFor('/v/b.rvz'),
+  crossFormat: store.checkFor('/v/b.iso'),
+  reverified: store.checkFor('/v/c.rvz'),
+}));
+"""
+
+
+def test_status_and_check_move_together(tmp_path):
+    out = _run(tmp_path, _STATUS_AND_CHECK_MOVE_TOGETHER)
+    assert out == {
+        "oldA": None, "renamed": "round_tripped",
+        "oldB": None, "crossFormat": None,
+        "reverified": "intact",
+    }

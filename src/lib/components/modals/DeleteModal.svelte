@@ -79,7 +79,7 @@
       // the same path (e.g. a re-converted output) doesn't inherit a
       // stale OK badge from the deleted predecessor during this
       // session.
-      verification.statuses.delete(deletedPath);
+      verification.forget(deletedPath);
       // Close + report success immediately so a downstream refresh
       // failure doesn't surface as "Failed to delete" after the delete
       // already happened server-side.
