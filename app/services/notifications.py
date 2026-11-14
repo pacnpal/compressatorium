@@ -6,10 +6,10 @@ public surface at the bottom of this module and never touch a transport:
 * ``notify(event)``: fire and forget; sends run off the caller's path.
 * ``on_job_finished(job)``: the ``JobManager`` terminal listener. A failed job
   started by hand becomes one ``job_failed`` message.
-* ``sweep_jobs_queued(jobs)`` / ``sweep_finished(result)``: the sweep's two
-  hooks. A sweep queues jobs and returns; the message goes out once the last of
-  its jobs is terminal, so its counts and bytes saved are real. Failures inside
-  a sweep are listed in that one message, never sent one by one.
+* ``sweep_expect(paths)`` / ``sweep_jobs_queued(jobs)`` / ``sweep_finished(result)``:
+  the sweep's three hooks. A sweep queues jobs and returns; the message goes out
+  once the last of its jobs is terminal, so its counts and bytes saved are real.
+  Failures inside a sweep are listed in that one message, never sent one by one.
 
 Events are a shared registry (``register_event``) so a later ticket adds its
 own (check failed, for instance) without touching this module's logic.
@@ -182,7 +182,7 @@ def _send_apprise(url: str, event: Event) -> None:
         raise NotificationError("Apprise does not recognise that URL")
     # Apprise reports why a send failed only through its log; capture the last
     # warning so Test can say "error=401" or "connection error", not just "failed".
-    for service in notifier:  # bound each plugin's own network waits
+    for service in notifier:  # cap each plugin's own per-operation waits (not an overall deadline)
         for attr in ("socket_connect_timeout", "socket_read_timeout"):
             if hasattr(service, attr):
                 setattr(service, attr, SEND_TIMEOUT_S * 0.4)
@@ -334,6 +334,7 @@ async def remove_destination(dest_id: str) -> bool:
         if len(kept) == len(dests):
             return False
         await _save(kept)
+        _drop_queue(dest_id)
         return True
 
 
@@ -382,94 +383,150 @@ def _redact(text: str, url: str | None) -> str:
 _tasks: set[asyncio.Task] = set()
 
 
+# One inbox for the whole module, filled synchronously by `notify`, so the order
+# events were raised in is the order every destination sees them in. A single
+# dispatcher task loads the destinations and hands each event to each
+# destination's own FIFO queue, one event at a time.
+_inbox: deque = deque()
+_dispatcher: asyncio.Task | None = None
 _queues: dict[str, deque] = {}
 _workers: dict[str, asyncio.Task] = {}
 
 
-def _enqueue(dest: dict, event: Event) -> asyncio.Future:
-    """Queue *event* behind whatever *dest* is already sending.
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.get_running_loop().create_task(coro)
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return task
 
-    Sends to one destination go one at a time, in order, so two events close
-    together both arrive. A destination whose transport outlived its deadline
+
+def _submit(event: Event) -> asyncio.Future:
+    """Put *event* in the inbox (no await, so call order is delivery order).
+    The returned future resolves once every destination has dealt with it."""
+    global _dispatcher
+    done = asyncio.get_running_loop().create_future()
+    _inbox.append((event, done))
+    if _dispatcher is None or _dispatcher.done():
+        _dispatcher = _spawn(_dispatch())
+    return done
+
+
+async def _dispatch() -> None:
+    while _inbox:
+        event, done = _inbox.popleft()
+        try:
+            dests = await _load()
+        except Exception:  # noqa: BLE001  a broken store must not stop later events
+            logger.warning("Could not read notification destinations", exc_info=True)
+            done.set_result(None)
+            continue
+        # No await between these: each destination's queue gets events in order.
+        waits = [_enqueue(d["id"], event) for d in dests]
+        if waits:
+            _spawn(_resolve(waits, done))
+        else:
+            done.set_result(None)
+
+
+async def _resolve(waits: list[asyncio.Future], done: asyncio.Future) -> None:
+    await asyncio.gather(*waits)
+    if not done.done():
+        done.set_result(None)
+
+
+def _enqueue(slot: str, event: Event) -> asyncio.Future:
+    """Queue *event* behind whatever destination *slot* is already sending.
+
+    Sends to one destination go one at a time, in order, so events close
+    together all arrive. A destination whose transport outlived its deadline
     refuses the next send in `_send_one` instead of stacking another thread.
     """
     loop = asyncio.get_running_loop()
     done = loop.create_future()
-    slot = dest["id"]
     queue = _queues.setdefault(slot, deque())
     if len(queue) >= MAX_QUEUED_PER_DESTINATION:
-        _, _, dropped = queue.popleft()
+        dropped_event, dropped = queue.popleft()
         logger.warning(
-            "Notification queue for destination %s is full; dropped the oldest message", slot,
+            "Notification queue for destination %s is full; dropped the oldest message "
+            "(%s: %s)", slot, dropped_event.kind, dropped_event.title,
         )
         if not dropped.done():
-            dropped.set_exception(NotificationError("Dropped: too many messages waiting"))
-    queue.append((dest, event, done))
+            dropped.set_result(None)
+    queue.append((event, done))
     worker = _workers.get(slot)
     if worker is None or worker.done():
-        task = loop.create_task(_drain_destination(slot))
-        _workers[slot] = task
-        _tasks.add(task)
-        task.add_done_callback(_tasks.discard)
+        _workers[slot] = _spawn(_drain_destination(slot))
     return done
+
+
+def _log_failure(dest: dict, event: Event, exc: Exception) -> None:
+    # Not exc_info and not str(exc) of a foreign exception: both can carry the
+    # URL. Our own NotificationError texts are redacted too.
+    reason = (
+        _redact(str(exc), dest["url"]) if isinstance(exc, NotificationError)
+        else type(exc).__name__
+    )
+    logger.warning(
+        "Notification (%s) to %s destination %s failed: %s",
+        event.kind, dest["kind"], dest["id"], reason,
+    )
 
 
 async def _drain_destination(slot: str) -> None:
     queue = _queues[slot]
+    try:
+        while queue:
+            event, done = queue.popleft()
+            try:
+                # Read at send time: an edit applies to what is already queued,
+                # and a destination deleted meanwhile is skipped.
+                dest = next((d for d in await _load() if d["id"] == slot), None)
+                if dest is not None:
+                    try:
+                        await _send_one(dest["kind"], dest["url"], event, slot=slot)
+                    except Exception as exc:  # noqa: BLE001  one send never stops the queue
+                        _log_failure(dest, event, exc)
+            except Exception:  # noqa: BLE001  the store read failed; keep draining
+                logger.warning("Could not read notification destinations", exc_info=True)
+            finally:
+                if not done.done():
+                    done.set_result(None)
+    finally:
+        if not queue:
+            _queues.pop(slot, None)
+        if _workers.get(slot) is asyncio.current_task():
+            del _workers[slot]
+
+
+def _drop_queue(slot: str) -> None:
+    """A destination was removed: nothing queued for it is sent."""
+    queue = _queues.get(slot)
     while queue:
-        dest, event, done = queue.popleft()
-        try:
-            await _send_one(dest["kind"], dest["url"], event, slot=slot)
-        except Exception as exc:  # noqa: BLE001  handed to the waiting caller
-            if not done.done():
-                done.set_exception(exc)
-        else:
-            if not done.done():
-                done.set_result(None)
+        _, done = queue.popleft()
+        if not done.done():
+            done.set_result(None)
 
 
 async def deliver(event: Event) -> None:
-    """Send *event* to every destination. Never raises; each failure is logged."""
-    try:
-        dests = await _load()
-    except Exception:
-        logger.warning("Could not read notification destinations", exc_info=True)
-        return
-    if not dests:
-        return
-
-    async def one(dest: dict) -> None:
-        try:
-            await _enqueue(dest, event)
-        except Exception as exc:  # noqa: BLE001  one destination never fails the rest
-            # Not exc_info and not str(exc) of a foreign exception: both can
-            # carry the URL. Our own NotificationError texts are redacted too.
-            reason = (
-                _redact(str(exc), dest["url"]) if isinstance(exc, NotificationError)
-                else type(exc).__name__
-            )
-            logger.warning(
-                "Notification to %s destination %s failed: %s",
-                dest["kind"], dest["id"], reason,
-            )
-
-    await asyncio.gather(*(one(d) for d in dests))
+    """Send *event* to every destination and wait for it. Never raises."""
+    await _submit(event)
 
 
 def notify(event: Event) -> None:
     """Queue *event* for delivery and return at once. Call from the event loop."""
     try:
-        task = asyncio.get_running_loop().create_task(deliver(event))
+        _submit(event)
     except RuntimeError:
         return  # no loop (a synchronous harness): nothing to send on
-    _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
 
 
 async def drain() -> None:
     """Wait for queued sends (tests and shutdown)."""
-    while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+    while True:
+        running = [t for t in _tasks if not t.done()]
+        if not running:
+            return
+        await asyncio.gather(*running, return_exceptions=True)
 
 
 # ----------------------------------------------------------------------
@@ -514,6 +571,7 @@ class _Sweep:
         self.errors: list[dict] = []
         # False when every error was already reported by an earlier sweep.
         self.has_new_errors = False
+        self.sent = False
         # Jobs that ended before `sweep_jobs_queued` saw them.
         self.early: dict[str, ConversionJob] = {}
 
@@ -584,12 +642,12 @@ def sweep_jobs_queued(jobs: list[ConversionJob]) -> None:
         if job.id in _open_sweep.early:  # already counted by the listener
             continue
         _open_sweep.jobs.append(job)
-        # A job can end before this hook runs (the queue awaits after accepting
-        # a batch). Nothing would ever discard it from `pending`, so it is
-        # counted but not waited on.
+        # The job is the sweep's from here on, whatever its status, so its
+        # terminal listener (which may not have run yet) never sends it alone.
+        _job_sweeps[job.id] = _open_sweep
+        # A job that already ended is counted but not waited on.
         if getattr(job, "status", None) not in _TERMINAL:
             _open_sweep.pending.add(job.id)
-            _job_sweeps[job.id] = _open_sweep
 
 
 def sweep_finished(result: dict, *, dry_run: bool = False) -> None:
@@ -625,8 +683,9 @@ def sweep_finished(result: dict, *, dry_run: bool = False) -> None:
 
 
 def _maybe_send(sweep: _Sweep) -> None:
-    if not sweep.closed or sweep.pending:
+    if not sweep.closed or sweep.pending or sweep.sent:
         return
+    sweep.sent = True  # a late terminal listener must not send it a second time
     event = sweep.event()
     if event is not None:
         notify(event)
@@ -652,9 +711,11 @@ async def on_job_finished(job: ConversionJob) -> None:
 
 
 def _reset_for_tests() -> None:
-    global _open_sweep, _reported_errors
+    global _open_sweep, _reported_errors, _dispatcher
     _open_sweep = None
     _reported_errors = set()
+    _dispatcher = None
+    _inbox.clear()
     _job_sweeps.clear()
     _expected.clear()
     _queues.clear()

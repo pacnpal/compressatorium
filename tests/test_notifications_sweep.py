@@ -232,3 +232,45 @@ async def test_cancelling_a_sweep_is_not_reported_as_a_failure(tmp_path, sent):
         await romm_auto.sweep()
     await notifications.drain()
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_job_whose_listener_runs_after_the_batch_returns_is_not_sent_twice(
+    tmp_path, sent, monkeypatch,
+):
+    """The mirror order: the batch call resumes first and sees a finished job."""
+    import asyncio
+
+    from models import ConversionMode
+    from services import job_manager as jm
+    from services.preferences_store import preferences_store
+
+    src = tmp_path / "Game.iso"
+    src.write_bytes(b"x")
+    manager = jm.JobManager(max_concurrent=1, max_job_history=5)
+    manager.add_terminal_listener(notifications.on_job_finished)
+    await preferences_store.put(notifications.PREF_KEY, {"destinations": [
+        {"id": "d1", "kind": "webhook", "url": "https://hooks.example/t", "label": ""}]})
+    loop = asyncio.get_running_loop()
+
+    async def late_listener_prune():
+        for job in manager.get_all_jobs():
+            job.status = JobStatus.FAILED
+            job.error_message = "no disc"
+            loop.call_later(0.1, manager._notify_terminal, job)  # after the call returns
+
+    monkeypatch.setattr(manager, "_prune_jobs", late_listener_prune)
+    notifications.sweep_expect([str(src)])
+    jobs = await manager.create_batch_jobs(
+        [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},
+    )
+    try:
+        assert jobs[0].status == JobStatus.FAILED  # already finished when we see it
+        notifications.sweep_jobs_queued(jobs)
+        notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
+        await asyncio.sleep(0.3)
+        await notifications.drain()
+    finally:
+        for job in jobs:
+            jm.concurrency_manager.release(job.id)
+    assert [e.kind for e in sent] == ["sweep_finished"]

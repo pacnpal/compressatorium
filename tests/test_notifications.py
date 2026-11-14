@@ -380,6 +380,10 @@ async def test_job_already_terminal_when_queued_does_not_hang_the_sweep(client, 
     notifications.sweep_finished({"queued": 1, "errors": []})
     await notifications.drain()
     assert len(rec.sent) == 1 and rec.sent[0][2].data["failed"] == 1
+    # Its listener runs later and must find the claim: no lone job_failed.
+    await notifications.on_job_finished(quick)
+    await notifications.drain()
+    assert len(rec.sent) == 1
     assert not notifications._job_sweeps  # nothing left waiting in memory
 
 
@@ -495,7 +499,8 @@ async def test_overlapping_sends_to_one_healthy_destination_all_arrive_in_order(
 
 
 @pytest.mark.asyncio
-async def test_a_full_queue_drops_the_oldest_with_a_warning(rec, monkeypatch, caplog):
+async def test_a_full_queue_drops_the_oldest_with_a_warning(client, rec, monkeypatch, caplog):
+    dest = await _add(client)
     release = threading.Event()
     seen = []
 
@@ -505,19 +510,17 @@ async def test_a_full_queue_drops_the_oldest_with_a_warning(rec, monkeypatch, ca
 
     monkeypatch.setitem(notifications.TRANSPORTS, "webhook", transport)
     monkeypatch.setattr(notifications, "MAX_QUEUED_PER_DESTINATION", 2)
-    dest = {"id": "x", "kind": "webhook", "url": "https://h.example/x"}
 
     def ev(n):
         return notifications.Event("job_failed", n, "b")
 
-    futs = [notifications._enqueue(dest, ev("e0"))]
-    await asyncio.sleep(0.05)  # e0 is in flight, the queue is empty
-    futs += [notifications._enqueue(dest, ev(n)) for n in ("e1", "e2", "e3")]
+    futs = [notifications._enqueue(dest["id"], ev("e0"))]
+    await asyncio.sleep(0.1)  # e0 is in flight, the queue is empty
+    futs += [notifications._enqueue(dest["id"], ev(n)) for n in ("e1", "e2", "e3")]
     release.set()
-    results = await asyncio.gather(*futs, return_exceptions=True)
+    await asyncio.gather(*futs)
     assert seen == ["e0", "e2", "e3"]  # e1 was the oldest waiting when e3 arrived
-    assert isinstance(results[1], notifications.NotificationError)
-    assert "dropped" in caplog.text.lower()
+    assert "dropped" in caplog.text.lower() and "e1" in caplog.text
 
 
 def test_webhook_has_an_overall_deadline_against_a_slow_drip(monkeypatch):
@@ -615,19 +618,61 @@ def test_ipv6_literal_without_a_port_gets_the_scheme_default_port(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_burst_to_a_healthy_destination_is_delivered_in_full(client, rec, monkeypatch):
+async def test_a_burst_to_a_healthy_destination_arrives_complete_and_in_order(
+        client, rec, monkeypatch):
     await _add(client)
+    got = []
+    monkeypatch.setitem(
+        notifications.TRANSPORTS, "webhook", lambda url, event: got.append(event.title))
+    for burst in range(20):  # the order used to differ from run to run
+        got.clear()
+        for i in range(5):
+            notifications.notify(notifications.Event("job_failed", f"e{i}", "b"))
+        await notifications.drain()
+        assert got == [f"e{i}" for i in range(5)], f"burst {burst}"
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_destination_drops_its_queued_messages(client, rec, monkeypatch):
+    dest = await _add(client)
+    release = threading.Event()
     got = []
 
     def transport(url, event):
-        time.sleep(0.05)
+        release.wait(2)
         got.append(event.title)
 
     monkeypatch.setitem(notifications.TRANSPORTS, "webhook", transport)
-    for i in range(5):
+    for i in range(3):
         notifications.notify(notifications.Event("job_failed", f"e{i}", "b"))
+    await asyncio.sleep(0.1)  # e0 in flight, e1 and e2 queued
+    await client.delete(dest["id"])
+    release.set()
     await notifications.drain()
-    assert sorted(got) == [f"e{i}" for i in range(5)]
+    assert got == ["e0"]
+    assert not notifications._queues and not notifications._workers
+
+
+@pytest.mark.asyncio
+async def test_queued_messages_use_the_url_current_when_they_are_sent(
+        client, rec, monkeypatch):
+    dest = await _add(client, "https://old.example/x")
+    release = threading.Event()
+    urls = []
+
+    def transport(url, event):
+        release.wait(2)
+        urls.append(url)
+
+    monkeypatch.setitem(notifications.TRANSPORTS, "webhook", transport)
+    for i in range(2):
+        notifications.notify(notifications.Event("job_failed", f"e{i}", "b"))
+    await asyncio.sleep(0.1)
+    await client.edit(dest["id"], url="https://new.example/x")
+    release.set()
+    await notifications.drain()
+    assert urls == ["https://old.example/x", "https://new.example/x"]
+    assert not notifications._queues and not notifications._workers
 
 
 @pytest.mark.asyncio
