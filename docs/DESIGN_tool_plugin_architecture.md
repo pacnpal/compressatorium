@@ -2222,6 +2222,43 @@ and any mismatch keeps the Source. An NKit `.nkit.iso` Source is hashed as a
 file; whether that equals the digest of its output depends on what
 `dolphin-tool` writes, and either way the guarantee holds.
 
+**Spike (#300): can a CD Source be hashed into the layout chdman's data SHA1
+covers, without extracting?** Result: **not proven, so not used.** The CD path
+extracts the output instead (below).
+
+What the data SHA1 of a CD CHD covers, read from MAME's source
+(`src/tools/chdman.cpp`, `src/lib/util/cdrom.cpp`, master, November 2026):
+
+- Every frame is 2448 bytes: the track's sector data (`datasize`, 2048 or
+  2352) zero-filled to 2352, then 96 bytes of subcode (zeros when the Source
+  has no `.sub`). `chd_cd_compressor::read_data` starts each block with
+  `memset(dest, 0, length)`.
+- Each track is padded to a 4-frame boundary: `do_create_cd` computes
+  `padded = (frames + TRACK_PADDING - 1) / TRACK_PADDING` with
+  `TRACK_PADDING = 4` and stores the difference as `extraframes`.
+- Audio is stored byte-swapped. The CUE parser sets `swap = true` for every
+  `AUDIO` track ("this is true for cue/bin and cue/iso"), and `read_data` swaps
+  each 16-bit sample when `swap` is set. `do_extract_cd` swaps it back for
+  cue and GDI output.
+- Pregaps: a `PREGAP` directive adds `padframes` that `read_data` zero-fills,
+  while `INDEX 00` data in the file is stored as pregap data. GD-ROM images add
+  `splitframes` that read across a track boundary.
+
+So a direct hash is possible in principle: walk the sheet, read each track's
+sectors, zero-fill to 2352, append 96 zero bytes, swap audio, emit the pregap
+and 4-frame padding frames, and SHA1 the stream. But every one of those rules
+must match chdman exactly, for every track type, pregap form and GD-ROM layout,
+or a good CHD reads as a mismatch. No chdman binary was available to prove the
+reimplementation against (none installed on the dev machine, and Docker was not
+running), so the rule from #300 applies: use the extract fallback. A later
+change can add the direct hash once it is tested against real chdman output
+across a sample set, and then skip the extract.
+
+DVD and HD CHDs need no spike: they store the image's bytes as-is, so the data
+SHA1 is the SHA1 of the Source image. The overall `SHA1` that `chdman info`
+also prints folds in the metadata (and changes when the disc-ID tags are
+added), so it is never a content digest.
+
 **A failed Round-trip stores nothing.** On a mismatch or an unreadable digest
 the output's verification record is cleared, not written: the output gets no
 check badge, no `produced_meta` for the re-run fast path (§3.3.6), and a record
