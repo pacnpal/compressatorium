@@ -38,6 +38,15 @@ registry = ReferrerRegistry()
 registry.register(M3uReferrer())
 
 
+def _applies(referrer: Referrer, image_path: str, renames: Mapping[str, str]) -> bool:
+    """Whether *referrer* could point at the Image or any file being replaced.
+
+    Every deleted path is asked, not just the Image's own: a cue's track in a
+    subfolder can have a playlist of its own.
+    """
+    return any(referrer.detect(p) for p in dict.fromkeys([image_path, *renames]))
+
+
 def plan_changes(image_path: str, renames: Mapping[str, str]) -> list[ReferrerChange]:
     """Every registered Referrer's planned change for *renames*. Writes nothing.
 
@@ -45,7 +54,7 @@ def plan_changes(image_path: str, renames: Mapping[str, str]) -> list[ReferrerCh
     """
     changes: list[ReferrerChange] = []
     for referrer in registry.all():
-        if referrer.detect(image_path):
+        if _applies(referrer, image_path, renames):
             changes.extend(referrer.plan(renames))
     return changes
 
@@ -103,7 +112,7 @@ def _update_sync(image_path: str, renames: Mapping[str, str]) -> ReferrerOutcome
     planned: list[tuple[Referrer, ReferrerChange]] = []
     for referrer in registry.all():
         try:
-            if referrer.detect(image_path):
+            if _applies(referrer, image_path, renames):
                 planned.extend((referrer, c) for c in referrer.plan(renames))
         except Exception as exc:  # noqa: BLE001 - any failure keeps the Source
             outcome._fail(referrer.id, exc, referrer.id)

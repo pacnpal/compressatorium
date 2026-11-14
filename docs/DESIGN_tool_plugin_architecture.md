@@ -2190,7 +2190,9 @@ to the output that replaces it (a `.cue` and its `.bin` tracks all map to the
 The package exposes the registry and two entry points:
 
 - `plan_changes(image_path, renames)` runs `detect` + `plan` on every
-  registered Referrer. `POST /api/jobs/delete-plan` calls it per item (with the
+  registered Referrer. Both entry points ask `detect` about the Image *and*
+  every path in `renames`, so a companion that is deleted too (a cue's track
+  in a subfolder) gates planning as well. `POST /api/jobs/delete-plan` calls it per item (with the
   request's `output_dir`, so the planned output path is the real one) and
   returns `referrer_changes: [{referrer, target, edits: [{old, new}]}]`, which
   `DeletePlanModal.svelte` lists under each source. A plan that can't be made
@@ -2213,8 +2215,12 @@ The package exposes the registry and two entry points:
 
 `atomic_write_bytes(path, data)` (in `base.py`) is the shared writer for file
 Referrers and anything else that writes a playlist: a temp file in the same
-directory, fsync, `os.replace`, keeping the old file's permission bits. A crash
-leaves the old file or the new one, never half of one.
+directory, fsync, `os.replace`, keeping the old file's permission bits and
+group (and its owner when running as root). Readers that reach a shared
+playlist through its group would otherwise lose access, so a group that can't
+be set on the temp file aborts the write (`PermissionError` "can't keep its
+group"), which keeps the Source. A crash leaves the old file or the new one,
+never half of one.
 
 **The `.m3u` Referrer** (`m3u.py`) is always on.
 
@@ -2239,9 +2245,12 @@ leaves the old file or the new one, never half of one.
   `path|label` entries, absolute paths in the emulator's own path space, mixed
   separators, quoted names and case differences on case-sensitive volumes.
   An unresolved entry for some other file does not block anything. A playlist
-  that isn't 8-bit text (a UTF-16 BOM, or NUL bytes) is never rewritten: if its
-  decoded text contains a replaced file's name the Source is kept, otherwise it
-  is left alone.
+  that isn't 8-bit text (a UTF-16 BOM, or NUL bytes) is never rewritten. It is
+  decoded as UTF-16 for checking only: the BOM names the byte order, or without
+  one the NULs of ASCII text do (odd offsets little-endian, even offsets
+  big-endian). If the decoded text contains a replaced file's name, or the
+  file can't be decoded reliably, the Source is kept; otherwise it is left
+  alone.
 - *Entry style.* The new entry is the entry's own folder part plus the path
   from the replaced file's resolved folder to the resolved output, so both
   sides use the same path form (a symlinked folder does not turn `Game.cue`

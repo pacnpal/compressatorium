@@ -5,13 +5,17 @@ Driven through the Referrer hook the job calls, on a temp folder.
 from __future__ import annotations
 
 import asyncio
+import os
+import stat
 import time
 import unicodedata
 from pathlib import Path
 
 import pytest
 from services import referrers
+from services.referrers import base as base_module
 from services.referrers import m3u as m3u_module
+from services.referrers.base import atomic_write_bytes
 from services.referrers.m3u import M3uReferrer
 
 from config import settings
@@ -289,6 +293,112 @@ async def test_a_utf16_playlist_naming_the_source_keeps_it(tmp_path, encoding):
     assert not outcome.ok
     assert outcome.failed == str(playlist)
     assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+async def test_a_bomless_utf16_playlist_with_a_non_ascii_name_keeps_the_source(
+    tmp_path, encoding,
+):
+    _disc(tmp_path, "Pokémon.cue")
+    playlist = tmp_path / "P.m3u"
+    data = "Pokémon.cue\n".encode(encoding)
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Pokémon.cue", "Pokémon.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_a_playlist_beside_a_track_in_a_subfolder_is_updated(tmp_path):
+    """The cue's track lives in tracks/, and only tracks/ has a playlist."""
+    _disc(tmp_path, "Game.cue")
+    (tmp_path / "tracks").mkdir()
+    _disc(tmp_path / "tracks", "Game.bin")
+    playlist = tmp_path / "tracks" / "Game.m3u"
+    playlist.write_text("Game.bin\n")
+
+    outcome = await referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"),
+        {
+            str(tmp_path / "Game.cue"): str(tmp_path / "Game.chd"),
+            str(tmp_path / "tracks" / "Game.bin"): str(tmp_path / "Game.chd"),
+        },
+    )
+
+    assert outcome.ok
+    assert playlist.read_text() == "../Game.chd\n"
+
+
+def _other_group(path: Path) -> int | None:
+    current = path.stat().st_gid
+    return next((g for g in os.getgroups() if g != current), None)
+
+
+def test_a_rewrite_keeps_the_playlists_group(tmp_path):
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("A.cue\n")
+    group = _other_group(tmp_path)
+    if group is None:
+        pytest.skip("needs a second group")
+    try:
+        os.chown(playlist, -1, group)
+    except PermissionError:
+        pytest.skip("can't change group here")
+
+    atomic_write_bytes(str(playlist), b"A.chd\n")
+
+    assert playlist.stat().st_gid == group
+
+
+def _pretend_group_differs(monkeypatch, playlist: Path) -> None:
+    """The playlist reports a group the temp file won't get, and chown refuses."""
+    real_stat = os.stat
+    original_gid = real_stat(playlist).st_gid
+
+    def stat_with_other_group(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        if str(path) == str(playlist):
+            fields = list(st)
+            fields[stat.ST_GID] = original_gid + 1
+            return os.stat_result(fields)
+        return st
+
+    def refuse(*_a, **_kw):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(base_module.os, "stat", stat_with_other_group)
+    monkeypatch.setattr(base_module.os, "chown", refuse)
+
+
+def test_a_group_that_cannot_be_kept_fails_the_write(tmp_path, monkeypatch):
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("A.cue\n")
+    _pretend_group_differs(monkeypatch, playlist)
+
+    with pytest.raises(PermissionError):
+        atomic_write_bytes(str(playlist), b"A.chd\n")
+    monkeypatch.undo()
+    assert playlist.read_text() == "A.cue\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["Game.m3u"]
+
+
+@pytest.mark.asyncio
+async def test_a_group_that_cannot_be_kept_keeps_the_source(tmp_path, monkeypatch):
+    _disc(tmp_path, "A.cue")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("A.cue\n")
+    (tmp_path / "Game.m3u.bak").write_text("A.cue\n")  # only the playlist is rewritten
+    _pretend_group_differs(monkeypatch, playlist)
+
+    outcome = await _replace(tmp_path, "A.cue", "A.chd")
+
+    monkeypatch.undo()
+    assert not outcome.ok
+    assert "group" in outcome.reason
+    assert playlist.read_text() == "A.cue\n"
 
 
 @pytest.mark.asyncio
