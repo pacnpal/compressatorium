@@ -110,6 +110,21 @@ class LockManager:
         with self._lock_mutex:
             return self._dir_overlaps_locked(resolved)
 
+    @staticmethod
+    def _still_linked(lock_handle, lock_file_path: str) -> bool:
+        """Whether the file we hold ``flock`` on is still the one at its path.
+
+        ``release_lock`` unlinks the lock file after unlocking. A process that
+        opened the file just before that, and locked it just after, holds a
+        lock on a file no one else can see: a third process creates the path
+        afresh and locks it too, and two writers share one output. Checked
+        after every ``flock``; a stale handle is dropped and the open retried.
+        """
+        try:
+            return os.fstat(lock_handle.fileno()).st_ino == os.stat(lock_file_path).st_ino
+        except OSError:
+            return False
+
     def _lock_file_path(self, normalized_path: str) -> str:
         # Use a stable hash to avoid path length issues and keep locks in /tmp.
         digest = hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()
@@ -299,75 +314,92 @@ class LockManager:
             lock_dir = os.path.dirname(lock_file_path)
             if lock_dir:
                 os.makedirs(lock_dir, exist_ok=True)
-            lock_handle = None
-            try:
-                with contextlib.ExitStack() as stack:
-                    # Open lock file in append mode (binary) to avoid truncating existing content.
-                    # Binary mode: flock-only handle, no text is read or written.
-                    lock_handle = stack.enter_context(
-                        open(lock_file_path, "ab")
+            for _attempt in range(3):
+                outcome = self._try_file_lock(
+                    normalized_path, lock_file_path, allow_existing,
+                )
+                if outcome is not None:
+                    return outcome
+            return False
+
+    def _try_file_lock(
+        self, normalized_path: str, lock_file_path: str, allow_existing: bool,
+    ) -> bool | None:
+        """One attempt at :meth:`acquire_lock`; None when the lock file was
+        unlinked under us and the attempt should be repeated. Caller holds
+        ``self._lock_mutex``."""
+        lock_handle = None
+        try:
+            with contextlib.ExitStack() as stack:
+                # Open lock file in append mode (binary) to avoid truncating existing content.
+                # Binary mode: flock-only handle, no text is read or written.
+                lock_handle = stack.enter_context(
+                    open(lock_file_path, "ab")
+                )
+
+                # Try to acquire an exclusive lock (non-blocking)
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    # Lock is held by another process
+                    return False
+                except OSError:
+                    # Other error (permission denied, etc.)
+                    logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
+                    return False
+
+                if not self._still_linked(lock_handle, lock_file_path):
+                    return None
+
+                # Now that we have the lock, check if CHD already exists (atomic with lock)
+                if os.path.exists(normalized_path):
+                    if not allow_existing or not os.path.isfile(normalized_path):
+                        # File exists and overwrite not allowed (or not a file): release lock and
+                        # clean up
+                        try:
+                            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                        except Exception:
+                            logger.debug(
+                                "Failed to release lock for existing file: %s",
+                                normalized_path,
+                                exc_info=True,
+                            )
+                        # Clean up lock file since we're not using it
+                        try:
+                            if os.path.exists(lock_file_path):
+                                os.remove(lock_file_path)
+                        except Exception:
+                            logger.debug(
+                                "Failed to clean up lock file: %s",
+                                lock_file_path,
+                                exc_info=True,
+                            )
+                        return False
+
+                # Successfully acquired the lock and file doesn't exist
+                self._locks.add(normalized_path)
+                self._lock_handles[normalized_path] = lock_handle
+                # Transfer ownership to _lock_handles by detaching ExitStack cleanup.
+                # This keeps lock_handle open for the conversion lifecycle.
+                stack.pop_all()
+                return True
+
+        except Exception:
+            # Ensure file handle is closed on any error
+            if lock_handle is not None:
+                if self._lock_handles.get(normalized_path) is lock_handle:
+                    self._lock_handles.pop(normalized_path, None)
+                    self._locks.discard(normalized_path)
+                try:
+                    lock_handle.close()
+                except Exception:
+                    logger.debug(
+                        "Failed to close lock handle for: %s",
+                        normalized_path,
+                        exc_info=True,
                     )
-
-                    # Try to acquire an exclusive lock (non-blocking)
-                    try:
-                        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        # Lock is held by another process
-                        return False
-                    except OSError:
-                        # Other error (permission denied, etc.)
-                        logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
-                        return False
-
-                    # Now that we have the lock, check if CHD already exists (atomic with lock)
-                    if os.path.exists(normalized_path):
-                        if not allow_existing or not os.path.isfile(normalized_path):
-                            # File exists and overwrite not allowed (or not a file): release lock and
-                            # clean up
-                            try:
-                                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-                            except Exception:
-                                logger.debug(
-                                    "Failed to release lock for existing file: %s",
-                                    normalized_path,
-                                    exc_info=True,
-                                )
-                            # Clean up lock file since we're not using it
-                            try:
-                                if os.path.exists(lock_file_path):
-                                    os.remove(lock_file_path)
-                            except Exception:
-                                logger.debug(
-                                    "Failed to clean up lock file: %s",
-                                    lock_file_path,
-                                    exc_info=True,
-                                )
-                            return False
-
-                    # Successfully acquired the lock and file doesn't exist
-                    self._locks.add(normalized_path)
-                    self._lock_handles[normalized_path] = lock_handle
-                    # Transfer ownership to _lock_handles by detaching ExitStack cleanup.
-                    # This keeps lock_handle open for the conversion lifecycle.
-                    stack.pop_all()
-                    return True
-
-            except Exception:
-                # Ensure file handle is closed on any error
-                if lock_handle is not None:
-                    if self._lock_handles.get(normalized_path) is lock_handle:
-                        self._lock_handles.pop(normalized_path, None)
-                        self._locks.discard(normalized_path)
-                    try:
-                        lock_handle.close()
-                    except Exception:
-                        logger.debug(
-                            "Failed to close lock handle for: %s",
-                            normalized_path,
-                            exc_info=True,
-                        )
-                logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
-                return False
+            logger.error("Failed to acquire lock for %s", normalized_path, exc_info=True)
+            return False
 
     def release_lock(self, output_path: str):
         """Release the lock for an output file path."""
@@ -431,6 +463,10 @@ class LockManager:
                         logger.error(
                             "Failed to acquire dir lock for %s", normalized, exc_info=True,
                         )
+                        return False
+                    if not self._still_linked(lock_handle, lock_file_path):
+                        # Unlinked by its last holder under us: a lock no one
+                        # else can see. The job defers and tries again.
                         return False
                     self._dir_locks.add(normalized)
                     self._dir_lock_handles[normalized] = lock_handle
