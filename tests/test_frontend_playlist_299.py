@@ -68,3 +68,9 @@ def test_disc_images_filters_by_the_mirrored_disc_extensions(tmp_path):
     assert _eval_registry(tmp_path, dump, "disc_images_eval.mjs") == [
         "/a/x.cue", "/a/Z.CHD", "/a/w.rvz",
     ]
+
+
+def test_client_uses_optional_chaining_for_the_error_body():
+    src = (_SRC / "api" / "client.js").read_text(encoding="utf-8")
+    assert "body && body.detail" not in src
+    assert "body && typeof body.detail" not in src

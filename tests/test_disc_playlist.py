@@ -297,3 +297,74 @@ def test_same_unnumbered_image_in_two_formats_is_refused(vol: Path):
     paths = _discs(vol, "game.cue", "game.chd")
     with pytest.raises(disc_playlist.PlaylistError, match="same disc"):
         disc_playlist.plan_playlist(paths)
+
+
+# --- PR review: symlinks, entry encoding, name length -----------------------
+
+
+def test_playlist_goes_in_the_folder_the_user_selected_from(vol: Path):
+    real = vol / "real"
+    _discs(real, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    os.symlink(real, vol / "link")
+    paths = [str(vol / "link" / "Game (Disc 1).cue"), str(vol / "link" / "Game (Disc 2).cue")]
+    plan = disc_playlist.plan_playlist(paths)
+    assert plan.directory == str(vol / "link")
+    out = disc_playlist.create_playlist(paths, plan.file_name)
+    assert (real / "Game.m3u").read_bytes() == b"Game (Disc 1).cue\nGame (Disc 2).cue\n"
+    assert out.directory == str(vol / "link")
+
+
+def test_a_disc_that_is_a_symlink_into_another_folder_is_refused(vol: Path):
+    _discs(vol / "b", "Game (Disc 1).cue", "Game (Disc 2).cue")
+    (vol / "a").mkdir()
+    os.symlink(vol / "b" / "Game (Disc 1).cue", vol / "a" / "Game (Disc 1).cue")
+    paths = [str(vol / "a" / "Game (Disc 1).cue"), str(vol / "b" / "Game (Disc 2).cue")]
+    with pytest.raises(disc_playlist.PlaylistError, match="one folder"):
+        disc_playlist.plan_playlist(paths)
+
+
+def test_an_entry_that_would_not_resolve_to_the_selected_file_is_refused(vol, monkeypatch):
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    monkeypatch.setattr(disc_playlist.os.path, "samefile", lambda a, b: False)
+    with pytest.raises(disc_playlist.PlaylistError, match="resolve"):
+        disc_playlist.plan_playlist(paths)
+
+
+def test_entries_starting_with_whitespace_or_control_chars_are_protected(vol: Path):
+    paths = _discs(vol, " Game (Disc 1).cue", "\x1fGame (Disc 2).cue")
+    plan = disc_playlist.plan_playlist(paths)
+    assert plan.entries == ["./\x1fGame (Disc 2).cue", "./ Game (Disc 1).cue"] or plan.entries == [
+        "./ Game (Disc 1).cue", "./\x1fGame (Disc 2).cue",
+    ]
+    disc_playlist.create_playlist(paths, plan.file_name)
+    written = (vol / plan.file_name).read_bytes().decode().splitlines()
+    assert sorted(written) == sorted(plan.entries)
+
+
+def test_playlist_bytes_reads_the_rendered_file_back():
+    from app.services.referrers.m3u import playlist_bytes
+
+    assert playlist_bytes([" a.cue", "#b.cue"]) == b"./ a.cue\n./#b.cue\n"
+    with pytest.raises(ValueError):
+        playlist_bytes(["trailing space.cue "])  # a reader would trim it
+    with pytest.raises(ValueError):
+        playlist_bytes(["two\nlines.cue"])
+
+
+_TITLE_MAX = 245  # 255 - ".m3u" - " (999)"
+
+
+def test_a_longest_title_can_still_be_given_a_collision_suffix(vol: Path):
+    title = "x" * _TITLE_MAX
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    (vol / f"{title}.m3u").write_text("keep")
+    plan = disc_playlist.plan_playlist(paths, title=title)
+    assert plan.file_name == f"{title} (2).m3u"
+    disc_playlist.create_playlist(paths, plan.file_name)  # what the preview offered
+    assert (vol / plan.file_name).exists()
+
+
+def test_a_title_one_byte_over_the_limit_is_refused(vol: Path):
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    with pytest.raises(disc_playlist.PlaylistError, match="too long"):
+        disc_playlist.plan_playlist(paths, title="x" * (_TITLE_MAX + 1))
