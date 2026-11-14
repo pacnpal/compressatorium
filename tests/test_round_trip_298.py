@@ -149,3 +149,198 @@ def test_migration_backfills_existing_verifications_as_intact(db_path, reset_db_
         assert value == "intact"
     finally:
         reset_db_engine()
+
+
+# ---------------------------------------------------------------------------
+# End to end: POST /jobs -> plan_job -> job_manager -> delete decision
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(name="e2e")
+def _e2e(tmp_path, monkeypatch, db_path, reset_db_engine):
+    """Confine the route to ``tmp_path``; stub the converters and their
+    container checks; fake dolphin-tool's hash run at the runner seam."""
+    from app.routes import convert as convert_routes
+    from services import db as _db
+
+    _db.init_engine(db_path)
+    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "temp_dir", str(tmp_path / "temp"))
+    monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
+
+    async def fake_convert(input_path, output_path, mode="", *, compression=None,
+                           cancel_event=None):
+        with open(output_path, "wb") as f:
+            f.write(b"converted output")
+        yield {"progress": 100, "message": "done"}
+
+    async def container_check_passes(path, *, cancel_event=None):
+        return {"valid": True, "message": "ok"}
+
+    for tool_id in ("dolphin", "z3ds"):
+        service = registry.get(tool_id)._service
+        monkeypatch.setattr(service, "convert", fake_convert)
+        monkeypatch.setattr(service, "verify", container_check_passes)
+
+    state = {"stdout": b"", "rc": 0, "calls": []}
+    service = _dolphin()._service
+
+    async def fake_capture(cmd, **kwargs):
+        state["calls"].append(cmd)
+        return state["rc"], state["stdout"], b""
+
+    monkeypatch.setattr(service._runner, "run_capture", fake_capture)
+    state["tmp_path"] = tmp_path
+    state["routes"] = convert_routes
+    yield state
+    reset_db_engine()
+
+
+async def _run(e2e, source, mode, **request_fields):
+    from app.models import ConversionMode, DuplicateAction, JobCreateRequest
+
+    routes = e2e["routes"]
+    request = JobCreateRequest(
+        file_path=str(source),
+        mode=ConversionMode(mode),
+        duplicate_action=DuplicateAction.SKIP,
+        **request_fields,
+    )
+    job = await routes.create_job(request)
+    await routes.job_manager._process_job(job.id)
+    return job
+
+
+def _source_iso(e2e, payload=b"the disc" * 4096):
+    iso = e2e["tmp_path"] / "Game.iso"
+    iso.write_bytes(payload)
+    return iso, hashlib.sha1(payload).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_matching_digests_delete_the_source_and_say_round_tripped(e2e):
+    from services import ledger
+    from services.verification_store import verification_store
+
+    iso, sha1 = _source_iso(e2e)
+    e2e["stdout"] = f"SHA-1: {sha1}\n".encode()
+
+    job = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
+
+    assert job.status.value == "completed", job.error_message
+    assert not iso.exists()
+    assert job.check_passed == "round_tripped"
+    assert ledger.row_from_job(job)["check_passed"] == "round_tripped"
+    record = await verification_store.get_record(job.output_path)
+    assert record["check_passed"] == "round_tripped"
+    # Only the output went through dolphin-tool; the Source ISO is hashed directly.
+    assert [c[c.index("-i") + 1] for c in e2e["calls"]] == [job.output_path]
+
+
+@pytest.mark.asyncio
+async def test_mismatched_digests_keep_the_source_and_say_the_content_differs(e2e):
+    from services import ledger
+
+    iso, _ = _source_iso(e2e)
+    e2e["stdout"] = f"SHA-1: {'0' * 40}\n".encode()
+
+    job = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
+
+    assert job.status.value == "failed"
+    assert iso.exists()
+    assert "content differs" in job.error_message
+    assert "Source kept" in job.error_message
+    # The output did pass its container check, and that is all it passed.
+    assert job.check_passed == "intact"
+    row = ledger.row_from_job(job)
+    assert row["check_passed"] == "intact" and row["source_deleted"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_digest_that_cannot_be_read_keeps_the_source(e2e):
+    iso, _ = _source_iso(e2e)
+    e2e["rc"] = 1
+
+    job = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
+
+    assert job.status.value == "failed"
+    assert iso.exists()
+    assert "Round-trip" in job.error_message and "Source kept" in job.error_message
+
+
+@pytest.mark.asyncio
+async def test_container_only_opt_out_skips_the_comparison(e2e):
+    iso, _ = _source_iso(e2e)
+
+    job = await _run(
+        e2e, iso, "dolphin_rvz", delete_on_verify=True, container_only=True,
+    )
+
+    assert job.status.value == "completed", job.error_message
+    assert not iso.exists()
+    assert job.container_only is True
+    assert job.check_passed == "intact"
+    assert e2e["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_mode_without_a_digest_keeps_the_container_check(e2e):
+    rom = e2e["tmp_path"] / "Game.3ds"
+    rom.write_bytes(b"cartridge")
+
+    job = await _run(e2e, rom, "z3ds_compress", delete_on_verify=True)
+
+    assert job.status.value == "completed", job.error_message
+    assert not rom.exists()
+    assert job.check_passed == "intact"
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_keeps_its_source_runs_only_the_intact_check(e2e, monkeypatch):
+    from app.models import ConversionMode
+
+    iso, _ = _source_iso(e2e)
+    reads: list[str] = []
+    tool = _dolphin()
+    original = tool.content_digest
+
+    async def counting(path, *, cancel_event=None):
+        reads.append(path)
+        return await original(path, cancel_event=cancel_event)
+
+    monkeypatch.setattr(tool, "content_digest", counting)
+    manager = e2e["routes"].job_manager
+    job = await manager.create_job(
+        str(iso), ConversionMode.DOLPHIN_RVZ,
+        output_path=str(iso.with_suffix(".rvz")), verify_after=True,
+    )
+    await manager._process_job(job.id)
+
+    assert job.status.value == "completed", job.error_message
+    assert iso.exists()
+    assert job.check_passed == "intact"
+    assert reads == [] and e2e["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_batch_route_carries_the_container_only_opt_out(e2e):
+    from app.models import BatchJobCreateRequest, ConversionMode, DuplicateAction
+
+    sources = []
+    for name in ("A.iso", "B.iso"):
+        path = e2e["tmp_path"] / name
+        path.write_bytes(name.encode())
+        sources.append(str(path))
+
+    jobs = await e2e["routes"].create_batch_jobs(BatchJobCreateRequest(
+        file_paths=sources, mode=ConversionMode.DOLPHIN_RVZ,
+        duplicate_action=DuplicateAction.SKIP,
+        delete_on_verify=True, container_only=True,
+    ))
+    for job in jobs:
+        await e2e["routes"].job_manager._process_job(job.id)
+
+    assert [j.container_only for j in jobs] == [True, True]
+    assert [j.check_passed for j in jobs] == ["intact", "intact"]
+    assert e2e["calls"] == []

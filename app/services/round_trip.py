@@ -1,0 +1,114 @@
+"""The Round-trip check (#298): does the output hold the same content as its Source?
+
+Shared by every tool: it asks the mode's tool for a content digest of the
+Source and of the output (``ToolPlugin.content_digest``) and compares them. A
+tool only supplies the digest; the bounding, the cancel handling and the
+verdict live here, so no tool re-implements them.
+
+The outcome never deletes anything itself. The job pipeline reads it and keeps
+the Source on anything but a pass.
+"""
+from __future__ import annotations
+
+import asyncio
+import os
+from dataclasses import dataclass
+
+from logging_setup import get_logger
+
+from services.tools.base import ContentDigest, ContentDigestUnavailable, ToolPlugin
+
+logger = get_logger("round_trip")
+
+
+@dataclass(frozen=True)
+class RoundTripOutcome:
+    """``passed`` the digests matched; ``cancelled`` Cancel was pressed, so
+    nothing was proven either way; otherwise ``message`` says why the Source
+    must be kept."""
+
+    passed: bool
+    cancelled: bool = False
+    message: str = ""
+
+
+async def _digest(
+    tool: ToolPlugin, path: str, cancel_event: asyncio.Event | None,
+) -> ContentDigest:
+    """One side's digest, under the same bound as a verify of that file."""
+    try:
+        bound = await tool.verify_timeout(path, cancel_event=cancel_event)
+        digest = await asyncio.wait_for(
+            tool.content_digest(path, cancel_event=cancel_event),
+            timeout=bound or None,
+        )
+    except ContentDigestUnavailable:
+        raise
+    except asyncio.TimeoutError:
+        raise ContentDigestUnavailable(
+            f"hashing {os.path.basename(path)} did not finish in time",
+        ) from None
+    except Exception as e:  # noqa: BLE001 - any failure means "not proven"
+        raise ContentDigestUnavailable(
+            f"could not hash {os.path.basename(path)}: {e}",
+        ) from e
+    if digest is None:
+        raise ContentDigestUnavailable(
+            f"{tool.display_name} has no content digest for "
+            f"{os.path.basename(path)}",
+        )
+    return digest
+
+
+async def round_trip(
+    tool: ToolPlugin,
+    source_path: str,
+    output_path: str,
+    *,
+    cancel_event: asyncio.Event | None = None,
+) -> RoundTripOutcome:
+    """Compare the content ``source_path`` and ``output_path`` decode to.
+
+    ``source_path`` is the file the converter read (an extracted archive
+    member, not the ``archive::member`` pseudo-path). Read one side at a time:
+    both are usually on the same volume, and two full reads at once only
+    contend for it.
+    """
+    cancelled = RoundTripOutcome(passed=False, cancelled=True)
+
+    def _is_cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    try:
+        source = await _digest(tool, source_path, cancel_event)
+        if _is_cancelled():
+            return cancelled
+        output = await _digest(tool, output_path, cancel_event)
+    except ContentDigestUnavailable as e:
+        if _is_cancelled():
+            return cancelled
+        logger.warning("Round-trip could not run for %s: %s", output_path, e)
+        return RoundTripOutcome(
+            passed=False, message=f"Round-trip could not run: {e}. Source kept.",
+        )
+    if _is_cancelled():
+        return cancelled
+    try:
+        same = source.same_content(output)
+    except ValueError as e:
+        return RoundTripOutcome(
+            passed=False, message=f"Round-trip could not compare: {e}. Source kept.",
+        )
+    if same:
+        return RoundTripOutcome(passed=True)
+    logger.warning(
+        "Round-trip mismatch: %s %s=%s, output %s=%s",
+        source_path, source.kind, source.value, output_path, output.value,
+    )
+    return RoundTripOutcome(
+        passed=False,
+        message=(
+            "Round-trip failed: the output's content differs from the Source. "
+            "Source kept."
+        ),
+    )
