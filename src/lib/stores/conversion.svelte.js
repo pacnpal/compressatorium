@@ -61,6 +61,9 @@ class ConversionStore {
   compressionLevel = $state(defaultLevelFor(INITIAL_TOOL));
   outputDir = $state('');
   deleteOnVerify = $state(false);
+  // The named opt-out from the Round-trip check: delete on the container
+  // check alone. Only meaningful with deleteOnVerify on a round-trip mode.
+  containerOnly = $state(false);
   split = $state(false);
   customFilterMode = $state(false);
   // Auto: the backend works out each selected Image's Platform and sends it to
@@ -119,6 +122,10 @@ class ConversionStore {
 
   get supportsDeleteOnVerify() {
     return !!this.currentSpec?.supportsDeleteOnVerify;
+  }
+
+  get supportsRoundTrip() {
+    return !!this.currentSpec?.supportsRoundTrip;
   }
 
   get supportsSplit() {
@@ -393,6 +400,7 @@ class ConversionStore {
     // The backend rejects the combination outright, so a sticky flag
     // would fail the next submission instead of silently degrading.
     if (!this.supportsDeleteOnVerify) this.deleteOnVerify = false;
+    if (!this.supportsRoundTrip) this.containerOnly = false;
     // Likewise clear the split flag when leaving a mode that offers it.
     if (!this.supportsSplit) this.split = false;
   }
@@ -591,6 +599,7 @@ class ConversionStore {
         // going through setMode (the backend rejects the combination
         // for extract/raw modes).
         deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
+        containerOnly: this.supportsRoundTrip && this.containerOnly,
         // Same masking for the makeps3iso 4 GB FAT32 split toggle.
         split: this.supportsSplit && this.split,
       });

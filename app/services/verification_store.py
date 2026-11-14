@@ -68,6 +68,7 @@ class VerificationStore:
         chd_path: str,
         source_path: str | None,
         produced_meta: dict | None = None,
+        check: str = "intact",
     ) -> None:
         normalized = self._normalize(chd_path)
         normalized_source = self._normalize(source_path) if source_path else None
@@ -76,6 +77,7 @@ class VerificationStore:
             source_path=normalized_source,
             verified_at=_utcnow_iso(),
             produced_meta=produced_meta,
+            check_passed=check,
         )
         stmt = stmt.on_conflict_do_update(
             index_elements=["chd_path"],
@@ -83,6 +85,7 @@ class VerificationStore:
                 "source_path": stmt.excluded.source_path,
                 "verified_at": stmt.excluded.verified_at,
                 "produced_meta": stmt.excluded.produced_meta,
+                "check_passed": stmt.excluded.check_passed,
             },
         )
         with self._session() as session:
@@ -95,9 +98,16 @@ class VerificationStore:
         *,
         source_path: str | None = None,
         produced_meta: dict | None = None,
+        check: str = "intact",
     ) -> None:
+        """Record that ``chd_path`` passed a check.
+
+        ``check`` names which one (#298): ``"intact"``, its tool's container
+        check (every manual Verify), or ``"round_tripped"``, its content digest
+        equalled its Source's at conversion time.
+        """
         await run_in_threadpool(
-            self._mark_sync, chd_path, source_path, produced_meta,
+            self._mark_sync, chd_path, source_path, produced_meta, check,
         )
 
     def _clear_sync(self, chd_path: str) -> None:
@@ -126,6 +136,7 @@ class VerificationStore:
             source_path = old.source_path
             verified_at = old.verified_at
             produced_meta = old.produced_meta
+            check_passed = old.check_passed
             session.delete(old)
             session.flush()
             # Upsert under the new key.
@@ -134,12 +145,14 @@ class VerificationStore:
                 existing.source_path = source_path
                 existing.verified_at = verified_at
                 existing.produced_meta = produced_meta
+                existing.check_passed = check_passed
             else:
                 session.add(_db.Verification(
                     chd_path=new_normalized,
                     source_path=source_path,
                     verified_at=verified_at,
                     produced_meta=produced_meta,
+                    check_passed=check_passed,
                 ))
             session.commit()
 
@@ -167,6 +180,7 @@ class VerificationStore:
                 "source_path": row.source_path,
                 "verified_at": row.verified_at,
                 "produced_meta": row.produced_meta,
+                "check_passed": row.check_passed,
             }
 
     async def get_record(self, chd_path: str) -> dict[str, str | None] | None:
@@ -184,6 +198,7 @@ class VerificationStore:
                     "chd_path": r.chd_path,
                     "source_path": r.source_path,
                     "verified_at": r.verified_at,
+                    "check_passed": r.check_passed,
                 }
                 for r in rows
             ]

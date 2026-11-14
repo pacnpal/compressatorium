@@ -163,6 +163,41 @@
       await new Promise(r => setTimeout(r, 500));
     })()
 
+# --- Workspace: Dolphin delete-source (Round-trip, container-only opt-out) --
+# Selects every GameCube file and ticks delete-source so the convert panel
+# shows the Round-trip wording and the "Container check only" opt-out (#298).
+# The checkbox is found by its label text, the only stable hook it has.
+- url: http://127.0.0.1:8099/?s=workspace-dolphin-delete-light#/workspace/dolphin
+  output: docs/screenshots/workspace-dolphin-delete-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: &js_dolphin_delete |
+    (async () => {
+      const theme = new URLSearchParams(location.search).get('s').endsWith('dark')
+        ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      await new Promise(r => setTimeout(r, 400));
+      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'GameCube');
+      if (vol) vol.click();
+      await new Promise(r => setTimeout(r, 500));
+      const all = document.querySelector('thead input[type="checkbox"]');
+      if (all && !all.checked) all.click();
+      await new Promise(r => setTimeout(r, 400));
+      const box = [...document.querySelectorAll('label.checkbox')]
+        .find(l => l.textContent.includes('Delete sources'));
+      const input = box && box.querySelector('input');
+      if (input && !input.checked) input.click();
+      await new Promise(r => setTimeout(r, 400));
+    })()
+- url: http://127.0.0.1:8099/?s=workspace-dolphin-delete-dark#/workspace/dolphin
+  output: docs/screenshots/workspace-dolphin-delete-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: *js_dolphin_delete
+
 # --- Workspace: 3DS (Nintendo 3DS volume selected) ------------------------
 - url: http://127.0.0.1:8099/?s=workspace-3ds-light#/workspace/z3ds
   output: docs/screenshots/workspace-3ds-light.png
@@ -294,6 +329,67 @@
       tab.click();
       await new Promise(r => setTimeout(r, 600));
     })()
+
+# The rule editor with one Rule open: the check level next to delete-source,
+# and the one-time notice about the upgrade to Round-trip (#302). With no RomM
+# instance here, the RomM and notice responses are canned in the page: fetch is
+# wrapped, the view is re-entered so it loads through the wrapper, and the rest
+# (defaults, options) still comes from the real backend. The theme is read from
+# the `?s=` suffix so both shots share one script. Tall, so the open Rule fits.
+- url: http://127.0.0.1:8099/?s=romm-rule-editor-light#/romm
+  output: docs/screenshots/romm-rule-editor-light.png
+  width: 1280
+  height: 1700
+  wait: 1800
+  javascript: &js_rule_editor |
+    (async () => {
+      const theme = location.search.includes('-dark') ? 'dark' : 'light';
+      localStorage.setItem('theme-preference', theme);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: theme }));
+      const real = window.fetch.bind(window);
+      const live = async (path) => (await real(path)).json();
+      const rules = await live('/api/romm/rules');
+      const modes = ['dolphin_rvz', 'dolphin_wia', 'dolphin_gcz', 'dolphin_iso'];
+      const canned = {
+        '/api/romm/status': { ...(await live('/api/romm/status')), configured: true,
+          connected: true, version: '4.0', library_root: '/library',
+          library_root_mounted: true, token_set: true },
+        '/api/romm/settings': { ...(await live('/api/romm/settings')),
+          url: 'http://romm:8080', library_root: '/library', token_set: true },
+        '/api/romm/platforms': [{ id: 7, name: 'GameCube', slug: 'ngc', rom_count: 12,
+          tool_ids: ['dolphin'], mode_ids: modes }],
+        '/api/romm/rules': { ...rules, state: {}, rules: { 7: { ...rules.defaults,
+          enabled: true, mode: 'dolphin_rvz', delete_on_verify: true } } },
+        '/api/romm/roms': { entries: [], diagnostics: null },
+        '/api/rules/notices': { check_level: { show: true, switched: 1 } },
+      };
+      window.fetch = (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const body = canned[url.pathname];
+        if (body === undefined) return real(input, init);
+        return Promise.resolve(new Response(JSON.stringify(body),
+          { headers: { 'Content-Type': 'application/json' } }));
+      };
+      location.hash = '#/dashboard';
+      await new Promise(r => setTimeout(r, 300));
+      location.hash = '#/romm';
+      await new Promise(r => setTimeout(r, 800));
+      const tab = [...document.querySelectorAll('.tab')].find(b => b.textContent.trim() === 'Automation');
+      if (!tab) throw new Error('Automation tab not found');
+      tab.click();
+      await new Promise(r => setTimeout(r, 400));
+      const row = [...document.querySelectorAll('.row-toggle')].find(b => b.textContent.includes('GameCube'));
+      if (!row) throw new Error('GameCube rule not found');
+      row.click();
+      await new Promise(r => setTimeout(r, 400));
+      if (!document.querySelector('.notice')) throw new Error('check-level notice not shown');
+    })()
+- url: http://127.0.0.1:8099/?s=romm-rule-editor-dark#/romm
+  output: docs/screenshots/romm-rule-editor-dark.png
+  width: 1280
+  height: 1700
+  wait: 1800
+  javascript: *js_rule_editor
 
 # --- Rules view on a folder Library (#303) --------------------------------
 # The fixture's "ROM Library/roms" folder is registered as a Library through the

@@ -969,6 +969,7 @@ async def create_job(request: JobCreateRequest):
             filename_override=plan.display_filename,
             compression=compression,
             delete_on_verify=request.delete_on_verify,
+            container_only=request.container_only,
             split=request.split,
             delete_snapshot=plan.delete_snapshot,
         )
@@ -1034,6 +1035,7 @@ async def _queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
             batch.request.mode,
             compression=batch.compression,
             delete_on_verify=batch.request.delete_on_verify,
+            container_only=batch.request.container_only,
             split=batch.request.split,
         )
     except OutputClaimedError as exc:

@@ -137,7 +137,7 @@
         }
       }
       toast.success(
-        `Verified ${verifiedTotal} of ${totalPaths} file${totalPaths === 1 ? '' : 's'}`,
+        `${verifiedTotal} of ${totalPaths} file${totalPaths === 1 ? '' : 's'} Intact`,
       );
     } catch (e) {
       if (e?.name !== 'AbortError') {
@@ -213,7 +213,7 @@
         </div>
       {:else if !running && (runResults.verified + runResults.failed) > 0}
         <div class="bv-summary" role="status">
-          <Badge tone="success">{runResults.verified} verified</Badge>
+          <Badge tone="success">{runResults.verified} Intact</Badge>
           {#if runResults.failed > 0}
             <Badge tone="error">{runResults.failed} failed</Badge>
           {/if}

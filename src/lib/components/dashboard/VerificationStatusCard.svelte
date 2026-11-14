@@ -7,12 +7,12 @@
   const batch = $derived(verification.batchRun);
 </script>
 
-<StatCard title="Verification" subtitle="Cached OK results" accent="var(--badge-verified)">
+<StatCard title="Verification" subtitle="Outputs that passed a check" accent="var(--badge-verified)">
   {#snippet icon()}<ShieldCheck size={16} />{/snippet}
   {#snippet body()}
     <div class="big">
       <span class="num">{verifiedCount}</span>
-      <span class="lbl">verified</span>
+      <span class="lbl">Intact or Round-tripped</span>
     </div>
     {#if batch}
       <div class="batch">

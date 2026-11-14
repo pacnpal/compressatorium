@@ -502,7 +502,7 @@ class NszService:
                 async for update in self._runner.capture_verify(
                     verify_cmd,
                     path=file_path,
-                    success_message="File verified successfully",
+                    success_message="File is Intact",
                     cancel_event=cancel_event,
                     nice_via_wrapper=True,
                     env=env,
