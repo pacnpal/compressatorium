@@ -206,6 +206,39 @@ class BatchJobCreateRequest(BaseModel):
     split: bool = False  # makeps3iso folder->iso: split output into 4 GB parts
 
 
+class AutoPlanRequest(BaseModel):
+    """Images to send to their Platform's default target (the Auto choice)."""
+
+    file_paths: list[str]
+    output_dir: str | None = None
+
+
+class AutoJobCreateRequest(AutoPlanRequest):
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP
+
+
+class AutoPlanItem(BaseModel):
+    """One row of an Auto plan: the Image's Platform and where it goes.
+
+    ``how`` is ``header``, ``folder``, ``conflict`` or ``unsorted``. ``mode``
+    is None when the Image is skipped, and ``skip_reason`` then says why.
+    """
+
+    file_path: str
+    platform: str | None = None
+    how: str
+    reason: str
+    mode: str | None = None
+    tool_id: str | None = None
+    compression: str | None = None
+    skip_reason: str | None = None
+
+
+class AutoBatchResponse(BaseModel):
+    plan: list[AutoPlanItem]
+    jobs: list[ConversionJob]
+
+
 class CheckDuplicatesRequest(BaseModel):
     file_paths: list[str]
     output_dir: str | None = None

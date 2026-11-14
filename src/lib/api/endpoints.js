@@ -222,6 +222,25 @@ export const api = {
     );
   },
 
+  // Auto: the backend works out each Image's Platform and default target.
+  getAutoPlan(filePaths, outputDir = null) {
+    return jsonPost(
+      `${API_BASE}/jobs/auto-plan`,
+      { file_paths: filePaths, output_dir: outputDir },
+      {},
+      'Failed to plan Auto conversion',
+    );
+  },
+
+  createAutoJobs(filePaths, outputDir = null, duplicateAction = 'skip') {
+    return jsonPost(
+      `${API_BASE}/jobs/auto`,
+      { file_paths: filePaths, output_dir: outputDir, duplicate_action: duplicateAction },
+      {},
+      'Failed to create Auto jobs',
+    );
+  },
+
   checkDuplicates(filePaths, outputDir = null, mode = 'createcd') {
     return jsonPost(
       `${API_BASE}/jobs/check-duplicates`,

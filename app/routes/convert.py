@@ -2,7 +2,7 @@ import asyncio
 from logging_setup import get_logger
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -11,6 +11,10 @@ from config import settings
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from models import (
+    AutoBatchResponse,
+    AutoJobCreateRequest,
+    AutoPlanItem,
+    AutoPlanRequest,
     BatchJobCreateRequest,
     CheckDuplicatesRequest,
     ConversionJob,
@@ -28,6 +32,9 @@ from services.job_manager import (
     QueueBackpressureError,
     job_manager,
 )
+from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
+from services.platform_detect import plan_auto
+from services.preferences_store import preferences_store
 from services.romz import romz_service
 from services.output_conflicts import (
     OutputPathExhausted,
@@ -984,9 +991,85 @@ async def create_job(request: JobCreateRequest):
     return job
 
 
+@dataclass
+class PreparedBatch:
+    """A batch planned to the last detail and not yet queued."""
+
+    request: BatchJobCreateRequest
+    compression: str | None
+    plans: list[JobPlan]
+
+    @property
+    def job_specs(self) -> list[dict]:
+        return [
+            {
+                "file_path": plan.file_path,
+                "output_path": plan.output_path,
+                "allow_overwrite": plan.allow_overwrite,
+                "filename_override": plan.display_filename,
+                "delete_snapshot": plan.delete_snapshot,
+            }
+            for plan in self.plans
+        ]
+
+
+def _check_queue_room(adding: int) -> None:
+    """429 when ``adding`` more jobs would push the queue past its depth."""
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    if max_depth > 0 and job_manager.get_queue_depth() + adding > max_depth:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Conversion queue would exceed capacity "
+                f"({max_depth} jobs). Retry later."
+            ),
+        )
+
+
+async def _queue_prepared(batch: PreparedBatch) -> list[ConversionJob]:
+    """Queue a prepared batch as one atomic job-manager call."""
+    try:
+        return await job_manager.create_jobs_atomic(
+            batch.job_specs,
+            batch.request.mode,
+            compression=batch.compression,
+            delete_on_verify=batch.request.delete_on_verify,
+            split=batch.request.split,
+        )
+    except OutputClaimedError as exc:
+        # A concurrency outcome, not a malformed request: another live job took
+        # this destination between planning and queueing. 409 so the caller can
+        # retry or skip; a 500 said "server broke" for something working
+        # exactly as designed.
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except DestinationUnresolvableError as exc:
+        # Transient and on the storage's side, not the caller's: the volume
+        # holding the destination did not answer inside the probe bound, so the
+        # collision check could not be made and nothing was queued. 503 says
+        # "come back", which is the truth -- a 500 would read as a bug and a
+        # 400 as a bad request.
+        raise HTTPException(status_code=503, detail=exc.detail) from exc
+    except QueueBackpressureError as exc:
+        raise HTTPException(status_code=429, detail=exc.detail) from exc
+
+
 @router.post("/jobs/batch", response_model=list[ConversionJob])
 async def create_batch_jobs(request: BatchJobCreateRequest):
     """Create multiple conversion jobs."""
+    batch = await _prepare_batch(request)
+    # Proactive batch backpressure: reject before enqueuing any jobs if
+    # accepting the batch would push the queue past ``max_queue_depth``.
+    # Keeps single-job and batch submission behaviour consistent.
+    _check_queue_room(len(batch.plans))
+    return await _queue_prepared(batch)
+
+
+async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
+    """Validate and plan every file of a batch, queueing nothing.
+
+    Raises the same HTTP errors ``create_batch_jobs`` always has. Split out so
+    Auto can prepare every group before it queues any of them.
+    """
     if request.mode in (ConversionMode.METADATA_SCAN, ConversionMode.DAT_MATCH):
         raise HTTPException(
             status_code=400,
@@ -1073,59 +1156,150 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         if plan.priority > existing.priority:
             selected[key] = plan
 
-    job_specs = []
-    for key in order:
-        plan = selected[key]
-        job_specs.append(
-            {
-                "file_path": plan.file_path,
-                "output_path": plan.output_path,
-                "allow_overwrite": plan.allow_overwrite,
-                "filename_override": plan.display_filename,
-                "delete_snapshot": plan.delete_snapshot,
-            },
-        )
+    return PreparedBatch(
+        request=request,
+        compression=compression,
+        plans=[selected[key] for key in order],
+    )
 
-    # Proactive batch backpressure: reject before enqueuing any jobs if
-    # accepting the batch would push the queue past ``max_queue_depth``.
-    # Keeps single-job and batch submission behaviour consistent.
-    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
-    if max_depth > 0:
-        projected = job_manager.get_queue_depth() + len(job_specs)
-        if projected > max_depth:
+
+def _auto_compression(target) -> str | None:
+    """The saved compression for an Auto target, if its mode accepts it.
+
+    A saved value the mode would refuse (left over from an older picker) falls
+    back to the tool default rather than failing the whole batch.
+    """
+    if not target.compression:
+        return None
+    try:
+        value = normalize_compression(target.compression)
+        _validate_request_compression(registry.spec(target.mode), target.mode, value)
+    except HTTPException:
+        logger.warning(
+            "Saved compression %r does not fit %s; using the tool default",
+            target.compression, target.mode,
+        )
+        return None
+    return value
+
+
+async def _plan_auto(request: AutoPlanRequest) -> list:
+    for file_path in request.file_paths:
+        if not is_within_configured_volumes(file_path):
             raise HTTPException(
-                status_code=429,
-                detail=(
-                    f"Conversion queue would exceed capacity "
-                    f"({max_depth} jobs). Retry later."
-                ),
+                status_code=403,
+                detail="Access denied: path outside configured volumes",
+            )
+    prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
+    output_dir = normalize_output_dir(request.output_dir)
+    plan = await run_in_threadpool(
+        plan_auto, list(request.file_paths),
+        compression_prefs=prefs, output_dir=output_dir,
+    )
+    return [
+        replace(target, compression=_auto_compression(target)) if target.mode else target
+        for target in plan
+    ]
+
+
+def _plan_item(target) -> AutoPlanItem:
+    return AutoPlanItem(
+        file_path=target.file_path,
+        platform=target.detection.platform,
+        how=target.detection.how,
+        reason=target.detection.reason,
+        mode=target.mode,
+        tool_id=target.tool_id,
+        compression=target.compression,
+        skip_reason=target.skip_reason,
+    )
+
+
+@router.post("/jobs/auto-plan", response_model=list[AutoPlanItem])
+async def auto_plan(request: AutoPlanRequest):
+    """Each Image's Platform and default target, without queueing anything."""
+    return [_plan_item(target) for target in await _plan_auto(request)]
+
+
+@router.post("/jobs/auto", response_model=AutoBatchResponse)
+async def create_auto_jobs(request: AutoJobCreateRequest):
+    """Queue each Image for its Platform's default target (the Auto choice).
+
+    Images are grouped by target mode and each group goes through the ordinary
+    batch planning, so validation, duplicate handling and backpressure are the
+    same as a hand-picked batch. Conflicted and Unsorted Images, and an Image
+    whose output another one in the plan already writes, are left alone and
+    reported in the plan.
+
+    Every group is prepared before any is queued, so a planning error queues
+    nothing. Each group is still its own atomic queue call, so if a later group
+    is refused at queue time (another job took a destination, a volume stopped
+    answering) the jobs this request already queued are withdrawn and the error
+    is returned. A job that already finished cannot be withdrawn; it is kept,
+    logged, and named in the error.
+    """
+    plan = await _plan_auto(request)
+    groups: dict[tuple[str, str | None], list[str]] = {}
+    for target in plan:
+        if target.mode:
+            groups.setdefault((target.mode, target.compression), []).append(
+                target.file_path,
             )
 
-    try:
-        jobs = await job_manager.create_jobs_atomic(
-            job_specs,
-            request.mode,
+    prepared = [
+        await _prepare_batch(BatchJobCreateRequest(
+            file_paths=paths,
+            mode=ConversionMode(mode),
+            output_dir=request.output_dir,
+            duplicate_action=request.duplicate_action,
             compression=compression,
-            delete_on_verify=request.delete_on_verify,
-            split=request.split,
-        )
-    except OutputClaimedError as exc:
-        # A concurrency outcome, not a malformed request: another live job took
-        # this destination between planning and queueing. 409 so the caller can
-        # retry or skip; a 500 said "server broke" for something working
-        # exactly as designed.
-        raise HTTPException(status_code=409, detail=exc.detail) from exc
-    except DestinationUnresolvableError as exc:
-        # Transient and on the storage's side, not the caller's: the volume
-        # holding the destination did not answer inside the probe bound, so the
-        # collision check could not be made and nothing was queued. 503 says
-        # "come back", which is the truth -- a 500 would read as a bug and a
-        # 400 as a bad request.
-        raise HTTPException(status_code=503, detail=exc.detail) from exc
-    except QueueBackpressureError as exc:
-        raise HTTPException(status_code=429, detail=exc.detail) from exc
+        ))
+        for (mode, compression), paths in groups.items()
+    ]
+    _check_queue_room(sum(len(batch.plans) for batch in prepared))
 
-    return jobs
+    jobs: list[ConversionJob] = []
+    for batch in prepared:
+        try:
+            jobs += await _queue_prepared(batch)
+        except HTTPException as exc:
+            kept = await _cancel_queued(jobs)
+            if kept:
+                exc.detail = (
+                    f"{exc.detail} Already finished and kept: {', '.join(kept)}."
+                )
+            raise
+        except BaseException:
+            # Anything else, a client disconnect's CancelledError included:
+            # still withdraw what this request queued, then let it propagate.
+            await _cancel_queued(jobs)
+            raise
+    return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)
+
+
+async def _cancel_queued(jobs: list) -> list[str]:
+    """Withdraw jobs an Auto request queued before a later group failed.
+
+    Returns the names of jobs that could not be withdrawn because they had
+    already finished (a small job can complete before a later group is
+    refused). Their output stays; nothing is deleted.
+    """
+    kept: list[str] = []
+    for job in jobs:
+        name = getattr(job, "filename", None) or job.id
+        try:
+            withdrawn = await job_manager.cancel_job(job.id)
+        except Exception:  # keep withdrawing the rest
+            logger.warning("Could not cancel Auto job %s", job.id, exc_info=True)
+            kept.append(name)
+            continue
+        if not withdrawn:
+            logger.warning(
+                "Auto job %s (%s) had already finished when its batch failed; "
+                "its output is kept", job.id, name,
+            )
+            kept.append(name)
+    return kept
 
 
 @router.get("/jobs", response_model=list[ConversionJob])

@@ -65,6 +65,26 @@ class ModeSpec:
     # mode on GameCube, and a saved rule would convert a disc to a format for
     # the wrong console.
     platform_slugs: frozenset[str] = frozenset()
+    # The inputs this mode's command can actually read, when that is narrower
+    # than ``input_extensions`` (which gates manual selection and stays as it
+    # was). Empty means "every input extension". chdman is the case: all five
+    # create modes accept the same four extensions by hand, but ``createdvd``
+    # reads only a flat 2048-byte ``.iso`` and ``createcd`` only a track sheet
+    # or an ``.iso``. Auto asks ``ToolRegistry.mode_reads_extensions`` so it
+    # never sends a file to a command that cannot read it. Must be a subset of
+    # ``input_extensions``.
+    reads_extensions: frozenset[str] = frozenset()
+    # Whether Auto may pick this mode as a Platform's default target. False for
+    # commands that are never the right default for an Image whose Platform
+    # merely matches: chdman's hard-disk / raw / laserdisc commands claim the
+    # arcade Platforms, but a CD image in an ``arcade`` folder is a CD.
+    auto_target: bool = True
+    # Platforms this mode may be the Auto target for on top of
+    # ``platform_slugs``, without being offered for them by hand. createcd
+    # declares ``ps2``: a PS2 CD-ROM title is a plain Mode 2 CD that only
+    # createcd reads as a track sheet, but a platform-narrowed manual panel
+    # must keep landing a PS2 catalog on createdvd (see chdman.py).
+    auto_platform_slugs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -118,3 +138,8 @@ class ChainSpec:
     # each composite mode has to name its own system or it is offered on every
     # one of them.
     platform_slugs: frozenset[str] = frozenset()
+    # Structural parity with ModeSpec.reads_extensions / auto_target /
+    # auto_platform_slugs.
+    reads_extensions: frozenset[str] = frozenset()
+    auto_target: bool = True
+    auto_platform_slugs: frozenset[str] = frozenset()

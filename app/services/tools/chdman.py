@@ -20,6 +20,7 @@ from services.disc_id import (
     DiscIdStorageAbandoned,
     clear_embedded_disc_id,
     embed_in_chd,
+    disc_platform,
     extract_from_source,
     read_embedded_game_id,
 )
@@ -57,13 +58,33 @@ _DVD_PLATFORMS = frozenset({"ps2", "psp"})
 _HD_PLATFORMS = frozenset({"arcade", "mame"})
 _LD_PLATFORMS = frozenset({"laseractive"})
 
-# mode -> (label, the platforms that mode's media command actually serves).
+# mode -> (label, the platforms that mode's media command actually serves,
+#          what the command can actually read, whether Auto may default to it).
+#
+# Manual selection still offers every create mode on all four source
+# extensions (``input_extensions``); the read set is what Auto checks. chdman
+# ``createcd`` parses a track sheet (``.cue``/``.gdi``) or a single-track
+# ``.iso``; a bare ``.bin`` has no table of contents, so the ``.cue`` beside it
+# is the Image. ``createdvd`` copies a flat 2048-byte image, so only ``.iso``.
+# The hard-disk, raw and laserdisc commands are never a default: they claim
+# the arcade Platforms, but a CD image in an ``arcade`` folder is a CD.
+#
+# The last column is the Platforms a mode is an Auto target for without being
+# offered for them by hand. Some PS2 titles shipped on CD-ROM and are kept as
+# cue/bin; only createcd reads those. Claiming ``ps2`` in ``platform_slugs``
+# instead would make createcd, the first create mode, the default of every
+# platform-narrowed PS2 panel and rule. Auto still sends a PS2 ``.iso`` to
+# createdvd, the smaller reader. PSP (UMD), PS3 and the Nintendo and Xbox discs
+# are never CDs chdman reads, so ``ps2`` is the only one.
+_CD_READS = frozenset({".cue", ".gdi", ".iso"})
+_DVD_READS = frozenset({".iso"})
+_NONE: frozenset[str] = frozenset()
 _CREATE_MODES = {
-    "createraw": ("Create Raw", _HD_PLATFORMS),
-    "createhd": ("Create HD", _HD_PLATFORMS),
-    "createcd": ("Create CD", _CD_PLATFORMS),
-    "createdvd": ("Create DVD", _DVD_PLATFORMS),
-    "createld": ("Create LD", _LD_PLATFORMS),
+    "createraw": ("Create Raw", _HD_PLATFORMS, _NONE, False, _NONE),
+    "createhd": ("Create HD", _HD_PLATFORMS, _NONE, False, _NONE),
+    "createcd": ("Create CD", _CD_PLATFORMS, _CD_READS, True, frozenset({"ps2"})),
+    "createdvd": ("Create DVD", _DVD_PLATFORMS, _DVD_READS, True, _NONE),
+    "createld": ("Create LD", _LD_PLATFORMS, _NONE, False, _NONE),
 }
 # mode -> (label, primary output ext, companion exts). extractcd is the only
 # multi-file extract: chdman writes the .cue track sheet plus a sibling .bin
@@ -92,8 +113,11 @@ def _build_modes() -> list[ModeSpec]:
             supports_delete_on_verify=True,
             allows_archive_input=True,
             platform_slugs=slugs,
+            reads_extensions=reads,
+            auto_target=auto_target,
+            auto_platform_slugs=auto_slugs,
         )
-        for mode, (label, slugs) in _CREATE_MODES.items()
+        for mode, (label, slugs, reads, auto_target, auto_slugs) in _CREATE_MODES.items()
     ]
     modes += [
         ModeSpec(
@@ -157,6 +181,11 @@ class ChdmanTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = chdman_service
+
+    def header_platform(self, path: str) -> str | None:
+        # PS1/PS2/PSP/Dreamcast through the disc-ID parser, Saturn and Sega CD
+        # through their sector-0 system ids.
+        return disc_platform(path)
 
     # chdman's extract/copy modes take .chd input, but a .chd is not a
     # "convertible-from" source in the file listing, only the create sources
