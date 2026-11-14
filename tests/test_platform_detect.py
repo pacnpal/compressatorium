@@ -364,3 +364,42 @@ def test_cache_is_dropped_when_the_mtime_changes(tmp_path):
     detect_platform(path, tools=[probe])
 
     assert probe.calls == 2
+
+
+_SATURN_CUE = b'FILE "game.bin" BINARY\n  TRACK 01 MODE1/2352\n'
+
+
+def test_a_cue_whose_track_arrives_later_is_detected_once_it_does(tmp_path):
+    folder = tmp_path / "downloads"
+    cue = _write(folder / "game.cue", _SATURN_CUE)
+
+    assert detect_platform(cue).how == "unsorted"
+
+    _sector0(folder / "game.bin", b"SEGA SEGASATURN ", raw=True)
+
+    assert detect_platform(cue).platform == "saturn"
+
+
+def test_a_cue_is_re_probed_when_its_track_changes(tmp_path):
+    folder = tmp_path / "downloads"
+    cue = _write(folder / "game.cue", _SATURN_CUE)
+    track = _sector0(folder / "game.bin", b"SEGA SEGASATURN ", raw=True)
+    assert detect_platform(cue).platform == "saturn"
+
+    # Same cue sheet, a different disc behind it.
+    _sector0(Path(track), b"SEGADISCSYSTEM  ", raw=True)
+    st = os.stat(track)
+    os.utime(track, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+
+    assert detect_platform(cue).platform == "segacd"
+
+
+def test_a_gdi_lists_its_tracks_as_header_reads(tmp_path):
+    from services.tools import registry
+
+    folder = tmp_path / "dc"
+    gdi = _write(folder / "game.gdi", b"2\n1 0 4 2352 track01.bin 0\n2 600 0 2352 track02.raw 0\n")
+
+    reads = registry.get("chdman").header_reads(gdi)
+
+    assert reads == [str(folder / "track01.bin"), str(folder / "track02.raw")]

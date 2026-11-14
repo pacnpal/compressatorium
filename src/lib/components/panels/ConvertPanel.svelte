@@ -107,10 +107,18 @@
     const proceed = await new Promise((resolve) => {
       autoPlanPrompt = resolve;
     });
+    const plan = conversion.autoPlan ?? [];
     conversion.clearAutoPlan();
     if (!proceed) return;
     try {
-      await conversion.submitAuto(selectedPaths);
+      // Same RomM metadata snapshot as a manual submit, per planned target.
+      const fromRomm = fileBrowser.rommPlatformId !== null;
+      await conversion.submitAuto(selectedPaths, {
+        plan,
+        rommRepin: fromRomm,
+        rommPlatformId: fileBrowser.rommPlatformId,
+      });
+      if (fromRomm) romm.setPendingRepins(conversion.lastRepinPending);
       fileBrowser.clearSelection();
     } catch (_e) {
       // toast already raised in conversion.submitAuto

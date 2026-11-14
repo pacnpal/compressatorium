@@ -90,6 +90,34 @@ def _parse_gdi_tracks(gdi_path: Path) -> List[str]:
     return tracks
 
 
+def sheet_track_paths(sheet_path: str) -> list[str]:
+    """The track files a ``.cue`` or ``.gdi`` sheet names, resolved beside it.
+
+    The same parsing and containment rules the delete plan uses, so a track
+    reference that escapes the sheet's folder is left out. Tracks are listed
+    whether or not they exist yet. Empty for any other file, or a sheet that
+    cannot be read.
+    """
+    sheet = Path(sheet_path)
+    ext = sheet.suffix.lower()
+    try:
+        if ext == ".cue":
+            refs = _parse_cue_tracks(sheet)
+        elif ext == ".gdi":
+            refs = _parse_gdi_tracks(sheet)
+        else:
+            return []
+    except OSError:
+        return []
+    paths: list[str] = []
+    for ref in refs:
+        try:
+            paths.append(str(_resolve_track_path(sheet.parent, ref)))
+        except ValueError:
+            continue
+    return paths
+
+
 def build_delete_plan(source_path: str) -> Dict[str, object]:
     original_source = source_path
     is_archive_member = "::" in source_path

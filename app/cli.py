@@ -312,8 +312,14 @@ def _validate_convert(args) -> None:
         raise UsageError(f"--to {args.to}: not a format or mode. Formats: {names}")
 
 
-def _route_to(items: list[Item], target: str, prefs: dict) -> list[Item]:
-    """Pick each Image's mode for ``--to``; drop discovered Images out of scope."""
+def _route_to(
+    items: list[Item], target: str, prefs: dict, ready: list[str],
+) -> list[Item]:
+    """Pick each Image's mode for ``--to``; drop discovered Images out of scope.
+
+    A mode whose tool cannot run here (``ready``) is skipped with the same
+    reason Auto gives.
+    """
     from routes.convert import checked_compression
     from services.platform_detect import (
         detect_platform,
@@ -328,6 +334,10 @@ def _route_to(items: list[Item], target: str, prefs: dict) -> list[Item]:
             continue
         item.platform = detect_platform(item.path).platform
         item.mode, item.reason = format_route(item.path, target, item.platform, registry)
+        tool = registry.for_mode(item.mode) if item.mode else None
+        if tool is not None and tool.id not in ready:
+            item.mode = None
+            item.reason = f"{tool.display_name} isn't ready: {tool.not_ready_reason}"
         if item.mode:
             item.compression = checked_compression(
                 item.mode, _pref_for(item.mode, prefs),
@@ -347,13 +357,17 @@ def _pref_for(mode: str, prefs: dict) -> str | None:
     return prefs.get(spec.tool_id) or None
 
 
-async def _route_auto(items: list[Item], output_dir: str | None, prefs: dict) -> list[Item]:
+async def _route_auto(
+    items: list[Item], output_dir: str | None, prefs: dict, ready: list[str],
+) -> list[Item]:
     from routes.convert import plan_auto_targets
     from services.platform_detect import auto_reads
     from services.tools import registry
 
     kept = [i for i in items if i.explicit or auto_reads(i.path, registry)]
-    targets = await plan_auto_targets([i.path for i in kept], output_dir, prefs)
+    targets = await plan_auto_targets(
+        [i.path for i in kept], output_dir, prefs, ready_tool_ids=ready,
+    )
     for item, target in zip(kept, targets, strict=True):
         item.platform = target.detection.platform
         item.mode = target.mode
@@ -510,10 +524,14 @@ async def convert(args, printer: Printer) -> int:
     has_db = _open_db(args.dry_run)
     prefs = await _saved_compression(has_db)
     items = await run_in_threadpool(_discover, paths)
+    from services.tools import registry
+
+    # The shared, bounded readiness probe the Auto route uses.
+    ready = await registry.ready_tool_ids()
     if args.auto:
-        items = await _route_auto(items, args.output_dir, prefs)
+        items = await _route_auto(items, args.output_dir, prefs, ready)
     else:
-        items = await run_in_threadpool(_route_to, items, args.to, prefs)
+        items = await run_in_threadpool(_route_to, items, args.to, prefs, ready)
     _decide_deletes(items, args)
     prepared = await _prepare(items, args)
 

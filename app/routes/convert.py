@@ -25,6 +25,7 @@ from models import (
     JobCreateRequest,
     JobStatus,
 )
+from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
 from services.archive import archive_service
 from services.job_manager import (
     DestinationUnresolvableError,
@@ -32,7 +33,6 @@ from services.job_manager import (
     QueueBackpressureError,
     job_manager,
 )
-from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
 from services.platform_detect import plan_auto
 from services.preferences_store import preferences_store
 from services.romz import romz_service
@@ -1214,17 +1214,29 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
     prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
     return await plan_auto_targets(
         list(request.file_paths), normalize_output_dir(request.output_dir), prefs,
+        # The shared, bounded readiness probe (a tool that cannot run here, such
+        # as nsz without prod.keys, is skipped in the plan instead of queued to
+        # fail).
+        ready_tool_ids=await registry.ready_tool_ids(),
     )
 
 
-async def plan_auto_targets(paths: list[str], output_dir: str | None, prefs: dict) -> list:
+async def plan_auto_targets(
+    paths: list[str],
+    output_dir: str | None,
+    prefs: dict,
+    *,
+    ready_tool_ids: list[str] | None = None,
+) -> list:
     """``plan_auto`` with each saved compression checked against its mode.
 
     The Auto route and the CLI's ``--auto`` (#306) share it; ``prefs`` is the
-    saved ``conversion`` preference.
+    saved ``conversion`` preference and ``ready_tool_ids`` the tools that can
+    run here (``registry.ready_tool_ids()``).
     """
     plan = await run_in_threadpool(
         plan_auto, paths, compression_prefs=prefs, output_dir=output_dir,
+        ready_tool_ids=ready_tool_ids,
     )
     return [
         replace(target, compression=checked_compression(target.mode, target.compression))

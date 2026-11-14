@@ -378,3 +378,23 @@ def test_verify_dry_run_checks_nothing(volume, dolphin, capsys):
     assert code == 0
     assert lines == [{"path": str(rvz), "status": "planned", "tool": "dolphin",
                       "reason": None}]
+
+
+@pytest.mark.parametrize("target", [("--to", "rvz"), ("--auto",)])
+def test_a_tool_that_cannot_run_here_is_skipped_with_its_reason(
+    volume, dolphin, capsys, monkeypatch, target,
+):
+    tool = registry.get("dolphin")
+
+    async def not_ready():
+        return False
+
+    monkeypatch.setattr(tool, "is_ready", not_ready)
+    _iso(volume)
+
+    code, lines = _cli(capsys, "convert", str(volume), *target, "--json")
+
+    assert code == 0
+    assert lines[0]["status"] == "skipped"
+    assert lines[0]["reason"].startswith(f"{tool.display_name} isn't ready")
+    assert dolphin["runs"] == []
