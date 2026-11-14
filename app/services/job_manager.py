@@ -49,22 +49,28 @@ logger = get_logger("job_manager")
 
 
 def _source_bytes(path: str) -> Optional[int]:
-    """Size of a job's Source: a file, a whole directory tree, or the
-    archive holding a member. None when it can't be read."""
+    """Size of a job's whole Source set: a directory tree, or every file the
+    shared delete plan would remove (CUE/GDI tracks, registry companions such
+    as split parts, the archive holding a member). None when unreadable."""
     real = strip_archive_path(path) if "::" in path else path
-    try:
-        if os.path.isdir(real):
-            total = 0
-            for root, _dirs, files in os.walk(real):
-                for name in files:
-                    try:
-                        total += os.path.getsize(os.path.join(root, name))
-                    except OSError:
-                        pass
-            return total
-        return os.path.getsize(real)
-    except OSError:
-        return None
+    if os.path.isdir(real):
+        files = (
+            os.path.join(root, name)
+            for root, _dirs, names in os.walk(real) for name in names
+        )
+    else:
+        try:
+            files = build_delete_plan(path).get("delete_paths", []) or [real]
+        except Exception:
+            files = [real]
+    total, seen = 0, False
+    for f in files:
+        try:
+            total += os.path.getsize(f)
+            seen = True
+        except OSError:
+            pass
+    return total if seen else None
 
 # Modes for externally-managed jobs that bypass the conversion queue,
 # they are driven by callers via create/update/finish_external_job and

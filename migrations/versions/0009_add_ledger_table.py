@@ -48,6 +48,10 @@ def upgrade() -> None:
     )
     # Newest-first listing and age-based pruning both select on finished_at.
     op.create_index('ix_ledger_finished_at', 'ledger', ['finished_at'])
+    # A job can be announced terminal twice; this makes the second a no-op.
+    op.create_index(
+        'ux_ledger_job_finished', 'ledger', ['job_id', 'finished_at'], unique=True,
+    )
 
 
 def downgrade() -> None:

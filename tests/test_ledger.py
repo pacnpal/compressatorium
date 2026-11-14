@@ -69,3 +69,24 @@ async def test_kept_forever_by_default():
     await ledger.record(_job(id="old", done=old))
     await ledger.record(_job(id="new"))
     assert len(await ledger.recent(10)) == 2
+
+
+@pytest.mark.asyncio
+async def test_repeated_terminal_notification_writes_one_row():
+    job = _job(status=JobStatus.CANCELLED, deleted=False)
+    await ledger.record(job)
+    await ledger.record(job)
+    assert len(await ledger.recent(10)) == 1
+
+
+def test_source_bytes_counts_cue_tracks(tmp_path):
+    from services.job_manager import _source_bytes
+
+    (tmp_path / "Game (Track 1).bin").write_bytes(b"x" * 700)
+    (tmp_path / "Game (Track 2).bin").write_bytes(b"x" * 300)
+    cue = tmp_path / "Game.cue"
+    cue.write_text(
+        'FILE "Game (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n'
+        'FILE "Game (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n'
+    )
+    assert _source_bytes(str(cue)) == 1000 + cue.stat().st_size

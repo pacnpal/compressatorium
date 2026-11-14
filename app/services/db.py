@@ -286,7 +286,10 @@ class LedgerEntry(Base):
     image_key = Column(String, nullable=True)
     platform = Column(String, nullable=True)
     error = Column(String, nullable=True)
-    __table_args__ = (Index("ix_ledger_finished_at", "finished_at"),)
+    __table_args__ = (
+        Index("ix_ledger_finished_at", "finished_at"),
+        Index("ux_ledger_job_finished", "job_id", "finished_at", unique=True),
+    )
 
 
 class Preference(Base):

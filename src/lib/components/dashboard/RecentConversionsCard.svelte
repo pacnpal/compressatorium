@@ -1,25 +1,14 @@
 <script>
-  import { api } from '$lib/api/endpoints.js';
-  import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { ledger } from '$lib/stores/ledger.svelte.js';
   import { registry } from '$lib/tools/registry.js';
   import StatCard from './StatCard.svelte';
   import Badge from '$lib/components/ui/Badge.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Clock from '@lucide/svelte/icons/clock';
 
-  // Read from the Ledger, so the list survives a restart. Refetched whenever
-  // another job finishes (the live terminal count changes).
-  let recent = $state([]);
-  const finished = $derived(
-    jobs.jobs.filter(
-      (j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled',
-    ).length,
-  );
-
-  $effect(() => {
-    void finished;
-    api.getLedgerRecent(5).then((rows) => (recent = rows)).catch(() => {});
-  });
+  // Read from the Ledger, so the list survives a restart. The Dashboard
+  // refreshes the store whenever another job finishes.
+  const recent = $derived(ledger.recent);
 
   function shortFile(row) {
     const p = row?.source_path ?? '';

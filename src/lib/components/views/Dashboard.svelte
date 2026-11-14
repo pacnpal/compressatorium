@@ -6,6 +6,20 @@
   import VerificationStatusCard from '$lib/components/dashboard/VerificationStatusCard.svelte';
   import QuickToolsCard from '$lib/components/dashboard/QuickToolsCard.svelte';
   import MetadataScanCard from '$lib/components/dashboard/MetadataScanCard.svelte';
+  import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { ledger } from '$lib/stores/ledger.svelte.js';
+
+  // One refresh of the Ledger cards per terminal job (and on mount).
+  const finished = $derived(
+    jobs.jobs.filter(
+      (j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled',
+    ).length,
+  );
+
+  $effect(() => {
+    void finished;
+    ledger.refresh();
+  });
 </script>
 
 <section class="view" aria-labelledby="dashboard-title">

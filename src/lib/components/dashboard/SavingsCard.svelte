@@ -1,23 +1,16 @@
 <script>
-  import { api } from '$lib/api/endpoints.js';
+  import { ledger } from '$lib/stores/ledger.svelte.js';
   import { formatSize } from '$lib/api/format.js';
-  import { jobs } from '$lib/stores/jobs.svelte.js';
   import StatCard from './StatCard.svelte';
   import HardDrive from '@lucide/svelte/icons/hard-drive';
 
   // Space reclaimed: completed Ledger rows whose Source was deleted.
-  let savings = $state(null);
-  const completed = $derived(jobs.completedCount);
-
-  $effect(() => {
-    void completed;
-    api.getLedgerSavings().then((s) => (savings = s)).catch(() => {});
-  });
+  const savings = $derived(ledger.savings);
 
   const split = (obj) =>
     Object.entries(obj ?? {})
-      .filter(([, v]) => v > 0)
-      .sort((a, b) => b[1] - a[1])
+      .filter(([, v]) => v !== 0)
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
       .slice(0, 4);
 </script>
 

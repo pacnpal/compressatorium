@@ -22,6 +22,7 @@ from services import db as _db
 from services.preferences_store import preferences_store
 from services.tools import registry
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 logger = get_logger("ledger")
 
@@ -48,7 +49,8 @@ def _tool_and_platform(mode: str) -> tuple[str | None, str | None]:
 def row_from_job(job: ConversionJob) -> dict:
     mode = getattr(job.mode, "value", str(job.mode))
     tool, platform = _tool_and_platform(mode)
-    finished = job.completed_at or datetime.now(timezone.utc)
+    # Deterministic (never now()), so a repeated notification keys the same row.
+    finished = job.completed_at or job.created_at
     duration = (
         (finished - job.started_at).total_seconds() if job.started_at else None
     )
@@ -82,7 +84,14 @@ def _session():
 
 def _insert_sync(row: dict, retention_days: int | None) -> None:
     with _session() as session:
-        session.add(_db.LedgerEntry(**row))
+        # A job can be announced terminal more than once (a queued cancel is
+        # notified by cancel_job and again by the runner), so the same
+        # (job_id, finished_at) is a no-op rather than a second row.
+        session.execute(
+            sqlite_insert(_db.LedgerEntry)
+            .values(**row)
+            .on_conflict_do_nothing(index_elements=["job_id", "finished_at"])
+        )
         if retention_days:
             cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))
             session.execute(
