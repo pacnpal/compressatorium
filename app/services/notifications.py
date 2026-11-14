@@ -631,6 +631,14 @@ def sweep_expect(paths: list[str]) -> None:
         _expected[str(path)] = _open_sweep
 
 
+def sweep_release(paths: list[str]) -> None:
+    """Sweep hook 0b: the queue call for these Sources is over (accepted or
+    refused). A refused batch must not keep claiming them: the job that took the
+    destination is usually a manual one, and its failure is its own news."""
+    for path in paths:
+        _expected.pop(str(path), None)
+
+
 def sweep_jobs_queued(jobs: list[ConversionJob]) -> None:
     """Sweep hook 1: these jobs belong to the running sweep. Call with no await
     after the queue accepts them, so a job that ends at once is already claimed."""

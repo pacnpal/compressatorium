@@ -2254,15 +2254,23 @@ never see a transport:
 - `on_job_finished(job)` is a `JobManager.add_terminal_listener` callback
   (registered in `main.py`). A failed job that no sweep owns becomes one
   `job_failed` message.
-- `sweep_expect(paths)`, `sweep_jobs_queued(jobs)` and `sweep_finished(result,
-  dry_run=)` are the sweep's three hooks (one line each in `rules/sweep.py::_sweep_locked`; `sweep_finished` is called from `sweep()` in a `finally`). A sweep
+- `sweep_expect(paths)`, `sweep_jobs_queued(jobs)`, `sweep_release(paths)` and
+  `sweep_finished(result, dry_run=, library_id=)` are the sweep's hooks (one line
+  each in `rules/sweep.py::_sweep_locked`; `sweep_finished` is called from `sweep()`
+  in a `finally`, so the post-lock return point named in the Rule engine section is
+  not where a sweep ends for notifications). A sweep
   queues jobs and returns, so its message waits until the last of those jobs is
   terminal, then sends one `sweep_finished` message: counts, bytes saved (the
   Ledger's definition, via `ledger.job_saved_bytes`), and the failures listed
   inside it. The queue call enqueues and then awaits, so a job can end before it
   returns: `sweep_expect` claims the batch's Source paths first, and the terminal
   listener counts a claimed job for the sweep instead of sending a lone
-  `job_failed`. A job already terminal when `sweep_jobs_queued` runs is counted
+  `job_failed`; `sweep_release` drops the claims when the queue call returns or
+  refuses the batch (a refusal is usually a manual job holding the Source, and its
+  failure is its own news). The claim is by Source path because job ids do not
+  exist until the call returns; once `sweep_jobs_queued` has the jobs, each job is
+  the sweep's by id whatever its status, so a late listener sends nothing alone and
+  the sweep message goes out once. A job already terminal when `sweep_jobs_queued` runs is counted
   but not waited on. `sweep()` calls `sweep_finished` from a `finally`, with a
   default `sweep_failed` error, so a sweep that raises after queueing still
   closes; a cancel (shutdown) reports nothing as a failure. A sweep that queued
@@ -2287,10 +2295,17 @@ never read), does not use `HTTP(S)_PROXY`, and runs under one overall deadline: 
 timer shuts the socket down at 0.9 x `SEND_TIMEOUT_S`. Apprise keeps its own
 per-operation socket timeouts (4 s by default), which are not an overall limit.
 
-Sends run in a private thread pool (`MAX_DESTINATIONS` + 12 workers). Each saved
-destination has a FIFO queue (`MAX_QUEUED_PER_DESTINATION`, oldest dropped with a
-warning when full) drained by one worker, so events close together all arrive, in
-order. A thread cannot be killed: if a send outlives `SEND_TIMEOUT_S` the
+`notify` and `deliver` put the event in a module inbox synchronously, before any
+await, so the order events were raised in is the order every destination sees
+them. One dispatcher task drains the inbox: it loads the destinations and hands the
+event to each destination's own FIFO queue (`MAX_QUEUED_PER_DESTINATION`, oldest
+dropped with a warning when full), one event at a time. Each queue has one worker.
+The worker reads the destination's kind and URL when it sends, so an edit applies to
+messages already queued and a destination deleted meanwhile is skipped;
+`remove_destination` also drops its queue. Empty queues and finished workers are
+removed.
+
+Sends run in a private thread pool (`MAX_DESTINATIONS` + 12 workers). A thread cannot be killed: if a send outlives `SEND_TIMEOUT_S` the
 destination is marked busy until its thread really ends, and queued sends to it
 fail fast ("still running") instead of stacking threads. Errors are scrubbed: a
 destination URL is a secret and appears in no log line, no API response and no

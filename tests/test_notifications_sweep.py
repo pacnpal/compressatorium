@@ -276,3 +276,70 @@ async def test_a_sweep_job_whose_listener_runs_after_the_batch_returns_is_not_se
         for job in jobs:
             jm.concurrency_manager.release(job.id)
     assert [e.kind for e in sent] == ["sweep_finished"]
+
+
+@pytest.mark.asyncio
+async def test_the_real_sweep_claims_its_batch_before_the_queue_call(tmp_path, sent):
+    """Fails if the sweep stops calling sweep_expect: a job that fails inside
+    the queue call would then be sent alone as well as in the sweep message."""
+    from services.romm import auto as romm_auto
+
+    roms = await _setup(tmp_path)
+
+    async def _batch(paths, mode, **kwargs):
+        jobs = [_Job(p, f"job-{i}") for i, p in enumerate(paths)]
+        for job in jobs:  # ends, and its listener runs, before the call returns
+            job.status = JobStatus.FAILED
+            job.error_message = "no disc"
+            await notifications.on_job_finished(job)
+        return jobs
+
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
+            patch.object(job_manager, "create_batch_jobs", _batch), \
+            patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
+        await romm_auto.sweep(ignore_schedule=True)
+    await notifications.drain()
+    assert [e.kind for e in sent] == ["sweep_finished"]
+    assert sent[0].data["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_refused_batch_releases_its_claims_for_the_rest_of_the_sweep(
+    tmp_path, sent,
+):
+    """OutputClaimedError usually means a manual job holds the same Source; its
+    failure later in the sweep must not be absorbed into the sweep message."""
+    from datetime import datetime, timezone
+
+    from models import ConversionJob, ConversionMode
+    from services.job_manager import OutputClaimedError
+    from services.romm import auto as romm_auto
+    from services.romm.library import romm_library
+
+    roms = await _setup(tmp_path)
+    source = roms[0]["full_path"]
+    real_extras = romm_library.sweep_extras
+
+    async def _refuse(paths, mode, **kwargs):
+        raise OutputClaimedError("taken")
+
+    async def extras_after_the_refusal():
+        assert not notifications._expected  # the claim did not outlive the refusal
+        now = datetime.now(timezone.utc)
+        manual = ConversionJob(
+            id="manual", file_path=str(tmp_path / "library" / source),
+            filename="Game.iso", mode=ConversionMode.CREATEDVD, status=JobStatus.FAILED,
+            created_at=now, completed_at=now, error_message="boom",
+        )
+        await notifications.on_job_finished(manual)
+        return await real_extras()
+
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
+            patch.object(job_manager, "create_batch_jobs", _refuse), \
+            patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(romm_library, "sweep_extras", extras_after_the_refusal), \
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
+        await romm_auto.sweep(ignore_schedule=True)
+    await notifications.drain()
+    assert "job_failed" in [e.kind for e in sent]

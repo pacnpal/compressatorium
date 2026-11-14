@@ -1276,6 +1276,8 @@ async def _sweep_locked(
                     {"platform_id": platform_ref, "error": "queue_failed"},
                 )
                 summary["queue_failed"] = True
+            finally:
+                notifications.sweep_release(batch)  # a refused batch keeps no claim
         elif batch:
             summary["queued"] = len(batch)
             result["queued"] += len(batch)
