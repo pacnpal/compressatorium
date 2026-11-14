@@ -356,35 +356,6 @@ class ConversionStore {
     this.autoPlan = null;
   }
 
-  /** Queue each Image for its Platform's default target. */
-  async submitAuto(filePaths) {
-    if (!filePaths?.length) return null;
-    this.converting = true;
-    try {
-      const result = await api.createAutoJobs(filePaths, this.outputDir || null, 'skip');
-      const created = Array.isArray(result?.jobs) ? result.jobs : [];
-      jobs.adopt(created);
-      const skipped = (result?.plan ?? []).filter((row) => row.skip_reason).length;
-      if (created.length === 0) {
-        toast.warning(`No jobs queued (all ${filePaths.length} skipped)`);
-      } else if (created.length < filePaths.length) {
-        toast.success(
-          `Queued ${created.length} of ${filePaths.length} job(s); `
-          + `${filePaths.length - created.length} skipped`
-          + (skipped ? ` (${skipped} with no Platform)` : ''),
-        );
-      } else {
-        toast.success(`Queued ${created.length} job(s)`);
-      }
-      return result;
-    } catch (e) {
-      toast.error(e?.message ?? 'Failed to create Auto jobs');
-      throw e;
-    } finally {
-      this.converting = false;
-    }
-  }
-
   setMode(mode) {
     if (!registry.specFor(mode)) return;
     this.mode = mode;
@@ -523,19 +494,112 @@ class ConversionStore {
 
   // ─── Submission ───────────────────────────────────────────────────────
   /**
+   * Queue every path for the selected mode. `rommRepin` / `rommPlatformId`:
+   * see `#queueWithRepin`.
+   *
    * @param {string[]} filePaths
-   * @param {{ duplicateAction?: string, rommRepin?: boolean }} [opts]
-   *   `rommRepin` records each source's RomM metadata before the jobs are
-   *   queued, so a format RomM cannot hash-match (RVZ/CSO/NSZ/WUX/Z3DS) can be
-   *   re-identified after its rescan. It must happen BEFORE the conversion:
-   *   the provider ids are read from the RomM record for the source file, and
-   *   that record is what goes stale once the source is converted or deleted.
+   * @param {{ duplicateAction?: string, rommRepin?: boolean, rommPlatformId?: any }} [opts]
    */
   async submit(
     filePaths,
     { duplicateAction = 'skip', rommRepin = false, rommPlatformId = null } = {},
   ) {
     if (!filePaths?.length) return null;
+    return this.#queueWithRepin(
+      filePaths,
+      { [this.mode]: filePaths },
+      { duplicateAction, rommRepin, rommPlatformId },
+      async () => {
+        const result = await jobs.createBatch(filePaths, this.mode, {
+          outputDir: this.outputDir || null,
+          duplicateAction,
+          compression: this.compressionValue,
+          // Mask the flag at submit time too, defense in depth against
+          // any code path that might set deleteOnVerify true without
+          // going through setMode (the backend rejects the combination
+          // for extract/raw modes).
+          deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
+          // Same masking for the makeps3iso 4 GB FAT32 split toggle.
+          split: this.supportsSplit && this.split,
+        });
+        return { result, createdJobs: Array.isArray(result) ? result : [] };
+      },
+    );
+  }
+
+  /**
+   * Queue each Image for its Platform's default target (the Auto choice).
+   *
+   * `plan` is the backend's Auto plan the user confirmed: each row's `mode` is
+   * the target its Image will be queued for. The RomM metadata snapshot and
+   * its reconciliation run exactly as for `submit()`, once per target mode.
+   */
+  async submitAuto(
+    filePaths,
+    { plan = [], rommRepin = false, rommPlatformId = null } = {},
+  ) {
+    if (!filePaths?.length) return null;
+    const wanted = new Set(filePaths);
+    const modeOf = Object.fromEntries(
+      (plan ?? [])
+        .filter((row) => row?.mode && wanted.has(row.file_path))
+        .map((row) => [row.file_path, row.mode]),
+    );
+    return this.#queueWithRepin(
+      filePaths,
+      groupByMode(Object.keys(modeOf), modeOf),
+      { duplicateAction: 'skip', rommRepin, rommPlatformId },
+      async () => {
+        const result = await api.createAutoJobs(filePaths, this.outputDir || null, 'skip');
+        const createdJobs = Array.isArray(result?.jobs) ? result.jobs : [];
+        jobs.adopt(createdJobs);
+        return { result, createdJobs };
+      },
+    );
+  }
+
+  /**
+   * Record RomM metadata for each (mode -> sources) group. Results merge into
+   * one `{ recorded, pending, recorded_paths, recorded_ids }`, the shape one
+   * `planRommRepin` call returns. `misdirected` re-records sources the queue
+   * wrote somewhere other than planned.
+   */
+  async #planRepin(groups, duplicateAction, rommPlatformId, misdirected = null) {
+    const merged = { recorded: 0, pending: null, recorded_paths: {}, recorded_ids: {} };
+    for (const [mode, paths] of Object.entries(groups)) {
+      if (!paths.length) continue;
+      const args = [paths, mode, this.outputDir || null, duplicateAction, rommPlatformId];
+      if (misdirected) {
+        args.push(Object.fromEntries(paths.map((p) => [p, misdirected[p]])));
+      }
+      const planned = await api.planRommRepin(...args);
+      merged.recorded += planned?.recorded ?? 0;
+      if (typeof planned?.pending === 'number') merged.pending = planned.pending;
+      Object.assign(merged.recorded_paths, planned?.recorded_paths ?? {});
+      Object.assign(merged.recorded_ids, planned?.recorded_ids ?? {});
+    }
+    return merged;
+  }
+
+  /**
+   * The submission path both `submit()` and `submitAuto()` share.
+   *
+   * @param {string[]} filePaths every path the user asked for
+   * @param {Record<string, string[]>} groups target mode -> its sources
+   * @param {{ duplicateAction: string, rommRepin: boolean, rommPlatformId: any }} opts
+   *   `rommRepin` records each source's RomM metadata before the jobs are
+   *   queued, so a format RomM cannot hash-match (RVZ/CSO/NSZ/WUX/Z3DS) can be
+   *   re-identified after its rescan. It must happen BEFORE the conversion:
+   *   the provider ids are read from the RomM record for the source file, and
+   *   that record is what goes stale once the source is converted or deleted.
+   * @param {() => Promise<{ result: any, createdJobs: object[] }>} queue
+   */
+  async #queueWithRepin(filePaths, groups, opts, queue) {
+    const { duplicateAction, rommRepin, rommPlatformId } = opts;
+    const modeOf = {};
+    for (const [mode, paths] of Object.entries(groups)) {
+      for (const path of paths) modeOf[path] = mode;
+    }
     this.converting = true;
     this.lastRepinRecorded = 0;
     this.lastRepinPending = null;
@@ -561,10 +625,7 @@ class ConversionStore {
           // platform's full catalog looking for these paths, which on a large
           // instance is hundreds of serialised requests before a small batch
           // is even queued. These rows all came from one platform's listing.
-          const planned = await api.planRommRepin(
-            filePaths, this.mode, this.outputDir || null, duplicateAction,
-            rommPlatformId,
-          );
+          const planned = await this.#planRepin(groups, duplicateAction, rommPlatformId);
           // Reported back to the caller rather than pushed into the RomM store
           // from here: conversion is imported by fileBrowser, which the RomM
           // store imports, so a static import back would be a cycle.
@@ -582,25 +643,14 @@ class ConversionStore {
           );
         }
       }
-      const result = await jobs.createBatch(filePaths, this.mode, {
-        outputDir: this.outputDir || null,
-        duplicateAction,
-        compression: this.compressionValue,
-        // Mask the flag at submit time too, defense in depth against
-        // any code path that might set deleteOnVerify true without
-        // going through setMode (the backend rejects the combination
-        // for extract/raw modes).
-        deleteOnVerify: this.supportsDeleteOnVerify && this.deleteOnVerify,
-        // Same masking for the makeps3iso 4 GB FAT32 split toggle.
-        split: this.supportsSplit && this.split,
-      });
+      const { result, createdJobs } = await queue();
       // Report what the backend actually created. createBatch can
       // legitimately return fewer jobs than requested when the user
       // chose duplicateAction: 'skip', or when create_batch_jobs
       // rejects inputs during per-file validation, or [] when
       // everything was filtered out. Telling the user "Queued N" when
       // N rows were skipped is misleading.
-      const created = Array.isArray(result) ? result.length : 0;
+      const created = createdJobs.length;
       const requested = filePaths.length;
       if (created === 0) {
         toast.warning(`No jobs queued (all ${requested} skipped)`);
@@ -618,7 +668,7 @@ class ConversionStore {
       // predicted path would then be settled against whatever landed there —
       // this ROM's identity stamped on an unrelated file. So compare against
       // each job's real `output_path`, not just its source.
-      const created_jobs = (Array.isArray(result) ? result : []).filter(Boolean);
+      const created_jobs = createdJobs.filter(Boolean);
       // The queue reports each job's source as the backend resolved it, which
       // is the symlink-free path; the row was recorded against the path the
       // browser submitted. For a library reached through a symlinked ancestor
@@ -646,8 +696,8 @@ class ConversionStore {
         // Losing this ordering is how metadata disappears silently.
         let replanned = null;
         try {
-          replanned = await api.planRommRepin(
-            Object.keys(misdirected), this.mode, this.outputDir || null,
+          replanned = await this.#planRepin(
+            groupByMode(Object.keys(misdirected), modeOf),
             duplicateAction, rommPlatformId, misdirected,
           );
         } catch (e) {
@@ -780,6 +830,17 @@ class ConversionStore {
       }
     }
   }
+}
+
+/** Sources grouped by their target mode: `{ mode: [path, ...] }`. */
+function groupByMode(paths, modeOf) {
+  const groups = {};
+  for (const path of paths) {
+    const mode = modeOf[path];
+    if (!mode) continue;
+    (groups[mode] ??= []).push(path);
+  }
+  return groups;
 }
 
 export const conversion = new ConversionStore();
