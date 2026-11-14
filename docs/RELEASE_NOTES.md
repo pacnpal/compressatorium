@@ -29,8 +29,15 @@
   - Delete-source runs on Dolphin modes take longer: the Source and the output
     are each read once more.
   - **RomM Rules:** delete-source Rules on Dolphin modes now Round-trip by
-    default, so their sweeps take longer for the same reason. A per-Rule
-    container-only setting comes later.
+    default, so their sweeps take longer for the same reason.
+- **Each Rule now says which check runs before it deletes a Source** (#302).
+  Next to delete-source, the rule editor offers **Container check only
+  (faster, weaker)**; left unticked, the Rule Round-trips (the default).
+  Sweeps hand the Rule's setting to every job they queue, and Preview shows it.
+  - **On upgrade, every stored Rule with delete-source on is set to
+    Round-trip**, so sweeps on formats that support it read each file once
+    more and take longer. The rule editor says so once, with how to opt out;
+    dismissing the notice is remembered.
 - **Round-trip check for chdman Create CD and Create DVD** (#300). With
   delete-source on, these jobs now prove the CHD holds the same disc before the
   ISO or cue/bin is removed. A DVD CHD's data SHA1 is compared with the ISO's
@@ -53,8 +60,8 @@
     cue/bin sets, cues with `CDI/2352` tracks, and cues with WAVE audio files.
     Use Container check only for those.
   - **RomM Rules:** delete-source Rules on Create CD and Create DVD now
-    Round-trip too, with no per-Rule opt-out yet, so their sweeps need the
-    scratch space and take longer.
+    Round-trip too unless the Rule is set to Container check only, so their
+    sweeps need the scratch space and take longer.
 - **chdman verify is stricter** (#300). chdman reports a data SHA1 mismatch, and
   a CHD with no checksum, while still exiting with success. Verify now passes a
   CHD only when chdman says the raw SHA1 matched, and fails on any error line.
