@@ -53,7 +53,8 @@ async def test_iso_digest_is_the_file_sha1_without_spawning(tmp_path, monkeypatc
 async def test_container_digest_comes_from_dolphin_tool_verify(tmp_path, monkeypatch):
     calls: list = []
     sha1 = "ab" * 20
-    _fake_capture(monkeypatch, stdout=f"SHA-1: {sha1.upper()}\n".encode(), calls=calls)
+    # The real format with --algorithm: the bare hash on one line.
+    _fake_capture(monkeypatch, stdout=f"{sha1.upper()}\n".encode(), calls=calls)
     rvz = tmp_path / "Game.rvz"
     rvz.write_bytes(b"x")
 
@@ -62,6 +63,26 @@ async def test_container_digest_comes_from_dolphin_tool_verify(tmp_path, monkeyp
     assert digest == ContentDigest(kind="gc_wii_disc_sha1", value=sha1)
     assert len(calls) == 1
     assert calls[0][-4:] == ["-i", str(rvz), "--algorithm", "sha1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stdout", [
+    f"Problems: none\n{'ab' * 20}\n",
+    f"SHA-1: {'ab' * 20}\n",
+    f"{'ab' * 20}\n{'ab' * 20}\n",
+    f"{'ab' * 20} extra\n",
+])
+async def test_anything_but_one_bare_hash_line_is_unavailable(
+    tmp_path, monkeypatch, stdout,
+):
+    # The delete gate accepts only the exact shape dolphin-tool prints with
+    # --algorithm sha1; stray text around a hash is not a digest.
+    _fake_capture(monkeypatch, stdout=stdout.encode())
+    rvz = tmp_path / "Game.rvz"
+    rvz.write_bytes(b"x")
+
+    with pytest.raises(ContentDigestUnavailable):
+        await _dolphin().content_digest(str(rvz))
 
 
 @pytest.mark.asyncio
@@ -253,7 +274,7 @@ async def test_matching_digests_delete_the_source_and_say_round_tripped(e2e):
     from services.verification_store import verification_store
 
     iso, sha1 = _source_iso(e2e)
-    e2e["stdout"] = f"SHA-1: {sha1}\n".encode()
+    e2e["stdout"] = f"{sha1}\n".encode()
 
     job = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
 
@@ -272,7 +293,7 @@ async def test_mismatched_digests_keep_the_source_and_say_the_content_differs(e2
     from services import ledger
 
     iso, _ = _source_iso(e2e)
-    e2e["stdout"] = f"SHA-1: {'0' * 40}\n".encode()
+    e2e["stdout"] = f"{'0' * 40}\n".encode()
 
     job = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
 

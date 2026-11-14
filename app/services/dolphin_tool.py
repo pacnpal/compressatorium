@@ -186,6 +186,32 @@ class DolphinToolService:
         cancel/timeout/terminate handling lives in the shared
         ``SubprocessRunner.run_capture``.
         """
+        stdout = await self._verify_sha1_stdout(path, cancel_event=cancel_event)
+        if stdout is None:
+            return []
+        # The hash line is formatted as "SHA-1: <hex>" / "<hex>"; pull every
+        # standalone 40-char hex token so format tweaks don't break matching.
+        return [m.lower() for m in re.findall(r"\b[0-9a-fA-F]{40}\b", stdout)]
+
+    async def disc_sha1(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        """The disc SHA1 for the Round-trip check, parsed strictly.
+
+        Same run as :meth:`disc_hashes`, but the delete gate accepts only the
+        exact shape ``--algorithm sha1`` prints: one bare 40-hex line and
+        nothing else. Anything looser returns ``None`` (not proven).
+        """
+        stdout = await self._verify_sha1_stdout(path, cancel_event=cancel_event)
+        if stdout is None:
+            return None
+        match = re.fullmatch(r"\s*([0-9a-fA-F]{40})\s*", stdout)
+        return match.group(1).lower() if match else None
+
+    async def _verify_sha1_stdout(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str | None:
+        """Stdout of ``dolphin-tool verify --algorithm sha1``, or None on failure."""
         cmd = [
             self.dolphin_tool_path, "verify", "-i", path, "--algorithm", "sha1",
         ]
@@ -211,7 +237,7 @@ class DolphinToolService:
                 "abandoned %s, so the storage is not answering",
                 path, ", ".join(probe_abandoned),
             )
-            return []
+            return None
         returncode, stdout, _ = await self._runner.run_capture(
             cmd, timeout=timeout or None, cancel_event=cancel_event,
         )
@@ -219,13 +245,10 @@ class DolphinToolService:
             logger.warning(
                 "dolphin-tool verify (hash) aborted (cancel/timeout) for %s", path,
             )
-            return []
+            return None
         if returncode != 0:
-            return []
-        # The hash line is formatted as "SHA-1: <hex>" / "<hex>"; pull every
-        # standalone 40-char hex token so format tweaks don't break matching.
-        text = stdout.decode("utf-8", "replace")
-        return [m.lower() for m in re.findall(r"\b[0-9a-fA-F]{40}\b", text)]
+            return None
+        return stdout.decode("utf-8", "replace")
 
     async def verify(
         self, path: str, *, cancel_event: asyncio.Event | None = None,

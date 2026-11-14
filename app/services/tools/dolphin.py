@@ -240,14 +240,11 @@ class DolphinTool(BaseTool):
             except (OSError, ReadCancelled) as e:
                 raise ContentDigestUnavailable(f"could not hash {path}: {e}") from e
         else:
-            hashes = set(
-                await self._service.disc_hashes(path, cancel_event=cancel_event),
-            )
-            if len(hashes) != 1:
+            value = await self._service.disc_sha1(path, cancel_event=cancel_event)
+            if value is None:
                 raise ContentDigestUnavailable(
-                    f"dolphin-tool verify gave no single disc SHA1 for {path}",
+                    f"dolphin-tool verify gave no disc SHA1 for {path}",
                 )
-            value = hashes.pop()
         return ContentDigest(kind=DISC_SHA1_KIND, value=str(value).lower())
 
     def info_model(self, raw: dict, path: str) -> DolphinDiscInfo:
