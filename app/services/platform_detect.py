@@ -209,3 +209,100 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         while len(_cache) > _CACHE_MAX:
             _cache.popitem(last=False)
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Auto: each Image to its Platform's default target
+# --------------------------------------------------------------------------- #
+
+# The forward direction: modes that turn a source into the target format.
+_TARGET_KINDS = frozenset({"create", "compress"})
+
+
+@dataclass(frozen=True)
+class AutoTarget:
+    """Where Auto sends one Image, or why it leaves the Image alone."""
+
+    file_path: str
+    detection: Detection
+    mode: str | None
+    tool_id: str | None
+    compression: str | None
+    skip_reason: str | None
+
+
+def default_mode(path: str, platform: str, tools_registry) -> str | None:
+    """The default target mode for an Image of ``platform`` at ``path``.
+
+    The first create-direction mode the registry lists for the Platform that
+    takes this file. When several take it, the most specific input extension
+    wins (``.nkit.iso`` over ``.iso``), registration order breaking ties: the
+    same rule as ``ToolRegistry.tool_for_verify``. None when no mode serves
+    the Platform for this file type.
+    """
+    disk_path, member = _split_member(path)
+    best: str | None = None
+    best_len = 0
+    for spec in tools_registry.mode_specs():
+        if getattr(spec.kind, "value", spec.kind) not in _TARGET_KINDS:
+            continue
+        claimed = {
+            canonical_slug(s) for s in tools_registry.mode_platform_slugs(spec.mode)
+        }
+        if platform not in claimed:
+            continue
+        name = path.split("::", 1)[1] if member else disk_path
+        matched = match_extension(name, spec.input_extensions)
+        if matched is None or len(matched) <= best_len:
+            continue
+        if member and not spec.allows_archive_input:
+            continue
+        if not member and not tools_registry.for_mode(spec.mode).converts_path(disk_path):
+            continue
+        best, best_len = spec.mode, len(matched)
+    return best
+
+
+def _skip_reason(detection: Detection) -> str:
+    if detection.how == CONFLICT:
+        return f"Platform conflict: {detection.reason}"
+    return f"Unsorted: {detection.reason}"
+
+
+def plan_auto(
+    paths: Iterable[str],
+    *,
+    compression_prefs: dict | None = None,
+    tools_registry=None,
+) -> list[AutoTarget]:
+    """Work out each Image's Platform and default target, without queueing.
+
+    ``compression_prefs`` is the saved per-tool compression (the convert
+    panel's remembered setting, keyed by tool id). A mode that takes no
+    compression gets None, and so does a tool with nothing saved, which means
+    the tool's own default. Blocking; call it off the event loop.
+    """
+    if tools_registry is None:
+        from services.tools import registry as tools_registry
+    prefs = compression_prefs or {}
+    tools = tools_registry.all()
+    plan: list[AutoTarget] = []
+    for path in paths:
+        detection = detect_platform(path, tools=tools)
+        if not detection.decided:
+            plan.append(AutoTarget(path, detection, None, None, None,
+                                   _skip_reason(detection)))
+            continue
+        mode = default_mode(path, detection.platform, tools_registry)
+        if mode is None:
+            plan.append(AutoTarget(
+                path, detection, None, None, None,
+                f"No {detection.platform} target takes this file type",
+            ))
+            continue
+        spec = tools_registry.spec(mode)
+        compression = None
+        if spec.supports_compression or spec.supports_compression_level:
+            compression = prefs.get(spec.tool_id) or None
+        plan.append(AutoTarget(path, detection, mode, spec.tool_id, compression, None))
+    return plan

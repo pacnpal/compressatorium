@@ -2,7 +2,7 @@ import asyncio
 from logging_setup import get_logger
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -11,6 +11,10 @@ from config import settings
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from models import (
+    AutoBatchResponse,
+    AutoJobCreateRequest,
+    AutoPlanItem,
+    AutoPlanRequest,
     BatchJobCreateRequest,
     CheckDuplicatesRequest,
     ConversionJob,
@@ -28,6 +32,9 @@ from services.job_manager import (
     QueueBackpressureError,
     job_manager,
 )
+from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
+from services.platform_detect import plan_auto
+from services.preferences_store import preferences_store
 from services.romz import romz_service
 from services.output_conflicts import (
     OutputPathExhausted,
@@ -1126,6 +1133,99 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
         raise HTTPException(status_code=429, detail=exc.detail) from exc
 
     return jobs
+
+
+def _auto_compression(target) -> str | None:
+    """The saved compression for an Auto target, if its mode accepts it.
+
+    A saved value the mode would refuse (left over from an older picker) falls
+    back to the tool default rather than failing the whole batch.
+    """
+    if not target.compression:
+        return None
+    try:
+        value = normalize_compression(target.compression)
+        _validate_request_compression(registry.spec(target.mode), target.mode, value)
+    except HTTPException:
+        logger.warning(
+            "Saved compression %r does not fit %s; using the tool default",
+            target.compression, target.mode,
+        )
+        return None
+    return value
+
+
+async def _plan_auto(request: AutoPlanRequest) -> list:
+    for file_path in request.file_paths:
+        if not is_within_configured_volumes(file_path):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: path outside configured volumes",
+            )
+    prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
+    plan = await run_in_threadpool(
+        plan_auto, list(request.file_paths), compression_prefs=prefs,
+    )
+    return [
+        replace(target, compression=_auto_compression(target)) if target.mode else target
+        for target in plan
+    ]
+
+
+def _plan_item(target) -> AutoPlanItem:
+    return AutoPlanItem(
+        file_path=target.file_path,
+        platform=target.detection.platform,
+        how=target.detection.how,
+        reason=target.detection.reason,
+        mode=target.mode,
+        tool_id=target.tool_id,
+        compression=target.compression,
+        skip_reason=target.skip_reason,
+    )
+
+
+@router.post("/jobs/auto-plan", response_model=list[AutoPlanItem])
+async def auto_plan(request: AutoPlanRequest):
+    """Each Image's Platform and default target, without queueing anything."""
+    return [_plan_item(target) for target in await _plan_auto(request)]
+
+
+@router.post("/jobs/auto", response_model=AutoBatchResponse)
+async def create_auto_jobs(request: AutoJobCreateRequest):
+    """Queue each Image for its Platform's default target (the Auto choice).
+
+    Images are grouped by target mode and each group goes through the ordinary
+    batch path, so planning, duplicate handling and backpressure are the same as
+    a hand-picked batch. Conflicted and Unsorted Images are left alone and
+    reported in the plan.
+    """
+    plan = await _plan_auto(request)
+    groups: dict[tuple[str, str | None], list[str]] = {}
+    for target in plan:
+        if target.mode:
+            groups.setdefault((target.mode, target.compression), []).append(
+                target.file_path,
+            )
+
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    planned = sum(len(paths) for paths in groups.values())
+    if 0 < max_depth < job_manager.get_queue_depth() + planned:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Conversion queue would exceed capacity ({max_depth} jobs). Retry later.",
+        )
+
+    jobs: list[ConversionJob] = []
+    for (mode, compression), paths in groups.items():
+        jobs += await create_batch_jobs(BatchJobCreateRequest(
+            file_paths=paths,
+            mode=ConversionMode(mode),
+            output_dir=request.output_dir,
+            duplicate_action=request.duplicate_action,
+            compression=compression,
+        ))
+    return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)
 
 
 @router.get("/jobs", response_model=list[ConversionJob])
