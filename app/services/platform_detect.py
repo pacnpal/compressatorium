@@ -29,6 +29,7 @@ from dataclasses import dataclass, replace
 from pathlib import PurePath
 
 from logging_setup import get_logger
+from models import InputKind
 from utils.path_utils import match_extension
 
 logger = get_logger("platform_detect")
@@ -284,6 +285,64 @@ def _auto_candidates(platform: str, tools_registry) -> list:
     return found
 
 
+def _extension_match(spec, path: str, reads) -> str | None:
+    """The extension of ``path`` that ``spec`` reads, by name only.
+
+    A directory mode (makeps3iso's folder->iso) reads folders, not suffixes:
+    it answers ``""`` for a directory on disk and None for anything else.
+    """
+    disk_path, member = _split_member(path)
+    if InputKind.DIRECTORY in spec.input_kinds:
+        return "" if not member and os.path.isdir(disk_path) else None
+    name = path.split("::", 1)[1] if member else disk_path
+    return match_extension(name, reads)
+
+
+def _can_read(spec, path: str, tools_registry) -> bool:
+    """Whether ``spec``'s command can read ``path``, past its extension.
+
+    An archive member needs a mode that takes archive members; a file on disk
+    asks the tool's ``converts_path`` and a folder its ``accepts_directory``.
+    May touch the disk (a header or a sibling), so it runs last.
+
+    ``converts_path`` refines the tool's own ``input_extensions``, so it is
+    asked only about a file those cover: chdman's extract and copy modes read
+    ``.chd``, which chdman leaves out of its tool-wide inputs on purpose.
+    """
+    disk_path, member = _split_member(path)
+    if member:
+        return bool(spec.allows_archive_input)
+    tool = tools_registry.for_mode(spec.mode)
+    if InputKind.DIRECTORY in spec.input_kinds:
+        return bool(tool.accepts_directory(disk_path))
+    if match_extension(disk_path, tool.input_extensions) is None:
+        return True
+    return bool(tool.converts_path(disk_path))
+
+
+def _best_reader(path: str, specs, tools_registry, reads_of) -> tuple:
+    """``(spec, matched extension)`` of the most specific reader of ``path``.
+
+    The most specific extension match wins (``.nkit.iso`` over ``.iso``), then
+    the smallest read set, then the order of ``specs`` (registration order).
+    ``(None, None)`` when no spec can read the file.
+    """
+    best, best_matched = None, None
+    best_key: tuple[int, int] | None = None
+    for spec in specs:
+        reads = reads_of(spec)
+        matched = _extension_match(spec, path, reads)
+        if matched is None:
+            continue
+        key = (-len(matched), len(reads))
+        if best_key is not None and key >= best_key:
+            continue
+        if not _can_read(spec, path, tools_registry):
+            continue
+        best, best_matched, best_key = spec, matched, key
+    return best, best_matched
+
+
 def default_mode(path: str, platform: str, tools_registry) -> str | None:
     """The default target mode for an Image of ``platform`` at ``path``.
 
@@ -296,24 +355,139 @@ def default_mode(path: str, platform: str, tools_registry) -> str | None:
     ``.iso`` goes to createdvd, which reads only ``.iso``, not createcd), then
     registration order. None when no candidate reads the file.
     """
-    disk_path, member = _split_member(path)
-    name = path.split("::", 1)[1] if member else disk_path
-    best: str | None = None
-    best_key: tuple[int, int] | None = None
-    for spec in _auto_candidates(platform, tools_registry):
+    best, _ = _best_reader(
+        path, _auto_candidates(platform, tools_registry), tools_registry,
+        lambda spec: tools_registry.mode_reads_extensions(spec.mode),
+    )
+    return best.mode if best else None
+
+
+# --------------------------------------------------------------------------- #
+# A named format: `compressatorium convert --to <format>` (#306)
+# --------------------------------------------------------------------------- #
+
+
+def _parse_target(target: str, tools_registry) -> tuple[str | None, str | None]:
+    """``(format, None)`` for a format such as ``chd``, ``(None, mode)`` for a mode id."""
+    key = target.strip().lower()
+    if any(spec.mode == key for spec in tools_registry.mode_specs()):
+        return None, key
+    return (key if key.startswith(".") else f".{key}"), None
+
+
+def target_formats(tools_registry) -> list[str]:
+    """Every format some Auto-eligible mode writes (``.chd``, ``.rvz``, ...).
+
+    Read from each mode's ``output_path`` over its own inputs, so a tool whose
+    output extension follows its input (z3ds, nsz) is covered without a list.
+    """
+    found: set[str] = set()
+    for spec in tools_registry.mode_specs():
+        if not spec.auto_target:
+            continue
+        tool = tools_registry.for_mode(spec.mode)
+        for ext in tools_registry.mode_reads_extensions(spec.mode) or {""}:
+            probe = f"/compressatorium-format-probe/Game{ext}"
+            try:
+                out = tool.output_path(spec.mode, probe)
+            except (KeyError, ValueError, OSError):
+                continue
+            stem = "/compressatorium-format-probe/Game"
+            if out.startswith(stem) and len(out) > len(stem):
+                found.add(out[len(stem):].lower())
+    return sorted(found)
+
+
+def _writes(spec, path: str, fmt: str, tools_registry) -> bool:
+    out = _target_output(path, spec.mode, None, tools_registry)
+    return out is not None and match_extension(out, {fmt}) is not None
+
+
+def format_candidates(path: str, target: str, tools_registry) -> list:
+    """The modes that could turn ``path`` into ``target``, Platform aside.
+
+    ``target`` is a format (``chd``, ``.rvz``) or a mode id (``createcd``). A
+    format matches every Auto-eligible mode whose command reads the Image and
+    whose output has that extension; a mode id matches itself when it accepts
+    the Image. Empty means the Image is not in scope for ``target``.
+    """
+    fmt, mode = _parse_target(target, tools_registry)
+    if mode is not None:
+        spec = tools_registry.spec(mode)
+        if _extension_match(spec, path, spec.input_extensions) is None:
+            return []
+        return [spec] if _can_read(spec, path, tools_registry) else []
+    found = []
+    for spec in tools_registry.mode_specs():
+        if not spec.auto_target:
+            continue
         reads = tools_registry.mode_reads_extensions(spec.mode)
-        matched = match_extension(name, reads)
-        if matched is None:
+        if _extension_match(spec, path, reads) is None:
             continue
-        key = (-len(matched), len(reads))
-        if best_key is not None and key >= best_key:
+        if not _writes(spec, path, fmt, tools_registry):
             continue
-        if member and not spec.allows_archive_input:
-            continue
-        if not member and not tools_registry.for_mode(spec.mode).converts_path(disk_path):
-            continue
-        best, best_key = spec.mode, key
-    return best
+        if _can_read(spec, path, tools_registry):
+            found.append(spec)
+    return found
+
+
+def _serves(spec, platform: str, tools_registry) -> bool:
+    """Whether ``spec`` may convert an Image of ``platform``.
+
+    The Auto test (``platform_slugs`` or ``auto_platform_slugs``), kept
+    conservative like ``mode_allows_platform``: a mode that names no Platform,
+    or a Platform no mode names, rules nothing out.
+    """
+    def claimed(s) -> set:
+        return {
+            canonical_slug(slug)
+            for slug in (*tools_registry.mode_platform_slugs(s.mode), *s.auto_platform_slugs)
+        }
+
+    own = claimed(spec)
+    if not own or platform in own:
+        return True
+    return not any(platform in claimed(s) for s in tools_registry.mode_specs())
+
+
+def format_route(
+    path: str, target: str, platform: str | None, tools_registry,
+) -> tuple[str | None, str | None]:
+    """``(mode, None)`` for how ``path`` becomes ``target``, or ``(None, reason)``.
+
+    Auto's choice restricted to the modes that write the format: the
+    Image's Platform (when one was worked out) narrows the candidates, then
+    ``_best_reader`` ranks them exactly as ``default_mode`` does. An Image whose
+    most specific reader already reads the format is left alone ("Already
+    CHD"), the ``auto_route`` rule. A mode id is taken as given once it reads
+    the Image and serves its Platform.
+    """
+    fmt, mode = _parse_target(target, tools_registry)
+    candidates = format_candidates(path, target, tools_registry)
+    if not candidates:
+        name = path.split("::", 1)[-1]
+        ext = os.path.splitext(name)[1].lower() or name
+        if mode is not None:
+            return None, f"{mode} does not read {ext} files"
+        return None, f"No {fmt} target reads {ext} files"
+    if platform:
+        served = [s for s in candidates if _serves(s, platform, tools_registry)]
+        if not served:
+            if mode is not None:
+                return None, f"{mode} does not convert {platform} Images"
+            return None, f"No {fmt} target for {platform} Images"
+        candidates = served
+    if mode is not None:
+        return mode, None
+    best, matched = _best_reader(
+        path, candidates, tools_registry,
+        lambda spec: tools_registry.mode_reads_extensions(spec.mode),
+    )
+    if best is None:
+        return None, f"No {fmt} target reads this Image"
+    if matched and matched.lower() == fmt:
+        return None, f"Already {fmt.lstrip('.').upper()}"
+    return best.mode, None
 
 
 def auto_route(path: str, platform: str, tools_registry) -> tuple[str | None, str | None]:
