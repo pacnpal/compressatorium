@@ -2136,8 +2136,8 @@ ended. The job carries what the row needs and the in-memory history would lose:
   job starts, before anything can be deleted: a directory tree, or every file
   `utils.delete_plan.build_delete_plan` would remove (CUE/GDI tracks, registry
   source companions, the archive holding a member).
-- `ConversionJob.check_passed` -- `"intact"` once the tool's own verify passed.
-  `"round_tripped"` is reserved for the Round-trip check (#298).
+- `ConversionJob.check_passed` -- `"intact"` once the tool's own verify passed,
+  `"round_tripped"` once the Round-trip check passed too (§3.3.11).
 - `ConversionJob.deleted_paths` -- each path the delete-on-verify step removed;
   `source_deleted` is derived from it.
 
@@ -2152,6 +2152,72 @@ insert is `ON CONFLICT DO NOTHING`. The dashboard reads the Ledger through
 a short settle delay, since the row is written after the completion event. A `retention_days`
 in the `ledger` preference prunes older rows on each write; unset keeps them
 forever. Recording never raises: a failure is logged and the job is unaffected.
+
+### 3.3.11 The Round-trip check (`ToolPlugin.content_digest`, `services/round_trip.py`)
+
+A container check proves the output reads back cleanly. It does not prove the
+output holds the same disc as the Source the job is about to delete. The
+Round-trip check does (#298): the output is Round-tripped when the content it
+decodes to equals the content its Source decodes to. It is a claim about image
+content, never container bytes: `Game.iso` and the `Game.rvz` made from it have
+different file hashes and the same digest.
+
+**The contract.** One optional method and one mode flag:
+
+```python
+@dataclass(frozen=True)
+class ContentDigest:
+    kind: str    # shape of what was hashed, e.g. "gc_wii_disc_sha1"
+    value: str   # lowercase hex
+    def same_content(self, other) -> bool: ...   # ValueError on a kind mismatch
+
+async def content_digest(self, path, *, cancel_event=None) -> ContentDigest | None
+```
+
+- `content_digest(path)` hashes what `path` decodes to. `None` means the tool
+  has no digest for this kind of file; `ContentDigestUnavailable` means it
+  should have one and could not get it. `BaseTool` returns `None`.
+- `kind` keeps digests of different shapes apart. `same_content` raises
+  `ValueError` rather than answer "different" for, say, a CD track hash against
+  a disc-image hash, and the check treats that as "not proven".
+- `ModeSpec.supports_round_trip` (mirrored as `supportsRoundTrip` in
+  `registry.js`, parity-tested) says the mode's tool has a digest for both its
+  inputs and its output. `registry.mode_supports_round_trip(mode)` reads it.
+  `ChainSpec` carries it as `False` until chains compare the first step's
+  decoded Source with the final output (#301).
+
+**Where it runs.** `JobManager._delete_check` is the one decision point. It runs
+after the container check passes and returns `(check_passed,
+keep_source_reason)`. The Round-trip runs only when it decides something:
+`delete_on_verify` is set, the mode supports it, and the job did not take the
+named opt-out `ConversionJob.container_only` (`container_only` on
+`POST /api/jobs` and `/api/jobs/batch`). Otherwise the answer is
+`("intact", None)` with no extra reads, which is what every `verify_after` job
+and every mode without a digest gets. The outcome is stored before it is acted
+on: `verification_store.mark_verified(..., check=check_passed)` writes it to
+`verifications.check_passed` (migration `0010`, existing rows backfilled
+`"intact"`), and `ConversionJob.check_passed` carries it to the Ledger and to
+the job's `complete` event. A mismatch or an unavailable digest leaves
+`check_passed="intact"`, keeps the Source and fails the job with the reason.
+
+**`services/round_trip.round_trip(tool, source, output)`** owns everything a
+tool should not repeat: one side at a time (both are usually on the same
+volume), each bounded by `tool.verify_timeout(path)`, any exception folded into
+"could not run", and a fired `cancel_event` reported as cancelled (no verdict,
+no delete) rather than as a failure. `source` is the file the converter read,
+so an archive member is hashed from its extracted copy. The job marks the step
+in `_verifying` so the stall reporter treats it like the container check.
+
+**Per tool.** Each tool proves content the cheapest sound way it has:
+
+| Tool | Source side | Output side |
+| --- | --- | --- |
+| dolphin | `.iso`: SHA1 of the file (detached read, no subprocess). `.rvz`/`.wia`/`.gcz`/`.wbfs`: `dolphin-tool verify --algorithm sha1` | same rule by extension |
+
+Every other tool returns `None` today and its modes keep the container check;
+chdman (#300) and the rest (#301) add rows here. An NKit `.nkit.iso` Source is
+hashed as a file, so it never matches the full disc rebuilt from the output and
+its Source is kept: a safe false negative.
 
 ### 3.4 `registry.py`
 
