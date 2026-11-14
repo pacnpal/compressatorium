@@ -525,7 +525,6 @@ async def test_a_full_queue_drops_the_oldest_with_a_warning(client, rec, monkeyp
 
 def test_webhook_has_an_overall_deadline_against_a_slow_drip(monkeypatch):
     import socket
-    import time
 
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))

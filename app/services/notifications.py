@@ -416,7 +416,7 @@ async def _dispatch() -> None:
         event, done = _inbox.popleft()
         try:
             dests = await _load()
-        except Exception:  # noqa: BLE001  a broken store must not stop later events
+        except Exception:
             logger.warning("Could not read notification destinations", exc_info=True)
             done.set_result(None)
             continue
@@ -486,7 +486,7 @@ async def _drain_destination(slot: str) -> None:
                         await _send_one(dest["kind"], dest["url"], event, slot=slot)
                     except Exception as exc:  # noqa: BLE001  one send never stops the queue
                         _log_failure(dest, event, exc)
-            except Exception:  # noqa: BLE001  the store read failed; keep draining
+            except Exception:
                 logger.warning("Could not read notification destinations", exc_info=True)
             finally:
                 if not done.done():
@@ -650,7 +650,9 @@ def sweep_jobs_queued(jobs: list[ConversionJob]) -> None:
             _open_sweep.pending.add(job.id)
 
 
-def sweep_finished(result: dict, *, dry_run: bool = False) -> None:
+def sweep_finished(
+    result: dict, *, dry_run: bool = False, library_id: str | None = None,
+) -> None:
     """Sweep hook 2: the pass is over. Sends when its jobs have all ended."""
     global _open_sweep
     sweep, _open_sweep = _open_sweep, None
@@ -665,7 +667,9 @@ def sweep_finished(result: dict, *, dry_run: bool = False) -> None:
     # error each time. Report an error once per (platform, reason); it is
     # forgotten only when a later sweep inspected the platform without it (below).
     global _reported_errors
-    keys = {(e.get("platform_id"), str(e.get("error"))) for e in sweep.errors}
+    keys = {
+        (library_id, e.get("platform_id"), str(e.get("error"))) for e in sweep.errors
+    }
     sweep.has_new_errors = bool(keys - _reported_errors)
     # Forget an error only when this sweep looked at that platform and found it
     # clean. A platform the sweep skipped (a platform_ids filter, the queue cap
@@ -674,9 +678,13 @@ def sweep_finished(result: dict, *, dry_run: bool = False) -> None:
     checked = {p.get("platform_id") for p in result.get("platforms") or []
                if isinstance(p, dict)}
     finished = "platforms" in result
+    # Keyed by Library too: each Library is swept in turn, and one Library's
+    # clean sweep says nothing about another's errors.
     kept = {
         k for k in _reported_errors
-        if (k[0] is None and not finished) or (k[0] is not None and k[0] not in checked)
+        if k[0] != library_id
+        or (k[1] is None and not finished)
+        or (k[1] is not None and k[1] not in checked)
     }
     _reported_errors = kept | keys
     _maybe_send(sweep)

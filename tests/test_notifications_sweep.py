@@ -1,4 +1,4 @@
-"""Notifications (#293) through the real ``romm_auto.sweep()``: the two hook lines.
+"""Notifications (#293) through the real ``romm_auto.sweep()``: the sweep hooks.
 
 The unit tests in test_notifications.py call the hooks directly; these prove the
 sweep itself calls them, with RomM and the queue stubbed the way test_romm.py
@@ -15,7 +15,9 @@ from models import JobStatus
 from routes import romm as romm_routes
 from services import db as _db
 from services import notifications
+from services.job_manager import job_manager
 from services.romm import settings as romm_settings
+from services.rules import sweep as rules_sweep
 from services.tools import registry
 
 
@@ -83,9 +85,9 @@ async def test_a_sweep_sends_one_message_once_its_jobs_end(tmp_path, sent):
         return list(made)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _batch), \
-            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(job_manager, "create_batch_jobs", _batch), \
+            patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         result = await romm_auto.sweep(ignore_schedule=True)
     assert result["queued"] == 1
 
@@ -105,8 +107,8 @@ async def test_a_preview_sends_nothing(tmp_path, sent):
 
     roms = await _setup(tmp_path)
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.sweep(ignore_schedule=True, dry_run=True)
     await notifications.drain()
     assert sent == []
@@ -122,9 +124,9 @@ async def test_a_platform_that_keeps_failing_sends_one_message_over_many_ticks(
     roms = await _setup(tmp_path)
     tool = registry.for_mode("dolphin_rvz")
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
             patch.object(type(tool), "is_ready", AsyncMock(return_value=False)), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         for _ in range(10):
             result = await romm_auto.sweep()
             assert result["errors"] == [{"platform_id": 7, "error": "tool_not_ready"}]
@@ -144,10 +146,10 @@ async def test_a_sweep_that_fails_after_queueing_still_closes_and_reports(tmp_pa
         return list(made)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _batch), \
-            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
-            patch.object(romm_auto, "_record_run", AsyncMock(side_effect=RuntimeError("db"))), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True), \
+            patch.object(job_manager, "create_batch_jobs", _batch), \
+            patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(rules_sweep, "_record_run", AsyncMock(side_effect=RuntimeError("db"))), \
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True), \
             pytest.raises(RuntimeError):
         await romm_auto.sweep(ignore_schedule=True)
 
@@ -167,9 +169,9 @@ async def test_an_unrelated_run_does_not_re_alert_a_known_failure(tmp_path, sent
     roms = await _setup(tmp_path)
     tool = registry.for_mode("dolphin_rvz")
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
             patch.object(type(tool), "is_ready", AsyncMock(return_value=False)), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.sweep()
         await romm_auto.sweep(platform_ids=[])  # inspects nothing
         await romm_auto.sweep()
@@ -227,7 +229,7 @@ async def test_cancelling_a_sweep_is_not_reported_as_a_failure(tmp_path, sent):
 
     await _setup(tmp_path)
     with patch.object(
-        romm_auto, "_sweep_locked", AsyncMock(side_effect=asyncio.CancelledError),
+        rules_sweep, "_sweep_locked", AsyncMock(side_effect=asyncio.CancelledError),
     ), pytest.raises(asyncio.CancelledError):
         await romm_auto.sweep()
     await notifications.drain()
