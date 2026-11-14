@@ -478,8 +478,9 @@ compressatorium_queue_depth                      # queued or running now
 `/api/ledger/savings` is the savings summary (totals by Platform and by format).
 Both follow the API's auth rules: with `COMPRESSATORIUM_ENABLE_AUTH` on, give
 Prometheus the token as a bearer token or as the basic-auth password. The job and
-byte totals are counted from the Ledger, so a retention prune lowers them, which
-Prometheus treats as a counter reset.
+byte totals are true counters kept in their own table: they only go up, and a
+retention prune of Ledger rows does not lower them. (They start from the Ledger's
+contents when you upgrade.)
 
 | Light | Dark |
 |-------|------|

@@ -45,7 +45,7 @@
     <SidebarItem label="Ledger" {collapsed} active={view === 'ledger'} onclick={() => go('ledger')}>
       {#snippet icon()}<ScrollText size={16} />{/snippet}
     </SidebarItem>
-    <SidebarItem label="Help"{collapsed} active={view === 'help'} onclick={() => go('help')}>
+    <SidebarItem label="Help" {collapsed} active={view === 'help'} onclick={() => go('help')}>
       {#snippet icon()}<HelpCircle size={16} />{/snippet}
     </SidebarItem>
   </nav>

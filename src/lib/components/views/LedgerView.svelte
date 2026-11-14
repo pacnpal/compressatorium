@@ -147,7 +147,7 @@
   <div class="panel">
     {#if loading && items.length === 0}
       <div class="loading"><Spinner size="sm" /> Loading</div>
-    {:else if items.length === 0}
+    {:else if items.length === 0 && !error}
       <EmptyState
         title={filtered ? 'No rows match' : 'No jobs recorded yet'}
         description={filtered ? 'Try a different search or filter.' : 'Finished conversions will appear here.'}

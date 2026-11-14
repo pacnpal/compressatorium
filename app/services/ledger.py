@@ -94,16 +94,38 @@ def _session():
     return _db.SessionLocal()
 
 
+def _bump_totals(session, row: dict) -> None:
+    """Add *row* to the running totals the metrics serve. Never subtracted."""
+    done = row["status"] == "completed"
+    in_b = (row["input_bytes"] or 0) if done else 0
+    out_b = (row["output_bytes"] or 0) if done else 0
+    t = _db.LedgerTotal
+    session.execute(
+        sqlite_insert(t)
+        .values(status=row["status"], jobs=1, input_bytes=in_b, output_bytes=out_b)
+        .on_conflict_do_update(
+            index_elements=["status"],
+            set_={
+                "jobs": t.jobs + 1,
+                "input_bytes": t.input_bytes + in_b,
+                "output_bytes": t.output_bytes + out_b,
+            },
+        )
+    )
+
+
 def _insert_sync(row: dict, retention_days: int | None) -> None:
     with _session() as session:
         # A job can be announced terminal more than once (a queued cancel is
         # notified by cancel_job and again by the runner), so the same
         # (job_id, finished_at) is a no-op rather than a second row.
-        session.execute(
+        inserted = session.execute(
             sqlite_insert(_db.LedgerEntry)
             .values(**row)
             .on_conflict_do_nothing(index_elements=["job_id", "finished_at"])
-        )
+        ).rowcount
+        if inserted:
+            _bump_totals(session, row)
         if retention_days:
             cutoff = _iso(datetime.now(timezone.utc) - timedelta(days=retention_days))
             session.execute(
@@ -281,37 +303,65 @@ def _csv_chunk(rows: list[dict], header: bool) -> str:
     return buf.getvalue()
 
 
+def _after_sync(flt: LedgerFilter, after: tuple[str, int] | None, max_id: int) -> list[dict]:
+    e = _db.LedgerEntry
+    clauses = [*flt.clauses(), e.id <= max_id]
+    if after is not None:
+        finished, row_id = after
+        clauses.append(
+            (e.finished_at < finished) | ((e.finished_at == finished) & (e.id < row_id))
+        )
+    with _session() as session:
+        rows = session.scalars(
+            select(e).where(*clauses)
+            .order_by(e.finished_at.desc(), e.id.desc()).limit(_CSV_PAGE)
+        ).all()
+        return [_entry_dict(r) for r in rows]
+
+
+def _max_id_sync() -> int:
+    with _session() as session:
+        return int(session.scalar(select(func.max(_db.LedgerEntry.id))) or 0)
+
+
 async def export_csv(flt: LedgerFilter):
-    """Yield the CSV for every row matching *flt*, newest first, a page at a time."""
-    offset = 0
+    """Yield the CSV for every row matching *flt*, newest first.
+
+    Keyset-paged on ``(finished_at, id)`` and capped at the newest id present
+    when the export starts, so a job finishing or a prune running mid-export
+    can neither repeat a row nor skip one.
+    """
+    max_id = await run_in_threadpool(_max_id_sync)
+    after = None
+    first = True
     while True:
-        page = await list_page(flt, _CSV_PAGE, offset)
-        yield _csv_chunk(page["items"], header=offset == 0)
-        offset += _CSV_PAGE
-        if offset >= page["total"]:
+        rows = await run_in_threadpool(_after_sync, flt, after, max_id)
+        if rows or first:
+            yield _csv_chunk(rows, header=first)
+        first = False
+        if len(rows) < _CSV_PAGE:
             return
+        after = (rows[-1]["finished_at"], rows[-1]["id"])
 
 
 def _metrics_sync() -> tuple[dict[str, int], int, int]:
-    e = _db.LedgerEntry
+    t = _db.LedgerTotal
     with _session() as session:
-        by_status = dict(session.execute(
-            select(e.status, func.count()).group_by(e.status)
-        ).all())
-        bytes_in, bytes_out = session.execute(
-            select(
-                func.coalesce(func.sum(e.input_bytes), 0),
-                func.coalesce(func.sum(e.output_bytes), 0),
-            ).where(e.status == "completed")
-        ).one()
-    return by_status, int(bytes_in), int(bytes_out)
+        rows = session.execute(
+            select(t.status, t.jobs, t.input_bytes, t.output_bytes)
+        ).all()
+    return (
+        {r[0]: int(r[1]) for r in rows},
+        sum(int(r[2]) for r in rows),
+        sum(int(r[3]) for r in rows),
+    )
 
 
 async def metrics_text(queue_depth: int) -> str:
-    """Prometheus text exposition (v0.0.4) of the Ledger plus the live queue.
+    """Prometheus text exposition (v0.0.4): running totals plus the live queue.
 
-    The totals are counted from the Ledger, so a retention prune lowers them;
-    Prometheus reads that as a counter reset.
+    The counters come from ``ledger_totals``, which only ever grows, so a
+    retention prune of Ledger rows never makes one go down.
     """
     by_status, bytes_in, bytes_out = await run_in_threadpool(_metrics_sync)
     statuses = sorted(set(_METRIC_STATUSES) | set(by_status))

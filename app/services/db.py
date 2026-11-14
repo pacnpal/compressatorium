@@ -292,6 +292,21 @@ class LedgerEntry(Base):
     )
 
 
+class LedgerTotal(Base):
+    """Running per-status totals behind the Prometheus counters (#297).
+
+    Incremented when a Ledger row is written and never decremented, so a
+    retention prune of ``ledger`` rows cannot make a counter go down.
+    Byte sums only accumulate for completed jobs.
+    """
+
+    __tablename__ = "ledger_totals"
+    status = Column(String, primary_key=True)
+    jobs = Column(Integer, nullable=False, default=0)
+    input_bytes = Column(Integer, nullable=False, default=0)
+    output_bytes = Column(Integer, nullable=False, default=0)
+
+
 class Preference(Base):
     """Generic key/value store for app preferences (UI layout, etc.).
 

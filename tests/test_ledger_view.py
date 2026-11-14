@@ -126,7 +126,150 @@ async def test_routes_call_the_same_query_layer():
     assert (await routes.metrics()).media_type.startswith("text/plain")
 
 
-@pytest.mark.parametrize("path", ["/api/ledger", "/api/ledger/export.csv", "/api/metrics"])
+LEDGER_PATHS = [
+    "/api/ledger", "/api/ledger/export.csv", "/api/ledger/savings", "/api/metrics",
+]
+
+
+def test_ledger_paths_are_mounted_on_the_app():
+    import main
+
+    assert set(LEDGER_PATHS) <= set(main.app.openapi()["paths"])
+
+
+@pytest.mark.asyncio
+async def test_export_route_streams_the_csv_body():
+    from routes import ledger as routes
+
+    await _seed()
+    resp = await routes.ledger_export(q="", status="", tool="", platform="")
+    body = "".join([c async for c in resp.body_iterator])
+    assert body.startswith("job_id,finished_at,tool")
+    assert len(body.strip().splitlines()) == 4
+
+
+@pytest.mark.parametrize("prefix", ["=", "+", "-", "@", "\t", "\r"])
+@pytest.mark.asyncio
+async def test_csv_cells_with_formula_prefixes_are_neutralised(prefix):
+    import csv
+    import io
+
+    job = ConversionJob(
+        id="f", file_path="/data/x.iso", filename="x.iso", mode=ConversionMode.CREATEDVD,
+        status=JobStatus.FAILED, created_at=datetime.now(timezone.utc),
+        error_message=f"{prefix}cmd|' /C calc'!A0",
+    )
+    await ledger.record(job)
+    text = "".join([c async for c in ledger.export_csv(ledger.LedgerFilter())])
+    rows = list(csv.reader(io.StringIO(text, newline="")))
+    err = rows[1][rows[0].index("error")]
+    assert err.startswith("'" + prefix)
+
+
+@pytest.mark.asyncio
+async def test_prune_never_lowers_the_counters(monkeypatch):
+    from services.preferences_store import preferences_store
+
+    old = datetime.now(timezone.utc) - timedelta(days=40)
+    for i in range(3):
+        await ledger.record(_done(f"old{i}", old))
+    before = await ledger.metrics_text(0)
+    assert 'compressatorium_jobs_total{status="completed"} 3' in before
+    await preferences_store.put(ledger.PREF_KEY, {"retention_days": 30})
+    await ledger.record(_done("new", datetime.now(timezone.utc)))
+    # The three old rows are gone from the table...
+    assert [r["job_id"] for r in await ledger.recent(10)] == ["new"]
+    # ...but the counters only went up.
+    after = await ledger.metrics_text(0)
+    assert 'compressatorium_jobs_total{status="completed"} 4' in after
+    assert "compressatorium_input_bytes_total 4000" in after
+    assert "compressatorium_output_bytes_total 1600" in after
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_notification_counts_once():
+    job = _done("dup", datetime.now(timezone.utc))
+    await ledger.record(job)
+    await ledger.record(job)
+    assert 'compressatorium_jobs_total{status="completed"} 1' in await ledger.metrics_text(0)
+
+
+def _done(job_id, when):
+    return ConversionJob(
+        id=job_id, file_path=f"/data/{job_id}.iso", filename=f"{job_id}.iso",
+        mode=ConversionMode.CREATEDVD, status=JobStatus.COMPLETED, created_at=when,
+        started_at=when - timedelta(seconds=5), completed_at=when,
+        output_path=f"/data/{job_id}.chd", output_size=400, input_bytes=1000,
+        deleted_paths=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_export_does_not_duplicate_when_a_row_lands_mid_export(monkeypatch):
+    monkeypatch.setattr(ledger, "_CSV_PAGE", 2)
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    for i in range(5):
+        await ledger.record(_done(f"j{i}", base + timedelta(days=i)))
+    chunks = []
+    async for chunk in ledger.export_csv(ledger.LedgerFilter()):
+        chunks.append(chunk)
+        if len(chunks) == 1:
+            await ledger.record(_done("late", base + timedelta(days=30)))
+    ids = [line.split(",")[0] for line in "".join(chunks).strip().splitlines()[1:]]
+    assert len(ids) == len(set(ids))
+    assert set(ids) == {f"j{i}" for i in range(5)}
+
+
+@pytest.mark.asyncio
+async def test_export_does_not_skip_when_old_rows_are_pruned_mid_export(monkeypatch):
+    monkeypatch.setattr(ledger, "_CSV_PAGE", 2)
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    for i in range(5):
+        await ledger.record(_done(f"j{i}", base + timedelta(days=i)))
+    seen = []
+    async for chunk in ledger.export_csv(ledger.LedgerFilter()):
+        seen.append(chunk)
+        if len(seen) == 1:
+            with _db.SessionLocal() as s:
+                s.query(_db.LedgerEntry).filter_by(job_id="j4").delete()
+                s.commit()
+    ids = [line.split(",")[0] for line in "".join(seen).strip().splitlines()[1:]]
+    # j4 was in the first page; deleting it must not shift later pages and drop j2.
+    assert ids == ["j4", "j3", "j2", "j1", "j0"]
+
+
+def test_migration_0010_seeds_counters_from_the_ledger(tmp_path):
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{tmp_path}/m.db")
+    _db.apply_migrations(engine)
+    with engine.begin() as c:
+        c.execute(text("delete from ledger_totals"))
+        for i, (st, inb, outb) in enumerate(
+            [("completed", 10, 4), ("completed", 20, 5), ("failed", 7, None)]
+        ):
+            c.execute(text(
+                "insert into ledger (job_id, finished_at, mode, source_path, status, "
+                "check_passed, source_deleted, deleted_paths, referrers_updated, "
+                "input_bytes, output_bytes) values (:j, :f, 'm', '/p', :s, 'none', 0, "
+                "'[]', '[]', :i, :o)"
+            ), {"j": f"j{i}", "f": f"2026-01-0{i + 1}", "s": st, "i": inb, "o": outb})
+    import importlib.util
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parent.parent / "migrations/versions"
+    spec = importlib.util.spec_from_file_location("m10", next(path.glob("0010_*.py")))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with engine.begin() as c:
+        mod.seed_totals(c)
+        rows = {r[0]: r[1:] for r in c.execute(text(
+            "select status, jobs, input_bytes, output_bytes from ledger_totals"))}
+    assert rows["completed"] == (2, 30, 9)
+    assert rows["failed"] == (1, 0, 0)
+
+
+@pytest.mark.parametrize("path", LEDGER_PATHS)
 def test_new_endpoints_are_behind_auth(monkeypatch, path):
     from auth import require_auth_middleware
     from starlette.requests import Request
