@@ -269,6 +269,61 @@ def test_migration_0010_seeds_counters_from_the_ledger(tmp_path):
     assert rows["failed"] == (1, 0, 0)
 
 
+def _run_0010_upgrade(engine):
+    import importlib.util
+    import pathlib
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    path = pathlib.Path(__file__).resolve().parent.parent / "migrations/versions"
+    spec = importlib.util.spec_from_file_location("m10u", next(path.glob("0010_*.py")))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with engine.begin() as conn:
+        with Operations.context(MigrationContext.configure(conn)):
+            mod.upgrade()
+
+
+def _ledger_db(tmp_path):
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{tmp_path}/pre.db")
+    _db.ensure_schema(engine)  # create_all path: ledger_totals exists, empty
+    with engine.begin() as c:
+        for i, (st, inb, outb) in enumerate([("completed", 10, 4), ("failed", 7, None)]):
+            c.execute(text(
+                "insert into ledger (job_id, finished_at, mode, source_path, status, "
+                "check_passed, source_deleted, deleted_paths, referrers_updated, "
+                "input_bytes, output_bytes) values (:j, :f, 'm', '/p', :s, 'none', 0, "
+                "'[]', '[]', :i, :o)"
+            ), {"j": f"j{i}", "f": f"2026-01-0{i + 1}", "s": st, "i": inb, "o": outb})
+    return engine
+
+
+def test_0010_seeds_a_precreated_empty_totals_table(tmp_path):
+    from sqlalchemy import text
+
+    engine = _ledger_db(tmp_path)
+    _run_0010_upgrade(engine)
+    with engine.connect() as c:
+        rows = {r[0]: r[1:] for r in c.execute(text(
+            "select status, jobs, input_bytes, output_bytes from ledger_totals"))}
+    assert rows == {"completed": (1, 10, 4), "failed": (1, 0, 0)}
+
+
+def test_0010_never_overwrites_existing_counters(tmp_path):
+    from sqlalchemy import text
+
+    engine = _ledger_db(tmp_path)
+    with engine.begin() as c:
+        c.execute(text("insert into ledger_totals values ('completed', 99, 5, 6)"))
+    _run_0010_upgrade(engine)
+    with engine.connect() as c:
+        rows = c.execute(text("select * from ledger_totals")).all()
+    assert [tuple(r) for r in rows] == [("completed", 99, 5, 6)]
+
+
 @pytest.mark.parametrize("path", LEDGER_PATHS)
 def test_new_endpoints_are_behind_auth(monkeypatch, path):
     from auth import require_auth_middleware

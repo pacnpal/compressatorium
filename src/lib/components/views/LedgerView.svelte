@@ -60,6 +60,13 @@
       items = res.items;
       total = res.total;
       error = '';
+      // A prune can shrink the Ledger under the page being viewed; step back
+      // to the last page that still exists and load it.
+      const last = Math.max(1, Math.ceil(res.total / PAGE_SIZE));
+      if (page > last) {
+        page = last;
+        return load();
+      }
     } catch (e) {
       if (mine !== seq) return;
       error = e?.message ?? 'Could not load the Ledger';

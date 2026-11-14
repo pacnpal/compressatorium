@@ -21,8 +21,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def seed_totals(conn) -> None:
-    """Replace the totals with counts and sums taken from the current Ledger."""
-    conn.execute(sa.text('DELETE FROM ledger_totals'))
+    """Fill an empty ``ledger_totals`` from the current Ledger's counts and sums."""
     conn.execute(sa.text(
         'INSERT INTO ledger_totals (status, jobs, input_bytes, output_bytes) '
         'SELECT status, COUNT(*), '
@@ -35,17 +34,19 @@ def seed_totals(conn) -> None:
 def upgrade() -> None:
     bind = op.get_bind()
     # Tolerate a pre-created table (create_all-then-stamp path), as 0009 does.
-    if 'ledger_totals' in sa.inspect(bind).get_table_names():
-        return
-    op.create_table(
-        'ledger_totals',
-        sa.Column('status', sa.String(), nullable=False),
-        sa.Column('jobs', sa.Integer(), nullable=False),
-        sa.Column('input_bytes', sa.Integer(), nullable=False),
-        sa.Column('output_bytes', sa.Integer(), nullable=False),
-        sa.PrimaryKeyConstraint('status'),
-    )
-    seed_totals(bind)
+    if 'ledger_totals' not in sa.inspect(bind).get_table_names():
+        op.create_table(
+            'ledger_totals',
+            sa.Column('status', sa.String(), nullable=False),
+            sa.Column('jobs', sa.Integer(), nullable=False),
+            sa.Column('input_bytes', sa.Integer(), nullable=False),
+            sa.Column('output_bytes', sa.Integer(), nullable=False),
+            sa.PrimaryKeyConstraint('status'),
+        )
+    # Seed only an empty table: a pre-created one that already holds running
+    # counters must never be overwritten.
+    if not bind.execute(sa.text('SELECT COUNT(*) FROM ledger_totals')).scalar():
+        seed_totals(bind)
 
 
 def downgrade() -> None:
