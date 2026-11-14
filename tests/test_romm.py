@@ -25,8 +25,19 @@ import pytest
 from models import JobStatus
 from routes import romm as romm_routes
 from services import db as _db
+from services.job_manager import job_manager
+from services.preferences_store import preferences_store
 from services.romm import client as romm_service
 from services.romm import repin as romm_repin
+from services.romm.library import (
+    LEGACY_RULES_KEY,
+    LEGACY_STATE_KEY,
+    image_from_rom,
+    romm_library,
+)
+from services.rules import rules as rules_rules
+from services.rules import schedule as rules_schedule
+from services.rules import sweep as rules_sweep
 from services.tools import registry
 from services.romm import DAT_SAFE_OUTPUT_EXTS, RommClient, RommError
 
@@ -1044,9 +1055,9 @@ def test_overnight_window_wraps_midnight() -> None:
     inside = datetime(2026, 8, 17, 23, 30, tzinfo=timezone.utc)   # Monday
     outside = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
     early = datetime(2026, 8, 17, 3, 0, tzinfo=timezone.utc)
-    assert romm_auto._in_window(rule, inside)
-    assert romm_auto._in_window(rule, early)
-    assert not romm_auto._in_window(rule, outside)
+    assert rules_schedule._in_window(rule, inside)
+    assert rules_schedule._in_window(rule, early)
+    assert not rules_schedule._in_window(rule, outside)
 
 
 def test_day_mask_excludes_other_days() -> None:
@@ -1057,8 +1068,8 @@ def test_day_mask_excludes_other_days() -> None:
     rule["days"] = [5, 6]  # weekends only
     monday = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
     saturday = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
-    assert not romm_auto._in_window(rule, monday)
-    assert romm_auto._in_window(rule, saturday)
+    assert not rules_schedule._in_window(rule, monday)
+    assert rules_schedule._in_window(rule, saturday)
 
 
 def test_disabled_rule_is_never_due() -> None:
@@ -1067,7 +1078,7 @@ def test_disabled_rule_is_never_due() -> None:
 
     rule = romm_auto.default_rule("dolphin_rvz")
     rule["enabled"] = False
-    assert not romm_auto._is_due(rule, {}, datetime.now(timezone.utc))
+    assert not rules_schedule._is_due(rule, {}, datetime.now(timezone.utc))
 
 
 def test_interval_gates_a_second_run() -> None:
@@ -1080,9 +1091,9 @@ def test_interval_gates_a_second_run() -> None:
     now = datetime.now(timezone.utc)
     just_ran = {"last_run_at": (now - timedelta(minutes=5)).isoformat()}
     long_ago = {"last_run_at": (now - timedelta(hours=3)).isoformat()}
-    assert not romm_auto._is_due(rule, just_ran, now)
-    assert romm_auto._is_due(rule, long_ago, now)
-    assert romm_auto._is_due(rule, {}, now)   # never run
+    assert not rules_schedule._is_due(rule, just_ran, now)
+    assert rules_schedule._is_due(rule, long_ago, now)
+    assert rules_schedule._is_due(rule, {}, now)   # never run
 
 
 def test_size_and_name_filters() -> None:
@@ -1092,13 +1103,15 @@ def test_size_and_name_filters() -> None:
     rule["min_size_mb"] = 100
     big = {"fs_name": "Big Game (USA).iso", "fs_size_bytes": 4_400_000_000}
     small = {"fs_name": "Tiny.iso", "fs_size_bytes": 1024}
-    assert romm_auto._passes_filters(big, rule)
-    assert not romm_auto._passes_filters(small, rule)
+    assert rules_sweep._passes_filters(image_from_rom(big), rule)
+    assert not rules_sweep._passes_filters(image_from_rom(small), rule)
 
     rule = romm_auto.default_rule("dolphin_rvz")
     rule["exclude_pattern"] = r"\(Japan\)"
-    assert not romm_auto._passes_filters({"fs_name": "Game (Japan).iso"}, rule)
-    assert romm_auto._passes_filters({"fs_name": "Game (USA).iso"}, rule)
+    assert not rules_sweep._passes_filters(
+        image_from_rom({"fs_name": "Game (Japan).iso"}), rule,
+    )
+    assert rules_sweep._passes_filters(image_from_rom({"fs_name": "Game (USA).iso"}), rule)
 
 
 def test_rom_ordering_is_deterministic() -> None:
@@ -1116,7 +1129,8 @@ def test_rom_ordering_is_deterministic() -> None:
 
     def order(name: str) -> list[int]:
         rule["order"] = name
-        return [r["id"] for r in sorted(roms, key=romm_auto._rom_sort_key(rule))]
+        images = [image_from_rom(r) for r in roms]
+        return [i.key for i in sorted(images, key=rules_sweep._image_sort_key(rule))]
 
     assert order("name") == [1, 2, 3]          # alpha, Bravo, Charlie
     assert order("size_desc") == [3, 1, 2]     # 300, 200, 100
@@ -1161,11 +1175,11 @@ async def test_sweep_is_idempotent_against_the_filesystem(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         first = await romm_auto.sweep(ignore_schedule=True)
         assert first["queued"] == 1, first
         assert queued == [[str(lib / "Game.iso")]]
@@ -1201,12 +1215,12 @@ async def test_sweep_preview_queues_nothing_and_does_not_move_the_clock(
     }]
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "create_batch_jobs",
+                job_manager, "create_batch_jobs",
             ) as create, \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         preview = await romm_auto.sweep(ignore_schedule=True, dry_run=True)
 
     create.assert_not_called()
@@ -1236,9 +1250,9 @@ async def test_sweep_respects_the_overall_cap(settings_db, tmp_path: Path) -> No
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         preview = await romm_auto.sweep(
             ignore_schedule=True, dry_run=True, overall_limit=3,
         )
@@ -1267,10 +1281,10 @@ async def test_sweep_skips_sources_already_being_converted(
     }]
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates",
+                job_manager, "get_active_job_candidates",
                 return_value=[("job-1", [str(source)])],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         result = await romm_auto.sweep(ignore_schedule=True, dry_run=True)
 
     assert result["queued"] == 0
@@ -1307,9 +1321,10 @@ async def test_sweep_with_output_dir_is_idempotent(settings_db, tmp_path: Path) 
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True), \
+            patch.object(rules_rules, "is_within_configured_volumes", return_value=True):
         # Saved inside the patch: normalize_rule refuses an output_dir outside
         # the configured volumes, and this tmp path is outside them.
         await romm_auto.set_rules({"7": {
@@ -1351,11 +1366,11 @@ async def test_sweep_records_repin_rows_for_unsafe_formats(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         result = await romm_auto.sweep(ignore_schedule=True)
 
     assert result["repins_recorded"] == 1, result
@@ -1388,11 +1403,11 @@ async def test_sweep_records_nothing_for_dat_safe_formats(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         result = await romm_auto.sweep(ignore_schedule=True)
 
     assert result["queued"] == 1
@@ -1425,11 +1440,11 @@ async def test_sweep_supplies_delete_snapshots(settings_db, tmp_path: Path) -> N
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.sweep(ignore_schedule=True)
 
     assert captured["delete_on_verify"] is True
@@ -1458,9 +1473,9 @@ async def test_disabled_rule_is_paused_even_for_run_now(
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         # The global button: paused stays paused.
         globally = await romm_auto.sweep(ignore_schedule=True, dry_run=True)
         # Naming the platform is a deliberate per-platform action, so it runs.
@@ -1508,12 +1523,12 @@ def test_schedule_window_uses_the_rules_timezone() -> None:
     rule["timezone"] = "America/New_York"
 
     # 03:00 UTC Tuesday is 23:00 Monday in New York -> inside the window.
-    assert romm_auto._in_window(
+    assert rules_schedule._in_window(
         rule, datetime(2026, 8, 18, 3, 0, tzinfo=dt_timezone.utc),
     )
     # 22:00 UTC is 18:00 in New York -> outside it, though it would have
     # matched when the window was compared against UTC.
-    assert not romm_auto._in_window(
+    assert not rules_schedule._in_window(
         rule, datetime(2026, 8, 17, 22, 0, tzinfo=dt_timezone.utc),
     )
 
@@ -1643,9 +1658,9 @@ def test_naive_last_run_does_not_abort_the_schedule_check() -> None:
     now = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
     # No trailing Z: parses to a naive datetime.
     stale = {"last_run_at": "2026-05-01T09:00:00"}
-    assert romm_auto._is_due(rule, stale, now) is True
+    assert rules_schedule._is_due(rule, stale, now) is True
     recent = {"last_run_at": "2026-05-01T11:30:00"}
-    assert romm_auto._is_due(rule, recent, now) is False
+    assert rules_schedule._is_due(rule, recent, now) is False
 
 
 @pytest.mark.asyncio
@@ -1676,9 +1691,9 @@ async def test_rename_policy_queues_a_free_path_instead_of_skipping(
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "skip",
         }})
@@ -1690,7 +1705,7 @@ async def test_rename_policy_queues_a_free_path_instead_of_skipping(
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "rename",
         }})
         queued = AsyncMock(return_value=[MagicMock()])
-        with patch.object(romm_auto.job_manager, "create_batch_jobs", queued):
+        with patch.object(job_manager, "create_batch_jobs", queued):
             renamed = await romm_auto.sweep(ignore_schedule=True)
 
     assert renamed["queued"] == 1, renamed
@@ -1728,13 +1743,13 @@ async def test_failed_queueing_leaves_no_pending_repin_rows(
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
             patch.object(
-                romm_auto.job_manager, "create_batch_jobs",
+                job_manager, "create_batch_jobs",
                 AsyncMock(side_effect=RuntimeError("queue exploded")),
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({
             "7": {"mode": "dolphin_rvz", "enabled": True},
         })
@@ -1810,10 +1825,10 @@ async def test_rule_settings_reach_the_queue(settings_db, tmp_path: Path) -> Non
     queued = AsyncMock(return_value=[MagicMock()])
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", queued), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(job_manager, "create_batch_jobs", queued), \
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz",
             "enabled": True,
@@ -1899,9 +1914,9 @@ async def test_overwrite_never_targets_the_rule_s_own_source(
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -2050,14 +2065,14 @@ def test_nsz_layout_and_level_both_reach_the_job() -> None:
         "mode": "nsz_compress", "compression": "block", "compression_level": 12,
     })
     assert rule["compression"] == "block"
-    assert romm_auto._compression_arg(rule) == "block:12"
+    assert rules_sweep._compression_arg(rule) == "block:12"
 
     # A level with no layout is still expressible: nsz reads the empty layout
     # part as "tool default" and honours the level.
     level_only = romm_auto.normalize_rule({
         "mode": "nsz_compress", "compression_level": 12,
     })
-    assert romm_auto._compression_arg(level_only) == ":12"
+    assert rules_sweep._compression_arg(level_only) == ":12"
 
 
 def test_a_level_without_a_codec_names_the_tools_default() -> None:
@@ -2075,12 +2090,12 @@ def test_a_level_without_a_codec_names_the_tools_default() -> None:
         "mode": "dolphin_rvz", "compression_level": 19,
     })
     assert rule["compression"] is None
-    assert romm_auto._compression_arg(rule) == "zstd:19"
+    assert rules_sweep._compression_arg(rule) == "zstd:19"
     # A codec the operator did pick is never second-guessed.
     chosen = romm_auto.normalize_rule({
         "mode": "dolphin_rvz", "compression": "lzma2", "compression_level": 9,
     })
-    assert romm_auto._compression_arg(chosen) == "lzma2:9"
+    assert rules_sweep._compression_arg(chosen) == "lzma2:9"
     # And the mode that has no codec picker keeps its meaningful empty part.
     assert registry.default_compression("nsz_compress") is None
 
@@ -2101,7 +2116,7 @@ def test_a_codec_mode_with_no_declared_default_drops_the_level(monkeypatch) -> N
     rule = romm_auto.normalize_rule({
         "mode": "dolphin_rvz", "compression_level": 19,
     })
-    assert romm_auto._compression_arg(rule) is None
+    assert rules_sweep._compression_arg(rule) is None
 
 
 def test_a_polynomial_filter_pattern_is_refused_too() -> None:
@@ -2112,11 +2127,10 @@ def test_a_polynomial_filter_pattern_is_refused_too() -> None:
     that run between six stars, and `re` cannot be interrupted while
     `_sweep_lock` is held. Adjacency plus an overlapping atom is the tell.
     """
-    from services.romm import auto as romm_auto
 
-    assert romm_auto._valid_pattern("a*a*a*a*a*a*b") == (None, True)
-    assert romm_auto._valid_pattern(r"\w*\d*x") == (None, True)
-    assert romm_auto._valid_pattern("(a*)(a*)b") == (None, True)
+    assert rules_rules._valid_pattern("a*a*a*a*a*a*b") == (None, True)
+    assert rules_rules._valid_pattern(r"\w*\d*x") == (None, True)
+    assert rules_rules._valid_pattern("(a*)(a*)b") == (None, True)
 
     # And the filters an operator actually writes still go through: two
     # quantifiers that cannot both take the same character are not a hazard,
@@ -2124,7 +2138,7 @@ def test_a_polynomial_filter_pattern_is_refused_too() -> None:
     for good in (
         r"^Metroid.*\.iso$", "(USA)", ".*rev1.*", r"\w*\s*Disc", r"^\d{4}-.*",
     ):
-        assert romm_auto._valid_pattern(good) == (good, False), good
+        assert rules_rules._valid_pattern(good) == (good, False), good
 
 
 def test_deselecting_every_weekday_is_honoured_not_widened() -> None:
@@ -2144,7 +2158,7 @@ def test_deselecting_every_weekday_is_honoured_not_widened() -> None:
     assert rule["days"] == []
     # And the scheduler agrees: no day is ever this rule's day.
     now = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
-    assert romm_auto._in_window(rule, now) is False
+    assert rules_schedule._in_window(rule, now) is False
 
     # Omitting the field still inherits every day, so an older stored rule (or
     # one written by hand) is not silently switched off.
@@ -2176,7 +2190,7 @@ def test_a_rejected_output_dir_pauses_the_rule() -> None:
     """
     from services.romm import auto as romm_auto
 
-    with patch.object(romm_auto, "is_within_configured_volumes", return_value=False):
+    with patch.object(rules_rules, "is_within_configured_volumes", return_value=False):
         rule = romm_auto.normalize_rule({
             "mode": "dolphin_rvz", "enabled": True, "output_dir": "/somewhere/else",
         })
@@ -2205,13 +2219,13 @@ async def test_a_failed_queue_does_not_advance_the_schedule(
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
             patch.object(
-                romm_auto.job_manager, "create_batch_jobs",
+                job_manager, "create_batch_jobs",
                 AsyncMock(side_effect=RuntimeError("queue exploded")),
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
         await romm_auto.sweep(ignore_schedule=True)
 
@@ -2345,11 +2359,11 @@ async def test_rename_rule_converts_each_source_exactly_once(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "rename",
         }})
@@ -2400,11 +2414,11 @@ async def test_overwrite_rule_converts_each_source_exactly_once(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -2447,11 +2461,11 @@ async def test_forget_converted_lets_a_rule_run_again(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -2518,11 +2532,11 @@ async def test_a_queued_conversion_that_never_ran_is_retried(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -2596,7 +2610,6 @@ def test_catastrophic_filter_patterns_are_refused_at_save_time() -> None:
     operator-supplied regex to time it is the thing CodeQL flags, and a timing
     test would also have to survive the very blow-up it is looking for.
     """
-    from services.romm import auto as romm_auto
 
     good = (
         r"\(USA\)", ".*Beta.*", "^Super", r"^.*\(USA\).*(Rev [0-9])?$",
@@ -2605,14 +2618,14 @@ def test_catastrophic_filter_patterns_are_refused_at_save_time() -> None:
         r"(?:USA|Japan)", r"Final Fantasy (I{1,3}|IV)",
     )
     for pattern in good:
-        assert romm_auto._has_nested_quantifier(pattern) is False, pattern
+        assert rules_rules._has_nested_quantifier(pattern) is False, pattern
         re.compile(pattern)  # and they are all real regexes
 
     for pattern in ("(a+)+$", "(x+x+)+y", "(a|a)+$", r"^(\w+\s?)*$", "(a*)*b"):
-        assert romm_auto._has_nested_quantifier(pattern) is True, pattern
+        assert rules_rules._has_nested_quantifier(pattern) is True, pattern
 
     # And the rule that carries one is paused rather than silently unfiltered.
-    pattern, invalid = romm_auto._valid_pattern("(a+)+$")
+    pattern, invalid = rules_rules._valid_pattern("(a+)+$")
     assert pattern is None and invalid is True
 
 
@@ -2704,9 +2717,9 @@ async def test_sweep_refuses_a_composite_mode_for_the_wrong_platform(
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {"mode": "cso_to_chd", "enabled": True}})
         result = await romm_auto.sweep(ignore_schedule=True, dry_run=True)
 
@@ -2735,9 +2748,9 @@ async def test_changing_the_romm_instance_forgets_the_conversion_history(
     await romm_auto.set_rules({"7": {
         "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
     }})
-    await romm_auto._mark_converted(
-        "7",
-        romm_auto._converted_entries([(1, str(tmp_path / "Game.rvz"), "", None)]),
+    await rules_sweep._mark_converted(
+        romm_library, "7",
+        rules_sweep._converted_entries([(1, str(tmp_path / "Game.rvz"), "", None)]),
     )
     assert (await romm_auto.get_state())["7"]["converted"]
 
@@ -2763,7 +2776,7 @@ async def test_retargeting_a_rule_cannot_race_a_running_sweep(
     await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
 
     # Hold the sweep lock and confirm a save cannot slip past it.
-    async with romm_auto._sweep_lock:
+    async with rules_sweep._sweep_lock:
         saving = asyncio.create_task(
             romm_auto.set_rules({"7": {"mode": "dolphin_gcz", "enabled": True}}),
         )
@@ -2806,11 +2819,11 @@ async def test_automation_repin_records_the_pre_conversion_fingerprint(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fast_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fast_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -2854,11 +2867,11 @@ async def test_a_failed_job_does_not_count_as_converted(
     failed = SimpleNamespace(id="job-1", status=JobStatus.FAILED)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -2868,9 +2881,9 @@ async def test_a_failed_job_does_not_count_as_converted(
         # but nothing usable was produced.
         (lib / "Game.rvz").unlink()
         with patch.object(
-            romm_auto.job_manager, "get_job", return_value=failed,
+            job_manager, "get_job", return_value=failed,
         ), patch.object(
-            romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+            job_manager, "get_active_job_candidates", return_value=[],
         ):
             retried = await romm_auto.sweep(ignore_schedule=True)
         assert retried["queued"] == 1, retried
@@ -2879,9 +2892,9 @@ async def test_a_failed_job_does_not_count_as_converted(
         done = SimpleNamespace(id="job-1", status=JobStatus.COMPLETED)
         (lib / "Game.rvz").write_bytes(b"the real output")
         with patch.object(
-            romm_auto.job_manager, "get_job", return_value=done,
+            job_manager, "get_job", return_value=done,
         ), patch.object(
-            romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+            job_manager, "get_active_job_candidates", return_value=[],
         ):
             settled = await romm_auto.sweep(ignore_schedule=True)
         assert settled["queued"] == 0, settled
@@ -2917,11 +2930,11 @@ async def test_a_pruned_failed_job_still_does_not_count_as_converted(
         return [_FakeJob(p, "job-77") for p in paths]
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -2934,9 +2947,9 @@ async def test_a_pruned_failed_job_still_does_not_count_as_converted(
         )
         (lib / "Game.rvz").unlink()
         with patch.object(
-            romm_auto.job_manager, "get_job", return_value=None,
+            job_manager, "get_job", return_value=None,
         ), patch.object(
-            romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+            job_manager, "get_active_job_candidates", return_value=[],
         ):
             retried = await romm_auto.sweep(ignore_schedule=True)
         assert retried["queued"] == 1, retried
@@ -2970,11 +2983,11 @@ async def test_a_completed_job_is_remembered_after_the_queue_forgets_it(
         return [_FakeJob(p, "job-78") for p in paths]
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -2985,9 +2998,9 @@ async def test_a_completed_job_is_remembered_after_the_queue_forgets_it(
         # The output is produced and then moved away by hand; the queue has
         # forgotten the job. The record still says it happened.
         with patch.object(
-            romm_auto.job_manager, "get_job", return_value=None,
+            job_manager, "get_job", return_value=None,
         ), patch.object(
-            romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+            job_manager, "get_active_job_candidates", return_value=[],
         ):
             again = await romm_auto.sweep(ignore_schedule=True)
         assert again["queued"] == 0, again
@@ -3006,14 +3019,14 @@ async def test_the_sweep_writes_down_an_outcome_the_queue_can_still_answer_for(
     from services.romm import auto as romm_auto
 
     record = {"path": "/x/Game.rvz", "pre": "1:2", "job_id": "job-9"}
-    await romm_auto.preferences_store.put(romm_auto.STATE_KEY, {
+    await preferences_store.put(LEGACY_STATE_KEY, {
         "7": {"converted": {"1": dict(record)}},
     })
     with patch.object(
-        romm_auto.job_manager, "get_job",
+        job_manager, "get_job",
         return_value=SimpleNamespace(id="job-9", status=JobStatus.FAILED),
     ):
-        returned = await romm_auto._persist_known_outcomes("7", {"1": dict(record)})
+        returned = await rules_sweep._persist_known_outcomes(romm_library, "7", {"1": dict(record)})
 
     assert returned["1"]["done"] is False
     state = await romm_auto.get_state()
@@ -3351,8 +3364,8 @@ async def test_saving_rules_never_validates_volumes_on_the_event_loop(
 
     ticker = asyncio.create_task(_tick())
     try:
-        with patch.object(romm_auto, "is_within_configured_volumes", _within), \
-                patch.object(romm_auto, "_VOLUME_PROBE_SECONDS", 0.2):
+        with patch.object(rules_rules, "is_within_configured_volumes", _within), \
+                patch.object(rules_sweep, "_VOLUME_PROBE_SECONDS", 0.2):
             # The real entry point, so this covers the wiring and not just the
             # helper: `set_rules` is what holds `_sweep_lock`.
             rules = await asyncio.wait_for(
@@ -3502,7 +3515,7 @@ async def test_a_dead_output_dir_stops_one_platform_not_the_whole_sweep(
         # since died — written straight to the blob, which is also how a
         # hand-edited database reaches the sweep. `get_rules` reads it back
         # without re-validating, by design, so the sweep is the check.
-        await romm_auto.preferences_store.put(romm_auto.RULES_KEY, {
+        await preferences_store.put(LEGACY_RULES_KEY, {
             "7": romm_auto.normalize_rule(
                 {"mode": "dolphin_rvz", "enabled": True,
                  "output_dir": "/dead-mount/out"},
@@ -3511,10 +3524,10 @@ async def test_a_dead_output_dir_stops_one_platform_not_the_whole_sweep(
         })
         with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
                 patch.object(
-                    romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                    job_manager, "get_active_job_candidates", return_value=[],
                 ), \
-                patch.object(romm_auto, "is_within_configured_volumes", _within), \
-                patch.object(romm_auto, "_VOLUME_PROBE_SECONDS", 0.2):
+                patch.object(rules_sweep, "is_within_configured_volumes", _within), \
+                patch.object(rules_sweep, "_VOLUME_PROBE_SECONDS", 0.2):
             result = await asyncio.wait_for(
                 romm_auto.sweep(ignore_schedule=True, dry_run=True), timeout=10,
             )
@@ -3554,24 +3567,25 @@ async def test_a_finished_job_updates_one_record_not_the_whole_history(
         }}
         for pid in range(20)
     }
-    await romm_auto.preferences_store.put(romm_auto.STATE_KEY, big)
+    await preferences_store.put(LEGACY_STATE_KEY, big)
 
     reads = 0
-    real_get_state = romm_auto.get_state
+    real_get_state = rules_sweep.get_state
 
-    async def _counted_get_state():
+    async def _counted_get_state(*args):
         nonlocal reads
         reads += 1
-        return await real_get_state()
+        return await real_get_state(*args)
 
     # A job this process never queued: nothing to write, and nothing to read.
-    with patch.object(romm_auto, "get_state", _counted_get_state):
+    with patch.object(rules_sweep, "get_state", _counted_get_state):
         await romm_auto.note_job_finished(_Job("not-ours", JobStatus.COMPLETED))
     assert reads == 0, "a manual job made the listener read the whole history"
 
     # One this process did queue, indexed when it was marked.
-    await romm_auto._mark_converted(
-        "3", romm_auto._converted_entries([(7, "/l/3/7.rvz", "", "job-7")]),
+    await rules_sweep._mark_converted(
+        romm_library, "3",
+        rules_sweep._converted_entries([(7, "/l/3/7.rvz", "", "job-7")]),
     )
     await romm_auto.note_job_finished(_Job("job-7", JobStatus.FAILED))
     state = await romm_auto.get_state()
@@ -3582,7 +3596,7 @@ async def test_a_finished_job_updates_one_record_not_the_whole_history(
 
     # The index entry is consumed, so a repeated announcement is a no-op and
     # the map cannot grow without bound.
-    assert "job-7" not in romm_auto._job_owners
+    assert "job-7" not in rules_sweep._job_owners
 
 
 @pytest.mark.asyncio
@@ -3605,20 +3619,20 @@ async def test_a_verdict_that_arrives_before_its_record_is_not_lost(
             self.id = job_id
             self.status = status
 
-    entries = romm_auto._converted_entries([(11, "/l/7/11.rvz", "", "job-fast")])
+    entries = rules_sweep._converted_entries([(11, "/l/7/11.rvz", "", "job-fast")])
     # Acceptance: owner registered, record not written yet.
-    romm_auto._own_jobs("7", entries)
+    rules_sweep._own_jobs(romm_library, "7", entries)
 
     # The conversion fails before `_mark_converted` gets to run.
     await romm_auto.note_job_finished(_Job("job-fast", JobStatus.FAILED))
 
     # ...and the record, when it lands, carries the verdict anyway.
-    await romm_auto._mark_converted("7", entries)
+    await rules_sweep._mark_converted(romm_library, "7", entries)
     state = await romm_auto.get_state()
     assert state["7"]["converted"]["11"]["done"] is False, state["7"]["converted"]
 
     # The stash is drained, so it cannot grow without bound.
-    assert "job-fast" not in romm_auto._late_verdicts
+    assert "job-fast" not in rules_sweep._late_verdicts
 
 
 @pytest.mark.asyncio
@@ -3750,14 +3764,15 @@ async def test_retargeting_a_rule_does_not_outlive_its_history_reset(
     from services.romm import auto as romm_auto
 
     await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "duplicate_action": "overwrite"}})
-    await romm_auto._mark_converted(
-        "7", romm_auto._converted_entries([(1, str(tmp_path / "Game.rvz"), "", None)]),
+    await rules_sweep._mark_converted(
+        romm_library, "7",
+        rules_sweep._converted_entries([(1, str(tmp_path / "Game.rvz"), "", None)]),
     )
     assert (await romm_auto.get_state())["7"]["converted"]
 
     # The history clear fails while the rule is being retargeted.
     with patch.object(
-        romm_auto, "forget_converted_locked", side_effect=RuntimeError("disk full"),
+        rules_sweep, "forget_converted_locked", side_effect=RuntimeError("disk full"),
     ), pytest.raises(RuntimeError):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_gcz", "duplicate_action": "overwrite",
@@ -3800,9 +3815,9 @@ async def test_a_targeted_run_will_not_start_a_rule_validation_paused(
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         # Refused at save time, so the rule is paused with the reason recorded.
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True,
@@ -4047,12 +4062,12 @@ async def test_a_platform_whose_sources_all_dropped_does_not_advance_its_clock(
         return []
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True), \
-            patch.object(romm_auto, "build_delete_snapshot", side_effect=OSError):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True), \
+            patch.object(rules_sweep, "build_delete_snapshot", side_effect=OSError):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "delete_on_verify": True,
         }})
@@ -4079,8 +4094,8 @@ def test_a_filter_pattern_too_long_to_store_is_refused_not_trimmed() -> None:
     # A bare alternation of literals: every prefix of it is still a valid
     # regex, which is exactly what makes trimming dangerous rather than noisy.
     overlong = "|".join(f"Game{i:03d}" for i in range(80))
-    assert len(overlong) > romm_auto._MAX_PATTERN
-    trimmed = overlong[:romm_auto._MAX_PATTERN]
+    assert len(overlong) > rules_rules._MAX_PATTERN
+    trimmed = overlong[:rules_rules._MAX_PATTERN]
     re.compile(trimmed)  # the premise: the trimmed form compiles...
     assert trimmed != overlong
     # ...and means something else. The cut lands mid-name, leaving a fragment
@@ -4089,7 +4104,7 @@ def test_a_filter_pattern_too_long_to_store_is_refused_not_trimmed() -> None:
     assert re.search(overlong, "Game999") is None
     assert re.search(trimmed, "Game999") is not None
 
-    pattern, invalid = romm_auto._valid_pattern(overlong)
+    pattern, invalid = rules_rules._valid_pattern(overlong)
     assert pattern is None and invalid is True, pattern
 
     # And the rule carrying it is paused rather than run with a filter nobody
@@ -4102,8 +4117,8 @@ def test_a_filter_pattern_too_long_to_store_is_refused_not_trimmed() -> None:
 
     # A pattern at the limit is still accepted: this refuses the overlong ones,
     # it does not tighten the limit.
-    at_limit = "a" * romm_auto._MAX_PATTERN
-    assert romm_auto._valid_pattern(at_limit) == (at_limit, False)
+    at_limit = "a" * rules_rules._MAX_PATTERN
+    assert rules_rules._valid_pattern(at_limit) == (at_limit, False)
 
 
 def test_an_identity_swap_retires_a_claim_its_holder_never_released(
@@ -4305,12 +4320,12 @@ async def test_a_failed_repin_write_still_records_what_was_queued(
     recorder = MagicMock(side_effect=RuntimeError("database is locked"))
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True), \
-            patch.object(romm_auto.romm_repin, "record", recorder):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True), \
+            patch.object(romm_repin, "record", recorder):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -4327,13 +4342,13 @@ async def test_a_failed_repin_write_still_records_what_was_queued(
     assert "1" in state["7"]["converted"], state
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True), \
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True), \
             patch.object(
-                romm_auto.job_manager, "get_job",
+                job_manager, "get_job",
                 return_value=SimpleNamespace(id="x", status=JobStatus.COMPLETED),
             ):
         second = await romm_auto.sweep(ignore_schedule=True)
@@ -4360,7 +4375,7 @@ def test_half_a_schedule_window_pauses_the_rule() -> None:
     # And the clock refuses it even if the blob is edited straight in the
     # database, where normalization never ran.
     forced = dict(half, enabled=True)
-    assert romm_auto._in_window(
+    assert rules_schedule._in_window(
         forced, datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc),
     ) is False
 
@@ -4407,12 +4422,12 @@ async def test_a_hung_candidate_probe_stops_the_platform(
     async def _never_returns(*_args, **_kwargs):
         await _asyncio.sleep(3600)
 
-    monkeypatch.setattr(romm_auto, "run_detached", _never_returns)
-    monkeypatch.setattr(romm_auto, "_CANDIDATE_PROBE_SECONDS", 0.05)
+    monkeypatch.setattr(rules_sweep, "run_detached", _never_returns)
+    monkeypatch.setattr(rules_sweep, "_CANDIDATE_PROBE_SECONDS", 0.05)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ):
         await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
         # The test's own guard: without the deadline this never returns.
@@ -4488,11 +4503,11 @@ async def test_a_manual_limit_can_only_narrow_the_run(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
         widened = await romm_auto.sweep(ignore_schedule=True, overall_limit=500)
         assert widened["queued"] == 1, widened
@@ -4523,10 +4538,10 @@ async def test_sweep_skips_a_platform_whose_tool_is_not_installed(
     tool = registry.for_mode("dolphin_rvz")
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
             patch.object(type(tool), "is_ready", AsyncMock(return_value=False)), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
         result = await romm_auto.sweep(ignore_schedule=True, dry_run=True)
 
@@ -4555,9 +4570,9 @@ async def test_sweep_refuses_a_catalog_entry_whose_file_is_gone(
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {"mode": "dolphin_rvz", "enabled": True}})
         result = await romm_auto.sweep(ignore_schedule=True, dry_run=True)
 
@@ -4597,9 +4612,9 @@ async def test_sweep_refuses_a_directory_where_the_mode_takes_a_file(
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -4616,9 +4631,9 @@ async def test_sweep_refuses_a_directory_where_the_mode_takes_a_file(
     # The directory mode's own source is still accepted, or the check would
     # have closed the PS3 folder path along with the bug.
     assert (
-        registry.mode_input_kind("folder_to_iso") is romm_auto.InputKind.DIRECTORY
+        registry.mode_input_kind("folder_to_iso") is rules_sweep.InputKind.DIRECTORY
     )
-    assert registry.mode_input_kind("dolphin_rvz") is romm_auto.InputKind.FILE
+    assert registry.mode_input_kind("dolphin_rvz") is rules_sweep.InputKind.FILE
 
 
 @pytest.mark.asyncio
@@ -4655,11 +4670,11 @@ async def test_sweep_never_sends_two_sources_to_one_destination(
         return _fake_jobs(paths)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(romm_auto.job_manager, "create_batch_jobs", _fake_batch), \
+            patch.object(job_manager, "create_batch_jobs", _fake_batch), \
             patch.object(
-                romm_auto.job_manager, "get_active_job_candidates", return_value=[],
+                job_manager, "get_active_job_candidates", return_value=[],
             ), \
-            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
         await romm_auto.set_rules({"7": {
             "mode": "dolphin_rvz", "enabled": True, "duplicate_action": "overwrite",
         }})
@@ -4677,18 +4692,17 @@ def test_modes_validate_sources_against_their_own_inputs() -> None:
     extract and copy modes take. Asking the tool rejected every real `copy`
     source and accepted `.iso` files that mode cannot consume.
     """
-    from services.romm import auto as romm_auto
 
     tool = registry.for_mode("copy")
     spec = registry.spec("copy")
     assert tool.converts_path("/vol/Game.chd") is False  # the old, wrong gate
-    assert romm_auto._accepts_source(tool, spec, "/vol/Game.chd") is True
-    assert romm_auto._accepts_source(tool, spec, "/vol/Game.iso") is False
+    assert rules_sweep._accepts_source(tool, spec, "/vol/Game.chd") is True
+    assert rules_sweep._accepts_source(tool, spec, "/vol/Game.iso") is False
 
     # The create direction is unaffected: it takes the disc images.
     create, create_spec = registry.for_mode("createcd"), registry.spec("createcd")
-    assert romm_auto._accepts_source(create, create_spec, "/vol/Game.cue") is True
-    assert romm_auto._accepts_source(create, create_spec, "/vol/Game.chd") is False
+    assert rules_sweep._accepts_source(create, create_spec, "/vol/Game.cue") is True
+    assert rules_sweep._accepts_source(create, create_spec, "/vol/Game.chd") is False
 
 
 def test_directory_modes_use_the_directory_predicate(tmp_path: Path) -> None:
@@ -4698,7 +4712,6 @@ def test_directory_modes_use_the_directory_predicate(tmp_path: Path) -> None:
     folder "unconvertible" and queue nothing, ever.
     """
     from services import ps3
-    from services.romm import auto as romm_auto
 
     folder = tmp_path / "MyGame"
     (folder / "PS3_GAME" / "USRDIR").mkdir(parents=True)
@@ -4708,12 +4721,12 @@ def test_directory_modes_use_the_directory_predicate(tmp_path: Path) -> None:
     tool = registry.for_mode("folder_to_iso")
     spec = registry.spec("folder_to_iso")
     assert tool.converts_path(str(folder)) is False  # the old, wrong gate
-    assert romm_auto._accepts_source(tool, spec, str(folder)) is True
+    assert rules_sweep._accepts_source(tool, spec, str(folder)) is True
 
     # A file mode is still judged on its extensions.
     dolphin, dolphin_spec = registry.for_mode("dolphin_rvz"), registry.spec("dolphin_rvz")
-    assert romm_auto._accepts_source(dolphin, dolphin_spec, "/vol/Game.iso") is True
-    assert romm_auto._accepts_source(dolphin, dolphin_spec, "/vol/Game.txt") is False
+    assert rules_sweep._accepts_source(dolphin, dolphin_spec, "/vol/Game.iso") is True
+    assert rules_sweep._accepts_source(dolphin, dolphin_spec, "/vol/Game.txt") is False
 
 
 @pytest.mark.asyncio
@@ -4885,11 +4898,10 @@ def test_an_optional_atom_inside_a_repeated_group_is_refused() -> None:
     abandoned probe thread eats into the process-wide capacity that unrelated
     filesystem checks share.
     """
-    from services.romm import auto as romm_auto
-    _, refused = romm_auto._valid_pattern("^(a?){30}a{30}b$")
+    _, refused = rules_rules._valid_pattern("^(a?){30}a{30}b$")
     assert refused, "a bounded-repeat group of optional atoms was accepted"
     for pattern in ("(a?)+", "(?:a?)+", "(a??)+"):
-        assert romm_auto._valid_pattern(pattern)[1], pattern
+        assert rules_rules._valid_pattern(pattern)[1], pattern
 
 
 def test_the_group_syntax_that_starts_with_a_question_mark_still_passes() -> None:
@@ -4900,10 +4912,9 @@ def test_the_group_syntax_that_starts_with_a_question_mark_still_passes() -> Non
     the rule, and an operator who cannot express "(?:USA|Europe)" writes
     something looser instead.
     """
-    from services.romm import auto as romm_auto
     for pattern in ("(?:USA|Europe)", "(?:abc)+", "(?P<region>abc)+",
                     "(?i:abc)+", "(?=abc)", "(USA)?", "[a?]+"):
-        value, refused = romm_auto._valid_pattern(pattern)
+        value, refused = rules_rules._valid_pattern(pattern)
         assert not refused, f"{pattern} was refused"
         assert value == pattern
 
