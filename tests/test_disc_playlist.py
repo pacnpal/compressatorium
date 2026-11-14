@@ -420,3 +420,26 @@ def test_create_validates_only_the_requested_name_not_the_derived_default(vol: P
     assert disc_playlist.plan_playlist(paths, title="Short").file_name == "Short.m3u"
     disc_playlist.create_playlist(paths, "Short.m3u")
     assert (vol / "Short.m3u").read_bytes() == f"{long}.iso\n{long}b.iso\n".encode()
+
+
+def test_sibling_symlinks_into_another_folder_are_refused(vol: Path):
+    # The .m3u Referrer looks in the resolved source folder and its ancestors,
+    # so a playlist beside symlinks would never follow the discs when they convert.
+    _discs(vol / "b", "Game (Disc 1).cue", "Game (Disc 2).cue")
+    (vol / "a").mkdir()
+    paths = []
+    for n in ("Game (Disc 1).cue", "Game (Disc 2).cue"):
+        os.symlink(vol / "b" / n, vol / "a" / n)
+        paths.append(str(vol / "a" / n))
+    with pytest.raises(disc_playlist.PlaylistError, match="symlinks into another folder"):
+        disc_playlist.plan_playlist(paths)
+    assert not (vol / "a" / "Game.m3u").exists()
+
+
+def test_a_symlinked_folder_that_resolves_to_the_source_folder_is_allowed(vol: Path):
+    # The playlist folder resolves to the discs' own folder, so the Referrer finds it.
+    real = vol / "psx" / ".discs"
+    _discs(real, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    os.symlink(real, vol / "psx" / "view")
+    paths = [str(vol / "psx" / "view" / n) for n in ("Game (Disc 1).cue", "Game (Disc 2).cue")]
+    assert disc_playlist.plan_playlist(paths).directory == str(vol / "psx" / "view")
