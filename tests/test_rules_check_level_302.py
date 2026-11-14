@@ -356,7 +356,7 @@ async def test_the_notice_counts_only_rules_that_now_round_trip(db: Path) -> Non
     from routes import rules as rules_routes
 
     await preferences_store.put("rules", {
-        "romm:7": DELETING, "romm:9": {**DELETING, "mode": "createcd"},
+        "romm:7": DELETING, "romm:9": {**DELETING, "mode": "createhd"},
     })
     got = await rules_routes.get_rule_notices()
     assert got == {"check_level": {"show": True, "switched": 1, "container_check": 1}}
@@ -366,7 +366,7 @@ async def test_the_notice_counts_only_rules_that_now_round_trip(db: Path) -> Non
 async def test_no_notice_when_no_switched_rule_can_round_trip(db: Path) -> None:
     from routes import rules as rules_routes
 
-    await preferences_store.put("rules", {"romm:9": {**DELETING, "mode": "createcd"}})
+    await preferences_store.put("rules", {"romm:9": {**DELETING, "mode": "createhd"}})
     got = await rules_routes.get_rule_notices()
     assert got == {"check_level": {"show": False, "switched": 0, "container_check": 1}}
 
