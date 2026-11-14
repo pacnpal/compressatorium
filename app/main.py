@@ -320,14 +320,17 @@ async def lifespan(app: FastAPI):
     # The unattended-conversion scheduler always runs; it checks the master
     # switch each tick, so toggling auto-convert in the app takes effect
     # without a restart.  It sleeps first, so startup never queues anything.
-    romm_auto_task = asyncio.create_task(romm_auto.run_forever())
+    # Every Library (RomM and each registered folder) is asked on each tick.
+    from services import libraries as library_catalogue
+
+    romm_auto_task = asyncio.create_task(library_catalogue.run_forever())
     app.state.background_tasks.add(romm_auto_task)
     romm_auto_task.add_done_callback(app.state.background_tasks.discard)
 
     def _log_romm_auto_error(t: asyncio.Task) -> None:
         if not t.cancelled() and t.exception() is not None:
             logger.error(
-                "RomM auto-convert scheduler exited unexpectedly",
+                "Rules scheduler exited unexpectedly",
                 exc_info=t.exception(),
             )
 

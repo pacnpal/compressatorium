@@ -69,7 +69,8 @@ def _tree(db: Path):
     locked = Path(_gamecube(roms / "gc" / "Locked.iso"))
     locked.chmod(0)
     yield roms
-    locked.chmod(0o644)
+    if locked.exists():
+        locked.chmod(0o644)
 
 
 @pytest.fixture(name="ready")
@@ -349,3 +350,165 @@ async def test_a_rule_names_a_platform_slug(tree: Path) -> None:
         "a:b": {"mode": "dolphin_rvz"},
     }})
     assert list(saved["rules"]) == ["ngc"]
+
+
+# ----------------------------------------------------------------------
+# sweeps on the temp tree
+# ----------------------------------------------------------------------
+
+
+_RULES = {
+    "ps2": {"mode": "createdvd", "enabled": True},
+    "ngc": {"mode": "dolphin_rvz", "enabled": True},
+}
+
+
+async def _library_with_rules(tree: Path) -> dict:
+    from routes import libraries as routes
+
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"rules": _RULES})
+    return lib
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_queues_only_images_with_a_platform(
+    tree: Path, ready, queue,
+) -> None:
+    """The misfiled (Conflicted), Unsorted and unreadable Images are never queued."""
+    from routes import libraries as routes
+
+    lib = await _library_with_rules(tree)
+    result = await routes.run_library(lib["id"])
+
+    names = sorted(Path(p).name for p in queue)
+    expected = ["Ico.iso", "Melee.iso", "Sunshine.iso"]
+    if _IS_ROOT:
+        expected = ["Ico.iso", "Locked.iso", "Melee.iso", "Sunshine.iso"]
+    assert names == expected, result
+    assert result["queued"] == len(expected)
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_running_a_sweep_twice_queues_nothing_new(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    from routes import libraries as routes
+
+    (tree / "gc" / "Locked.iso").unlink()
+    outputs: list[str] = []
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch_and_note_outputs(paths, mode, **kwargs):
+        outputs.extend(kwargs["output_paths"][p] for p in paths)
+        return await real_batch(paths, mode, **kwargs)
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch_and_note_outputs)
+    lib = await _library_with_rules(tree)
+
+    first = await routes.run_library(lib["id"])
+    second = await routes.run_library(lib["id"])
+    assert first["queued"] == 3
+    # Still in the queue: nothing is queued twice.
+    assert second["queued"] == 0
+    assert second["skipped_active"] == 3
+
+    # The jobs finish: their outputs exist and the queue is empty again.
+    for output in outputs:
+        Path(output).write_bytes(b"done")
+    monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
+    third = await routes.run_library(lib["id"])
+    assert third["queued"] == 0
+    # The three Sources, plus the two RVZ outputs, which are ngc Images too.
+    assert third["skipped_existing"] == 5
+    assert len(queue) == 3
+
+
+@pytest.mark.asyncio
+async def test_preview_does_not_move_the_schedule_clock(
+    tree: Path, ready, queue,
+) -> None:
+    from routes import libraries as routes
+
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _library_with_rules(tree)
+
+    preview = await routes.preview_library(lib["id"])
+    assert preview["dry_run"] is True
+    assert preview["queued"] == 3
+    assert queue == []
+    assert (await routes.get_library_rules(lib["id"]))["state"] == {}
+
+    await routes.run_library(lib["id"])
+    state = (await routes.get_library_rules(lib["id"]))["state"]
+    assert set(state) == {"ps2", "ngc"}
+    assert all(entry["last_run_at"] for entry in state.values())
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_can_be_narrowed_to_one_platform(
+    tree: Path, ready, queue,
+) -> None:
+    from routes import libraries as routes
+
+    lib = await _library_with_rules(tree)
+    result = await routes.run_library(
+        lib["id"], routes.SweepRequest(platform_ids=["ps2"]),
+    )
+    assert [Path(p).name for p in queue] == ["Ico.iso"]
+    assert [p["platform_id"] for p in result["platforms"]] == ["ps2"]
+
+
+@pytest.mark.asyncio
+async def test_the_scheduler_sweeps_a_folder_library_whose_switch_is_on(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    """One scheduler tick, with the folder Library's switch on and RomM's off."""
+    import asyncio
+
+    from routes import libraries as routes
+    from services import libraries
+    from services.rules import sweep as rules_sweep
+
+    lib = await _library_with_rules(tree)
+    updated = await routes.update_library(
+        lib["id"], routes.UpdateLibraryRequest(schedule_enabled=True, max_per_sweep=2),
+    )
+    assert updated["schedule_enabled"] is True
+    assert updated["max_per_sweep"] == 2
+
+    ticks = 0
+
+    async def one_tick(_seconds):
+        nonlocal ticks
+        ticks += 1
+        if ticks > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(rules_sweep.asyncio, "sleep", one_tick)
+    with pytest.raises(asyncio.CancelledError):
+        await libraries.run_forever()
+
+    # Capped by the Library's own limit.
+    assert len(queue) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_library_whose_folder_is_gone_reports_it(
+    tree: Path, ready, queue,
+) -> None:
+    import shutil
+
+    from routes import libraries as routes
+
+    lib = await _library_with_rules(tree)
+    (tree / "gc" / "Locked.iso").chmod(0o644)
+    shutil.rmtree(tree)
+
+    result = await routes.run_library(lib["id"])
+    assert result["queued"] == 0
+    assert result["stopped_reason"] == "not_configured"
+    with pytest.raises(HTTPException) as exc:
+        await routes.library_platforms(lib["id"])
+    assert exc.value.status_code == 409

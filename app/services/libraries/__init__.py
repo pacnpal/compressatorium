@@ -34,6 +34,7 @@ __all__ = [
     "get",
     "register",
     "remove",
+    "run_forever",
     "update",
 ]
 
@@ -94,6 +95,13 @@ def all_libraries() -> list[Library]:
     from services.romm.library import romm_library
 
     return [romm_library, *folder_libraries()]
+
+
+async def run_forever() -> None:
+    """The scheduler: every Library whose switch is on, on its own Rules' clocks."""
+    from services.rules import sweep as rules_sweep
+
+    await rules_sweep.run_forever(all_libraries)
 
 
 def get(library_id: str) -> Library | None:
