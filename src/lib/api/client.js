@@ -44,14 +44,22 @@ export async function fetchJson(url, opts = {}, fallbackMessage = 'Request faile
   const res = await fetch(url, opts);
   if (!res.ok) {
     let detail = fallbackMessage;
+    let data;
     try {
       const body = await res.json();
       if (body && typeof body.detail === 'string') detail = body.detail;
+      else if (body && body.detail && typeof body.detail === 'object') {
+        // A structured detail (e.g. a 409 carrying `suggested_name`) is kept
+        // on the error; its `message`, if any, is the text.
+        data = body.detail;
+        if (typeof data.message === 'string') detail = data.message;
+      }
     } catch (_e) {
       // body wasn't JSON; keep fallbackMessage
     }
     const err = new Error(detail);
     err.status = res.status;
+    if (data) err.detail = data;
     throw err;
   }
   if (res.status === 204 || res.status === 205) return {};

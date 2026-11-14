@@ -245,3 +245,10 @@ def test_playlist_bytes_use_the_referrer_encoding():
     assert playlist_bytes(["A (Disc 1).cue", "é (Disc 2).cue"]) == (
         "A (Disc 1).cue\né (Disc 2).cue\n".encode()
     )
+
+
+def test_a_name_starting_with_hash_stays_an_entry_not_a_comment(vol: Path):
+    paths = _discs(vol, "#1 Game (Disc 1).cue", "#1 Game (Disc 2).cue")
+    assert disc_playlist.plan_playlist(paths).entries == [
+        "./#1 Game (Disc 1).cue", "./#1 Game (Disc 2).cue",
+    ]

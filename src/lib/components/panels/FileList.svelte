@@ -27,6 +27,7 @@
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import Trash2 from '@lucide/svelte/icons/trash-2';
+  import ListMusic from '@lucide/svelte/icons/list-music';
 
   const entries = $derived(fileBrowser.visibleEntries);
   const pageCount = $derived(fileBrowser.pageCount);
@@ -151,6 +152,17 @@
     // *only* split rows doesn't surface a Delete button that opens an empty
     // "Delete 0 files?" modal; a mixed selection still shows it for the rest.
     return sel.some((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
+  });
+
+  // "Create .m3u" needs two or more real files in one folder. Whether they are
+  // disc Images is the server's call (registry disc_extensions); the dialog
+  // shows its reason when they are not.
+  const playlistCandidates = $derived.by(() => {
+    const paths = Array.from(fileBrowser.selectedFiles.values())
+      .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null)
+      .map((e) => e.path);
+    const folder = (p) => p.slice(0, Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')));
+    return paths.length >= 2 && new Set(paths.map(folder)).size === 1 ? paths : [];
   });
 
   let searchInput = $state('');
@@ -280,6 +292,10 @@
       .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
   }
 
+  function openPlaylist() {
+    ui.playlistPaths = playlistCandidates;
+  }
+
   function sortIcon(field) {
     if (sortBy !== field) return ChevronsUpDown;
     return sortOrder === 'asc' ? ChevronUp : ChevronDown;
@@ -375,6 +391,11 @@
       {#if selectedHasVerifiable}
         <button type="button" class="bulk-action" onclick={openBulkVerify}>
           <ShieldCheck size={12} aria-hidden="true" /> Verify
+        </button>
+      {/if}
+      {#if playlistCandidates.length >= 2}
+        <button type="button" class="bulk-action" onclick={openPlaylist}>
+          <ListMusic size={12} aria-hidden="true" /> Create .m3u
         </button>
       {/if}
       {#if selectedHasFilesystemPath}

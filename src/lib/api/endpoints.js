@@ -164,6 +164,26 @@ export const api = {
     );
   },
 
+  /** Preview the .m3u the selected discs would make. Writes nothing. */
+  playlistPreview(paths, title) {
+    return jsonPost(
+      `${API_BASE}/files/playlist/preview`,
+      title == null ? { paths } : { paths, title },
+      {},
+      'Failed to preview the playlist',
+    );
+  },
+
+  /** Write the previewed playlist. A taken name is a 409 with `err.detail.suggested_name`. */
+  createPlaylist(paths, fileName) {
+    return jsonPost(
+      `${API_BASE}/files/playlist`,
+      { paths, file_name: fileName },
+      {},
+      'Failed to create the playlist',
+    );
+  },
+
   deleteBatch(paths) {
     return jsonPost(
       `${API_BASE}/files/delete-batch`,

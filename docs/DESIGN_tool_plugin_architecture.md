@@ -2216,6 +2216,22 @@ Referrers and anything else that writes a playlist: a temp file in the same
 directory, fsync, `os.replace`, keeping the old file's permission bits. A crash
 leaves the old file or the new one, never half of one.
 
+`write_new_bytes(path, data)` is its no-overwrite sibling: the same temp file
+and fsync, then `utils.path_utils.place_without_clobbering` (a hard link or a
+no-replace rename), so "is the name free" and "create it" are one atomic step and
+a file or symlink already at `path` raises `FileExistsError` untouched.
+`m3u.playlist_bytes(entries)` builds a fresh playlist in the encoding the
+Referrer reads and rewrites with. **Create an `.m3u` from selected discs** (#299,
+`services/disc_playlist.py`, `POST /api/files/playlist/preview` and
+`/api/files/playlist`) is built on these two, not a second writer. It accepts two
+or more files directly in one folder inside a Volume whose extension is in
+`registry.disc_extensions()`, the union of each tool's `disc_extensions` (chdman
+declares `.cue .gdi .iso .chd`; a tool with no standalone disc files declares
+nothing). Order is by `(Disc N)` / `Disc N` / `CD N`, then name. Entries are file
+names beside the playlist. The preview computes a free name (`<Title> (2).m3u`);
+the create call writes exactly the previewed name and answers 409 with the next
+free one if it was taken since, never picking a different name on its own.
+
 **The `.m3u` Referrer** (`m3u.py`) is always on.
 
 - *Where it looks.* The replaced file's resolved folder and each folder above
