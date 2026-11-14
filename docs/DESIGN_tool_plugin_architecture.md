@@ -2193,12 +2193,13 @@ keep_source_reason)`. The Round-trip runs only when it decides something:
 named opt-out `ConversionJob.container_only` (`container_only` on
 `POST /api/jobs` and `/api/jobs/batch`). Otherwise the answer is
 `("intact", None)` with no extra reads, which is what every `verify_after` job
-and every mode without a digest gets. The outcome is stored before it is acted
-on: `verification_store.mark_verified(..., check=check_passed)` writes it to
+and every mode without a digest gets. `ConversionJob.check_passed` carries the
+result to the Ledger and to the job's `complete` event. On a pass,
+`verification_store.mark_verified(..., check=check_passed)` writes it to
 `verifications.check_passed` (migration `0010`, existing rows backfilled
-`"intact"`), and `ConversionJob.check_passed` carries it to the Ledger and to
-the job's `complete` event. A mismatch or an unavailable digest leaves
-`check_passed="intact"`, keeps the Source and fails the job with the reason.
+`"intact"`). A mismatch or an unavailable digest leaves
+`check_passed="intact"`, stores nothing for the output (see below), keeps the
+Source and fails the job with the reason.
 
 **`services/round_trip.round_trip(tool, source, output)`** owns everything a
 tool should not repeat: one side at a time (both are usually on the same
@@ -2215,9 +2216,18 @@ in `_verifying` so the stall reporter treats it like the container check.
 | dolphin | `.iso`: SHA1 of the file (detached read, no subprocess). `.rvz`/`.wia`/`.gcz`/`.wbfs`: `dolphin-tool verify --algorithm sha1` | same rule by extension |
 
 Every other tool returns `None` today and its modes keep the container check;
-chdman (#300) and the rest (#301) add rows here. An NKit `.nkit.iso` Source is
-hashed as a file, so it never matches the full disc rebuilt from the output and
-its Source is kept: a safe false negative.
+chdman (#300) and the rest (#301) add rows here. What the check guarantees
+does not depend on the input format: only identical digests allow a delete,
+and any mismatch keeps the Source. An NKit `.nkit.iso` Source is hashed as a
+file; whether that equals the digest of its output depends on what
+`dolphin-tool` writes, and either way the guarantee holds.
+
+**A failed Round-trip stores nothing.** On a mismatch or an unreadable digest
+the output's verification record is cleared, not written: the output gets no
+check badge, no `produced_meta` for the re-run fast path (§3.3.6), and a record
+an earlier run left for that path is dropped. `ConversionJob.check_passed`
+(and so the Ledger row) still says `"intact"`, because the container check did
+pass.
 
 ### 3.4 `registry.py`
 

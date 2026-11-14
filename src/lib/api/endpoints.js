@@ -465,7 +465,7 @@ export const api = {
   },
 
   getVerifiedCHDs: () =>
-    fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch verified CHDs'),
+    fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch check results'),
 
   // ─── Batch verify (POST + ReadableStream SSE) ─────────────────────────
   verifyBatchCHDs(paths, opts) {

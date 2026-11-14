@@ -58,7 +58,7 @@
     {
       glyph: 'NKT',
       name: 'NKit',
-      blurb: 'NKit-shrunk GameCube and Wii images back to a plain, full-size .iso, using nkit2iso. NKit shrinks a disc by dropping everything a program can recreate — the junk padding, the gaps, and for Wii the encryption and hash tree — so restoring means rebuilding all of it and checking the result against the CRC32 stored in the NKit header. There are no per-job settings to choose, and the output is bit-exact and CRC32-verified — except for one case: a Wii image whose update partition was removed at shrink time has no way back to bit-exact, because that data is not in the file. By default that region is zero-filled and the CRC32 check is skipped, so the ISO is playable but not redump-verifiable, and the job says so plainly. One direction only: this app never writes NKit. There is also a one-step Convert to RVZ mode (nkit_to_rvz) that restores and compresses in a single job, keeping the full-size ISO in a scratch directory instead of your library — usually what you want, since no emulator reads NKit and Dolphin reads RVZ natively. Info reads the NKit header, so you can see the console, game and restored size before spending the restore. Set NKIT2ISO_RECOVERY=download if you want the tool to fetch the publicly archived recovery partition for those images instead and get a bit-exact, redump-verified restore — the only case where it uses the network.',
+      blurb: 'NKit-shrunk GameCube and Wii images back to a plain, full-size .iso, using nkit2iso. NKit shrinks a disc by dropping everything a program can recreate — the junk padding, the gaps, and for Wii the encryption and hash tree — so restoring means rebuilding all of it and checking the result against the CRC32 stored in the NKit header. There are no per-job settings to choose, and the output is bit-exact and passes the CRC32 check — except for one case: a Wii image whose update partition was removed at shrink time has no way back to bit-exact, because that data is not in the file. By default that region is zero-filled and the CRC32 check is skipped, so the ISO is playable but will not match its Redump entry, and the job says so plainly. One direction only: this app never writes NKit. There is also a one-step Convert to RVZ mode (nkit_to_rvz) that restores and compresses in a single job, keeping the full-size ISO in a scratch directory instead of your library — usually what you want, since no emulator reads NKit and Dolphin reads RVZ natively. Info reads the NKit header, so you can see the console, game and restored size before spending the restore. Set NKIT2ISO_RECOVERY=download if you want the tool to fetch the publicly archived recovery partition for those images instead and get a bit-exact restore that matches Redump — the only case where it uses the network.',
       io: '.nkit.iso / .nkit.gcz  →  .iso  (or  →  .rvz  in one step)',
     },
     {
@@ -276,8 +276,12 @@
     </p>
     <p>
       Verify reads the whole output back and checks it against the hashes baked into the
-      file. If you turn on delete-on-verify, the source is removed only after the output
-      passes. If verify fails, the source stays exactly where it was. You get a confirmation
+      file. A file that passes is Intact. If you turn on delete-on-verify, the source is
+      removed only after the output passes its check, and never if it fails. For GameCube
+      and Wii (Dolphin) the default check is stronger: the output must be Round-tripped,
+      meaning the disc it decodes to has the same SHA1 as the source disc. Tick
+      <em>Container check only (faster, weaker)</em> in the convert panel to drop back to
+      the Intact check for that job. Other tools use the Intact check. You get a confirmation
       list of everything that will be deleted before anything happens, including the
       <code>.cue</code> and <code>.gdi</code> track files that ride along with a
       <code>.bin</code>, and the whole archive if the source came from one.
@@ -291,8 +295,8 @@
     </p>
     <p>
       Bulk Verify checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and
-      CSO files. Verification status sticks around between sessions, so a file you verified last
-      week still shows verified today. Long verifies can be given a timeout so a stalled one
+      CSO files. Check results stick around between sessions, so a file that was Intact last
+      week still shows Intact today. Long verifies can be given a timeout so a stalled one
       doesn't sit forever.
     </p>
     <p>
@@ -335,7 +339,7 @@
     <p>
       One click pulls roughly 69 DATs straight from the MAMERedump GitHub. You can also
       import your own <code>.dat</code> or <code>.xml</code> from No-Intro or Redump. These
-      matches feed tools like Hasheous and RomM, so a verified set carries over.
+      matches feed tools like Hasheous and RomM, so a Recognized set carries over.
     </p>
     <p>
       Hasheous also works the other way round. Press <strong>Turn on</strong> in the DAT
