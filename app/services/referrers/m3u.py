@@ -124,8 +124,20 @@ def _new_entry(posix_entry: str, target: _Target) -> list[str]:
     step = os.path.relpath(target.new, target.old_dir)
     literal = folder + sep + step
     candidates = [literal] if "/" not in step else [os.path.normpath(literal), literal]
-    # A line starting with "#" is a comment to every m3u reader.
-    return [f"./{c}" if c.startswith("#") else c for c in candidates]
+    # Readers trim each line and treat "#" as a comment, so protect a leading
+    # "#" or space with "./". A trailing space can't be protected; _rewrite
+    # rejects such a candidate.
+    return [f"./{c}" if c[:1] == "#" or c[:1].isspace() else c for c in candidates]
+
+
+def _parse_line(text: str) -> tuple[str, str, bool] | None:
+    """How a reader (and _rewrite) reads one line: None for a blank or "#"
+    line, else ``(entry, posix_entry, backslashed)``."""
+    entry = text.strip()
+    if not entry or entry.startswith("#"):
+        return None
+    backslashed = "\\" in entry and "/" not in entry
+    return entry, (entry.replace("\\", "/") if backslashed else entry), backslashed
 
 
 def _points_at(playlist_dir: str, entry: str, target: _Target) -> bool:
@@ -192,12 +204,11 @@ def _rewrite(
         body = line.rstrip(b"\r\n")
         ending = line[len(body):]
         text = body.decode(*_ENC)
-        entry = text.strip()
-        if not entry or entry.startswith("#"):
+        parsed = _parse_line(text)
+        if parsed is None:
             out.append(prefix + line)
             continue
-        backslashed = "\\" in entry and "/" not in entry
-        posix_entry = entry.replace("\\", "/") if backslashed else entry
+        entry, posix_entry, backslashed = parsed
         key = _file_key(os.path.join(playlist_dir, posix_entry))
         target = renames.by_key.get(key) if key else None
         if target is None:
@@ -208,19 +219,21 @@ def _rewrite(
                 )
             out.append(prefix + line)
             continue
-        new_entry = next(
-            (c for c in _new_entry(posix_entry, target) if _points_at(playlist_dir, c, target)),
-            None,
-        )
-        if new_entry is None:
+        lead = text[: len(text) - len(text.lstrip())]
+        trail = text[len(text.rstrip()):]
+        new_line = None
+        for candidate in _new_entry(posix_entry, target):
+            styled = candidate.replace("/", "\\") if backslashed else candidate
+            # Read the line back the way a reader will; it must reach the output.
+            read_back = _parse_line(lead + styled + trail)
+            if read_back and _points_at(playlist_dir, read_back[1], target):
+                new_entry, new_line = styled, lead + styled + trail
+                break
+        if new_line is None:
             raise ReferrerError(
                 playlist, f"line {number}: can't write a path that reaches the output",
             )
-        if backslashed:
-            new_entry = new_entry.replace("/", "\\")
-        lead = text[: len(text) - len(text.lstrip())]
-        trail = text[len(text.rstrip()):]
-        out.append(prefix + (lead + new_entry + trail).encode(*_ENC) + ending)
+        out.append(prefix + new_line.encode(*_ENC) + ending)
         edits.append((entry, new_entry))
     return b"".join(out), edits
 
