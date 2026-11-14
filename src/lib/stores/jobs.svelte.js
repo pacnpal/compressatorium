@@ -475,6 +475,7 @@ class JobsStore {
         opts.compression ?? null,
         opts.deleteOnVerify ?? false,
         opts.split ?? false,
+        opts.containerOnly ?? false,
       );
       this._applyJob(job);
       return job;
@@ -495,6 +496,7 @@ class JobsStore {
         opts.compression ?? null,
         opts.deleteOnVerify ?? false,
         opts.split ?? false,
+        opts.containerOnly ?? false,
       );
       if (Array.isArray(created)) {
         for (const job of created) this._applyJob(job);
@@ -620,6 +622,9 @@ class JobsStore {
             // when delete-on-verify removed the source, drop it.
             if (data?.verified && data?.job?.output_path) {
               verification.statuses.add(data.job.output_path);
+              verification.checks.set(
+                data.job.output_path, data.check_passed ?? 'intact',
+              );
             }
             if (data?.source_deleted && data?.job?.file_path) {
               verification.statuses.delete(data.job.file_path);

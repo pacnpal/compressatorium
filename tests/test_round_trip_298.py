@@ -123,6 +123,31 @@ async def test_stored_verification_records_which_check_passed(db_path, reset_db_
         reset_db_engine()
 
 
+@pytest.mark.asyncio
+async def test_verified_listing_says_which_check_each_output_passed(
+    tmp_path, monkeypatch, db_path, reset_db_engine,
+):
+    from routes import info as info_routes
+    from services import db as _db
+    from services.verification_store import verification_store
+
+    _db.init_engine(db_path)
+    monkeypatch.setattr(info_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(info_routes.settings, "data_mount_root", str(tmp_path))
+    rt, intact = tmp_path / "a.rvz", tmp_path / "b.chd"
+    rt.write_bytes(b"a")
+    intact.write_bytes(b"b")
+    try:
+        await verification_store.mark_verified(str(rt), check="round_tripped")
+        await verification_store.mark_verified(str(intact))
+        listing = await info_routes.list_verified()
+    finally:
+        reset_db_engine()
+
+    assert sorted(listing["verified"]) == sorted([str(rt), str(intact)])
+    assert listing["checks"] == {str(rt): "round_tripped", str(intact): "intact"}
+
+
 def test_migration_backfills_existing_verifications_as_intact(db_path, reset_db_engine):
     from alembic import command
     from services import db as _db

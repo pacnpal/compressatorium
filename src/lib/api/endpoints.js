@@ -181,6 +181,7 @@ export const api = {
     compression = null,
     deleteOnVerify = false,
     split = false,
+    containerOnly = false,
   ) {
     return jsonPost(
       `${API_BASE}/jobs`,
@@ -190,6 +191,7 @@ export const api = {
         output_dir: outputDir,
         compression,
         delete_on_verify: deleteOnVerify,
+        container_only: containerOnly,
         split,
       },
       {},
@@ -205,6 +207,7 @@ export const api = {
     compression = null,
     deleteOnVerify = false,
     split = false,
+    containerOnly = false,
   ) {
     return jsonPost(
       `${API_BASE}/jobs/batch`,
@@ -215,6 +218,7 @@ export const api = {
         duplicate_action: duplicateAction,
         compression,
         delete_on_verify: deleteOnVerify,
+        container_only: containerOnly,
         split,
       },
       {},

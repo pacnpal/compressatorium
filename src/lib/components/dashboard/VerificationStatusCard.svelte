@@ -12,7 +12,7 @@
   {#snippet body()}
     <div class="big">
       <span class="num">{verifiedCount}</span>
-      <span class="lbl">verified</span>
+      <span class="lbl">Intact or Round-tripped</span>
     </div>
     {#if batch}
       <div class="batch">
