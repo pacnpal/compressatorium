@@ -17,9 +17,10 @@ import shutil
 from pathlib import Path
 
 import pytest
-from config import settings
 from services.round_trip import round_trip
 from services.tools import registry
+
+from config import settings
 
 
 def _binary() -> str | None:

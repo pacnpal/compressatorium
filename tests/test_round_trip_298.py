@@ -8,6 +8,7 @@ binary; the Source ISO side is a real SHA1 of a real temp file.
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 from services.tools import registry
@@ -185,8 +186,9 @@ def test_migration_backfills_existing_verifications_as_intact(db_path, reset_db_
 def _e2e(tmp_path, monkeypatch, db_path, reset_db_engine):
     """Confine the route to ``tmp_path``; stub the converters and their
     container checks; fake dolphin-tool's hash run at the runner seam."""
-    from app.routes import convert as convert_routes
     from services import db as _db
+
+    from app.routes import convert as convert_routes
 
     _db.init_engine(db_path)
     monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
@@ -196,8 +198,7 @@ def _e2e(tmp_path, monkeypatch, db_path, reset_db_engine):
 
     async def fake_convert(input_path, output_path, mode="", *, compression=None,
                            cancel_event=None):
-        with open(output_path, "wb") as f:
-            f.write(b"converted output")
+        Path(output_path).write_bytes(b"converted output")
         yield {"progress": 100, "message": "done"}
 
     async def container_check_passes(path, *, cancel_event=None):
@@ -292,6 +293,38 @@ async def test_a_digest_that_cannot_be_read_keeps_the_source(e2e):
     assert job.status.value == "failed"
     assert iso.exists()
     assert "Round-trip" in job.error_message and "Source kept" in job.error_message
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_the_comparison_keeps_the_source_without_a_verdict(
+    e2e, monkeypatch,
+):
+    from utils.delete_plan import build_delete_snapshot
+
+    from app.models import ConversionMode
+
+    iso, _ = _source_iso(e2e)
+    manager = e2e["routes"].job_manager
+    service = _dolphin()._service
+
+    async def cancel_mid_hash(cmd, **kwargs):
+        # Cancel lands while dolphin-tool is hashing the output; the runner
+        # reports the abort as a None returncode.
+        manager._cancel_events[job.id].set()
+        return None, b"", b""
+
+    monkeypatch.setattr(service._runner, "run_capture", cancel_mid_hash)
+    job = await manager.create_job(
+        str(iso), ConversionMode.DOLPHIN_RVZ,
+        output_path=str(iso.with_suffix(".rvz")),
+        delete_on_verify=True,
+        delete_snapshot=build_delete_snapshot(str(iso)),
+    )
+    await manager._process_job(job.id)
+
+    assert job.status.value == "cancelled"
+    assert iso.exists()
+    assert job.error_message is None
 
 
 @pytest.mark.asyncio

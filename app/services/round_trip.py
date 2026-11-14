@@ -15,7 +15,6 @@ import os
 from dataclasses import dataclass
 
 from logging_setup import get_logger
-
 from services.tools.base import ContentDigest, ContentDigestUnavailable, ToolPlugin
 
 logger = get_logger("round_trip")
@@ -48,7 +47,7 @@ async def _digest(
         raise ContentDigestUnavailable(
             f"hashing {os.path.basename(path)} did not finish in time",
         ) from None
-    except Exception as e:  # noqa: BLE001 - any failure means "not proven"
+    except Exception as e:  # any failure means "not proven"
         raise ContentDigestUnavailable(
             f"could not hash {os.path.basename(path)}: {e}",
         ) from e
