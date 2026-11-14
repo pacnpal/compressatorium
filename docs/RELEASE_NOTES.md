@@ -31,6 +31,18 @@
   - **RomM Rules:** delete-source Rules on Dolphin modes now Round-trip by
     default, so their sweeps take longer for the same reason. A per-Rule
     container-only setting comes later.
+- **Round-trip check for chdman Create CD and Create DVD** (#300). With
+  delete-source on, these jobs now prove the CHD holds the same disc before the
+  ISO or cue/bin is removed. A DVD CHD's data SHA1 is compared with the ISO's
+  SHA1. A CD CHD is extracted to a temp folder (only when the scratch volume has
+  room), and its track data is compared with the Source tracks; the temp folder
+  is removed afterwards, also when the job fails or is cancelled. On a mismatch
+  the Source is kept. Container check only skips the comparison here too.
+  - CD delete-source jobs take longer and need free scratch space about the
+    size of the disc while the comparison runs.
+  - Some GD-ROM (Dreamcast) sets may be kept with "content differs" when their
+    files are laid out differently from what chdman writes back. Use Container
+    check only for those.
 - **Xbox / Xbox 360: trim disc images to XISO** with
   [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
   (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's

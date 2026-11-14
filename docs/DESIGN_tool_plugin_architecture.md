@@ -2214,9 +2214,43 @@ in `_verifying` so the stall reporter treats it like the container check.
 | Tool | Source side | Output side |
 | --- | --- | --- |
 | dolphin | `.iso`: SHA1 of the file (detached read, no subprocess). `.rvz`/`.wia`/`.gcz`/`.wbfs`: `dolphin-tool verify --algorithm sha1` | same rule by extension |
+| chdman (`createcd`, `createdvd`) | `.iso`/`.bin`: SHA1 of the file. `.cue`/`.gdi`: SHA1 of the track files the sheet names, read end to end in sheet order, each file once | `.chd`: `chdman info`, then by metadata tag. DVD (`DVD `) or hard disk (`GDDD`): the `Data SHA1` line. CD (`CHCD`/`CHTR`/`CHT2`): `chdman extractcd` to a `.cue` in a scratch dir, then the sheet rule. GD-ROM (`CHGT`/`CHGD`): the same, extracted as a `.gdi` |
 
-Every other tool returns `None` today and its modes keep the container check;
-chdman (#300) and the rest (#301) add rows here. What the check guarantees
+chdman's digest kind is `image_data_sha1`: the SHA1 of the image's bytes as
+files on disk, track files laid end to end in sheet order. That one definition
+covers an ISO, a cue/bin set (split or single-bin, since only the byte stream
+counts) and a DVD CHD's data SHA1. The DVD side reads the header value, which
+is sound because the job only asks after the container check passed and
+`chdman verify` recomputes exactly that hash from the decoded data. The tag is
+read strictly from the `Metadata: Tag='XXXX'` lines; a CHD with no CD, DVD or
+hard-disk tag is "not proven". `createhd`, `createraw`, `createld` and `copy`
+do not declare `supports_round_trip`: `createhd` may pad the image to its
+geometry, so its data SHA1 need not equal the Source file's.
+
+**The extract fallback** (`ChdmanTool._extracted_cd_sha1`) runs inside
+`services.disk.headroom_scratch_dir(prefix, required_bytes)`, the shared form of
+what a chain does for its work dir: create the dir on the scratch volume
+(`create_scratch_dir`, so `CHD_TEMP_DIR`), run `ensure_headroom` for
+`required_bytes` plus `scratch_margin_bytes()` (the `chain_disk_margin_mb`
+cushion) before anything is written, and `remove_partial_tree` the dir on
+every exit. `required_bytes` is the CHD's `Logical size`, which counts
+2448-byte frames and so bounds the extracted tracks from above. Too little
+space, a failed or cancelled `extractcd`, or the outer `verify_timeout` bound
+all end the same way: the dir is removed and the digest is unavailable, so the
+Source is kept. `ChdmanService.extract_cd` goes through the tool's
+`SubprocessRunner.run_capture`, so the child is PID-tracked and Cancel stops
+it. The extract reads the CHD once more and writes up to the image's size to
+the scratch volume, so a CD delete-source job takes roughly one more read and
+one write of the disc.
+
+Known limit: an extract gives back the layout chdman writes. A Source whose
+track files hold the same sectors in a different file layout than chdman
+writes back (likely for some GD-ROM sets, Redump-style cue against chdman's
+`.gdi` output) compares as different and keeps its Source. That is the safe
+direction, and the job says so.
+
+The other tools return `None` today and their modes keep the container check;
+#301 adds rows here. What the check guarantees
 does not depend on the input format: only identical digests allow a delete,
 and any mismatch keeps the Source. An NKit `.nkit.iso` Source is hashed as a
 file; whether that equals the digest of its output depends on what

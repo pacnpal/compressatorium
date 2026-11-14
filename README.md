@@ -12,7 +12,7 @@ A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool**
 * **Multiple volume mounts** so you can keep separate game libraries separate.
 * **File detection** that works out which files each tool can convert.
 * **Existing-output detection** with skip, rename, or overwrite.
-* **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. For GameCube/Wii the output must be Round-tripped (it decodes to the same disc as the source); other tools need it Intact (it passes its own container check).
+* **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. For GameCube/Wii and for CHDMAN Create CD / Create DVD the output must be Round-tripped (it decodes to the same disc as the source); other tools need it Intact (it passes its own container check).
 * **Progress tracking** through a live job queue.
 * **File info** for CHD, Dolphin, 3DS, Switch, CSO, handheld ROM, NKit, Wii U, and Xbox files.
 
@@ -465,9 +465,11 @@ Converting never deletes anything on its own — the safe order is convert, veri
 then delete the source. Verify reads the whole output back and checks it against
 the file's own hashes/CRC; a file that passes is **Intact**. With
 **delete-on-verify** the source is removed only after the output passes, and
-never if it fails. For Dolphin modes the bar is higher by default: the output
-must be **Round-tripped**, meaning the disc it decodes to has the same SHA1 as
-the source disc. **Container check only (faster, weaker)** in the convert panel
+never if it fails. For Dolphin modes and CHDMAN Create CD / Create DVD the bar
+is higher by default: the output must be **Round-tripped**, meaning the disc it
+decodes to has the same SHA1 as the source disc. A CD CHD is extracted to a temp
+folder for this (only if the scratch volume has room; the folder is removed
+afterwards). **Container check only (faster, weaker)** in the convert panel
 drops back to the Intact check for that job. You get a confirmation list of
 everything to be deleted first, including the `.cue`/`.gdi` track files that ride
 with a `.bin`, and the whole archive if the source came from one. **Bulk Verify**
