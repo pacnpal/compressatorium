@@ -126,3 +126,18 @@ async def test_cancelling_the_source_probe_returns_now(monkeypatch):
     cancel.set()
     with pytest.raises(jm.ConversionCancelled):
         await asyncio.wait_for(manager._source_bytes_bounded(job, cancel), timeout=10)
+
+
+def test_timestamps_have_fixed_precision():
+    whole = ledger._iso(datetime(2026, 11, 14, 12, 0, 0, tzinfo=timezone.utc))
+    later = ledger._iso(datetime(2026, 11, 14, 12, 0, 0, 500000, tzinfo=timezone.utc))
+    assert whole < later
+
+
+def test_retention_above_the_bound_is_refused():
+    from pydantic import ValidationError
+    from routes.ledger import LedgerSettings
+
+    LedgerSettings(retention_days=ledger.MAX_RETENTION_DAYS)
+    with pytest.raises(ValidationError):
+        LedgerSettings(retention_days=1_000_000_000)

@@ -27,12 +27,21 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 logger = get_logger("ledger")
 
 PREF_KEY = "ledger"
+# 100 years: keeps `now - timedelta(days=…)` far inside datetime's range.
+MAX_RETENTION_DAYS = 36500
 
 
 def _iso(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    # Fixed precision: isoformat() drops the fraction on a whole second, and
+    # "…:00Z" sorts after "…:00.5Z", so mixed precision misorders rows and
+    # pruning cutoffs that compare these strings.
+    return (
+        dt.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def _tool_and_platform(mode: str) -> tuple[str | None, str | None]:
@@ -103,7 +112,9 @@ def _insert_sync(row: dict, retention_days: int | None) -> None:
 async def retention_days() -> int | None:
     stored = await preferences_store.get(PREF_KEY) or {}
     days = stored.get("retention_days")
-    return days if isinstance(days, int) and days > 0 else None
+    if isinstance(days, int) and 0 < days <= MAX_RETENTION_DAYS:
+        return days
+    return None
 
 
 async def record(job: ConversionJob) -> None:

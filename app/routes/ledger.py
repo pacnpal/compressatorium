@@ -10,7 +10,9 @@ router = APIRouter()
 
 class LedgerSettings(BaseModel):
     # None/0 keeps rows forever (the default).
-    retention_days: int | None = Field(default=None, ge=0)
+    retention_days: int | None = Field(
+        default=None, ge=0, le=ledger.MAX_RETENTION_DAYS,
+    )
 
 
 @router.get("/ledger/recent")
