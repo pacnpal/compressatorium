@@ -14,6 +14,7 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 _AUTOMATION = _SRC / "lib" / "components" / "views" / "RommAutomation.svelte"
 _NOTICES = _SRC / "lib" / "stores" / "ruleNotices.svelte.js"
 _ENDPOINTS = _SRC / "lib" / "api" / "endpoints.js"
+_LEVELS = _SRC / "lib" / "util" / "checkLevels.js"
 
 
 def test_the_check_level_sits_next_to_delete_source():
@@ -27,8 +28,37 @@ def test_the_check_level_sits_next_to_delete_source():
     assert "delete_on_verify: v" in body
     # Offered only where it decides something, as in the convert panel.
     assert "rule.delete_on_verify && spec?.supportsRoundTrip" in body, body
-    assert "rule.check_level === 'container_only'" in body, body
-    assert "check_level: v ? 'container_only' : 'round_trip'" in body, body
+    assert "rule.check_level === CHECK_LEVEL.containerOnly" in body, body
+    assert (
+        "check_level: v ? CHECK_LEVEL.containerOnly : CHECK_LEVEL.roundTrip" in body
+    ), body
+    # The description follows the box: no Round-trip promise once it is ticked.
+    assert (
+        "spec?.supportsRoundTrip && rule.check_level !== CHECK_LEVEL.containerOnly" in body
+    ), body
+
+
+def test_the_editor_names_no_level_string_itself():
+    """One JS copy of the two levels, held to the backend's by the test below."""
+    src = _AUTOMATION.read_text(encoding="utf-8")
+    assert "'round_trip'" not in src and "'container_only'" not in src
+    assert "from '$lib/util/checkLevels.js'" in src
+
+
+def test_the_js_levels_match_the_backend():
+    from services.rules.rules import CHECK_LEVELS
+
+    js = _LEVELS.read_text(encoding="utf-8")
+    found = re.search(
+        r"roundTrip: '([a-z_]+)',\s*containerOnly: '([a-z_]+)'", js,
+    )
+    assert found, js
+    assert found.groups() == CHECK_LEVELS
+
+
+def test_the_notice_says_which_rules_keep_the_container_check():
+    src = _AUTOMATION.read_text(encoding="utf-8")
+    assert "ruleNotices.checkLevel.container_check" in src
 
 
 def test_preview_shows_the_check_level():

@@ -15,6 +15,7 @@
   import { toast } from 'svelte-sonner';
   import { romm, DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
   import { ruleNotices } from '$lib/stores/ruleNotices.svelte.js';
+  import { CHECK_LEVEL, CHECK_LEVEL_LABELS } from '$lib/util/checkLevels.js';
   import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -45,11 +46,9 @@
     }
   }
 
-  // What Preview says about the check a delete-source batch must pass.
-  const CHECK_LEVEL_LABELS = {
-    round_trip: 'Round-trip before deleting the source',
-    container_only: 'container check only before deleting the source',
-  };
+  function ruleCount(n) {
+    return n === 1 ? '1 rule' : `${n} rules`;
+  }
   const autoOn = $derived(romm.settings?.auto_convert === true);
 
   // SvelteSet: mutation must be reactive so an expanded row re-renders.
@@ -386,13 +385,18 @@
     <section class="notice" role="status">
       <Info size={16} aria-hidden="true" />
       <div class="notice-text">
-        <strong>Rules that delete their source now Round-trip first.</strong>
+        <strong>
+          {ruleCount(ruleNotices.checkLevel.switched)} that
+          {ruleNotices.checkLevel.switched === 1 ? 'deletes its' : 'delete their'}
+          source now Round-trip first.
+        </strong>
         Before a sweep deletes a source, it checks that the new file decodes to the
-        same content, and keeps the source if it does not. Formats that support
-        this read each file once more, so those sweeps take longer.
-        {ruleNotices.checkLevel.switched === 1
-          ? '1 rule was switched.'
-          : `${ruleNotices.checkLevel.switched} rules were switched.`}
+        same content, and keeps the source if it does not. Each file is read once
+        more, so those sweeps take longer.
+        {#if ruleNotices.checkLevel.container_check}
+          {ruleCount(ruleNotices.checkLevel.container_check)} on formats without
+          a Round-trip yet keep the container check.
+        {/if}
         To go back to the faster check, tick <em>Container check only</em> under
         a rule's delete setting.
       </div>
@@ -774,7 +778,7 @@
                     <Checkbox
                       checked={rule.delete_on_verify}
                       label="Delete the source after the new file verifies"
-                      description={spec?.supportsRoundTrip
+                      description={spec?.supportsRoundTrip && rule.check_level !== CHECK_LEVEL.containerOnly
                         ? 'The new file must be Round-tripped (it decodes to the same content as the source) first. The source is kept if it is not.'
                         : 'The new file must be Intact (it passes its own container check) first. The source is kept if it is not.'}
                       onchange={(v) => update(platform.id, { delete_on_verify: v })}
@@ -784,10 +788,10 @@
                          is kept either way. -->
                     {#if rule.delete_on_verify && spec?.supportsRoundTrip}
                       <Checkbox
-                        checked={rule.check_level === 'container_only'}
+                        checked={rule.check_level === CHECK_LEVEL.containerOnly}
                         label="Container check only (faster, weaker)"
                         description="Skips the content comparison and deletes once the new file is Intact. It proves the file reads back cleanly, not that it holds the same disc."
-                        onchange={(v) => update(platform.id, { check_level: v ? 'container_only' : 'round_trip' })}
+                        onchange={(v) => update(platform.id, { check_level: v ? CHECK_LEVEL.containerOnly : CHECK_LEVEL.roundTrip })}
                       />
                     {/if}
                   {/if}
