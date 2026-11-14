@@ -38,24 +38,60 @@ FOLDER = "folder"
 CONFLICT = "conflict"
 UNSORTED = "unsorted"
 
-# Platform slug (RomM's, which is IGDB's) -> other names for the same console:
-# the tools' and disc-ID parser's own vocabulary, and the folder names ES-DE
-# and Batocera use. A slug a tool declares that is not listed here stands for
-# itself.
+# Platform slug (RomM's, which is IGDB's) -> every other name for the same
+# console: the tools' and the disc-ID parser's own vocabulary, and the folder
+# names ES-DE (es_systems.xml) and Batocera use. Detection always answers with
+# the key. Every slug a tool declares must appear here, as a key or an alias;
+# tests/test_platform_detect.py fails when a new tool brings one that is not.
 _ALIASES: dict[str, tuple[str, ...]] = {
+    # Sony
     "ps": ("psx", "ps1", "playstation", "sony-playstation"),
     "ps2": ("playstation2", "playstation-2"),
     "psp": ("playstation-portable",),
     "ps3": ("playstation3", "playstation-3"),
+    # Nintendo
     "ngc": ("gc", "gamecube", "nintendo-gamecube"),
     "wii": ("nintendo-wii",),
     "wiiu": ("wii-u",),
+    "switch": ("nintendo-switch",),
+    "3ds": ("n3ds", "nintendo-3ds"),
+    "new-nintendo-3ds": ("new3ds",),
+    "nds": ("nintendo-ds",),
+    "gb": ("gameboy", "game-boy"),
+    "gbc": ("gameboy-color", "game-boy-color"),
+    "gba": ("gameboy-advance", "game-boy-advance"),
+    "nes": ("famicom",),
+    "snes": ("sfc", "snesna", "superfamicom", "super-famicom"),
+    "n64": ("nintendo-64",),
+    "virtualboy": ("vb", "virtual-boy"),
+    # Sega
     "dc": ("dreamcast", "sega-dreamcast"),
-    "saturn": ("segasaturn", "sega-saturn"),
-    "segacd": ("sega-cd", "megacd", "mega-cd"),
+    "saturn": ("segasaturn", "sega-saturn", "saturnjp"),
+    "segacd": ("sega-cd", "megacd", "mega-cd", "megacdjp"),
+    "genesis-slash-megadrive": (
+        "genesis", "megadrive", "mega-drive", "megadrivejp", "segamd", "md",
+    ),
+    "sms": ("mastersystem", "master-system", "sega-master-system"),
+    "gamegear": ("gg", "game-gear"),
+    # NEC, SNK, Bandai, Atari, Commodore, Philips, Panasonic, Pioneer
+    "turbografx-cd": ("tg-cd", "tgcd", "pcenginecd", "pce-cd", "pcecd"),
+    "pc-fx": ("pcfx",),
+    "neo-geo-cd": ("neogeocd", "neogeocdjp"),
+    "neo-geo-pocket": ("ngp",),
+    "neo-geo-pocket-color": ("ngpc",),
+    "wonderswan": ("wswan",),
+    "wonderswan-color": ("wonderswancolor", "wswanc"),
+    "lynx": ("atarilynx", "atari-lynx"),
+    "atari2600": ("atari-2600",),
+    "atari7800": ("atari-7800",),
+    "c64": ("commodore-64",),
+    "philips-cd-i": ("cdi", "cdimono1", "cd-i"),
+    "3do": ("3do-interactive-multiplayer",),
+    "laseractive": (),
+    "arcade": ("mame", "fbneo", "naomi", "atomiswave"),
+    # Microsoft
     "xbox": ("microsoft-xbox",),
     "xbox360": ("xbox-360",),
-    "switch": ("nintendo-switch",),
 }
 _CANONICAL: dict[str, str] = {
     alias: slug for slug, aliases in _ALIASES.items() for alias in (slug, *aliases)

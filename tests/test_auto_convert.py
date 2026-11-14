@@ -93,6 +93,21 @@ def test_arcade_cd_images_never_get_a_hard_disk_command(tmp_path, folder, name):
     assert entry.mode == "createcd"
 
 
+@pytest.mark.parametrize(
+    ("folder", "name", "mode"),
+    [
+        ("pcenginecd", "game.cue", "createcd"),
+        ("cdi", "game.cue", "createcd"),
+        ("megadrive", "game.md", "romz_7z"),
+        ("n3ds", "game.3ds", "z3ds_compress"),
+    ],
+)
+def test_frontend_folder_names_reach_a_target(tmp_path, folder, name, mode):
+    [entry] = plan_auto([_blank(tmp_path / folder / name)])
+
+    assert entry.mode == mode
+
+
 def test_a_modes_read_set_never_widens_what_it_accepts():
     # reads_extensions narrows input_extensions for Auto only; a read set that
     # names something plan_job would refuse would plan jobs that never queue.

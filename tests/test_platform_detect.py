@@ -156,6 +156,66 @@ def test_folder_name_names_the_platform_when_there_is_no_header(
     assert (result.platform, result.how, result.folder) == (expected, "folder", expected)
 
 
+# Every frontend folder name the reviewer probed, and the RomM slug it means.
+# The CD Platforms here have no header probe, so the folder is their only signal.
+FRONTEND_FOLDERS = [
+    ("pcenginecd", "turbografx-cd"), ("tg-cd", "turbografx-cd"),
+    ("cdi", "philips-cd-i"), ("cdimono1", "philips-cd-i"),
+    ("megadrive", "genesis-slash-megadrive"), ("genesis", "genesis-slash-megadrive"),
+    ("segamd", "genesis-slash-megadrive"),
+    ("mastersystem", "sms"), ("gg", "gamegear"), ("game-gear", "gamegear"),
+    ("atarilynx", "lynx"), ("ngp", "neo-geo-pocket"), ("ngpc", "neo-geo-pocket-color"),
+    ("wonderswancolor", "wonderswan-color"), ("n3ds", "3ds"),
+    ("neogeocd", "neo-geo-cd"), ("pcfx", "pc-fx"), ("mame", "arcade"),
+]
+
+
+@pytest.mark.parametrize(("folder", "expected"), FRONTEND_FOLDERS)
+def test_es_de_and_batocera_folders_name_the_romm_slug(tmp_path, folder, expected):
+    path = _blank(tmp_path / folder / "game.bin")
+
+    assert detect_platform(path).platform == expected
+
+
+def _alias_rows():
+    return [
+        (alias, slug)
+        for slug, aliases in platform_detect._ALIASES.items()
+        for alias in (slug, *aliases)
+    ]
+
+
+@pytest.mark.parametrize(("alias", "slug"), _alias_rows())
+def test_every_alias_names_its_romm_slug(tmp_path, alias, slug):
+    assert platform_detect.canonical_slug(alias) == slug
+    path = _blank(tmp_path / alias / "game.bin")
+    assert detect_platform(path).platform == slug
+
+
+def test_aliases_are_unambiguous():
+    rows = _alias_rows()
+    names = [alias for alias, _slug in rows]
+    assert len(names) == len(set(names)), "an alias names two Platforms"
+
+
+def _declared_slugs():
+    from services.tools import registry
+
+    slugs = set()
+    for tool in registry.all():
+        slugs |= set(tool.platform_slugs)
+    for spec in registry.mode_specs():
+        slugs |= set(spec.platform_slugs)
+    return sorted(slugs)
+
+
+@pytest.mark.parametrize("declared", _declared_slugs())
+def test_every_declared_slug_maps_onto_a_romm_slug_in_the_table(declared):
+    # A tool that adds a Platform brings its folder names here too, or this
+    # fails: the canonical answer must be a key of the alias table.
+    assert platform_detect.canonical_slug(declared) in platform_detect._ALIASES
+
+
 def test_nearest_platform_folder_wins(tmp_path):
     path = _write(tmp_path / "ps2" / "psp" / "game.iso", b"\0" * 64)
 
