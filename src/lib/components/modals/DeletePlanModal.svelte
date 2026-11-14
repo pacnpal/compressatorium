@@ -146,7 +146,7 @@
             <div class="dp-referrer" title={change.target}>
               <span class="dp-referrer-file">updates {shortName(change.target)}:</span>
               {#each change.edits ?? [] as edit, i (i)}
-                <span class="dp-target">{edit.old} → {edit.new}</span>
+                <span class="dp-edit">{edit.old} → {edit.new}</span>
               {/each}
             </div>
           {/each}
@@ -183,5 +183,6 @@
   .dp-note { margin: 0; font-size: var(--text-xs); color: var(--text-2); }
   .dp-referrer { display: flex; gap: var(--space-1); align-items: center; flex-wrap: wrap; color: var(--text-3); font-size: var(--text-xs); font-family: var(--font-mono); }
   .dp-referrer-file { color: var(--text-2); }
+  .dp-edit { color: var(--text-2); overflow-wrap: anywhere; }
   .dp-more-row { padding: 4px var(--space-2); color: var(--text-3); font-size: var(--text-xs); font-style: italic; }
 </style>
