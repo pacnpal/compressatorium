@@ -625,6 +625,33 @@ has converted, and that memory is kept honest for you:
 The schedule clock and the conversion history are separate, so forgetting one
 never disturbs the other.
 
+### Folder Libraries and the Rules view
+
+You don't need RomM to automate conversions. Open any folder inside a Volume in
+the Workspace, and pick **Register as a Library** from its row menu. The folder
+becomes a Library, and the **Rules** view (in the sidebar) shows it:
+
+- **Platforms** come from Platform detection: an Image's own header first, then
+  its folder name (`ps2`, `gc`, `psx`, `megacd`, ... as ES-DE and Batocera lay
+  them out). Each Platform shows how many Images it has.
+- **Unsorted** Images (nothing names their Platform) and **Conflicted** ones
+  (the header disagrees with the folder, such as a GameCube disc filed under
+  `ps2`) are counted but never converted by a Rule. Files that cannot be read
+  are counted on their own and skipped too.
+- **Rules** have the same settings as RomM's, one per Platform: "convert ps2 to
+  CHD nightly" is a ps2 Rule with a window of `01:00`–`05:00`. A folder Rule
+  always **skips** an Image whose output already exists, so a sweep that runs
+  twice queues nothing new. Overwrite and write-alongside are not offered for
+  folder Libraries.
+- **Only Recognized / not Recognized** filters read the DAT or Hasheous match
+  already cached for each file. Listing a Library never hashes anything; a file
+  you have not matched yet counts as not Recognized.
+- **Preview** shows what a sweep would queue and moves no schedule clock. **Run
+  now** queues it. **Run automatically** turns the scheduler on for that Library.
+- **Remove Library** forgets the Library and its Rules. It never touches a file.
+
+The RomM view's **Automation** tab is the same Rules view, opened on RomM.
+
 #### Your metadata survives conversion
 
 This is the part most conversion workflows get wrong. RomM identifies a CHD by the
@@ -856,6 +883,14 @@ Per-platform automation — target format, schedule, queueing limits and selecti
 | Light | Dark |
 |-------|------|
 | ![RomM automation, light](docs/screenshots/romm-automation-light.png) | ![RomM automation, dark](docs/screenshots/romm-automation-dark.png) |
+
+#### Rules on a folder Library
+
+A folder registered as a Library, with the Platforms found in it, its Unsorted and Conflicted counts, and a PS2 Rule. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
+
+| Light | Dark |
+|-------|------|
+| ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
 
 #### DAT Library
 

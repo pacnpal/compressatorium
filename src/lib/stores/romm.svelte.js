@@ -130,6 +130,27 @@ class RommStore {
     return this.platforms.find((p) => p.id === this.selectedPlatformId) ?? null;
   }
 
+  // ─── the rules-source contract the Rules view reads (libraries.svelte.js) ──
+
+  imageNoun = 'ROMs';
+  emptyTitle = 'No platforms yet';
+  emptyHint = 'Connect RomM in Settings, then your platforms appear here.';
+  matchedLabel = 'Only ROMs RomM has identified';
+  unmatchedLabel = 'Only ROMs RomM could not identify';
+
+  imageCount(platform) {
+    return platform?.rom_count ?? 0;
+  }
+
+  /** RomM's master switch for the scheduler, kept in its own settings. */
+  get scheduleEnabled() {
+    return this.settings?.auto_convert === true;
+  }
+
+  async setScheduleEnabled(enabled) {
+    await this.saveSettings({ auto_convert: enabled });
+  }
+
   platformName(platformId) {
     const id = Number(platformId);
     return this.platforms.find((p) => p.id === id)?.name ?? `Platform ${platformId}`;

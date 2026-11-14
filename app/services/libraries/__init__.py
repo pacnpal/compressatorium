@@ -133,6 +133,8 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
     if not root.is_dir():
         raise LibraryPathError(404, "Folder not found")
     for existing in folder_libraries():
+        if root == Path(existing.root):
+            raise LibraryPathError(409, f"Already the Library {existing.name!r}")
         if _overlaps(root, Path(existing.root)):
             raise LibraryPathError(
                 409, f"Overlaps the Library {existing.name!r} at {existing.root}",

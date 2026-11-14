@@ -1,18 +1,21 @@
 <script>
   /**
-   * Per-platform automation rules.
+   * Per-platform Rules for one Library.
    *
-   * Each RomM platform gets its own rule — target format, compression, output
+   * Each Platform of the Library gets its own Rule — target format, compression, output
    * location, schedule, queueing limits and selection filters — because a
    * library is not homogeneous and one global setting cannot describe it.
    *
    * The editor renders from the schema the backend ships alongside the rules
    * (`defaults` + `options`), so the UI never carries a second copy of what a
    * valid rule looks like.
+   *
+   * `source` is the Library's rules source (see `libraries.svelte.js`): the
+   * RomM store for RomM, a `FolderRulesSource` for a folder Library.
    */
   import { SvelteSet } from 'svelte/reactivity';
   import { toast } from 'svelte-sonner';
-  import { romm, DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
+  import { DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
   import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -25,16 +28,18 @@
   import Save from '@lucide/svelte/icons/save';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
 
-  const platforms = $derived(romm.platforms);
-  const autoOn = $derived(romm.settings?.auto_convert === true);
+  let { source } = $props();
+
+  const platforms = $derived(source.platforms);
+  const autoOn = $derived(source.scheduleEnabled);
 
   // SvelteSet: mutation must be reactive so an expanded row re-renders.
   const expanded = new SvelteSet();
   // The store owns this: the tab unmounts whenever the operator switches to
   // the library, and a local flag came back false while the edits themselves
-  // survived in `romm.rules` — hiding the save bar and letting Preview / Run
+  // survived in `source.rules` — hiding the save bar and letting Preview / Run
   // now report on the server's rules while the editor showed the new ones.
-  const dirty = $derived(romm.rulesDirty);
+  const dirty = $derived(source.rulesDirty);
 
   // The convertible targets one platform can actually use. Built from the
   // registry so a new tool or mode appears here with no change, then narrowed
@@ -60,7 +65,7 @@
         // file never terminates. That one is the backend's answer, because it
         // needs the tool's own output_path; the backend refuses such a rule
         // too, for a blob written straight into the database.
-        if (!romm.modeIsAutomatable(m.mode)) continue;
+        if (!source.modeIsAutomatable(m.mode)) continue;
         if (Array.isArray(allowedModes) && !allowedModes.includes(m.mode)) continue;
         out.push({ value: m.mode, label: `${tool.label} → ${m.label}` });
       }
@@ -78,13 +83,13 @@
   const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
   function update(platformId, patch) {
-    const current = romm.ruleFor(platformId);
+    const current = source.ruleFor(platformId);
     // A platform with no stored rule is being created right now, so it adopts
     // the browser's zone. `ruleFor` falls back to the backend default, whose
     // timezone is the truthy string "UTC" — testing `current.timezone ||`
     // therefore always kept UTC and a 22:00–04:00 window written in Berlin ran
     // at 22:00 UTC. A rule the operator has already saved keeps its own zone.
-    const isNew = !romm.rules[String(platformId)];
+    const isNew = !source.rules[String(platformId)];
     const rule = {
       ...current,
       timezone: isNew ? browserZone : (current.timezone || browserZone),
@@ -97,8 +102,8 @@
       ...patch,
     };
     // `setRule` / `removeRule` raise the store's dirty flag themselves.
-    if (!rule.mode) romm.removeRule(platformId);
-    else romm.setRule(platformId, rule);
+    if (!rule.mode) source.removeRule(platformId);
+    else source.setRule(platformId, rule);
   }
 
   /**
@@ -115,7 +120,7 @@
   }
 
   function toggleDay(platformId, day) {
-    const rule = romm.ruleFor(platformId);
+    const rule = source.ruleFor(platformId);
     const days = new SvelteSet(rule.days ?? []);
     if (days.has(day)) days.delete(day);
     else days.add(day);
@@ -200,14 +205,14 @@
   };
 
   const duplicateOptions = $derived(
-    (romm.ruleOptions?.duplicate_actions ?? ['skip', 'overwrite', 'rename']).map(
+    (source.ruleOptions?.duplicate_actions ?? ['skip', 'overwrite', 'rename']).map(
       (value) => ({ value, label: duplicateLabels[value] ?? value }),
     ),
   );
 
   async function save() {
     try {
-      await romm.saveRules();
+      await source.saveRules();
       toast.success('Automation rules saved');
     } catch (e) {
       toast.error(e?.message ?? 'Failed to save rules');
@@ -225,12 +230,12 @@
   async function commitPendingEdits() {
     if (!dirty) return true;
     try {
-      await romm.saveRules();
+      await source.saveRules();
     } catch (e) {
       toast.error(e?.message ?? 'Failed to save rules');
       return false;
     }
-    if (romm.rulesDirty) {
+    if (source.rulesDirty) {
       // The save was superseded: an edit landed while it was in flight, so the
       // store deliberately kept the newer rule and left it unsaved. Proceeding
       // would run the action against the *older* server-side snapshot while
@@ -238,12 +243,12 @@
       // off, or a delete-after-verify just cleared. Save again rather than act
       // on a configuration nobody is looking at.
       try {
-        await romm.saveRules();
+        await source.saveRules();
       } catch (e) {
         toast.error(e?.message ?? 'Failed to save rules');
         return false;
       }
-      if (romm.rulesDirty) {
+      if (source.rulesDirty) {
         toast.warning('Your edits are still saving — try that again in a moment');
         return false;
       }
@@ -254,7 +259,7 @@
   async function preview() {
     if (!(await commitPendingEdits())) return;
     try {
-      const r = await romm.previewSweep();
+      const r = await source.previewSweep();
       const n = r?.queued ?? 0;
       toast.info(n ? `Would queue ${n} conversion${n === 1 ? '' : 's'}` : 'Nothing to convert');
     } catch (e) {
@@ -265,7 +270,7 @@
   async function runNow() {
     if (!(await commitPendingEdits())) return;
     try {
-      const r = await romm.runSweep();
+      const r = await source.runSweep();
       const n = r?.queued ?? 0;
       if (n) toast.success(`Queued ${n} conversion${n === 1 ? '' : 's'}`);
       else toast.info('Nothing to convert right now');
@@ -284,7 +289,7 @@
     // surprise.)
     if (enabled && !(await commitPendingEdits())) return;
     try {
-      await romm.saveSettings({ auto_convert: enabled });
+      await source.setScheduleEnabled(enabled);
       toast.success(enabled ? 'Automatic conversion on' : 'Automatic conversion off');
     } catch (e) {
       toast.error(e?.message ?? 'Failed to save');
@@ -294,7 +299,7 @@
   /** Clear one platform's converted-id history (see the store for why). */
   async function forgetConverted(platformId) {
     try {
-      await romm.forgetConverted([String(platformId)]);
+      await source.forgetConverted([String(platformId)]);
       toast.success('Conversion history cleared for this platform');
     } catch (e) {
       toast.error(e?.message ?? 'Failed to clear the conversion history');
@@ -312,7 +317,7 @@
     tool_wrong_for_platform: 'the saved format is not for this system — skipped',
     output_dir_outside_volumes:
       'its output folder is outside the configured volumes — skipped',
-    unreadable: 'RomM could not list this platform',
+    unreadable: 'the Library could not list this platform',
     queue_failed: 'the conversion queue rejected this batch',
     destination_claimed:
       'another job took one of the output paths — nothing was queued, the next '
@@ -327,7 +332,7 @@
   }
 
   function lastRunLabel(platformId) {
-    const state = romm.lastRunFor(platformId);
+    const state = source.lastRunFor(platformId);
     if (!state?.last_run_at) return 'never run';
     const when = new Date(state.last_run_at);
     if (Number.isNaN(when.getTime())) return 'never run';
@@ -340,7 +345,7 @@
     <div class="master-text">
       <h2>Automatic conversion</h2>
       <p>
-        Each platform runs on its own schedule. A ROM is only queued when its
+        Each platform runs on its own schedule. An Image is only queued when its
         target format is genuinely missing, so a sweep that runs twice — or
         after a restart — never duplicates work.
       </p>
@@ -351,15 +356,15 @@
         label="Run automatically"
         onchange={(v) => toggleAuto(v)}
       />
-      <Button variant="secondary" onclick={preview} loading={romm.sweeping} icon={eyeIcon}>
+      <Button variant="secondary" onclick={preview} loading={source.sweeping} icon={eyeIcon}>
         Preview
       </Button>
-      <Button onclick={runNow} loading={romm.sweeping} icon={playIcon}>Run now</Button>
+      <Button onclick={runNow} loading={source.sweeping} icon={playIcon}>Run now</Button>
     </div>
   </section>
 
-  {#if romm.sweepResult}
-    {@const r = romm.sweepResult}
+  {#if source.sweepResult}
+    {@const r = source.sweepResult}
     <section class="sweep">
       <strong>{r.dry_run ? 'Preview' : 'Last run'}:</strong>
       {r.queued ?? 0} queued
@@ -367,7 +372,7 @@
         · {r.skipped_existing ?? 0} already converted
         · {r.skipped_filtered ?? 0} filtered out
         {#if r.skipped_active}· {r.skipped_active} already in the queue{/if}
-        {#if r.skipped_missing}· {r.skipped_missing} listed by RomM but gone from disk{/if}
+        {#if r.skipped_missing}· {r.skipped_missing} listed but gone from disk{/if}
         {#if r.skipped_unconvertible}
           · {r.skipped_unconvertible} the target format cannot take
         {/if}
@@ -378,14 +383,14 @@
       {#if r.errors?.length}
         <ul class="sweep-errors">
           {#each r.errors as e (e.platform_id)}
-            <li>{romm.platformName(e.platform_id)}: {sweepErrorLabel(e.error)}</li>
+            <li>{source.platformName(e.platform_id)}: {sweepErrorLabel(e.error)}</li>
           {/each}
         </ul>
       {/if}
       {#each r.platforms ?? [] as p (p.platform_id)}
         {#if p.candidates?.length}
           <details class="candidates">
-            <summary>{romm.platformName(p.platform_id)}: {p.queued}</summary>
+            <summary>{source.platformName(p.platform_id)}: {p.queued}</summary>
             <!-- Keyed by index: the backend reduces candidates to basenames, so
                  two ROMs in different folders can both be "Game.iso" and a
                  value key would throw mid-render. -->
@@ -396,24 +401,24 @@
     </section>
   {/if}
 
-  {#if romm.rulesError}
+  {#if source.rulesError}
     <div class="rules-error" role="alert">
-      Could not load the automation rules: {romm.rulesError}
+      Could not load the automation rules: {source.rulesError}
     </div>
   {/if}
 
-  {#if romm.rulesLoading}
+  {#if source.rulesLoading}
     <div class="loading"><Spinner /> Loading rules…</div>
   {:else if platforms.length === 0}
     <EmptyState
-      title="No platforms yet"
-      description="Connect RomM in Settings, then your platforms appear here."
+      title={source.emptyTitle}
+      description={source.emptyHint}
     />
   {:else}
     <div class="rules">
       {#each platforms as platform (platform.id)}
-        {@const rule = romm.ruleFor(platform.id)}
-        {@const configured = !!romm.rules[String(platform.id)]}
+        {@const rule = source.ruleFor(platform.id)}
+        {@const configured = !!source.rules[String(platform.id)]}
         {@const spec = specFor(rule.mode)}
         {@const open = expanded.has(platform.id)}
         <article class="rule" class:configured>
@@ -421,7 +426,9 @@
             <button class="row-toggle" type="button" onclick={() => toggle(platform.id)}>
               <ChevronDown size={16} class={open ? 'chev open' : 'chev'} />
               <span class="pname">{platform.name}</span>
-              {#if platform.rom_count}<span class="muted">{platform.rom_count} ROMs</span>{/if}
+              {#if source.imageCount(platform)}
+                <span class="muted">{source.imageCount(platform)} {source.imageNoun}</span>
+              {/if}
             </button>
             <div class="row-summary">
               {#if configured && rule.enabled}
@@ -613,7 +620,7 @@
                     <span>Convert in this order</span>
                     <Select
                       value={rule.order}
-                      options={(romm.ruleOptions.orders ?? []).map((o) => ({
+                      options={(source.ruleOptions.orders ?? []).map((o) => ({
                         value: o, label: ORDER_LABELS[o] ?? o,
                       }))}
                       ariaLabel="Order"
@@ -646,7 +653,7 @@
                   </label>
 
                   <label class="field">
-                    <span>Smallest ROM (MB)</span>
+                    <span>Smallest Image (MB)</span>
                     <input
                       type="number" min="0"
                       value={rule.min_size_mb}
@@ -657,7 +664,7 @@
                   </label>
 
                   <label class="field">
-                    <span>Largest ROM (MB, 0 = any)</span>
+                    <span>Largest Image (MB, 0 = any)</span>
                     <input
                       type="number" min="0"
                       value={rule.max_size_mb}
@@ -698,12 +705,12 @@
                   />
                   <Checkbox
                     checked={rule.only_matched}
-                    label="Only ROMs RomM has identified"
+                    label={source.matchedLabel}
                     onchange={(v) => setIdFilter(platform.id, 'only_matched', v)}
                   />
                   <Checkbox
                     checked={rule.only_unmatched}
-                    label="Only ROMs RomM could not identify"
+                    label={source.unmatchedLabel}
                     onchange={(v) => setIdFilter(platform.id, 'only_unmatched', v)}
                   />
                   <!-- Two capabilities, not one. A mode can be verifiable and
@@ -761,7 +768,7 @@
                   </p>
                 {/if}
 
-                {#if romm.losesDatMatch(spec)}
+                {#if source.losesDatMatch(spec)}
                   <p class="warn">
                     RomM cannot hash-match <strong>{spec?.outputExt}</strong>, so
                     these ROMs need their metadata re-applied after RomM rescans.
@@ -779,14 +786,14 @@
                 <p class="last-run muted">{lastRunLabel(platform.id)}</p>
 
                 {#if rule.duplicate_action !== 'skip'}
-                  {@const remembered = romm.convertedCountFor(platform.id)}
+                  {@const remembered = source.convertedCountFor(platform.id)}
                   {#if remembered > 0}
                     <p class="last-run muted forget">
                       <span>
                         Remembers {remembered}
-                        {remembered === 1 ? 'ROM' : 'ROMs'} it has already converted, so
+                        {remembered === 1 ? 'Image' : 'Images'} it has already converted, so
                         {duplicateLabels[rule.duplicate_action] ?? rule.duplicate_action}
-                        happens once per ROM instead of every run.
+                        happens once per Image instead of every run.
                       </span>
                       <Button
                         variant="ghost"
@@ -806,7 +813,7 @@
 
     <div class="save-bar" class:visible={dirty}>
       <span>Unsaved changes</span>
-      <Button onclick={save} loading={romm.rulesSaving} icon={saveIcon}>Save rules</Button>
+      <Button onclick={save} loading={source.rulesSaving} icon={saveIcon}>Save rules</Button>
     </div>
   {/if}
 </div>

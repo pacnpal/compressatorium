@@ -129,7 +129,16 @@ async def library_platforms(library_id: str) -> dict:
     for platform in summary["platforms"]:
         platform["tool_ids"] = registry.narrow_to_platform(ready, platform["slug"])
         platform["mode_ids"] = registry.modes_for_platform(platform["slug"])
-    return {"library": libraries.describe(library), **summary}
+    return {
+        "library": libraries.describe(library),
+        **summary,
+        # Which modes may run unattended, as /api/romm/status reports it, so
+        # the editor offers the same targets for every Library.
+        "automatable_modes": sorted(
+            spec.mode for spec in registry.mode_specs()
+            if registry.mode_is_automatable(spec.mode)
+        ),
+    }
 
 
 @router.get("/libraries/{library_id}/rules")

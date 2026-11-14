@@ -1,7 +1,7 @@
 """Work out an Image's Platform from the Image itself.
 
 One function, :func:`detect_platform`, shared by the convert panel's Auto
-choice and (later) folder Libraries, the Inbox and the CLI. It never guesses:
+choice and folder Libraries, and (later) the Inbox and the CLI. It never guesses:
 
 1. **Header.** Each tool that takes the file's extension reads its own header
    through ``ToolPlugin.header_platform`` (chdman: PS1/PS2/PSP/Dreamcast/

@@ -2159,8 +2159,8 @@ forever. Recording never raises: a failure is logged and the job is unaffected.
 A Rule converts the Images of one Platform in one Library. The engine that runs
 Rules is shared; where the Images come from is behind a `Library`
 (`services/rules/library.py`). RomM is the first Library
-(`services/romm/library.py`, `romm_library`). A folder Library (#303) is the
-second: one root folder inside a Volume.
+(`services/romm/library.py`, `romm_library`). A folder Library (#303,
+`services/libraries/folder.py`) is the second: one root folder inside a Volume.
 
 | Module | Holds |
 | --- | --- |
@@ -2168,10 +2168,12 @@ second: one root folder inside a Volume.
 | `rules/schedule.py` | `_in_window` (weekday mask, time window, time zone), `_is_due` (interval) |
 | `rules/store.py` | the `rules` and `rules.state` preference rows, keyed `"<library id>:<platform id>"`, and the legacy-key move |
 | `rules/sweep.py` | `get_rules` / `set_rules` / `get_state` / `forget_converted`, the sweep, the converted history, `note_job_finished`, `run_forever` |
-| `rules/library.py` | `Library`, `Image`, `Platform`, `QueuedImage`, `LibraryUnreadable`, capability names |
+| `rules/library.py` | `Library`, `Image`, `Platform`, `QueuedImage`, `LibraryUnreadable`, capability names, `duplicate_actions(library)` |
 
-**The interface.** A Library has an `id` (`"romm"`; a folder Library will use
-`"folder:<root>"`), `capabilities`, and:
+**The interface.** A Library has an `id` (`"romm"`; a folder Library uses
+`"folder:<row id>"`, the row in `folder_libraries`, so a path with a `:` in it
+cannot reach a stored key), `capabilities`, `kind`, `name` and `root` (for the
+API and the Rules view; the engine never reads those three), and:
 
 - `platforms()` and `images(platform_id)`, both blocking (the sweep calls them
   in a worker thread). `images` raises `LibraryUnreadable`, which the sweep
@@ -2208,8 +2210,13 @@ second: one root folder inside a Volume.
 - `sweep_extras()` adds keys when a sweep ends (RomM: `pending_repins`).
 
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`) say what a Library
-supports. The engine does not gate on them yet; a Rules editor and the folder
-Library use them to offer only what applies.
+supports. `CONVERTED_HISTORY` is enforced: `duplicate_actions(library)` is
+every policy with it and `("skip",)` without, `normalize_rule` falls a stored
+policy outside that set back to `skip`, and `PUT /api/libraries/{id}/rules`
+refuses one with 422 (`duplicate_action_unsupported`). The Rules endpoints
+return the same set in `options.duplicate_actions`, so the editor never offers
+a policy the Library cannot honour. Nothing in `rules/` asks what kind of
+Library it has.
 
 **What `recognized` means.** It is the Library's own identification of the
 Image, and it is what the Rule filters `only_matched` / `only_unmatched` read.
@@ -2217,7 +2224,12 @@ RomM fills it with RomM's "identified" status (`is_identified`, else any
 metadata-provider id), which is how `only_matched` has always behaved. That is
 a metadata match, often by file name, not Recognized in the glossary sense (a
 DAT or Hasheous hash match). The field is a stand-in until DAT-based
-recognition lands; code that needs a hash match must not read it as one.
+recognition lands; code that needs a hash match must not read it as one. A
+folder Library fills it with Recognized proper: the cached `dat_matches` row
+for the file (one batched query per listing, `get_matches_batch`), True for a
+DAT or Hasheous hit, False for a miss still valid for the configured sources
+(`routes.dat.cached_result_usable`), None when nothing usable is cached.
+Listing never hashes.
 
 **Storage.** Rules live in the `rules` preference row and run state in
 `rules.state`, one entry per `"<library id>:<platform id>"`. Callers read and
@@ -2243,13 +2255,55 @@ place for anything that reports a finished sweep.
 RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
 `run_forever()`, ...) and passes `romm_library` to each, so the HTTP API did
 not change. `run_forever(libraries)` takes a callable returning the Libraries to
-sweep on each tick.
+sweep on each tick. `main.py` passes `services.libraries.all_libraries` (through
+`services.libraries.run_forever`), so RomM and every folder Library whose
+`schedule_enabled` is on are swept.
+
+**The folder Library** (`services/libraries/folder.py`). A walk of the root
+(`os.walk`, symlinks not followed, symlinked files skipped) lists every regular
+file whose extension a tool reads or writes (`registry.convertible_extensions`
+plus `output_extensions`). Each goes through `platform_detect.detect_platform`
+(cached by size and mtime). An Image with a Platform belongs to it; a Conflicted
+or Unsorted one belongs to none, so no Rule sees it. A file the process cannot
+read, or a folder it cannot list, is counted as `unreadable` and skipped. A
+Platform id is the canonical slug (`platform_detect.known_slug` refuses one no
+Platform has), an Image key is the posix path relative to the root, `added_at`
+is the mtime. `summary()` gives the Rules view its counts. The Library declares
+`RECOGNIZED_FILTER` and not `CONVERTED_HISTORY`, so its Rules are skip-only.
+Each `images(platform_id)` walks the root again; detection is cached, so a
+repeat walk costs a stat per file.
+
+**The catalogue** (`services/libraries/__init__.py`). Folder Libraries are rows
+of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
+migration 0010), read once and cached; `register`, `update` and `remove`
+replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
+browser's check), requires a folder, and refuses the same root or one that
+contains or sits inside a registered one (409), since two Libraries would give
+one Image two Rules. `remove` calls `sweep.forget_library`, which under the
+sweep lock drops the Library's Rules and state rows and its entries in the
+job-owner index, then deletes the row. No file is touched.
+
+**The API** (`routes/libraries.py`): `GET/POST /api/libraries`,
+`PATCH/DELETE /api/libraries/{id}` (folder Libraries only),
+`GET /api/libraries/{id}/platforms` (folder only; also `tool_ids`, `mode_ids`
+and `automatable_modes`, as RomM's platform list carries),
+`GET/PUT /api/libraries/{id}/rules`, `POST .../rules/forget-converted`,
+`POST .../preview` and `POST .../run`. RomM's own `/api/romm/rules` and
+`/api/romm/auto-convert/*` are unchanged.
+
+**The Rules view** (`src/lib/components/views/RulesView.svelte`). A Library
+picker over `RuleEditor.svelte` (the former `RommAutomation.svelte`). The editor
+reads one *rules source*: the RomM store for RomM, a `FolderRulesSource`
+(`src/lib/stores/libraries.svelte.js`) for a folder Library; the members both
+carry are listed at the top of that file. The RomM view's Automation tab renders
+the same view opened on RomM. Folders get **Register as a Library** in the row
+menu (`RowActionsMenu.svelte`).
 
 ### 3.3.12 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
 
 `detect_platform(path) -> Detection` is the one place an Image's Platform is
-worked out without a library manager. The convert panel's Auto choice uses it
-today; folder Libraries (#303), the Inbox and the CLI (#306) are meant to call
+worked out without a library manager. The convert panel's Auto choice
+and folder Libraries (#303) use it; the Inbox and the CLI (#306) are meant to call
 the same function. `Detection` is a frozen dataclass: `platform` (a slug, or
 None), `how` (`"header"`, `"folder"`, `"conflict"`, `"unsorted"`), what each
 source said (`header`, `folder`) and a one-line `reason` for the UI.

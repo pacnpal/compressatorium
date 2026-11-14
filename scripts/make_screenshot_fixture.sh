@@ -48,4 +48,13 @@ placeholder "$root/Nintendo 3DS/mario-3d-land.cci" 2048
 placeholder "$root/Wii U/splatoon.wud" 3072
 placeholder "$root/Wii U/mario-maker.wux" 1024
 
+# A folder Library (#303): Platform folders the way ES-DE and Batocera lay them
+# out. The placeholders carry no header, so each Image's Platform comes from its
+# folder name; the loose file at the top has none and shows as Unsorted.
+mkdir -p "$root/ROM Library/roms/ps2" "$root/ROM Library/roms/gc"
+placeholder "$root/ROM Library/roms/ps2/ico.iso" 2048
+placeholder "$root/ROM Library/roms/ps2/okami.iso" 2048
+placeholder "$root/ROM Library/roms/gc/metroid-prime.iso" 2048
+placeholder "$root/ROM Library/roms/mystery-disc.iso" 1024
+
 echo "Fixture volume created under: $root"
