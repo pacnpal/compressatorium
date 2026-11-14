@@ -1,0 +1,180 @@
+"""The Library interface: what the Rule engine needs from a set of Images.
+
+A Library is a set of Images that Rules run against (see ``CONTEXT.md``). The
+engine in :mod:`services.rules.sweep` knows nothing about where a Library's
+Images come from. It asks the Library for the Images of one Platform, filters
+and orders them, and queues conversions. Anything only one kind of Library
+does (RomM's metadata snapshot, for one) happens in that Library's hooks.
+
+RomM is the first Library (:mod:`services.romm.library`). A folder Library is
+one root folder inside a Volume, and its Image key is the path relative to that
+root.
+
+Blocking methods (``platforms``, ``images``, ``Image.path``) may touch the
+network or a mount. The engine calls them off the event loop.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Hashable, Mapping
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+# Capabilities a Library can declare. The engine does not gate on them yet;
+# they say what a Library supports so a Rules editor, and the folder Library
+# (#303), can offer only what applies.
+#
+# Images carry the Library's own identification (``Image.recognized``), so a
+# Rule's only_matched / only_unmatched filters mean something.
+RECOGNIZED_FILTER = "recognized_filter"
+# A Rule may use the ``overwrite`` and ``rename`` duplicate policies. Both need
+# the converted-history memory, keyed by Image key, to stay idempotent.
+CONVERTED_HISTORY = "converted_history"
+
+
+class LibraryUnreadable(Exception):
+    """The Library could not list a Platform's Images right now."""
+
+
+@dataclass(frozen=True)
+class Platform:
+    """One Platform of a Library.
+
+    ``id`` is the Library's own id for it as a string (RomM's platform id,
+    or a folder Library's folder slug). ``slug`` is the console slug the tool
+    registry knows (``ngc``, ``ps2``), used to check a mode fits the Platform.
+    """
+
+    id: str
+    slug: str | None
+    name: str
+
+
+class Image:
+    """One Image as a Library reports it.
+
+    ``key`` identifies the Image inside its Library and is what the converted
+    history is keyed by (RomM: the ROM id; a folder Library: the path relative
+    to its root). ``name`` is the file name the Rule's name filters match,
+    ``title`` what the ``name`` order sorts by. ``added_at`` is any number that
+    grows as Images are added, newest largest.
+
+    ``recognized`` is the Library's own identification of the Image: True or
+    False when it knows, None when it cannot say. It is what a Rule's
+    ``only_matched`` / ``only_unmatched`` filters read. For RomM it is RomM's
+    "identified" status (a metadata-provider match, often by file name), not
+    Recognized in the glossary sense of a DAT or Hasheous hash match. It
+    stands in until DAT-based recognition lands; code that needs a hash match
+    must not read this field as one.
+
+    ``path`` is the local path, or None when the Image has none here. A Library
+    that can only work it out by touching the disk passes ``resolve_path``
+    instead, and the first read of ``path`` calls it once. That read can block,
+    so the engine makes it off the event loop.
+
+    ``record`` is the Library's own record for the Image, for its hooks.
+    """
+
+    __slots__ = (
+        "_path", "_resolve_path", "added_at", "key", "name", "platform",
+        "recognized", "record", "size", "title",
+    )
+
+    def __init__(
+        self,
+        *,
+        key: Hashable,
+        name: str,
+        size: int = 0,
+        added_at: float = 0,
+        recognized: bool | None = None,
+        platform: str | None = None,
+        title: str | None = None,
+        path: str | None = None,
+        resolve_path: Callable[[], str | None] | None = None,
+        record: Any = None,
+    ) -> None:
+        self.key = key
+        self.name = name
+        self.size = size
+        self.added_at = added_at
+        self.recognized = recognized
+        self.platform = platform
+        self.title = title if title is not None else name
+        self._path = path
+        self._resolve_path = resolve_path
+        self.record = record
+
+    @property
+    def path(self) -> str | None:
+        if self._resolve_path is not None:
+            self._path = self._resolve_path()
+            self._resolve_path = None
+        return self._path
+
+    def __repr__(self) -> str:
+        return f"Image(key={self.key!r}, name={self.name!r})"
+
+
+@dataclass(frozen=True)
+class QueuedImage:
+    """One Image a sweep just queued, as handed to ``Library.after_queue``."""
+
+    image: Image
+    source: str
+    destination: str
+    pre: str
+
+
+class Library(Protocol):
+    """What the Rule engine needs from a Library."""
+
+    # Stable id. Stored Rule and state keys are ``f"{id}:{platform_id}"``.
+    id: str
+    # A set of the capability names above.
+    capabilities: frozenset[str]
+    # Where an earlier release kept this Library's Rules or state without the
+    # Library prefix, as ``{engine key: old preference key}``. Read once, moved
+    # under the prefixed keys, then deleted. Empty for a new kind of Library.
+    legacy_preference_keys: Mapping[str, str]
+
+    def configured(self) -> bool:
+        """Whether the Library can be swept at all right now."""
+
+    def canonical_platform_id(self, raw: Any) -> str | None:
+        """The canonical string form of a Platform id, or None if *raw* is not one."""
+
+    def platform_value(self, platform_id: str) -> Any:
+        """A Platform id as this Library's API reports it. Also its sort order."""
+
+    def platforms(self) -> list[Platform]:
+        """Every Platform in the Library. Blocking."""
+
+    def images(self, platform_id: str) -> list[Image]:
+        """The Images of one Platform. Blocking. Raises :class:`LibraryUnreadable`."""
+
+    def rule_defaults(self) -> Mapping[str, Any]:
+        """Overrides for the engine's Rule defaults (interval, cap, verify, delete)."""
+
+    def max_per_sweep(self) -> int:
+        """The most a single sweep of this Library may queue, over all Platforms."""
+
+    def schedule_enabled(self) -> bool:
+        """The master switch: whether the scheduler sweeps this Library."""
+
+    # ---- hooks for steps only this Library performs ----
+
+    def sweep_blocked(self) -> str | None:
+        """An error code when the Library must not be swept now, else None."""
+
+    def summary_fields(self) -> Mapping[str, Any]:
+        """Extra keys every per-Platform summary starts with (and the result too)."""
+
+    async def after_queue(
+        self, rule: dict, spec: Any, queued: list[QueuedImage],
+        summary: dict, result: dict,
+    ) -> None:
+        """Called once a Platform's batch is accepted by the queue."""
+
+    async def sweep_extras(self) -> Mapping[str, Any]:
+        """Extra keys added to a sweep's result when it ends."""
