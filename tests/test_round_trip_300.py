@@ -520,6 +520,23 @@ async def test_verify_without_the_success_line_fails_although_chdman_exits_0(
     assert result["valid"] is False
 
 
+NO_CHECKSUM = "This CHD carries no checksum, so it can't be checked"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stdout", [
+    "No verification to be done; CHD has no checksum\n",
+    "No verification to be done; CHD is uncompressed\n",
+])
+async def test_a_chd_without_a_checksum_is_reported_as_not_checkable(
+    tmp_path, monkeypatch, stdout,
+):
+    # Still not Intact, but the reason is that it can't be checked, not damage.
+    result = await _verify_with(tmp_path, monkeypatch, stdout)
+    assert result["valid"] is False
+    assert result["message"] == NO_CHECKSUM
+
+
 @pytest.mark.asyncio
 async def test_a_nonzero_exit_still_fails_verify(tmp_path, monkeypatch):
     result = await _verify_with(tmp_path, monkeypatch, f"{_RAW_OK}\n", rc=1)
@@ -618,6 +635,28 @@ async def test_createdvd_with_matching_data_sha1_deletes_the_iso(e2e):
     assert not iso.exists()
     assert job.check_passed == "round_tripped"
     assert ledger.row_from_job(job)["check_passed"] == "round_tripped"
+
+
+@pytest.mark.asyncio
+async def test_a_delete_source_job_whose_chd_has_no_checksum_keeps_the_iso_and_says_why(
+    e2e, monkeypatch,
+):
+    from services.chdman import ChdmanService
+
+    iso = e2e["tmp_path"] / "Game.iso"
+    iso.write_bytes(b"dvd sectors" * 4096)
+    service = _chdman()._service
+    # The real verify, run against a chdman that has nothing to check.
+    monkeypatch.setattr(service, "verify", ChdmanService.verify.__get__(service))
+    monkeypatch.setattr(service, "chdman_path", _fake_verifier(
+        e2e["tmp_path"], "No verification to be done; CHD is uncompressed\n",
+    ))
+
+    job = await _run(e2e, iso, "createdvd", delete_on_verify=True)
+
+    assert job.status.value == "failed"
+    assert iso.exists()
+    assert NO_CHECKSUM in job.error_message
 
 
 @pytest.mark.asyncio

@@ -2412,7 +2412,10 @@ Source that chdman cannot reproduce byte for byte does not match. That covers
 cue `WAVE` or `MOTOROLA` (big-endian) audio files, track files with a trailing
 partial sector, and GD-ROM sets whose layout differs from chdman's `.gdi`
 output (a CHD does not say whether its Source was a `.gdi` or a Redump-style
-cue, and it is always extracted as `.gdi`).
+cue, and it is always extracted as `.gdi`). Two cases are kept every time: a
+Redump-style GD-ROM cue/bin Source (a cue table can never equal chdman's gdi
+table), and a cue with `CDI/2352` tracks (MAME stores them as `MODE2_RAW` and
+extracts `MODE2/2352`, and track type tokens are compared as written).
 
 The other tools return `None` today and their modes keep the container check;
 #301 adds rows here. What the check guarantees

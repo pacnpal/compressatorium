@@ -469,7 +469,7 @@ never if it fails. For Dolphin modes and CHDMAN Create CD / Create DVD the bar
 is higher by default: the output must be **Round-tripped**, meaning the disc it
 decodes to has the same SHA1 as the source disc. A CD CHD is extracted to a temp
 folder for this, and both its track data and its track table (tracks, types,
-lengths, index offsets, gaps) must match the source cue; the folder is removed
+lengths, index offsets, gaps) must match the source cue or gdi; the folder is removed
 afterwards. Without about a disc's worth of free scratch space the job keeps the
 source and fails. **Container check only (faster, weaker)** in the convert panel
 drops back to the Intact check for that job. You get a confirmation list of

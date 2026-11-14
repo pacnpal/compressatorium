@@ -325,6 +325,9 @@ class ChdmanService:
         return str(input_p.parent / filename)
 
 
+NO_CHECKSUM_MESSAGE = "This CHD carries no checksum, so it can't be checked"
+
+
 def _judge_verify_output(lines: list[str]) -> str | None:
     """Why a ``chdman verify`` that exited 0 still failed, or None if it passed.
 
@@ -342,9 +345,10 @@ def _judge_verify_output(lines: list[str]) -> str | None:
     ]
     if errors:
         return "\n".join(errors)
-    skipped = next((line for line in text if "No verification to be done" in line), None)
-    if skipped:
-        return skipped
+    if any("No verification to be done" in line for line in text):
+        # Uncompressed, or no checksum: nothing was read, so not Intact. Said
+        # as "can't be checked" so a library file does not look damaged.
+        return NO_CHECKSUM_MESSAGE
     if not any("Raw SHA1 verification successful" in line for line in text):
         return "chdman verify did not report a raw SHA1 match"
     return None
