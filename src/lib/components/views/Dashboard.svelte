@@ -2,6 +2,7 @@
   import QueueSummaryCard from '$lib/components/dashboard/QueueSummaryCard.svelte';
   import VolumeOverviewCard from '$lib/components/dashboard/VolumeOverviewCard.svelte';
   import RecentConversionsCard from '$lib/components/dashboard/RecentConversionsCard.svelte';
+  import SavingsCard from '$lib/components/dashboard/SavingsCard.svelte';
   import VerificationStatusCard from '$lib/components/dashboard/VerificationStatusCard.svelte';
   import QuickToolsCard from '$lib/components/dashboard/QuickToolsCard.svelte';
   import MetadataScanCard from '$lib/components/dashboard/MetadataScanCard.svelte';
@@ -17,6 +18,7 @@
     <QueueSummaryCard />
     <VerificationStatusCard />
     <VolumeOverviewCard />
+    <SavingsCard />
     <RecentConversionsCard />
     <MetadataScanCard />
     <QuickToolsCard />

@@ -47,6 +47,25 @@ from utils.path_utils import (
 
 logger = get_logger("job_manager")
 
+
+def _source_bytes(path: str) -> Optional[int]:
+    """Size of a job's Source: a file, a whole directory tree, or the
+    archive holding a member. None when it can't be read."""
+    real = strip_archive_path(path) if "::" in path else path
+    try:
+        if os.path.isdir(real):
+            total = 0
+            for root, _dirs, files in os.walk(real):
+                for name in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        pass
+            return total
+        return os.path.getsize(real)
+    except OSError:
+        return None
+
 # Modes for externally-managed jobs that bypass the conversion queue,
 # they are driven by callers via create/update/finish_external_job and
 # must NOT count against max_queue_depth backpressure, stuck-detection,
@@ -2695,6 +2714,8 @@ class JobManager:
 
         job.status = JobStatus.PROCESSING
         job.started_at = datetime.now(timezone.utc)
+        if job.input_bytes is None:
+            job.input_bytes = await run_in_threadpool(_source_bytes, job.file_path)
         # Restart the progress clock at the moment work actually begins. It was
         # last set when the job was created, so a job that waited in the queue
         # longer than debug_progress_timeout -- routine on a deep queue -- would
@@ -3056,6 +3077,7 @@ class JobManager:
                         )
 
                     verified = True
+                    job.check_passed = "intact"
                     # Snapshot what produced this verified artifact (mode +
                     # output shaping + source/output fingerprints) so a later
                     # re-queue can recognize prior success and complete as a
@@ -3236,6 +3258,7 @@ class JobManager:
 
                         for path in delete_order:
                             await run_in_threadpool(os.remove, path)
+                            job.deleted_paths.append(path)
 
                         source_deleted = True
 

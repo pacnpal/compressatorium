@@ -1,4 +1,5 @@
 <script>
+  import { api } from '$lib/api/endpoints.js';
   import { jobs } from '$lib/stores/jobs.svelte.js';
   import { registry } from '$lib/tools/registry.js';
   import StatCard from './StatCard.svelte';
@@ -6,29 +7,22 @@
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
   import Clock from '@lucide/svelte/icons/clock';
 
-  // Most-recent five terminal-state jobs (any kind). Sorted by
-  // `completed_at` when present, otherwise by id; the backend assigns
-  // ids monotonically so they're a stable order proxy.
-  const recent = $derived.by(() => {
-    const terminal = jobs.jobs.filter(
+  // Read from the Ledger, so the list survives a restart. Refetched whenever
+  // another job finishes (the live terminal count changes).
+  let recent = $state([]);
+  const finished = $derived(
+    jobs.jobs.filter(
       (j) => j.status === 'completed' || j.status === 'failed' || j.status === 'cancelled',
-    );
-    terminal.sort((a, b) => {
-      const ta = Date.parse(a.completed_at ?? '') || 0;
-      const tb = Date.parse(b.completed_at ?? '') || 0;
-      if (ta !== tb) return tb - ta;
-      // Numeric fallback when both ids parse as numbers so "10" sorts
-      // after "2"; lexicographic for non-numeric ids (UUIDs, etc.).
-      const na = Number(a.id);
-      const nb = Number(b.id);
-      if (Number.isFinite(na) && Number.isFinite(nb)) return nb - na;
-      return String(b.id).localeCompare(String(a.id));
-    });
-    return terminal.slice(0, 5);
+    ).length,
+  );
+
+  $effect(() => {
+    void finished;
+    api.getLedgerRecent(5).then((rows) => (recent = rows)).catch(() => {});
   });
 
-  function shortFile(j) {
-    const p = j?.file_path ?? '';
+  function shortFile(row) {
+    const p = row?.source_path ?? '';
     return p.split(/[/\\]/).pop() ?? p;
   }
 
@@ -46,12 +40,12 @@
       <EmptyState title="No recent activity" description="Completed jobs will appear here." glyph="∅" />
     {:else}
       <ul class="recent-list">
-        {#each recent as j (j.id)}
-          {@const spec = registry.specFor(j.mode)}
-          <li class="recent-row" title={j.file_path}>
-            <span class="recent-name">{shortFile(j)}</span>
-            <span class="recent-mode">{spec?.label ?? j.mode}</span>
-            <Badge tone={tone(j.status)} size="sm">{j.status}</Badge>
+        {#each recent as row (row.id)}
+          {@const spec = registry.specFor(row.mode)}
+          <li class="recent-row" title={row.source_path}>
+            <span class="recent-name">{shortFile(row)}</span>
+            <span class="recent-mode">{spec?.label ?? row.mode}</span>
+            <Badge tone={tone(row.status)} size="sm">{row.status}</Badge>
           </li>
         {/each}
       </ul>

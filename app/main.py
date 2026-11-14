@@ -11,6 +11,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from routes import convert, dat, files, info, preferences, romm
+from routes import ledger as ledger_routes
+from services import ledger
 from services.job_manager import job_manager
 from services.nsz import nsz_service
 
@@ -311,6 +313,8 @@ async def lifespan(app: FastAPI):
     # that answer weeks later to know whether a ROM was really converted, so
     # it listens for the outcome and writes it down as each job finishes.
     job_manager.add_terminal_listener(romm_auto.note_job_finished)
+    # Every terminal job also lands in the permanent Ledger (#292).
+    job_manager.add_terminal_listener(ledger.record)
 
     # The unattended-conversion scheduler always runs; it checks the master
     # switch each tick, so toggling auto-convert in the app takes effect
@@ -410,6 +414,7 @@ app.include_router(info.router, prefix="/api", tags=["info"])
 app.include_router(dat.router, prefix="/api", tags=["dat"])
 app.include_router(preferences.router, prefix="/api", tags=["preferences"])
 app.include_router(romm.router, prefix="/api", tags=["romm"])
+app.include_router(ledger_routes.router, prefix="/api", tags=["ledger"])
 
 
 @app.get("/health")

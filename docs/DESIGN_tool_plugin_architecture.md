@@ -2125,6 +2125,28 @@ verified at all") and `ToolPlugin.delete_on_verify_is_safe(mode, compression)`
 because that is where the source is unlinked and a job can arrive there without
 having passed either plan-time check.
 
+### 3.3.10 The Ledger (`services/ledger.py`)
+
+`ledger.record` is a `JobManager.add_terminal_listener` callback (registered in
+`main.py` beside the RomM one), so every runner outcome writes one `ledger` row
+(`db.LedgerEntry`, migration `0009`) while the job object still says how it
+ended. The job carries what the row needs and the in-memory history would lose:
+
+- `ConversionJob.input_bytes` -- Source size (file, directory tree, or the
+  archive holding a member), read when the job starts, before anything can be
+  deleted.
+- `ConversionJob.check_passed` -- `"intact"` once the tool's own verify passed.
+  `"round_tripped"` is reserved for the Round-trip check (#298).
+- `ConversionJob.deleted_paths` -- each path the delete-on-verify step removed;
+  `source_deleted` is derived from it.
+
+`tool` comes from `registry.for_mode`; `platform` is filled only when the mode
+serves exactly one Platform slug until detection lands (#294). `library_id`,
+`image_key` and `referrers_updated` are written empty for later tickets to fill.
+Savings count only completed rows whose Source was deleted. A `retention_days`
+in the `ledger` preference prunes older rows on each write; unset keeps them
+forever. Recording never raises: a failure is logged and the job is unaffected.
+
 ### 3.4 `registry.py`
 
 ```python

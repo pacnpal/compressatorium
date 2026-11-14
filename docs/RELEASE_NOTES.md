@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Ledger: a permanent record of every finished job** (#292). Each job that
+  completes, fails or is cancelled writes one row (finish time, tool, mode,
+  Source and output paths, input and output bytes, duration, status, the check
+  that passed, and any Source files deleted). Rows survive restarts and are
+  kept forever unless `PUT /api/ledger/settings` sets `retention_days`.
+  - New dashboard card **Space saved**: bytes reclaimed by conversions whose
+    Source was deleted, split by Platform and by output format.
+  - **Recent conversions** now reads from the Ledger, so it is no longer empty
+    after a restart.
 - **Xbox / Xbox 360: trim disc images to XISO** with
   [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
   (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's

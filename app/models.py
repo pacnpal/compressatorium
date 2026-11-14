@@ -174,6 +174,12 @@ class ConversionJob(BaseModel):
     # manager can protect the whole source subtree. Serialized to its string
     # value at the API/persistence edge (InputKind is a str enum).
     input_kind: InputKind = InputKind.FILE
+    # Ledger bookkeeping (#292). Source bytes are read before the converter
+    # runs, so a row written after the Source was deleted still has them.
+    input_bytes: int | None = None
+    # "intact" once the tool's own container check passed; None if no check ran.
+    check_passed: str | None = None
+    deleted_paths: list[str] = []
 
 
 class JobCreateRequest(BaseModel):
