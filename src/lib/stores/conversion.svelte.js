@@ -838,7 +838,8 @@ function groupByMode(paths, modeOf) {
   for (const path of paths) {
     const mode = modeOf[path];
     if (!mode) continue;
-    (groups[mode] ??= []).push(path);
+    if (!groups[mode]) groups[mode] = [];
+    groups[mode].push(path);
   }
   return groups;
 }
