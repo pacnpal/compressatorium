@@ -40,12 +40,13 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 
-from config import settings
 from logging_setup import get_logger
 from services.timeout_policy import (
     compute_progress_stall_timeout,
     compute_size_scaled_timeout,
 )
+
+from config import settings
 
 
 class ConversionCancelled(Exception):
@@ -1229,6 +1230,137 @@ class SubprocessRunner:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await comm
             self.untrack_pid(process.pid)
+
+    async def hash_stdout(
+        self,
+        cmd: list[str],
+        *,
+        algorithm: str = "sha1",
+        stdin_path: str | None = None,
+        stdin_offset: int = 0,
+        timeout: float | None = None,
+        cancel_event: asyncio.Event | None = None,
+        nice_via_wrapper: bool = False,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
+        """Run a decoder that writes the decoded image to stdout; hash the stream.
+
+        The streaming counterpart to :meth:`run_capture` for the Round-trip
+        check (#301): stdout is read in chunks and hashed as it arrives, never
+        buffered and never written to a temp file. ``stdin_path`` feeds the
+        child that file from ``stdin_offset`` on (a container whose payload
+        follows a header, piped to ``zstd -dc``), read on detached threads.
+
+        Returns the hex digest (``services.stream_digest.new_hasher`` names).
+        Raises :class:`ReadCancelled` when ``cancel_event`` fires,
+        :class:`asyncio.TimeoutError` past ``timeout`` seconds, and
+        ``RuntimeError`` (with the child's stderr tail) on a non-zero exit. The
+        child is PID-tracked and stopped through the bounded :meth:`reap`
+        ladder on every exit, so a cancel or a deadline stops the decoder.
+        """
+        from services.stream_digest import new_hasher  # import cycle
+
+        if cancel_event is not None and cancel_event.is_set():
+            raise ReadCancelled("Read cancelled")
+        label = os.path.basename(cmd[0])
+        # Command wrappers, never a preexec_fn: see run_verify.
+        if not nice_via_wrapper:
+            cmd = nice_prefix(self._owner) + ioprio_prefix(self._owner) + cmd
+        process = await asyncio.create_subprocess_exec(  # nosemgrep
+            cmd[0], *cmd[1:],
+            stdin=(
+                asyncio.subprocess.PIPE
+                if stdin_path is not None
+                else asyncio.subprocess.DEVNULL
+            ),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        self.track_pid(process.pid)
+        hasher = new_hasher(algorithm)
+        stderr_tail = bytearray()
+
+        async def _feed() -> None:
+            # Plain handle through the detached seam, as z3ds verify does: on
+            # a dead mount the read can only be abandoned, never closed.
+            def _open():
+                handle = open(stdin_path, "rb")  # noqa: SIM115
+                handle.seek(stdin_offset)
+                return handle
+
+            handle = await run_detached(_open)
+            try:
+                while True:
+                    chunk = await run_detached(handle.read, 1 << 20)
+                    if not chunk:
+                        break
+                    process.stdin.write(chunk)
+                    await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the decoder stopped reading; its exit code says why
+            finally:
+                with contextlib.suppress(Exception):
+                    process.stdin.close()
+                with contextlib.suppress(Exception):
+                    await run_detached(handle.close)
+
+        async def _drain_stdout() -> None:
+            while True:
+                chunk = await process.stdout.read(1 << 20)
+                if not chunk:
+                    return
+                hasher.update(chunk)
+
+        async def _drain_stderr() -> None:
+            while True:
+                chunk = await process.stderr.read(4096)
+                if not chunk:
+                    return
+                stderr_tail.extend(chunk)
+                del stderr_tail[:-4096]
+
+        async def _run() -> None:
+            parts = [_drain_stdout(), _drain_stderr()]
+            if stdin_path is not None:
+                parts.append(_feed())
+            await asyncio.gather(*parts)
+            await process.wait()
+
+        work = asyncio.ensure_future(_run())
+        cancel_wait = (
+            asyncio.ensure_future(cancel_event.wait())
+            if cancel_event is not None
+            else None
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                [work] + ([cancel_wait] if cancel_wait is not None else []),
+                timeout=timeout or None,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if work not in done:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ReadCancelled("Read cancelled")
+                raise asyncio.TimeoutError(f"decoder did not finish in {timeout}s")
+            work.result()
+        finally:
+            for helper in (cancel_wait, work):
+                if helper is not None and not helper.done():
+                    helper.cancel()
+            await self.reap(process, exit_timeout=0)
+            for helper in (cancel_wait, work):
+                if helper is not None:
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await helper
+            self.untrack_pid(process.pid)
+        if process.returncode != 0:
+            tail = stderr_tail.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"{label} exited with {process.returncode}"
+                + (f": {tail.splitlines()[-1]}" if tail else ""),
+            )
+        return hasher.hexdigest()
 
     # --- verify ----------------------------------------------------------
     #
