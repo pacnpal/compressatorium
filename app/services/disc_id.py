@@ -479,6 +479,97 @@ def _parse_ipbin(data: bytes) -> dict:
 
 
 # ===========================================================================
+# Platform headers: which console a disc belongs to, from a few bytes
+# ===========================================================================
+#
+# These answer "whose disc is this" and nothing else. The names they return are
+# this module's own vocabulary (the same one ``_parse_system_cnf`` already uses:
+# "ps1", "ps2", "psp", "dreamcast"); ``services.platform_detect`` maps them onto
+# Platform slugs.
+
+# GameCube / Wii disc header magic numbers (big-endian u32). The same values
+# nkit2iso reads, because an NKit image keeps the original disc header.
+GAMECUBE_MAGIC = 0xC2339F3D   # at 0x1C
+WII_MAGIC = 0x5D1C9EA3        # at 0x18
+
+# Sega sector-0 system ids, at the start of the first data sector.
+_SEGA_SECTOR0_IDS = (
+    (b"SEGA SEGASATURN", "saturn"),
+    (b"SEGADISCSYSTEM", "segacd"),
+    (_DC_HWID_NEEDLE, "dreamcast"),
+)
+# Where sector 0's user data starts: a cooked 2048-byte image, a raw Mode 1
+# track (16-byte sync + header), a raw Mode 2 Form 1 track (24 bytes).
+_SECTOR0_OFFSETS = (0, _RAW_SECTOR_HEADER_SIZE_MODE1, _RAW_SECTOR_HEADER_SIZE_MODE2)
+
+
+def nintendo_disc_platform(path: str) -> str | None:
+    """``"gamecube"`` or ``"wii"`` from a raw GC/Wii disc header, else None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(0x20)
+    except OSError:
+        return None
+    if len(head) < 0x20:
+        return None
+    if struct.unpack_from(">I", head, 0x18)[0] == WII_MAGIC:
+        return "wii"
+    if struct.unpack_from(">I", head, 0x1C)[0] == GAMECUBE_MAGIC:
+        return "gamecube"
+    return None
+
+
+def _cue_data_file(path: str) -> str | None:
+    """The first ``FILE`` a cue sheet names, when it exists beside the sheet."""
+    try:
+        with open(path, encoding="latin-1") as cue:
+            for line in cue:
+                parts = line.strip().split('"')
+                if line.strip().upper().startswith("FILE ") and len(parts) >= 2:
+                    candidate = Path(path).parent / parts[1]
+                    return str(candidate) if candidate.is_file() else None
+    except OSError:
+        return None
+    return None
+
+
+def sega_sector0_platform(path: str) -> str | None:
+    """Saturn, Sega CD or Dreamcast from the system id at the start of sector 0.
+
+    Reads one sector. A ``.cue`` is followed to its first data file.
+    """
+    if Path(path).suffix.lower() == ".cue":
+        resolved = _cue_data_file(path)
+        if resolved is None:
+            return None
+        path = resolved
+    try:
+        with open(path, "rb") as f:
+            head = f.read(_RAW_SECTOR_HEADER_SIZE_MODE2 + 0x20)
+    except OSError:
+        return None
+    for offset in _SECTOR0_OFFSETS:
+        window = head[offset:offset + 0x10]
+        for needle, platform in _SEGA_SECTOR0_IDS:
+            if window.startswith(needle):
+                return platform
+    return None
+
+
+def disc_platform(path: str) -> str | None:
+    """The console of a CD/DVD source image, from its own header, or None.
+
+    PS1 / PS2 through ``SYSTEM.CNF``, PSP through ``PARAM.SFO`` and Dreamcast
+    through a ``.gdi``'s ``IP.BIN`` (all the existing extractor), then the Sega
+    sector-0 ids (Saturn, Sega CD, a Dreamcast track read directly).
+    """
+    found = extract_from_source(path)
+    if found and found.get("platform"):
+        return found["platform"]
+    return sega_sector0_platform(path)
+
+
+# ===========================================================================
 # Public synchronous extractor: source files
 # ===========================================================================
 

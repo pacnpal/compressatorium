@@ -20,6 +20,7 @@ from services.disc_id import (
     DiscIdStorageAbandoned,
     clear_embedded_disc_id,
     embed_in_chd,
+    disc_platform,
     extract_from_source,
     read_embedded_game_id,
 )
@@ -157,6 +158,11 @@ class ChdmanTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = chdman_service
+
+    def header_platform(self, path: str) -> str | None:
+        # PS1/PS2/PSP/Dreamcast through the disc-ID parser, Saturn and Sega CD
+        # through their sector-0 system ids.
+        return disc_platform(path)
 
     # chdman's extract/copy modes take .chd input, but a .chd is not a
     # "convertible-from" source in the file listing, only the create sources

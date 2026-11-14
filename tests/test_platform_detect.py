@@ -1,0 +1,305 @@
+"""Platform detection: an Image's Platform worked out from its own bytes.
+
+Fixtures are tiny synthetic headers (a few KiB, or a sparse file where a real
+layout puts the header deep in the image), never real disc images.
+"""
+from __future__ import annotations
+
+import os
+import struct
+from pathlib import Path
+
+import pytest
+from services import platform_detect
+from services.platform_detect import Detection, detect_platform
+
+from .test_disc_id import _make_ipbin, _make_iso, _make_param_sfo
+from .test_xiso_service import build_image
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cache():
+    platform_detect.clear_cache()
+    yield
+    platform_detect.clear_cache()
+
+
+def _write(path: Path, data: bytes) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return str(path)
+
+
+def _gamecube(path: Path) -> str:
+    head = bytearray(0x440)
+    head[0:6] = b"GALE01"
+    struct.pack_into(">I", head, 0x1C, 0xC2339F3D)
+    return _write(path, bytes(head))
+
+
+def _wii(path: Path) -> str:
+    head = bytearray(0x440)
+    head[0:6] = b"RSPE01"
+    struct.pack_into(">I", head, 0x18, 0x5D1C9EA3)
+    return _write(path, bytes(head))
+
+
+def _ps2(path: Path) -> str:
+    cnf = b"BOOT2 = cdrom0:\\SLUS_203.12;1\nVER = 1.00\n"
+    return _write(path, _make_iso({"SYSTEM.CNF": cnf}))
+
+
+def _ps1(path: Path) -> str:
+    cnf = b"BOOT = cdrom:\\SCUS_941.63;1\nTCB = 4\n"
+    return _write(path, _make_iso({"SYSTEM.CNF": cnf}))
+
+
+def _psp(path: Path) -> str:
+    sfo = _make_param_sfo({"DISC_ID": "ULUS10041", "TITLE": "Test"})
+    return _write(path, _make_iso({"PSP_GAME/PARAM.SFO": sfo}))
+
+
+def _sector0(path: Path, magic: bytes, *, raw: bool = False) -> str:
+    """A disc whose first data sector starts with ``magic``.
+
+    ``raw`` writes it the way a 2352-byte BIN track holds it: 16 bytes of sync
+    and header, then the user data.
+    """
+    sector = bytearray(2352 if raw else 2048)
+    start = 16 if raw else 0
+    sector[start:start + len(magic)] = magic
+    return _write(path, bytes(sector))
+
+
+# --------------------------------------------------------------------------- #
+# Headers
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize(
+    ("builder", "name", "expected"),
+    [
+        (_gamecube, "game.iso", "ngc"),
+        (_wii, "game.iso", "wii"),
+        (_ps2, "game.iso", "ps2"),
+        (_ps1, "game.iso", "ps"),
+        (_psp, "game.iso", "psp"),
+        (lambda p: _sector0(p, b"SEGA SEGASATURN "), "game.iso", "saturn"),
+        (lambda p: _sector0(p, b"SEGA SEGASATURN ", raw=True), "game.bin", "saturn"),
+        (lambda p: _sector0(p, b"SEGADISCSYSTEM  "), "game.iso", "segacd"),
+        (lambda p: _sector0(p, b"SEGADISCSYSTEM  ", raw=True), "game.bin", "segacd"),
+        (lambda p: _write(p, _make_ipbin()), "game.iso", "dc"),
+    ],
+    ids=[
+        "gamecube", "wii", "ps2", "ps1", "psp", "saturn-iso", "saturn-bin",
+        "segacd-iso", "segacd-bin", "dreamcast-ipbin",
+    ],
+)
+def test_header_names_the_platform(tmp_path, builder, name, expected):
+    path = builder(tmp_path / "unsorted" / name)
+
+    result = detect_platform(path)
+
+    assert result == Detection(
+        platform=expected, how="header", header=expected, folder=None,
+        reason=result.reason,
+    )
+
+
+def test_xbox_360_header_from_its_layout(tmp_path):
+    path = tmp_path / "stuff" / "halo3.iso"
+    path.parent.mkdir()
+    build_image(path, layout="XGD2", exe="default.xex")
+
+    assert detect_platform(str(path)).platform == "xbox360"
+
+
+def test_trimmed_xbox_image_named_by_its_boot_executable(tmp_path):
+    path = tmp_path / "stuff" / "halo.iso"
+    path.parent.mkdir()
+    build_image(path, layout="XISO", exe="default.xbe")
+
+    assert detect_platform(str(path)).platform == "xbox"
+
+
+def test_dreamcast_gdi_reads_its_first_track(tmp_path):
+    folder = tmp_path / "stuff"
+    track = bytearray(2352)
+    track[16:16 + 0x200] = _make_ipbin()
+    _write(folder / "track01.bin", bytes(track))
+    gdi = _write(folder / "game.gdi", b"1\n1 0 4 2352 track01.bin 0\n")
+
+    assert detect_platform(gdi).platform == "dc"
+
+
+# --------------------------------------------------------------------------- #
+# Folder names
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize(
+    ("folder", "expected"),
+    [
+        # Slugs the tools already declare.
+        ("ps2", "ps2"), ("psp", "psp"), ("ngc", "ngc"), ("wii", "wii"),
+        ("xbox", "xbox"), ("dc", "dc"), ("saturn", "saturn"), ("segacd", "segacd"),
+        # ES-DE / Batocera names for the same consoles.
+        ("psx", "ps"), ("gc", "ngc"), ("gamecube", "ngc"), ("dreamcast", "dc"),
+        ("megacd", "segacd"), ("PS2", "ps2"),
+    ],
+)
+def test_folder_name_names_the_platform_when_there_is_no_header(
+    tmp_path, folder, expected,
+):
+    path = _write(tmp_path / "roms" / folder / "Game (USA)" / "game.iso", b"\0" * 64)
+
+    result = detect_platform(path)
+
+    assert (result.platform, result.how, result.folder) == (expected, "folder", expected)
+
+
+def test_nearest_platform_folder_wins(tmp_path):
+    path = _write(tmp_path / "ps2" / "psp" / "game.iso", b"\0" * 64)
+
+    assert detect_platform(path).platform == "psp"
+
+
+def test_nothing_answers_is_unsorted(tmp_path):
+    path = _write(tmp_path / "downloads" / "game.iso", b"\0" * 64)
+
+    result = detect_platform(path)
+
+    assert result.platform is None
+    assert result.how == "unsorted"
+    assert not result.decided
+
+
+def test_archive_member_uses_the_archive_folder(tmp_path):
+    archive = _write(tmp_path / "psx" / "game.zip", b"PK\x05\x06" + b"\0" * 18)
+
+    result = detect_platform(f"{archive}::disc.cue")
+
+    assert (result.platform, result.how) == ("ps", "folder")
+
+
+def test_missing_file_is_unsorted(tmp_path):
+    result = detect_platform(str(tmp_path / "ps2" / "gone.iso"))
+
+    assert result.how == "unsorted"
+
+
+# --------------------------------------------------------------------------- #
+# Precedence and conflicts
+# --------------------------------------------------------------------------- #
+
+def _blank(path: Path) -> str:
+    return _write(path, b"\0" * 64)
+
+
+# (folder the Image sits in, header builder, expected platform, expected how)
+PRECEDENCE = [
+    ("downloads", _ps2, "ps2", "header"),   # header only
+    ("ps2", _ps2, "ps2", "header"),         # header and folder agree
+    ("ps2", _blank, "ps2", "folder"),       # folder only
+    ("gc", _ps2, None, "conflict"),         # a clash names no Platform
+    ("ps2", _gamecube, None, "conflict"),
+    ("psx", _ps2, None, "conflict"),        # PS1 folder, PS2 disc
+    ("downloads", _blank, None, "unsorted"),
+]
+
+
+@pytest.mark.parametrize(("folder", "builder", "platform", "how"), PRECEDENCE)
+def test_precedence(tmp_path, folder, builder, platform, how):
+    path = builder(tmp_path / folder / "game.iso")
+
+    result = detect_platform(path)
+
+    assert (result.platform, result.how) == (platform, how)
+
+
+def test_conflict_keeps_both_answers_and_says_why(tmp_path):
+    path = _gamecube(tmp_path / "ps2" / "game.iso")
+
+    result = detect_platform(path)
+
+    assert (result.header, result.folder) == ("ngc", "ps2")
+    assert "ps2" in result.reason and "ngc" in result.reason
+
+
+class _Probe:
+    """A stub tool whose header probe answers ``slug`` and counts its calls."""
+
+    def __init__(self, tool_id: str, slug: str | None, exts=frozenset({".iso"})):
+        self.id = tool_id
+        self.slug = slug
+        self.input_extensions = exts
+        self.platform_slugs = frozenset({slug} if slug else ())
+        self.calls = 0
+
+    def header_platform(self, path: str) -> str | None:
+        self.calls += 1
+        return self.slug
+
+
+def test_two_headers_that_disagree_are_a_conflict(tmp_path):
+    path = _blank(tmp_path / "downloads" / "game.iso")
+
+    result = detect_platform(path, tools=[_Probe("a", "ps2"), _Probe("b", "ngc")])
+
+    assert (result.platform, result.how) == (None, "conflict")
+
+
+def test_only_tools_taking_the_extension_are_asked(tmp_path):
+    path = _blank(tmp_path / "downloads" / "game.iso")
+    other = _Probe("cart", "gba", exts=frozenset({".gba"}))
+
+    detect_platform(path, tools=[other])
+
+    assert other.calls == 0
+
+
+def test_a_failing_probe_is_not_an_answer(tmp_path):
+    path = _blank(tmp_path / "ps2" / "game.iso")
+
+    class _Broken(_Probe):
+        def header_platform(self, path):
+            raise OSError("EIO")
+
+    result = detect_platform(path, tools=[_Broken("x", None)])
+
+    assert (result.platform, result.how) == ("ps2", "folder")
+
+
+# --------------------------------------------------------------------------- #
+# Cache
+# --------------------------------------------------------------------------- #
+
+def test_result_is_cached_per_file(tmp_path):
+    path = _blank(tmp_path / "downloads" / "game.iso")
+    probe = _Probe("a", "ps2")
+
+    detect_platform(path, tools=[probe])
+    detect_platform(path, tools=[probe])
+
+    assert probe.calls == 1
+
+
+def test_cache_is_dropped_when_the_size_changes(tmp_path):
+    path = _blank(tmp_path / "downloads" / "game.iso")
+    probe = _Probe("a", "ps2")
+    detect_platform(path, tools=[probe])
+
+    Path(path).write_bytes(b"\0" * 128)
+    detect_platform(path, tools=[probe])
+
+    assert probe.calls == 2
+
+
+def test_cache_is_dropped_when_the_mtime_changes(tmp_path):
+    path = _blank(tmp_path / "downloads" / "game.iso")
+    probe = _Probe("a", "ps2")
+    detect_platform(path, tools=[probe])
+
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    detect_platform(path, tools=[probe])
+
+    assert probe.calls == 2
