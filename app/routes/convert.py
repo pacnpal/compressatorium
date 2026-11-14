@@ -28,6 +28,7 @@ from services.job_manager import (
     QueueBackpressureError,
     job_manager,
 )
+from services import referrers
 from services.romz import romz_service
 from services.output_conflicts import (
     OutputPathExhausted,
@@ -46,6 +47,7 @@ from utils.path_utils import (
     is_within_configured_volumes,
     match_extension,
     source_companions_are_safe,
+    strip_archive_path,
 )
 
 router = APIRouter()
@@ -785,6 +787,21 @@ async def plan_job(
     )
 
 
+async def _planned_output_path(mode: str, file_path: str, output_dir: str | None) -> str:
+    """The output a conversion of *file_path* would be planned to write."""
+    if "::" not in file_path:
+        return await run_in_threadpool(_get_output_path, mode, file_path, output_dir)
+    # An archive member is named from its internal filename and lands beside
+    # the archive unless an output folder was chosen. Off the event loop: romz
+    # extract reads the archive to name its output.
+    archive_path, internal_path = file_path.split("::", 1)
+    output_name = archive_service._output_name_for_member(internal_path)
+    return await run_in_threadpool(
+        _get_output_path, mode, output_name, output_dir or os.path.dirname(archive_path),
+        treat_as_stem=True,
+    )
+
+
 @router.post("/jobs/check-duplicates", response_model=list[DuplicateInfo])
 async def check_duplicates(request: CheckDuplicatesRequest):
     """Check which output files already exist for the given input files."""
@@ -809,29 +826,7 @@ async def check_duplicates(request: CheckDuplicatesRequest):
         if not is_within_configured_volumes(file_path):
             continue
 
-        # Handle archive paths - get the actual filename and determine output location
-        actual_filename = file_path
-        effective_output_dir = output_dir
-
-        if "::" in file_path:
-            # For archive files, use the internal filename for the CHD name
-            # and save next to the archive (unless output_dir is specified)
-            archive_path, internal_path = file_path.split("::", 1)
-            actual_filename = internal_path
-            if not effective_output_dir:
-                effective_output_dir = os.path.dirname(archive_path)
-
-        # Off the event loop: romz extract reads the archive to name its output.
-        if "::" in file_path:
-            output_name = archive_service._output_name_for_member(actual_filename)
-            output_path = await run_in_threadpool(
-                _get_output_path, mode, output_name, effective_output_dir,
-                treat_as_stem=True,
-            )
-        else:
-            output_path = await run_in_threadpool(
-                _get_output_path, mode, actual_filename, effective_output_dir,
-            )
+        output_path = await _planned_output_path(mode, file_path, output_dir)
         exists, _ = await run_in_threadpool(
             check_output_conflicts, mode, output_path,
         )
@@ -841,6 +836,33 @@ async def check_duplicates(request: CheckDuplicatesRequest):
         )
 
     return results
+
+
+async def _add_referrer_changes(
+    item: dict, mode: str, file_path: str, output_dir: str | None,
+) -> None:
+    """List each Referrer's planned change on a delete-plan *item* (#295).
+
+    The same renames the job hands the Referrer hook: every file the delete
+    removes, mapped to the planned output.
+    """
+    item["referrer_changes"] = []
+    delete_paths = item.get("delete_paths") or []
+    if not delete_paths:
+        return
+    output_path = await _planned_output_path(mode, file_path, output_dir)
+    image_path = strip_archive_path(file_path) if "::" in file_path else file_path
+    try:
+        changes = await run_in_threadpool(
+            referrers.plan_changes, image_path, {p: output_path for p in delete_paths},
+        )
+    except Exception as exc:  # noqa: BLE001 - the job would keep the Source too
+        target = getattr(exc, "target", None) or image_path
+        item.setdefault("warnings", []).append(
+            f"Couldn't read {os.path.basename(target)}; the source will be kept",
+        )
+        return
+    item["referrer_changes"] = [c.to_dict() for c in changes]
 
 
 @router.post("/jobs/delete-plan")
@@ -854,6 +876,15 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
         raise HTTPException(
             status_code=400,
             detail=_DELETE_ON_VERIFY_UNSUPPORTED_DETAIL,
+        )
+
+    output_dir = normalize_output_dir(request.output_dir)
+    if output_dir and not is_within_configured_volumes(
+        output_dir, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: output directory outside configured volumes",
         )
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
@@ -874,6 +905,7 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
             }
         else:
             item = await run_in_threadpool(build_delete_plan, file_path)
+            await _add_referrer_changes(item, mode, file_path, output_dir)
 
         if "::" in file_path:
             archive_path = file_path.split("::", 1)[0]

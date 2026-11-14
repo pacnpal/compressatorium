@@ -12,7 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from app.models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+from app.models import (
+    ConversionMode,
+    DeletePlanRequest,
+    DuplicateAction,
+    JobCreateRequest,
+    JobStatus,
+)
 from app.routes import convert as convert_routes
 from app.services import job_manager as job_manager_module
 from app.services import ledger
@@ -139,3 +145,35 @@ async def test_playlist_not_naming_the_disc_is_left_alone(volume):
 
     assert other.read_bytes() == b"Other Game.cue\n"
     assert not (volume / "Other.m3u.bak").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_confirmation_lists_the_playlist_change(volume):
+    plan = await convert_routes.delete_plan(DeletePlanRequest(
+        file_paths=[str(volume / "Game (Disc 1).cue")],
+        mode=ConversionMode.CREATECD,
+    ))
+
+    assert plan["items"][0]["referrer_changes"] == [{
+        "referrer": "m3u",
+        "target": str(volume / "Game.m3u"),
+        "edits": [{"old": "Game (Disc 1).cue", "new": "Game (Disc 1).chd"}],
+    }]
+    # Planning writes nothing.
+    assert (volume / "Game.m3u").read_bytes() == M3U
+    assert not (volume / "Game.m3u.bak").exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_confirmation_follows_the_output_folder(volume):
+    (volume / "chd").mkdir()
+    plan = await convert_routes.delete_plan(DeletePlanRequest(
+        file_paths=[str(volume / "Game (Disc 1).cue")],
+        mode=ConversionMode.CREATECD,
+        output_dir=str(volume / "chd"),
+    ))
+
+    [change] = plan["items"][0]["referrer_changes"]
+    assert change["edits"] == [
+        {"old": "Game (Disc 1).cue", "new": os.path.join("chd", "Game (Disc 1).chd")},
+    ]
