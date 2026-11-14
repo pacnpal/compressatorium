@@ -64,6 +64,9 @@ class ToolPlugin(Protocol):
     # tool. None means "this tool names no default" -- see
     # BaseTool.default_compression for what that costs.
     default_compression: str | None
+    # What to tell the user when ``is_ready()`` is False: why this tool cannot
+    # run here. Auto shows it beside an Image it skipped for that reason.
+    not_ready_reason: str
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
@@ -161,6 +164,14 @@ class ToolPlugin(Protocol):
         by its tool, not by a central list. None means "not mine, or I cannot
         tell", never a guess. Reads a few bytes from disk; call it off the
         event loop.
+        """
+
+    def header_reads(self, path: str) -> list[str]:
+        """Other files ``header_platform(path)`` reads, besides ``path``.
+
+        A track sheet's answer comes from the tracks it names, so detection
+        keys its cache on their size and mtime too, and does not cache an
+        answer while one is missing. Default empty.
         """
 
     def verifies_path(self, path: str) -> bool:
@@ -401,6 +412,9 @@ class BaseTool:
     # Mirrors `defaultCompression` in `src/lib/tools/registry.js`, which seeds
     # the same choice in the manual picker.
     default_compression: str | None = None
+    # Why ``is_ready()`` answered False, in the user's words. Tools gated on a
+    # user-supplied file or an optional runtime say which one.
+    not_ready_reason: str = "its program is not available on this server"
 
     def __init__(self, binary_path: str) -> None:
         self.binary_path = binary_path
@@ -480,6 +494,10 @@ class BaseTool:
         # Default: no header probe. Tools that can tell their consoles apart
         # from the image bytes (chdman, dolphin, xiso) override it.
         return None
+
+    def header_reads(self, path: str) -> list[str]:
+        # Default: the probe reads only the file itself.
+        return []
 
     def verifies_path(self, path: str) -> bool:
         # Default: a declared-extension match (suffix-based, so a compound

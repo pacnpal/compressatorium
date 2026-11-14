@@ -2281,7 +2281,12 @@ tool declares a slug the table does not cover, so a new Platform brings its
 folder names with it. A header that disagrees with the folder, or two headers that disagree,
 is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
-changes; `clear_cache()` exists for tests.
+changes; `clear_cache()` exists for tests. A header probe that reads other
+files declares them through `ToolPlugin.header_reads(path)` (default empty;
+chdman returns a `.cue`/`.gdi` sheet's tracks via the delete plan's own parser,
+`utils.delete_plan.sheet_track_paths`). Their path, size and mtime join the
+cache key, and while one of them is missing or unreadable (a `.bin` still
+copying in) the answer is not cached at all.
 
 **Auto targets** (`plan_auto`, `default_mode`). The candidates for an Image with
 a Platform are the create-direction modes (`ModeKind.CREATE` / `COMPRESS`) that
@@ -2341,6 +2346,21 @@ Images get a `skip_reason`, and so does an Image with a Platform but no target:
 "No tool converts <platform> Images" when no mode serves the Platform at all
 (Neo Geo Pocket Color, WonderSwan Color), "No <platform> target reads <ext>
 files" when the file is the problem.
+
+A target whose tool cannot run here is skipped too. The route awaits the
+shared, bounded `registry.ready_tool_ids()` and passes it to `plan_auto`
+(`ready_tool_ids=`), which skips the Image with
+"<display_name> isn't ready: <not_ready_reason>". `ToolPlugin.not_ready_reason`
+says why in the user's words; the default names a missing program, nsz names
+`prod.keys`, jwud the JWUDTool launcher and Java. Both Auto routes plan through
+this, so the plan the user confirms and the jobs queued agree.
+
+From a RomM platform listing, Auto records RomM metadata for re-pinning exactly
+as a manual submit does. Both go through one store path,
+`conversion.#queueWithRepin`, which calls `planRommRepin` once per target mode
+before queueing, then reconciles the records against the jobs actually created
+(redirected outputs re-recorded under their own mode, rows for sources that
+never became jobs retired).
 
 `POST /api/jobs/auto-plan` returns the plan without queueing.
 `POST /api/jobs/auto` groups the planned Images by (mode, compression). The

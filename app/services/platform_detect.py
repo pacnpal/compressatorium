@@ -208,9 +208,10 @@ def _decide(path: str, tools: list) -> Detection:
     )
 
 
-# path -> (size, mtime_ns, Detection). Bounded, oldest evicted first.
+# path -> ((size, mtime_ns, header dependencies), Detection). Bounded, oldest
+# evicted first.
 _CACHE_MAX = 8192
-_cache: OrderedDict[str, tuple[int, int, Detection]] = OrderedDict()
+_cache: OrderedDict[str, tuple[tuple, Detection]] = OrderedDict()
 _cache_lock = threading.Lock()
 
 
@@ -232,19 +233,48 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         st = os.stat(disk_path)
     except OSError:
         return Detection(None, UNSORTED, None, None, "file could not be read")
-    key = (st.st_size, st.st_mtime_ns)
+    deps = () if _member else _header_dependencies(disk_path, tool_list)
+    if deps is None:
+        # A file the header probe needs is missing or unreadable (a .bin still
+        # copying in). Answer now, but remember nothing: the next call re-reads.
+        return _decide(path, tool_list)
+    key = (st.st_size, st.st_mtime_ns, deps)
     with _cache_lock:
         hit = _cache.get(path)
-        if hit is not None and hit[:2] == key:
+        if hit is not None and hit[0] == key:
             _cache.move_to_end(path)
-            return hit[2]
+            return hit[1]
     result = _decide(path, tool_list)
     with _cache_lock:
-        _cache[path] = (*key, result)
+        _cache[path] = (key, result)
         _cache.move_to_end(path)
         while len(_cache) > _CACHE_MAX:
             _cache.popitem(last=False)
     return result
+
+
+def _header_dependencies(path: str, tools: Iterable) -> tuple | None:
+    """``(path, size, mtime_ns)`` of every other file a header probe reads.
+
+    Asked of the tools that would probe ``path`` (``ToolPlugin.header_reads``,
+    a track sheet's tracks). None when one of them cannot be stat'ed.
+    """
+    seen: set[str] = set()
+    deps = []
+    for tool in tools:
+        if match_extension(path, tool.input_extensions) is None:
+            continue
+        reads = getattr(tool, "header_reads", None)
+        for dep in (reads(path) if reads else []):
+            if dep in seen:
+                continue
+            seen.add(dep)
+            try:
+                st = os.stat(dep)
+            except OSError:
+                return None
+            deps.append((dep, st.st_size, st.st_mtime_ns))
+    return tuple(sorted(deps))
 
 
 # --------------------------------------------------------------------------- #
@@ -377,6 +407,7 @@ def plan_auto(
     *,
     compression_prefs: dict | None = None,
     output_dir: str | None = None,
+    ready_tool_ids: Iterable[str] | None = None,
     tools_registry=None,
 ) -> list[AutoTarget]:
     """Work out each Image's Platform and default target, without queueing.
@@ -388,11 +419,15 @@ def plan_auto(
     output (``game.iso`` and ``game.nkit.iso`` both to ``game.rvz``) cannot
     both convert. The one the batch path would keep (``input_priority``, then
     the earlier in ``paths``) keeps it; the other is skipped with a reason.
-    Blocking; call it off the event loop.
+    ``ready_tool_ids`` is what ``ToolRegistry.ready_tool_ids()`` answered (the
+    caller awaits it; this function is blocking). An Image whose target tool is
+    not in it is skipped with the tool's ``not_ready_reason``. None skips the
+    check. Blocking; call it off the event loop.
     """
     if tools_registry is None:
         from services.tools import registry as tools_registry
-    plan = _plan_targets(paths, compression_prefs or {}, tools_registry)
+    ready = set(ready_tool_ids) if ready_tool_ids is not None else None
+    plan = _plan_targets(paths, compression_prefs or {}, tools_registry, ready)
     from services.output_conflicts import input_priority
 
     claimed: dict[str, int] = {}
@@ -423,7 +458,7 @@ def plan_auto(
     return plan
 
 
-def _plan_targets(paths, prefs: dict, tools_registry) -> list[AutoTarget]:
+def _plan_targets(paths, prefs: dict, tools_registry, ready) -> list[AutoTarget]:
     tools = tools_registry.all()
     plan: list[AutoTarget] = []
     for path in paths:
@@ -437,6 +472,13 @@ def _plan_targets(paths, prefs: dict, tools_registry) -> list[AutoTarget]:
             plan.append(AutoTarget(path, detection, None, None, None, reason))
             continue
         spec = tools_registry.spec(mode)
+        if ready is not None and spec.tool_id not in ready:
+            tool = tools_registry.get(spec.tool_id)
+            plan.append(AutoTarget(
+                path, detection, None, None, None,
+                f"{tool.display_name} isn't ready: {tool.not_ready_reason}",
+            ))
+            continue
         compression = None
         if spec.supports_compression or spec.supports_compression_level:
             compression = prefs.get(spec.tool_id) or None
