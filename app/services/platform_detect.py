@@ -106,6 +106,21 @@ def canonical_slug(name: str | None) -> str | None:
     return _CANONICAL.get(key, key) or None
 
 
+def known_slug(name: str | None) -> str | None:
+    """The Platform slug *name* stands for, or None when no Platform has it.
+
+    A slug is known when it is in the alias table or a registered tool declares
+    it. Used to check a Platform id a client submits (a folder Library's Rule
+    keys) rather than storing whatever string arrives.
+    """
+    slug = canonical_slug(name)
+    if slug is None:
+        return None
+    if slug in _ALIASES:
+        return slug
+    return slug if slug in set(_folder_names(_default_tools()).values()) else None
+
+
 @dataclass(frozen=True)
 class Detection:
     """What :func:`detect_platform` worked out, and how.

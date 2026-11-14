@@ -292,6 +292,26 @@ class LedgerEntry(Base):
     )
 
 
+class FolderLibraryRecord(Base):
+    """A folder registered as a Library (#303).
+
+    ``root`` is the resolved folder, inside a Volume. The Library's id in the
+    Rule engine is ``"folder:<id>"``; its Rules and run state live in the
+    ``rules`` / ``rules.state`` preference rows under that prefix, and are
+    removed with the row. Removing a row never touches files.
+    """
+
+    __tablename__ = "folder_libraries"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    root = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=False)
+    # The scheduler's master switch for this Library, like RomM's auto_convert.
+    schedule_enabled = Column(Boolean, nullable=False, default=False)
+    # The most one sweep of this Library may queue, over all its Platforms.
+    max_per_sweep = Column(Integer, nullable=False, default=25)
+    created_at = Column(String, nullable=False)
+
+
 class Preference(Base):
     """Generic key/value store for app preferences (UI layout, etc.).
 

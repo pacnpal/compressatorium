@@ -20,9 +20,9 @@ from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-# Capabilities a Library can declare. The engine does not gate on them yet;
-# they say what a Library supports so a Rules editor, and the folder Library
-# (#303), can offer only what applies.
+# Capabilities a Library can declare. They say what a Library supports, so a
+# Rules editor offers only what applies and the engine refuses the rest (see
+# `duplicate_actions`).
 #
 # Images carry the Library's own identification (``Image.recognized``), so a
 # Rule's only_matched / only_unmatched filters mean something.
@@ -30,6 +30,21 @@ RECOGNIZED_FILTER = "recognized_filter"
 # A Rule may use the ``overwrite`` and ``rename`` duplicate policies. Both need
 # the converted-history memory, keyed by Image key, to stay idempotent.
 CONVERTED_HISTORY = "converted_history"
+
+# Every duplicate policy, in the order the editor lists them.
+_ALL_DUPLICATE_ACTIONS = ("skip", "overwrite", "rename")
+
+
+def duplicate_actions(library: Library) -> tuple[str, ...]:
+    """The duplicate policies *library*'s Rules may use.
+
+    ``skip`` is idempotent from the destination alone, so every Library has
+    it. ``overwrite`` and ``rename`` need the converted history to stop, so
+    they need :data:`CONVERTED_HISTORY`.
+    """
+    if CONVERTED_HISTORY in library.capabilities:
+        return _ALL_DUPLICATE_ACTIONS
+    return ("skip",)
 
 
 class LibraryUnreadable(Exception):
@@ -131,6 +146,12 @@ class Library(Protocol):
 
     # Stable id. Stored Rule and state keys are ``f"{id}:{platform_id}"``.
     id: str
+    # What kind of Library this is (``"romm"``, ``"folder"``), its display
+    # name, and its root folder here (None when it has none). For the API and
+    # the Rules view; the engine never reads them.
+    kind: str
+    name: str
+    root: str | None
     # A set of the capability names above.
     capabilities: frozenset[str]
     # Where an earlier release kept this Library's Rules or state without the

@@ -53,7 +53,13 @@ from services.output_conflicts import (
     resolve_destination,
 )
 from services.rules import store
-from services.rules.library import Image, Library, LibraryUnreadable, QueuedImage
+from services.rules.library import (
+    Image,
+    Library,
+    LibraryUnreadable,
+    QueuedImage,
+    duplicate_actions,
+)
 from services.rules.rules import (
     _output_identity,
     _validation_paused,
@@ -121,6 +127,7 @@ def _normalize(library: Library, raw: Any, **kwargs) -> dict[str, dict]:
         raw,
         platform_id=library.canonical_platform_id,
         defaults=library.rule_defaults(),
+        duplicate_actions=duplicate_actions(library),
         **kwargs,
     )
 
@@ -302,6 +309,22 @@ async def forget_converted_locked(
     if cleared:
         await store.write(store.STATE_KEY, library, state)
     return cleared
+
+
+async def forget_library(library: Library) -> None:
+    """Drop every Rule and all run state *library* has. Touches no files.
+
+    For a Library being removed. Under the sweep lock, so a sweep of it that is
+    running finishes first and cannot write its state back afterwards, and the
+    owner index loses the Library's queued jobs so their outcomes are not
+    written back either.
+    """
+    async with _sweep_lock:
+        for job_id, owner in list(_job_owners.items()):
+            if owner[0].id == library.id:
+                _job_owners.pop(job_id, None)
+        await store.write(store.RULES_KEY, library, {})
+        await store.write(store.STATE_KEY, library, {})
 
 
 async def get_state(library: Library) -> dict[str, dict]:

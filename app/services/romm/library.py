@@ -76,10 +76,17 @@ class RommLibrary:
     """The RomM instance configured in the app, as a Library."""
 
     id = "romm"
+    kind = "romm"
+    name = "RomM"
     capabilities = frozenset({RECOGNIZED_FILTER, CONVERTED_HISTORY})
     legacy_preference_keys = MappingProxyType(
         {RULES_KEY: LEGACY_RULES_KEY, STATE_KEY: LEGACY_STATE_KEY},
     )
+
+    @property
+    def root(self) -> str | None:
+        """RomM's library folder as mounted here, or None when unset."""
+        return romm_client.library_root or None
 
     def configured(self) -> bool:
         return bool(romm_client.configured and romm_client.library_root)

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 import string
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import time as dt_time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -436,6 +436,7 @@ def default_rule(
 def normalize_rule(
     raw: Any, *, mode_required: bool = True, check_volumes: bool = True,
     volumes_unreachable: bool = False, defaults: Mapping[str, Any] | None = None,
+    duplicate_actions: Iterable[str] = DUPLICATE_ACTIONS,
 ) -> dict[str, Any] | None:
     """Coerce one submitted/stored rule into the full schema.
 
@@ -444,6 +445,8 @@ def normalize_rule(
     falls back to that field's default rather than failing the whole sweep,
     because these blobs outlive the tools that were installed when they were
     written. *defaults* is the Library's ``rule_defaults()``.
+    *duplicate_actions* are the policies the Library allows (see
+    ``library.duplicate_actions``); any other falls back to ``skip``.
     """
     if not isinstance(raw, dict):
         return None
@@ -523,7 +526,12 @@ def normalize_rule(
             # write beside each source instead, filling a filesystem the
             # operator did not choose. The editor surfaces the rejected path.
             out["enabled"] = False
-    if raw.get("duplicate_action") in DUPLICATE_ACTIONS:
+    # Narrowed to what the Library allows. `skip` is the narrow fallback: it
+    # never replaces an existing file, so a stored blob naming a policy the
+    # Library cannot honour runs as the safe one rather than not at all.
+    if raw.get("duplicate_action") in DUPLICATE_ACTIONS and (
+        raw["duplicate_action"] in tuple(duplicate_actions)
+    ):
         out["duplicate_action"] = raw["duplicate_action"]
     # Each gated on its own capability. They are not the same question:
     # `supports_delete_on_verify` says the *source may be removed* once the
@@ -628,6 +636,7 @@ def normalize_rules(
     raw: Any, *, check_volumes: bool = True, volumes_unreachable: bool = False,
     platform_id: Callable[[Any], str | None],
     defaults: Mapping[str, Any] | None = None,
+    duplicate_actions: Iterable[str] = DUPLICATE_ACTIONS,
 ) -> dict[str, dict]:
     """Normalize a whole rule set, keyed by Platform id.
 
@@ -654,6 +663,7 @@ def normalize_rules(
             check_volumes=check_volumes,
             volumes_unreachable=volumes_unreachable,
             defaults=defaults,
+            duplicate_actions=duplicate_actions,
         )
         if rule is not None:
             rules[canonical] = rule
