@@ -196,8 +196,11 @@ def _e2e(tmp_path, monkeypatch, db_path, reset_db_engine):
     monkeypatch.setattr(convert_routes.settings, "temp_dir", str(tmp_path / "temp"))
     monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
 
+    converts: list[str] = []
+
     async def fake_convert(input_path, output_path, mode="", *, compression=None,
                            cancel_event=None):
+        converts.append(output_path)
         Path(output_path).write_bytes(b"converted output")
         yield {"progress": 100, "message": "done"}
 
@@ -209,7 +212,7 @@ def _e2e(tmp_path, monkeypatch, db_path, reset_db_engine):
         monkeypatch.setattr(service, "convert", fake_convert)
         monkeypatch.setattr(service, "verify", container_check_passes)
 
-    state = {"stdout": b"", "rc": 0, "calls": []}
+    state = {"stdout": b"", "rc": 0, "calls": [], "converts": converts}
     service = _dolphin()._service
 
     async def fake_capture(cmd, **kwargs):
@@ -281,6 +284,31 @@ async def test_mismatched_digests_keep_the_source_and_say_the_content_differs(e2
     assert job.check_passed == "intact"
     row = ledger.row_from_job(job)
     assert row["check_passed"] == "intact" and row["source_deleted"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_mismatched_output_is_not_stored_as_a_checked_result(e2e):
+    """A Round-trip mismatch must not leave the output recorded as checked:
+    a later keep-Source overwrite job re-converts instead of reusing it."""
+    from app.models import ConversionMode
+    from services.verification_store import verification_store
+
+    iso, _ = _source_iso(e2e)
+    e2e["stdout"] = f"{'0' * 40}\n".encode()
+    failed = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
+    assert failed.status.value == "failed"
+    assert await verification_store.get_record(failed.output_path) is None
+
+    manager = e2e["routes"].job_manager
+    again = await manager.create_job(
+        str(iso), ConversionMode.DOLPHIN_RVZ,
+        output_path=failed.output_path, allow_overwrite=True, verify_after=True,
+    )
+    await manager._process_job(again.id)
+
+    assert again.status.value == "completed", again.error_message
+    assert "skipped re-conversion" not in again.message
+    assert e2e["converts"] == [failed.output_path, failed.output_path]
 
 
 @pytest.mark.asyncio

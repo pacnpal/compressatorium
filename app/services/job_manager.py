@@ -3175,12 +3175,20 @@ class JobManager:
                     verified = True
                     # The delete decision (#298): which check the output
                     # passed, and, when it is not enough to delete the Source,
-                    # why. Recorded before acting on it, so a refused delete
-                    # still leaves the output marked with the check it passed.
+                    # why. The job (and so the Ledger row) records the check
+                    # either way.
                     check_passed, keep_source_reason = await self._delete_check(
                         job, tool, input_path, verify_path, cancel_event,
                     )
                     job.check_passed = check_passed
+                    if keep_source_reason:
+                        # The Round-trip did not pass, so this output may not
+                        # hold the Source's content. Store nothing that would
+                        # present it as a checked result: no badge, no reuse
+                        # snapshot for the re-run fast path, and any record an
+                        # earlier run left for this path is dropped.
+                        await verification_store.clear(job.output_path)
+                        raise RuntimeError(keep_source_reason)
                     # Snapshot what produced this verified artifact (mode +
                     # output shaping + source/output fingerprints) so a later
                     # re-queue can recognize prior success and complete as a
@@ -3196,8 +3204,6 @@ class JobManager:
                         produced_meta=produced_meta,
                         check=check_passed,
                     )
-                    if keep_source_reason:
-                        raise RuntimeError(keep_source_reason)
                     check_label = _CHECK_LABELS[check_passed]
 
                     if not job.delete_on_verify:
