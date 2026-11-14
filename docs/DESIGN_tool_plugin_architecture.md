@@ -2153,6 +2153,63 @@ a short settle delay, since the row is written after the completion event. A `re
 in the `ledger` preference prunes older rows on each write; unset keeps them
 forever. Recording never raises: a failure is logged and the job is unaffected.
 
+### 3.3.11 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
+
+`detect_platform(path) -> Detection` is the one place an Image's Platform is
+worked out without a library manager. The convert panel's Auto choice uses it
+today; folder Libraries (#303), the Inbox and the CLI (#306) are meant to call
+the same function. `Detection` is a frozen dataclass: `platform` (a slug, or
+None), `how` (`"header"`, `"folder"`, `"conflict"`, `"unsorted"`), what each
+source said (`header`, `folder`) and a one-line `reason` for the UI.
+
+Precedence is fixed and never guesses:
+
+1. **Header.** Every registered tool whose `input_extensions` match the file is
+   asked `header_platform(path)`. The default answers None; a tool that can tell
+   its consoles apart from the bytes overrides it. chdman answers through
+   `disc_id.disc_platform` (PS1/PS2 from `SYSTEM.CNF`, PSP from `PARAM.SFO`,
+   Dreamcast from a `.gdi`'s `IP.BIN`, all the existing disc-ID parser, plus the
+   Saturn / Sega CD / Dreamcast system id at the start of sector 0). dolphin
+   answers through `disc_id.nintendo_disc_platform` (the GameCube magic at 0x1C,
+   Wii at 0x18). xiso answers through `extract_xiso.detect_console` (the XDVDFS
+   layout, or a trimmed image's boot executable). A probe that raises is
+   treated as no answer. A new console is taught to detection by its tool's
+   override, not by an edit here.
+2. **Folder name.** The nearest parent folder whose name is a slug some tool
+   declares in `platform_slugs`, or an alias in `_ALIASES` (the names RomM,
+   ES-DE and Batocera use: `psx`, `gc`, `megacd`, `dreamcast`, ...). Archive
+   members (`a.zip::disc.iso`) skip the header and use the archive's folder.
+
+Every answer goes through `canonical_slug`, which maps aliases and the tools'
+own vocabulary (`ps1`, `gamecube`, `dreamcast`) onto RomM's slugs (`ps`, `ngc`,
+`dc`). A header that disagrees with the folder, or two headers that disagree,
+is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
+cached per path in a bounded LRU and dropped when the file's size or mtime
+changes; `clear_cache()` exists for tests.
+
+**Auto targets** (`plan_auto`, `default_mode`). An Image with a Platform goes to
+the first create-direction mode (`ModeKind.CREATE` / `COMPRESS`) whose
+`registry.mode_platform_slugs` claims that Platform and which takes the file
+(`match_extension` plus the tool's `converts_path`). When several do, the most
+specific extension wins (`.nkit.iso` over `.iso`), registration order breaking
+ties, the same rule as `tool_for_verify`. So a PS2 `.iso` gets `createdvd`, a
+PS1 `.cue` `createcd`, a GameCube `.iso` `dolphin_rvz`, a `.nkit.iso`
+`nkit_to_rvz`. The compression is the saved per-tool value (the `conversion`
+preference) when the mode takes one, else the tool default; a saved value the
+mode would refuse also falls back to the tool default. Conflicted and Unsorted
+Images, and a Platform with no mode for the file type, get a `skip_reason`.
+
+`POST /api/jobs/auto-plan` returns the plan without queueing.
+`POST /api/jobs/auto` groups the planned Images by (mode, compression) and
+sends each group through `create_batch_jobs`, so planning, duplicate handling
+and backpressure are the ordinary batch path; it checks the whole batch against
+`max_queue_depth` first so a later group cannot be refused after an earlier one
+queued. Auto never deletes a Source (no delete-on-verify).
+
+The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
+under the `primary_tool_preference` key that now names the selected tool tab;
+its values were tool ids, so a value left from it still loads as a tab.
+
 ### 3.4 `registry.py`
 
 ```python
