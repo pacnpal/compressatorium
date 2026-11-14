@@ -371,7 +371,7 @@ class ChdmanTool(BaseTool):
         DVD/HD: the header's data SHA1. The job only asks after the container
         check passed, and ``chdman verify`` recomputes exactly that hash from
         the decoded data, so the header value is proven. CD/GD-ROM: extracted
-        to a scratch dir and hashed like a Source sheet (DESIGN §3.3.11 records
+        to a scratch dir and hashed like a Source sheet (DESIGN §3.3.12 records
         why it is not computed in place). Never the overall SHA1: it folds in
         metadata.
         """

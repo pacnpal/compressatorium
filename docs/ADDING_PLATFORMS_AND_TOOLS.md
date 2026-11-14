@@ -236,7 +236,7 @@ A plugin subclasses `BaseTool` and provides:
 | `active_pids()` | PIDs for the debug heartbeat |
 | `post_convert(input_path, output_path, mode)` | optional hook, default no-op |
 | `embedded_hashes(path, *, cancel_event=None)` | **optional** DAT-match fast path. Return `(sha1, match_type)` tuples your format already carries / can derive cheaply (so matching skips a full file hash); default `[]` → the caller falls back to a file-level SHA1, which is correct for raw formats. Raise `EmbeddedHashUnavailable` (from `services.tools.base`) when you *should* yield a hash but the attempt failed transiently, so it's recorded as a non-cacheable miss instead of a false negative. |
-| `content_digest(path, *, cancel_event=None)` | **optional** Round-trip check. Return a `ContentDigest(kind, value)` hashing what the file *decodes to*, for both your inputs and your outputs, and set `ModeSpec.supports_round_trip=True` on the modes it covers. Default `None` keeps the container check. Raise `ContentDigestUnavailable` when the hash should exist but could not be read; the Source is then kept. If the output's content can only be hashed from a decoded copy, decode it inside `services.disk.headroom_scratch_dir(prefix, required_bytes)` (headroom-checked, removed on every exit), as chdman does for CD CHDs. See DESIGN §3.3.11. |
+| `content_digest(path, *, cancel_event=None)` | **optional** Round-trip check. Return a `ContentDigest(kind, value)` hashing what the file *decodes to*, for both your inputs and your outputs, and set `ModeSpec.supports_round_trip=True` on the modes it covers. Default `None` keeps the container check. Raise `ContentDigestUnavailable` when the hash should exist but could not be read; the Source is then kept. If the output's content can only be hashed from a decoded copy, decode it inside `services.disk.headroom_scratch_dir(prefix, required_bytes)` (headroom-checked, removed on every exit), as chdman does for CD CHDs. See DESIGN §3.3.12. |
 | `embedded_hash_is_exhaustive` | optional flag (default `False`). Set `True` only when your container bytes can never appear in a DAT (e.g. a recompressed image), so a content-hash miss is definitive and the file-level fallback is skipped; leave `False` if your file's own SHA1 might be indexed. |
 
 `BaseTool` fills in `input_extensions` (the union of every mode's
@@ -1239,7 +1239,7 @@ PLUGIN (app/services/tools/<tool>.py)
     fast path (default falls back to file-level SHA1)
 [ ] optional: content_digest() + ModeSpec.supports_round_trip (and
     supportsRoundTrip in registry.js) so delete-source jobs are Round-tripped
-    instead of only Intact; see DESIGN §3.3.11
+    instead of only Intact; see DESIGN §3.3.12
 [ ] optional: companion_exts (or override companion_outputs) if the mode writes
     sidecars beside its primary output
 [ ] optional: accepts_directory() + input_kinds={InputKind.DIRECTORY} for a

@@ -73,6 +73,32 @@ class VerificationStore {
     return this.checks.get(path) ?? 'intact';
   }
 
+  // The only writers of `statuses` and `checks` outside a load: a path and
+  // its check always change together, so no badge keeps a check that belongs
+  // to another file or an earlier run.
+
+  /** Record that `path` passed `check`. A manual Verify is 'intact'. */
+  markChecked(path, check = 'intact') {
+    if (!path) return;
+    this.statuses.add(path);
+    this.checks.set(path, check);
+  }
+
+  /** Drop everything known about `path` (deleted, or no longer checked). */
+  forget(path) {
+    if (!path) return;
+    this.statuses.delete(path);
+    this.checks.delete(path);
+  }
+
+  /** Follow a rename. `keep` carries the check over (same-format rename). */
+  move(oldPath, newPath, { keep }) {
+    const had = this.isVerified(oldPath);
+    const check = this.checks.get(oldPath) ?? 'intact';
+    this.forget(oldPath);
+    if (had && keep) this.markChecked(newPath, check);
+  }
+
   progressFor(path) {
     return path ? this.progress.get(path) ?? null : null;
   }
@@ -109,7 +135,7 @@ class VerificationStore {
         },
       });
       this.progress.delete(path);
-      if (result?.valid) this.statuses.add(path);
+      if (result?.valid) this.markChecked(path);
       return result;
     } catch (e) {
       this.progress.delete(path);
@@ -143,7 +169,7 @@ class VerificationStore {
         signal: this._batchAbort.signal,
         onProgress: (evt) => this._handleBatchProgress(evt),
         onFileComplete: (data) => {
-          if (data?.path && data?.valid) this.statuses.add(data.path);
+          if (data?.path && data?.valid) this.markChecked(data.path);
         },
       });
       if (this.batchRun) {

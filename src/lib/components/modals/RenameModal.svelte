@@ -39,14 +39,13 @@
       // Backend returns { success, old_path, new_path, message } and
       // also moves the verification record server-side for .chd → .chd
       // renames (app/routes/files.py rename_file). Mirror that move in
-      // our local verification.statuses so the OK badge survives the
+      // our local verification store so the check badge survives the
       // rename without waiting for a verified-set reload.
       const result = await api.renameFile(target.path, trimmed);
       const oldPath = result?.old_path ?? target.path;
       const newPath = result?.new_path;
-      if (newPath && verification.statuses.has(oldPath)) {
-        verification.statuses.delete(oldPath);
-        // Preserve the OK badge across renames inside the same
+      if (newPath && verification.isVerified(oldPath)) {
+        // Preserve the check badge across renames inside the same
         // verify-class (e.g. .rvz → .rvz, .chd → .chd, .z3ds → .z3ds).
         // Cross-class renames (.chd → .iso, .rvz → .iso) drop the
         // badge because the new file is no longer the verifiable
@@ -61,9 +60,11 @@
         const newExt = newPath.toLowerCase().match(/\.[^./\\]+$/)?.[0] ?? '';
         const oldTool = registry.toolForVerifyPath(oldPath);
         const newTool = registry.toolForVerifyPath(newPath);
-        if (oldTool && newTool && oldTool.id === newTool.id && oldExt === newExt) {
-          verification.statuses.add(newPath);
-        }
+        // `move` carries the check that passed (Intact or Round-tripped)
+        // with the status, the same as verification_store.move() does.
+        verification.move(oldPath, newPath, {
+          keep: !!(oldTool && newTool && oldTool.id === newTool.id && oldExt === newExt),
+        });
       }
       // Re-key the selection if the renamed file was selected.
       // Otherwise the selection-count + ConvertPanel would keep

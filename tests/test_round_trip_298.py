@@ -365,6 +365,45 @@ async def test_a_failed_round_trip_drops_a_record_left_by_an_earlier_run(
 
 
 @pytest.mark.asyncio
+async def test_a_no_op_rerun_reports_the_stored_check(e2e, monkeypatch):
+    """Round-tripped, then the delete itself is refused: the output's record
+    stays round_tripped. A keep-Source re-run takes the no-op fast path, and
+    its completion event must carry that stored check, not imply Intact."""
+    from app.models import ConversionMode
+
+    iso, sha1 = _source_iso(e2e)
+    e2e["stdout"] = f"{sha1}\n".encode()
+    manager = e2e["routes"].job_manager
+    # The delete step refuses (another job holds the Source) after the
+    # Round-trip passed; the Source itself is untouched, so the reuse
+    # snapshot is recorded.
+    monkeypatch.setattr(manager, "_is_path_in_use_by_other_job", lambda *_: True)
+    first = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
+    assert first.status.value == "failed" and iso.exists()
+    assert "in use by another job" in first.error_message
+    assert first.check_passed == "round_tripped"
+    monkeypatch.setattr(manager, "_is_path_in_use_by_other_job", lambda *_: False)
+
+    events: list[dict] = []
+    original = manager._notify_subscribers
+
+    async def capture(job_id, payload):
+        events.append(payload)
+        return await original(job_id, payload)
+
+    monkeypatch.setattr(manager, "_notify_subscribers", capture)
+    again = await manager.create_job(
+        str(iso), ConversionMode.DOLPHIN_RVZ,
+        output_path=first.output_path, allow_overwrite=True, verify_after=True,
+    )
+    await manager._process_job(again.id)
+
+    assert "skipped re-conversion" in again.message, (again.status, again.error_message)
+    complete = next(e for e in events if e.get("type") == "complete")
+    assert complete["check_passed"] == "round_tripped"
+
+
+@pytest.mark.asyncio
 async def test_a_digest_that_cannot_be_read_keeps_the_source(e2e):
     iso, _ = _source_iso(e2e)
     e2e["rc"] = 1

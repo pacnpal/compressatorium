@@ -70,7 +70,7 @@
       const removed = Array.isArray(result?.results)
         ? result.results.filter((r) => r?.success).map((r) => r.path)
         : paths;
-      for (const p of removed) verification.statuses.delete(p);
+      for (const p of removed) verification.forget(p);
       // Close + drop selection + report immediately so a downstream
       // refresh failure doesn't surface as "Failed to delete" after
       // the backend already removed the files.
