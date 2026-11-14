@@ -299,9 +299,8 @@ def _run_0010_upgrade(engine):
     spec = importlib.util.spec_from_file_location("m10u", next(path.glob("0010_*.py")))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    with engine.begin() as conn:
-        with Operations.context(MigrationContext.configure(conn)):
-            mod.upgrade()
+    with engine.begin() as conn, Operations.context(MigrationContext.configure(conn)):
+        mod.upgrade()
 
 
 def _ledger_db(tmp_path):
