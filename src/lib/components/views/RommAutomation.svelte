@@ -10,9 +10,12 @@
    * (`defaults` + `options`), so the UI never carries a second copy of what a
    * valid rule looks like.
    */
+  import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { toast } from 'svelte-sonner';
   import { romm, DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
+  import { ruleNotices } from '$lib/stores/ruleNotices.svelte.js';
+  import { CHECK_LEVEL, CHECK_LEVEL_LABELS } from '$lib/util/checkLevels.js';
   import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -24,8 +27,28 @@
   import Eye from '@lucide/svelte/icons/eye';
   import Save from '@lucide/svelte/icons/save';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import Info from '@lucide/svelte/icons/info';
+  import XIcon from '@lucide/svelte/icons/x';
 
   const platforms = $derived(romm.platforms);
+
+  // The one-time notice about the upgrade to Round-trip (#302). The server
+  // says whether to show it, so this asks each time the editor opens.
+  onMount(() => {
+    ruleNotices.load();
+  });
+
+  async function dismissCheckLevelNotice() {
+    try {
+      await ruleNotices.dismissCheckLevel();
+    } catch (e) {
+      toast.error(e?.message ?? 'Failed to dismiss the notice');
+    }
+  }
+
+  function ruleCount(n) {
+    return n === 1 ? '1 rule' : `${n} rules`;
+  }
   const autoOn = $derived(romm.settings?.auto_convert === true);
 
   // SvelteSet: mutation must be reactive so an expanded row re-renders.
@@ -358,6 +381,31 @@
     </div>
   </section>
 
+  {#if ruleNotices.checkLevel?.show}
+    <section class="notice" role="status">
+      <Info size={16} aria-hidden="true" />
+      <div class="notice-text">
+        <strong>
+          {ruleCount(ruleNotices.checkLevel.switched)} that
+          {ruleNotices.checkLevel.switched === 1 ? 'deletes its' : 'delete their'}
+          source now Round-trip first.
+        </strong>
+        Before a sweep deletes a source, it checks that the new file decodes to the
+        same content, and keeps the source if it does not. Each file is read once
+        more, so those sweeps take longer.
+        {#if ruleNotices.checkLevel.container_check}
+          {ruleCount(ruleNotices.checkLevel.container_check)} on formats without
+          a Round-trip yet keep the container check.
+        {/if}
+        To go back to the faster check, tick <em>Container check only</em> under
+        a rule's delete setting.
+      </div>
+      <Button variant="ghost" size="sm" onclick={dismissCheckLevelNotice} icon={xIcon}>
+        Dismiss
+      </Button>
+    </section>
+  {/if}
+
   {#if romm.sweepResult}
     {@const r = romm.sweepResult}
     <section class="sweep">
@@ -385,7 +433,12 @@
       {#each r.platforms ?? [] as p (p.platform_id)}
         {#if p.candidates?.length}
           <details class="candidates">
-            <summary>{romm.platformName(p.platform_id)}: {p.queued}</summary>
+            <summary>
+              {romm.platformName(p.platform_id)}: {p.queued}
+              {#if p.check_level}
+                <span class="muted">· {CHECK_LEVEL_LABELS[p.check_level] ?? p.check_level}</span>
+              {/if}
+            </summary>
             <!-- Keyed by index: the backend reduces candidates to basenames, so
                  two ROMs in different folders can both be "Game.iso" and a
                  value key would throw mid-render. -->
@@ -725,8 +778,22 @@
                     <Checkbox
                       checked={rule.delete_on_verify}
                       label="Delete the source after the new file verifies"
+                      description={spec?.supportsRoundTrip && rule.check_level !== CHECK_LEVEL.containerOnly
+                        ? 'The new file must be Round-tripped (it decodes to the same content as the source) first. The source is kept if it is not.'
+                        : 'The new file must be Intact (it passes its own container check) first. The source is kept if it is not.'}
                       onchange={(v) => update(platform.id, { delete_on_verify: v })}
                     />
+                    <!-- The Rule's check level (#302). Shown where it decides
+                         something, as in the convert panel; the stored level
+                         is kept either way. -->
+                    {#if rule.delete_on_verify && spec?.supportsRoundTrip}
+                      <Checkbox
+                        checked={rule.check_level === CHECK_LEVEL.containerOnly}
+                        label="Container check only (faster, weaker)"
+                        description="Skips the content comparison and deletes once the new file is Intact. It proves the file reads back cleanly, not that it holds the same disc."
+                        onchange={(v) => update(platform.id, { check_level: v ? CHECK_LEVEL.containerOnly : CHECK_LEVEL.roundTrip })}
+                      />
+                    {/if}
                   {/if}
                 </div>
 
@@ -813,6 +880,7 @@
 
 {#snippet playIcon()}<Play size={14} />{/snippet}
 {#snippet eyeIcon()}<Eye size={14} />{/snippet}
+{#snippet xIcon()}<XIcon size={14} />{/snippet}
 {#snippet saveIcon()}<Save size={14} />{/snippet}
 
 <style>
@@ -861,6 +929,17 @@
   }
   .master-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 
+  .notice {
+    display: flex;
+    gap: var(--space-3);
+    align-items: flex-start;
+    background: var(--surface-2);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    font-size: var(--text-sm);
+  }
+  .notice-text { flex: 1; min-width: 0; }
   .sweep {
     background: var(--surface-2);
     border: 1px solid var(--border-subtle);

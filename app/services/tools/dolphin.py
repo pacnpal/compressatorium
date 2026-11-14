@@ -15,11 +15,22 @@ from services.dolphin_tool import (
     DOLPHIN_OUTPUT_FORMATS,
     dolphin_tool_service,
 )
+from services.file_hasher import compute_file_sha1_sync
 from services.lock_manager import lock_manager
+from services.subprocess_runner import ReadCancelled, run_detached
 from services.workload_limiter import workload_limiter
 
-from .base import BaseTool, EmbeddedHashUnavailable
+from .base import (
+    BaseTool,
+    ContentDigest,
+    ContentDigestUnavailable,
+    EmbeddedHashUnavailable,
+)
 from .spec import ModeKind, ModeSpec
+
+# The digest kind every Dolphin mode produces and compares: SHA1 of the whole
+# GameCube/Wii disc image, the same hash Redump indexes.
+DISC_SHA1_KIND = "gc_wii_disc_sha1"
 
 # mode -> (label, output_ext, kind, supports_compression, supports_level)
 _MODES = {
@@ -49,6 +60,8 @@ def _build_modes() -> list[ModeSpec]:
             supports_compression=supports_compression,
             supports_compression_level=supports_level,
             supports_delete_on_verify=True,
+            # Every input and output extension has a disc-SHA1 content digest.
+            supports_round_trip=True,
             allows_archive_input=True,
         )
         for mode, (label, ext, kind, supports_compression, supports_level)
@@ -210,6 +223,31 @@ class DolphinTool(BaseTool):
                 f"dolphin-tool verify produced no hash for {path}",
             )
         return [(h, "dolphin_disc_sha1") for h in hashes]
+
+    async def content_digest(
+        self, path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> ContentDigest | None:
+        # Both sides of every Dolphin mode reduce to the SHA1 of the whole disc
+        # image. A plain .iso *is* that image, so it is hashed directly, with no
+        # subprocess; the containers are rebuilt and hashed by
+        # `dolphin-tool verify --algorithm sha1`.
+        ext = Path(path).suffix.lower()
+        if ext not in self.verify_extensions:
+            return None
+        if ext == ".iso":
+            try:
+                value = await run_detached(
+                    compute_file_sha1_sync, path, cancel_event=cancel_event,
+                )
+            except (OSError, ReadCancelled) as e:
+                raise ContentDigestUnavailable(f"could not hash {path}: {e}") from e
+        else:
+            value = await self._service.disc_sha1(path, cancel_event=cancel_event)
+            if value is None:
+                raise ContentDigestUnavailable(
+                    f"dolphin-tool verify gave no disc SHA1 for {path}",
+                )
+        return ContentDigest(kind=DISC_SHA1_KIND, value=str(value).lower())
 
     def info_model(self, raw: dict, path: str) -> DolphinDiscInfo:
         return DolphinDiscInfo(

@@ -21,6 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from logging_setup import get_logger
+from services.round_trip import round_trip_applies
 from services.tools import registry
 from utils.path_utils import is_within_configured_volumes
 
@@ -30,6 +31,12 @@ logger = get_logger("romm_auto")
 
 ORDERS = ("name", "size_desc", "size_asc", "id", "newest")
 DUPLICATE_ACTIONS = ("skip", "overwrite", "rename")
+# The check that must pass before a delete-source job removes its Source (#302).
+# `round_trip` compares decoded content (§3.3.12) where the mode supports it;
+# `container_only` is the named opt-out the convert routes take as
+# `container_only`. First is the default, and the fallback for a value nobody
+# can read: the stronger check, never the weaker one.
+CHECK_LEVELS = ("round_trip", "container_only")
 # 0 = Monday, matching datetime.weekday().
 ALL_DAYS = (0, 1, 2, 3, 4, 5, 6)
 
@@ -393,6 +400,9 @@ def default_rule(
         "duplicate_action": "skip",
         "delete_on_verify": bool(cfg["delete_on_verify"]),
         "verify_after": bool(cfg["verify_after"]),
+        # Read only when delete_on_verify is on. Kept while it is off, so
+        # switching delete-source off and on again keeps the operator's choice.
+        "check_level": CHECK_LEVELS[0],
         "split": False,
         # scheduling
         "interval_minutes": _clamp(
@@ -559,6 +569,8 @@ def normalize_rule(
             out["unsafe_delete_on_verify"] = True
     else:
         out["delete_on_verify"] = False
+    if raw.get("check_level") in CHECK_LEVELS:
+        out["check_level"] = raw["check_level"]
     out["split"] = bool(raw.get("split", False))
 
     # `out[...]` as the fallback, not a literal: `default_rule()` already seeded
@@ -622,6 +634,32 @@ def normalize_rule(
     if out["only_matched"] and out["only_unmatched"]:
         out["only_matched"] = out["only_unmatched"] = False
     return out
+
+
+def takes_container_only(rule: Mapping[str, Any]) -> bool:
+    """Whether jobs this Rule queues take the convert routes' ``container_only`` opt-out.
+
+    Only a Rule that deletes its Source has a check to opt out of; a Rule that
+    keeps it reads nothing extra whatever its level says.
+    """
+    return bool(rule.get("delete_on_verify")) and rule.get("check_level") == "container_only"
+
+
+def effective_check_level(rule: Mapping[str, Any]) -> str | None:
+    """The check a delete-source job from this Rule will pass before deleting.
+
+    What Preview shows, as opposed to the stored preference: ``round_trip``
+    only where the mode can Round-trip and the Rule did not opt out, otherwise
+    ``container_only``. None when the Rule keeps its Source. Decided by
+    ``round_trip_applies``, the same helper the job path asks.
+    """
+    if not rule.get("delete_on_verify"):
+        return None
+    runs = round_trip_applies(
+        rule.get("mode") or "", delete_on_verify=True,
+        container_only=takes_container_only(rule),
+    )
+    return CHECK_LEVELS[0] if runs else CHECK_LEVELS[1]
 
 
 def normalize_rules(

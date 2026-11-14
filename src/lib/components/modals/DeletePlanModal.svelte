@@ -76,7 +76,8 @@
       <Badge tone={blocked ? 'error' : 'warning'}>{totalDelete}</Badge>
       file{totalDelete === 1 ? '' : 's'} will be deleted across {items.length}
       conversion{items.length === 1 ? '' : 's'}, but only after each
-      output is verified. This cannot be undone.
+      output passes its check (Round-tripped where the mode supports it,
+      otherwise Intact). This cannot be undone.
     </p>
     {#if hasReferrerChanges}
       <p class="dp-note">

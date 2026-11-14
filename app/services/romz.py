@@ -633,7 +633,7 @@ class RomzService:
         async for update in self._runner.capture_verify(
             [self.sevenzip_path, "t", "--", file_path],
             path=file_path,
-            success_message="File verified successfully",
+            success_message="File is Intact",
             cancel_event=cancel_event,
         ):
             yield update

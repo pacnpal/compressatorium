@@ -733,7 +733,7 @@ class ExtractXisoService:
                 path=file_path,
                 nice_via_wrapper=True,
                 success_message=(
-                    f"XISO structure verified ({stats['file_count']} files, "
+                    f"XISO structure is Intact ({stats['file_count']} files, "
                     f"{_format_size(stats['data_bytes'])} of game data)"
                 ),
                 cancel_event=cancel_event,
