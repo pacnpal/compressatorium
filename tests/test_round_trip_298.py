@@ -403,6 +403,11 @@ async def test_cancel_during_the_comparison_keeps_the_source_without_a_verdict(
     assert job.status.value == "cancelled"
     assert iso.exists()
     assert job.error_message is None
+    # The container check did pass before Cancel; the Round-trip gave no
+    # verdict, so the record says Intact, never Round-tripped or none.
+    from services import ledger
+    assert job.check_passed == "intact"
+    assert ledger.row_from_job(job)["check_passed"] == "intact"
 
 
 @pytest.mark.asyncio
