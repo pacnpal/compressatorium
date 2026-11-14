@@ -400,28 +400,54 @@ async def test_an_output_path_with_a_line_break_keeps_the_source(tmp_path, folde
     assert playlist.read_text() == "Game.cue\n"
 
 
-AWKWARD_FOLDERS = [
+AWKWARD_NAMES = [
     " CHD", "CHD ", "#CHD", ";CHD", "\tCHD", "CHD\t", "a#b", "Pokémon",
     unicodedata.normalize("NFD", "Pokémon"), "CHD\nextra", "CHD\rextra",
     "CHD\x0bextra", "CHD\x1fextra", " ", "#",
+    "﻿CHD", "a\\b", "\\CHD", "CHD\\",
 ]
 
 
+def _reader_entries(data: bytes) -> list[str]:
+    """What an emulator reads from a playlist, written out independently of
+    the code under test: a leading UTF-8 BOM dropped, lines split, each
+    trimmed, blank and # lines skipped, and an entry with backslashes but no
+    slash read as backslash-separated."""
+    text = data.decode("utf-8")
+    text = text.removeprefix("﻿")
+    entries = []
+    for line in text.splitlines():
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        if "\\" in entry and "/" not in entry:
+            entry = entry.replace("\\", "/")
+        entries.append(entry)
+    return entries
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("folder", AWKWARD_FOLDERS, ids=repr)
-async def test_awkward_output_folders_round_trip_or_keep_the_source(tmp_path, folder):
-    """Whatever the output folder is called, the playlist either reads back
-    (as a reader would: split into lines, trimmed, # skipped) to the output,
-    or the Source is kept and the playlist is untouched."""
+@pytest.mark.parametrize("first_line", [True, False], ids=["first-line", "after-header"])
+@pytest.mark.parametrize("where", ["folder", "file"])
+@pytest.mark.parametrize("name", AWKWARD_NAMES, ids=repr)
+async def test_awkward_output_names_round_trip_or_keep_the_source(
+    tmp_path, name, where, first_line,
+):
+    """Whatever the output (or its folder) is called, the playlist either reads
+    back, as a reader would, to the output, or the Source is kept and the
+    playlist is untouched."""
     _disc(tmp_path, "Game.cue")
     _disc(tmp_path, "Other.cue")
     try:
-        (tmp_path / folder).mkdir()
+        if where == "folder":
+            (tmp_path / name).mkdir()
+            out = _disc(tmp_path / name, "Game.chd")
+        else:
+            out = _disc(tmp_path, f"{name}.chd")
     except OSError:
         pytest.skip("the filesystem refuses this name")
-    out = _disc(tmp_path / folder, "Game.chd")
     playlist = tmp_path / "Game.m3u"
-    original = "#EXTM3U\nGame.cue\nOther.cue\n"
+    original = ("" if first_line else "#EXTM3U\n") + "Game.cue\nOther.cue\n"
     playlist.write_text(original)
 
     outcome = await referrers.update_before_source_removal(
@@ -431,13 +457,68 @@ async def test_awkward_output_folders_round_trip_or_keep_the_source(tmp_path, fo
     if not outcome.ok:
         assert playlist.read_text() == original
         return
-    entries = [
-        line.strip() for line in playlist.read_bytes().decode().splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    entries = _reader_entries(playlist.read_bytes())
     assert len(entries) == 2
     assert os.path.samefile(tmp_path / entries[0], out)
     assert entries[1] == "Other.cue"
+
+
+@pytest.mark.asyncio
+async def test_a_first_entry_starting_with_a_bom_character_is_protected(tmp_path):
+    """U+FEFF at the start of the file reads as a BOM, so it needs ./"""
+    _disc(tmp_path, "Game.cue")
+    _disc(tmp_path, "﻿Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+
+    outcome = await _replace(tmp_path, "Game.cue", "﻿Game.chd")
+
+    assert outcome.ok, outcome.reason
+    assert playlist.read_text() == "./﻿Game.chd\n"
+
+
+@pytest.mark.asyncio
+async def test_a_literal_backslash_in_a_name_is_protected(tmp_path):
+    """A reader splits a slash-free entry on backslashes, so it needs ./"""
+    _disc(tmp_path, "Game.cue")
+    try:
+        _disc(tmp_path, "Game\\ (Disc 2).chd")
+    except OSError:
+        pytest.skip("the filesystem refuses backslashes in names")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game\\ (Disc 2).chd")
+
+    assert outcome.ok, outcome.reason
+    assert playlist.read_text() == "./Game\\ (Disc 2).chd\n"
+    assert _reader_entries(playlist.read_bytes()) == ["./Game\\ (Disc 2).chd"]
+
+
+@pytest.mark.parametrize(("name", "first_line", "expected"), [
+    ("Game.iso", True, "Game.iso"),
+    ("﻿Game.iso", True, "./﻿Game.iso"),
+    ("﻿Game.iso", False, "﻿Game.iso"),
+    ("Game\\ (Disc 2).iso", False, "./Game\\ (Disc 2).iso"),
+    ("#Game.iso", False, "./#Game.iso"),
+    (" Game.iso", False, "./ Game.iso"),
+    ("Game.iso ", False, None),
+    ("Game\n.iso", False, None),
+])
+def test_entry_for_new_playlists_uses_the_same_reader(tmp_path, name, first_line, expected):
+    """The encoder shared with playlist creation (#299)."""
+    try:
+        _disc(tmp_path, name)
+    except OSError:
+        pytest.skip("the filesystem refuses this name")
+
+    entry = m3u_module.entry_for(str(tmp_path), str(tmp_path / name), first_line=first_line)
+
+    assert entry == expected
+    if entry is not None:
+        data = (entry + "\n").encode() if first_line else ("#EXTM3U\n" + entry + "\n").encode()
+        [read] = _reader_entries(data)
+        assert os.path.samefile(tmp_path / read, tmp_path / name)
 
 
 def _other_group(path: Path) -> int | None:
