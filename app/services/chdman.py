@@ -167,6 +167,33 @@ class ChdmanService:
 
         return self._parse_info(stdout.decode())
 
+    async def extract_cd(
+        self,
+        chd_path: str,
+        sheet_path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+    ) -> bool:
+        """``chdman extractcd`` the CD in ``chd_path`` to ``sheet_path``.
+
+        The sheet's extension picks the format (``.cue`` or ``.gdi``); the track
+        files land beside it. Unbounded here: the Round-trip check bounds the
+        whole digest. True only when chdman exited 0; a cancel, a timeout or a
+        failure is False.
+        """
+        returncode, _, stderr = await self._runner.run_capture(
+            [self.chdman_path, "extractcd", "-f", "-i", chd_path, "-o", sheet_path],
+            cancel_event=cancel_event,
+        )
+        if returncode != 0:
+            logger.warning(
+                "chdman extractcd %s for %s: %s",
+                "aborted" if returncode is None else f"failed ({returncode})",
+                chd_path, stderr.decode(errors="replace").strip(),
+            )
+            return False
+        return True
+
     async def verify(
         self, chd_path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> dict:

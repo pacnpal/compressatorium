@@ -108,8 +108,11 @@ def test_every_dolphin_mode_declares_round_trip():
 
 
 def test_modes_without_a_content_digest_do_not_declare_round_trip():
+    # Dolphin (#298) and chdman's CD/DVD create modes (#300) have a content
+    # digest on both sides; every other mode keeps the container check.
+    with_digest = set(DOLPHIN_MODES) | {"createcd", "createdvd"}
     for spec in registry.mode_specs():
-        if spec.tool_id != "dolphin":
+        if spec.mode not in with_digest:
             assert not registry.mode_supports_round_trip(spec.mode), spec.mode
 
 

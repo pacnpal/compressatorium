@@ -90,6 +90,30 @@ def _parse_gdi_tracks(gdi_path: Path) -> List[str]:
     return tracks
 
 
+def sheet_track_paths(sheet_path: str) -> List[str]:
+    """The track files a ``.cue`` / ``.gdi`` sheet names, in sheet order.
+
+    Each file once, at its first mention (a single-bin cue names one file for
+    every track). Resolved with the same rules the delete plan uses, so a
+    reference that is absolute or escapes the sheet's folder raises
+    ``ValueError``. Any other extension names no tracks.
+    """
+    sheet = Path(sheet_path)
+    ext = sheet.suffix.lower()
+    if ext == ".cue":
+        refs = _parse_cue_tracks(sheet)
+    elif ext == ".gdi":
+        refs = _parse_gdi_tracks(sheet)
+    else:
+        return []
+    paths: List[str] = []
+    for ref in refs:
+        path = str(_resolve_track_path(sheet.parent, ref))
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
 def build_delete_plan(source_path: str) -> Dict[str, object]:
     original_source = source_path
     is_archive_member = "::" in source_path

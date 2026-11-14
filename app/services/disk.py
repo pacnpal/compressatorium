@@ -16,11 +16,46 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 
 class InsufficientDiskSpace(RuntimeError):
     """Raised by :func:`ensure_headroom` when a target volume lacks space."""
+
+
+def scratch_margin_bytes() -> int:
+    """The per-volume cushion every scratch-dir headroom check keeps free."""
+    from config import settings  # local import to keep this module stdlib-only
+
+    return int(getattr(settings, "chain_disk_margin_mb", 512)) * 1024 * 1024
+
+
+@asynccontextmanager
+async def headroom_scratch_dir(prefix: str, required_bytes: int) -> AsyncIterator[str]:
+    """A private scratch dir that has room for ``required_bytes``, removed on exit.
+
+    The one-dir form of what a chain does for its work dir: create it on the
+    scratch volume (:func:`create_scratch_dir`), check that volume can take
+    ``required_bytes`` plus :func:`scratch_margin_bytes` before anything is
+    written (raises :class:`InsufficientDiskSpace`), and remove the dir on
+    every exit: success, an exception, a cancel, or an outer deadline. The
+    Round-trip check decodes a CD CHD into one (#300).
+    """
+    from fastapi.concurrency import run_in_threadpool
+    from services.subprocess_runner import remove_partial_tree
+
+    work_dir = await run_in_threadpool(create_scratch_dir, prefix)
+    try:
+        await run_in_threadpool(
+            ensure_headroom,
+            [(work_dir, required_bytes)],
+            margin_bytes=scratch_margin_bytes(),
+        )
+        yield work_dir
+    finally:
+        await remove_partial_tree(work_dir, label="scratch dir")
 
 
 def create_scratch_dir(prefix: str) -> str:
