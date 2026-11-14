@@ -29,6 +29,7 @@ from services.file_hasher import compute_files_sha1_sync
 from services.lock_manager import lock_manager
 from services.subprocess_runner import ReadCancelled, run_detached
 from utils.delete_plan import sheet_track_paths
+from utils.disc_sheet import layout_fingerprint
 
 from .base import BaseTool, ContentDigest, ContentDigestUnavailable
 from .spec import ModeKind, ModeSpec
@@ -468,11 +469,20 @@ async def _hash_files(paths: list[str], cancel_event: asyncio.Event | None) -> s
 
 
 async def _hash_sheet(sheet: str, cancel_event: asyncio.Event | None) -> str:
-    """SHA1 of the track files a cue/gdi names, in sheet order."""
+    """The digest value of a cue/gdi: its track data and its track table.
+
+    ``<sha1 of the track files in sheet order>``, plus ``/<sha1 of the track
+    table>`` unless the table is the one chdman infers for a bare image of those
+    bytes (``utils.disc_sheet.layout_fingerprint``). So equal values mean the
+    same sector bytes *and* the same tracks, types, sector sizes, lengths, index
+    offsets and gaps, however the tracks are split into files.
+    """
     try:
         tracks = await run_detached(sheet_track_paths, sheet, cancel_event=cancel_event)
+        layout = await run_detached(layout_fingerprint, sheet, cancel_event=cancel_event)
     except (OSError, ValueError, ReadCancelled) as e:
         raise ContentDigestUnavailable(f"could not read {Path(sheet).name}: {e}") from e
     if not tracks:
         raise ContentDigestUnavailable(f"{Path(sheet).name} names no track files")
-    return await _hash_files(tracks, cancel_event)
+    data_sha1 = await _hash_files(tracks, cancel_event)
+    return data_sha1 if layout is None else f"{data_sha1}/{layout}"

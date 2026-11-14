@@ -41,6 +41,12 @@ def _resolve_track_path(base_dir: Path, ref: str) -> Path:
     return candidate
 
 
+def resolve_track_path(base_dir: Path, ref: str) -> Path:
+    """A sheet's track reference resolved inside ``base_dir`` (``ValueError``
+    when it is absolute or escapes it). Shared with ``utils.disc_sheet``."""
+    return _resolve_track_path(base_dir, ref)
+
+
 def _parse_cue_tracks(cue_path: Path) -> List[str]:
     tracks: List[str] = []
     with cue_path.open("r", encoding="utf-8", errors="ignore") as fh:

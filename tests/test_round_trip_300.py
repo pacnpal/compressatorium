@@ -52,8 +52,9 @@ def _info_stdout(*, tag: str, data_sha1: str | None, logical: int = 4096) -> byt
 class FakeChdman:
     """Answers ``chdman info`` and ``chdman extractcd`` like the real binary.
 
-    ``extract_files`` maps a file name to its bytes; ``extractcd`` writes a cue
-    naming them (in that order) plus the files, into the ``-o`` directory.
+    ``extract_files`` maps a file name to its bytes; ``extractcd`` writes them
+    into the ``-o`` directory with ``extract_sheet`` as the sheet, or, when that
+    is unset, a sheet naming each file as one track.
     """
 
     def __init__(self) -> None:
@@ -61,6 +62,7 @@ class FakeChdman:
         self.info_rc = 0
         self.extract_rc = 0
         self.extract_files: dict[str, bytes] = {}
+        self.extract_sheet: str | None = None
         self.calls: list[list[str]] = []
         self.on_extract = None
 
@@ -72,7 +74,9 @@ class FakeChdman:
             sheet = Path(cmd[cmd.index("-o") + 1])
             for name, data in self.extract_files.items():
                 (sheet.parent / name).write_bytes(data)
-            if sheet.suffix == ".gdi":
+            if self.extract_sheet is not None:
+                sheet.write_text(self.extract_sheet)
+            elif sheet.suffix == ".gdi":
                 sheet.write_text(f"{len(self.extract_files)}\n" + "".join(
                     f'{i} 0 4 2352 "{name}" 0\n'
                     for i, name in enumerate(self.extract_files, start=1)
@@ -107,6 +111,11 @@ def _scratch_left(tmp_path) -> list[str]:
     return os.listdir(scratch) if scratch.exists() else []
 
 
+def _bytes_part(digest: ContentDigest) -> str:
+    """The track-data SHA1 in a digest value (``<data sha1>[/<layout sha1>]``)."""
+    return digest.value.split("/")[0]
+
+
 # ---------------------------------------------------------------------------
 # Source side
 # ---------------------------------------------------------------------------
@@ -137,7 +146,8 @@ async def test_cue_source_digest_hashes_its_track_files_in_sheet_order(tmp_path,
 
     digest = await _chdman().content_digest(str(cue))
 
-    assert digest == ContentDigest(kind=KIND, value=_sha1(b"data track", b"audio track"))
+    assert digest.kind == KIND
+    assert _bytes_part(digest) == _sha1(b"data track", b"audio track")
     assert fake.calls == []
 
 
@@ -228,7 +238,8 @@ async def test_cd_chd_digest_extracts_and_hashes_the_tracks(tmp_path, fake, tag)
     digest = await _chdman().content_digest(str(chd))
 
     # The track bytes, never the CD data SHA1 (2448-byte frames).
-    assert digest == ContentDigest(kind=KIND, value=_sha1(b"data trackaudio track"))
+    assert digest.kind == KIND
+    assert _bytes_part(digest) == _sha1(b"data trackaudio track")
     assert fake.commands() == ["info", "extractcd"]
     extract = next(c for c in fake.calls if "extractcd" in c)
     assert extract[extract.index("-i") + 1] == str(chd)
@@ -244,7 +255,7 @@ async def test_gdrom_chd_is_extracted_as_a_gdi(tmp_path, fake):
 
     digest = await _chdman().content_digest(str(chd))
 
-    assert digest.value == _sha1(b"low density", b"high density")
+    assert _bytes_part(digest) == _sha1(b"low density", b"high density")
     extract = next(c for c in fake.calls if "extractcd" in c)
     assert extract[extract.index("-o") + 1].endswith(".gdi")
 
@@ -260,7 +271,107 @@ async def test_gdi_source_digest_hashes_its_track_files_in_sheet_order(tmp_path,
 
     digest = await _chdman().content_digest(str(gdi))
 
-    assert digest.value == _sha1(b"low density", b"audio")
+    assert _bytes_part(digest) == _sha1(b"low density", b"audio")
+
+
+# ---------------------------------------------------------------------------
+# The track table is part of the CD digest
+# ---------------------------------------------------------------------------
+
+_SECTOR = 2352
+_T1 = b"\x01" * (2 * _SECTOR)          # track 1: 2 frames
+_T2 = b"\x02" * (3 * _SECTOR)          # track 2: 1 pregap frame + 2 frames
+
+
+def _split_cue(folder: Path, *, t2_type="AUDIO", t2_index=("00:00:00", "00:00:01"),
+               t2_extra="") -> Path:
+    """A Redump-style split cue: one file per track, track 2's pregap in its file."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "Game (Track 1).bin").write_bytes(_T1)
+    (folder / "Game (Track 2).bin").write_bytes(_T2)
+    index = "".join(
+        f"    INDEX {n:02d} {msf}\n"
+        for n, msf in zip((0, 1) if len(t2_index) == 2 else (1,), t2_index)
+    )
+    cue = folder / "Game.cue"
+    cue.write_text(
+        'FILE "Game (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n'
+        "    INDEX 01 00:00:00\n"
+        f'FILE "Game (Track 2).bin" BINARY\n  TRACK 02 {t2_type}\n{t2_extra}{index}'
+    )
+    return cue
+
+
+def _single_bin_cue(folder: Path) -> Path:
+    """The same disc as :func:`_split_cue`, as chdman writes it back: one .bin."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "image.bin").write_bytes(_T1 + _T2)
+    cue = folder / "image.cue"
+    cue.write_text(
+        'FILE "image.bin" BINARY\n'
+        "  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n"
+        "  TRACK 02 AUDIO\n    INDEX 00 00:00:02\n    INDEX 01 00:00:03\n"
+    )
+    return cue
+
+
+async def _digest_of(path: Path) -> ContentDigest:
+    return await _chdman().content_digest(str(path))
+
+
+@pytest.mark.asyncio
+async def test_the_same_tracks_split_or_in_one_bin_have_one_digest(tmp_path, fake):
+    split = await _digest_of(_split_cue(tmp_path / "split"))
+    single = await _digest_of(_single_bin_cue(tmp_path / "single"))
+
+    assert split.same_content(single)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [
+    {"t2_type": "MODE2/2352"},                    # track type
+    {"t2_type": "MODE1/2048"},                    # type and sector size
+    {"t2_index": ("00:00:02",)},                  # INDEX 01 moved, no pregap
+    {"t2_index": ("00:00:00", "00:00:02")},       # INDEX 01 offset differs
+    {"t2_extra": "    PREGAP 00:02:00\n"},        # a pregap not in the file
+    {"t2_extra": "    POSTGAP 00:02:00\n"},       # a postgap
+], ids=["type", "sector-size", "no-pregap", "index-01", "pregap", "postgap"])
+async def test_same_track_bytes_with_a_different_track_table_differ(
+    tmp_path, fake, changed,
+):
+    source = await _digest_of(_split_cue(tmp_path / "source"))
+    other = await _digest_of(_split_cue(tmp_path / "other", **changed))
+
+    assert _bytes_part(source) == _bytes_part(other)
+    assert not source.same_content(other)
+
+
+@pytest.mark.asyncio
+async def test_same_track_bytes_as_a_different_number_of_tracks_differ(tmp_path, fake):
+    two = await _digest_of(_single_bin_cue(tmp_path / "two"))
+    one_folder = tmp_path / "one"
+    one_folder.mkdir()
+    (one_folder / "image.bin").write_bytes(_T1 + _T2)
+    one = one_folder / "image.cue"
+    one.write_text('FILE "image.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+
+    assert not two.same_content(await _digest_of(one))
+
+
+@pytest.mark.asyncio
+async def test_an_iso_and_its_one_track_cd_read_back_have_one_digest(tmp_path, fake):
+    """createcd from an .iso: chdman stores one MODE1/2048 track and extracts
+    it back as a one-track cue over the same bytes."""
+    payload = b"\x03" * (4 * 2048)
+    iso = tmp_path / "Game.iso"
+    iso.write_bytes(payload)
+    folder = tmp_path / "extract"
+    folder.mkdir()
+    (folder / "image.bin").write_bytes(payload)
+    cue = folder / "image.cue"
+    cue.write_text('FILE "image.bin" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n')
+
+    assert (await _digest_of(iso)).same_content(await _digest_of(cue))
 
 
 @pytest.mark.asyncio
@@ -533,6 +644,7 @@ async def test_createcd_with_matching_tracks_deletes_the_cue_and_its_tracks(e2e)
     fake.info = _info_stdout(tag="CHT2", data_sha1="ab" * 20)
     # chdman extracts one .bin holding both tracks; the digest is layout-free.
     fake.extract_files = {"image.bin": track_bytes}
+    fake.extract_sheet = _EXTRACTED_TWO_TRACKS.format(track2="AUDIO")
 
     job = await _run(e2e, cue, "createcd", delete_on_verify=True)
 
@@ -540,6 +652,32 @@ async def test_createcd_with_matching_tracks_deletes_the_cue_and_its_tracks(e2e)
     assert not cue.exists() and not any(t.exists() for t in tracks)
     assert job.check_passed == "round_tripped"
     assert fake.commands().count("extractcd") == 1
+    assert _scratch_left(e2e["tmp_path"]) == []
+
+
+_EXTRACTED_TWO_TRACKS = (
+    'FILE "image.bin" BINARY\n'
+    "  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n"
+    "  TRACK 02 {track2}\n    INDEX 01 00:00:01\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_createcd_with_the_same_bytes_but_another_track_table_keeps_the_source(
+    e2e,
+):
+    cue, tracks, track_bytes = _source_cue(e2e["tmp_path"])
+    fake = e2e["fake"]
+    fake.info = _info_stdout(tag="CHT2", data_sha1="ab" * 20)
+    fake.extract_files = {"image.bin": track_bytes}
+    # Every byte is the same, but track 2 came back as data, not audio.
+    fake.extract_sheet = _EXTRACTED_TWO_TRACKS.format(track2="MODE2/2352")
+
+    job = await _run(e2e, cue, "createcd", delete_on_verify=True)
+
+    assert job.status.value == "failed"
+    assert cue.exists() and all(t.exists() for t in tracks)
+    assert "Source kept" in job.error_message
     assert _scratch_left(e2e["tmp_path"]) == []
 
 
