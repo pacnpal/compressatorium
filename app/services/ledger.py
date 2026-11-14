@@ -12,7 +12,10 @@ Source still occupies its space, so nothing was reclaimed yet.
 
 from __future__ import annotations
 
+import csv
+import io
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi.concurrency import run_in_threadpool
@@ -179,3 +182,154 @@ def _savings_sync() -> dict:
 
 async def savings() -> dict:
     return await run_in_threadpool(_savings_sync)
+
+
+# --- Ledger view: filtered list, CSV export, metrics (#297) -----------------
+
+CSV_COLUMNS = (
+    "job_id", "finished_at", "tool", "mode", "source_path", "output_path",
+    "input_bytes", "output_bytes", "duration_s", "status", "check_passed",
+    "source_deleted", "deleted_paths", "referrers_updated", "library_id",
+    "image_key", "platform", "error",
+)
+_CSV_PAGE = 500
+# Always exported so a scrape sees a zero, not a missing series.
+_METRIC_STATUSES = ("completed", "failed", "cancelled")
+
+
+@dataclass(frozen=True)
+class LedgerFilter:
+    """What the Ledger view and its CSV export filter on.
+
+    Empty strings mean "no filter". ``q`` matches the Source or output path.
+    """
+
+    q: str = ""
+    status: str = ""
+    tool: str = ""
+    platform: str = ""
+
+    def clauses(self) -> list:
+        e = _db.LedgerEntry
+        out = []
+        if self.q:
+            out.append(
+                e.source_path.contains(self.q, autoescape=True)
+                | e.output_path.contains(self.q, autoescape=True)
+            )
+        for column, value in (
+            (e.status, self.status), (e.tool, self.tool), (e.platform, self.platform),
+        ):
+            if value:
+                out.append(column == value)
+        return out
+
+
+def _list_sync(flt: LedgerFilter, limit: int, offset: int) -> dict:
+    e = _db.LedgerEntry
+    with _session() as session:
+        total = session.scalar(
+            select(func.count()).select_from(e).where(*flt.clauses())
+        )
+        rows = session.scalars(
+            select(e).where(*flt.clauses())
+            .order_by(e.finished_at.desc(), e.id.desc())
+            .limit(limit).offset(offset)
+        ).all()
+        return {"items": [_entry_dict(r) for r in rows], "total": int(total or 0)}
+
+
+async def list_page(flt: LedgerFilter, limit: int = 50, offset: int = 0) -> dict:
+    """Newest-first page of rows matching *flt*, plus the total match count."""
+    return await run_in_threadpool(_list_sync, flt, limit, offset)
+
+
+def _facets_sync() -> dict:
+    e = _db.LedgerEntry
+    with _session() as session:
+        return {
+            name: sorted(v for v in session.scalars(select(column).distinct()) if v)
+            for name, column in (
+                ("status", e.status), ("tool", e.tool), ("platform", e.platform),
+            )
+        }
+
+
+async def facets() -> dict:
+    """Distinct status / tool / Platform values present, for the filter menus."""
+    return await run_in_threadpool(_facets_sync)
+
+
+def _csv_cell(value):
+    if isinstance(value, (list, tuple)):
+        value = "; ".join(str(v) for v in value)
+    if value is None:
+        return ""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        # Stops a spreadsheet from running a cell as a formula.
+        return "'" + value
+    return value
+
+
+def _csv_chunk(rows: list[dict], header: bool) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n")
+    if header:
+        writer.writerow(CSV_COLUMNS)
+    for row in rows:
+        writer.writerow([_csv_cell(row[c]) for c in CSV_COLUMNS])
+    return buf.getvalue()
+
+
+async def export_csv(flt: LedgerFilter):
+    """Yield the CSV for every row matching *flt*, newest first, a page at a time."""
+    offset = 0
+    while True:
+        page = await list_page(flt, _CSV_PAGE, offset)
+        yield _csv_chunk(page["items"], header=offset == 0)
+        offset += _CSV_PAGE
+        if offset >= page["total"]:
+            return
+
+
+def _metrics_sync() -> tuple[dict[str, int], int, int]:
+    e = _db.LedgerEntry
+    with _session() as session:
+        by_status = dict(session.execute(
+            select(e.status, func.count()).group_by(e.status)
+        ).all())
+        bytes_in, bytes_out = session.execute(
+            select(
+                func.coalesce(func.sum(e.input_bytes), 0),
+                func.coalesce(func.sum(e.output_bytes), 0),
+            ).where(e.status == "completed")
+        ).one()
+    return by_status, int(bytes_in), int(bytes_out)
+
+
+async def metrics_text(queue_depth: int) -> str:
+    """Prometheus text exposition (v0.0.4) of the Ledger plus the live queue.
+
+    The totals are counted from the Ledger, so a retention prune lowers them;
+    Prometheus reads that as a counter reset.
+    """
+    by_status, bytes_in, bytes_out = await run_in_threadpool(_metrics_sync)
+    statuses = sorted(set(_METRIC_STATUSES) | set(by_status))
+    lines = [
+        "# HELP compressatorium_jobs_total Finished jobs recorded in the Ledger, by status.",
+        "# TYPE compressatorium_jobs_total counter",
+        *(
+            f'compressatorium_jobs_total{{status="{s}"}} {by_status.get(s, 0)}'
+            for s in statuses
+        ),
+        "# HELP compressatorium_input_bytes_total Source bytes of completed conversions.",
+        "# TYPE compressatorium_input_bytes_total counter",
+        f"compressatorium_input_bytes_total {bytes_in}",
+        "# HELP compressatorium_output_bytes_total Output bytes of completed conversions.",
+        "# TYPE compressatorium_output_bytes_total counter",
+        f"compressatorium_output_bytes_total {bytes_out}",
+        "# HELP compressatorium_queue_depth Jobs queued or running now.",
+        "# TYPE compressatorium_queue_depth gauge",
+        f"compressatorium_queue_depth {queue_depth}",
+    ]
+    return "\n".join(lines) + "\n"
