@@ -414,6 +414,18 @@ async def test_a_repeating_error_is_reported_once_until_it_changes(client, rec):
 
 
 @pytest.mark.asyncio
+async def test_a_reason_that_flips_back_is_reported_again(client, rec):
+    """A platform with an error never lists itself in result["platforms"]."""
+    await _add(client)
+    for reason in ("tool_not_ready", "unreadable", "tool_not_ready"):
+        notifications.sweep_finished({
+            "queued": 0, "platforms": [],
+            "errors": [{"platform_id": 7, "error": reason}]}, library_id="romm")
+    await notifications.drain()
+    assert len(rec.sent) == 3
+
+
+@pytest.mark.asyncio
 async def test_a_second_platform_failing_is_new_even_if_the_first_repeats(client, rec):
     await _add(client)
     a = {"platform_id": 1, "error": "tool_not_ready"}

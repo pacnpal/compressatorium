@@ -677,6 +677,9 @@ def sweep_finished(
     # died has no "platforms" at all and clears nothing.
     checked = {p.get("platform_id") for p in result.get("platforms") or []
                if isinstance(p, dict)}
+    # A platform that failed before its summary was written is in `errors`
+    # instead, and was just as much inspected.
+    checked |= {e.get("platform_id") for e in sweep.errors}
     finished = "platforms" in result
     # Keyed by Library too: each Library is swept in turn, and one Library's
     # clean sweep says nothing about another's errors.
