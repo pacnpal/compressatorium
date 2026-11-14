@@ -386,10 +386,12 @@ def test_a_tool_that_cannot_run_here_is_skipped_with_its_reason(
 ):
     tool = registry.get("dolphin")
 
-    async def not_ready():
+    async def not_ready(self):
         return False
 
-    monkeypatch.setattr(tool, "is_ready", not_ready)
+    # On the class: patching the instance leaves a bound method behind on undo,
+    # which would shadow later class-level patches.
+    monkeypatch.setattr(type(tool), "is_ready", not_ready)
     _iso(volume)
 
     code, lines = _cli(capsys, "convert", str(volume), *target, "--json")
