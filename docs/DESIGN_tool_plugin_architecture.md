@@ -2361,6 +2361,12 @@ an earlier run left for that path is dropped. `ConversionJob.check_passed`
 (and so the Ledger row) still says `"intact"`, because the container check did
 pass.
 
+**A reused output keeps its check.** When the re-run fast path (§3.3.6) skips a
+conversion, no check runs in that job, so `job.check_passed` stays unset. Its
+`complete` event still sends `check_passed` read from the stored record
+(`JobManager._stored_check`), so the UI keeps a Round-tripped badge rather than
+falling back to Intact.
+
 ### 3.3.13 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
 
 `detect_platform(path) -> Detection` is the one place an Image's Platform is

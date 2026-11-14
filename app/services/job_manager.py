@@ -2557,6 +2557,17 @@ class JobManager:
             return False
         return await run_in_threadpool(self._produced_meta_matches, job, meta)
 
+    @staticmethod
+    async def _stored_check(output_path: str) -> str:
+        """The check a stored output passed; "intact" when unknown."""
+        try:
+            record = await verification_store.get_record(output_path)
+        except Exception as exc:
+            logger.debug("Stored check lookup failed for %s: %s", output_path, exc)
+            return "intact"
+        check = (record or {}).get("check_passed")
+        return check if check in _CHECK_LABELS else "intact"
+
     async def _run_job(self, job_id: str):
         try:
             await self._process_job(job_id)
@@ -2897,7 +2908,14 @@ class JobManager:
                 )
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
-                job.message = "Output already Intact; skipped re-conversion."
+                # No check ran in this job, so job.check_passed stays unset;
+                # the event reports the check the reused output already
+                # passed, so the UI doesn't downgrade a Round-tripped badge.
+                stored_check = await self._stored_check(job.output_path)
+                job.message = (
+                    f"Output already {_CHECK_LABELS[stored_check]}; "
+                    "skipped re-conversion."
+                )
                 await self._notify_subscribers(
                     job_id,
                     {
@@ -2906,6 +2924,7 @@ class JobManager:
                         "output_path": job.output_path,
                         "output_size": job.output_size,
                         "verified": True,
+                        "check_passed": stored_check,
                         "source_deleted": False,
                     },
                 )
