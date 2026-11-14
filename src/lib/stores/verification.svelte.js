@@ -26,6 +26,9 @@ class VerificationStore {
     // that's NOT in this baseline at completion time was added during
     // the in-flight request and must survive the replay.
     const baseline = new Set(this.statuses);
+    // Same for check values: a `complete` event during the request can add a
+    // check or upgrade one (intact -> round_tripped) for a path we already had.
+    const checksBaseline = new Map(this.checks);
     this._loadBaseline = baseline;
     try {
       const data = await api.getVerifiedCHDs();
@@ -39,6 +42,10 @@ class VerificationStore {
       for (const p of this.statuses) {
         if (!baseline.has(p)) addedSince[p] = true;
       }
+      const checksSince = Object.create(null);
+      for (const [p, check] of this.checks) {
+        if (checksBaseline.get(p) !== check) checksSince[p] = check;
+      }
       this.statuses.clear();
       for (const path of data?.verified ?? []) this.statuses.add(path);
       this.checks.clear();
@@ -46,6 +53,9 @@ class VerificationStore {
         this.checks.set(path, check);
       }
       for (const path of Object.keys(addedSince)) this.statuses.add(path);
+      for (const [path, check] of Object.entries(checksSince)) {
+        this.checks.set(path, check);
+      }
     } catch (_e) {
       // non-fatal, leave whatever we had
     } finally {
