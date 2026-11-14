@@ -2239,7 +2239,12 @@ it, and it is kept while delete-source is off. A sweep passes it to
 says `container_only`), so `JobManager._delete_check` (§3.3.12) decides a
 sweep's job and a manual one the same way. A delete-source Rule's
 per-Platform sweep summary carries `check_level`, which is what Preview shows;
-a Rule that keeps its Source gets no such key.
+a Rule that keeps its Source gets no such key. It is the check that will run,
+not the stored preference: `rules.effective_check_level` asks
+`round_trip.round_trip_applies(mode, delete_on_verify=, container_only=)`, the
+same helper `_delete_check` asks, so a stored `round_trip` on a mode with no
+digest shows `container_only`, and a mode that gains a digest (#300) changes
+both answers at once.
 
 **The upgrade to Round-trip.** `store._upgrade_check_level` runs once, in
 `_load` after the Library's legacy copy and under `store._lock`, before any
@@ -2252,8 +2257,13 @@ afterwards are never touched. RomM's pre-#296 rows predate the field too, so
 to `switched` when the pass already ran (another Library was read first).
 
 **One-time notices.** `GET /api/rules/notices` returns
-`{"check_level": {"show", "switched"}}`; `show` is true while the upgrade
-switched at least one Rule and nobody has dismissed it.
+`{"check_level": {"show", "switched", "container_check"}}`. Before counting it
+runs the legacy copy of each of the app's Libraries (`routes/rules._libraries`)
+and the upgrade pass, so the first read sees Rules still under pre-#296 keys.
+`switched` counts the switched Rules whose mode can Round-trip now (registry),
+`container_check` the rest, which keep the container check until their tool
+gains a digest. `show` is true while `switched` is not zero and nobody has
+dismissed it.
 `POST /api/rules/notices/check-level/dismiss` records the dismissal in the
 `rules.notices` row. The routes are not RomM's, so a folder Library's editor
 uses the same ones; the front end reads them through
@@ -2312,8 +2322,9 @@ after the container check passes and returns `(check_passed,
 keep_source_reason)`. The Round-trip runs only when it decides something:
 `delete_on_verify` is set, the mode supports it, and the job did not take the
 named opt-out `ConversionJob.container_only` (`container_only` on
-`POST /api/jobs` and `/api/jobs/batch`, and a Rule's `check_level`, §3.3.11). Otherwise the answer is
-`("intact", None)` with no extra reads, which is what every `verify_after` job
+`POST /api/jobs` and `/api/jobs/batch`, and a Rule's `check_level`, §3.3.11).
+That test is `round_trip.round_trip_applies`, shared with Rule Preview.
+Otherwise the answer is `("intact", None)` with no extra reads, which is what every `verify_after` job
 and every mode without a digest gets. `ConversionJob.check_passed` carries the
 result to the Ledger and to the job's `complete` event. On a pass,
 `verification_store.mark_verified(..., check=check_passed)` writes it to

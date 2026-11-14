@@ -155,6 +155,63 @@ async def test_preview_shows_the_check_level(db: Path, rule: dict, shown) -> Non
     assert preview["platforms"][0].get("check_level") == shown
 
 
+@pytest.mark.asyncio
+async def test_preview_shows_the_check_that_runs_on_a_mode_without_a_digest(db: Path) -> None:
+    """A stored round_trip on a mode that cannot Round-trip deletes on Intact.
+
+    Read from the registry, so a mode that gains a digest (#300) shows
+    round_trip with no change here.
+    """
+    from services.tools import registry
+
+    await _configured_romm(db)
+    with patch.object(registry, "mode_supports_round_trip", return_value=False):
+        _, preview = await _sweep({"delete_on_verify": True}, dry_run=True)
+    assert preview["platforms"][0]["check_level"] == "container_only"
+
+
+@pytest.mark.parametrize(("delete", "container_only", "supported", "runs"), [
+    (True, False, True, True),
+    (True, True, True, False),
+    (True, False, False, False),
+    (False, False, True, False),
+])
+def test_one_helper_decides_whether_a_round_trip_runs(
+    delete: bool, container_only: bool, supported: bool, runs: bool,
+) -> None:
+    from services.round_trip import round_trip_applies
+    from services.rules.rules import effective_check_level
+    from services.tools import registry
+
+    with patch.object(registry, "mode_supports_round_trip", return_value=supported):
+        assert round_trip_applies(
+            "dolphin_rvz", delete_on_verify=delete, container_only=container_only,
+        ) is runs
+        level = effective_check_level({
+            "mode": "dolphin_rvz", "delete_on_verify": delete,
+            "check_level": "container_only" if container_only else "round_trip",
+        })
+    assert level == (None if not delete else "round_trip" if runs else "container_only")
+
+
+@pytest.mark.asyncio
+async def test_the_job_path_asks_the_same_helper() -> None:
+    """`_delete_check` reads nothing extra when the shared helper says no."""
+    from services import job_manager as jm
+
+    job = MagicMock(delete_on_verify=True, container_only=False)
+    job.mode.value = "dolphin_rvz"
+    tool = MagicMock()
+    with patch.object(jm, "round_trip_applies", return_value=False) as applies, \
+            patch.object(jm, "round_trip", AsyncMock()) as ran:
+        got = await jm.job_manager._delete_check(job, tool, "/s.iso", "/o.rvz", None)
+    assert got == ("intact", None)
+    applies.assert_called_once_with(
+        "dolphin_rvz", delete_on_verify=True, container_only=False,
+    )
+    ran.assert_not_awaited()
+
+
 # ----------------------------------------------------------------------
 # the upgrade: stored delete-source Rules move to Round-trip, once
 # ----------------------------------------------------------------------
@@ -253,17 +310,30 @@ async def test_pre_296_rules_are_switched_as_they_are_copied(db: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_pre_296_rules_copied_after_the_upgrade_are_switched_too(db: Path) -> None:
-    """Another Library (or the notice) can run the upgrade before RomM's copy."""
-    from routes import rules as rules_routes
+    """Another Library can run the upgrade before RomM's copy."""
+    from services.rules import store
+
+    from tests.test_rules_library_296 import _FolderLike
 
     await preferences_store.put("romm.rules", {"7": DELETING})
-    assert (await rules_routes.get_rule_notices())["check_level"]["show"] is False
+    await store.read(store.RULES_KEY, _FolderLike(db))
+    assert (await preferences_store.get(UPGRADE_KEY))["switched"] == []
 
     got = await romm_routes.get_romm_rules()
 
     assert got["rules"]["7"]["check_level"] == "round_trip"
     assert (await preferences_store.get(UPGRADE_KEY))["switched"] == ["romm:7"]
-    assert (await rules_routes.get_rule_notices())["check_level"]["show"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_first_notice_read_sees_pre_296_rules(db: Path) -> None:
+    """The editor may ask for the notice before anything has read RomM's Rules."""
+    from routes import rules as rules_routes
+
+    await preferences_store.put("romm.rules", {"7": DELETING})
+    got = await rules_routes.get_rule_notices()
+    assert got["check_level"]["show"] is True
+    assert got["check_level"]["switched"] == 1
 
 
 # ----------------------------------------------------------------------
@@ -277,7 +347,28 @@ async def test_the_notice_shows_after_an_upgrade_that_switched_rules(db: Path) -
 
     await preferences_store.put("rules", {"romm:7": DELETING, "romm:8": KEEPING})
     got = await rules_routes.get_rule_notices()
-    assert got == {"check_level": {"show": True, "switched": 1}}
+    assert got == {"check_level": {"show": True, "switched": 1, "container_check": 0}}
+
+
+@pytest.mark.asyncio
+async def test_the_notice_counts_only_rules_that_now_round_trip(db: Path) -> None:
+    """A delete-source Rule on a mode with no digest keeps the container check."""
+    from routes import rules as rules_routes
+
+    await preferences_store.put("rules", {
+        "romm:7": DELETING, "romm:9": {**DELETING, "mode": "createcd"},
+    })
+    got = await rules_routes.get_rule_notices()
+    assert got == {"check_level": {"show": True, "switched": 1, "container_check": 1}}
+
+
+@pytest.mark.asyncio
+async def test_no_notice_when_no_switched_rule_can_round_trip(db: Path) -> None:
+    from routes import rules as rules_routes
+
+    await preferences_store.put("rules", {"romm:9": {**DELETING, "mode": "createcd"}})
+    got = await rules_routes.get_rule_notices()
+    assert got == {"check_level": {"show": False, "switched": 0, "container_check": 1}}
 
 
 @pytest.mark.asyncio
@@ -288,22 +379,19 @@ async def test_dismissing_the_notice_is_remembered(db: Path) -> None:
     await rules_routes.get_rule_notices()
 
     got = await rules_routes.dismiss_check_level_notice()
-    assert got == {"check_level": {"show": False, "switched": 1}}
+    assert got == {"check_level": {"show": False, "switched": 1, "container_check": 0}}
     assert (await rules_routes.get_rule_notices())["check_level"]["show"] is False
     assert (await preferences_store.get("rules.notices"))["check_level"].endswith("Z")
 
 
-def test_the_notice_routes_are_served(db: Path) -> None:
+def test_the_notice_routes_are_served() -> None:
+    """Registered on the app. Their behaviour is tested by calling them above."""
     import main
-    from fastapi.testclient import TestClient
 
-    # Not entered as a context manager, so the app's startup tasks stay off.
-    client = TestClient(main.app)
-    assert client.get("/api/rules/notices").json() == {
-        "check_level": {"show": False, "switched": 0},
-    }
-    dismissed = client.post("/api/rules/notices/check-level/dismiss")
-    assert dismissed.status_code == 200
+    assert main.app.url_path_for("get_rule_notices") == "/api/rules/notices"
+    assert main.app.url_path_for("dismiss_check_level_notice") == (
+        "/api/rules/notices/check-level/dismiss"
+    )
 
 
 @pytest.mark.asyncio
@@ -315,4 +403,4 @@ async def test_no_notice_when_nothing_was_switched(db: Path, stored) -> None:
     if stored is not None:
         await preferences_store.put("rules", stored)
     got = await rules_routes.get_rule_notices()
-    assert got == {"check_level": {"show": False, "switched": 0}}
+    assert got == {"check_level": {"show": False, "switched": 0, "container_check": 0}}

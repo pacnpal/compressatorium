@@ -21,11 +21,13 @@ downgrade. Anything written to them later is ignored.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from services.preferences_store import preferences_store
 from services.rules.rules import CHECK_LEVELS
+from services.tools import registry
 
 if TYPE_CHECKING:
     from services.rules.library import Library
@@ -155,28 +157,50 @@ async def _load(kind: str, library: Library) -> dict:
     return dict(blob) if isinstance(blob, dict) else {}
 
 
-async def check_level_notice() -> dict:
-    """The one-time notice about the upgrade: ``{"show", "switched"}``.
+async def check_level_notice(libraries: Iterable[Library] = ()) -> dict:
+    """The one-time notice about the upgrade: ``{"show", "switched", "container_check"}``.
 
-    Shown only when the upgrade switched at least one Rule and nobody has
-    dismissed it; a fresh install has nothing to explain.
+    *libraries* are the app's Libraries. Their legacy copies run first, so the
+    count includes Rules an earlier release stored under old keys even when
+    the editor asks before anything has read them.
+
+    ``switched`` counts the switched Rules that now Round-trip (their mode has
+    a digest, read from the registry); ``container_check`` the switched Rules
+    whose mode has none, which keep the container check for now. Shown only
+    when ``switched`` is not zero and nobody has dismissed it.
     """
     async with _lock:
+        for library in libraries:
+            await _copy_legacy(library)
         upgrade = await _upgrade_check_level()
+        rules = await preferences_store.get(RULES_KEY)
         notices = await preferences_store.get(NOTICES_KEY)
-    switched = len(upgrade.get("switched") or [])
+    rules = rules if isinstance(rules, dict) else {}
+    switched = container_check = 0
+    for key in upgrade.get("switched") or []:
+        rule = rules.get(key)
+        if not isinstance(rule, dict):
+            continue
+        if registry.mode_supports_round_trip(str(rule.get("mode") or "")):
+            switched += 1
+        else:
+            container_check += 1
     dismissed = isinstance(notices, dict) and bool(notices.get("check_level"))
-    return {"show": bool(switched) and not dismissed, "switched": switched}
+    return {
+        "show": bool(switched) and not dismissed,
+        "switched": switched,
+        "container_check": container_check,
+    }
 
 
-async def dismiss_check_level_notice() -> dict:
+async def dismiss_check_level_notice(libraries: Iterable[Library] = ()) -> dict:
     """Remember that the notice was dismissed. Returns the notice as it now stands."""
     async with _lock:
         notices = await preferences_store.get(NOTICES_KEY)
         notices = dict(notices) if isinstance(notices, dict) else {}
         notices.setdefault("check_level", _now())
         await preferences_store.put(NOTICES_KEY, notices)
-    return await check_level_notice()
+    return await check_level_notice(libraries)
 
 
 async def read(kind: str, library: Library) -> dict:

@@ -57,6 +57,7 @@ from services.rules.library import Image, Library, LibraryUnreadable, QueuedImag
 from services.rules.rules import (
     _output_identity,
     _validation_paused,
+    effective_check_level,
     normalize_rules,
     takes_container_only,
 )
@@ -1101,9 +1102,10 @@ async def _sweep_locked(
             "considered": considered,
         }
         if rule["delete_on_verify"]:
-            # What Preview shows: the check that must pass before this batch
-            # deletes a Source. Absent when nothing is deleted.
-            summary["check_level"] = rule["check_level"]
+            # What Preview shows: the check that will actually pass before
+            # this batch deletes a Source, not the stored preference (a mode
+            # with no digest deletes on Intact). Absent when nothing is deleted.
+            summary["check_level"] = effective_check_level(rule)
 
         if batch and not dry_run:
             try:

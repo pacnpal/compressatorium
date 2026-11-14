@@ -21,6 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from logging_setup import get_logger
+from services.round_trip import round_trip_applies
 from services.tools import registry
 from utils.path_utils import is_within_configured_volumes
 
@@ -642,6 +643,23 @@ def takes_container_only(rule: Mapping[str, Any]) -> bool:
     keeps it reads nothing extra whatever its level says.
     """
     return bool(rule.get("delete_on_verify")) and rule.get("check_level") == "container_only"
+
+
+def effective_check_level(rule: Mapping[str, Any]) -> str | None:
+    """The check a delete-source job from this Rule will pass before deleting.
+
+    What Preview shows, as opposed to the stored preference: ``round_trip``
+    only where the mode can Round-trip and the Rule did not opt out, otherwise
+    ``container_only``. None when the Rule keeps its Source. Decided by
+    ``round_trip_applies``, the same helper the job path asks.
+    """
+    if not rule.get("delete_on_verify"):
+        return None
+    runs = round_trip_applies(
+        rule.get("mode") or "", delete_on_verify=True,
+        container_only=takes_container_only(rule),
+    )
+    return CHECK_LEVELS[0] if runs else CHECK_LEVELS[1]
 
 
 def normalize_rules(

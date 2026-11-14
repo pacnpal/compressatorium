@@ -34,7 +34,7 @@ from services.chdman import ConversionCancelled, chdman_service
 from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import lock_manager
-from services.round_trip import round_trip
+from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import ReadCancelled, run_detached
 from services.tools import ModeKind, registry
 from services.verification_store import verification_store
@@ -2543,10 +2543,10 @@ class JobManager:
         deleted, the mode can round-trip, and the job did not take the
         container-only opt-out. A job that keeps its Source reads nothing extra.
         """
-        if not (
-            job.delete_on_verify
-            and not job.container_only
-            and registry.mode_supports_round_trip(job.mode.value)
+        if not round_trip_applies(
+            job.mode.value,
+            delete_on_verify=job.delete_on_verify,
+            container_only=job.container_only,
         ):
             return "intact", None
         # The container check has passed. Record that now, so a Cancel during
