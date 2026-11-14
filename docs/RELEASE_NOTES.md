@@ -31,6 +31,14 @@
   - **RomM Rules:** delete-source Rules on Dolphin modes now Round-trip by
     default, so their sweeps take longer for the same reason. A per-Rule
     container-only setting comes later.
+- **Each Rule now says which check runs before it deletes a Source** (#302).
+  Next to delete-source, the rule editor offers **Container check only
+  (faster, weaker)**; left unticked, the Rule Round-trips (the default).
+  Sweeps hand the Rule's setting to every job they queue, and Preview shows it.
+  - **On upgrade, every stored Rule with delete-source on is set to
+    Round-trip**, so sweeps on formats that support it read each file once
+    more and take longer. The rule editor says so once, with how to opt out;
+    dismissing the notice is remembered.
 - **Xbox / Xbox 360: trim disc images to XISO** with
   [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
   (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's
