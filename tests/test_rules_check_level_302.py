@@ -153,3 +153,166 @@ async def test_preview_shows_the_check_level(db: Path, rule: dict, shown) -> Non
     queued.assert_not_awaited()
     assert preview["dry_run"] is True
     assert preview["platforms"][0].get("check_level") == shown
+
+
+# ----------------------------------------------------------------------
+# the upgrade: stored delete-source Rules move to Round-trip, once
+# ----------------------------------------------------------------------
+
+UPGRADE_KEY = "rules.check_level_upgrade"
+
+# Rules as an earlier release stored them: no check_level at all.
+DELETING = {"mode": "dolphin_rvz", "enabled": True, "delete_on_verify": True}
+KEEPING = {"mode": "dolphin_rvz", "enabled": True}
+
+
+@pytest.mark.asyncio
+async def test_the_upgrade_sets_every_deleting_rule_to_round_trip(db: Path) -> None:
+    # A row a hand edit left at container_only is switched too: the upgrade
+    # says every stored delete-source Rule moves.
+    await preferences_store.put("rules", {
+        "romm:7": DELETING,
+        "romm:8": KEEPING,
+        "romm:9": {**DELETING, "check_level": "container_only"},
+        "folder:/a:gc": DELETING,
+    })
+
+    await romm_routes.get_romm_rules()
+
+    stored = await preferences_store.get("rules")
+    assert stored["romm:7"] == {**DELETING, "check_level": "round_trip"}
+    assert stored["romm:9"]["check_level"] == "round_trip"
+    # Every Library's Rules, not only the one being read.
+    assert stored["folder:/a:gc"]["check_level"] == "round_trip"
+    # A Rule that keeps its Source is left exactly as it was.
+    assert stored["romm:8"] == KEEPING
+    marker = await preferences_store.get(UPGRADE_KEY)
+    assert marker["switched"] == ["folder:/a:gc", "romm:7", "romm:9"]
+    assert marker["upgraded_at"].endswith("Z")
+
+
+@pytest.mark.asyncio
+async def test_the_upgrade_runs_once(db: Path) -> None:
+    await preferences_store.put("rules", {"romm:7": DELETING})
+    await romm_routes.get_romm_rules()
+
+    # The operator opts out afterwards. Later reads must not undo it.
+    await romm_routes.put_romm_rules({"7": {**DELETING, "check_level": "container_only"}})
+    got = await romm_routes.get_romm_rules()
+    assert got["rules"]["7"]["check_level"] == "container_only"
+    assert (await preferences_store.get("rules"))["romm:7"]["check_level"] == "container_only"
+    assert (await preferences_store.get(UPGRADE_KEY))["switched"] == ["romm:7"]
+
+
+@pytest.mark.asyncio
+async def test_a_crash_before_the_marker_repeats_the_upgrade(db: Path) -> None:
+    """The marker is written last, so a crash after the Rules leaves it unwritten."""
+    await preferences_store.put("rules", {"romm:7": DELETING, "romm:8": KEEPING})
+    real_put = preferences_store.put
+
+    async def crash_on_marker(key, value):
+        if key == UPGRADE_KEY:
+            raise RuntimeError("power cut")
+        return await real_put(key, value)
+
+    with patch.object(preferences_store, "put", side_effect=crash_on_marker), \
+            pytest.raises(RuntimeError):
+        await romm_routes.get_romm_rules()
+    assert await preferences_store.get(UPGRADE_KEY) is None
+
+    got = await romm_routes.get_romm_rules()
+    assert got["rules"]["7"]["check_level"] == "round_trip"
+    assert await preferences_store.get("rules") == {
+        "romm:7": {**DELETING, "check_level": "round_trip"}, "romm:8": KEEPING,
+    }
+    assert (await preferences_store.get(UPGRADE_KEY))["switched"] == ["romm:7"]
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_install_switches_nothing(db: Path) -> None:
+    await romm_routes.get_romm_rules()
+    assert await preferences_store.get("rules") is None
+    assert (await preferences_store.get(UPGRADE_KEY))["switched"] == []
+
+
+@pytest.mark.asyncio
+async def test_pre_296_rules_are_switched_as_they_are_copied(db: Path) -> None:
+    """RomM's old rows predate the check level too."""
+    await preferences_store.put("romm.rules", {"7": DELETING, "8": KEEPING})
+
+    got = await romm_routes.get_romm_rules()
+
+    assert got["rules"]["7"]["check_level"] == "round_trip"
+    assert await preferences_store.get("rules") == {
+        "romm:7": {**DELETING, "check_level": "round_trip"}, "romm:8": KEEPING,
+    }
+    # The old row is still a copy as of the upgrade (#296).
+    assert await preferences_store.get("romm.rules") == {"7": DELETING, "8": KEEPING}
+    assert (await preferences_store.get(UPGRADE_KEY))["switched"] == ["romm:7"]
+
+
+@pytest.mark.asyncio
+async def test_pre_296_rules_copied_after_the_upgrade_are_switched_too(db: Path) -> None:
+    """Another Library (or the notice) can run the upgrade before RomM's copy."""
+    from routes import rules as rules_routes
+
+    await preferences_store.put("romm.rules", {"7": DELETING})
+    assert (await rules_routes.get_rule_notices())["check_level"]["show"] is False
+
+    got = await romm_routes.get_romm_rules()
+
+    assert got["rules"]["7"]["check_level"] == "round_trip"
+    assert (await preferences_store.get(UPGRADE_KEY))["switched"] == ["romm:7"]
+    assert (await rules_routes.get_rule_notices())["check_level"]["show"] is True
+
+
+# ----------------------------------------------------------------------
+# the one-time notice
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_notice_shows_after_an_upgrade_that_switched_rules(db: Path) -> None:
+    from routes import rules as rules_routes
+
+    await preferences_store.put("rules", {"romm:7": DELETING, "romm:8": KEEPING})
+    got = await rules_routes.get_rule_notices()
+    assert got == {"check_level": {"show": True, "switched": 1}}
+
+
+@pytest.mark.asyncio
+async def test_dismissing_the_notice_is_remembered(db: Path) -> None:
+    from routes import rules as rules_routes
+
+    await preferences_store.put("rules", {"romm:7": DELETING})
+    await rules_routes.get_rule_notices()
+
+    got = await rules_routes.dismiss_check_level_notice()
+    assert got == {"check_level": {"show": False, "switched": 1}}
+    assert (await rules_routes.get_rule_notices())["check_level"]["show"] is False
+    assert (await preferences_store.get("rules.notices"))["check_level"].endswith("Z")
+
+
+def test_the_notice_routes_are_served(db: Path) -> None:
+    import main
+    from fastapi.testclient import TestClient
+
+    # Not entered as a context manager, so the app's startup tasks stay off.
+    client = TestClient(main.app)
+    assert client.get("/api/rules/notices").json() == {
+        "check_level": {"show": False, "switched": 0},
+    }
+    dismissed = client.post("/api/rules/notices/check-level/dismiss")
+    assert dismissed.status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored", [None, {"romm:8": KEEPING}])
+async def test_no_notice_when_nothing_was_switched(db: Path, stored) -> None:
+    """A fresh install, or Rules that keep their Source, changed nothing to explain."""
+    from routes import rules as rules_routes
+
+    if stored is not None:
+        await preferences_store.put("rules", stored)
+    got = await rules_routes.get_rule_notices()
+    assert got == {"check_level": {"show": False, "switched": 0}}
