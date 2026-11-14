@@ -346,7 +346,7 @@ def _judge_verify_output(lines: list[str]) -> str | None:
     if skipped:
         return skipped
     if not any("Raw SHA1 verification successful" in line for line in text):
-        return "chdman verify did not report the raw SHA1 as verified"
+        return "chdman verify did not report a raw SHA1 match"
     return None
 
 
