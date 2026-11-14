@@ -226,8 +226,17 @@ def _refuse_duplicate_discs(names: list[str]) -> None:
             )
 
 
-def plan_playlist(paths: list[str], title: str | None = None) -> PlaylistPlan:
-    """The playlist these discs would make. Writes nothing."""
+@dataclass
+class _Selection:
+    directory: str
+    names: list[str]      # disc file names, in playlist order
+    entries: list[str]    # as written on the lines
+    warnings: list[str]
+
+
+def _check_selection(paths: list[str]) -> _Selection:
+    """Validate the selected discs and render their entries. Says nothing about
+    the playlist's name, so a given name is never judged by the derived default."""
     directory, files = _validated_files(paths)
     names, tracks = _split_discs_and_tracks(files)
     if len(names) < 2:
@@ -241,23 +250,29 @@ def plan_playlist(paths: list[str], title: str | None = None) -> PlaylistPlan:
         )
     if len({disc_title(n).casefold() for n in names}) > 1:
         warnings.append("These names don't share one title; check the playlist name.")
-    chosen = _clean_title(title) if title is not None else disc_title(names[0])
-    _check_file_name_part(chosen, "The playlist name")
-    requested = f"{chosen}{PLAYLIST_EXT}"
-    free = _free_name(directory, chosen)
     entries = [protect_entry(n) for n in names]
     try:
-        playlist_bytes(entries)  # the preview must be a playlist that can be written
+        playlist_bytes(entries)  # must be a playlist that can be written
     except ValueError as exc:
         raise PlaylistError(f"These names can't go in a playlist: {exc}") from None
+    return _Selection(directory, names, entries, warnings)
+
+
+def plan_playlist(paths: list[str], title: str | None = None) -> PlaylistPlan:
+    """The playlist these discs would make. Writes nothing."""
+    sel = _check_selection(paths)
+    chosen = _clean_title(title) if title is not None else disc_title(sel.names[0])
+    _check_file_name_part(chosen, "The playlist name")
+    requested = f"{chosen}{PLAYLIST_EXT}"
+    free = _free_name(sel.directory, chosen)
     return PlaylistPlan(
-        directory=directory,
+        directory=sel.directory,
         title=chosen,
         requested_name=requested,
         file_name=free,
         name_taken=free != requested,
-        entries=entries,
-        warnings=warnings,
+        entries=sel.entries,
+        warnings=sel.warnings,
     )
 
 
@@ -277,16 +292,21 @@ def create_playlist(paths: list[str], file_name: str) -> PlaylistPlan:
     exists now, including when it appeared after the preview.
     """
     stem = _check_playlist_file_name(file_name)
-    plan = plan_playlist(paths)  # entries only; the name is the previewed file_name
-    target = os.path.join(plan.directory, file_name)
+    sel = _check_selection(paths)  # the name is the previewed file_name, not re-derived
+    target = os.path.join(sel.directory, file_name)
     if not is_within_configured_volumes(target, treat_archives=False):
         raise PlaylistError("The playlist would be outside the configured volumes")
     try:
-        write_new_bytes(target, playlist_bytes(plan.entries))
+        write_new_bytes(target, playlist_bytes(sel.entries))
     except FileExistsError:
         base = _TRAILING_NUMBER_SUFFIX_RE.sub("", stem)
-        raise PlaylistNameTaken(file_name, _free_name(plan.directory, base)) from None
-    plan.requested_name = plan.file_name = file_name
-    plan.title = stem
-    plan.name_taken = False
-    return plan
+        raise PlaylistNameTaken(file_name, _free_name(sel.directory, base)) from None
+    return PlaylistPlan(
+        directory=sel.directory,
+        title=stem,
+        requested_name=file_name,
+        file_name=file_name,
+        name_taken=False,
+        entries=sel.entries,
+        warnings=sel.warnings,
+    )
