@@ -13,6 +13,13 @@
     Source was deleted, split by Platform and by output format.
   - **Recent conversions** now reads from the Ledger, so it is no longer empty
     after a restart.
+- **Ledger view, CSV export and metrics** (#297). A new **Ledger** page lists
+  every row newest first, paged, with search by path and filters for status,
+  tool and Platform. **Export CSV** downloads the rows matching the current
+  filter. New endpoints: `GET /api/ledger` (paged JSON), `GET
+  /api/ledger/export.csv`, and `GET /api/metrics` (Prometheus text: jobs by
+  status, bytes in, bytes out, queue depth). All sit behind the same auth as
+  the rest of the API. `GET /api/ledger/savings` remains the savings summary.
 - **Xbox / Xbox 360: trim disc images to XISO** with
   [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
   (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's
