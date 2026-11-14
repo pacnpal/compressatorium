@@ -6,6 +6,11 @@ at `273b85c` (2026-10-25), latest release **5.4.1** (2026-10-22). Version tags
 below say which RomM release introduced an API; anything marked **verify** needs
 a spike against a live instance before it is relied on.
 
+> **Newer pass:** `docs/VALUE_ADD_ROADMAP.md` re-checked RomM at `eb10d95`
+> (5.5.0-alpha.1, 2026-11-13). It lists what changed in RomM since this doc,
+> where RomM's converter stops, and the work that helps people without RomM.
+> Its "Corrections" section applies to the items below.
+
 ## Where we are today
 
 Compressatorium talks to six RomM endpoints (`services/romm/client.py`):
