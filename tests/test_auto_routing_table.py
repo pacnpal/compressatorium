@@ -1,7 +1,8 @@
 """The whole Auto routing table in one place.
 
 For every Platform a tool declares, and every extension a mode serving it can
-read, the mode Auto picks. ``test_the_table_covers_every_routable_pair`` fails
+read, the mode Auto picks, or ``skip: <reason>`` when it leaves the Image
+alone. ``test_the_table_covers_every_routable_pair`` fails
 when a tool, mode, Platform or read set changes the set of pairs, so this file
 has to be updated (and read) whenever routing changes.
 
@@ -12,8 +13,10 @@ Rows worth knowing about:
 - The cartridge Platforms all reach ``romz_7z`` for every ROM extension: romz
   is one format-agnostic mode, so a ``.gba`` in a ``gb`` folder is packed as it
   is.
-- ``ngc``/``wii`` ``.rvz`` goes to ``dolphin_rvz`` (an RVZ re-encoded as RVZ).
-  Without an output directory the job is skipped as "output exists".
+- ``ngc``/``wii`` ``.rvz`` is skipped as "Already RVZ": the chosen mode's output
+  format is the input's, so converting would only re-encode it. That is the
+  only row of this kind today; no other default target writes an extension it
+  also reads.
 - ``laseractive`` and ``ps3`` have no rows: ``createld`` is never an Auto
   default, and ``folder_to_iso`` takes a folder, not a file.
 """
@@ -23,7 +26,7 @@ from pathlib import Path
 
 import pytest
 from services import platform_detect
-from services.platform_detect import canonical_slug, default_mode
+from services.platform_detect import auto_route, canonical_slug
 from services.tools import registry
 
 from .test_xiso_service import build_image
@@ -32,7 +35,7 @@ CD = {".cue": "createcd", ".gdi": "createcd", ".iso": "createcd"}
 CSO_TO_CHD = {".cso": "cso_to_chd", ".zso": "cso_to_chd", ".dax": "cso_to_chd"}
 DOLPHIN = {
     ".iso": "dolphin_rvz", ".gcz": "dolphin_rvz", ".wia": "dolphin_rvz",
-    ".rvz": "dolphin_rvz", ".wbfs": "dolphin_rvz",
+    ".rvz": "skip: Already RVZ", ".wbfs": "dolphin_rvz",
     ".nkit.iso": "nkit_to_rvz", ".nkit.gcz": "nkit_to_rvz",
 }
 Z3DS = dict.fromkeys((".3ds", ".3dsx", ".cci", ".cia", ".cxi"), "z3ds_compress")
@@ -103,8 +106,8 @@ def _fresh_cache():
     yield
 
 
-@pytest.mark.parametrize(("platform", "ext", "mode"), ROWS)
-def test_auto_target(tmp_path: Path, platform, ext, mode):
+@pytest.mark.parametrize(("platform", "ext", "expected"), ROWS)
+def test_auto_target(tmp_path: Path, platform, ext, expected):
     path = tmp_path / f"game{ext}"
     if platform.startswith("xbox"):
         # The Xbox tool only converts a file that really holds an Xbox volume.
@@ -112,4 +115,6 @@ def test_auto_target(tmp_path: Path, platform, ext, mode):
     else:
         path.write_bytes(b"\0" * 64)
 
-    assert default_mode(str(path), platform, registry) == mode
+    mode, reason = auto_route(str(path), platform, registry)
+
+    assert (mode or f"skip: {reason}") == expected

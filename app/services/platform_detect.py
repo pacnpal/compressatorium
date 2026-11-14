@@ -316,6 +316,23 @@ def default_mode(path: str, platform: str, tools_registry) -> str | None:
     return best
 
 
+def auto_route(path: str, platform: str, tools_registry) -> tuple[str | None, str | None]:
+    """``(mode, None)`` for where Auto sends this Image, or ``(None, reason)``.
+
+    ``default_mode`` picks the target. The Image is then left alone when the
+    target writes the format it is already in (an RVZ under ``dolphin_rvz``):
+    the mode's ``output_ext`` matching the input name says so, for any tool.
+    """
+    mode = default_mode(path, platform, tools_registry)
+    if mode is None:
+        return None, _no_target_reason(path, platform, tools_registry)
+    output_ext = tools_registry.spec(mode).output_ext
+    name = path.split("::", 1)[-1]
+    if output_ext and match_extension(name, {output_ext}) is not None:
+        return None, f"Already {output_ext.lstrip('.').upper()}"
+    return mode, None
+
+
 def _no_target_reason(path: str, platform: str, tools_registry) -> str:
     """Why an Image with a Platform has no target: the Platform, or the file."""
     if not _auto_candidates(platform, tools_registry):
@@ -415,12 +432,9 @@ def _plan_targets(paths, prefs: dict, tools_registry) -> list[AutoTarget]:
             plan.append(AutoTarget(path, detection, None, None, None,
                                    _skip_reason(detection)))
             continue
-        mode = default_mode(path, detection.platform, tools_registry)
+        mode, reason = auto_route(path, detection.platform, tools_registry)
         if mode is None:
-            plan.append(AutoTarget(
-                path, detection, None, None, None,
-                _no_target_reason(path, detection.platform, tools_registry),
-            ))
+            plan.append(AutoTarget(path, detection, None, None, None, reason))
             continue
         spec = tools_registry.spec(mode)
         compression = None

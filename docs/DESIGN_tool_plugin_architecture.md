@@ -2212,6 +2212,13 @@ folder `createcd`. `tests/test_auto_routing_table.py` holds the whole table, one
 row per (Platform, readable extension), and fails when a tool or mode changes
 the set of pairs.
 
+`auto_route` wraps `default_mode` and leaves an Image alone when it is already
+in its target's format: when the chosen mode's `output_ext` matches the input
+name, the Image is skipped as "Already <FORMAT>" rather than re-encoded. It is
+read off the spec, so it holds for any tool. Today the only such row is a
+GameCube/Wii `.rvz` under `dolphin_rvz` ("Already RVZ"); a `.wia` or `.gcz`
+still converts to RVZ.
+
 `ModeSpec.reads_extensions` is the mode's real input domain when it is
 narrower than `input_extensions`; empty means "every input extension". It must
 be a subset of `input_extensions`, which keeps gating manual selection and

@@ -169,6 +169,21 @@ def test_platform_with_no_target_for_the_file_type_is_skipped(tmp_path):
     assert entry.skip_reason == "No ps2 target reads .rvz files"
 
 
+def test_an_image_already_in_its_target_format_is_left_alone(tmp_path):
+    path = _write(tmp_path / "gc" / "game.rvz", b"RVZ\x01" + b"\0" * 60)
+
+    [entry] = plan_auto([path])
+
+    assert (entry.detection.platform, entry.mode) == ("ngc", None)
+    assert entry.skip_reason == "Already RVZ"
+
+
+def test_other_dolphin_formats_still_convert_to_rvz(tmp_path):
+    [entry] = plan_auto([_write(tmp_path / "gc" / "game.wia", b"WIA\x01" + b"\0" * 60)])
+
+    assert entry.mode == "dolphin_rvz"
+
+
 @pytest.mark.parametrize(
     ("folder", "name", "platform"),
     [
