@@ -1529,6 +1529,9 @@ async def sweep(
                 overall_limit=overall_limit,
             )
             return result
+        except asyncio.CancelledError:
+            result = {"errors": []}  # a cancel (shutdown) is not a failure to report
+            raise
         finally:
             notifications.sweep_finished(result, dry_run=dry_run)
 
@@ -1859,6 +1862,7 @@ async def _sweep_locked(
                         result["platforms"].append(summary)
                         continue
 
+                notifications.sweep_expect(batch)
                 jobs = await job_manager.create_batch_jobs(
                     batch,
                     ConversionMode(rule["mode"]),

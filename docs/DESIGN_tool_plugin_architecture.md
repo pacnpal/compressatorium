@@ -2162,32 +2162,49 @@ never see a transport:
 - `on_job_finished(job)` is a `JobManager.add_terminal_listener` callback
   (registered in `main.py`). A failed job that no sweep owns becomes one
   `job_failed` message.
-- `sweep_jobs_queued(jobs)` and `sweep_finished(result, dry_run=)` are the sweep's
-  two hooks (one line each in `romm/auto.py`). A sweep queues jobs and returns,
-  so its message waits until the last of those jobs is terminal, then sends one
-  `sweep_finished` message: counts, bytes saved (the Ledger's definition, via
-  `ledger.job_saved_bytes`), and the failures listed inside it. `sweep_jobs_queued`
-  runs before any await so a job that ends instantly is already claimed. A sweep
-  that queued nothing and hit no error sends nothing; a preview sends nothing.
-  A platform that keeps failing is due again every scheduler tick, so an error
-  is reported once per `(platform, reason)`: repeats stay quiet, a different
-  reason sends again, and a sweep without the error forgets it (no recovery
-  message). A job already terminal when `sweep_jobs_queued` runs is counted but
-  not waited on.
+- `sweep_expect(paths)`, `sweep_jobs_queued(jobs)` and `sweep_finished(result,
+  dry_run=)` are the sweep's three hooks (one line each in `romm/auto.py`). A sweep
+  queues jobs and returns, so its message waits until the last of those jobs is
+  terminal, then sends one `sweep_finished` message: counts, bytes saved (the
+  Ledger's definition, via `ledger.job_saved_bytes`), and the failures listed
+  inside it. The queue call enqueues and then awaits, so a job can end before it
+  returns: `sweep_expect` claims the batch's Source paths first, and the terminal
+  listener counts a claimed job for the sweep instead of sending a lone
+  `job_failed`. A job already terminal when `sweep_jobs_queued` runs is counted
+  but not waited on. `sweep()` calls `sweep_finished` from a `finally`, with a
+  default `sweep_failed` error, so a sweep that raises after queueing still
+  closes; a cancel (shutdown) reports nothing as a failure. A sweep that queued
+  nothing and hit no error sends nothing; a preview sends nothing.
+- A platform that keeps failing is due again every scheduler tick, so an error is
+  reported once per `(platform, reason)`: repeats stay quiet and a different reason
+  sends again. A reported error is forgotten only when a later sweep lists the
+  platform in `result["platforms"]` (it was inspected) without that error; a
+  filtered or capped sweep forgets nothing. There is no recovery message. The key
+  is the error text, so those texts must stay constant.
 
 Events are a registry: `register_event(key, title)` adds one, `event_list()`
 feeds Settings. A later ticket (check failed, with check Rules) registers its own
 event and calls `notify`; no transport changes.
 
 Transports are `TRANSPORTS[kind](url, event)`, blocking and raising on failure:
-`webhook` (stdlib `urllib`, JSON `POST`, http/https only) and `apprise` (imported
+`webhook` (`http.client`, JSON `POST`, http/https only) and `apprise` (imported
 inside the function; without the package `validate` refuses Apprise URLs with a
-clear message). Tests replace entries in `TRANSPORTS` with a recorder. Every send
-runs in a private thread pool under `SEND_TIMEOUT_S`, so a hung destination is
-abandoned and logged, never awaited by a job. Errors are scrubbed: a destination
-URL is a secret and appears in no log line, no API response and no error text. Foreign exceptions are logged by type name only; our own error texts pass
-`_redact`, which strips the URL and each piece of it. An Apprise failure reason is
-taken from Apprise's own log (`LogCapture`) and redacted the same way.
+clear message). Tests replace entries in `TRANSPORTS` with a recorder. The webhook
+never follows redirects (any status of 300 or more is an error, and `Location` is
+never read), does not use `HTTP(S)_PROXY`, and runs under one overall deadline: a
+timer shuts the socket down at 0.9 x `SEND_TIMEOUT_S`. Apprise keeps its own
+per-operation socket timeouts (4 s by default), which are not an overall limit.
+
+Sends run in a private thread pool (`MAX_DESTINATIONS` + 12 workers). Each saved
+destination has a FIFO queue (`MAX_QUEUED_PER_DESTINATION`, oldest dropped with a
+warning when full) drained by one worker, so events close together all arrive, in
+order. A thread cannot be killed: if a send outlives `SEND_TIMEOUT_S` the
+destination is marked busy until its thread really ends, and queued sends to it
+fail fast ("still running") instead of stacking threads. Errors are scrubbed: a
+destination URL is a secret and appears in no log line, no API response and no
+error text. Foreign exceptions are logged by type name only; our own error texts
+pass `_redact`, which strips the URL and each piece of it. An Apprise failure
+reason is taken from Apprise's own log (`LogCapture`) and redacted the same way.
 
 Destinations live in the `notifications` preference (`{"destinations": [{id,
 kind, url, label}]}`). The API (`routes/notifications.py`) returns only

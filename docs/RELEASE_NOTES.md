@@ -12,6 +12,8 @@
   to the browser, and a destination that errors or hangs never fails or delays a
   job. Apprise is bundled in the Docker image and imported only when used;
   webhooks need no extra package.
+  Webhook delivery does not follow redirects (Test reports "HTTP 30x") and does not
+  use `HTTP(S)_PROXY`.
 - **Ledger: a permanent record of every finished job** (#292). Each job that
   completes, fails or is cancelled writes one row (finish time, tool, mode,
   Source and output paths, input and output bytes, duration, status, the check

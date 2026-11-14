@@ -31,6 +31,7 @@ import re
 import socket
 import threading
 import uuid
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -52,6 +53,8 @@ MAX_LABEL_LEN = 60
 # A destination that hangs is abandoned after this long; the job never waits.
 SEND_TIMEOUT_S = 10.0
 MAX_LISTED_FAILURES = 20
+# Messages waiting behind a slow destination; the oldest is dropped beyond this.
+MAX_QUEUED_PER_DESTINATION = 20
 MAX_ERROR_LEN = 300
 
 # ----------------------------------------------------------------------
@@ -92,14 +95,17 @@ class NotificationError(Exception):
 
 
 def _check_http_url(url: str) -> None:
-    # Whitespace and control characters make urllib raise InvalidURL, whose
+    # Whitespace and control characters make http.client raise InvalidURL, whose
     # message echoes the path and query (the token).
     if any(c.isspace() or ord(c) < 32 for c in url):
         raise NotificationError("The URL must not contain spaces or control characters")
     try:
         parts = urlparse.urlsplit(url)
+        port = parts.port  # raises ValueError when out of range
     except ValueError:
         raise NotificationError("That is not a valid URL") from None
+    if port == 0:
+        raise NotificationError("That is not a valid URL")
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise NotificationError("A webhook URL must start with http:// or https://")
 
@@ -128,7 +134,10 @@ def _send_webhook(url: str, event: Event) -> None:
     factory = (
         http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
     )
-    conn = factory(parts.hostname, parts.port, timeout=SEND_TIMEOUT_S)
+    # An explicit port: without one, http.client reads the last ":" group of an
+    # unbracketed IPv6 literal as the port.
+    default_port = 443 if parts.scheme == "https" else 80
+    conn = factory(parts.hostname, parts.port or default_port, timeout=SEND_TIMEOUT_S)
     expired = threading.Event()
 
     def on_deadline() -> None:
@@ -373,6 +382,52 @@ def _redact(text: str, url: str | None) -> str:
 _tasks: set[asyncio.Task] = set()
 
 
+_queues: dict[str, deque] = {}
+_workers: dict[str, asyncio.Task] = {}
+
+
+def _enqueue(dest: dict, event: Event) -> asyncio.Future:
+    """Queue *event* behind whatever *dest* is already sending.
+
+    Sends to one destination go one at a time, in order, so two events close
+    together both arrive. A destination whose transport outlived its deadline
+    refuses the next send in `_send_one` instead of stacking another thread.
+    """
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+    slot = dest["id"]
+    queue = _queues.setdefault(slot, deque())
+    if len(queue) >= MAX_QUEUED_PER_DESTINATION:
+        _, _, dropped = queue.popleft()
+        logger.warning(
+            "Notification queue for destination %s is full; dropped the oldest message", slot,
+        )
+        if not dropped.done():
+            dropped.set_exception(NotificationError("Dropped: too many messages waiting"))
+    queue.append((dest, event, done))
+    worker = _workers.get(slot)
+    if worker is None or worker.done():
+        task = loop.create_task(_drain_destination(slot))
+        _workers[slot] = task
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
+    return done
+
+
+async def _drain_destination(slot: str) -> None:
+    queue = _queues[slot]
+    while queue:
+        dest, event, done = queue.popleft()
+        try:
+            await _send_one(dest["kind"], dest["url"], event, slot=slot)
+        except Exception as exc:  # noqa: BLE001  handed to the waiting caller
+            if not done.done():
+                done.set_exception(exc)
+        else:
+            if not done.done():
+                done.set_result(None)
+
+
 async def deliver(event: Event) -> None:
     """Send *event* to every destination. Never raises; each failure is logged."""
     try:
@@ -385,7 +440,7 @@ async def deliver(event: Event) -> None:
 
     async def one(dest: dict) -> None:
         try:
-            await _send_one(dest["kind"], dest["url"], event, slot=dest["id"])
+            await _enqueue(dest, event)
         except Exception as exc:  # noqa: BLE001  one destination never fails the rest
             # Not exc_info and not str(exc) of a foreign exception: both can
             # carry the URL. Our own NotificationError texts are redacted too.
@@ -459,6 +514,8 @@ class _Sweep:
         self.errors: list[dict] = []
         # False when every error was already reported by an earlier sweep.
         self.has_new_errors = False
+        # Jobs that ended before `sweep_jobs_queued` saw them.
+        self.early: dict[str, ConversionJob] = {}
 
     def event(self) -> Event | None:
         done = [j for j in self.jobs if j.status == JobStatus.COMPLETED]
@@ -496,9 +553,24 @@ class _Sweep:
 
 
 _open_sweep: _Sweep | None = None
+# Source path -> the sweep that is about to queue it. Opened before the queue
+# call, because that call enqueues and then awaits: a job can end (and its
+# terminal listener run) before the call returns and `sweep_jobs_queued` runs.
+_expected: dict[str, _Sweep] = {}
 _reported_errors: set[tuple] = set()
 _TERMINAL = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
 _job_sweeps: dict[str, _Sweep] = {}
+
+
+def sweep_expect(paths: list[str]) -> None:
+    """Sweep hook 0: these Sources are about to be queued by the running sweep.
+    Call just before the queue call, so no job of the batch is ever mistaken for
+    a manual one."""
+    global _open_sweep
+    if _open_sweep is None:
+        _open_sweep = _Sweep()
+    for path in paths:
+        _expected[str(path)] = _open_sweep
 
 
 def sweep_jobs_queued(jobs: list[ConversionJob]) -> None:
@@ -508,6 +580,9 @@ def sweep_jobs_queued(jobs: list[ConversionJob]) -> None:
     if _open_sweep is None:
         _open_sweep = _Sweep()
     for job in jobs:
+        _expected.pop(job.file_path, None)
+        if job.id in _open_sweep.early:  # already counted by the listener
+            continue
         _open_sweep.jobs.append(job)
         # A job can end before this hook runs (the queue awaits after accepting
         # a batch). Nothing would ever discard it from `pending`, so it is
@@ -524,11 +599,13 @@ def sweep_finished(result: dict, *, dry_run: bool = False) -> None:
     if dry_run:
         return
     sweep = sweep or _Sweep()
+    for path in [p for p, owner in _expected.items() if owner is sweep]:
+        del _expected[path]  # a batch that never came back leaves no claim
     sweep.closed = True
     sweep.errors = [e for e in result.get("errors") or [] if isinstance(e, dict)]
     # A failing platform is due again every scheduler tick and records the same
-    # error each time. Report an error once per (platform, reason); a sweep
-    # without it forgets it, so a later recurrence is news again.
+    # error each time. Report an error once per (platform, reason); it is
+    # forgotten only when a later sweep inspected the platform without it (below).
     global _reported_errors
     keys = {(e.get("platform_id"), str(e.get("error"))) for e in sweep.errors}
     sweep.has_new_errors = bool(keys - _reported_errors)
@@ -560,6 +637,13 @@ async def on_job_finished(job: ConversionJob) -> None:
     if job.status not in _TERMINAL:
         return
     sweep = _job_sweeps.pop(job.id, None)
+    if sweep is None:
+        claimed = _expected.get(job.file_path)
+        if claimed is not None and job.id not in claimed.early:
+            # Ended inside the queue call, before the sweep got the job back.
+            claimed.early[job.id] = job
+            claimed.jobs.append(job)
+            return
     if sweep is not None:
         sweep.pending.discard(job.id)
         _maybe_send(sweep)
@@ -572,4 +656,8 @@ def _reset_for_tests() -> None:
     _open_sweep = None
     _reported_errors = set()
     _job_sweeps.clear()
+    _expected.clear()
+    _queues.clear()
+    _workers.clear()
+    _in_flight.clear()
     _tasks.clear()

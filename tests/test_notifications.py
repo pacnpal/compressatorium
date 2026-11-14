@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -468,6 +469,57 @@ async def test_a_destination_still_stuck_is_skipped_not_stacked(client, rec, mon
     assert len(calls) == 2
 
 
+@pytest.mark.asyncio
+async def test_overlapping_sends_to_one_healthy_destination_all_arrive_in_order(
+        client, rec, monkeypatch):
+    """Two events close together must not drop the second."""
+    await _add(client)
+    order = []
+    release = threading.Event()
+
+    def transport(url, event):
+        if event.title == "first":
+            release.wait(2)
+        order.append(event.title)
+
+    monkeypatch.setitem(notifications.TRANSPORTS, "webhook", transport)
+    first = asyncio.ensure_future(
+        notifications.deliver(notifications.Event("job_failed", "first", "b")))
+    await asyncio.sleep(0.05)  # the first send is now in flight
+    second = asyncio.ensure_future(
+        notifications.deliver(notifications.Event("sweep_finished", "second", "b")))
+    await asyncio.sleep(0.05)
+    release.set()
+    await asyncio.gather(first, second)
+    assert order == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_a_full_queue_drops_the_oldest_with_a_warning(rec, monkeypatch, caplog):
+    release = threading.Event()
+    seen = []
+
+    def transport(url, event):
+        release.wait(2)
+        seen.append(event.title)
+
+    monkeypatch.setitem(notifications.TRANSPORTS, "webhook", transport)
+    monkeypatch.setattr(notifications, "MAX_QUEUED_PER_DESTINATION", 2)
+    dest = {"id": "x", "kind": "webhook", "url": "https://h.example/x"}
+
+    def ev(n):
+        return notifications.Event("job_failed", n, "b")
+
+    futs = [notifications._enqueue(dest, ev("e0"))]
+    await asyncio.sleep(0.05)  # e0 is in flight, the queue is empty
+    futs += [notifications._enqueue(dest, ev(n)) for n in ("e1", "e2", "e3")]
+    release.set()
+    results = await asyncio.gather(*futs, return_exceptions=True)
+    assert seen == ["e0", "e2", "e3"]  # e1 was the oldest waiting when e3 arrived
+    assert isinstance(results[1], notifications.NotificationError)
+    assert "dropped" in caplog.text.lower()
+
+
 def test_webhook_has_an_overall_deadline_against_a_slow_drip(monkeypatch):
     import socket
     import time
@@ -497,12 +549,85 @@ def test_webhook_has_an_overall_deadline_against_a_slow_drip(monkeypatch):
 
 
 def test_webhook_does_not_follow_redirects():
-    srv, _ = _serve(status=302)
+    target, reached = _serve()
+    redirecting, _ = _serve(
+        status=302, location=f"http://127.0.0.1:{target.server_port}/elsewhere")
     try:
         with pytest.raises(notifications.NotificationError, match="HTTP 302"):
-            notifications._send_webhook(f"http://127.0.0.1:{srv.server_port}/h", _event())
+            notifications._send_webhook(
+                f"http://127.0.0.1:{redirecting.server_port}/h", _event())
+        assert reached == []  # the Location was never visited
     finally:
-        srv.shutdown()
+        target.shutdown()
+        redirecting.shutdown()
+
+
+@pytest.mark.parametrize("url", ["http://h:99999/x", "http://h:0/x", "https://h:70000/x"])
+def test_out_of_range_port_is_refused_at_save(url):
+    with pytest.raises(notifications.NotificationError):
+        notifications.validate("webhook", url)
+
+
+def test_ipv6_literal_without_a_port_reaches_the_right_host():
+    import socket
+
+    try:
+        srv = socket.socket(socket.AF_INET6)
+        srv.bind(("::1", 0))
+    except OSError:
+        pytest.skip("no IPv6 loopback")
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    got = []
+
+    def accept():
+        conn, _ = srv.accept()
+        got.append(conn.recv(65536))
+        conn.send(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        conn.close()
+
+    threading.Thread(target=accept, daemon=True).start()
+    notifications._send_webhook(f"http://[::1]:{port}/h", _event())
+    assert got and got[0].startswith(b"POST /h")
+
+
+def test_ipv6_literal_without_a_port_gets_the_scheme_default_port(monkeypatch):
+    seen = []
+
+    class Recorder:
+        def __init__(self, host, port=None, timeout=None):
+            seen.append((host, port))
+            self.sock = None
+
+        def request(self, *a, **k):
+            raise OSError("stop here")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(notifications.http.client, "HTTPConnection", Recorder)
+    monkeypatch.setattr(notifications.http.client, "HTTPSConnection", Recorder)
+    for url in ("http://[::1]/h", "https://[fe80::abcd]/h"):
+        with pytest.raises(notifications.NotificationError):
+            notifications._send_webhook(url, _event())
+    # http.client would read the last ":" group of an unbracketed host as a port.
+    assert seen == [("::1", 80), ("fe80::abcd", 443)]
+
+
+@pytest.mark.asyncio
+async def test_a_burst_to_a_healthy_destination_is_delivered_in_full(client, rec, monkeypatch):
+    await _add(client)
+    got = []
+
+    def transport(url, event):
+        time.sleep(0.05)
+        got.append(event.title)
+
+    monkeypatch.setitem(notifications.TRANSPORTS, "webhook", transport)
+    for i in range(5):
+        notifications.notify(notifications.Event("job_failed", f"e{i}", "b"))
+    await notifications.drain()
+    assert sorted(got) == [f"e{i}" for i in range(5)]
 
 
 @pytest.mark.asyncio
@@ -527,7 +652,7 @@ async def test_a_platform_a_sweep_did_not_inspect_keeps_its_reported_error(clien
 # --- the real webhook transport (local server, no third party) -------------
 
 
-def _serve(status=200):
+def _serve(status=200, location=None):
     import json as _json
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -537,6 +662,8 @@ def _serve(status=200):
         def do_POST(self):
             got.append(_json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
             self.send_response(status)
+            if location:
+                self.send_header("Location", location)
             self.end_headers()
 
         def log_message(self, *a):

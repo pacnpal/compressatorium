@@ -175,3 +175,60 @@ async def test_an_unrelated_run_does_not_re_alert_a_known_failure(tmp_path, sent
         await romm_auto.sweep()
     await notifications.drain()
     assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_job_that_fails_during_batch_creation_is_not_sent_twice(
+    tmp_path, sent, monkeypatch,
+):
+    """create_jobs_atomic enqueues, then awaits _prune_jobs: a job can fail in
+    that window, before the sweep has seen the batch call return."""
+    import asyncio
+
+    from models import ConversionMode
+    from services import job_manager as jm
+
+    src = tmp_path / "Game.iso"
+    src.write_bytes(b"x")
+    manager = jm.JobManager(max_concurrent=1, max_job_history=5)
+    manager.add_terminal_listener(notifications.on_job_finished)
+    from services.preferences_store import preferences_store
+    await preferences_store.put(notifications.PREF_KEY, {"destinations": [
+        {"id": "d1", "kind": "webhook", "url": "https://hooks.example/t", "label": ""}]})
+
+    async def failing_prune():
+        for job in manager.get_all_jobs():
+            job.status = JobStatus.FAILED
+            job.error_message = "no disc"
+            manager._notify_terminal(job)
+        await asyncio.sleep(0.05)  # the listener task runs before the call returns
+
+    monkeypatch.setattr(manager, "_prune_jobs", failing_prune)
+    notifications.sweep_expect([str(src)])
+    jobs = await manager.create_batch_jobs(
+        [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},
+    )
+    try:
+        notifications.sweep_jobs_queued(jobs)
+        notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
+        await notifications.drain()
+    finally:
+        for job in jobs:
+            jm.concurrency_manager.release(job.id)
+    assert [e.kind for e in sent] == ["sweep_finished"]
+    assert sent[0].data["failed"] == 1 and sent[0].data["queued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_sweep_is_not_reported_as_a_failure(tmp_path, sent):
+    import asyncio
+
+    from services.romm import auto as romm_auto
+
+    await _setup(tmp_path)
+    with patch.object(
+        romm_auto, "_sweep_locked", AsyncMock(side_effect=asyncio.CancelledError),
+    ), pytest.raises(asyncio.CancelledError):
+        await romm_auto.sweep()
+    await notifications.drain()
+    assert sent == []

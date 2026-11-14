@@ -474,7 +474,7 @@ A webhook gets a JSON `POST` with `event`, `title`, `message` and `data`. Use
 **Test** to send a sample message and see the error if it fails. Saved URLs are
 never sent back to the browser, since they often hold a token, and sends have a
 10 second timeout and run in the background, so a slow or broken destination
-never delays or fails a job. Webhooks need nothing extra. Apprise ships in the
+never delays or fails a job. Messages to one destination are sent in order, so a burst all arrives. A webhook URL that redirects is treated as an error (Test shows "HTTP 30x"; save the final URL), and webhook delivery does not use `HTTP_PROXY` / `HTTPS_PROXY`. Webhooks need nothing extra. Apprise ships in the
 Docker image; without it, Apprise URLs are refused with a message and webhooks
 still work. The same destinations are available at `/api/notifications`.
 
