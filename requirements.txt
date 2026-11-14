@@ -13,4 +13,4 @@ alembic>=1.18.5
 nsz>=4.6.1
 # Apprise: optional notification destinations (Discord, Telegram, ntfy, ...). Imported
 # lazily; webhooks need nothing. Nothing is sent until a destination is configured.
-apprise>=1.9.0
+apprise>=1.11.0

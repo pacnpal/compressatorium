@@ -22,19 +22,20 @@ API, and never appear in a log line or an error message.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import importlib.util
 import json
 import logging
 import os
 import re
+import socket
+import threading
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
-from urllib import error as urlerror
 from urllib import parse as urlparse
-from urllib import request as urlrequest
 
 from logging_setup import get_logger
 from models import ConversionJob, JobStatus
@@ -103,24 +104,59 @@ def _check_http_url(url: str) -> None:
         raise NotificationError("A webhook URL must start with http:// or https://")
 
 
+def _abort(conn: http.client.HTTPConnection) -> None:
+    """Wake a thread blocked on this connection's socket (the deadline hit)."""
+    sock = conn.sock
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    conn.close()
+
+
 def _send_webhook(url: str, event: Event) -> None:
     _check_http_url(url)
+    parts = urlparse.urlsplit(url)
     payload = json.dumps({
         "event": event.kind, "title": event.title, "message": event.body, "data": event.data,
     }).encode()
-    req = urlrequest.Request(
-        url, data=payload, method="POST",
-        headers={"Content-Type": "application/json", "User-Agent": "compressatorium"},
+    target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    # http.client, not urlopen: the scheme is fixed to http/https by the check
+    # above, redirects are never followed, and the whole exchange gets one
+    # deadline (a socket timeout alone lets a slow-drip server hold the thread).
+    factory = (
+        http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
     )
+    conn = factory(parts.hostname, parts.port, timeout=SEND_TIMEOUT_S)
+    expired = threading.Event()
+
+    def on_deadline() -> None:
+        expired.set()
+        _abort(conn)
+
+    timer = threading.Timer(SEND_TIMEOUT_S * 0.9, on_deadline)
+    timer.daemon = True
+    timer.start()
     try:
-        with urlrequest.urlopen(req, timeout=SEND_TIMEOUT_S):
-            pass
-    except urlerror.HTTPError as exc:
-        raise NotificationError(f"The webhook answered HTTP {exc.code}") from None
-    except (urlerror.URLError, OSError) as exc:
+        conn.request("POST", target, body=payload, headers={
+            "Content-Type": "application/json", "User-Agent": "compressatorium",
+            "Host": parts.netloc.rsplit("@", 1)[-1],
+        })
+        response = conn.getresponse()
+        response.read(1024)
+        status = response.status
+    except (OSError, http.client.HTTPException) as exc:
+        if expired.is_set():
+            raise NotificationError("The webhook did not finish in time") from None
         # str(exc) can echo the URL; the reason alone is safe.
-        reason = getattr(exc, "reason", None) or type(exc).__name__
+        reason = getattr(exc, "strerror", None) or type(exc).__name__
         raise NotificationError(f"Could not reach the webhook: {reason}") from None
+    finally:
+        timer.cancel()
+        conn.close()
+    if status >= 300:
+        raise NotificationError(f"The webhook answered HTTP {status}")
 
 
 def apprise_available() -> bool:
@@ -137,6 +173,10 @@ def _send_apprise(url: str, event: Event) -> None:
         raise NotificationError("Apprise does not recognise that URL")
     # Apprise reports why a send failed only through its log; capture the last
     # warning so Test can say "error=401" or "connection error", not just "failed".
+    for service in notifier:  # bound each plugin's own network waits
+        for attr in ("socket_connect_timeout", "socket_read_timeout"):
+            if hasattr(service, attr):
+                setattr(service, attr, SEND_TIMEOUT_S * 0.4)
     with apprise.LogCapture(level=logging.WARNING) as capture:
         delivered = notifier.notify(title=event.title, body=event.body)
         captured = capture.getvalue()
@@ -166,17 +206,30 @@ TRANSPORTS: dict[str, Callable[[str, Event], None]] = {
 }
 
 # Own pool so a hung destination can never starve the app's default thread pool.
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="notify")
+# A thread cannot be killed once a transport hangs, so two limits keep the pool
+# usable: each destination holds at most one send in flight (`_in_flight`), and
+# the pool is larger than MAX_DESTINATIONS plus a few Test sends.
+_executor = ThreadPoolExecutor(max_workers=MAX_DESTINATIONS + 12, thread_name_prefix="notify")
+_in_flight: set[str] = set()
 
 
-async def _send_one(kind: str, url: str, event: Event) -> None:
-    """Send *event* through one transport, bounded by SEND_TIMEOUT_S. Raises."""
-    loop = asyncio.get_running_loop()
+async def _send_one(kind: str, url: str, event: Event, slot: str | None = None) -> None:
+    """Send *event* through one transport, bounded by SEND_TIMEOUT_S. Raises.
+
+    *slot* names a saved destination: while its previous send's thread is still
+    running (it outlived the timeout), a new send to it is refused rather than
+    stacking another thread behind a dead endpoint.
+    """
+    if slot is not None:
+        if slot in _in_flight:
+            raise NotificationError("The previous send to this destination is still running")
+        _in_flight.add(slot)
+    future = _executor.submit(TRANSPORTS[kind], url, event)
+    if slot is not None:
+        # Released when the thread really ends, not when we stop waiting.
+        future.add_done_callback(lambda _f: _in_flight.discard(slot))
     try:
-        await asyncio.wait_for(
-            loop.run_in_executor(_executor, TRANSPORTS[kind], url, event),
-            SEND_TIMEOUT_S,
-        )
+        await asyncio.wait_for(asyncio.wrap_future(future), SEND_TIMEOUT_S)
     except asyncio.TimeoutError:
         raise NotificationError(f"Timed out after {SEND_TIMEOUT_S:g}s") from None
 
@@ -332,7 +385,7 @@ async def deliver(event: Event) -> None:
 
     async def one(dest: dict) -> None:
         try:
-            await _send_one(dest["kind"], dest["url"], event)
+            await _send_one(dest["kind"], dest["url"], event, slot=dest["id"])
         except Exception as exc:  # noqa: BLE001  one destination never fails the rest
             # Not exc_info and not str(exc) of a foreign exception: both can
             # carry the URL. Our own NotificationError texts are redacted too.
@@ -479,7 +532,18 @@ def sweep_finished(result: dict, *, dry_run: bool = False) -> None:
     global _reported_errors
     keys = {(e.get("platform_id"), str(e.get("error"))) for e in sweep.errors}
     sweep.has_new_errors = bool(keys - _reported_errors)
-    _reported_errors = keys
+    # Forget an error only when this sweep looked at that platform and found it
+    # clean. A platform the sweep skipped (a platform_ids filter, the queue cap
+    # stopping early) says nothing, so its error stays reported. A sweep that
+    # died has no "platforms" at all and clears nothing.
+    checked = {p.get("platform_id") for p in result.get("platforms") or []
+               if isinstance(p, dict)}
+    finished = "platforms" in result
+    kept = {
+        k for k in _reported_errors
+        if (k[0] is None and not finished) or (k[0] is not None and k[0] not in checked)
+    }
+    _reported_errors = kept | keys
     _maybe_send(sweep)
 
 

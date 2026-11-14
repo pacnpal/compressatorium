@@ -1518,12 +1518,19 @@ async def sweep(
                 "errors": [{"platform_id": None, "error": "identity_cleanup_pending"}],
                 "pending_repins": await run_in_threadpool(romm_repin.count_pending),
             }
-        return await _sweep_locked(
-            platform_ids=platform_ids,
-            ignore_schedule=ignore_schedule,
-            dry_run=dry_run,
-            overall_limit=overall_limit,
-        )
+        # Closed even if the sweep raises after queueing jobs: the default is the
+        # failure, replaced by the real result on success.
+        result: dict = {"errors": [{"platform_id": None, "error": "sweep_failed"}]}
+        try:
+            result = await _sweep_locked(
+                platform_ids=platform_ids,
+                ignore_schedule=ignore_schedule,
+                dry_run=dry_run,
+                overall_limit=overall_limit,
+            )
+            return result
+        finally:
+            notifications.sweep_finished(result, dry_run=dry_run)
 
 
 async def _sweep_locked(
@@ -2021,7 +2028,6 @@ async def _sweep_locked(
     # than stacking one, so a sweep that re-records a retried conversion adds
     # rows without changing the total.
     result["pending_repins"] = await run_in_threadpool(romm_repin.count_pending)
-    notifications.sweep_finished(result, dry_run=dry_run)
     return result
 
 

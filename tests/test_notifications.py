@@ -207,6 +207,9 @@ async def test_apprise_test_failure_names_the_reason_without_the_token(
         def add(self, url):
             return url.startswith("json://")
 
+        def __iter__(self):
+            return iter([types.SimpleNamespace(socket_read_timeout=4)])
+
         def notify(self, title, body):
             logging.getLogger("apprise-fake").warning(
                 "Failed to send JSON POST notification to /SECRETPATH: "
@@ -395,7 +398,8 @@ async def test_a_repeating_error_is_reported_once_until_it_changes(client, rec):
 
     # A clean sweep sends nothing (no recovery message) but forgets the error,
     # so a recurrence is news again.
-    notifications.sweep_finished({"queued": 0, "errors": []})
+    notifications.sweep_finished(
+        {"queued": 0, "errors": [], "platforms": [{"platform_id": 7}]})
     await notifications.drain()
     assert len(rec.sent) == 2
     notifications.sweep_finished({"queued": 0, "errors": [
@@ -419,6 +423,105 @@ def test_events_are_a_shared_registry(monkeypatch):
     monkeypatch.setattr(notifications, "_EVENTS", dict(notifications._EVENTS))
     notifications.register_event("check_failed", "A check failed")
     assert "check_failed" in {e["key"] for e in notifications.event_list()}
+
+
+@pytest.mark.asyncio
+async def test_hung_destinations_cannot_starve_a_healthy_one(client, rec, monkeypatch):
+    """Four blocked transports used to fill the 4-thread pool; a fifth never ran."""
+    gate = threading.Event()
+    monkeypatch.setattr(notifications, "SEND_TIMEOUT_S", 0.05)
+    delivered = []
+
+    def transport(url, event):
+        if "hang" in url:
+            gate.wait(5)
+        else:
+            delivered.append(url)
+
+    monkeypatch.setitem(notifications.TRANSPORTS, "webhook", transport)
+    for i in range(4):
+        await _add(client, f"https://hang{i}.example/x", label=f"h{i}")
+    await _add(client, "https://good.example/x", label="ok")
+    await notifications.deliver(_event())
+    assert delivered == ["https://good.example/x"]
+    gate.set()
+
+
+@pytest.mark.asyncio
+async def test_a_destination_still_stuck_is_skipped_not_stacked(client, rec, monkeypatch):
+    gate = threading.Event()
+    calls = []
+    monkeypatch.setattr(notifications, "SEND_TIMEOUT_S", 0.05)
+
+    def transport(url, event):
+        calls.append(url)
+        gate.wait(5)
+
+    monkeypatch.setitem(notifications.TRANSPORTS, "webhook", transport)
+    await _add(client, "https://hang.example/x")
+    await notifications.deliver(_event())
+    await notifications.deliver(_event())  # the first send is still blocked
+    assert len(calls) == 1
+    gate.set()
+    await asyncio.sleep(0.1)
+    await notifications.deliver(_event())  # free again
+    assert len(calls) == 2
+
+
+def test_webhook_has_an_overall_deadline_against_a_slow_drip(monkeypatch):
+    import socket
+    import time
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    stop = threading.Event()
+
+    def drip():
+        conn, _ = srv.accept()
+        conn.recv(65536)
+        while not stop.is_set():  # one byte at a time, never finishing
+            try:
+                conn.send(b"H")
+            except OSError:
+                return
+            time.sleep(0.1)
+
+    threading.Thread(target=drip, daemon=True).start()
+    monkeypatch.setattr(notifications, "SEND_TIMEOUT_S", 0.6)
+    started = time.monotonic()
+    with pytest.raises(notifications.NotificationError):
+        notifications._send_webhook(f"http://127.0.0.1:{srv.getsockname()[1]}/h", _event())
+    stop.set()
+    assert time.monotonic() - started < 3
+
+
+def test_webhook_does_not_follow_redirects():
+    srv, _ = _serve(status=302)
+    try:
+        with pytest.raises(notifications.NotificationError, match="HTTP 302"):
+            notifications._send_webhook(f"http://127.0.0.1:{srv.server_port}/h", _event())
+    finally:
+        srv.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_platform_a_sweep_did_not_inspect_keeps_its_reported_error(client, rec):
+    await _add(client)
+    err = {"platform_id": 7, "error": "tool_not_ready"}
+    other = {"platform_id": 8}
+    notifications.sweep_finished({"queued": 0, "errors": [err], "platforms": [other]})
+    # A later sweep never reached platform 7 (filtered, or the cap stopped early).
+    notifications.sweep_finished({"queued": 0, "errors": [], "platforms": [other]})
+    notifications.sweep_finished({"queued": 0, "errors": [err], "platforms": [other]})
+    await notifications.drain()
+    assert len(rec.sent) == 1
+    # Checked and clean: forgotten, so a recurrence is news.
+    notifications.sweep_finished(
+        {"queued": 0, "errors": [], "platforms": [{"platform_id": 7}]})
+    notifications.sweep_finished({"queued": 0, "errors": [err], "platforms": [other]})
+    await notifications.drain()
+    assert len(rec.sent) == 2
 
 
 # --- the real webhook transport (local server, no third party) -------------

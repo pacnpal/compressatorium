@@ -130,3 +130,48 @@ async def test_a_platform_that_keeps_failing_sends_one_message_over_many_ticks(
             assert result["errors"] == [{"platform_id": 7, "error": "tool_not_ready"}]
     await notifications.drain()
     assert len(sent) == 1 and "tool_not_ready" in sent[0].body
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_that_fails_after_queueing_still_closes_and_reports(tmp_path, sent):
+    from services.romm import auto as romm_auto
+
+    roms = await _setup(tmp_path)
+    made: list[_Job] = []
+
+    async def _batch(paths, mode, **kwargs):
+        made.extend(_Job(p, f"job-{i}") for i, p in enumerate(paths))
+        return list(made)
+
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
+            patch.object(romm_auto.job_manager, "create_batch_jobs", _batch), \
+            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(romm_auto, "_record_run", AsyncMock(side_effect=RuntimeError("db"))), \
+            patch.object(romm_auto, "is_within_configured_volumes", return_value=True), \
+            pytest.raises(RuntimeError):
+        await romm_auto.sweep(ignore_schedule=True)
+
+    assert notifications._open_sweep is None  # closed, not left to swallow the next one
+    made[0].status = JobStatus.FAILED
+    made[0].error_message = "boom"
+    await notifications.on_job_finished(made[0])
+    await notifications.drain()
+    assert len(sent) == 1 and sent[0].data["failed"] == 1
+    assert "sweep_failed" in sent[0].body
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_run_does_not_re_alert_a_known_failure(tmp_path, sent):
+    from services.romm import auto as romm_auto
+
+    roms = await _setup(tmp_path)
+    tool = registry.for_mode("dolphin_rvz")
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
+            patch.object(romm_auto.job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(type(tool), "is_ready", AsyncMock(return_value=False)), \
+            patch.object(romm_auto, "is_within_configured_volumes", return_value=True):
+        await romm_auto.sweep()
+        await romm_auto.sweep(platform_ids=[])  # inspects nothing
+        await romm_auto.sweep()
+    await notifications.drain()
+    assert len(sent) == 1
