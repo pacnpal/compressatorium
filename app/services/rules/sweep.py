@@ -903,6 +903,8 @@ async def _sweep_locked(
         rule = rules[platform_id]
         if wanted is not None and platform_id not in wanted:
             continue
+        # How errors and summaries name this Platform (RomM: the integer id).
+        platform_ref = library.platform_value(platform_id)
         # `enabled` gates unconditionally: a paused platform must stay paused
         # even when the operator presses Run now, which passes
         # ignore_schedule=True. The one exception is naming platforms
@@ -921,7 +923,7 @@ async def _sweep_locked(
         if not rule["enabled"] and (wanted is None or _validation_paused(rule)):
             if wanted is not None:
                 result["errors"].append(
-                    {"platform_id": library.platform_value(platform_id), "error": "rule_invalid"},
+                    {"platform_id": platform_ref, "error": "rule_invalid"},
                 )
             continue
         # ignore_schedule bypasses only the clock (interval, window, weekday).
@@ -944,7 +946,7 @@ async def _sweep_locked(
                 spec.tool_id, platform_id,
             )
             result["errors"].append(
-                {"platform_id": library.platform_value(platform_id), "error": "tool_not_ready"},
+                {"platform_id": platform_ref, "error": "tool_not_ready"},
             )
             continue
 
@@ -959,7 +961,7 @@ async def _sweep_locked(
                 platform_id,
             )
             result["errors"].append(
-                {"platform_id": library.platform_value(platform_id), "error": "output_dir_outside_volumes"},
+                {"platform_id": platform_ref, "error": "output_dir_outside_volumes"},
             )
             continue
 
@@ -968,7 +970,7 @@ async def _sweep_locked(
         except LibraryUnreadable as exc:
             logger.warning("romm_auto: platform %s unreadable: %s", platform_id, exc)
             result["errors"].append(
-                {"platform_id": library.platform_value(platform_id), "error": "unreadable"},
+                {"platform_id": platform_ref, "error": "unreadable"},
             )
             continue
 
@@ -987,7 +989,7 @@ async def _sweep_locked(
                 rule["mode"], slug, platform_id,
             )
             result["errors"].append(
-                {"platform_id": library.platform_value(platform_id), "error": "tool_wrong_for_platform"},
+                {"platform_id": platform_ref, "error": "tool_wrong_for_platform"},
             )
             continue
 
@@ -1047,7 +1049,7 @@ async def _sweep_locked(
                     "stopping this platform", platform_id,
                 )
                 result["errors"].append(
-                    {"platform_id": library.platform_value(platform_id), "error": "library_unresponsive"},
+                    {"platform_id": platform_ref, "error": "library_unresponsive"},
                 )
                 unresponsive = True
                 break
@@ -1087,7 +1089,7 @@ async def _sweep_locked(
 
         result["considered"] += considered
         summary = {
-            "platform_id": library.platform_value(platform_id),
+            "platform_id": platform_ref,
             "mode": rule["mode"],
             "queued": 0,
             # Always present, so a caller reading a preview does not have to
@@ -1137,7 +1139,7 @@ async def _sweep_locked(
                         )
                         summary["snapshot_failed"] = True
                         result["errors"].append({
-                            "platform_id": library.platform_value(platform_id),
+                            "platform_id": platform_ref,
                             "error": "sources_unreadable",
                         })
                         result["platforms"].append(summary)
@@ -1249,7 +1251,7 @@ async def _sweep_locked(
                     platform_id, exc,
                 )
                 result["errors"].append(
-                    {"platform_id": library.platform_value(platform_id), "error": "destination_claimed"},
+                    {"platform_id": platform_ref, "error": "destination_claimed"},
                 )
                 summary["queue_failed"] = True
             except Exception:
@@ -1257,7 +1259,7 @@ async def _sweep_locked(
                     "romm_auto: failed to queue platform %s", platform_id, exc_info=True,
                 )
                 result["errors"].append(
-                    {"platform_id": library.platform_value(platform_id), "error": "queue_failed"},
+                    {"platform_id": platform_ref, "error": "queue_failed"},
                 )
                 summary["queue_failed"] = True
         elif batch:
