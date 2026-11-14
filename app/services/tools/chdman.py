@@ -68,14 +68,23 @@ _LD_PLATFORMS = frozenset({"laseractive"})
 # is the Image. ``createdvd`` copies a flat 2048-byte image, so only ``.iso``.
 # The hard-disk, raw and laserdisc commands are never a default: they claim
 # the arcade Platforms, but a CD image in an ``arcade`` folder is a CD.
+#
+# The last column is the Platforms a mode is an Auto target for without being
+# offered for them by hand. Some PS2 titles shipped on CD-ROM and are kept as
+# cue/bin; only createcd reads those. Claiming ``ps2`` in ``platform_slugs``
+# instead would make createcd, the first create mode, the default of every
+# platform-narrowed PS2 panel and rule. Auto still sends a PS2 ``.iso`` to
+# createdvd, the smaller reader. PSP (UMD), PS3 and the Nintendo and Xbox discs
+# are never CDs chdman reads, so ``ps2`` is the only one.
 _CD_READS = frozenset({".cue", ".gdi", ".iso"})
 _DVD_READS = frozenset({".iso"})
+_NONE: frozenset[str] = frozenset()
 _CREATE_MODES = {
-    "createraw": ("Create Raw", _HD_PLATFORMS, frozenset(), False),
-    "createhd": ("Create HD", _HD_PLATFORMS, frozenset(), False),
-    "createcd": ("Create CD", _CD_PLATFORMS, _CD_READS, True),
-    "createdvd": ("Create DVD", _DVD_PLATFORMS, _DVD_READS, True),
-    "createld": ("Create LD", _LD_PLATFORMS, frozenset(), False),
+    "createraw": ("Create Raw", _HD_PLATFORMS, _NONE, False, _NONE),
+    "createhd": ("Create HD", _HD_PLATFORMS, _NONE, False, _NONE),
+    "createcd": ("Create CD", _CD_PLATFORMS, _CD_READS, True, frozenset({"ps2"})),
+    "createdvd": ("Create DVD", _DVD_PLATFORMS, _DVD_READS, True, _NONE),
+    "createld": ("Create LD", _LD_PLATFORMS, _NONE, False, _NONE),
 }
 # mode -> (label, primary output ext, companion exts). extractcd is the only
 # multi-file extract: chdman writes the .cue track sheet plus a sibling .bin
@@ -106,8 +115,9 @@ def _build_modes() -> list[ModeSpec]:
             platform_slugs=slugs,
             reads_extensions=reads,
             auto_target=auto_target,
+            auto_platform_slugs=auto_slugs,
         )
-        for mode, (label, slugs, reads, auto_target) in _CREATE_MODES.items()
+        for mode, (label, slugs, reads, auto_target, auto_slugs) in _CREATE_MODES.items()
     ]
     modes += [
         ModeSpec(

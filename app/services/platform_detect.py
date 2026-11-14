@@ -88,7 +88,7 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "philips-cd-i": ("cdi", "cdimono1", "cd-i"),
     "3do": ("3do-interactive-multiplayer",),
     "laseractive": (),
-    "arcade": ("mame", "fbneo", "naomi", "atomiswave"),
+    "arcade": ("mame", "fbneo", "naomi", "naomi2", "naomigd", "atomiswave"),
     # Microsoft
     "xbox": ("microsoft-xbox",),
     "xbox360": ("xbox-360",),
@@ -267,39 +267,62 @@ class AutoTarget:
     skip_reason: str | None
 
 
-def default_mode(path: str, platform: str, tools_registry) -> str | None:
-    """The default target mode for an Image of ``platform`` at ``path``.
-
-    The first create-direction mode the registry lists for the Platform that is
-    an Auto default (``ModeSpec.auto_target``) and whose command can read this
-    file (``ToolRegistry.mode_reads_extensions``). When several take it, the most specific input extension
-    wins (``.nkit.iso`` over ``.iso``), registration order breaking ties: the
-    same rule as ``ToolRegistry.tool_for_verify``. None when no mode serves
-    the Platform for this file type.
-    """
-    disk_path, member = _split_member(path)
-    best: str | None = None
-    best_len = 0
+def _auto_candidates(platform: str, tools_registry) -> list:
+    """Create-direction modes that may be ``platform``'s Auto target."""
+    found = []
     for spec in tools_registry.mode_specs():
         if not spec.auto_target:
             continue
         if getattr(spec.kind, "value", spec.kind) not in _TARGET_KINDS:
             continue
         claimed = {
-            canonical_slug(s) for s in tools_registry.mode_platform_slugs(spec.mode)
+            canonical_slug(s)
+            for s in (*tools_registry.mode_platform_slugs(spec.mode), *spec.auto_platform_slugs)
         }
-        if platform not in claimed:
+        if platform in claimed:
+            found.append(spec)
+    return found
+
+
+def default_mode(path: str, platform: str, tools_registry) -> str | None:
+    """The default target mode for an Image of ``platform`` at ``path``.
+
+    Candidates are the create-direction modes that claim the Platform
+    (``platform_slugs`` or ``auto_platform_slugs``), may be an Auto default
+    (``ModeSpec.auto_target``) and whose command can read this file
+    (``ToolRegistry.mode_reads_extensions`` and the tool's ``converts_path``).
+    Among them the most specific extension match wins (``.nkit.iso`` over
+    ``.iso``), then the smallest read set (the most specific reader: a PS2
+    ``.iso`` goes to createdvd, which reads only ``.iso``, not createcd), then
+    registration order. None when no candidate reads the file.
+    """
+    disk_path, member = _split_member(path)
+    name = path.split("::", 1)[1] if member else disk_path
+    best: str | None = None
+    best_key: tuple[int, int] | None = None
+    for spec in _auto_candidates(platform, tools_registry):
+        reads = tools_registry.mode_reads_extensions(spec.mode)
+        matched = match_extension(name, reads)
+        if matched is None:
             continue
-        name = path.split("::", 1)[1] if member else disk_path
-        matched = match_extension(name, tools_registry.mode_reads_extensions(spec.mode))
-        if matched is None or len(matched) <= best_len:
+        key = (-len(matched), len(reads))
+        if best_key is not None and key >= best_key:
             continue
         if member and not spec.allows_archive_input:
             continue
         if not member and not tools_registry.for_mode(spec.mode).converts_path(disk_path):
             continue
-        best, best_len = spec.mode, len(matched)
+        best, best_key = spec.mode, key
     return best
+
+
+def _no_target_reason(path: str, platform: str, tools_registry) -> str:
+    """Why an Image with a Platform has no target: the Platform, or the file."""
+    if not _auto_candidates(platform, tools_registry):
+        return f"No tool converts {platform} Images"
+    name = path.split("::", 1)[-1]
+    ext = os.path.splitext(name)[1].lower() or name
+    return f"No {platform} target reads {ext} files"
 
 
 def _skip_reason(detection: Detection) -> str:
@@ -346,28 +369,40 @@ def plan_auto(
     compression gets None, and so does a tool with nothing saved, which means
     the tool's own default. Two Images whose targets would write the same
     output (``game.iso`` and ``game.nkit.iso`` both to ``game.rvz``) cannot
-    both convert: the first in ``paths`` keeps it and the later one is skipped
-    with a reason. Blocking; call it off the event loop.
+    both convert. The one the batch path would keep (``input_priority``, then
+    the earlier in ``paths``) keeps it; the other is skipped with a reason.
+    Blocking; call it off the event loop.
     """
     if tools_registry is None:
         from services.tools import registry as tools_registry
     plan = _plan_targets(paths, compression_prefs or {}, tools_registry)
-    claimed: dict[str, str] = {}
+    from services.output_conflicts import input_priority
+
+    claimed: dict[str, int] = {}
     for index, target in enumerate(plan):
         if not target.mode:
             continue
         out = _target_output(target.file_path, target.mode, output_dir, tools_registry)
         if out is None:
             continue
-        holder = claimed.setdefault(out, target.file_path)
-        if holder != target.file_path:
-            plan[index] = replace(
-                target, mode=None, tool_id=None, compression=None,
-                skip_reason=(
-                    f"Same output as {os.path.basename(holder.split('::')[-1])} "
-                    f"({os.path.basename(out)})"
-                ),
-            )
+        holder = claimed.get(out)
+        if holder is None:
+            claimed[out] = index
+            continue
+        # The batch path's rule: the higher input_priority keeps the output
+        # (.cue/.gdi over .iso over .bin), ties to the earlier selection.
+        keep, lose = holder, index
+        if input_priority(target.file_path) > input_priority(plan[holder].file_path):
+            keep, lose = index, holder
+            claimed[out] = index
+        winner = plan[keep].file_path
+        plan[lose] = replace(
+            plan[lose], mode=None, tool_id=None, compression=None,
+            skip_reason=(
+                f"Same output as {os.path.basename(winner.split('::')[-1])} "
+                f"({os.path.basename(out)})"
+            ),
+        )
     return plan
 
 
@@ -384,7 +419,7 @@ def _plan_targets(paths, prefs: dict, tools_registry) -> list[AutoTarget]:
         if mode is None:
             plan.append(AutoTarget(
                 path, detection, None, None, None,
-                f"No {detection.platform} target takes this file type",
+                _no_target_reason(path, detection.platform, tools_registry),
             ))
             continue
         spec = tools_registry.spec(mode)

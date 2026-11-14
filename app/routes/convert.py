@@ -1231,11 +1231,12 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     whose output another one in the plan already writes, are left alone and
     reported in the plan.
 
-    All or nothing: every group is prepared before any is queued, so a planning
-    error queues nothing. Each group is still its own atomic queue call, so if a
-    later group is refused at queue time (another job took a destination, a
-    volume stopped answering) the jobs this request already queued are
-    cancelled and the error is returned.
+    Every group is prepared before any is queued, so a planning error queues
+    nothing. Each group is still its own atomic queue call, so if a later group
+    is refused at queue time (another job took a destination, a volume stopped
+    answering) the jobs this request already queued are withdrawn and the error
+    is returned. A job that already finished cannot be withdrawn; it is kept,
+    logged, and named in the error.
     """
     plan = await _plan_auto(request)
     groups: dict[tuple[str, str | None], list[str]] = {}
@@ -1261,19 +1262,44 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     for batch in prepared:
         try:
             jobs += await _queue_prepared(batch)
-        except HTTPException:
+        except HTTPException as exc:
+            kept = await _cancel_queued(jobs)
+            if kept:
+                exc.detail = (
+                    f"{exc.detail} Already finished and kept: {', '.join(kept)}."
+                )
+            raise
+        except BaseException:
+            # Anything else, a client disconnect's CancelledError included:
+            # still withdraw what this request queued, then let it propagate.
             await _cancel_queued(jobs)
             raise
     return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)
 
 
-async def _cancel_queued(jobs: list) -> None:
-    """Withdraw jobs an Auto request queued before a later group failed."""
+async def _cancel_queued(jobs: list) -> list[str]:
+    """Withdraw jobs an Auto request queued before a later group failed.
+
+    Returns the names of jobs that could not be withdrawn because they had
+    already finished (a small job can complete before a later group is
+    refused). Their output stays; nothing is deleted.
+    """
+    kept: list[str] = []
     for job in jobs:
+        name = getattr(job, "filename", None) or job.id
         try:
-            await job_manager.cancel_job(job.id)
+            withdrawn = await job_manager.cancel_job(job.id)
         except Exception:  # keep withdrawing the rest
             logger.warning("Could not cancel Auto job %s", job.id, exc_info=True)
+            kept.append(name)
+            continue
+        if not withdrawn:
+            logger.warning(
+                "Auto job %s (%s) had already finished when its batch failed; "
+                "its output is kept", job.id, name,
+            )
+            kept.append(name)
+    return kept
 
 
 @router.get("/jobs", response_model=list[ConversionJob])

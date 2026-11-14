@@ -70,17 +70,18 @@ def _raw_ps2_cd(folder: Path) -> tuple[str, str]:
     return cue, track
 
 
-def test_ps2_cd_cue_bin_never_gets_the_dvd_command(tmp_path):
+def test_ps2_cd_cue_goes_to_the_cd_command(tmp_path):
     cue, track = _raw_ps2_cd(tmp_path / "downloads")
 
     plan = _by_path(plan_auto([cue, track]))
 
     assert plan["game.cue"].detection.platform == "ps2"
-    # createdvd reads a flat 2048-byte image; a track sheet or raw track is
-    # not one, so there is no PS2 target for these files.
-    assert plan["game.cue"].mode is None
+    # A PS2 CD-ROM title is a plain Mode 2 CD: createcd reads its track sheet.
+    # createdvd reads only a flat 2048-byte image, so it never gets the .cue.
+    assert plan["game.cue"].mode == "createcd"
+    # The raw track has no table of contents; its .cue is the Image.
     assert plan["game.bin"].mode is None
-    assert "ps2" in plan["game.cue"].skip_reason
+    assert ".bin" in plan["game.bin"].skip_reason
 
 
 @pytest.mark.parametrize("folder", ["arcade", "mame"])
@@ -165,7 +166,21 @@ def test_platform_with_no_target_for_the_file_type_is_skipped(tmp_path):
     [entry] = plan_auto([path])
 
     assert entry.mode is None
-    assert entry.skip_reason
+    assert entry.skip_reason == "No ps2 target reads .rvz files"
+
+
+@pytest.mark.parametrize(
+    ("folder", "name", "platform"),
+    [
+        ("ngpc", "game.ngc", "neo-geo-pocket-color"),
+        ("wonderswancolor", "game.wsc", "wonderswan-color"),
+    ],
+)
+def test_a_platform_no_tool_converts_says_so(tmp_path, folder, name, platform):
+    [entry] = plan_auto([_blank(tmp_path / folder / name)])
+
+    assert entry.mode is None
+    assert entry.skip_reason == f"No tool converts {platform} Images"
 
 
 def test_saved_compression_follows_the_tool(tmp_path):
@@ -281,6 +296,19 @@ def test_two_images_with_one_output_keep_the_first_and_say_why(tmp_path):
     assert "game.iso" in plan["game.nkit.iso"].skip_reason
 
 
+def test_output_collisions_keep_the_input_the_batch_path_would_keep(tmp_path):
+    # The batch collapse keeps the .cue over the .iso (input_priority); the
+    # plan must agree whatever order the selection arrives in.
+    iso = _ps1(tmp_path / "psx" / "game.iso")
+    cue = _write(tmp_path / "psx" / "game.cue", b'FILE "game.bin" BINARY\n')
+
+    plan = _by_path(plan_auto([iso, cue]))
+
+    assert plan["game.cue"].mode == "createcd"
+    assert plan["game.iso"].mode is None
+    assert "game.cue" in plan["game.iso"].skip_reason
+
+
 def test_output_collisions_follow_the_output_directory(tmp_path):
     # Different folders, one output directory: both would write out/game.rvz.
     first = _gamecube(tmp_path / "a" / "game.iso")
@@ -354,6 +382,58 @@ async def test_auto_route_cancels_what_it_queued_when_a_later_group_fails(
     assert exc.value.status_code == 409
     assert queued_ids, "the failing group must not be the first one queued"
     assert sorted(cancelled) == sorted(queued_ids)
+
+
+@pytest.mark.asyncio
+async def test_auto_route_names_a_job_that_finished_before_the_withdrawal(
+    route_env, monkeypatch, caplog,
+):
+    paths = _mixed_selection(route_env["tmp_path"])
+
+    async def fake_atomic(job_specs, mode, **_kwargs):
+        if mode.value == "dolphin_rvz":
+            raise convert_routes.OutputClaimedError("taken by another job")
+        name = Path(job_specs[0]["file_path"]).name
+        return [type("Job", (), {"id": f"job-{mode.value}", "filename": name})()]
+
+    async def fake_cancel(_job_id):
+        return False  # already finished: nothing left to cancel
+
+    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
+    monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
+
+    with pytest.raises(convert_routes.HTTPException) as exc:
+        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+
+    assert exc.value.status_code == 409
+    assert "taken by another job" in exc.value.detail
+    assert "ps2.iso" in exc.value.detail
+    assert "ps2.iso" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_auto_route_withdraws_on_any_failure_not_only_http_errors(
+    route_env, monkeypatch,
+):
+    paths = _mixed_selection(route_env["tmp_path"])
+    cancelled: list[str] = []
+
+    async def fake_atomic(job_specs, mode, **_kwargs):
+        if mode.value == "dolphin_rvz":
+            raise RuntimeError("queue fell over")
+        return [type("Job", (), {"id": f"job-{mode.value}", "filename": "x"})()]
+
+    async def fake_cancel(job_id):
+        cancelled.append(job_id)
+        return True
+
+    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
+    monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
+
+    with pytest.raises(RuntimeError):
+        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+
+    assert cancelled
 
 
 @pytest.mark.asyncio

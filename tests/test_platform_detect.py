@@ -167,6 +167,7 @@ FRONTEND_FOLDERS = [
     ("atarilynx", "lynx"), ("ngp", "neo-geo-pocket"), ("ngpc", "neo-geo-pocket-color"),
     ("wonderswancolor", "wonderswan-color"), ("n3ds", "3ds"),
     ("neogeocd", "neo-geo-cd"), ("pcfx", "pc-fx"), ("mame", "arcade"),
+    ("naomi2", "arcade"), ("naomigd", "arcade"),
 ]
 
 

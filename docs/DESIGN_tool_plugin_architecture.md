@@ -2191,15 +2191,26 @@ is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
 changes; `clear_cache()` exists for tests.
 
-**Auto targets** (`plan_auto`, `default_mode`). An Image with a Platform goes to
-the first create-direction mode (`ModeKind.CREATE` / `COMPRESS`) whose
-`registry.mode_platform_slugs` claims that Platform, that may be an Auto
-default (`ModeSpec.auto_target`), and whose command can read the file
-(`registry.mode_reads_extensions` plus the tool's `converts_path`). When several
-do, the most specific extension wins (`.nkit.iso` over `.iso`), registration
-order breaking ties, the same rule as `tool_for_verify`. So a PS2 `.iso` gets
-`createdvd`, a PS1 `.cue` `createcd`, a GameCube `.iso` `dolphin_rvz`, a
-`.nkit.iso` `nkit_to_rvz`, a CD image in an `arcade` folder `createcd`.
+**Auto targets** (`plan_auto`, `default_mode`). The candidates for an Image with
+a Platform are the create-direction modes (`ModeKind.CREATE` / `COMPRESS`) that
+claim the Platform (`registry.mode_platform_slugs`, or the mode's
+`auto_platform_slugs`), may be an Auto default (`ModeSpec.auto_target`), and
+whose command can read the file (`registry.mode_reads_extensions` plus the
+tool's `converts_path`). Among them:
+
+1. the most specific extension match wins (`.nkit.iso` over `.iso`, the
+   `tool_for_verify` rule);
+2. then the smallest read set, the most specific reader (a PS2 `.iso` goes to
+   `createdvd`, which reads only `.iso`, not `createcd`, which also reads track
+   sheets);
+3. then registration order (`createdvd` before the CSO modes, which also read
+   only `.iso`).
+
+So a PS2 `.iso` gets `createdvd`, a PS2 or PS1 `.cue` `createcd`, a GameCube
+`.iso` `dolphin_rvz`, a `.nkit.iso` `nkit_to_rvz`, a CD image in an `arcade`
+folder `createcd`. `tests/test_auto_routing_table.py` holds the whole table, one
+row per (Platform, readable extension), and fails when a tool or mode changes
+the set of pairs.
 
 `ModeSpec.reads_extensions` is the mode's real input domain when it is
 narrower than `input_extensions`; empty means "every input extension". It must
@@ -2207,19 +2218,30 @@ be a subset of `input_extensions`, which keeps gating manual selection and
 `plan_job` exactly as before. chdman uses it because its five create modes all
 accept `.iso/.cue/.bin/.gdi` by hand while the commands differ: `createcd`
 reads a track sheet or a single-track `.iso`, `createdvd` a flat 2048-byte
-`.iso`. So a PS2 CD-ROM title as cue/bin gets no target (`ps2` is claimed only
-by `createdvd`) and is skipped with a reason, instead of being sent to the DVD
-command. `ModeSpec.auto_target` is false for chdman's `createraw`, `createhd`
-and `createld`: they claim the arcade Platforms, but are never the right
-default for an Image.
+`.iso`. A bare `.bin` is read by neither (chdman needs the table of contents),
+so its `.cue` is the Image. `ModeSpec.auto_target` is false for chdman's
+`createraw`, `createhd` and `createld`: they claim the arcade Platforms, but
+are never the right default for an Image.
+
+`ModeSpec.auto_platform_slugs` lets a mode be a Platform's Auto target without
+being offered for it by hand. `createcd` declares `ps2`, because PS2 CD-ROM
+titles are plain Mode 2 CDs kept as cue/bin. Adding `ps2` to its
+`platform_slugs` would have made `createcd`, the first chdman create mode, the
+default of every platform-narrowed PS2 panel and rule, which
+`test_chdman_media_commands_are_narrowed_per_platform` forbids.
 
 Two Images whose targets would write the same output (`game.iso` and
 `game.nkit.iso` both to `game.rvz`, or two `game.iso` into one output
-directory) cannot both convert: `plan_auto` keeps the first in the selection
-and skips the later one with a reason naming the output. The compression is the saved per-tool value (the `conversion`
+directory) cannot both convert. `plan_auto` keeps the one the batch path would
+keep (`output_conflicts.input_priority`: `.cue`/`.gdi` over `.iso` over `.bin`,
+then the earlier in the selection) and skips the other with a reason naming the
+output. The compression is the saved per-tool value (the `conversion`
 preference) when the mode takes one, else the tool default; a saved value the
 mode would refuse also falls back to the tool default. Conflicted and Unsorted
-Images, and a Platform with no mode for the file type, get a `skip_reason`.
+Images get a `skip_reason`, and so does an Image with a Platform but no target:
+"No tool converts <platform> Images" when no mode serves the Platform at all
+(Neo Geo Pocket Color, WonderSwan Color), "No <platform> target reads <ext>
+files" when the file is the problem.
 
 `POST /api/jobs/auto-plan` returns the plan without queueing.
 `POST /api/jobs/auto` groups the planned Images by (mode, compression). The
@@ -2229,10 +2251,12 @@ queue nothing) and `_queue_prepared` (one atomic `create_jobs_atomic` call);
 a planning error queues nothing, then checks the whole batch against
 `max_queue_depth`, then queues the groups. Each group is its own atomic call,
 so a later group can still be refused at queue time (409 when another job took
-a destination, 503 when a volume stops answering). When that happens the route
-cancels the jobs this request already queued and returns the error, so the
-client never has to adopt half a batch. Auto never deletes a Source (no
-delete-on-verify).
+a destination, 503 when a volume stops answering), and earlier jobs may have
+started by then. On any failure the route withdraws the jobs this request
+queued (`job_manager.cancel_job`) and returns the error. A job that had already
+finished cannot be withdrawn: its output stays, it is logged, and the error
+names it ("Already finished and kept: ..."). Auto never deletes a Source (no
+delete-on-verify), so nothing is lost either way.
 
 The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;
