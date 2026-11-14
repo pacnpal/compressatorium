@@ -47,8 +47,8 @@ export async function fetchJson(url, opts = {}, fallbackMessage = 'Request faile
     let data;
     try {
       const body = await res.json();
-      if (body && typeof body.detail === 'string') detail = body.detail;
-      else if (body && body.detail && typeof body.detail === 'object') {
+      if (typeof body?.detail === 'string') detail = body.detail;
+      else if (body?.detail && typeof body.detail === 'object') {
         // A structured detail (e.g. a 409 carrying `suggested_name`) is kept
         // on the error; its `message`, if any, is the text.
         data = body.detail;

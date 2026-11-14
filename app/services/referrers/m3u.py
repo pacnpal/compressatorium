@@ -124,10 +124,14 @@ def _new_entry(posix_entry: str, target: _Target) -> list[str]:
     step = os.path.relpath(target.new, target.old_dir)
     literal = folder + sep + step
     candidates = [literal] if "/" not in step else [os.path.normpath(literal), literal]
-    # Readers trim each line and treat "#" as a comment, so protect a leading
-    # "#" or space with "./". A trailing space can't be protected; _rewrite
-    # rejects such a candidate.
-    return [f"./{c}" if c[:1] == "#" or c[:1].isspace() else c for c in candidates]
+    # A trailing space can't be protected; _rewrite rejects such a candidate.
+    return [protect_entry(c) for c in candidates]
+
+
+def protect_entry(entry: str) -> str:
+    """*entry* as written on a line. Readers trim each line and treat "#" as a
+    comment, so a leading "#", space or control character gets a "./" prefix."""
+    return f"./{entry}" if entry[:1] == "#" or entry[:1].isspace() else entry
 
 
 def _parse_line(text: str) -> tuple[str, str, bool] | None:
@@ -242,9 +246,22 @@ def playlist_bytes(entries: list[str]) -> bytes:
     """A fresh playlist: one entry per line, ``\\n`` endings, no BOM, UTF-8
     (``surrogateescape``, the same encoding the Referrer reads and rewrites with).
 
+    Entries go through ``protect_entry``. The rendered file is then read back
+    line by line the way a reader (and ``_rewrite``) parses it, and a
+    ``ValueError`` is raised unless that gives exactly the entries written
+    (a trailing space or a line break inside an entry would not survive).
+
     The shared way to build a new ``.m3u``; write it with ``write_new_bytes``.
     """
-    return "".join(entry + "\n" for entry in entries).encode(*_ENC)
+    lines = [protect_entry(entry) for entry in entries]
+    data = "".join(line + "\n" for line in lines).encode(*_ENC)
+    read_back = [
+        parsed[0] if (parsed := _parse_line(raw.decode(*_ENC))) else None
+        for raw in data.splitlines()
+    ]
+    if read_back != lines:
+        raise ValueError("an entry would not read back as written")
+    return data
 
 
 def _read(path: str) -> bytes:

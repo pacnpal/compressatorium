@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from services.referrers import write_new_bytes
-from services.referrers.m3u import PLAYLIST_EXT, playlist_bytes
+from services.referrers.m3u import PLAYLIST_EXT, playlist_bytes, protect_entry
 from services.tools import registry
 from utils.delete_plan import _parse_cue_tracks, _parse_gdi_tracks
 from utils.path_utils import is_within_configured_volumes, match_extension
@@ -34,7 +34,11 @@ _BARE_RE = re.compile(r"(?<![A-Za-z0-9])" + _DISC + r"(?![A-Za-z0-9])", re.IGNOR
 _NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])" + _DISC + r"(?![A-Za-z0-9])", re.IGNORECASE)
 _TRAILING_NUMBER_SUFFIX_RE = re.compile(r"\s\(\d+\)$")
 _SEPARATORS = " \t-_,.:;"
-_MAX_NAME_BYTES = 200  # leaves room for ".m3u" under the 255-byte file name limit
+_MAX_FILE_NAME_BYTES = 255
+# A title leaves room for the longest suffix the preview can add, " (999).m3u",
+# so every name it offers can be created; a file-name stem only for ".m3u".
+_MAX_TITLE_BYTES = _MAX_FILE_NAME_BYTES - len(".m3u") - len(" (999)")
+_MAX_STEM_BYTES = _MAX_FILE_NAME_BYTES - len(".m3u")
 _MAX_SUFFIX = 999
 
 
@@ -93,14 +97,14 @@ def _order_key(name: str) -> tuple:
     return (number is None, number or 0, unicodedata.normalize("NFC", name).casefold(), name)
 
 
-def _check_file_name_part(value: str, what: str) -> None:
+def _check_file_name_part(value: str, what: str, max_bytes: int = _MAX_TITLE_BYTES) -> None:
     if not value or value in (".", ".."):
         raise PlaylistError(f"{what} can't be empty")
     if "/" in value or "\\" in value:
         raise PlaylistError(f"{what} can't contain a path separator")
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
         raise PlaylistError(f"{what} can't contain control characters")
-    if len(value.encode("utf-8", "surrogateescape")) > _MAX_NAME_BYTES:
+    if len(value.encode("utf-8", "surrogateescape")) > max_bytes:
         raise PlaylistError(f"{what} is too long")
 
 
@@ -131,7 +135,12 @@ def _free_name(directory: str, title: str) -> str:
 
 
 def _validated_files(paths: list[str]) -> tuple[str, dict[str, str]]:
-    """The common folder and ``{file name: path}`` for the selection, or PlaylistError."""
+    """The folder the user selected from and ``{file name: path}``, or PlaylistError.
+
+    The playlist goes in the selected (unresolved) parent folder, which every
+    path must share, and each entry is checked to resolve from there to the
+    file that was selected.
+    """
     seen: dict[str, str] = {}
     for raw in paths:
         if "::" in raw:
@@ -145,15 +154,19 @@ def _validated_files(paths: list[str]) -> tuple[str, dict[str, str]]:
         seen.setdefault(os.path.realpath(raw), raw)
     if len(seen) < 2:
         raise PlaylistError("Select two or more discs")
-    if len({os.path.dirname(p) for p in seen}) != 1:
+    directories = {os.path.dirname(raw) for raw in seen.values()}
+    if len(directories) != 1:
         raise PlaylistError("The discs must be in one folder")
+    directory = directories.pop()
     files: dict[str, str] = {}
     for raw in seen.values():
         name = os.path.basename(raw)
         if any(ch in name for ch in "\r\n\0"):
             raise PlaylistError(f"{name} has a line break in its name")
+        if not os.path.samefile(os.path.join(directory, name), raw):
+            raise PlaylistError(f"{name} would not resolve from the playlist's folder")
         files[name] = raw
-    return os.path.dirname(next(iter(seen.values()))), files
+    return directory, files
 
 
 def _named_tracks(sheet: str) -> set[str]:
@@ -223,8 +236,11 @@ def plan_playlist(paths: list[str], title: str | None = None) -> PlaylistPlan:
     _check_file_name_part(chosen, "The playlist name")
     requested = f"{chosen}{PLAYLIST_EXT}"
     free = _free_name(directory, chosen)
-    # "#" starts a comment line; "./" keeps such a name an entry.
-    entries = [f"./{n}" if n.startswith("#") else n for n in names]
+    entries = [protect_entry(n) for n in names]
+    try:
+        playlist_bytes(entries)  # the preview must be a playlist that can be written
+    except ValueError as exc:
+        raise PlaylistError(f"These names can't go in a playlist: {exc}") from None
     return PlaylistPlan(
         directory=directory,
         title=chosen,
@@ -241,7 +257,7 @@ def _check_playlist_file_name(file_name: str) -> str:
     if not file_name.lower().endswith(PLAYLIST_EXT):
         raise PlaylistError("The playlist file name must end in .m3u")
     stem = file_name[: -len(PLAYLIST_EXT)]
-    _check_file_name_part(stem, "The playlist name")
+    _check_file_name_part(stem, "The playlist name", _MAX_STEM_BYTES)
     return stem
 
 
@@ -252,7 +268,7 @@ def create_playlist(paths: list[str], file_name: str) -> PlaylistPlan:
     exists now, including when it appeared after the preview.
     """
     stem = _check_playlist_file_name(file_name)
-    plan = plan_playlist(paths, title=stem)
+    plan = plan_playlist(paths)  # entries only; the name is the previewed file_name
     target = os.path.join(plan.directory, file_name)
     if not is_within_configured_volumes(target, treat_archives=False):
         raise PlaylistError("The playlist would be outside the configured volumes")

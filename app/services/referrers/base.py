@@ -136,9 +136,9 @@ def write_new_bytes(path: str, data: bytes) -> None:
     *path* is never touched. The new file has the default ``0o644`` mode.
     """
     directory = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(
-        dir=directory, prefix=f".{os.path.basename(path)}.", suffix=".tmp",
-    )
+    # A short fixed prefix: the target's own name can be near the 255-byte
+    # limit, and a temp name built from it would not fit.
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".new-", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
