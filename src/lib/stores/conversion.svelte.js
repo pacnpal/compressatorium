@@ -564,8 +564,11 @@ class ConversionStore {
    * `planRommRepin` call returns. `misdirected` re-records sources the queue
    * wrote somewhere other than planned.
    */
-  async #planRepin(groups, duplicateAction, rommPlatformId, misdirected = null) {
-    const merged = { recorded: 0, pending: null, recorded_paths: {}, recorded_ids: {} };
+  async #planRepin(groups, duplicateAction, rommPlatformId, misdirected, merged) {
+    // `merged` belongs to the caller and is filled one group at a time, so the
+    // rows earlier groups saved are still there when a later group's request
+    // throws: they are real records on the server, and the caller has to
+    // reconcile or retire them like any other.
     for (const [mode, paths] of Object.entries(groups)) {
       if (!paths.length) continue;
       const args = [paths, mode, this.outputDir || null, duplicateAction, rommPlatformId];
@@ -578,7 +581,6 @@ class ConversionStore {
       Object.assign(merged.recorded_paths, planned?.recorded_paths ?? {});
       Object.assign(merged.recorded_ids, planned?.recorded_ids ?? {});
     }
-    return merged;
   }
 
   /**
@@ -615,6 +617,7 @@ class ConversionStore {
     let recordedIds = {};
     try {
       if (rommRepin) {
+        const planned = emptyRepinPlan();
         try {
           // The duplicate policy goes with it: the plan has to record the
           // path the batch will actually write. Under Rename the batch resolves
@@ -625,14 +628,7 @@ class ConversionStore {
           // platform's full catalog looking for these paths, which on a large
           // instance is hundreds of serialised requests before a small batch
           // is even queued. These rows all came from one platform's listing.
-          const planned = await this.#planRepin(groups, duplicateAction, rommPlatformId);
-          // Reported back to the caller rather than pushed into the RomM store
-          // from here: conversion is imported by fileBrowser, which the RomM
-          // store imports, so a static import back would be a cycle.
-          this.lastRepinRecorded = planned?.recorded ?? 0;
-          this.lastRepinPending = planned?.pending ?? null;
-          recorded = planned?.recorded_paths ?? {};
-          recordedIds = planned?.recorded_ids ?? {};
+          await this.#planRepin(groups, duplicateAction, rommPlatformId, null, planned);
         } catch (e) {
           // Best-effort, like the disc-ID tagging hook: losing the metadata
           // snapshot costs a re-match in RomM, while refusing to convert costs
@@ -642,6 +638,15 @@ class ConversionStore {
             + 'converted files may need re-matching in RomM',
           );
         }
+        // Whatever was saved, including rows from groups before a failed one,
+        // goes through the same reconciliation and `finally` retirement.
+        // Reported back to the caller rather than pushed into the RomM store
+        // from here: conversion is imported by fileBrowser, which the RomM
+        // store imports, so a static import back would be a cycle.
+        this.lastRepinRecorded = planned.recorded;
+        this.lastRepinPending = planned.pending;
+        recorded = planned.recorded_paths;
+        recordedIds = planned.recorded_ids;
       }
       const { result, createdJobs } = await queue();
       // Report what the backend actually created. createBatch can
@@ -694,13 +699,18 @@ class ConversionStore {
         // first plan and now — cancelling first would leave the conversion
         // running with no snapshot at all, and the operator none the wiser.
         // Losing this ordering is how metadata disappears silently.
-        let replanned = null;
+        // Filled group by group: a later group failing leaves the earlier
+        // groups' new rows here, and they point at the outputs the queue
+        // really wrote, so the incomplete branch below keeps them.
+        const replanned = emptyRepinPlan();
+        let replanFailed = false;
         try {
-          replanned = await this.#planRepin(
+          await this.#planRepin(
             groupByMode(Object.keys(misdirected), modeOf),
-            duplicateAction, rommPlatformId, misdirected,
+            duplicateAction, rommPlatformId, misdirected, replanned,
           );
         } catch (e) {
+          replanFailed = true;
           // Say so rather than swallow it: the conversion is already queued,
           // so this metadata now needs the manual path. The count is corrected
           // below so the badge does not promise a re-match that is not coming.
@@ -716,12 +726,14 @@ class ConversionStore {
         // the old rows and report metadata that was never saved. Every
         // redirected source has to come back mapped to the path the queue
         // actually chose.
-        const replannedPaths = replanned?.recorded_paths ?? {};
-        const replannedIds = replanned?.recorded_ids ?? {};
+        const replannedPaths = replanned.recorded_paths;
+        const replannedIds = replanned.recorded_ids;
         const replanComplete = Object.entries(misdirected).every(
           ([source, destination]) => replannedPaths[source] === destination,
         );
-        if (replanned && !replanComplete) {
+        // A failed request already said so above; this covers a 200 that
+        // left some sources out.
+        if (!replanFailed && !replanComplete) {
           toast.warning(
             'Metadata could not be saved for every file the queue redirected. '
             + 'Re-match those in RomM by hand after converting.',
@@ -830,6 +842,11 @@ class ConversionStore {
       }
     }
   }
+}
+
+/** An empty accumulator in the shape one `planRommRepin` call returns. */
+function emptyRepinPlan() {
+  return { recorded: 0, pending: null, recorded_paths: {}, recorded_ids: {} };
 }
 
 /** Sources grouped by their target mode: `{ mode: [path, ...] }`. */

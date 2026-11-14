@@ -204,6 +204,65 @@ def test_manual_submit_still_records_once_for_the_selected_mode(tmp_path):
     assert data["cancelled"] == [], data
 
 
+_PARTIAL_SNAPSHOT = """
+const plan = [
+  { file_path: '/v/ps2/a.iso', mode: 'createdvd' },
+  { file_path: '/v/gc/b.iso', mode: 'dolphin_rvz' },
+];
+// The first target's snapshot is saved; the second one's request fails.
+planAnswer = (paths, mode) => {
+  if (mode === 'dolphin_rvz') throw new Error('RomM went away');
+  return {
+    recorded: 1, pending: 1,
+    recorded_paths: { '/v/ps2/a.iso': '/v/ps2/a.chd' },
+    recorded_ids: { '/v/ps2/a.iso': 11 },
+  };
+};
+// ...and then the queue refuses the whole submission.
+autoAnswer = () => { throw new Error('queue full'); };
+const store = new ConversionStore();
+let failed = false;
+try {
+  await store.submitAuto(['/v/ps2/a.iso', '/v/gc/b.iso'], {
+    plan, rommRepin: true, rommPlatformId: 7,
+  });
+} catch (_e) {
+  failed = true;
+}
+process.stdout.write(JSON.stringify({
+  failed,
+  cancelled: calls.cancel.flat(),
+  warned: toasts.some(([kind, m]) => kind === 'warning' && m.includes('RomM metadata')),
+}));
+"""
+
+
+def test_a_failed_later_snapshot_keeps_the_saved_rows_for_reconciliation(tmp_path):
+    data = _run(tmp_path, _PARTIAL_SNAPSHOT)
+
+    assert data["failed"] is True, data
+    assert data["warned"] is True, data
+    # Nothing was queued, so the row the first snapshot saved is retired.
+    assert data["cancelled"] == [11], data
+
+
+def test_a_saved_row_survives_a_later_failed_snapshot_when_its_job_queued(tmp_path):
+    scenario = _PARTIAL_SNAPSHOT.replace(
+        "autoAnswer = () => { throw new Error('queue full'); };",
+        "autoAnswer = () => ({ plan, jobs: [\n"
+        "  { id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a.chd' },\n"
+        "] });",
+    ).replace(
+        "  warned: toasts",
+        "  recorded: store.lastRepinRecorded,\n  warned: toasts",
+    )
+    data = _run(tmp_path, scenario)
+
+    assert data["failed"] is False, data
+    assert data["cancelled"] == [], data
+    assert data["recorded"] == 1, data
+
+
 def test_auto_re_records_a_redirected_output_under_its_own_mode(tmp_path):
     data = _run(tmp_path, _AUTO_MISDIRECTED)
 
