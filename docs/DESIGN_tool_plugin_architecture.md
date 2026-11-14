@@ -2226,8 +2226,13 @@ Referrer reads and rewrites with. **Create an `.m3u` from selected discs** (#299
 `/api/files/playlist`) is built on these two, not a second writer. It accepts two
 or more files directly in one folder inside a Volume whose extension is in
 `registry.disc_extensions()`, the union of each tool's `disc_extensions` (chdman
-declares `.cue .gdi .iso .chd`; a tool with no standalone disc files declares
-nothing). Order is by `(Disc N)` / `Disc N` / `CD N`, then name. Entries are file
+`.cue .gdi .iso .chd`, Dolphin `.iso .gcz .wia .rvz .wbfs`, maxcso `.cso .zso`; a
+tool with no standalone disc files declares nothing). `registry.js` mirrors it as
+`discExts` (checked by `tests/test_frontend_parity_186.py`), and the file list
+shows **Create .m3u** only for two or more such files in one folder. Order is by
+`(Disc N)` / `Disc N` / `CD N`, then name. A ticked `.bin` that a ticked `.cue` /
+`.gdi` names is dropped from the selection with a warning; two files for one disc
+(a `.cue` and its `.chd`, or one disc number twice) are refused. Entries are file
 names beside the playlist. The preview computes a free name (`<Title> (2).m3u`);
 the create call writes exactly the previewed name and answers 409 with the next
 free one if it was taken since, never picking a different name on its own.

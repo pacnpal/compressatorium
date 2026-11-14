@@ -36,7 +36,10 @@ def _run_dialog(tmp_path: Path, expr: str):
     return json.loads(proc.stdout)
 
 
-_READY = "{ preview: {}, title: 'Game', previewedTitle: 'Game', loading: false, busy: false, titleError: '' }"
+_READY = (
+    "{ preview: {}, title: 'Game', previewedTitle: 'Game',"
+    " loading: false, busy: false, titleError: '' }"
+)
 
 
 def test_create_is_enabled_when_the_shown_name_is_the_previewed_one(tmp_path):

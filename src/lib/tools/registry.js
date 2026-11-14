@@ -129,6 +129,7 @@ const XISO_SOURCE_EXTS = [...XISO_COMPRESS_EXTS, ...XISO_VERIFY_EXTS];
  * @property {string} verifyPrefix              URL segment for /api/{prefix}-verify (or empty for /api/verify)
  * @property {string[]} sourceExts
  * @property {string[]} verifyExts
+ * @property {string[]} [discExts]            files that are one disc of a multi-disc game (mirrors disc_extensions)
  * @property {string[]} modeGroups
  * @property {Record<string,string>} groups     group id → human label
  * @property {string} defaultMode               wire-mode the workspace selects when this tool is activated
@@ -172,6 +173,8 @@ export const TOOLS = [
     verifyPrefix: '',
     sourceExts: CHDMAN_SOURCE_EXTS,
     verifyExts: CHDMAN_VERIFY_EXTS,
+    // One disc each (mirrors BaseTool.disc_extensions; a .bin is a track, not a disc).
+    discExts: ['.cue', '.gdi', '.iso', '.chd'],
     modeGroups: ['create', 'extract', 'copy'],
     groups: { create: 'Create', extract: 'Extract', copy: 'Copy' },
     defaultMode: 'createcd',
@@ -265,6 +268,7 @@ export const TOOLS = [
     verifyPrefix: 'dolphin',
     sourceExts: DOLPHIN_SOURCE_EXTS,
     verifyExts: DOLPHIN_VERIFY_EXTS,
+    discExts: ['.iso', '.gcz', '.wia', '.rvz', '.wbfs'],
     modeGroups: ['dolphin'],
     groups: { dolphin: 'Dolphin' },
     defaultMode: 'dolphin_rvz',
@@ -394,6 +398,7 @@ export const TOOLS = [
     verifyPrefix: 'cso',
     sourceExts: CSO_SOURCE_EXTS,
     verifyExts: CSO_VERIFY_EXTS,
+    discExts: ['.cso', '.zso'],
     modeGroups: ['cso', 'chain'],
     groups: { cso: 'CSO / ZSO / DAX', chain: 'CSO → CHD' },
     defaultMode: 'cso_compress',
@@ -767,6 +772,10 @@ const COMPOUND_EXTS = [...new Set(
 export const registry = {
   /** All registered tools, in declared order. */
   all: () => TOOLS,
+
+  /** The paths that are disc Images by any tool's `discExts` (extension only). */
+  discImages: (paths) =>
+    paths.filter((p) => TOOLS.some((t) => endsWithAny(p, t.discExts ?? []))),
 
   /** Set of registered tool ids, replaces hardcoded VALID_TOOLS in callers. */
   ids: () => new Set(TOOLS.map((t) => t.id)),

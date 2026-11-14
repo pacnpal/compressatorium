@@ -154,13 +154,15 @@
     return sel.some((e) => e?.path && !e.path.includes('::') && e.split_parts == null);
   });
 
-  // "Create .m3u" needs two or more real files in one folder. Whether they are
-  // disc Images is the server's call (registry disc_extensions); the dialog
-  // shows its reason when they are not.
+  // "Create .m3u" needs two or more disc Images in one folder (discExts, mirrored
+  // from the backend registry). The server stays the authority and refuses
+  // anything else, e.g. two formats of one disc, with its reason in the dialog.
   const playlistCandidates = $derived.by(() => {
-    const paths = Array.from(fileBrowser.selectedFiles.values())
-      .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null)
-      .map((e) => e.path);
+    const paths = registry.discImages(
+      Array.from(fileBrowser.selectedFiles.values())
+        .filter((e) => e?.path && !e.path.includes('::') && e.split_parts == null)
+        .map((e) => e.path),
+    );
     const folder = (p) => p.slice(0, Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')));
     return paths.length >= 2 && new Set(paths.map(folder)).size === 1 ? paths : [];
   });

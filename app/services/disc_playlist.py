@@ -18,10 +18,12 @@ import os
 import re
 import unicodedata
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from services.referrers import write_new_bytes
 from services.referrers.m3u import PLAYLIST_EXT, playlist_bytes
 from services.tools import registry
+from utils.delete_plan import _parse_cue_tracks, _parse_gdi_tracks
 from utils.path_utils import is_within_configured_volumes, match_extension
 
 _DISC = r"(?:disc|disk|cd)[\s_-]*(\d+)(?:\s*of\s*\d+)?"
@@ -128,8 +130,8 @@ def _free_name(directory: str, title: str) -> str:
     raise PlaylistError("Too many playlists with this name already exist")
 
 
-def _validated_discs(paths: list[str]) -> tuple[str, list[str]]:
-    """The common folder and the disc file names, or PlaylistError."""
+def _validated_files(paths: list[str]) -> tuple[str, dict[str, str]]:
+    """The common folder and ``{file name: path}`` for the selection, or PlaylistError."""
     seen: dict[str, str] = {}
     for raw in paths:
         if "::" in raw:
@@ -143,28 +145,79 @@ def _validated_discs(paths: list[str]) -> tuple[str, list[str]]:
         seen.setdefault(os.path.realpath(raw), raw)
     if len(seen) < 2:
         raise PlaylistError("Select two or more discs")
-    disc_exts = registry.disc_extensions()
-    folders = {os.path.dirname(os.path.realpath(p)) for p in seen}
-    if len(folders) != 1:
+    if len({os.path.dirname(p) for p in seen}) != 1:
         raise PlaylistError("The discs must be in one folder")
-    names = []
+    files: dict[str, str] = {}
     for raw in seen.values():
         name = os.path.basename(raw)
-        if match_extension(name, disc_exts) is None:
-            raise PlaylistError(f"{name} is not a disc image")
         if any(ch in name for ch in "\r\n\0"):
             raise PlaylistError(f"{name} has a line break in its name")
-        names.append(name)
-    return os.path.dirname(next(iter(seen.values()))), names
+        files[name] = raw
+    return os.path.dirname(next(iter(seen.values()))), files
+
+
+def _named_tracks(sheet: str) -> set[str]:
+    """Casefolded track file names a .cue / .gdi sheet refers to."""
+    path = Path(sheet)
+    try:
+        parse = _parse_gdi_tracks if sheet.lower().endswith(".gdi") else _parse_cue_tracks
+        tracks = parse(path)
+    except OSError:
+        return set()
+    return {re.split(r"[\\/]", t)[-1].casefold() for t in tracks}
+
+
+def _split_discs_and_tracks(files: dict[str, str]) -> tuple[list[str], list[str]]:
+    """Disc image names, and the other selected files that are tracks of them.
+
+    A ticked ``.bin`` named by a ticked ``.cue`` / ``.gdi`` is that disc's
+    track, not another disc: it is left out. Any other non-disc file refuses.
+    """
+    disc_exts = registry.disc_extensions()
+    discs = [n for n in files if match_extension(n, disc_exts) is not None]
+    others = [n for n in files if n not in discs]
+    sheets = [files[n] for n in discs if n.lower().endswith((".cue", ".gdi"))]
+    named = set().union(*(_named_tracks(s) for s in sheets)) if sheets else set()
+    for name in others:
+        if name.casefold() not in named:
+            raise PlaylistError(f"{name} is not a disc image")
+    return discs, others
+
+
+def _refuse_duplicate_discs(names: list[str]) -> None:
+    """Two files for one disc (a .cue and its .chd, say) would list it twice."""
+    by_number: dict[int, list[str]] = {}
+    by_stem: dict[str, list[str]] = {}
+    for n in names:
+        number = disc_number(n)
+        if number is not None:
+            by_number.setdefault(number, []).append(n)
+        else:
+            by_stem.setdefault(_stem(n).casefold(), []).append(n)
+    for number, group in sorted(by_number.items()):
+        if len(group) > 1:
+            raise PlaylistError(f"Disc {number} appears twice: {', '.join(sorted(group))}")
+    for group in by_stem.values():
+        if len(group) > 1:
+            raise PlaylistError(
+                f"{' and '.join(sorted(group))} are the same disc in two formats",
+            )
 
 
 def plan_playlist(paths: list[str], title: str | None = None) -> PlaylistPlan:
     """The playlist these discs would make. Writes nothing."""
-    directory, names = _validated_discs(paths)
+    directory, files = _validated_files(paths)
+    names, tracks = _split_discs_and_tracks(files)
+    if len(names) < 2:
+        raise PlaylistError("Select two or more discs")
+    _refuse_duplicate_discs(names)
     names.sort(key=_order_key)
-    titles = {disc_title(n).casefold() for n in names}
     warnings = []
-    if len(titles) > 1:
+    if tracks:
+        warnings.append(
+            f"Left out {len(tracks)} track files that the selected cue sheets already name.",
+        )
+    if len({disc_title(n).casefold() for n in names}) > 1:
         warnings.append("These names don't share one title; check the playlist name.")
     chosen = _clean_title(title) if title is not None else disc_title(names[0])
     _check_file_name_part(chosen, "The playlist name")

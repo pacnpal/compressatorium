@@ -486,8 +486,9 @@ and the job ends as `converted, source kept: couldn't update <playlist>
 kept the source and why.
 
 **Create an `.m3u` from selected discs.** Tick the discs of one game in the file
-list (two or more disc images in the same folder, such as `.cue`, `.gdi`, `.iso`
-or `.chd`) and press **Create .m3u**. A preview shows the playlist name and its
+list (two or more disc images in the same folder, such as `.cue`, `.gdi`, `.iso`,
+`.chd`, `.rvz` or `.cso`) and press **Create .m3u**. Ticked `.bin` tracks of a
+`.cue` are left out; two formats of one disc are refused. A preview shows the playlist name and its
 entries before anything is written. The name drops the `(Disc N)` / `CD N` part
 (`Final Quest (Disc 1).cue` gives `Final Quest.m3u`) and can be edited. Entries
 go in disc order, by the number in the name and otherwise by name, as file names

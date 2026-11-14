@@ -429,7 +429,7 @@ class ToolRegistry:
         per tool, so a new disc format is a one-line change in its tool.
         """
         return tuple(sorted(
-            set().union(*(getattr(t, "disc_extensions", frozenset()) for t in self._tools.values()))
+            set().union(*(t.disc_extensions for t in self._tools.values()))
         ))
 
     def scannable_path(self, path: str) -> bool:

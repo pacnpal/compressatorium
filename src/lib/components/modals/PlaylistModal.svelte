@@ -2,6 +2,7 @@
   import { ui } from '$lib/stores/ui.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { api } from '$lib/api/endpoints.js';
+  import { canCreate } from '$lib/util/playlistDialog.js';
   import { toast } from 'svelte-sonner';
   import BaseModal from './BaseModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -12,7 +13,13 @@
   const open = $derived(paths.length > 0);
 
   let preview = $state(null);
-  let error = $state('');
+  // The title `preview` was made for. Create is only allowed while the shown
+  // title equals it (typing runs ahead of the debounced preview).
+  let previewedTitle = $state('');
+  // Selection refused before any preview exists: only Cancel makes sense.
+  let selectionError = $state('');
+  // The typed name was refused: shown under the input, which stays editable.
+  let titleError = $state('');
   let title = $state('');
   let loading = $state(false);
   let busy = $state(false);
@@ -23,16 +30,25 @@
   async function load(requestedTitle) {
     const mine = ++token;
     loading = true;
-    error = '';
     try {
       const result = await api.playlistPreview(paths, requestedTitle);
       if (mine !== token) return;
       preview = result;
+      selectionError = '';
+      titleError = '';
       if (requestedTitle == null) title = result.title;
+      previewedTitle = requestedTitle ?? result.title;
     } catch (e) {
       if (mine !== token) return;
-      preview = null;
-      error = e?.message ?? 'Failed to preview the playlist';
+      const message = e?.message ?? 'Failed to preview the playlist';
+      // A refused name keeps the field and the last good preview; a refused
+      // selection has nothing to edit.
+      if (requestedTitle == null) {
+        preview = null;
+        selectionError = message;
+      } else {
+        titleError = message;
+      }
     } finally {
       if (mine === token) loading = false;
     }
@@ -42,6 +58,9 @@
   $effect(() => {
     if (open) {
       preview = null;
+      previewedTitle = '';
+      selectionError = '';
+      titleError = '';
       title = '';
       load(null);
     } else {
@@ -50,8 +69,13 @@
     }
   });
 
+  const createEnabled = $derived(
+    canCreate({ preview, title, previewedTitle, loading, busy, titleError }),
+  );
+
   function onTitleInput() {
     clearTimeout(timer);
+    titleError = '';
     timer = setTimeout(() => load(title), 300);
   }
 
@@ -60,8 +84,15 @@
     ui.playlistPaths = null;
   }
 
+  function onTitleKeydown(e) {
+    if (e.key === 'Enter' && createEnabled) {
+      e.preventDefault();
+      handleCreate();
+    }
+  }
+
   async function handleCreate() {
-    if (!preview || busy) return;
+    if (!createEnabled) return;
     clearTimeout(timer);
     busy = true;
     try {
@@ -96,10 +127,10 @@
 >
   {#snippet titleIcon()}<ListMusic size={18} aria-hidden="true" />{/snippet}
   {#snippet body()}
-    {#if error}
+    {#if selectionError}
       <div class="pl-warn" role="alert">
         <TriangleAlert size={14} aria-hidden="true" />
-        <div>{error}</div>
+        <div>{selectionError}</div>
       </div>
     {:else if preview}
       <label class="pl-label">
@@ -110,6 +141,8 @@
             class="pl-input"
             bind:value={title}
             oninput={onTitleInput}
+            onkeydown={onTitleKeydown}
+            aria-invalid={titleError ? 'true' : undefined}
             autocomplete="off"
             spellcheck="false"
             aria-label="Playlist name"
@@ -117,6 +150,9 @@
           <span class="pl-ext">.m3u</span>
         </span>
       </label>
+      {#if titleError}
+        <p class="pl-error" role="alert">{titleError}</p>
+      {/if}
       <p class="pl-file" title={preview.directory}>
         Will be saved as <strong>{preview.file_name}</strong> in {preview.directory}
       </p>
@@ -147,7 +183,7 @@
     <Button
       variant="primary"
       onclick={handleCreate}
-      disabled={busy || loading || !preview}
+      disabled={!createEnabled}
       loading={busy}
     >
       Create playlist
@@ -182,6 +218,7 @@
     box-shadow: var(--focus-ring);
   }
   .pl-ext { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-2); }
+  .pl-error { margin: var(--space-1) 0 0; font-size: var(--text-xs); color: var(--error); }
   .pl-file {
     margin: var(--space-2) 0;
     font-size: var(--text-xs);
