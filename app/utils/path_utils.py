@@ -244,8 +244,9 @@ def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> b
 def volume_root_for(path: str) -> Optional[str]:
     """The resolved root of the configured Volume holding *path*, or None.
 
-    With nested Volumes the innermost one wins, since that is the boundary
-    the path was reached through.
+    With nested Volumes the outermost one wins: both are Volumes the user
+    granted, and a walk up from *path* should reach everything above it that
+    the app may read.
     """
     real_path = _resolve_path(path, strict=False)
     if real_path is None:
@@ -256,7 +257,7 @@ def volume_root_for(path: str) -> Optional[str]:
         if real_volume is None:
             continue
         inside = real_path == real_volume or real_volume in real_path.parents
-        if inside and (best is None or len(real_volume.parts) > len(best.parts)):
+        if inside and (best is None or len(real_volume.parts) < len(best.parts)):
             best = real_volume
     return str(best) if best is not None else None
 

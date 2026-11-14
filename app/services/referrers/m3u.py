@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -103,24 +104,63 @@ def _file_key(path: str) -> tuple[int, int] | None:
     return (st.st_dev, st.st_ino)
 
 
+def _fold(name: str) -> str:
+    """Compare file names as a person would: same Unicode form, any case."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
 def _named_file(entry: str) -> str:
     """The file name an entry means, however it is written: no label, quotes or folders."""
     name = entry.split("|", 1)[0].strip().strip("\"'").strip()
-    return re.split(r"[\\/]", name)[-1].casefold()
+    return _fold(re.split(r"[\\/]", name)[-1])
 
 
-def _new_entry(posix_entry: str, target: _Target) -> str:
+def _new_entry(posix_entry: str, target: _Target) -> list[str]:
+    """Candidate new entries, preferred first: the entry's own folder part plus
+    the step from the replaced file's folder to the output. When the output is
+    in another folder the tidy (normalised) form comes first, then the literal
+    one, which still resolves through a symlinked folder part."""
     folder, sep, _ = posix_entry.rpartition("/")
     step = os.path.relpath(target.new, target.old_dir)
-    new = folder + sep + step
-    if "/" in step:
-        new = os.path.normpath(new)
-    return new
+    literal = folder + sep + step
+    if "/" not in step:
+        return [literal]
+    return [os.path.normpath(literal), literal]
+
+
+def _points_at(playlist_dir: str, entry: str, target: _Target) -> bool:
+    """Whether *entry*, read from *playlist_dir*, reaches the output."""
+    path = os.path.join(playlist_dir, entry)
+    output_key = _file_key(target.new)
+    if output_key is not None:
+        return _file_key(path) == output_key
+    # The delete confirmation plans before the output exists.
+    return os.path.realpath(path) == target.new
+
+
+def _undecodable_mention(data: bytes, renames: _Renames) -> str | None:
+    """For a playlist that isn't 8-bit text (UTF-16, NUL bytes): the replaced
+    file name its text seems to mention, "" if none. None for a normal playlist."""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = data.decode("utf-16", errors="replace")
+    elif b"\x00" in data:
+        text = data.replace(b"\x00", b"").decode("utf-8", errors="replace")
+    else:
+        return None
+    folded = _fold(text)
+    return next((name for name in sorted(renames.names) if name in folded), "")
 
 
 def _rewrite(
     playlist: str, data: bytes, playlist_dir: str, renames: _Renames,
 ) -> tuple[bytes, list[tuple[str, str]]]:
+    mention = _undecodable_mention(data, renames)
+    if mention:
+        raise ReferrerError(
+            playlist, f"isn't plain text (UTF-16 or NUL bytes) and may name {mention}",
+        )
+    if mention is not None:
+        return data, []
     out: list[bytes] = []
     edits: list[tuple[str, str]] = []
     for number, line in enumerate(data.splitlines(keepends=True), start=1):
@@ -146,7 +186,14 @@ def _rewrite(
                 )
             out.append(prefix + line)
             continue
-        new_entry = _new_entry(posix_entry, target)
+        new_entry = next(
+            (c for c in _new_entry(posix_entry, target) if _points_at(playlist_dir, c, target)),
+            None,
+        )
+        if new_entry is None:
+            raise ReferrerError(
+                playlist, f"line {number}: can't write a path that reaches the output",
+            )
         if backslashed:
             new_entry = new_entry.replace("/", "\\")
         lead = text[: len(text) - len(text.lstrip())]
@@ -183,7 +230,7 @@ class M3uReferrer(Referrer):
             for d in _search_dirs(old):
                 if d not in dirs:
                     dirs.append(d)
-        targets = _Renames(by_key, frozenset(os.path.basename(o).casefold() for o in renames))
+        targets = _Renames(by_key, frozenset(_fold(os.path.basename(o)) for o in renames))
         changes = []
         for directory in dirs:
             for playlist in _playlists(directory):

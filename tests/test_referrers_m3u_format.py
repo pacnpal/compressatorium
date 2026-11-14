@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -237,3 +238,96 @@ async def test_no_playlist_means_nothing_to_do(tmp_path):
 def test_a_second_registration_of_an_id_is_refused():
     with pytest.raises(ValueError):
         referrers.registry.register(M3uReferrer())
+
+
+@pytest.mark.asyncio
+async def test_symlinked_entry_folder_with_output_elsewhere_points_at_the_output(tmp_path):
+    """An entry through a symlinked folder, output in another folder: the new
+    entry must still reach the output (a lexical '..' collapse would not)."""
+    (tmp_path / "x").mkdir()
+    _disc(tmp_path / "x", "G.cue")
+    (tmp_path / "a" / "b").mkdir(parents=True)
+    (tmp_path / "a" / "b" / "link").symlink_to(tmp_path / "x")
+    playlist = tmp_path / "G.m3u"
+    playlist.write_text("a/b/link/G.cue\n")
+    (tmp_path / "out").mkdir()
+    out = _disc(tmp_path / "out", "G.chd")
+
+    outcome = await referrers.update_before_source_removal(
+        str(tmp_path / "x" / "G.cue"), {str(tmp_path / "x" / "G.cue"): str(out)},
+    )
+
+    assert outcome.ok, outcome.reason
+    entry = playlist.read_text().strip()
+    assert (tmp_path / entry).resolve() == out.resolve()
+
+
+def test_an_entry_that_cannot_reach_the_output_keeps_the_source(tmp_path, monkeypatch):
+    """Whatever the formatter produces is checked against the output."""
+    _disc(tmp_path, "A.cue")
+    (tmp_path / "out").mkdir()
+    _disc(tmp_path / "out", "A.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("A.cue\n")
+    monkeypatch.setattr(m3u_module, "_new_entry", lambda *_a: ["nowhere/A.chd"])
+
+    with pytest.raises(referrers.ReferrerError, match="line 1"):
+        M3uReferrer().plan({str(tmp_path / "A.cue"): str(tmp_path / "out" / "A.chd")})
+    assert playlist.read_text() == "A.cue\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le"])
+async def test_a_utf16_playlist_naming_the_source_keeps_it(tmp_path, encoding):
+    _disc(tmp_path, "Game.cue")
+    playlist = tmp_path / "Game.m3u"
+    data = "Game.cue\n".encode(encoding)
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert outcome.failed == str(playlist)
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_utf16_playlist_does_not_block(tmp_path):
+    _disc(tmp_path, "Game.cue")
+    other = tmp_path / "Other.m3u"
+    other.write_bytes("Other.cue\n".encode("utf-16"))
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok
+    assert other.read_bytes() == "Other.cue\n".encode("utf-16")
+
+
+@pytest.mark.asyncio
+async def test_nested_volumes_walk_to_the_outer_root(tmp_path, monkeypatch):
+    outer = tmp_path / "roms"
+    inner = outer / "psx"
+    (inner / ".discs").mkdir(parents=True)
+    monkeypatch.setattr(settings, "chd_volumes", f"{outer},{inner}")
+    _disc(inner / ".discs", "G.cue")
+    top = outer / "All.m3u"
+    top.write_text("psx/.discs/G.cue\n")
+
+    outcome = await _replace(inner / ".discs", "G.cue", "G.chd")
+
+    assert outcome.ok
+    assert top.read_text() == "psx/.discs/G.chd\n"
+
+
+@pytest.mark.asyncio
+async def test_an_nfd_spelling_of_the_source_name_keeps_it(tmp_path):
+    name_nfc = unicodedata.normalize("NFC", "Pokémon.cue")
+    name_nfd = unicodedata.normalize("NFD", "Pokémon.cue")
+    _disc(tmp_path, name_nfc)
+    playlist = tmp_path / "P.m3u"
+    playlist.write_text(f"/userdata/roms/psx/{name_nfd}\n")
+
+    outcome = await _replace(tmp_path, name_nfc, "Pokemon.chd")
+
+    assert not outcome.ok
+    assert "line 1" in outcome.kept_message

@@ -2220,7 +2220,8 @@ leaves the old file or the new one, never half of one.
 
 - *Where it looks.* The replaced file's resolved folder and each folder above
   it up to and including its Volume root (`utils.path_utils.volume_root_for`,
-  innermost Volume wins). Only the `*.m3u` files directly in those folders,
+  with nested Volumes the outermost one wins, so `/roms/All.m3u` is found for
+  a disc under a `/roms/psx` Volume). Only the `*.m3u` files directly in those folders,
   no recursive walk, so the cost is one `scandir` per level. This covers a
   playlist beside the discs and the Batocera / ES-DE layout (`psx/Game.m3u`
   naming `.discs/Game (Disc 1).cue`). `detect` looks at the same folders.
@@ -2232,17 +2233,26 @@ leaves the old file or the new one, never half of one.
   `surrogateescape`).
 - *Fail safe.* An entry that does not resolve but whose file name matches a
   replaced file's name (after dropping a `|label` suffix and quotes, splitting
-  on `/` or `\`, ignoring case) is not guessed at: `plan` raises
+  on `/` or `\`, ignoring case, both sides in Unicode NFC) is not guessed at: `plan` raises
   `ReferrerError` naming the playlist and line (`line 2 names game.cue but
   doesn't point at it`), so the Source is kept. That catches RetroArch
   `path|label` entries, absolute paths in the emulator's own path space, mixed
   separators, quoted names and case differences on case-sensitive volumes.
-  An unresolved entry for some other file does not block anything.
+  An unresolved entry for some other file does not block anything. A playlist
+  that isn't 8-bit text (a UTF-16 BOM, or NUL bytes) is never rewritten: if its
+  decoded text contains a replaced file's name the Source is kept, otherwise it
+  is left alone.
 - *Entry style.* The new entry is the entry's own folder part plus the path
   from the replaced file's resolved folder to the resolved output, so both
   sides use the same path form (a symlinked folder does not turn `Game.cue`
   into `../link/Game.chd`), `./` and absolute prefixes are kept, and a
-  backslash entry stays backslashed.
+  backslash entry stays backslashed. When the output is in another folder the
+  normalised form is tried first, then the literal one (`link/../out/G.chd`
+  still resolves through a symlinked `link`). Every candidate is checked: read
+  from the playlist's folder it must reach the output (same `(st_dev,
+  st_ino)`, or the same resolved path while the delete confirmation plans
+  before the output exists). If no candidate does, `plan` raises and the
+  Source is kept.
 - *Concurrency.* Each playlist (by resolved path) has a `threading.Lock`.
   `apply` holds it while it re-reads the playlist, re-runs the rewrite on what
   is there now and writes, so two jobs updating one playlist both land, and an
