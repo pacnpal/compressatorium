@@ -280,8 +280,9 @@
       removed only after the output passes its check, and never if it fails. For GameCube
       and Wii (Dolphin) and for CHDMAN Create CD and Create DVD the default check is
       stronger: the output must be Round-tripped, meaning the disc it decodes to has the
-      same SHA1 as the source disc. A CD CHD is extracted to a temp folder for this, which
-      needs free scratch space about the size of the disc. Tick
+      same SHA1 as the source disc. A CD CHD is extracted to a temp folder for this, and
+      both its track data and its track table must match the source cue. Without free
+      scratch space about the size of the disc, the job keeps the source and fails. Tick
       <em>Container check only (faster, weaker)</em> in the convert panel to drop back to
       the Intact check for that job. Other tools use the Intact check. You get a confirmation
       list of everything that will be deleted before anything happens, including the

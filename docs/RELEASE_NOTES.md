@@ -21,8 +21,8 @@
   can't be read, the Source is kept and the job says why.
   - **Container check only (faster, weaker)** in the convert panel skips the
     comparison and deletes once the output passes its own container check.
-  - Other tools keep the container check for now. A job that keeps its Source
-    reads nothing extra.
+  - Tools other than Dolphin and chdman (below) keep the container check for
+    now. A job that keeps its Source reads nothing extra.
   - The job, the Ledger row, Verify results and the file badge now say **Intact** (passed its
     container check) or **Round-tripped** (decoded to the same content as its
     Source) instead of "verified". Existing checked files show as Intact.
@@ -34,15 +34,32 @@
 - **Round-trip check for chdman Create CD and Create DVD** (#300). With
   delete-source on, these jobs now prove the CHD holds the same disc before the
   ISO or cue/bin is removed. A DVD CHD's data SHA1 is compared with the ISO's
-  SHA1. A CD CHD is extracted to a temp folder (only when the scratch volume has
-  room), and its track data is compared with the Source tracks; the temp folder
-  is removed afterwards, also when the job fails or is cancelled. On a mismatch
-  the Source is kept. Container check only skips the comparison here too.
-  - CD delete-source jobs take longer and need free scratch space about the
-    size of the disc while the comparison runs.
-  - Some GD-ROM (Dreamcast) sets may be kept with "content differs" when their
-    files are laid out differently from what chdman writes back. Use Container
-    check only for those.
+  SHA1. A CD CHD is extracted to a temp folder on the scratch volume and
+  compared with the Source: the track data, and the track table (number of
+  tracks, and per track the type, sector size, length, INDEX 01 offset and
+  gaps). The temp folder is removed afterwards, also when the job fails or is
+  cancelled. On a mismatch the Source is kept. Container check only skips the
+  comparison here too.
+  - **Behaviour change:** a Create CD or Create DVD delete-source job that used
+    to delete on the container check now fails and keeps its Source when the
+    scratch volume lacks about a disc's worth of free space, or when
+    `chdman info` or `chdman extractcd` fails.
+  - CD delete-source jobs take longer: the CHD is read and written out once
+    more.
+  - Cue flags (DCP, PRE), CATALOG, ISRC and INDEX 02+ are not compared: a CHD
+    does not store them, with or without this check.
+  - Many GD-ROM (Dreamcast) sets, especially Redump-style cue/bin ones, and cues
+    with WAVE audio files will be kept with "content differs", because chdman
+    does not write them back in the same layout. Use Container check only for
+    those.
+  - **RomM Rules:** delete-source Rules on Create CD and Create DVD now
+    Round-trip too, with no per-Rule opt-out yet, so their sweeps need the
+    scratch space and take longer.
+- **chdman verify is stricter** (#300). chdman reports a data SHA1 mismatch, and
+  a CHD with no checksum, while still exiting with success. Verify now passes a
+  CHD only when chdman says the raw SHA1 was verified, and fails on any error
+  line. This applies to every chdman Verify and to the Intact check of every
+  chdman delete-source job.
 - **Xbox / Xbox 360: trim disc images to XISO** with
   [extract-xiso](https://github.com/XboxDev/extract-xiso), the tenth tool. A full
   (Redump-style) Xbox disc image becomes `Game.xiso.iso` holding only the game's

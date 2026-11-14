@@ -2260,7 +2260,7 @@ different file hashes and the same digest.
 @dataclass(frozen=True)
 class ContentDigest:
     kind: str    # shape of what was hashed, e.g. "gc_wii_disc_sha1"
-    value: str   # lowercase hex
+    value: str   # lowercase hex; compared only for equality (chdman: "<sha1>/<sha1>")
     def same_content(self, other) -> bool: ...   # ValueError on a kind mismatch
 
 async def content_digest(self, path, *, cancel_event=None) -> ContentDigest | None
@@ -2306,18 +2306,46 @@ in `_verifying` so the stall reporter treats it like the container check.
 | Tool | Source side | Output side |
 | --- | --- | --- |
 | dolphin | `.iso`: SHA1 of the file (detached read, no subprocess). `.rvz`/`.wia`/`.gcz`/`.wbfs`: `dolphin-tool verify --algorithm sha1` | same rule by extension |
-| chdman (`createcd`, `createdvd`) | `.iso`/`.bin`: SHA1 of the file. `.cue`/`.gdi`: SHA1 of the track files the sheet names, read end to end in sheet order, each file once | `.chd`: `chdman info`, then by metadata tag. DVD (`DVD `) or hard disk (`GDDD`): the `Data SHA1` line. CD (`CHCD`/`CHTR`/`CHT2`): `chdman extractcd` to a `.cue` in a scratch dir, then the sheet rule. GD-ROM (`CHGT`/`CHGD`): the same, extracted as a `.gdi` |
+| chdman (`createcd`, `createdvd`) | `.iso`/`.bin`: SHA1 of the file. `.cue`/`.gdi`: SHA1 of the track files the sheet names, read end to end in sheet order, each file once, plus the sheet's track table | `.chd`: `chdman info`, then by metadata tag. DVD (`DVD `) or hard disk (`GDDD`): the `Data SHA1` line. CD (`CHCD`/`CHTR`/`CHT2`): `chdman extractcd` to a `.cue` in a scratch dir, then the sheet rule. GD-ROM (`CHGT`/`CHGD`): the same, extracted as a `.gdi` |
 
-chdman's digest kind is `image_data_sha1`: the SHA1 of the image's bytes as
-files on disk, track files laid end to end in sheet order. That one definition
-covers an ISO, a cue/bin set (split or single-bin, since only the byte stream
-counts) and a DVD CHD's data SHA1. The DVD side reads the header value, which
-is sound because the job only asks after the container check passed and
-`chdman verify` recomputes exactly that hash from the decoded data. The tag is
-read strictly from the `Metadata: Tag='XXXX'` lines; a CHD with no CD, DVD or
-hard-disk tag is "not proven". `createhd`, `createraw`, `createld` and `copy`
-do not declare `supports_round_trip`: `createhd` may pad the image to its
-geometry, so its data SHA1 need not equal the Source file's.
+chdman's digest kind is `image_data_sha1`. Its value is the SHA1 of the image's
+bytes as files on disk, track files laid end to end in sheet order, followed by
+`/<sha1 of the track table>` for a sheet whose table says more than a bare image
+(`utils.disc_sheet.layout_fingerprint`). That one definition covers an ISO, a
+cue/bin set (split or single-bin) and a DVD CHD's data SHA1.
+
+**The track table** is compared so that equal sector bytes in a different disc
+layout do not pass. Per track of a cue: the type token (`MODE1/2352`,
+`MODE2/2352`, `AUDIO`, ...), its sector size, the pregap frames held in the file
+(`INDEX 01` minus `INDEX 00`), the `PREGAP` and `POSTGAP` frames, and the frames
+from `INDEX 01` to the end of the track; plus the number of tracks. Per track of
+a gdi: start LBA, data or audio, sector size and frames. Positions follow MAME's
+cue reader (`INDEX` times are frames within the file, a track's bytes start
+where the previous track in that file ended), so a Redump set with one `.bin`
+per track has the same table as the single `.bin` chdman writes back. A sheet
+whose table is exactly what chdman infers for a bare image of those bytes (one
+gapless `MODE1/2048`, `MODE2/2336` or `MODE2/2352` track, tried in that order)
+carries no table hash: that is how an `.iso` Source compares with the one-track
+cue a `createcd` of it extracts to. Not compared, because a CD CHD does not keep
+them: `INDEX 02` and later, `FLAGS` (DCP, PRE), `CATALOG`, `ISRC` and `REM`
+lines. Those are lost on conversion with or without the check.
+
+**The DVD side reads the header `Data SHA1`.** For `createdvd` that is the
+SHA1 of exactly the logical bytes chdman read, which is the whole ISO (MAME
+`chd_file_compressor` clips the hashed read to `logical_bytes()`). It proves
+what the CHD decodes to only together with the container check, which the job
+always runs first: `chdman verify` recomputes the SHA1 of the decoded data and
+compares it with this header value. chdman exits 0 even on that mismatch (it
+prints `Error: Raw SHA1 in header = ...` to stderr), so `ChdmanService.verify`
+passes only when the output has `Raw SHA1 verification successful!` and no
+`Error` or `No verification to be done` line (`SubprocessRunner.run_verify`'s
+`judge_output` hook; the strings are the same from MAME 0.146 to master). That
+rule also makes the plain Intact check of every chdman mode stricter.
+
+The tag is read strictly from the `Metadata: Tag='XXXX'` lines; a CHD with no
+CD, DVD or hard-disk tag is "not proven". `createhd`, `createraw`, `createld`
+and `copy` do not declare `supports_round_trip`: `createhd` may pad the image to
+its geometry, so its data SHA1 need not equal the Source file's.
 
 **The extract fallback** (`ChdmanTool._extracted_cd_sha1`) runs inside
 `services.disk.headroom_scratch_dir(prefix, required_bytes)`, the shared form of
@@ -2333,13 +2361,18 @@ Source is kept. `ChdmanService.extract_cd` goes through the tool's
 `SubprocessRunner.run_capture`, so the child is PID-tracked and Cancel stops
 it. The extract reads the CHD once more and writes up to the image's size to
 the scratch volume, so a CD delete-source job takes roughly one more read and
-one write of the disc.
+one write of the disc. The whole CD output digest (`info`, extract, re-hash)
+runs under `verify_timeout` sized on the compressed CHD; at the defaults
+(1800 s plus 600 s per GiB) that is ample, but an operator who tightened the
+per-GiB knob will see "did not finish in time" and kept Sources.
 
-Known limit: an extract gives back the layout chdman writes. A Source whose
-track files hold the same sectors in a different file layout than chdman
-writes back (likely for some GD-ROM sets, Redump-style cue against chdman's
-`.gdi` output) compares as different and keeps its Source. That is the safe
-direction, and the job says so.
+Known limits, all in the safe direction (the Source is kept and the job says
+the content differs): an extract gives back the layout chdman writes, so a
+Source that chdman cannot reproduce byte for byte does not match. That covers
+cue `WAVE` or `MOTOROLA` (big-endian) audio files, track files with a trailing
+partial sector, and GD-ROM sets whose layout differs from chdman's `.gdi`
+output (a CHD does not say whether its Source was a `.gdi` or a Redump-style
+cue, and it is always extracted as `.gdi`).
 
 The other tools return `None` today and their modes keep the container check;
 #301 adds rows here. What the check guarantees
@@ -2350,7 +2383,7 @@ file; whether that equals the digest of its output depends on what
 
 **Spike (#300): can a CD Source be hashed into the layout chdman's data SHA1
 covers, without extracting?** Result: **not proven, so not used.** The CD path
-extracts the output instead (below).
+extracts the output instead (the extract fallback above).
 
 What the data SHA1 of a CD CHD covers, read from MAME's source
 (`src/tools/chdman.cpp`, `src/lib/util/cdrom.cpp`, master, November 2026):

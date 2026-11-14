@@ -367,14 +367,15 @@ class ChdmanTool(BaseTool):
     async def _chd_image_sha1(
         self, path: str, cancel_event: asyncio.Event | None,
     ) -> str:
-        """SHA1 of the image a CHD decodes to.
+        """The digest value of the image a CHD decodes to.
 
         DVD/HD: the header's data SHA1. The job only asks after the container
         check passed, and ``chdman verify`` recomputes exactly that hash from
-        the decoded data, so the header value is proven. CD/GD-ROM: extracted
-        to a scratch dir and hashed like a Source sheet (DESIGN §3.3.12 records
-        why it is not computed in place). Never the overall SHA1: it folds in
-        metadata.
+        the decoded data; ``ChdmanService.verify`` passes only when chdman said
+        the raw SHA1 matched (it exits 0 on a mismatch), so the header value is
+        proven. CD/GD-ROM: extracted to a scratch dir and digested like a
+        Source sheet, track table included (DESIGN §3.3.12 records why it is
+        not computed in place). Never the overall SHA1: it folds in metadata.
         """
         try:
             info = await self._service.info(path)

@@ -468,8 +468,10 @@ the file's own hashes/CRC; a file that passes is **Intact**. With
 never if it fails. For Dolphin modes and CHDMAN Create CD / Create DVD the bar
 is higher by default: the output must be **Round-tripped**, meaning the disc it
 decodes to has the same SHA1 as the source disc. A CD CHD is extracted to a temp
-folder for this (only if the scratch volume has room; the folder is removed
-afterwards). **Container check only (faster, weaker)** in the convert panel
+folder for this, and both its track data and its track table (tracks, types,
+lengths, index offsets, gaps) must match the source cue; the folder is removed
+afterwards. Without about a disc's worth of free scratch space the job keeps the
+source and fails. **Container check only (faster, weaker)** in the convert panel
 drops back to the Intact check for that job. You get a confirmation list of
 everything to be deleted first, including the `.cue`/`.gdi` track files that ride
 with a `.bin`, and the whole archive if the source came from one. **Bulk Verify**
