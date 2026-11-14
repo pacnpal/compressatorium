@@ -28,6 +28,14 @@
     delete-on-verify: XISO carries no checksums and the trim is irreversible.
   - Info shows console, disc layout, file count and game-data size.
 
+### Changed
+
+- **RomM Rules run on a shared Rule engine** (#296). Nothing changes in the
+  app or the API. Stored Rules and their state move to new keys prefixed with
+  the Library id (`romm:7`) the first time they are read, and the old
+  `romm.rules` and `romm.auto_state` rows are removed. Downgrading to an
+  earlier release after that starts with no RomM Rules.
+
 ### Security
 
 - **Docker image: cleared the open Trivy findings.** Base images moved to
