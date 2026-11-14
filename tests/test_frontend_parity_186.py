@@ -121,6 +121,7 @@ def _frontend_tools(tmp_path: Path) -> dict[str, dict]:
         "\nconst __tools = TOOLS.map((t) => ({"
         " id: t.id,"
         " default_compression: (t.defaultCompression ?? [])[0] ?? null,"
+        " disc_exts: [...(t.discExts ?? [])].sort(),"
         "}));\n"
         "process.stdout.write(JSON.stringify(__tools));\n"
     )
@@ -231,3 +232,20 @@ def test_default_compression_mirrors_the_frontend_seed(tmp_path):
     assert not problems, (
         "tool-level compression-default drift:\n" + "\n".join(problems)
     )
+
+
+def test_disc_extensions_mirror_the_frontend(tmp_path):
+    """`BaseTool.disc_extensions` <-> `registry.js` `discExts` (the Create .m3u
+    button is shown only for selections of these)."""
+    frontend = _frontend_tools(tmp_path)
+    problems = []
+    for tool in registry.all():
+        row = frontend.get(tool.id)
+        if row is None:
+            continue  # chain has no descriptor of its own and declares none
+        if row["disc_exts"] != sorted(tool.disc_extensions):
+            problems.append(
+                f"  {tool.id}: registry.js={row['disc_exts']} "
+                f"backend={sorted(tool.disc_extensions)}"
+            )
+    assert not problems, "disc_extensions drift:\n" + "\n".join(problems)

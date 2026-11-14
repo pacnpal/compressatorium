@@ -252,3 +252,48 @@ def test_a_name_starting_with_hash_stays_an_entry_not_a_comment(vol: Path):
     assert disc_playlist.plan_playlist(paths).entries == [
         "./#1 Game (Disc 1).cue", "./#1 Game (Disc 2).cue",
     ]
+
+
+# --- fix round 1 ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ext", [".rvz", ".gcz", ".wia", ".wbfs", ".cso", ".zso"])
+def test_dolphin_and_maxcso_formats_are_disc_images(ext, vol: Path):
+    assert ext in registry.disc_extensions()
+    paths = _discs(vol, f"Game (Disc 1){ext}", f"Game (Disc 2){ext}")
+    assert disc_playlist.plan_playlist(paths).file_name == "Game.m3u"
+
+
+def _cue_with_bin(folder: Path, name: str) -> list[str]:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.bin").write_bytes(b"x")
+    (folder / f"{name}.cue").write_text(
+        f'FILE "{name}.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n',
+    )
+    return [str(folder / f"{name}.cue"), str(folder / f"{name}.bin")]
+
+
+def test_ticked_bin_tracks_collapse_into_their_cue(vol: Path):
+    paths = _cue_with_bin(vol, "Game (Disc 1)") + _cue_with_bin(vol, "Game (Disc 2)")
+    plan = disc_playlist.plan_playlist(paths)
+    assert plan.entries == ["Game (Disc 1).cue", "Game (Disc 2).cue"]
+    assert any("2 track files" in w for w in plan.warnings)
+
+
+def test_a_bin_no_selected_cue_names_is_still_refused(vol: Path):
+    paths = _cue_with_bin(vol, "Game (Disc 1)")[:1] + _discs(vol, "Game (Disc 2).cue")
+    paths += _discs(vol, "stray.bin")
+    with pytest.raises(disc_playlist.PlaylistError, match="not a disc image"):
+        disc_playlist.plan_playlist(paths)
+
+
+def test_two_formats_of_one_disc_are_refused(vol: Path):
+    paths = _discs(vol, "G (Disc 1).cue", "G (Disc 1).chd", "G (Disc 2).cue")
+    with pytest.raises(disc_playlist.PlaylistError, match="Disc 1.*twice"):
+        disc_playlist.plan_playlist(paths)
+
+
+def test_same_unnumbered_image_in_two_formats_is_refused(vol: Path):
+    paths = _discs(vol, "game.cue", "game.chd")
+    with pytest.raises(disc_playlist.PlaylistError, match="same disc"):
+        disc_playlist.plan_playlist(paths)
