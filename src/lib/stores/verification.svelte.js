@@ -9,6 +9,9 @@ import { registry } from '$lib/tools/registry.js';
 
 class VerificationStore {
   statuses = new SvelteSet();
+  // path -> 'intact' | 'round_tripped': which check a stored output passed.
+  // A path in `statuses` with no entry here passed the container check.
+  checks = new SvelteMap();
   progress = new SvelteMap();
   batchRun = $state(null);
   _batchAbort = null;
@@ -38,6 +41,10 @@ class VerificationStore {
       }
       this.statuses.clear();
       for (const path of data?.verified ?? []) this.statuses.add(path);
+      this.checks.clear();
+      for (const [path, check] of Object.entries(data?.checks ?? {})) {
+        this.checks.set(path, check);
+      }
       for (const path of Object.keys(addedSince)) this.statuses.add(path);
     } catch (_e) {
       // non-fatal, leave whatever we had
@@ -48,6 +55,12 @@ class VerificationStore {
 
   isVerified(path) {
     return path ? this.statuses.has(path) : false;
+  }
+
+  /** 'round_tripped' | 'intact' for a path that passed a check, else null. */
+  checkFor(path) {
+    if (!this.isVerified(path)) return null;
+    return this.checks.get(path) ?? 'intact';
   }
 
   progressFor(path) {

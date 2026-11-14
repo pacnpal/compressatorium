@@ -133,7 +133,7 @@
       <div class="dm-warn" role="alert">
         <TriangleAlert size={14} aria-hidden="true" />
         <div>
-          <strong>Unverified output{unverifiedOutputs.length === 1 ? '' : 's'} present.</strong>
+          <strong>Unchecked output{unverifiedOutputs.length === 1 ? '' : 's'} present.</strong>
           Deleting this source removes the original before the
           replacement has been confirmed correct. Verify the output
           first, or acknowledge the risk to proceed.

@@ -107,8 +107,8 @@
       <div class="bd-warn" role="alert">
         <TriangleAlert size={14} aria-hidden="true" />
         <div>
-          <strong>{unverifiedReplacements.length} source file{unverifiedReplacements.length === 1 ? ' has' : 's have'} an unverified output.</strong>
-          Their replacement files have not been verified yet, so deleting the originals now risks losing data if a conversion was corrupted. Verify the outputs first, or acknowledge the risk to proceed.
+          <strong>{unverifiedReplacements.length} source file{unverifiedReplacements.length === 1 ? ' has' : 's have'} an output that has not passed a check.</strong>
+          Their replacement files have not been checked yet, so deleting the originals now risks losing data if a conversion was corrupted. Verify the outputs first, or acknowledge the risk to proceed.
           <ul class="bd-warn-list">
             {#each unverifiedReplacements.slice(0, 6) as r (r.source)}
               <li title={r.source}>{r.source}</li>

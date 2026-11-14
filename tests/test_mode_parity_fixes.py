@@ -773,10 +773,13 @@ async def test_z3ds_delete_on_verify_marks_output_verified(tmp_path: Path, monke
     assert job.status == JobStatus.COMPLETED
     # Delete-on-verify also records a produced_meta snapshot (mode + shaping +
     # source/output fingerprints) so a later re-queue can no-op safely (#184).
+    # z3ds has no content digest, so the job keeps the container check and
+    # the stored verification says Intact (#298).
     mark_verified.assert_called_once_with(
         str(output_path),
         source_path=str(source_path),
         produced_meta=ANY,
+        check="intact",
     )
     produced = mark_verified.call_args.kwargs["produced_meta"]
     assert produced is not None and produced["mode"] == "z3ds_compress"
@@ -838,11 +841,14 @@ async def test_delete_on_verify_clears_verification_store_for_non_chd_source(
 
     manager = JobManager(max_concurrent=1, max_job_history=5)
     snapshot = build_delete_snapshot(str(source_path))
+    # Container-only: this test is about the store clean-up after a delete,
+    # not the Round-trip check (#298), which tests/test_round_trip_298.py covers.
     job = await manager.create_job(
         str(source_path),
         ConversionMode.DOLPHIN_WIA,
         output_path=str(output_path),
         delete_on_verify=True,
+        container_only=True,
         delete_snapshot=snapshot,
     )
 

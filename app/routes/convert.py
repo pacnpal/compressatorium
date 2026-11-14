@@ -962,6 +962,7 @@ async def create_job(request: JobCreateRequest):
             filename_override=plan.display_filename,
             compression=compression,
             delete_on_verify=request.delete_on_verify,
+            container_only=request.container_only,
             split=request.split,
             delete_snapshot=plan.delete_snapshot,
         )
@@ -1107,6 +1108,7 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
             request.mode,
             compression=compression,
             delete_on_verify=request.delete_on_verify,
+            container_only=request.container_only,
             split=request.split,
         )
     except OutputClaimedError as exc:
