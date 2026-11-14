@@ -2156,9 +2156,10 @@ forever. Recording never raises: a failure is logged and the job is unaffected.
 Reads all go through `services/ledger.py` so the routes stay thin. A
 `LedgerFilter` (path substring on Source or output, status, tool, Platform)
 builds one set of SQL clauses used by `list_page` (newest first, with a total),
-by `export_csv` (the same filter, keyset-paged on `(finished_at, id)` and capped
-at the newest id when the export starts, so a job finishing or a prune mid-export
-neither repeats nor skips a row) and by `facets` (distinct values for the filter
+by `export_csv` (the same filter, keyset-paged on `(finished_at, id)` inside one
+explicit read transaction held for the stream, so every page reads the same SQLite
+snapshot and a job finishing or a prune mid-export neither repeats, skips nor drops
+a row) and by `facets` (distinct values for the filter
 menus). The Prometheus counters are not computed from the `ledger` table: the
 `ledger_totals` table (migration `0010`, seeded from the Ledger) holds per-status
 job counts and completed-job byte sums, bumped in the same transaction as each

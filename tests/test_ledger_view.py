@@ -238,6 +238,25 @@ async def test_export_does_not_skip_when_old_rows_are_pruned_mid_export(monkeypa
     assert ids == ["j4", "j3", "j2", "j1", "j0"]
 
 
+@pytest.mark.asyncio
+async def test_export_reads_one_snapshot_while_a_prune_commits(monkeypatch):
+    monkeypatch.setattr(ledger, "_CSV_PAGE", 2)
+    old = datetime.now(timezone.utc) - timedelta(days=40)
+    for i in range(5):
+        await ledger.record(_done(f"old{i}", old + timedelta(minutes=i)))
+    chunks = []
+    async for chunk in ledger.export_csv(ledger.LedgerFilter()):
+        chunks.append(chunk)
+        if len(chunks) == 1:
+            # A retention prune commits from another connection mid-export.
+            with _db.SessionLocal() as other:
+                other.execute(_db.LedgerEntry.__table__.delete())
+                other.commit()
+    ids = [line.split(",")[0] for line in "".join(chunks).strip().splitlines()[1:]]
+    assert sorted(ids) == [f"old{i}" for i in range(5)]
+    assert await ledger.recent(10) == []
+
+
 def test_migration_0010_seeds_counters_from_the_ledger(tmp_path):
     from sqlalchemy import create_engine, text
 

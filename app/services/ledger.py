@@ -303,45 +303,57 @@ def _csv_chunk(rows: list[dict], header: bool) -> str:
     return buf.getvalue()
 
 
-def _after_sync(flt: LedgerFilter, after: tuple[str, int] | None, max_id: int) -> list[dict]:
+def _open_snapshot():
+    """A session inside an explicit read transaction (one SQLite snapshot).
+
+    pysqlite does not emit BEGIN for a SELECT, so without this every page
+    would read the latest committed data. Under WAL the snapshot starts at
+    the first read and ignores later commits, including a retention prune.
+    """
+    session = _session()
+    session.connection().exec_driver_sql("BEGIN")
+    return session
+
+
+def _after_sync(
+    session, flt: LedgerFilter, after: tuple[str, int] | None,
+) -> list[dict]:
     e = _db.LedgerEntry
-    clauses = [*flt.clauses(), e.id <= max_id]
+    clauses = flt.clauses()
     if after is not None:
         finished, row_id = after
         clauses.append(
             (e.finished_at < finished) | ((e.finished_at == finished) & (e.id < row_id))
         )
-    with _session() as session:
-        rows = session.scalars(
-            select(e).where(*clauses)
-            .order_by(e.finished_at.desc(), e.id.desc()).limit(_CSV_PAGE)
-        ).all()
-        return [_entry_dict(r) for r in rows]
-
-
-def _max_id_sync() -> int:
-    with _session() as session:
-        return int(session.scalar(select(func.max(_db.LedgerEntry.id))) or 0)
+    rows = session.scalars(
+        select(e).where(*clauses)
+        .order_by(e.finished_at.desc(), e.id.desc()).limit(_CSV_PAGE)
+    ).all()
+    return [_entry_dict(r) for r in rows]
 
 
 async def export_csv(flt: LedgerFilter):
     """Yield the CSV for every row matching *flt*, newest first.
 
-    Keyset-paged on ``(finished_at, id)`` and capped at the newest id present
-    when the export starts, so a job finishing or a prune running mid-export
-    can neither repeat a row nor skip one.
+    Keyset-paged on ``(finished_at, id)`` inside one read transaction held for
+    the whole stream, so every page sees the same snapshot: a job finishing or
+    a retention prune committing mid-export can neither repeat, skip nor drop
+    a row. Only one page is in memory at a time.
     """
-    max_id = await run_in_threadpool(_max_id_sync)
-    after = None
-    first = True
-    while True:
-        rows = await run_in_threadpool(_after_sync, flt, after, max_id)
-        if rows or first:
-            yield _csv_chunk(rows, header=first)
-        first = False
-        if len(rows) < _CSV_PAGE:
-            return
-        after = (rows[-1]["finished_at"], rows[-1]["id"])
+    session = await run_in_threadpool(_open_snapshot)
+    try:
+        after = None
+        first = True
+        while True:
+            rows = await run_in_threadpool(_after_sync, session, flt, after)
+            if rows or first:
+                yield _csv_chunk(rows, header=first)
+            first = False
+            if len(rows) < _CSV_PAGE:
+                return
+            after = (rows[-1]["finished_at"], rows[-1]["id"])
+    finally:
+        await run_in_threadpool(session.close)
 
 
 def _metrics_sync() -> tuple[dict[str, int], int, int]:
