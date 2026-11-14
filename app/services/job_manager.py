@@ -3300,7 +3300,7 @@ class JobManager:
                             source_for_delete,
                             {path: job.output_path for path in delete_order},
                         )
-                        job.referrers_updated = referrer_outcome.updated
+                        job.referrers_updated = referrer_outcome.records
                         if not referrer_outcome.ok:
                             job.message = referrer_outcome.kept_message
                             await self._notify_subscribers(

@@ -241,6 +241,26 @@ def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> b
     return False
 
 
+def volume_root_for(path: str) -> Optional[str]:
+    """The resolved root of the configured Volume holding *path*, or None.
+
+    With nested Volumes the innermost one wins, since that is the boundary
+    the path was reached through.
+    """
+    real_path = _resolve_path(path, strict=False)
+    if real_path is None:
+        return None
+    best: Optional[Path] = None
+    for volume in settings.volumes:
+        real_volume = _resolve_volume(volume)
+        if real_volume is None:
+            continue
+        inside = real_path == real_volume or real_volume in real_path.parents
+        if inside and (best is None or len(real_volume.parts) > len(best.parts)):
+            best = real_volume
+    return str(best) if best is not None else None
+
+
 def _strip_trailing_dot_and_seps(path: str) -> str:
     """Strip only *trailing* separators and ``.`` components from ``path``.
 

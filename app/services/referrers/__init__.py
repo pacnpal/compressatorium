@@ -52,36 +52,72 @@ def plan_changes(image_path: str, renames: Mapping[str, str]) -> list[ReferrerCh
 
 @dataclass
 class ReferrerOutcome:
-    """What the hook did. ``failed`` names the target that couldn't be updated."""
+    """What the hook did.
 
-    updated: list[dict] = field(default_factory=list)
+    ``records`` has one entry per Referrer target, in order:
+    ``{"referrer", "target", "status": "updated" | "failed" | "skipped"}``,
+    plus ``"reason"`` for failed and skipped ones. It is what the Ledger's
+    ``referrers_updated`` column stores. ``failed``/``reason`` name the first
+    failure, which is why the Source was kept.
+    """
+
+    records: list[dict] = field(default_factory=list)
     failed: str | None = None
+    reason: str | None = None
 
     @property
     def ok(self) -> bool:
         return self.failed is None
 
     @property
+    def updated(self) -> list[dict]:
+        return [r for r in self.records if r["status"] == "updated"]
+
+    @property
     def kept_message(self) -> str:
-        return f"converted, source kept: couldn't update {os.path.basename(self.failed or '')}"
+        name = os.path.basename(self.failed or "")
+        return f"converted, source kept: couldn't update {name} ({self.reason})"
+
+    def _record(self, referrer: str, target: str, status: str, reason: str | None = None):
+        record = {"referrer": referrer, "target": target, "status": status}
+        if reason is not None:
+            record["reason"] = reason
+        self.records.append(record)
+
+    def _fail(self, referrer: str, exc: Exception, fallback_target: str) -> None:
+        if isinstance(exc, ReferrerError):
+            target, reason = exc.target, exc.reason
+        else:
+            target, reason = fallback_target, str(exc) or type(exc).__name__
+        logger.warning("Referrer %s could not update %s: %s", referrer, target, reason)
+        self._record(referrer, target, "failed", reason)
+        self.failed, self.reason = target, reason
+
+
+_SKIPPED = "not attempted after an earlier Referrer failed"
 
 
 def _update_sync(image_path: str, renames: Mapping[str, str]) -> ReferrerOutcome:
+    """Plan every Referrer, then apply each change. The first failure stops it."""
     outcome = ReferrerOutcome()
+    planned: list[tuple[Referrer, ReferrerChange]] = []
     for referrer in registry.all():
-        target = referrer.id
         try:
-            if not referrer.detect(image_path):
-                continue
-            for change in referrer.plan(renames):
-                target = change.target
-                referrer.apply(change)
-                outcome.updated.append({"referrer": referrer.id, "target": change.target})
+            if referrer.detect(image_path):
+                planned.extend((referrer, c) for c in referrer.plan(renames))
         except Exception as exc:  # noqa: BLE001 - any failure keeps the Source
-            failed = exc.target if isinstance(exc, ReferrerError) else target
-            logger.warning("Referrer %s could not update %s: %s", referrer.id, failed, exc)
-            outcome.failed = failed
-            return outcome
+            outcome._fail(referrer.id, exc, referrer.id)
+            break
+    for referrer, change in planned:
+        if not outcome.ok:
+            outcome._record(referrer.id, change.target, "skipped", _SKIPPED)
+            continue
+        try:
+            referrer.apply(change)
+        except Exception as exc:  # noqa: BLE001 - any failure keeps the Source
+            outcome._fail(referrer.id, exc, change.target)
+            continue
+        outcome._record(referrer.id, change.target, "updated")
     return outcome
 
 

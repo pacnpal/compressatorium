@@ -11,6 +11,8 @@ import stat
 from pathlib import Path
 
 import pytest
+from services import db as _db
+from services import ledger as ledger_store
 
 from app.models import (
     ConversionMode,
@@ -107,8 +109,30 @@ async def test_playlist_follows_the_converted_disc(volume):
     assert (volume / "Game.m3u.bak").read_bytes() == M3U
     # The Ledger row names the Referrer that was updated.
     assert ledger.row_from_job(job)["referrers_updated"] == [
-        {"referrer": "m3u", "target": str(volume / "Game.m3u")},
+        {"referrer": "m3u", "target": str(volume / "Game.m3u"), "status": "updated"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_playlist_in_the_parent_folder_follows_a_hidden_disc(volume):
+    """Batocera / ES-DE: Game.m3u in the system folder, discs in a hidden folder."""
+    hidden = volume / "psx" / ".discs"
+    hidden.mkdir(parents=True)
+    _cue(hidden / "Game (Disc 1).cue")
+    playlist = volume / "psx" / "Game.m3u"
+    playlist.write_bytes(b".discs/Game (Disc 1).cue\n")
+
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=str(hidden / "Game (Disc 1).cue"),
+        mode=ConversionMode.CREATECD,
+        duplicate_action=DuplicateAction.SKIP,
+        delete_on_verify=True,
+    ))
+    await convert_routes.job_manager._process_job(job.id)
+
+    assert job.status == JobStatus.COMPLETED, job.error_message
+    assert playlist.read_bytes() == b".discs/Game (Disc 1).chd\n"
+    assert not (hidden / "Game (Disc 1).cue").exists()
 
 
 @pytest.mark.asyncio
@@ -116,7 +140,7 @@ async def test_playlist_follows_the_converted_disc(volume):
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason="root ignores file permissions",
 )
-async def test_read_only_playlist_keeps_the_source(volume):
+async def test_read_only_playlist_keeps_the_source(volume, db_path, reset_db_engine):
     playlist = volume / "Game.m3u"
     playlist.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
     try:
@@ -125,15 +149,33 @@ async def test_read_only_playlist_keeps_the_source(volume):
         playlist.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     assert job.status == JobStatus.COMPLETED, job.error_message
-    assert job.message == "converted, source kept: couldn't update Game.m3u"
+    assert job.message == "converted, source kept: couldn't update Game.m3u (is read-only)"
     assert playlist.read_bytes() == M3U
     assert (volume / "Game (Disc 1).cue").is_file()
     assert (volume / "Game (Disc 1).bin").is_file()
     assert (volume / "Game (Disc 1).chd").is_file()
     assert job.deleted_paths == []
-    row = ledger.row_from_job(job)
+    # The Ledger row, written and read back, says which Referrer failed and why.
+    _db.init_engine(db_path)
+    try:
+        await ledger_store.record(job)
+        [row] = await ledger_store.recent(1)
+    finally:
+        reset_db_engine()
     assert row["source_deleted"] is False
-    assert row["referrers_updated"] == []
+    assert row["referrers_updated"] == [{
+        "referrer": "m3u", "target": str(playlist),
+        "status": "failed", "reason": "is read-only",
+    }]
+
+
+def test_a_completed_job_that_kept_its_source_shows_why():
+    """Static check: JobRow shows the message on a completed job whose
+    delete-on-verify kept the Source."""
+    row = (Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
+           / "panels" / "JobRow.svelte").read_text()
+    assert "sourceKept" in row
+    assert "delete_on_verify" in row and "deleted_paths" in row
 
 
 @pytest.mark.asyncio

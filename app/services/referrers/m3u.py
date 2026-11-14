@@ -1,19 +1,40 @@
-"""The ``.m3u`` Referrer: multi-disc playlists beside an Image (#295).
+"""The ``.m3u`` Referrer: multi-disc playlists that name an Image (#295).
 
-Always on. A playlist in the same directory as a replaced file has each entry
-naming that file rewritten to the new file. Everything else is left byte for
-byte: comment and directive lines, other entries, blank lines, line endings,
-a UTF-8 BOM and any non-UTF-8 bytes (entries are decoded with
-``surrogateescape`` so they re-encode to exactly what was read).
+Always on. Playlists are looked for in the replaced file's own folder and in
+every folder above it up to and including its Volume root (only the files
+directly in those folders, no recursive walk). That covers a playlist beside
+the discs and the Batocera / ES-DE layout with ``Game.m3u`` in the system
+folder and the discs in a (hidden) subfolder.
 
-An entry keeps its style: a relative entry stays relative to the playlist, an
-absolute one stays absolute, and a backslash-separated entry keeps backslashes.
+An entry is rewritten only when it resolves exactly to a replaced file,
+matched by ``(st_dev, st_ino)`` so any spelling that reaches the file counts.
+Everything else is left byte for byte: comment and directive lines, other
+entries, blank lines, line endings, a UTF-8 BOM and any non-UTF-8 bytes
+(entries are decoded with ``surrogateescape``).
+
+Fail safe: an entry that does not resolve but whose file name (after
+stripping a ``|label`` suffix and quotes, splitting on either separator,
+ignoring case) is a replaced file's name is not guessed at. Planning raises
+``ReferrerError`` naming the playlist and line, so the Source is kept.
+
+A rewritten entry keeps its own prefix and separator style: the path from the
+old file's folder to the output is appended to the entry's own folder part,
+with both sides taken as resolved paths.
+
+Each playlist has a lock. ``apply`` re-reads the playlist under it and
+rewrites what is there now, so two jobs updating one playlist at once both
+land.
 """
 
 from __future__ import annotations
 
 import os
+import re
+import threading
 from collections.abc import Mapping
+from dataclasses import dataclass
+
+from utils.path_utils import volume_root_for
 
 from .base import Referrer, ReferrerChange, ReferrerError, atomic_write_bytes
 
@@ -21,6 +42,29 @@ PLAYLIST_EXT = ".m3u"
 BACKUP_SUFFIX = ".bak"
 _BOM = b"\xef\xbb\xbf"
 _ENC = ("utf-8", "surrogateescape")
+
+# One lock per resolved playlist path, held across read-rewrite-write.
+# ponytail: entries are never removed; one small lock per playlist ever touched.
+_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _playlist_lock(path: str) -> threading.Lock:
+    key = os.path.realpath(path)
+    with _locks_guard:
+        return _locks.setdefault(key, threading.Lock())
+
+
+@dataclass(frozen=True)
+class _Target:
+    old_dir: str  # resolved folder of the replaced file
+    new: str      # resolved output path
+
+
+@dataclass(frozen=True)
+class _Renames:
+    by_key: dict[tuple[int, int], _Target]
+    names: frozenset[str]  # casefolded file names of the replaced files
 
 
 def _playlists(directory: str) -> list[str]:
@@ -30,61 +74,81 @@ def _playlists(directory: str) -> list[str]:
                 e.path for e in it
                 if e.name.lower().endswith(PLAYLIST_EXT) and e.is_file()
             )
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return []
+
+
+def _search_dirs(path: str) -> list[str]:
+    """*path*'s resolved folder and each folder above it up to its Volume root."""
+    start = os.path.dirname(os.path.realpath(path))
+    root = volume_root_for(start)
+    dirs = [start]
+    if root is None or not (start == root or start.startswith(root.rstrip(os.sep) + os.sep)):
+        return dirs
+    current = start
+    while current != root:
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+        dirs.append(current)
+    return dirs
 
 
 def _file_key(path: str) -> tuple[int, int] | None:
     try:
         st = os.stat(path)
-    except OSError:
+    except (OSError, ValueError):
         return None
     return (st.st_dev, st.st_ino)
 
 
-def _resolve(entry: str, playlist_dir: str) -> str:
-    if os.sep == "/" and "\\" in entry and "/" not in entry:
-        entry = entry.replace("\\", "/")
-    return os.path.join(playlist_dir, entry)
+def _named_file(entry: str) -> str:
+    """The file name an entry means, however it is written: no label, quotes or folders."""
+    name = entry.split("|", 1)[0].strip().strip("\"'").strip()
+    return re.split(r"[\\/]", name)[-1].casefold()
 
 
-def _format(new_path: str, entry: str, playlist_dir: str) -> str:
-    if os.path.isabs(entry):
-        new = new_path
-    else:
-        new = os.path.relpath(new_path, playlist_dir)
-    if "\\" in entry and "/" not in entry:
-        new = new.replace("/", "\\")
+def _new_entry(posix_entry: str, target: _Target) -> str:
+    folder, sep, _ = posix_entry.rpartition("/")
+    step = os.path.relpath(target.new, target.old_dir)
+    new = folder + sep + step
+    if "/" in step:
+        new = os.path.normpath(new)
     return new
 
 
-def rewrite(
-    data: bytes, playlist_dir: str, renames: Mapping[tuple[int, int], str],
+def _rewrite(
+    playlist: str, data: bytes, playlist_dir: str, renames: _Renames,
 ) -> tuple[bytes, list[tuple[str, str]]]:
-    """*data* with every entry naming a renamed file rewritten.
-
-    *renames* is keyed by the old file's ``(st_dev, st_ino)``, so an entry
-    matches however it spells the path (relative, absolute, other case on a
-    case-insensitive volume).
-    """
     out: list[bytes] = []
     edits: list[tuple[str, str]] = []
-    for i, line in enumerate(data.splitlines(keepends=True)):
+    for number, line in enumerate(data.splitlines(keepends=True), start=1):
         prefix = b""
-        if i == 0 and line.startswith(_BOM):
+        if number == 1 and line.startswith(_BOM):
             prefix, line = _BOM, line[len(_BOM):]
         body = line.rstrip(b"\r\n")
         ending = line[len(body):]
         text = body.decode(*_ENC)
         entry = text.strip()
-        new_path = None
-        if entry and not entry.startswith("#"):
-            key = _file_key(_resolve(entry, playlist_dir))
-            new_path = renames.get(key) if key else None
-        if new_path is None:
+        if not entry or entry.startswith("#"):
             out.append(prefix + line)
             continue
-        new_entry = _format(new_path, entry, playlist_dir)
+        backslashed = "\\" in entry and "/" not in entry
+        posix_entry = entry.replace("\\", "/") if backslashed else entry
+        key = _file_key(os.path.join(playlist_dir, posix_entry))
+        target = renames.by_key.get(key) if key else None
+        if target is None:
+            if key is None and _named_file(entry) in renames.names:
+                raise ReferrerError(
+                    playlist,
+                    f"line {number} names {_named_file(entry)} but doesn't point at it",
+                )
+            out.append(prefix + line)
+            continue
+        new_entry = _new_entry(posix_entry, target)
+        if backslashed:
+            new_entry = new_entry.replace("/", "\\")
         lead = text[: len(text) - len(text.lstrip())]
         trail = text[len(text.rstrip()):]
         out.append(prefix + (lead + new_entry + trail).encode(*_ENC) + ending)
@@ -92,50 +156,62 @@ def rewrite(
     return b"".join(out), edits
 
 
+def _read(path: str) -> bytes:
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError as exc:
+        raise ReferrerError(path, f"can't read: {exc.strerror}") from exc
+
+
 class M3uReferrer(Referrer):
     id = "m3u"
     label = ".m3u playlist"
 
     def detect(self, image_path: str) -> bool:
-        return bool(_playlists(os.path.dirname(image_path)))
+        return any(_playlists(d) for d in _search_dirs(image_path))
 
     def plan(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
-        by_key = {}
+        by_key: dict[tuple[int, int], _Target] = {}
+        dirs: list[str] = []
         for old, new in renames.items():
             key = _file_key(old)
             if key:
-                by_key[key] = new
-        directories = sorted({os.path.dirname(old) for old in renames})
+                by_key[key] = _Target(
+                    os.path.realpath(os.path.dirname(old)), os.path.realpath(new),
+                )
+            for d in _search_dirs(old):
+                if d not in dirs:
+                    dirs.append(d)
+        targets = _Renames(by_key, frozenset(os.path.basename(o).casefold() for o in renames))
         changes = []
-        for directory in directories:
+        for directory in dirs:
             for playlist in _playlists(directory):
-                try:
-                    with open(playlist, "rb") as f:
-                        original = f.read()
-                except OSError as exc:
-                    raise ReferrerError(playlist, f"can't read: {exc.strerror}") from exc
-                updated, edits = rewrite(original, directory, by_key)
+                with _playlist_lock(playlist):
+                    _, edits = _rewrite(playlist, _read(playlist), directory, targets)
                 if edits:
                     changes.append(ReferrerChange(
                         referrer=self.id, target=playlist, edits=tuple(edits),
-                        payload=(original, updated),
+                        payload=(directory, targets),
                     ))
         return changes
 
     def apply(self, change: ReferrerChange) -> None:
         path = change.target
-        original, updated = change.payload
+        directory, targets = change.payload
         if os.path.islink(path):
             raise ReferrerError(path, "is a symlink")
         if not os.access(path, os.W_OK):
             raise ReferrerError(path, "is read-only")
-        try:
-            with open(path, "rb") as f:
-                if f.read() != original:
-                    raise ReferrerError(path, "changed since it was planned")
-            backup = path + BACKUP_SUFFIX
-            if not os.path.lexists(backup):
-                atomic_write_bytes(backup, original)
-            atomic_write_bytes(path, updated)
-        except OSError as exc:
-            raise ReferrerError(path, exc.strerror or str(exc)) from exc
+        with _playlist_lock(path):
+            original = _read(path)
+            updated, edits = _rewrite(path, original, directory, targets)
+            if not edits:
+                return
+            try:
+                backup = path + BACKUP_SUFFIX
+                if not os.path.lexists(backup):
+                    atomic_write_bytes(backup, original)
+                atomic_write_bytes(path, updated)
+            except OSError as exc:
+                raise ReferrerError(path, exc.strerror or str(exc)) from exc

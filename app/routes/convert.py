@@ -858,8 +858,10 @@ async def _add_referrer_changes(
         )
     except Exception as exc:  # noqa: BLE001 - the job would keep the Source too
         target = getattr(exc, "target", None) or image_path
+        reason = getattr(exc, "reason", None) or str(exc)
         item.setdefault("warnings", []).append(
-            f"Couldn't read {os.path.basename(target)}; the source will be kept",
+            f"Couldn't update {os.path.basename(target)} ({reason}); "
+            "the source will be kept",
         )
         return
     item["referrer_changes"] = [c.to_dict() for c in changes]
