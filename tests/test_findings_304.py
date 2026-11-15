@@ -479,6 +479,46 @@ async def test_a_mapping_that_disagrees_with_a_header_is_a_finding(tree: Path) -
     assert "you set the gc folder to wii" in rows["gc/Melee.iso"]["reason"]
 
 
+@pytest.mark.skipif(_IS_ROOT, reason="root reads a folder whatever its mode")
+@pytest.mark.asyncio
+async def test_a_subfolder_the_walk_cannot_read_keeps_its_findings(tree: Path) -> None:
+    from services import findings, libraries
+
+    _gamecube(tree / "shelf" / "ps2" / "Wrong.iso")
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+    wrong = next(r for r in _open() if r["image_key"] == "shelf/ps2/Wrong.iso")
+    findings.dismiss(wrong["id"])
+    shelf = tree / "shelf"
+
+    shelf.chmod(0)
+    try:
+        library.summary(refresh=True)
+        kept = {r["image_key"]: r for r in _open(include_dismissed=True)}
+        # Not seen is not gone: the row and its dismissal stay.
+        assert kept["shelf/ps2/Wrong.iso"]["dismissed"] is True
+        # The rest of the Library was still walked and reconciled.
+        assert "ps2/Misfiled.iso" in kept
+    finally:
+        shelf.chmod(0o755)
+
+    library.summary(refresh=True)
+    after = {r["image_key"]: r for r in _open(include_dismissed=True)}
+    assert after["shelf/ps2/Wrong.iso"]["id"] == wrong["id"]
+    assert after["shelf/ps2/Wrong.iso"]["dismissed"] is True
+
+
+def test_reconcile_leaves_rows_under_an_unseen_folder(db: Path) -> None:
+    from services import findings
+
+    findings.reconcile("folder:1", [_conflict("a/x.iso"), _conflict("ab/y.iso")])
+    findings.reconcile("folder:1", [], keep_under=["a"])
+
+    # "ab" is not under "a": only the unseen folder's rows survive.
+    assert [r["image_key"] for r in _open()] == ["a/x.iso"]
+
+
 @pytest.mark.asyncio
 async def test_a_root_that_is_gone_clears_nothing(tree: Path) -> None:
     from services import libraries

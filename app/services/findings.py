@@ -59,15 +59,25 @@ def _session():
     return _db.SessionLocal()
 
 
+def _under(key: str, prefixes: tuple[str, ...]) -> bool:
+    return any(key == p or key.startswith(f"{p}/") for p in prefixes)
+
+
 def reconcile(
     library_id: str, observed: Iterable[Observed], *,
     kinds: Iterable[str] = KINDS, now: str | None = None,
+    keep_under: Iterable[str] = (),
 ) -> dict[str, int]:
     """Make *library_id*'s stored Findings of *kinds* match *observed*. Blocking.
+
+    *keep_under* names the Image-key folders the producer could not look in
+    this time (a subfolder that did not list). Rows under them are left as
+    they are, dismissal included: not seen is not gone.
 
     Returns how many were added, updated (the cause changed) and cleared.
     """
     kinds = tuple(kinds)
+    unseen = tuple(p.strip("/") for p in keep_under if p.strip("/"))
     stamp = now or _now()
     current: dict[tuple[str, str], Observed] = {}
     for item in observed:
@@ -82,6 +92,8 @@ def reconcile(
         stored = {(row.image_key, row.kind): row for row in rows}
         for key, row in stored.items():
             item = current.get(key)
+            if item is None and _under(row.image_key, unseen):
+                continue
             if item is None:
                 session.delete(row)
                 counts["cleared"] += 1

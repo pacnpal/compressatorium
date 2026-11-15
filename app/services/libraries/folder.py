@@ -44,8 +44,10 @@ place and never wait for a walk.
 the Findings store what it saw (:func:`services.findings.reconcile`): a
 Platform conflict per conflicted Image, an Unsorted Finding per Image whose
 Platform nobody could work out, and one per Image file the walk could not
-read. A walk that fails (the root is gone) records nothing, so a mount blip
-clears no Finding. Findings never move or delete an Image.
+read. A walk that fails (the root is gone) records nothing, and a subfolder
+that does not list leaves the Findings under it as they are (dismissal
+included), so a mount blip clears no Finding. Findings never move or delete
+an Image.
 
 Folder Rules support the skip policy only (no ``CONVERTED_HISTORY``), and a
 failed Image waits until its file changes (``FAILED_HOLD``).
@@ -117,6 +119,9 @@ class Scan:
     unreadable: int = 0
     # The Image files among them, by path.
     unreadable_files: list[str] = field(default_factory=list)
+    # Folders under the root that could not be listed: the walk did not see
+    # into them, so their Findings are left alone.
+    unwalked: list[str] = field(default_factory=list)
     taken_at: float = 0.0
     # The Library's generation when the walk started (`FolderLibrary.invalidate`).
     generation: int = 0
@@ -217,11 +222,11 @@ class FolderLibrary:
 
     # ---- the walk ----
 
-    def _files(self) -> tuple[list[tuple[str, os.stat_result]], int, list[str]]:
+    def _files(self) -> tuple[list[tuple[str, os.stat_result]], int, list[str], list[str]]:
         """Every regular, readable file with an Image extension, and the unreadable ones.
 
         ``(files, how many files and folders could not be read, the unreadable
-        Image files)``.
+        Image files, the folders that could not be listed)``.
         """
         root = self.root
         # Checked on every walk, never remembered: a mount that blips fails
@@ -234,6 +239,7 @@ class FolderLibrary:
         files: list[tuple[str, os.stat_result]] = []
         unreadable = 0
         unreadable_files: list[str] = []
+        unwalked: list[str] = []
         root_errors: list[OSError] = []
 
         def on_error(exc: OSError) -> None:
@@ -242,6 +248,8 @@ class FolderLibrary:
                 root_errors.append(exc)
             else:
                 unreadable += 1
+                if getattr(exc, "filename", None):
+                    unwalked.append(os.fspath(exc.filename))
 
         for current, dirs, names in os.walk(root, followlinks=False, onerror=on_error):
             dirs.sort()
@@ -264,11 +272,11 @@ class FolderLibrary:
                 files.append((path, st))
         if root_errors:
             raise LibraryUnreadable(str(root_errors[0]))
-        return files, unreadable, unreadable_files
+        return files, unreadable, unreadable_files, unwalked
 
     def _walk(self) -> Scan:
         """Walk the root once, group the files into Images and detect each Platform."""
-        files, unreadable, unreadable_files = self._files()
+        files, unreadable, unreadable_files, unwalked = self._files()
         stats = dict(files)
         members_cache: dict[str, tuple[int, int, list[str]]] = {}
         detections: dict[str, tuple[tuple, Detection]] = {}
@@ -285,7 +293,7 @@ class FolderLibrary:
 
         scan = Scan(
             unreadable=unreadable, unreadable_files=unreadable_files,
-            taken_at=time.monotonic(),
+            unwalked=unwalked, taken_at=time.monotonic(),
         )
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
@@ -339,7 +347,10 @@ class FolderLibrary:
     def _record_findings(self, scan: Scan) -> None:
         """Hand the Findings store what this walk saw. A failure costs the Findings only."""
         try:
-            findings.reconcile(self.id, self._findings(scan))
+            findings.reconcile(
+                self.id, self._findings(scan),
+                keep_under=[self._key(path) for path in scan.unwalked],
+            )
         except Exception:
             # The walk is still good for Rules; the Findings view is behind
             # until the next walk. Logged, not swallowed.
