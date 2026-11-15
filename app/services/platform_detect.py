@@ -30,7 +30,7 @@ from pathlib import Path, PurePath
 
 from logging_setup import get_logger
 from models import InputKind
-from utils.path_utils import containing_volume_root, match_extension
+from utils.path_utils import containing_volume_root, is_special_file, match_extension
 
 logger = get_logger("platform_detect")
 
@@ -271,6 +271,11 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         st = os.stat(disk_path)
     except OSError:
         return Detection(None, UNSORTED, None, None, "file could not be read")
+    if is_special_file(disk_path):
+        # A FIFO, socket or device: opening one can block forever (a FIFO with
+        # no writer), stranding the threadpool worker. Checked before any
+        # header probe or open, here at the one entry point every caller uses.
+        return Detection(None, UNSORTED, None, None, "not a regular file or folder")
     if not _member and os.path.isdir(disk_path):
         # A folder Image (a PS3 disc folder) is judged by files below it, which
         # its own size and mtime do not track. Probe it fresh every time.
