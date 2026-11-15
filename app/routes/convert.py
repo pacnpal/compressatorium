@@ -1241,7 +1241,8 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     is refused at queue time (another job took a destination, a volume stopped
     answering) the jobs this request already queued are withdrawn and the error
     is returned. A job that already finished cannot be withdrawn; it is kept,
-    logged, and named in the error.
+    logged, and returned in the error as ``detail = {"message", "jobs"}``, with
+    ``jobs`` in the same shape a success returns.
     """
     plan = await _plan_auto(request)
     groups: dict[tuple[str, str | None], list[str]] = {}
@@ -1270,9 +1271,14 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
         except HTTPException as exc:
             kept = await _cancel_queued(jobs)
             if kept:
-                exc.detail = (
-                    f"{exc.detail} Already finished and kept: {', '.join(kept)}."
-                )
+                # The kept jobs go back in the shape a success returns them,
+                # so the client can adopt them and keep their re-pin records
+                # instead of retiring every snapshot it took for this batch.
+                names = ", ".join(job.filename or job.id for job in kept)
+                exc.detail = {
+                    "message": f"{exc.detail} Already finished and kept: {names}.",
+                    "jobs": [job.model_dump(mode="json") for job in kept],
+                }
             raise
         except BaseException:
             # Anything else, a client disconnect's CancelledError included:
@@ -1282,28 +1288,28 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)
 
 
-async def _cancel_queued(jobs: list) -> list[str]:
+async def _cancel_queued(jobs: list) -> list:
     """Withdraw jobs an Auto request queued before a later group failed.
 
-    Returns the names of jobs that could not be withdrawn because they had
-    already finished (a small job can complete before a later group is
-    refused). Their output stays; nothing is deleted.
+    Returns the jobs that could not be withdrawn because they had already
+    finished (a small job can complete before a later group is refused). Their
+    output stays; nothing is deleted.
     """
-    kept: list[str] = []
+    kept: list = []
     for job in jobs:
         name = getattr(job, "filename", None) or job.id
         try:
             withdrawn = await job_manager.cancel_job(job.id)
         except Exception:  # keep withdrawing the rest
             logger.warning("Could not cancel Auto job %s", job.id, exc_info=True)
-            kept.append(name)
+            kept.append(job)
             continue
         if not withdrawn:
             logger.warning(
                 "Auto job %s (%s) had already finished when its batch failed; "
                 "its output is kept", job.id, name,
             )
-            kept.append(name)
+            kept.append(job)
     return kept
 
 

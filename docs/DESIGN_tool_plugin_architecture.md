@@ -2528,7 +2528,18 @@ Precedence is fixed and never guesses:
    name for it (the tools' own spellings and the folder names ES-DE and
    Batocera use: `ps1`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
    `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
-   header and use the archive's folder.
+   header and use the archive's folder. The walk runs from the Image's own
+   folder up to the root of the Volume that holds it, root included, and never
+   above (`utils.path_utils.containing_volume_root`), so a Volume mounted under
+   `/mnt/md/...` does not make every Image in it a Genesis Image. A path in no
+   configured Volume uses only its own folder.
+
+Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
+(a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
+and the first spelling of a track name that exists beside the sheet wins. The
+disc-ID probe (`disc_id._cue_track_paths`), the header-dependency list
+(`delete_plan.sheet_track_paths`) and the delete plan all use it, so
+`Jeu (Édition).bin` resolves, and is cached, from either encoding.
 
 Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
 and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
@@ -2635,8 +2646,18 @@ a destination, 503 when a volume stops answering), and earlier jobs may have
 started by then. On any failure the route withdraws the jobs this request
 queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
-names it ("Already finished and kept: ..."). Auto never deletes a Source (no
-delete-on-verify), so nothing is lost either way.
+returns it. The error detail is then structured, `{"message": "... Already
+finished and kept: ...", "jobs": [...]}`, with `jobs` in the shape a success
+returns. `client.fetchJson` keeps a structured detail on `err.detail`, the store
+adopts those jobs and reconciles its re-pin snapshots against them before it
+retires the rest, so a kept output keeps its record. Auto never deletes a
+Source (no delete-on-verify), so nothing is lost either way.
+
+An explicit target choice wins over Auto. Every mode selector (the convert
+panel's dropdown, RomM's "Convert to") calls `conversion.chooseTarget(mode)`,
+which sets the mode and, if Auto was on, turns it off with an "Auto is off"
+notice. `setMode` stays the programmatic path (platform adoption, tool
+switches) and leaves Auto alone.
 
 The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;

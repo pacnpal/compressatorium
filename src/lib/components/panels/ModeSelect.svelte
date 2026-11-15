@@ -11,7 +11,7 @@
   <span class="label">Mode</span>
   <select
     value={mode}
-    onchange={(e) => conversion.setMode(e.currentTarget.value)}
+    onchange={(e) => conversion.chooseTarget(e.currentTarget.value)}
     aria-label="Conversion mode"
   >
     {#each groups as [group, list] (group)}
