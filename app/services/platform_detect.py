@@ -7,17 +7,20 @@ choice and folder Libraries, and (later) the Inbox and the CLI. It never guesses
    through ``ToolPlugin.header_platform`` (chdman: PS1/PS2/PSP/Dreamcast/
    Saturn/Sega CD, dolphin: GameCube/Wii, xiso: Xbox/Xbox 360). The registry
    decides who is asked, so a new console is taught here by its tool.
-2. **Folder name.** The nearest parent folder whose name is a Platform slug a
+2. **The user's mapping.** The nearest folder above the Image that the user
+   set to a Platform ("this folder is PSP",
+   :mod:`services.platform_mappings`, #304).
+3. **Folder name.** The nearest parent folder whose name is a Platform slug a
    tool declares, or a name RomM, ES-DE or Batocera use for one (``psx``,
-   ``gc``, ``megacd``, ...).
+   ``gc``, ``megacd``, ...). Not consulted when a mapping answers.
 
-The header wins. A folder name is only used when no header can be read. A
-header that disagrees with the folder, or two headers that disagree with each
-other, is a conflict and names no Platform. When nothing answers the Image is
-Unsorted.
+The header wins. A mapping or folder name is only used when no header can be
+read. A header that disagrees with the mapping or the folder, or two headers
+that disagree with each other, is a conflict and names no Platform. When
+nothing answers the Image is Unsorted.
 
 Results are cached per path and thrown away when the file's size or mtime
-changes.
+changes, or the mapping that applies to it does.
 """
 from __future__ import annotations
 
@@ -35,6 +38,7 @@ logger = get_logger("platform_detect")
 
 HEADER = "header"
 FOLDER = "folder"
+MAPPING = "mapping"
 CONFLICT = "conflict"
 UNSORTED = "unsorted"
 
@@ -179,9 +183,9 @@ def known_slug(name: str | None) -> str | None:
 class Detection:
     """What :func:`detect_platform` worked out, and how.
 
-    ``platform`` is set only when ``how`` is ``"header"`` or ``"folder"``.
-    ``header`` and ``folder`` keep what each source said, so a conflict can be
-    explained ("in the ps2 folder, header says ngc").
+    ``platform`` is set only when ``how`` is ``"header"``, ``"mapping"`` or
+    ``"folder"``. ``header``, ``folder`` and ``mapped`` keep what each source
+    said, so a conflict can be explained ("in the ps2 folder, header says ngc").
     """
 
     platform: str | None
@@ -189,6 +193,8 @@ class Detection:
     header: str | None
     folder: str | None
     reason: str
+    # The Platform the user's mapping gave the folder, when one applies.
+    mapped: str | None = None
 
     @property
     def decided(self) -> bool:
@@ -245,6 +251,13 @@ def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _mapping(disk_path: str) -> tuple[str, str] | None:
+    """``(folder name, slug)`` of the user's mapping that applies, or None."""
+    from services import platform_mappings
+
+    return platform_mappings.mapping_for(disk_path)
+
+
 def _decide(path: str, tools: list) -> Detection:
     disk_path, member = _split_member(path)
     headers: set[str] = set()
@@ -252,24 +265,30 @@ def _decide(path: str, tools: list) -> Detection:
     if not member:
         headers, sources = _header(disk_path, tools)
     folder, folder_name = _folder(disk_path, _folder_names(tools))
+    mapping = _mapping(disk_path)
+    mapped = mapping[1] if mapping else None
 
     if len(headers) > 1:
         return Detection(
             None, CONFLICT, None, folder,
-            f"headers disagree ({', '.join(sorted(sources))})",
+            f"headers disagree ({', '.join(sorted(sources))})", mapped,
         )
     header = next(iter(headers), None)
-    if header and folder and header != folder:
+    # The mapping outranks the folder name: the user's word on the folder.
+    if mapping:
+        place, how, where = mapped, MAPPING, f"you set the {mapping[0]} folder to {mapped}"
+    else:
+        place, how, where = folder, FOLDER, f"in the {folder_name} folder"
+    if header and place and header != place:
         return Detection(
             None, CONFLICT, header, folder,
-            f"in the {folder_name} folder, but the header says {header}",
+            f"{where}, but the header says {header}", mapped,
         )
     if header:
-        return Detection(header, HEADER, header, folder, f"header says {header}")
-    if folder:
+        return Detection(header, HEADER, header, folder, f"header says {header}", mapped)
+    if place:
         return Detection(
-            folder, FOLDER, None, folder,
-            f"no readable header; in the {folder_name} folder",
+            place, how, None, folder, f"no readable header; {where}", mapped,
         )
     return Detection(
         None, UNSORTED, None, None,
@@ -335,18 +354,19 @@ def detection_key(
 ) -> tuple | None:
     """What a cached Detection for *path* is valid for, or None when it must not be cached.
 
-    The file's size and mtime (*st*, the caller's stat of it) and those of
+    The file's size and mtime (*st*, the caller's stat of it), those of
     every other file its header probe reads (``ToolPlugin.header_reads``: a
-    sheet's tracks). None when one of those cannot be stat'ed. The shared
-    cache here and a folder Library's own cache both key on it, so a changed
-    track re-detects its sheet in either.
+    sheet's tracks), and the user's mapping that applies to it. None when one
+    of those files cannot be stat'ed. The shared cache here and a folder
+    Library's own cache both key on it, so a changed track or a changed
+    mapping re-detects the Image in either.
     """
     tool_list = list(tools) if tools is not None else _default_tools()
     disk_path, member = _split_member(path)
     deps = () if member else _header_dependencies(disk_path, tool_list)
     if deps is None:
         return None
-    return (st.st_size, st.st_mtime_ns, deps)
+    return (st.st_size, st.st_mtime_ns, deps, _mapping(disk_path))
 
 
 def _header_dependencies(path: str, tools: Iterable) -> tuple | None:

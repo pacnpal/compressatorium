@@ -67,8 +67,11 @@ class LibraryPathError(ValueError):
 
 def reset_for_tests() -> None:
     global _cache
+    from services import platform_mappings
+
     with _lock:
         _cache = None
+    platform_mappings.reset_for_tests()
 
 
 def _session():
@@ -255,6 +258,9 @@ async def remove(library_id: str) -> bool:
     await rules_sweep.forget_library(library)
 
     def _delete() -> None:
+        from services import platform_mappings
+
+        platform_mappings.forget_library(library_id)
         with _session() as session:
             row = session.get(_db.FolderLibraryRecord, record_id)
             if row is not None:

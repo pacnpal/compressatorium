@@ -318,6 +318,26 @@ class FolderLibraryRecord(Base):
     created_at = Column(String, nullable=False)
 
 
+class PlatformMappingRecord(Base):
+    """The user's word on a folder's Platform: "this folder is PSP" (#304).
+
+    Keyed by Library and the folder's path relative to the Library root
+    (``/`` separators, ``""`` for the root itself), so it follows the Library
+    rather than a mount path. Platform detection reads it as evidence that
+    ranks below the header and above the folder name.
+    """
+
+    __tablename__ = "platform_mappings"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(String, nullable=False)
+    folder = Column(String, nullable=False)
+    platform = Column(String, nullable=False)
+    updated_at = Column(String, nullable=False)
+    __table_args__ = (
+        Index("ux_platform_mappings_library_folder", "library_id", "folder", unique=True),
+    )
+
+
 class Preference(Base):
     """Generic key/value store for app preferences (UI layout, etc.).
 

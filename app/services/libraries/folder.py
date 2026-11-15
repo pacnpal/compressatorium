@@ -109,6 +109,8 @@ class Scan:
     # Image files and folders that could not be read. Never queued.
     unreadable: int = 0
     taken_at: float = 0.0
+    # The Library's generation when the walk started (`FolderLibrary.invalidate`).
+    generation: int = 0
 
     def by_platform(self) -> dict[str, list[Entry]]:
         out: dict[str, list[Entry]] = {}
@@ -173,6 +175,9 @@ class FolderLibrary:
         # Held for a whole walk. Only ever acquired without blocking (`scan`).
         self._lock = threading.Lock()
         self._scan: Scan | None = None
+        # Bumped when something the last walk relied on changed (a mapping),
+        # so the next listing walks again instead of serving it.
+        self._generation = 0
         # Serialises a settings change (database row, then this object), so
         # two concurrent edits leave both saying the same thing. Never the walk
         # lock: a settings edit must not wait for a walk.
@@ -196,6 +201,10 @@ class FolderLibrary:
             self._schedule_enabled = bool(schedule_enabled)
         if max_per_sweep is not None:
             self._max_per_sweep = int(max_per_sweep)
+
+    def invalidate(self) -> None:
+        """The last walk is out of date; the next listing walks again. Never waits."""
+        self._generation += 1
 
     # ---- the walk ----
 
@@ -293,12 +302,16 @@ class FolderLibrary:
                 f"previous listing of {self.root} still running",
             )
         try:
+            generation = self._generation
             fresh = (
                 self._scan is not None
+                and self._scan.generation == generation
                 and time.monotonic() - self._scan.taken_at < SCAN_TTL_SECONDS
             )
             if refresh or not fresh:
-                self._scan = self._walk()
+                scan = self._walk()
+                scan.generation = generation
+                self._scan = scan
             return self._scan
         finally:
             self._lock.release()
