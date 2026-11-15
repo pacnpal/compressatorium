@@ -17,6 +17,7 @@ from services.referrers import base as base_module
 from services.referrers import m3u as m3u_module
 from services.referrers.base import atomic_write_bytes
 from services.referrers.m3u import M3uReferrer
+from utils.path_utils import FileIdentity, file_identity, same_identity
 
 from config import settings
 
@@ -1003,6 +1004,38 @@ async def test_unstable_inodes_still_catch_a_replaced_output(tmp_path, monkeypat
     monkeypatch.undo()
     assert not outcome.ok
     assert playlist.read_text() == "Game.cue\n"
+
+
+def test_an_output_rewritten_in_place_fails_the_write_guard(tmp_path):
+    """Same inode, new bytes (a conversion opening it with O_TRUNC): the
+    output is no longer the one checked, so nothing may point at it."""
+    import threading
+
+    out = tmp_path / "Game.chd"
+    out.write_bytes(b"checked output")
+    guard = base_module.WriteGuard(
+        abandoned=threading.Event(), outputs={str(out): file_identity(str(out))},
+    )
+    inode = out.stat().st_ino
+    with open(out, "r+b") as f:
+        f.truncate(0)
+        f.write(b"something else entirely")
+    os.utime(out, ns=(1_000_000_000, 1_000_000_000))
+
+    assert out.stat().st_ino == inode
+    with pytest.raises(referrers.ReferrerError):
+        guard.check(str(tmp_path / "Game.m3u"))
+
+
+@pytest.mark.parametrize("differs", ["size", "mtime_ns"])
+def test_a_reused_inode_with_different_content_is_not_the_same_file(differs):
+    """Unstable inodes can collide: matching (dev, ino) alone isn't enough."""
+    a = FileIdentity(dev=1, ino=42, size=100, mtime_ns=5, realpath="/vol/a.cue")
+    b = a._replace(realpath="/vol/b.cue", **{differs: getattr(a, differs) + 1})
+
+    assert not same_identity(a, b)
+    assert same_identity(a, a._replace(ino=43))  # shfs: new inode, same file
+    assert not same_identity(a, a._replace(ino=43, realpath="/vol/c.cue"))
 
 
 def _stall_reads(monkeypatch):

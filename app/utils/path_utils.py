@@ -279,18 +279,21 @@ def file_identity(path: str) -> Optional[FileIdentity]:
 
 
 def same_identity(a: Optional[FileIdentity], b: Optional[FileIdentity]) -> bool:
-    """Whether two identities are the same file.
+    """Whether two identities are the same, unchanged file.
 
-    Same ``(st_dev, st_ino)``, or, because FUSE/SMB mounts such as Unraid's
-    shfs user shares can report a different ``st_ino`` for the same file on
-    each stat, the same resolved path with the same size and ``mtime_ns``.
-    A missing file (None) is never the same as anything.
+    Size and ``mtime_ns`` must always match, so a file rewritten in place
+    (same inode, new bytes) is not the file that was checked. Then either
+    ``(st_dev, st_ino)`` or the resolved path must match: FUSE/SMB mounts such
+    as Unraid's shfs user shares can report a different ``st_ino`` for the
+    same file on each stat, and their inodes can also be reused, which is why
+    the inode is never enough on its own. A missing file (None) is never the
+    same as anything.
     """
     if a is None or b is None:
         return False
-    if (a.dev, a.ino) == (b.dev, b.ino):
-        return True
-    return (a.realpath, a.size, a.mtime_ns) == (b.realpath, b.size, b.mtime_ns)
+    if (a.size, a.mtime_ns) != (b.size, b.mtime_ns):
+        return False
+    return (a.dev, a.ino) == (b.dev, b.ino) or a.realpath == b.realpath
 
 
 def same_file(a: str, b: str) -> bool:
