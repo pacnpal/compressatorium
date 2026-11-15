@@ -1620,3 +1620,25 @@ async def test_a_failure_under_an_old_rule_holds_nothing_under_the_new_one(
     preview = await routes.preview_library(lib["id"])
     assert preview["skipped_failed"] == 0, preview
     assert "Melee.iso" in preview["platforms"][0]["candidates"]
+
+
+@pytest.mark.asyncio
+async def test_a_split_part_added_later_joins_its_image(db: Path) -> None:
+    """Codex 4576709447: a cached membership follows the folder's current parts.
+
+    Scan with only part 1, add part 2, refresh: one Image of 30 bytes, not two.
+    """
+    from services import libraries
+
+    folder = db / "roms" / "wiiu"
+    folder.mkdir(parents=True)
+    (folder / "game_part1.wud").write_bytes(b"\0" * 10)
+    lib = await _register(db / "roms")
+    library = libraries.get(lib["id"])
+    library.scan(refresh=True)
+
+    (folder / "game_part2.wud").write_bytes(b"\0" * 20)
+    library.scan(refresh=True)
+
+    images = library.images("wiiu")
+    assert [(i.key, i.size) for i in images] == [("wiiu/game_part1.wud", 30)]
