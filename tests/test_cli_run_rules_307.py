@@ -313,6 +313,30 @@ def test_a_source_kept_while_another_job_reads_it_is_a_success(
     assert (out_dir / "Game.rvz").exists()
 
 
+def test_an_output_another_process_is_writing_is_skipped_not_failed(env, dolphin, capsys):
+    """run-rules' counterpart of verify's "Busy: another job is writing it":
+    the sweep skips an Image whose output is locked elsewhere as active, which
+    is not an error, so the pass exits 0 and queues nothing."""
+    from services.lock_manager import LockManager, lock_manager
+
+    iso = _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+    writer = LockManager()
+    writer._lock_dir = lock_manager._lock_dir
+    output = str(iso.with_suffix(".rvz"))
+    assert writer.acquire_lock(output)
+    try:
+        code, lines, _err = _cli(capsys, "run-rules", "--json")
+    finally:
+        writer.release_lock(output)
+
+    assert code == 0, lines
+    platform = [line for line in lines if line.get("platform_id") == "gc"]
+    assert [(p["status"], p["queued"], p["reason"]) for p in platform] == [("queued", 0, None)]
+    assert [line for line in lines if line.get("path")] == []
+    assert dolphin["runs"] == []
+
+
 def test_a_failed_job_exits_1(env, dolphin, capsys):
     _iso(env)
     _store_rules(env, {"shelf": RVZ_RULE})
