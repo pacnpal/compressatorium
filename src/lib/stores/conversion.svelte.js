@@ -442,20 +442,28 @@ class ConversionStore {
         this.clearAutoPlan();
         return null; // the panel is gone: never open its modal
       }
-      const answer = await untilAborted(confirm(), signal);
-      // An abort resolves the confirmation as cancelled.
-      const proceed = !signal?.aborted && !answer?.aborted && Boolean(answer);
-      const plan = this.autoPlan ?? [];
-      this.clearAutoPlan();
-      if (!proceed) return null;
-      try {
-        return await this.submitAuto(snapshot, {
-          plan, rommRepin: fromRomm, rommPlatformId: platformId, outputDir,
-        });
-      } catch (_e) {
-        return null; // toast already raised in submitAuto
-      } finally {
-        if (fromRomm) onRepinPending?.(this.lastRepinPending);
+      // Confirm, then queue the confirmed plan. When the server finds the plan
+      // changed since (409, with the new plan), show that plan and ask again.
+      for (;;) {
+        const answer = await untilAborted(confirm(), signal);
+        // An abort resolves the confirmation as cancelled.
+        const proceed = !signal?.aborted && !answer?.aborted && Boolean(answer);
+        const plan = this.autoPlan ?? [];
+        this.clearAutoPlan();
+        if (!proceed) return null;
+        let replanned = null;
+        try {
+          return await this.submitAuto(snapshot, {
+            plan, rommRepin: fromRomm, rommPlatformId: platformId, outputDir,
+          });
+        } catch (e) {
+          // Toast already raised in submitAuto.
+          replanned = e?.status === 409 && Array.isArray(e?.detail?.plan) ? e.detail.plan : null;
+          if (!replanned || signal?.aborted) return null;
+        } finally {
+          if (fromRomm) onRepinPending?.(this.lastRepinPending);
+        }
+        this.autoPlan = replanned;
       }
     } finally {
       this.#autoInFlight = false;
@@ -676,19 +684,26 @@ class ConversionStore {
   ) {
     if (!filePaths?.length) return null;
     const wanted = new Set(filePaths);
-    const modeOf = Object.fromEntries(
-      (plan ?? [])
-        .filter((row) => row?.mode && wanted.has(row.file_path))
-        .map((row) => [row.file_path, row.mode]),
-    );
+    // Only the confirmed plan's actionable rows go to the server, each with the
+    // target the user saw: an Image the preview skipped is never sent. The
+    // server replans them and refuses with 409 (and the new plan) when one
+    // changed, so nothing is queued that the user did not confirm.
+    const items = (plan ?? [])
+      .filter((row) => row?.mode && wanted.has(row.file_path))
+      .map((row) => ({ file_path: row.file_path, mode: row.mode }));
+    if (!items.length) {
+      toast.warning('Nothing to convert: Auto skips every selected Image');
+      return null;
+    }
+    const modeOf = Object.fromEntries(items.map((item) => [item.file_path, item.mode]));
     return this.#queueWithRepin(
-      filePaths,
+      items.map((item) => item.file_path),
       groupByMode(Object.keys(modeOf), modeOf),
       { duplicateAction: 'skip', rommRepin, rommPlatformId, outputDir },
       async () => {
         let result;
         try {
-          result = await api.createAutoJobs(filePaths, outputDir, 'skip');
+          result = await api.createAutoJobs(items, outputDir, 'skip');
         } catch (e) {
           // A later group was refused after earlier jobs had already
           // finished: the route returns those in `detail.jobs`. They are real
