@@ -2412,9 +2412,14 @@ replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
 browser's check), requires a folder, and refuses the same root or one that
 contains or sits inside another Library's root, a registered folder or RomM's
 library folder (409), since two Libraries would give one Image two Rules. The
-check and the insert run under `_register_lock` (only ever taken in a worker
-thread, since it is held across RomM's root resolve and a database write), and
-a unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
+rule is one function, `libraries.find_overlap`, run in both directions: the
+RomM settings route checks a new RomM library root against every folder
+Library (`check_romm_root`, a 409 naming the Library) before saving it. Both
+take `_register_lock`: `register` in its worker thread, held across RomM's
+root resolve and the database write, and the RomM save through
+`romm_root_claim`, which polls for the lock without parking a thread, so a
+cancelled request never leaves it held, and keeps it until the settings are
+saved. A unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
 in-memory cache only: the event loop takes it on every `get()`, so it is never
 held across disk or database access or a Library's walk lock. `update()` writes
 the row and changes the cached Library in place (`apply_settings`), as one
