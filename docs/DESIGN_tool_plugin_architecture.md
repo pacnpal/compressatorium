@@ -3437,6 +3437,15 @@ names, and every probe (`check_file_status`, `locked_folder_above`,
 real path, or packing the real parent, sees it. The identity is fixed when the
 lock is taken (`_lock_keys` for outputs, the key stored beside each input
 handle) and the release uses exactly that, even if a symlink changed since.
+An output lock covers both places a write can land
+(`LockManager._output_keys`): the destination the converter creates,
+`realpath(dirname)` joined with the basename (not following a symlink at the
+final component, so once an overwrite sweep has unlinked an output symlink
+the new file's path is still locked), and, when the output is a symlink
+today, its current real target, so nobody rewrites the old target mid-job.
+Both are taken or neither, and `release_lock` lets go of exactly the keys it
+took. Every output lock goes through this, the CLI's jobs included (they use
+the same job manager), and companion outputs too.
 The identity is filesystem bytes: `_lock_file_path` hashes
 `os.fsencode(realpath)` and the recorded path is written with `os.fsencode`
 and read back with `os.fsdecode`, so a native name a sheet reads (`Caf\xe9.bin`,

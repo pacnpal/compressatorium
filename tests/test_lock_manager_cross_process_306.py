@@ -783,3 +783,97 @@ async def test_a_companion_output_is_held_against_other_processes(
     # Released once the job ended.
     assert probe.acquire_lock(str(bin_path), allow_existing=True)
     probe.release_lock(str(bin_path))
+
+
+# --------------------------------------------------------------------------- #
+# An output lock covers both places a write can land (codex 4577612344)
+# --------------------------------------------------------------------------- #
+
+
+def test_an_output_lock_on_a_symlink_covers_the_destination_and_the_old_target(tmp_path):
+    holder, other = _manager(tmp_path / "locks"), _manager(tmp_path / "locks")
+    old = tmp_path / "old"
+    old.mkdir()
+    target = old / "Old.rvz"
+    target.write_bytes(b"old output")
+    out = tmp_path / "Game.rvz"
+    out.symlink_to(target)
+
+    assert holder.acquire_lock(str(out), allow_existing=True)
+    try:
+        assert not other.acquire_lock(str(target), allow_existing=True)  # the old target
+        out.unlink()  # what the overwrite sweep does
+        assert not other.acquire_lock(str(out), allow_existing=True)  # the new file's path
+        assert other.check_file_status(str(out))[1] is True
+    finally:
+        holder.release_lock(str(out))
+    assert other.acquire_lock(str(out), allow_existing=True)
+    other.release_lock(str(out))
+
+
+@pytest.mark.asyncio
+async def test_an_overwrite_job_on_a_symlinked_output_keeps_its_destination_locked(
+    guarded_volume, monkeypatch, db_path, reset_db_engine,
+):
+    """The job's output is a symlink; the overwrite sweep unlinks it and the
+    converter writes a new file at the original path. While the job runs,
+    another process can take neither that path nor the old target, and the
+    web guard reports the path busy."""
+    from datetime import datetime, timezone
+
+    from fastapi import HTTPException
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services import db as _db
+    from services import job_manager as job_manager_module
+    from services.job_manager import job_manager
+
+    g = guarded_volume
+    _db.init_engine(db_path)
+    games = g.folder.parent
+    source = games / "Game.iso"
+    source.write_bytes(b"disc" * 512)
+    old = games / "old"
+    old.mkdir()
+    target = old / "Old.rvz"
+    target.write_bytes(b"old output")
+    out = games / "Game.rvz"
+    out.symlink_to(target)
+    probe = _manager(g.cli._lock_dir)
+    for attr in ("chd_volumes", "data_mount_root"):
+        monkeypatch.setattr(
+            job_manager_module.source_companions_are_safe.__globals__["settings"],
+            attr, str(games.parent),
+        )
+    seen = {}
+
+    async def fake_convert(*_args, **_kwargs):
+        seen["link_gone"] = not os.path.islink(out)
+        seen["dest"] = probe.acquire_lock(str(out), allow_existing=True)
+        seen["old"] = probe.acquire_lock(str(target), allow_existing=True)
+        seen["busy"] = probe.check_file_status(str(out))[1]
+        try:
+            await g.routes.delete_file(g.request("delete-file"), path=str(target), recursive=False)
+            seen["web_old"] = "allowed"
+        except HTTPException as exc:
+            seen["web_old"] = exc.status_code
+        out.write_bytes(b"new rvz")
+        yield {"progress": 100, "message": "done"}
+
+    monkeypatch.setattr(
+        job_manager_module.registry.for_mode("dolphin_rvz"), "convert", fake_convert,
+    )
+    job = ConversionJob(
+        id="symlinkout", file_path=str(source), filename=source.name,
+        mode=ConversionMode.DOLPHIN_RVZ, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(out), allow_overwrite=True,
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        await job_manager._process_job(job.id)
+    finally:
+        job_manager.jobs.pop(job.id, None)
+        reset_db_engine()
+
+    assert seen == {
+        "link_gone": True, "dest": False, "old": False, "busy": True, "web_old": 409,
+    }, seen
