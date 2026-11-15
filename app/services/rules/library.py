@@ -86,7 +86,15 @@ def refuse_unsupported_policies(library: Library, raw: Any) -> None:
 
 
 class LibraryUnreadable(Exception):
-    """The Library could not list a Platform's Images right now."""
+    """The Library could not list a Platform's Images right now.
+
+    ``code`` is what the sweep reports for the Platform (``"unreadable"`` by
+    default). A Library raises a subclass with its own code when the reason is
+    worth telling apart (a folder Library: ``root_unavailable``,
+    ``listing_in_progress``).
+    """
+
+    code = "unreadable"
 
 
 @dataclass(frozen=True)

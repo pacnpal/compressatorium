@@ -250,6 +250,17 @@ def test_the_rules_view_offers_a_retry_while_a_listing_runs():
     assert "error" not in block.group(1), "the wait is styled as an error"
 
 
+def test_the_sweep_summary_names_every_reason_a_library_gives():
+    """Round 3: a mount blip and a running listing each have their own words."""
+    src = _EDITOR.read_text(encoding="utf-8")
+    labels = re.search(r"const SWEEP_ERROR_LABELS = \{(.*?)\n  \};", src, re.DOTALL)
+    assert labels, "SWEEP_ERROR_LABELS moved"
+    for code in ("root_unavailable", "listing_in_progress"):
+        assert f"{code}:" in labels.group(1), f"no label for {code}"
+    assert "still running, try again shortly" in labels.group(1)
+    assert "r.stopped_reason === 'not_configured'" in src
+
+
 def test_both_libraries_share_one_rules_source():
     """The Rule bookkeeping exists once (fix round 1, I1)."""
     folder = _STORE.read_text(encoding="utf-8")

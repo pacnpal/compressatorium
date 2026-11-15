@@ -512,7 +512,7 @@ async def test_a_library_whose_folder_is_gone_reports_it(
     assert result["queued"] == 0
     # `configured()` touches no disk (fix round 1, I3), so a missing root is
     # found by the listing, off the event loop, and reported per Platform.
-    assert {e["error"] for e in result["errors"]} == {"unreadable"}
+    assert {e["error"] for e in result["errors"]} == {"root_unavailable"}
     with pytest.raises(HTTPException) as exc:
         await routes.library_platforms(lib["id"])
     assert exc.value.status_code == 409
@@ -1072,24 +1072,176 @@ async def test_holds_are_pruned_when_the_image_goes(tree: Path, ready, queue, mo
 
 
 @pytest.mark.asyncio
-async def test_configured_turns_false_once_the_root_leaves_the_volumes(
-    tree: Path, ready, queue, tmp_path: Path, monkeypatch,
+async def test_a_mount_blip_fails_one_sweep_and_the_next_recovers(
+    db: Path, ready, queue, monkeypatch,
 ) -> None:
+    """The reviewer's probe (round 3, R1): configured() never latches.
+
+    The Volume's mount point vanishes for one walk (stale handle, autofs, a NAS
+    reboot). That sweep reports why; the next one, with the Volume back,
+    queues again without anyone opening the Rules view.
+    """
+    from routes import libraries as routes
+    from services import libraries
+    from services.libraries import folder
+
+    monkeypatch.setattr(folder, "SCAN_TTL_SECONDS", 0)
+    (db / "roms" / "ps2").mkdir(parents=True)
+    (db / "roms" / "ps2" / "a.iso").write_bytes(b"\0" * 64)
+    lib = await _register(db / "roms")
+    await routes.put_library_rules(lib["id"], {"rules": {"ps2": _RULES["ps2"]}})
+    library = libraries.get(lib["id"])
+
+    healthy = await routes.preview_library(lib["id"])
+    assert healthy["queued"] == 1, healthy
+
+    away = db.parent / "vol_away"
+    os.rename(db, away)
+    try:
+        blip = await routes.preview_library(lib["id"])
+    finally:
+        os.rename(away, db)
+    assert blip["queued"] == 0
+    assert blip["stopped_reason"] is None
+    assert blip["errors"] == [{"platform_id": "ps2", "error": "root_unavailable"}], blip
+    assert library.configured() is True
+
+    for _ in range(2):
+        again = await routes.preview_library(lib["id"])
+        assert again["queued"] == 1, again
+        assert again["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_listing_in_progress_is_a_wait_in_preview_and_run(
+    tree: Path, ready, queue, hung_walk,
+) -> None:
+    """Round 3, R3: the same neutral wait as the platforms route, not "could not list"."""
+    import threading
+
     from routes import libraries as routes
     from services import libraries
 
     lib = await _library_with_rules(tree)
     library = libraries.get(lib["id"])
-    assert library.configured() is True
+    threading.Thread(target=lambda: library.scan(refresh=True), daemon=True).start()
+    assert hung_walk.wait(2)
 
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    monkeypatch.setattr(app_settings, "chd_volumes", str(elsewhere))
-    with pytest.raises(HTTPException):
-        await routes.library_platforms(lib["id"])
-    assert library.configured() is False
-    result = await routes.run_library(lib["id"])
-    assert result["stopped_reason"] == "not_configured"
+    for call in (routes.preview_library, routes.run_library):
+        result = await call(lib["id"])
+        assert {e["error"] for e in result["errors"]} == {"listing_in_progress"}, result
+        assert result["queued"] == 0
+
+
+def test_concurrent_updates_leave_memory_and_the_database_agreeing(tree: Path, monkeypatch) -> None:
+    """Round 3, R2: two PATCHes of one field end with the same value in both places."""
+    import threading
+
+    from services import db as db_module
+    from services import libraries
+    from services.libraries.folder import FolderLibrary
+
+    library = libraries.register(str(tree))
+    first_committed = threading.Event()
+    real_apply = FolderLibrary.apply_settings
+    calls = {"n": 0}
+
+    def slow_first_apply(self, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            first_committed.set()
+            time.sleep(0.4)
+        return real_apply(self, **kwargs)
+
+    monkeypatch.setattr(FolderLibrary, "apply_settings", slow_first_apply)
+    first = threading.Thread(target=lambda: libraries.update(library.id, name="A"))
+    first.start()
+    assert first_committed.wait(2)
+    second = threading.Thread(target=lambda: libraries.update(library.id, name="B"))
+    second.start()
+    first.join(5)
+    second.join(5)
+
+    with db_module.SessionLocal() as session:
+        stored = session.get(db_module.FolderLibraryRecord, library.record_id).name
+    assert libraries.get(library.id).name == stored
+
+
+@pytest.mark.asyncio
+async def test_registering_against_a_hung_romm_mount_is_bounded(
+    db: Path, monkeypatch,
+) -> None:
+    """Round 3, R4: a dedicated thread under a bound, never a shared worker."""
+    import asyncio
+    import threading
+
+    from routes import libraries as routes
+    from services import libraries
+
+    release = threading.Event()
+
+    def hung_root():
+        release.wait(30)
+
+    monkeypatch.setattr(libraries, "_romm_root", hung_root)
+    monkeypatch.setattr(routes, "_REGISTER_SECONDS", 0.3)
+    monkeypatch.setattr(libraries, "REGISTER_WAIT_SECONDS", 0.2)
+    (db / "a").mkdir()
+    (db / "b").mkdir()
+    try:
+        with pytest.raises(HTTPException) as hung:
+            await _register(db / "a")
+        assert hung.value.status_code == 504
+        started = time.monotonic()
+        with pytest.raises(HTTPException) as busy:
+            await _register(db / "b")
+        assert busy.value.status_code in (409, 504)
+        assert time.monotonic() - started < 2
+        # Nothing waits in the shared pool.
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: 1), 2) == 1
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_hold_survives_a_restart_and_a_real_run(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    """Round 3, R5: a still-listed hold is kept by a real Run, across a restart."""
+    from models import JobStatus
+    from routes import libraries as routes
+    from services import libraries
+    from services.rules import sweep as rules_sweep
+
+    jobs: dict[str, str] = {}
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch(paths, mode, **kwargs):
+        made = await real_batch(paths, mode, **kwargs)
+        jobs.update({Path(j.file_path).name: j.id for j in made})
+        return made
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch)
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"rules": {"ps2": _RULES["ps2"]}})
+    await routes.run_library(lib["id"])
+    await rules_sweep.note_job_finished(SimpleNamespace(
+        id=jobs["Ico.iso"], status=JobStatus.FAILED,
+        file_path=str((tree / "ps2" / "Ico.iso").resolve()),
+    ))
+    monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
+
+    # A restart: the in-memory catalogue and job owners are gone; the state row is not.
+    libraries.reset_for_tests()
+    monkeypatch.setattr(rules_sweep, "_job_owners", {})
+
+    for _ in range(2):
+        result = await routes.run_library(lib["id"])
+        assert result["skipped_failed"] == 1, result
+        assert result["queued"] == 0
+    state = (await routes.get_library_rules(lib["id"]))["state"]
+    assert list(state["ps2"]["failed"]) == ["ps2/Ico.iso"]
 
 
 def test_a_changed_track_re_detects_its_sheet(db: Path, monkeypatch) -> None:

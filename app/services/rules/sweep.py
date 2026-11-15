@@ -1091,8 +1091,10 @@ async def _sweep_locked(
             )
         except LibraryUnreadable as exc:
             logger.warning("romm_auto: platform %s unreadable: %s", platform_id, exc)
+            # The Library's reason, so the summary can say "still running" or
+            # "the folder is not reachable" rather than one generic failure.
             result["errors"].append(
-                {"platform_id": platform_ref, "error": "unreadable"},
+                {"platform_id": platform_ref, "error": exc.code},
             )
             continue
         except asyncio.TimeoutError:

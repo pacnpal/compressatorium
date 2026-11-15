@@ -36,6 +36,9 @@ LISTING_IN_PROGRESS = "listing_in_progress"
 # healthy mount answers in seconds; a dead one would otherwise hold a request
 # open forever.
 _SCAN_SECONDS = 300
+# How long a registration may take. It resolves the folder and RomM's library
+# root, either of which may sit on a mount that stopped answering.
+_REGISTER_SECONDS = 60
 
 
 class RegisterLibraryRequest(BaseModel):
@@ -73,9 +76,19 @@ async def list_libraries() -> list[dict]:
 async def register_library(payload: RegisterLibraryRequest) -> dict:
     """Register a folder inside a Volume as a Library."""
     try:
-        library = await run_in_threadpool(libraries.register, payload.path, payload.name)
+        # A detached daemon thread under a bound, as walks run: a dead mount
+        # strands that one thread, never a shared worker.
+        library = await asyncio.wait_for(
+            run_detached(libraries.register, payload.path, payload.name),
+            _REGISTER_SECONDS,
+        )
     except libraries.LibraryPathError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="The folder or RomM's library folder did not answer in time",
+        ) from None
     return await run_in_threadpool(libraries.describe, library)
 
 

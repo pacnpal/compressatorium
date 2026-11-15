@@ -354,6 +354,10 @@
     output_dir_outside_volumes:
       'its output folder is outside the configured volumes — skipped',
     unreadable: 'the Library could not list this platform',
+    root_unavailable:
+      'the folder could not be reached inside the configured volumes (a mount may '
+      + 'be down) — the next run checks again',
+    listing_in_progress: 'a listing of this folder is still running, try again shortly',
     queue_failed: 'the conversion queue rejected this batch',
     destination_claimed:
       'another job took one of the output paths — nothing was queued, the next '
@@ -443,6 +447,9 @@
         {#if r.stopped_reason === 'limit'}· stopped at the per-run limit{/if}
         {#if r.stopped_reason === 'queue_full'}· stopped, queue full{/if}
         {#if r.stopped_reason === 'no_rules'}· no rules configured{/if}
+        {#if r.stopped_reason === 'not_configured'}
+          · stopped, this Library is not set up to be read
+        {/if}
       </span>
       {#if r.errors?.length}
         <ul class="sweep-errors">

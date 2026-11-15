@@ -662,6 +662,8 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
   over the folder first.
 - **Preview** shows what a sweep would queue and moves no schedule clock. **Run
   now** queues it. **Run automatically** turns the scheduler on for that Library.
+- If the folder cannot be reached during a run (a NAS rebooting, a mount
+  dropping), that run says so and queues nothing; the next run checks again.
 - **Remove Library** forgets the Library and its Rules. It never touches a file.
 
 The RomM view's **Automation** tab is the same Rules view, opened on RomM.

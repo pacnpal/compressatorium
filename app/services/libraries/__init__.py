@@ -52,6 +52,9 @@ _lock = threading.Lock()
 _register_lock = threading.Lock()
 
 MAX_PER_SWEEP_LIMIT = 1000
+# How long a registration waits for another one to finish before answering
+# "still running". Short: the other may be stuck on a dead RomM mount.
+REGISTER_WAIT_SECONDS = 5.0
 
 
 class LibraryPathError(ValueError):
@@ -165,7 +168,11 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
     # Check and insert as one step, so two registrations of nested folders
     # cannot both pass the check. `_register_lock`, not `_lock`: this resolves
     # RomM's root and writes the database, and `_lock` is taken by the loop.
-    with _register_lock:
+    # Bounded: a registration stuck on a dead RomM mount must not queue every
+    # later one behind it.
+    if not _register_lock.acquire(timeout=REGISTER_WAIT_SECONDS):
+        raise LibraryPathError(409, "Another registration is still running; try again shortly")
+    try:
         others = [(lib.name, Path(lib.root)) for lib in folder_libraries()]
         romm_root = _romm_root()
         if romm_root is not None:
@@ -193,6 +200,8 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
         with _lock:
             if _cache is not None:
                 _cache[library.record_id] = library
+    finally:
+        _register_lock.release()
     return library
 
 
@@ -214,20 +223,23 @@ def update(
     if max_per_sweep is not None:
         max_per_sweep = max(1, min(int(max_per_sweep), MAX_PER_SWEEP_LIMIT))
     label = name.strip() if name is not None and name.strip() else None
-    with _session() as session:
-        row = session.get(_db.FolderLibraryRecord, record_id)
-        if row is None:
-            return None
-        if label is not None:
-            row.name = label
-        if schedule_enabled is not None:
-            row.schedule_enabled = bool(schedule_enabled)
-        if max_per_sweep is not None:
-            row.max_per_sweep = max_per_sweep
-        session.commit()
-    library.apply_settings(
-        name=label, schedule_enabled=schedule_enabled, max_per_sweep=max_per_sweep,
-    )
+    # The row and the object change as one step, so two concurrent edits
+    # cannot leave memory saying one thing and the database another.
+    with library.settings_lock:
+        with _session() as session:
+            row = session.get(_db.FolderLibraryRecord, record_id)
+            if row is None:
+                return None
+            if label is not None:
+                row.name = label
+            if schedule_enabled is not None:
+                row.schedule_enabled = bool(schedule_enabled)
+            if max_per_sweep is not None:
+                row.max_per_sweep = max_per_sweep
+            session.commit()
+        library.apply_settings(
+            name=label, schedule_enabled=schedule_enabled, max_per_sweep=max_per_sweep,
+        )
     return library
 
 

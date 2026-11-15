@@ -2361,13 +2361,18 @@ A file the process cannot read, or a folder it cannot list, is counted as
 (`platform_detect.known_slug` refuses one no Platform has) and its name is
 `platform_name`; an Image key is the posix path relative to the root,
 `added_at` is the mtime. `summary()` gives the Rules view its counts.
-`configured()` answers from memory: whether the last walk found the root inside
-the configured Volumes (true until a walk says otherwise). A missing root is
-found by the walk and reported as `unreadable`. One walk at a time: `scan()`
-takes the Library's walk lock without blocking and raises `LibraryUnreadable`
-("previous listing ... still running") when a walk is already running, so a
-dead mount strands one thread per Library and every later sweep releases the
-sweep lock at once. The Library
+`configured()` is true: the engine calls it on the event loop, so it touches no
+disk, and it must not latch one bad answer. Every walk checks the root against
+the configured Volumes itself, on its worker thread, and raises
+`RootUnavailable` (`code = "root_unavailable"`) when the root is gone or
+unreachable, so a mount blip fails that one sweep with a reason and the next
+sweep checks again. One walk at a time: `scan()` takes the Library's walk lock
+without blocking and raises `ListingInProgress`
+(`code = "listing_in_progress"`) when a walk is already running, so a dead
+mount strands one thread per Library and every later sweep releases the sweep
+lock at once. `LibraryUnreadable.code` is what the engine reports for the
+Platform (default `"unreadable"`), so the summary can tell these apart; the
+platforms route answers 409 `listing_in_progress` for the second. The Library
 declares `RECOGNIZED_FILTER` and `FAILED_HOLD`, not `CONVERTED_HISTORY`, so its
 Rules are skip-only. `_recognized` returns None for every path when the match
 cache cannot be read.
@@ -2384,8 +2389,13 @@ thread, since it is held across RomM's root resolve and a database write), and
 a unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
 in-memory cache only: the event loop takes it on every `get()`, so it is never
 held across disk or database access or a Library's walk lock. `update()` writes
-the row and changes the cached Library in place (`apply_settings`), never
-waiting for a walk. `remove` calls `sweep.forget_library`, which under the
+the row and changes the cached Library in place (`apply_settings`), as one
+step under the Library's `settings_lock` so two concurrent edits cannot leave
+memory and the row disagreeing; it never waits for a walk. The register route
+runs `register()` on a detached daemon thread under a 60 s bound (504 past it),
+and `register()` waits at most `REGISTER_WAIT_SECONDS` for another registration
+(409 "still running"), so a dead RomM mount strands one thread, never a shared
+worker. `remove` calls `sweep.forget_library`, which under the
 sweep lock drops the Library's Rules and state rows and its entries in the
 job-owner index, then deletes the row. No file is touched.
 

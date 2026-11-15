@@ -25,11 +25,13 @@ reads, the same key the shared cache uses); both are pruned to the files the
 last walk saw. A repeat walk of a large Library is a stat per file and reads no
 headers.
 
-**No disk on the event loop.** :meth:`FolderLibrary.configured` answers from
-memory: what the last walk found when it checked the root against the
-configured Volumes (true until a walk says otherwise; the root was checked at
-registration). A root that has gone, or a mount that stops answering, shows up
-in the walk, which the engine runs on a detached daemon thread under a bound.
+**No disk on the event loop, no latch.** :meth:`FolderLibrary.configured` is
+true: it answers on the event loop, so it touches no disk, and it must not
+remember one bad walk. Every walk checks the root against the configured
+Volumes itself, on the worker thread, and a root that is gone or unreachable
+(a mount blip) fails that one listing with ``root_unavailable``; the next
+sweep walks and checks again. Each candidate is still checked against the
+Volumes before anything is queued.
 
 **One walk at a time.** A second walk of the same Library while one is still
 running fails at once (``LibraryUnreadable``, "previous listing still
@@ -78,6 +80,14 @@ SCAN_TTL_SECONDS = 30.0
 
 class ListingInProgress(LibraryUnreadable):
     """Another walk of this Library is still running; try again shortly."""
+
+    code = "listing_in_progress"
+
+
+class RootUnavailable(LibraryUnreadable):
+    """The root is gone, or not inside a configured Volume right now (a mount blip)."""
+
+    code = "root_unavailable"
 
 
 @dataclass(frozen=True)
@@ -163,8 +173,10 @@ class FolderLibrary:
         # Held for a whole walk. Only ever acquired without blocking (`scan`).
         self._lock = threading.Lock()
         self._scan: Scan | None = None
-        # Whether the last walk found the root inside the configured Volumes.
-        self._in_volumes = True
+        # Serialises a settings change (database row, then this object), so
+        # two concurrent edits leave both saying the same thing. Never the walk
+        # lock: a settings edit must not wait for a walk.
+        self.settings_lock = threading.Lock()
         # path -> (size, mtime_ns, value), for the files the last walk saw.
         # path -> (platform_detect.detection_key, Detection).
         self._detections: dict[str, tuple[tuple, Detection]] = {}
@@ -190,11 +202,12 @@ class FolderLibrary:
     def _files(self) -> tuple[list[tuple[str, os.stat_result]], int]:
         """Every regular, readable file with an Image extension, and how many were not readable."""
         root = self.root
-        self._in_volumes = is_within_configured_volumes(root, treat_archives=False)
-        if not self._in_volumes:
-            raise LibraryUnreadable(f"{root} is outside the configured Volumes")
+        # Checked on every walk, never remembered: a mount that blips fails
+        # this listing only.
+        if not is_within_configured_volumes(root, treat_archives=False):
+            raise RootUnavailable(f"{root} is not reachable inside the configured Volumes")
         if not os.path.isdir(root):
-            raise LibraryUnreadable(f"{root} is not a folder")
+            raise RootUnavailable(f"{root} is not a folder")
         extensions = _image_extensions()
         files: list[tuple[str, os.stat_result]] = []
         unreadable = 0
@@ -317,13 +330,13 @@ class FolderLibrary:
     # ---- the Library interface ----
 
     def configured(self) -> bool:
-        """Whether the last walk found the root inside the configured Volumes. No disk.
+        """True. Called on the event loop, so no disk; and never latched.
 
-        The engine calls this on the event loop. True until a walk says
-        otherwise (the root was checked at registration). A root that has gone
-        is found by the walk, off the loop, and reported as unreadable.
+        Whether the root is reachable is each walk's question (off the loop):
+        a bad answer fails that sweep with ``root_unavailable``, and the next
+        sweep asks again. See the module docstring.
         """
-        return self._in_volumes
+        return True
 
     def canonical_platform_id(self, raw: Any) -> str | None:
         if not isinstance(raw, str) or ":" in raw:
