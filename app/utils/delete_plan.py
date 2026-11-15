@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 from utils.path_utils import strip_archive_path
+from utils.sheet_text import pick_existing, sheet_readings
 
 
 _WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
@@ -41,33 +42,47 @@ def _resolve_track_path(base_dir: Path, ref: str) -> Path:
     return candidate
 
 
-def _parse_cue_tracks(cue_path: Path) -> List[str]:
-    tracks: List[str] = []
-    with cue_path.open("r", encoding="utf-8", errors="ignore") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.upper().startswith("REM"):
-                continue
-            if not stripped.upper().startswith("FILE"):
-                continue
-            try:
-                parts = shlex.split(stripped, comments=True, posix=True)
-            except ValueError:
-                continue
-            if len(parts) < 3 or parts[0].upper() != "FILE":
-                continue
-            name = parts[1].strip()
-            if name:
-                tracks.append(name)
+def _read_sheet(sheet_path: Path) -> list[str]:
+    """The sheet's readings (``utils.sheet_text``); raises when unreadable."""
+    readings = sheet_readings(sheet_path)
+    if not readings:
+        raise OSError(f"Cannot read track sheet: {sheet_path}")
+    return readings
+
+
+def _parse_cue_tracks(cue_path: Path) -> list[str]:
+    return _cue_tracks_from_text(_read_sheet(cue_path)[0])
+
+
+def _cue_tracks_from_text(text: str) -> list[str]:
+    tracks: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.upper().startswith("REM"):
+            continue
+        if not stripped.upper().startswith("FILE"):
+            continue
+        try:
+            parts = shlex.split(stripped, comments=True, posix=True)
+        except ValueError:
+            continue
+        if len(parts) < 3 or parts[0].upper() != "FILE":
+            continue
+        name = parts[1].strip()
+        if name:
+            tracks.append(name)
     return tracks
 
 
-def _parse_gdi_tracks(gdi_path: Path) -> List[str]:
-    tracks: List[str] = []
-    with gdi_path.open("r", encoding="utf-8", errors="ignore") as fh:
-        lines = [line.strip() for line in fh if line.strip()]
+def _parse_gdi_tracks(gdi_path: Path) -> list[str]:
+    return _gdi_tracks_from_text(_read_sheet(gdi_path)[0])
+
+
+def _gdi_tracks_from_text(text: str) -> list[str]:
+    tracks: list[str] = []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     if not lines:
         return tracks
@@ -94,28 +109,21 @@ def sheet_track_paths(sheet_path: str) -> list[str]:
     """The track files a ``.cue`` or ``.gdi`` sheet names, resolved beside it.
 
     The same parsing and containment rules the delete plan uses, so a track
-    reference that escapes the sheet's folder is left out. Tracks are listed
-    whether or not they exist yet. Empty for any other file, or a sheet that
+    reference that escapes the sheet's folder is left out, and the same
+    decoding the disc-ID probe uses (``utils.sheet_text``): the first spelling
+    of a name that exists wins. Tracks are listed whether or not they exist
+    yet. Empty for any other file, or a sheet that
     cannot be read.
     """
     sheet = Path(sheet_path)
-    ext = sheet.suffix.lower()
-    try:
-        if ext == ".cue":
-            refs = _parse_cue_tracks(sheet)
-        elif ext == ".gdi":
-            refs = _parse_gdi_tracks(sheet)
-        else:
-            return []
-    except OSError:
+    parse = {".cue": _cue_tracks_from_text, ".gdi": _gdi_tracks_from_text}.get(
+        sheet.suffix.lower(),
+    )
+    if parse is None:
         return []
-    paths: list[str] = []
-    for ref in refs:
-        try:
-            paths.append(str(_resolve_track_path(sheet.parent, ref)))
-        except ValueError:
-            continue
-    return paths
+    readings = [parse(text) for text in sheet_readings(sheet)]
+    tracks = pick_existing(readings, lambda ref: _resolve_track_path(sheet.parent, ref))
+    return [str(track) for track in tracks]
 
 
 def build_delete_plan(source_path: str) -> Dict[str, object]:

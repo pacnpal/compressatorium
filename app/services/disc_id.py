@@ -55,6 +55,7 @@ from services.subprocess_runner import (
     ioprio_prefix,
     nice_prefix,
 )
+from utils.sheet_text import pick_existing, sheet_readings
 
 logger = get_logger("disc_id")
 
@@ -519,11 +520,6 @@ def nintendo_disc_platform(path: str) -> str | None:
     return None
 
 
-_UTF8_BOM = b"\xef\xbb\xbf"
-# A cue sheet is a few hundred bytes; anything far larger is not one.
-_MAX_CUE_BYTES = 1024 * 1024
-
-
 def _cue_file_names(text: str) -> list[str]:
     """The quoted name of every ``FILE`` line, in order."""
     names = []
@@ -538,33 +534,13 @@ def _cue_file_names(text: str) -> list[str]:
 def _cue_track_paths(path: str) -> list[Path]:
     """Every track file a cue sheet names, resolved beside the sheet.
 
-    Sheets come in UTF-8 (with or without a BOM) and in Windows-1252, so a name
-    is decoded as UTF-8 first, as cp1252 when the sheet is not valid UTF-8, and
-    as Latin-1 last (the reading this module always used). The first spelling
-    that exists on disk wins; when none does, the Latin-1 one is returned and
-    the caller's existence check fails as it always did.
+    Decoded the shared way (``utils.sheet_text``: UTF-8 with a BOM stripped,
+    cp1252 when not UTF-8, Latin-1 last); the first spelling that exists on
+    disk wins, and a track none of whose spellings exists keeps the first.
     """
-    try:
-        with open(path, "rb") as cue:
-            raw = cue.read(_MAX_CUE_BYTES)
-    except OSError:
-        return []
-    raw = raw.removeprefix(_UTF8_BOM)
-    try:
-        first = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        first = raw.decode("cp1252", errors="replace")
-    readings = [_cue_file_names(first), _cue_file_names(raw.decode("latin-1"))]
     folder = Path(path).parent
-    tracks = []
-    for index, fallback in enumerate(readings[-1]):
-        chosen = folder / fallback
-        for names in readings:
-            if index < len(names) and (folder / names[index]).exists():
-                chosen = folder / names[index]
-                break
-        tracks.append(chosen)
-    return tracks
+    readings = [_cue_file_names(text) for text in sheet_readings(path)]
+    return pick_existing(readings, lambda name: folder / name)
 
 
 def _cue_data_file(path: str) -> str | None:

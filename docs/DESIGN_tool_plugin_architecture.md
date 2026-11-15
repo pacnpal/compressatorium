@@ -2394,10 +2394,12 @@ Precedence is fixed and never guesses:
    `/mnt/md/...` does not make every Image in it a Genesis Image. A path in no
    configured Volume uses only its own folder.
 
-Cue sheets are read as UTF-8 (a BOM stripped), as cp1252 when they are not
-valid UTF-8, and as Latin-1 last; the first spelling of a track name that
-exists beside the sheet is used (`disc_id._cue_track_paths`), so
-`Jeu (Édition).bin` resolves from either encoding.
+Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
+(a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
+and the first spelling of a track name that exists beside the sheet wins. The
+disc-ID probe (`disc_id._cue_track_paths`), the header-dependency list
+(`delete_plan.sheet_track_paths`) and the delete plan all use it, so
+`Jeu (Édition).bin` resolves, and is cached, from either encoding.
 
 Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
 and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,

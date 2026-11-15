@@ -479,6 +479,20 @@ def test_a_cue_naming_an_accented_track_is_followed(tmp_path, encode):
     assert detect_platform(cue).platform == "saturn"
 
 
+def test_a_cp1252_cue_lists_its_accented_track_and_is_cached(tmp_path):
+    from services.tools import registry
+
+    folder = tmp_path / "downloads"
+    track = _sector0(folder / _ACCENTED, b"SEGA SEGASATURN ", raw=True)
+    sheet = f'FILE "{_ACCENTED}" BINARY\n  TRACK 01 MODE1/2352\n'
+    cue = _write(folder / "game.cue", sheet.encode("cp1252"))
+
+    # The cache's dependency list reads the sheet the way the probe does.
+    assert registry.get("chdman").header_reads(cue) == [track]
+    assert detect_platform(cue).platform == "saturn"
+    assert cue in platform_detect._cache
+
+
 def test_a_gdi_lists_its_tracks_as_header_reads(tmp_path):
     from services.tools import registry
 
