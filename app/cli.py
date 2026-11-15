@@ -19,7 +19,7 @@ drives the same pieces the web UI does, in-process:
   directory (``<data dir>/locks``), so a running server and this process never
   write one output twice;
 * Rules (``run-rules``): ``rules.sweep.sweep``, the server scheduler's own
-  sweep, once per Library from ``services.libraries``; the scheduler lock
+  sweep, once per Library from ``services.library_catalog``; the scheduler lock
   (``services.scheduler_lock``) keeps it from running beside a server.
 
 Exit status: 0 when everything finished or there was nothing to do, 1 when any
@@ -314,11 +314,12 @@ class Printer:
     def __init__(self, as_json: bool) -> None:
         self.as_json = as_json
 
-    def line(self, data: dict) -> None:
+    def line(self, data: dict, *, prefix: str = "") -> None:
+        """One Image. ``prefix`` goes before the path in text mode."""
         if self.as_json:
             print(json.dumps(data), flush=True)
             return
-        text = f"{data['status']:<10} {data['path']}"
+        text = f"{data['status']:<10} {prefix}{data['path']}"
         if data.get("output"):
             text += f" -> {data['output']}"
         if data.get("check"):
@@ -921,9 +922,11 @@ async def verify(args, printer: Printer, state: RunState) -> int:
 
 
 def _choose_libraries(wanted: str | None) -> list:
-    from services import libraries
+    """The Libraries to sweep. Asked once the database is open: a Library list
+    may be stored there (folder Libraries, #303)."""
+    from services import library_catalog
 
-    every = libraries.all_libraries()
+    every = library_catalog.all_libraries()
     if wanted is None:
         return every
     chosen = [library for library in every if library.id == wanted]
@@ -933,17 +936,17 @@ def _choose_libraries(wanted: str | None) -> list:
     return chosen
 
 
-def _rules_line(library, platform_id=None, *, status, mode=None, queued=0,
+def _rules_line(library_id, platform_id=None, *, status, mode=None, queued=0,
                 considered=0, candidates=(), reason=None) -> dict:
     return {
-        "library": library.id, "platform_id": platform_id, "mode": mode,
+        "library": library_id, "platform_id": platform_id, "mode": mode,
         "status": status, "queued": queued, "considered": considered,
         "candidates": list(candidates), "reason": reason,
     }
 
 
 def _rules_text(line: dict) -> str:
-    where = line["library"]
+    where = line["library"] or "every Library"
     if line["platform_id"] is not None:
         where += f"/{line['platform_id']} {line['mode'] or ''}".rstrip()
     text = f"{line['status']:<10} {where}"
@@ -957,14 +960,26 @@ def _rules_text(line: dict) -> str:
     return text
 
 
-def _print_sweep(printer: Printer, library, result: dict) -> None:
+# A sweep that stopped for one of these did not do what its Rules say: exit 1.
+# `not_configured` is only reported for a Library that has Rules.
+_FAILED_STOPS = ("library_unresponsive", "not_configured")
+
+
+def _print_sweep(printer: Printer, library, result: dict) -> bool:
     """One line per Platform the sweep looked at, and one for the Library
-    when the sweep stopped early or never started (``no_rules``)."""
-    errors = {e["platform_id"]: e["error"] for e in result["errors"]}
+    when the sweep stopped early or never started (``no_rules``).
+
+    True when the sweep reported an error: any ``errors`` entry, including a
+    lost race for a destination (``destination_claimed``), or a stop in
+    ``_FAILED_STOPS``.
+    """
+    errors: dict = {}
+    for entry in result["errors"]:
+        errors.setdefault(entry["platform_id"], []).append(entry["error"])
     lines = []
     for summary in result["platforms"]:
         platform_id = summary["platform_id"]
-        reason = errors.pop(platform_id, None)
+        reason = ", ".join(errors.pop(platform_id, [])) or None
         if result.get("dry_run"):
             status = "planned"
         elif reason and not summary["queued"]:
@@ -972,60 +987,84 @@ def _print_sweep(printer: Printer, library, result: dict) -> None:
         else:
             status = "queued"
         lines.append(_rules_line(
-            library, platform_id, status=status, mode=summary["mode"],
+            library.id, platform_id, status=status, mode=summary["mode"],
             queued=summary["queued"], considered=summary["considered"],
             candidates=summary.get("candidates") or (), reason=reason,
         ))
     # A Platform skipped before it was read (tool not ready, Library
-    # unreadable) has an error and no summary.
-    for platform_id, error in errors.items():
-        lines.append(_rules_line(library, platform_id, status="error", reason=error))
+    # unreadable), or the whole Library refused (platform None), has an error
+    # and no summary.
+    for platform_id, reasons in errors.items():
+        lines.append(_rules_line(
+            library.id, platform_id, status="error", reason=", ".join(reasons),
+        ))
     stopped = result.get("stopped_reason")
     if stopped:
         status = "skipped" if stopped in ("no_rules", "not_configured") else "stopped"
-        lines.append(_rules_line(library, status=status, reason=stopped))
+        lines.append(_rules_line(library.id, status=status, reason=stopped))
     for line in lines:
         printer.summary(line, _rules_text(line))
+    return bool(result["errors"]) or stopped in _FAILED_STOPS
+
+
+async def _sweep_one(printer: Printer, library, state: RunState, *, dry_run: bool) -> bool:
+    """The Library's ``before_pass`` hook, then its sweep. True on any error.
+
+    An exception is reported for this Library and does not reach the caller,
+    as in the server's scheduler loop, so the other Libraries still run.
+    """
+    from services.rules import sweep as rules_sweep
+
+    try:
+        await library.before_pass(dry_run=dry_run)
+        result = await rules_sweep.sweep(
+            library, dry_run=dry_run, should_stop=lambda: state.stopping,
+        )
+    except Exception as exc:  # one Library must not stop the rest
+        logger.warning("run-rules: Library %s failed: %s", library.id, exc, exc_info=True)
+        line = _rules_line(library.id, status="error", reason=f"sweep_failed: {exc}")
+        printer.summary(line, _rules_text(line))
+        return True
+    return _print_sweep(printer, library, result)
 
 
 async def run_rules(args, printer: Printer, state: RunState) -> int:
     """One pass over the stored Rules of each Library, like one server tick.
 
-    Each Library goes through ``rules.sweep.sweep``, the sweep the server's
-    scheduler runs, so each Rule's own switch, days, window and interval
-    apply. The Library's in-app master switch does not: running this command
-    is the switch. The jobs it queues run here, and it returns once they have
-    ended, cleanup included. While it runs it holds the scheduler lock, so it
-    never runs beside a server on the same data directory.
+    Each Library runs its ``before_pass`` hook (what the server does for it at
+    startup or in the background), then goes through ``rules.sweep.sweep``,
+    the sweep the server's scheduler runs, so each Rule's own switch, days,
+    window and interval apply. The Library's in-app master switch does not:
+    running this command is the switch. The jobs it queues run here, and it
+    returns once they have ended, cleanup included. While it runs it holds the
+    scheduler lock, so it never runs beside a server on the same data
+    directory. Exit 1 when a sweep reported an error or a job failed.
     """
-    from services import libraries, scheduler_lock
+    from services import scheduler_lock
     from services.preferences_store import preferences_store
-    from services.rules import sweep as rules_sweep
 
-    chosen = _choose_libraries(args.library)
     with contextlib.ExitStack() as held:
         if args.dry_run:
-            # Look, but take nothing: a dry run must not stop a server starting.
+            # Look, but take nothing: a dry run must not hold up a server.
             scheduler_lock.check()
         else:
             # Before the database is opened: a refused run touches nothing.
             held.callback(scheduler_lock.acquire("run-rules").release)
         if not _open_db(args.dry_run):
             # A dry run with no database: nothing is stored, so no Rules.
+            line = _rules_line(args.library, status="skipped", reason="no_rules")
+            printer.summary(line, _rules_text(line))
+            return EXIT_OK
+        chosen = _choose_libraries(args.library)
+        if not args.dry_run:
+            return await _run_rules_pass(chosen, printer, state)
+        failed = False
+        # The Rule store writes as it reads (its one-time copies); a dry run
+        # keeps those writes in memory.
+        with preferences_store.read_only():
             for library in chosen:
-                line = _rules_line(library, status="skipped", reason="no_rules")
-                printer.summary(line, _rules_text(line))
-            return EXIT_OK
-        await libraries.load_settings()
-        if args.dry_run:
-            # The Rule store writes as it reads (its one-time copies); a dry
-            # run keeps those writes in memory.
-            with preferences_store.read_only():
-                for library in chosen:
-                    result = await rules_sweep.sweep(library, dry_run=True)
-                    _print_sweep(printer, library, result)
-            return EXIT_OK
-        return await _run_rules_pass(chosen, printer, state)
+                failed = await _sweep_one(printer, library, state, dry_run=True) or failed
+        return EXIT_FAILED if failed or state.stopping else EXIT_OK
 
 
 async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> int:
@@ -1043,7 +1082,8 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
         # A job that ends while its own sweep is still running has no owner
         # yet; the Library being swept queued it.
         library_id = owners.get(job.id) or (sweeping[-1] if sweeping else None)
-        printer.line({"library": library_id, **item.convert_line()})
+        printer.line({"library": library_id, **item.convert_line()},
+                     prefix=f"{library_id}: " if library_id else "")
 
     # Registered like the server's: the Rule history hears each job's outcome.
     async with _job_runner(state, on_terminal, rules_sweep.note_job_finished) as jobs:
@@ -1052,10 +1092,16 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
                 break
             before = set(jobs.jobs)
             sweeping.append(library.id)
-            result = await rules_sweep.sweep(library)
+            if await _sweep_one(printer, library, state, dry_run=False):
+                failed = True
             for job_id in set(jobs.jobs) - before:
                 owners.setdefault(job_id, library.id)
-            _print_sweep(printer, library, result)
+            if state.stopping:
+                # The signal cancelled what was queued when it arrived; the
+                # sweep may have let one more batch in since. Cancel that too
+                # rather than wait for it.
+                await jobs.cancel_all_jobs()
+                break
         await jobs.drain()
     return EXIT_FAILED if failed or state.stopping else EXIT_OK
 

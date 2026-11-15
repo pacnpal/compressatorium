@@ -164,6 +164,16 @@ class Library(Protocol):
 
     # ---- hooks for steps only this Library performs ----
 
+    async def before_pass(self, *, dry_run: bool) -> None:
+        """Called by ``run-rules`` (#307) before it sweeps this Library.
+
+        The work the server does at startup or in its background loops that a
+        sweep relies on: load saved settings, and, on a real pass, the
+        maintenance only this Library has. A dry run must write nothing. A
+        Library with nothing to do implements it as a no-op. Errors propagate:
+        ``run-rules`` reports them for this Library and goes on.
+        """
+
     def sweep_blocked(self) -> str | None:
         """An error code when the Library must not be swept now, else None."""
 

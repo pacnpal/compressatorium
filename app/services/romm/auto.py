@@ -66,6 +66,6 @@ async def run_forever() -> None:
 
     The same Library list ``compressatorium run-rules`` sweeps (#307).
     """
-    from services.libraries import all_libraries
+    from services.library_catalog import all_libraries
 
     await _sweep.run_forever(all_libraries)

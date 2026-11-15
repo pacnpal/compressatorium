@@ -2,7 +2,8 @@
 
 One list for both schedulers, the server's (``rules.sweep.run_forever``, via
 ``romm.auto``) and ``compressatorium run-rules`` (#307), so a Library added
-here is swept by both. RomM is the only Library so far.
+here is swept by both. RomM is the only Library so far. Callers ask for the
+list once the database is open, so a Library stored there can be listed.
 """
 
 from __future__ import annotations
@@ -15,15 +16,3 @@ def all_libraries() -> list[Library]:
     from services.romm.library import romm_library
 
     return [romm_library]
-
-
-async def load_settings() -> None:
-    """Read each Library's saved settings, as the server does at startup.
-
-    A process that sweeps without the server (``run-rules``) calls this first:
-    RomM keeps its connection and Rule defaults in a cache the server primes
-    when it starts.
-    """
-    from services.romm import settings as romm_settings
-
-    await romm_settings.load()

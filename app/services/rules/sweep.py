@@ -795,11 +795,16 @@ async def sweep(
     ignore_schedule: bool = False,
     dry_run: bool = False,
     overall_limit: int | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict:
     """Run one pass over *library*'s ruled Platforms.
 
     Returns a summary rather than raising on a partial failure: one unreachable
     platform must not abort the sweep for the others.
+
+    *should_stop* is asked before each Platform and again just before a batch
+    is queued; once it is true the sweep queues nothing more and ends with
+    ``stopped_reason == "stopped"`` (``run-rules`` on SIGTERM, #307).
 
     Serialised process-wide, so a scheduled tick and a manual run cannot both
     plan against the same "nothing is in flight" snapshot. A preview is a real
@@ -820,6 +825,7 @@ async def sweep(
             ignore_schedule=ignore_schedule,
             dry_run=dry_run,
             overall_limit=overall_limit,
+            should_stop=should_stop,
         )
     # The sweep is finished: every sweep that ran returns through here, after
     # the lock is released. `result["dry_run"]` tells a preview from a run.
@@ -833,8 +839,12 @@ async def _sweep_locked(
     ignore_schedule: bool,
     dry_run: bool,
     overall_limit: int | None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict:
     """The sweep body. Always called with ``_sweep_lock`` held."""
+    def stopping() -> bool:
+        return should_stop is not None and should_stop()
+
     rules = await get_rules(library)
     state = await get_state(library)
     now = datetime.now(timezone.utc)
@@ -900,6 +910,9 @@ async def _sweep_locked(
     claimed_destinations: set[str] = set()
 
     for platform_id in ordered:
+        if stopping():
+            result["stopped_reason"] = "stopped"
+            break
         if result["queued"] >= cap:
             result["stopped_reason"] = "limit"
             break
@@ -1107,6 +1120,11 @@ async def _sweep_locked(
             # with no digest deletes on Intact). Absent when nothing is deleted.
             summary["check_level"] = effective_check_level(rule)
 
+        if batch and not dry_run and stopping():
+            # Asked again here: listing and inspecting a Platform can take
+            # minutes, and a stop that arrived meanwhile must queue nothing.
+            result["stopped_reason"] = "stopped"
+            break
         if batch and not dry_run:
             try:
                 # delete-on-verify needs its snapshot up front, or

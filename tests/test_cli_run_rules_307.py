@@ -29,8 +29,18 @@ class _Shelf:
     def __init__(self, library_id: str, root: Path) -> None:
         self.id = library_id
         self.root = root
+        # What happened, in order: ("before_pass", dry_run), ("images", id).
+        self.calls: list[tuple] = []
+        self.unreadable = False  # images() raises LibraryUnreadable
+        self.broken = False  # configured() raises: the whole sweep fails
+        self.on_images = None  # called inside images(), for a signal mid-sweep
+
+    async def before_pass(self, *, dry_run: bool) -> None:
+        self.calls.append(("before_pass", dry_run))
 
     def configured(self):
+        if self.broken:
+            raise RuntimeError("database is locked")
         return True
 
     def canonical_platform_id(self, raw):
@@ -45,8 +55,13 @@ class _Shelf:
         return [Platform(id="gc", slug="ngc", name="GameCube")]
 
     def images(self, platform_id):
-        from services.rules import Image
+        from services.rules import Image, LibraryUnreadable
 
+        self.calls.append(("images", platform_id))
+        if self.on_images is not None:
+            self.on_images()
+        if self.unreadable:
+            raise LibraryUnreadable("RomM is not answering")
         return [
             Image(
                 key=p.name, name=p.name, size=p.stat().st_size,
@@ -80,7 +95,7 @@ class _Shelf:
 
 @pytest.fixture(name="env")
 def _env(tmp_path, monkeypatch, reset_db_engine):
-    from services import libraries
+    from services import library_catalog
     from services.concurrency_manager import concurrency_manager
     from services.job_manager import job_manager
     from services.lock_manager import lock_manager
@@ -126,7 +141,7 @@ def _env(tmp_path, monkeypatch, reset_db_engine):
     }
     for shelf in shelves.values():
         (shelf.root / "gc").mkdir(parents=True)
-    monkeypatch.setattr(libraries, "all_libraries", lambda: list(shelves.values()))
+    monkeypatch.setattr(library_catalog, "all_libraries", lambda: list(shelves.values()))
     yield {"vol": vol, "config": config, "locks": locks, **shelves}
     romm_settings.reset_for_tests()
     reset_db_engine()
@@ -135,12 +150,24 @@ def _env(tmp_path, monkeypatch, reset_db_engine):
 @pytest.fixture(name="dolphin")
 def _dolphin(monkeypatch):
     service = registry.get("dolphin")._service
-    state = {"fail": False, "runs": []}
+    state = {"fail": False, "runs": [], "seconds": 0}
 
     async def fake_run(cmd, *, input_path, output_path, **kwargs):
         state["runs"].append((input_path, output_path))
         if state["fail"]:
             raise RuntimeError("dolphin-tool failed with return code 1.")
+        if state["seconds"]:
+            # A slow run that, like the real runner, stops on its cancel event.
+            from services.subprocess_runner import ConversionCancelled
+
+            yield {"progress": 1, "message": "Converting"}
+            cancel = kwargs.get("cancel_event") or asyncio.Event()
+            try:
+                await asyncio.wait_for(cancel.wait(), state["seconds"])
+            except asyncio.TimeoutError:
+                pass
+            else:
+                raise ConversionCancelled("Conversion cancelled")
         Path(output_path).write_bytes(b"converted output")
         yield {"progress": 100, "message": "Conversion complete"}
 
@@ -416,24 +443,283 @@ def test_run_rules_holds_the_lock_for_its_whole_pass(env, dolphin, capsys, monke
     scheduler_lock.acquire("server", wait=0).release()
 
 
-def test_a_second_server_on_the_same_data_dir_refuses_to_start(env, monkeypatch):
+def test_lock_held_with_no_database_exits_3_and_creates_none(env, dolphin, capsys):
+    from services import scheduler_lock
+
+    server = scheduler_lock.acquire("server")
+    try:
+        code, lines, _err = _cli(capsys, "run-rules", "--json")
+    finally:
+        server.release()
+
+    assert (code, lines) == (3, [])
+    assert not (env["config"] / "compressatorium.db").exists()
+
+
+class _ReachedTheDatabase(Exception):
+    """Raised where the server's startup opens the database."""
+
+
+@pytest.fixture(name="server_start")
+def _server_start(env, monkeypatch):
+    """Start ``main.lifespan`` up to the database, with short lock intervals."""
     import main
+    from services import db as _db
     from services import scheduler_lock
 
     # The app's log handlers would outlive the test.
     monkeypatch.setattr(main, "configure_logging", lambda: None)
-    first = scheduler_lock.acquire("server")
+    monkeypatch.setattr(scheduler_lock, "_WAIT_POLL", 0.02)
+    monkeypatch.setattr(scheduler_lock, "_WAIT_LOG_EVERY", 0.1)
+
+    def reached(*args, **kwargs):
+        raise _ReachedTheDatabase
+
+    monkeypatch.setattr(_db, "resolve_db_path", reached)
 
     async def start():
         async with main.lifespan(main.app):
             pass
 
+    return start
+
+
+@pytest.mark.parametrize("holder", ["run-rules", "server"])
+def test_a_server_waits_for_the_lock_then_starts(env, server_start, caplog, holder):
+    """A server started during a run-rules pass (or beside another server)
+    waits, saying who it waits for, and starts once the lock is free."""
+    import logging
+
+    from services import scheduler_lock
+
+    caplog.set_level(logging.INFO)
+    first = scheduler_lock.acquire(holder)
+
+    async def scenario():
+        task = asyncio.create_task(server_start())
+        await asyncio.sleep(0.35)
+        waiting = not task.done()
+        first.release()
+        with pytest.raises(_ReachedTheDatabase):
+            await asyncio.wait_for(task, 5)
+        return waiting
+
     try:
-        with pytest.raises(RuntimeError) as refused:
-            asyncio.run(start())
+        assert asyncio.run(scenario()), "the server waited for the lock"
     finally:
         first.release()
 
-    assert "in use by the server" in str(refused.value)
-    # Refused before it touched anything: no database was created.
+    assert f"by {'the server' if holder == 'server' else 'another run-rules'}" in caplog.text
+    assert caplog.text.count("Waiting for the Rule scheduler lock") >= 2, "logged again"
+    # Released when startup failed, so the next start does not wait.
+    scheduler_lock.acquire("server", wait=0).release()
+
+
+def test_a_waiting_server_stops_on_sigterm(env, server_start):
+    import os
+    import signal
+
+    from services import scheduler_lock
+
+    told = []
+    previous = signal.signal(signal.SIGTERM, lambda *a: told.append("uvicorn"))
+    first = scheduler_lock.acquire("run-rules")
+    fds_before = len(os.listdir("/dev/fd"))
+
+    async def scenario():
+        task = asyncio.create_task(server_start())
+        await asyncio.sleep(0.1)
+        os.kill(os.getpid(), signal.SIGTERM)
+        with pytest.raises(RuntimeError, match="Stopped"):
+            await asyncio.wait_for(task, 5)
+
+    try:
+        asyncio.run(scenario())
+        handler_after = signal.getsignal(signal.SIGTERM)
+    finally:
+        first.release()
+        signal.signal(signal.SIGTERM, previous)
+
+    assert told == ["uvicorn"], "the server's own handler still heard it"
+    assert handler_after is not None and handler_after.__name__ == "<lambda>"
+    assert len(os.listdir("/dev/fd")) <= fds_before, "the lock file was closed"
     assert not (env["config"] / "compressatorium.db").exists()
+
+
+# --------------------------------------------------------------------------- #
+# errors, stops and the Library hook
+# --------------------------------------------------------------------------- #
+
+
+def test_an_unreadable_library_exits_1_and_the_rest_still_run(env, dolphin, capsys):
+    env["shelf"].unreadable = True
+    attic_iso = _iso(env, "attic")
+    _store_rules(env, {"shelf": RVZ_RULE, "attic": RVZ_RULE})
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+    dry_code, dry_lines, _err = _cli(capsys, "run-rules", "--dry-run", "--json")
+
+    assert code == 1
+    assert {"library": "shelf", "platform_id": "gc", "mode": None, "status": "error",
+            "queued": 0, "considered": 0, "candidates": [], "reason": "unreadable"} in lines
+    assert attic_iso.with_suffix(".rvz").exists()
+    assert dry_code == 1
+    assert any(line.get("reason") == "unreadable" for line in dry_lines)
+
+
+def test_a_sweep_that_raises_is_reported_and_the_next_library_runs(env, dolphin, capsys):
+    env["shelf"].broken = True
+    attic_iso = _iso(env, "attic")
+    _store_rules(env, {"shelf": RVZ_RULE, "attic": RVZ_RULE})
+
+    code, lines, err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    shelf = [line for line in lines if line["library"] == "shelf"]
+    assert [(s["status"], s["platform_id"]) for s in shelf] == [("error", None)]
+    assert "database is locked" in shelf[0]["reason"]
+    assert attic_iso.with_suffix(".rvz").exists()
+    assert "database is locked" in err
+
+
+def test_a_stop_during_a_sweep_queues_nothing_more(env, dolphin, capsys):
+    import os
+    import signal
+
+    iso = _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+    env["shelf"].on_images = lambda: os.kill(os.getpid(), signal.SIGTERM)
+
+    code, _lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    assert dolphin["runs"] == []
+    assert not iso.with_suffix(".rvz").exists()
+
+
+def test_a_job_queued_after_the_stop_is_cancelled(env, dolphin, capsys, monkeypatch):
+    """A stop that lands while the batch is being queued: the job it let in
+    is cancelled, not waited for."""
+    import os
+    import signal
+    import time
+
+    from services.job_manager import job_manager
+
+    _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+    dolphin["seconds"] = 30
+    real = job_manager.create_batch_jobs
+
+    async def stop_then_queue(*args, **kwargs):
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(0.1)  # the stop's own cancel finds nothing queued
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", stop_then_queue)
+    started = time.monotonic()
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    assert time.monotonic() - started < 15, "the job was cancelled, not waited for"
+    assert [line["status"] for line in lines if line.get("path")] == ["cancelled"]
+
+
+def test_each_library_runs_its_before_pass_hook_first(env, dolphin, capsys):
+    _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+
+    _cli(capsys, "run-rules", "--json")
+    _cli(capsys, "run-rules", "--dry-run", "--json")
+
+    # The dry pass lists no Images: the Rule ran a moment ago, so it is not due.
+    assert env["shelf"].calls == [
+        ("before_pass", False), ("images", "gc"), ("before_pass", True),
+    ]
+    assert env["attic"].calls == [("before_pass", False), ("before_pass", True)]
+
+
+def test_libraries_are_listed_once_the_database_is_open(env, dolphin, capsys, monkeypatch):
+    """A Library list read from the database (#303's folder Libraries) works."""
+    from services import db as _db
+    from services import library_catalog
+
+    shelves = [env["shelf"], env["attic"]]
+
+    def from_the_database():
+        assert _db.SessionLocal is not None, "listed before the database was opened"
+        return shelves
+
+    monkeypatch.setattr(library_catalog, "all_libraries", from_the_database)
+    iso = _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+    _db.SessionLocal = None
+    _db.engine = None
+
+    code, lines, _err = _cli(capsys, "run-rules", "--library", "shelf", "--json")
+
+    assert code == 0, lines
+    assert iso.with_suffix(".rvz").exists()
+
+
+def test_dry_run_keeps_a_legacy_copy_in_memory(env, dolphin, capsys):
+    """A Library's first read copies its pre-#296 rows; a dry run does not."""
+    from services.preferences_store import preferences_store
+
+    _iso(env)
+    env["shelf"].legacy_preference_keys = {"rules": "shelf.old_rules"}
+    _store_rules(env, {})
+    asyncio.run(preferences_store.put("shelf.old_rules", {"gc": RVZ_RULE["gc"]}))
+    keys = ("rules", "rules.migrated", "shelf.old_rules")
+    rows = {key: asyncio.run(preferences_store.get(key)) for key in keys}
+
+    code, lines, _err = _cli(capsys, "run-rules", "--dry-run", "--json")
+
+    assert code == 0, lines
+    assert any(line["status"] == "planned" and line["library"] == "shelf" for line in lines)
+    for key, value in rows.items():
+        assert asyncio.run(preferences_store.get(key)) == value, key
+
+
+def test_text_job_lines_name_the_library(env, dolphin, capsys):
+    import cli
+
+    iso = _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+
+    assert cli.main(["run-rules"]) == 0
+    out = capsys.readouterr().out.splitlines()
+
+    assert f"completed  shelf: {iso} -> {iso.with_suffix('.rvz')}" in out
+
+
+def test_romm_before_pass_does_what_the_server_does_at_startup(env, monkeypatch):
+    """Load the settings; on a real pass also finish an owed identity cleanup
+    and settle the re-pins RomM has matched since, once."""
+    from routes import romm as romm_routes
+    from services.romm import settings as romm_settings
+    from services.romm.library import romm_library
+
+    calls = []
+
+    async def load(**kwargs):
+        calls.append("load")
+        return {}
+
+    async def replay():
+        calls.append("replay_identity_cleanup")
+
+    async def settle():
+        calls.append("settle_once")
+        return None
+
+    monkeypatch.setattr(romm_settings, "load", load)
+    monkeypatch.setattr(romm_routes, "replay_identity_cleanup", replay)
+    monkeypatch.setattr(romm_routes, "settle_once", settle)
+
+    asyncio.run(romm_library.before_pass(dry_run=True))
+    assert calls == ["load"]
+    calls.clear()
+    asyncio.run(romm_library.before_pass(dry_run=False))
+    assert calls == ["load", "replay_identity_cleanup", "settle_once"]
