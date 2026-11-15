@@ -2375,14 +2375,15 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   **`add`** holds new members, written *first* (a reader that takes the first
   file of a kind finds them) and stamped `added_date_time` (the zip epoch by
   default), so a product does not depend on the clock. An added name replaces
-  any copied member that would have taken it. Two copied members renamed onto one name raise
-  `ValueError`.
+  any copied member that would have taken it. Two copied members renamed onto
+  one name raise `ValueError`.
 - **Nothing that looks finished appears early.** The archive is written to a
   `mkstemp` file named `.<dst name>.partial-*.tmp` in the destination
   directory (hidden, and ending in `.tmp`, which RomM's scanner skips by
   default, so a partial file is never listed as a game), fsynced, passed to
-  the caller's optional `check(temp_path)`, then placed with `utils.path_utils.place_without_clobbering`, the
-  atomic no-replace move, and the directory is fsynced. Any failure, including
+  the caller's optional `check(temp_path)`, then placed with
+  `utils.path_utils.place_without_clobbering`, the atomic no-replace move, and
+  the directory is fsynced. Any failure, including
   `ConversionCancelled` from `is_cancelled`, unlinks the temporary file. An
   existing file at `dst` raises `FileExistsError` and is never replaced; the job
   pipeline's authorized-overwrite sweep clears it first.
@@ -2415,8 +2416,9 @@ tool: it registers with an empty binary path and reports no pids.
   `dosbox.conf` at the root, as the first entry (RomM's default EmulatorJS,
   4.2.3, extracts the file and hands the core the first file with an extension
   it lists, which for DOSBox Pure is `.conf`; the nightly loads a generated
-  `BOOTUP.BAT` and relies on `dosbox_pure_conf=inside` instead), its `mount`/`imgmount`/`boot` lines rewritten by
-  `rewrite_conf` (bytes in, bytes out; CRLF and encoding kept). The product is
+  `BOOTUP.BAT` and relies on `dosbox_pure_conf=inside` instead), its
+  `mount`/`imgmount`/`boot` lines rewritten by `rewrite_conf` (bytes in, bytes
+  out; CRLF and encoding kept). The product is
   `<name>.dosz` beside the Source, the extension DOSBox Pure documents as a zip,
   so it can never share its Source's path.
 - **Warnings.** Lines that still point into `.\eXoDOS\` after the rewrite end

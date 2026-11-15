@@ -839,7 +839,8 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 |-------|------|
 | ![Wii U tool, light](docs/screenshots/workspace-wiiu-light.png) | ![Wii U tool, dark](docs/screenshots/workspace-wiiu-dark.png) |
 
-**eXoDOS.** Repack eXoDOS game zips into `.dosz` files RomM's in-browser DOS player can start.
+**eXoDOS.** Repack eXoDOS game zips into `.dosz` files for RomM's in-browser DOS
+player.
 
 | Light | Dark |
 |-------|------|
@@ -1625,6 +1626,9 @@ copied into RomM alone does not start.
   with the same rules as archive extraction (no absolute paths, no `..`), the
   archive size limits apply, and the template must resolve inside `EXODOS_DOS_DIR`.
 - **Not from archives**: the repack needs the zip itself and the `!dos` folder.
+- **Manual only.** Run it from the file browser. Rules never offer it, and a
+  stored Rule that names it is refused, because a Rule over RomM's `dos` folder
+  would write a second copy of every game beside it.
 
 **In RomM**, DOSBox Pure only reads a `dosbox.conf` when its core option
 `dosbox_pure_conf` is `inside` (it is off by default). Set it in RomM's
