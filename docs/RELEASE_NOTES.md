@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Findings view and folder Platforms** (#304). A new **Findings** view lists
+  the Images in your folder Libraries that need a decision: a Platform
+  conflict (the header disagrees with the folder) or an Unsorted Image. Each
+  row shows the Library, the Image, the kind, first and last seen, and links
+  to **Open folder** and **Set Platform**; **Dismiss** hides it until its cause
+  changes. **Set Platform** ("this folder is PSP") is also on a folder's row
+  menu, ranks below the header and above the folder name, and a header that
+  disagrees is a conflict. The app never moves or deletes an Image over a
+  Finding. API: `/api/findings`, `/api/platform-mappings`, `/api/platforms`.
+  New tables `platform_mappings` and `findings` (migration 0012).
 - **Folder Libraries and the Rules view** (#303). Pick **Register as a
   Library** on any folder inside a Volume, and the new **Rules** view shows the
   Platforms found in it with Image counts, plus how many Images are Unsorted or

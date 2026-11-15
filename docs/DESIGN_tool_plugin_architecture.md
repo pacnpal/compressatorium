@@ -2501,8 +2501,9 @@ pass.
 worked out without a library manager. The convert panel's Auto choice uses it
 today; folder Libraries (#303), the Inbox and the CLI (#306) are meant to call
 the same function. `Detection` is a frozen dataclass: `platform` (a slug, or
-None), `how` (`"header"`, `"folder"`, `"conflict"`, `"unsorted"`), what each
-source said (`header`, `folder`) and a one-line `reason` for the UI.
+None), `how` (`"header"`, `"mapping"`, `"folder"`, `"conflict"`,
+`"unsorted"`), what each source said (`header`, `folder`, `mapped`) and a
+one-line `reason` for the UI.
 
 Precedence is fixed and never guesses:
 
@@ -2517,7 +2518,10 @@ Precedence is fixed and never guesses:
    layout, or a trimmed image's boot executable). A probe that raises is
    treated as no answer. A new console is taught to detection by its tool's
    override, not by an edit here.
-2. **Folder name.** The nearest parent folder whose name is a key or alias in
+2. **The user's mapping** (#304, §3.3.14). The nearest folder above the Image
+   that the user set to a Platform. When one applies, the folder name is not
+   consulted.
+3. **Folder name.** The nearest parent folder whose name is a key or alias in
    `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
    name for it (the tools' own spellings and the folder names ES-DE and
    Batocera use: `ps1`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
@@ -2533,7 +2537,8 @@ pins every key to RomM's list. A test also fails when a tool declares a slug
 the table does not cover, so a new Platform brings its folder names with it.
 `platform_name(slug)` gives the display name from `_NAMES` (a test fails when a
 slug has none). `detect_uncached` is the same decision without the shared LRU,
-for a caller (the folder Library) that keeps its own per-file cache. A header that disagrees with the folder, or two headers that disagree,
+for a caller (the folder Library) that keeps its own per-file cache. A header
+that disagrees with the mapping or the folder, or two headers that disagree,
 is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
 changes; `clear_cache()` exists for tests. A header probe that reads other
@@ -2635,6 +2640,60 @@ delete-on-verify), so nothing is lost either way.
 The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;
 its values were tool ids, so a value left from it still loads as a tab.
+
+### 3.3.14 Folder Platform mappings and the Findings store (`services/platform_mappings.py`, `services/findings.py`)
+
+**Mappings.** A row of `platform_mappings` says "this folder is PSP": a
+`library_id`, the folder's path relative to that Library's root (`/`
+separators, `""` for the root), and a Platform slug checked with
+`known_slug`. `set_mapping(path, platform)` takes the folder's absolute path,
+finds the folder Library that holds it (403 outside the Volumes, 404 outside
+every folder Library, 422 for an unknown Platform), and clears the mapping
+when `platform` is None. The rows are kept in memory as an index of absolute
+folder paths, rebuilt on first use after any change; `mapping_for(path)` walks
+the Image's parents and returns the nearest mapped one. Removing a Library
+deletes its rows.
+
+Detection reads the mapping as evidence inside `_decide`, never as an override
+applied afterwards, so a mapping that disagrees with a header is a conflict in
+the same way a folder name is. `detection_key` includes the mapping that
+applies, which is how a changed mapping invalidates both caches: the shared
+LRU and a folder Library's per-file cache see a new key for exactly the Images
+under that folder. `set_mapping` also calls `FolderLibrary.invalidate()`,
+which bumps the Library's generation so the next listing walks again instead
+of serving the last walk (`SCAN_TTL_SECONDS`).
+
+**Findings.** `findings` holds one row per `(library_id, image_key, kind)`.
+The store is Library agnostic: a producer passes `reconcile(library_id,
+observed, kinds=...)` everything it currently sees, each an `Observed(kind,
+image_key, path, reason, cause)`. Rows not observed again (of those kinds, for
+that Library) are deleted; new ones get `first_seen`; every observed row gets
+`last_seen`. `fingerprint` is a digest of `kind` and the structured `cause`
+(for a Platform Finding: `how`, `header`, `folder`, `mapped`), not of the
+`reason` text, so a reworded message does not resurface a dismissed row.
+`dismiss(id)` copies the fingerprint into `dismissed_fingerprint`; the row is
+hidden while the two match and shows again once the cause changes. Kinds today
+are `platform_conflict` and `unsorted`; later producers (RomM, the Inbox, Check
+Rules) add their own kinds and pass them in `kinds`, so one producer never
+clears another's rows.
+
+**The producer.** The folder Library's walk (§3.3.11, #303) is the only one: at
+the end of `_walk` it reconciles a `platform_conflict` per conflicted Entry, an
+`unsorted` per Entry with no Platform, and an `unsorted` per Image file the walk
+could not read. A listing served from the last walk writes nothing, and a walk
+that fails (root unavailable) never reaches the reconcile, so a mount blip
+clears no Finding. A database error while reconciling is logged and costs only
+the Findings; the walk still serves the Rules. Nothing that reads the store
+moves, renames or deletes a file.
+
+**API** (`routes/findings.py`). `GET /api/findings` (`include_dismissed`), with
+each row's Library name and folder; `POST /api/findings/{id}/dismiss`; `POST
+/api/findings/check` walks every folder Library on a detached thread, bounded
+as #303's listings are, and reports each Library's status
+(`listing_in_progress`, `root_unavailable`, ...); `GET /api/platforms` lists
+what a folder can be set to; `GET`/`PUT /api/platform-mappings` lists and sets
+mappings, and a `PUT` walks the Library again right away so its Findings
+follow.
 
 ### 3.4 `registry.py`
 

@@ -642,8 +642,9 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
   outputs (`.chd`, `.rvz`) and archives (`.zip`, `.7z`) in the folder count as
   Images too; folders (a decrypted PS3 game) do not.
 - **Platforms** come from Platform detection: an Image's own header first, then
-  its folder name (`ps2`, `gc`, `psx`, `megacd`, ... as ES-DE and Batocera lay
-  them out). Each Platform shows its name and how many Images it has.
+  the Platform you set on its folder (see [Findings](#findings-and-folder-platforms)),
+  then its folder name (`ps2`, `gc`, `psx`, `megacd`, ... as ES-DE and Batocera
+  lay them out). Each Platform shows its name and how many Images it has.
 - **Unsorted** Images (nothing names their Platform) and **Conflicted** ones
   (the header disagrees with the folder, such as a GameCube disc filed under
   `ps2`) are counted but never converted by a Rule. Files that cannot be read
@@ -667,6 +668,32 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
 - **Remove Library** forgets the Library and its Rules. It never touches a file.
 
 The RomM view's **Automation** tab is the same Rules view, opened on RomM.
+
+### Findings and folder Platforms
+
+The **Findings** view (in the sidebar) lists every Image in a folder Library
+that needs your decision:
+
+- **Platform conflict**: the Image's header disagrees with its folder, or with
+  the Platform you set on the folder ("in the ps2 folder, but the header says
+  ngc").
+- **Unsorted**: nothing names the Image's Platform, or the file could not be
+  read.
+
+Each row shows the Library, the Image, the kind, and when it was first and last
+seen, with three actions: **Open folder** shows it in the Workspace, **Set
+Platform** tells the app what the folder holds, and **Dismiss** hides the row
+until its cause changes (a dismissed conflict comes back if the header or
+folder later says something else). **Check now** lists every folder Library
+again. Findings are written each time a Library is listed or swept, and cleared
+once the cause is gone.
+
+**Set Platform** ("this folder is PSP") is also on a folder's row menu in the
+Workspace, for any folder inside a folder Library. It applies to every Image
+below that folder. The header still wins, and a header that disagrees is a
+conflict, never a guess. **Clear mapping** removes it.
+
+The app never moves, renames or deletes an Image because of a Finding.
 
 #### Your metadata survives conversion
 
@@ -918,6 +945,14 @@ A folder registered as a Library, with the Platforms found in it, its Unsorted a
 | Light | Dark |
 |-------|------|
 | ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
+
+#### Findings
+
+A Platform conflict (a GameCube disc filed under `ps2`) and an Unsorted Image, each with its actions. See [Findings and folder Platforms](#findings-and-folder-platforms).
+
+| Light | Dark |
+|-------|------|
+| ![Findings view, light](docs/screenshots/findings-light.png) | ![Findings view, dark](docs/screenshots/findings-dark.png) |
 
 #### DAT Library
 
