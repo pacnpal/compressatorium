@@ -2089,3 +2089,65 @@ def test_an_input_lock_that_raises_fails_the_job_and_frees_the_slot(
     other = _other_process()
     assert other.acquire_lock(str(volume / "gc" / "A.rvz"))  # its output lock is gone
     other.release_lock(str(volume / "gc" / "A.rvz"))
+
+
+def test_a_job_cancelled_while_waiting_for_a_reader_keeps_its_source(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """codex 4577178425: cancelled during the reader wait, and the reader lets
+    go before the next poll: the Source must survive and the job end
+    CANCELLED, not take its delete locks and unlink."""
+    import asyncio
+    import threading
+
+    from services import job_manager as job_manager_module
+    from services.job_manager import JobManager, job_manager
+
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_WAIT_SECONDS", 10.0)
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.5)
+    iso = volume / "gc" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"the disc" * 512)
+    reader = _reader_on(iso)
+    loops = {}
+    original_release = JobManager._release_inputs
+    original_try = JobManager._try_hold_for_delete
+
+    def recording_release(self, job_id):
+        try:
+            loops.setdefault("loop", asyncio.get_running_loop())
+        except RuntimeError:
+            pass
+        return original_release(self, job_id)
+
+    def cancel_then_let_go(self, job_id, paths):
+        got = original_try(self, job_id, paths)
+        if not got and "cancelled" not in loops:
+            loops["cancelled"] = True
+
+            def during_the_sleep():
+                # Cancel the job, then the reader lets go, both while the
+                # wait sleeps before its next poll.
+                asyncio.run_coroutine_threadsafe(
+                    job_manager.cancel_job(job_id), loops["loop"],
+                ).result(5)
+                reader.release_input_lock(str(iso))
+
+            threading.Timer(0.05, during_the_sleep).start()
+        return got
+
+    monkeypatch.setattr(JobManager, "_release_inputs", recording_release)
+    monkeypatch.setattr(JobManager, "_try_hold_for_delete", cancel_then_let_go)
+    try:
+        code, lines = _cli(
+            capsys, "convert", str(iso), "--to", "rvz", "--delete-source",
+            "--container-only", "--json",
+        )
+    finally:
+        if "cancelled" not in loops:
+            reader.release_input_lock(str(iso))
+
+    assert loops.get("cancelled"), "the wait never started"
+    assert iso.exists(), lines
+    assert lines[0]["status"] == "cancelled", lines
+    assert lines[0]["source_deleted"] is False

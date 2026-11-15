@@ -1505,17 +1505,31 @@ class JobManager:
         A path another job reads (a shared lock in any process), or one under a
         folder another process packs, can't be held; this polls, without
         blocking, up to ``DELETE_READER_WAIT_SECONDS`` for it to be let go.
-        False when it is still held then (or the job is cancelled meanwhile):
-        the caller keeps the Source and the job still completes.
+        False when it is still held then, or when the job is cancelled
+        meanwhile: the caller keeps the Source (and, for a cancel, ends the job
+        CANCELLED). Cancellation is checked before every attempt and again
+        right after one succeeds, so a cancel that lands while it sleeps never
+        becomes a delete when the reader lets go before the next poll
+        (codex 4577178425).
         """
+
+        def cancelled() -> bool:
+            return bool(cancel_event and cancel_event.is_set()) or job_id in self._cancelled
+
         snapshot = self._delete_plans.get(job_id) or {}
         paths = list(snapshot.get("paths") or [])
         self._release_inputs(job_id)
         deadline = time.monotonic() + DELETE_READER_WAIT_SECONDS
         while True:
+            if cancelled():
+                self._release_delete_holds(job_id)
+                return False
             if await run_in_threadpool(self._try_hold_for_delete, job_id, paths):
+                if cancelled():
+                    self._release_delete_holds(job_id)
+                    return False
                 return True
-            if time.monotonic() >= deadline or (cancel_event and cancel_event.is_set()):
+            if time.monotonic() >= deadline:
                 return False
             await asyncio.sleep(DELETE_READER_POLL_SECONDS)
 
@@ -3531,6 +3545,11 @@ class JobManager:
                             },
                         )
                     elif not await self._hold_delete_paths_waiting(job_id, cancel_event):
+                        if cancel_event.is_set() or job_id in self._cancelled:
+                            # Cancelled while it waited: the Source stays and
+                            # the job ends CANCELLED, never reported as a
+                            # reader.
+                            raise ConversionCancelled("Conversion cancelled")
                         # Another job is still reading the Source (or a folder
                         # above it): the output is done and checked, so the job
                         # completes, keeping the Source.
@@ -3683,6 +3702,10 @@ class JobManager:
                                     "Delete path fingerprint mismatch; refusing to delete"
                                 )
 
+                        if cancel_event.is_set() or job_id in self._cancelled:
+                            # One last look before anything is unlinked.
+                            self._release_delete_holds(job_id)
+                            raise ConversionCancelled("Conversion cancelled")
                         for path in delete_order:
                             await run_in_threadpool(os.remove, path)
                             job.deleted_paths.append(path)
