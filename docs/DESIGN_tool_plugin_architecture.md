@@ -2363,9 +2363,11 @@ The sweep asks the same gate per candidate and reports the Image as unsafe
 regular, readable file whose extension a tool reads or writes
 (`registry.convertible_extensions` plus `output_extensions`), groups them with
 `group_images`, and detects each Image's Platform with
-`platform_detect.detect_uncached`. Detections and sheet members are cached on
-the Library per path, checked against size and mtime, and pruned to what the
-last walk saw, so the cache is as large as the Library and a repeat walk reads
+`platform_detect.detect_uncached`. Detections and Image members are cached on
+the Library per path and pruned to what the last walk saw. A detection is
+checked against `detection_key`; members against the file's size and mtime
+plus its folder's file names (a split set gains its part 2 without part 1
+changing), so the cache is as large as the Library and a repeat walk reads
 no headers (tested at 10,000 files). The walk is kept for `SCAN_TTL_SECONDS`
 (30 s): a sweep over several Platforms, and the listing before it, share one
 walk; the platforms endpoint asks for a fresh one. An Image with a Platform
