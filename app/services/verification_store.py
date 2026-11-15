@@ -244,6 +244,24 @@ class VerificationStore:
             row = session.get(_db.Verification, normalized)
             return row.produced_meta if row is not None else None
 
+    async def all_provenance(self) -> list[dict[str, object]]:
+        """Every row's path and ``produced_meta``, failed ones included (#306).
+
+        For discovery and routing only: a file whose last check failed is still
+        found from a folder run and goes back to the tool that made it. Reads
+        that mean "this passed" (``all_records``, ``get_record``) skip a failed
+        row, and ``--since`` and the re-run fast path stay on those.
+        """
+        return await run_in_threadpool(self._all_provenance_sync)
+
+    def _all_provenance_sync(self) -> list[dict[str, object]]:
+        with self._session() as session:
+            rows = session.scalars(select(_db.Verification)).all()
+            return [
+                {"chd_path": r.chd_path, "produced_meta": r.produced_meta}
+                for r in rows
+            ]
+
     async def all_records(self) -> list[dict[str, str | None]]:
         return await run_in_threadpool(self._all_records_sync)
 

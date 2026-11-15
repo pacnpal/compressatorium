@@ -3608,9 +3608,17 @@ class JobManager:
                         # The Round-trip did not pass, so this output may not
                         # hold the Source's content. Store nothing that would
                         # present it as a checked result: no badge, no reuse
-                        # snapshot for the re-run fast path, and any record an
-                        # earlier run left for this path is dropped.
-                        await verification_store.clear(job.output_path)
+                        # snapshot for the re-run fast path. A failed check
+                        # keeps provenance: the record names this output's
+                        # mode and tool (replacing whatever an earlier run
+                        # left) and is marked failed, so the next check still
+                        # goes to the tool that made it.
+                        await verification_store.mark_verified(
+                            job.output_path,
+                            source_path=job.file_path,
+                            produced_meta=self._verifier_identity(job),
+                        )
+                        await verification_store.mark_failed(job.output_path)
                         raise RuntimeError(keep_source_reason)
                     # Snapshot what produced this verified artifact (mode +
                     # output shaping + source/output fingerprints) so a later
