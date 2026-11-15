@@ -1411,6 +1411,51 @@ def test_an_iso_whose_platform_is_unknown_is_skipped_not_failed(volume, dolphin,
     assert "Platform" in lines[0]["reason"] and "determined" in lines[0]["reason"]
 
 
+# --------------------------------------------------------------------------- #
+# Codex on 618b0aa
+# --------------------------------------------------------------------------- #
+
+
+def test_an_archive_holding_another_image_is_kept(volume, dolphin, capsys):
+    """codex 4576728587: converting only Game.iso out of pack.zip must not
+    delete pack.zip, which also holds Other.nsp."""
+    pack = volume / "gc" / "pack.zip"
+    pack.parent.mkdir()
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 512)
+        zf.writestr("Other.nsp", b"switch" * 64)
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert pack.exists()
+    with zipfile.ZipFile(pack) as zf:
+        assert "Other.nsp" in zf.namelist()
+    line = next(x for x in lines if x["path"].endswith("::Game.iso"))
+    assert line["status"] == "completed"
+    assert line["source_deleted"] is False
+    assert "Other.nsp" in line["reason"]
+    assert code == 1  # a Source that was asked to go was kept
+
+
+def test_a_single_image_archive_is_still_deleted(volume, dolphin, capsys):
+    pack = volume / "gc" / "pack.zip"
+    pack.parent.mkdir()
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 512)
+        zf.writestr("readme.txt", b"notes")
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert code == 0, lines
+    assert not pack.exists()
+
+
 def test_refreshing_a_check_keeps_the_recorded_mode(volume, dolphin, capsys, monkeypatch):
     """codex 4576728584: a passing re-check wrote produced_meta=None, so the
     next run lost the recorded mode and sent the PS3 ISO to Dolphin."""

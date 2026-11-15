@@ -88,6 +88,13 @@
   process's conversions; its tickets are cleared by the next job that waits.
   The server and the CLI raise their open-file limit to the system maximum at
   start.
+- **Delete-source keeps an archive that holds another Image** (#306).
+  Deleting an archive member's Source deletes the whole archive, so the archive
+  now goes only when that member is the only Image in it. The count covers
+  every Image in the archive, including ones the run skipped or left out. The
+  web UI refuses such a request with the names of the other Images; the CLI
+  converts the member, keeps the archive, says so on that line and exits 1.
+  Junk such as `__MACOSX/` and a disc's own `.bin` tracks don't count.
 - **Auto converts a PS3 disc folder to an ISO** (#306). The Auto choice now
   sends a PS3 disc folder to `folder_to_iso`; it used to leave it alone.
 - A single convert request for an output another job is writing now says
