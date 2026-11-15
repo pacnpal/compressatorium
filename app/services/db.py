@@ -405,8 +405,9 @@ class ImageCheckRecord(Base):
     One row per (Library, Image key). A check that passes (``intact``) or fails
     (``not_intact``) writes ``checked_at`` and ``result``. An inconclusive one
     writes only ``attempted_at``, which orders the next picks and is no check
-    time. A check Rule picks the Images with no row first, then the oldest of
-    ``checked_at`` and ``attempted_at``. Removing the Library removes its rows.
+    time. A check Rule picks the Images with no row first, then by the later of
+    ``checked_at`` and ``attempted_at``, oldest first. Removing the Library
+    removes its rows.
     """
 
     __tablename__ = "image_checks"

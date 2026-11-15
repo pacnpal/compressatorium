@@ -165,6 +165,62 @@ def test_a_check_rule_with_no_window_runs_once_a_day() -> None:
     assert _is_due(rule, ran, _at(17, "00:01"))
 
 
+def _runs(rule: dict, start: datetime, minutes: int) -> list[datetime]:
+    """Tick *rule* once a minute from *start*, as the scheduler does; when it ran."""
+    from services.rules.schedule import _is_due
+
+    state: dict = {}
+    ran = []
+    # In UTC, so a minute is a real minute across a clock change.
+    moment = start.astimezone(timezone.utc)
+    for _ in range(minutes):
+        if _is_due(rule, state, moment):
+            ran.append(moment)
+            state = {"last_run_at": _stamp(moment + timedelta(seconds=5))}
+        moment += timedelta(minutes=1)
+    return ran
+
+
+def test_a_window_that_opens_in_the_spring_forward_gap_opens_once() -> None:
+    """02:30 does not exist on 2027-03-14 in New York: the window opens at 03:00 EDT, once."""
+    from zoneinfo import ZoneInfo
+
+    new_york = ZoneInfo("America/New_York")
+    rule = _nightly(window_start="02:30", window_end="05:00", timezone="America/New_York")
+    start = datetime(2027, 3, 13, 23, 0, tzinfo=new_york)
+
+    ran = _runs(rule, start, 8 * 60)
+
+    assert [r.astimezone(new_york).strftime("%H:%M %Z") for r in ran] == ["03:00 EDT"]
+
+
+def test_a_window_that_opens_in_the_repeated_hour_opens_once() -> None:
+    """01:30 happens twice on 2026-11-01 in New York: the window opens at the first."""
+    from zoneinfo import ZoneInfo
+
+    new_york = ZoneInfo("America/New_York")
+    rule = _nightly(window_start="01:30", window_end="03:00", timezone="America/New_York")
+    start = datetime(2026, 10, 31, 23, 0, tzinfo=new_york)
+
+    ran = _runs(rule, start, 6 * 60)
+
+    assert [r.astimezone(new_york).strftime("%H:%M %Z") for r in ran] == ["01:30 EDT"]
+
+
+def test_an_overnight_window_runs_once_a_night_across_both_changes() -> None:
+    from zoneinfo import ZoneInfo
+
+    new_york = ZoneInfo("America/New_York")
+    rule = _nightly(timezone="America/New_York")   # 22:00-02:00
+    for day in (datetime(2027, 3, 13, 12, 0, tzinfo=new_york),
+                datetime(2026, 10, 31, 12, 0, tzinfo=new_york)):
+        ran = _runs(rule, day, 40 * 60)
+        assert [r.astimezone(new_york).strftime("%a %H:%M") for r in ran] == [
+            day.strftime("%a") + " 22:00",
+            (day + timedelta(days=1)).strftime("%a") + " 22:00",
+        ]
+
+
 def test_each_kind_keeps_to_its_own_shape() -> None:
     """A conversion Rule needs a target; a check Rule never has one."""
     from services.rules.rules import CHECK, CONVERT, normalize_rule
@@ -1078,3 +1134,180 @@ async def test_two_platforms_failing_in_one_sweep_send_one_notification(
     }})
     await _run(created["id"])
     assert len([e for e in sent if e.kind == "check_failed"]) == 1
+
+
+# ----------------------------------------------------------------------
+# review round 2
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_image_waiting_for_a_verify_slot_is_not_locked(
+    tree: Path, ready, verifier, sent,
+) -> None:
+    """I1: the lock is taken when the verify starts, never while the check queues."""
+    import asyncio
+
+    from routes import libraries as routes
+    from services.lock_manager import lock_manager
+    from services.rules import check
+    from services.workload_limiter import workload_limiter
+
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+    cove = str(tree / "ps2" / "Cove.chd")
+    busy = [await workload_limiter.acquire("verify") for _ in range(workload_limiter.limit("verify"))]
+    try:
+        await routes.run_library(lib)
+        await asyncio.sleep(0.3)   # the check is queued for a verify slot
+        waiting_locked = lock_manager.check_file_status(cove)[1]
+    finally:
+        for token in busy:
+            token.release()
+    await check.drain()
+
+    assert waiting_locked is False
+    _verdicts, calls = verifier
+    assert calls == ["Cove.chd"]
+    assert lock_manager.check_file_status(cove)[1] is False
+
+
+def _observe_not_intact(library_id: str, key: str, path: Path) -> None:
+    from services import findings
+
+    findings.observe(library_id, findings.Observed(
+        kind=findings.NOT_INTACT, image_key=key, path=str(path), reason="bad",
+        cause={"tool": "chdman", "files": "x"},
+    ))
+
+
+def test_a_not_intact_finding_under_an_empty_mount_point_is_kept(db: Path) -> None:
+    """M2: an unmounted share is an empty folder; that is no evidence the Image is gone."""
+    from services import findings
+
+    (db / "mnt").mkdir()   # an unmounted mount point: empty
+    _observe_not_intact("lib", "A.chd", db / "mnt" / "A.chd")
+    _observe_not_intact("lib", "share/ps2/B.chd", db / "share" / "ps2" / "B.chd")
+
+    assert findings.clear_gone("lib", findings.NOT_INTACT) == 0
+    assert sorted(f["image_key"] for f in _not_intact()) == ["A.chd", "share/ps2/B.chd"]
+
+
+def test_a_not_intact_finding_beside_other_files_is_cleared(db: Path) -> None:
+    """M2: the folder lists other files, so the share is there and the Image is gone."""
+    from services import findings
+
+    _sparse(db / "roms" / "ps2" / "Other.chd", 1)
+    _observe_not_intact("lib", "ps2/A.chd", db / "roms" / "ps2" / "A.chd")
+
+    assert findings.clear_gone("lib", findings.NOT_INTACT) == 1
+    assert _not_intact() == []
+
+
+@pytest.mark.asyncio
+async def test_a_lock_that_fails_part_way_lets_go_of_the_others(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """M3: _hold releases what it took when an acquisition raises."""
+    from services.lock_manager import lock_manager
+    from services.rules import check as checks
+
+    extra = tree / "ps2" / "Cove.extra"
+    extra.write_bytes(b"x")
+    monkeypatch.setattr(checks, "image_members", lambda path: [str(extra)])
+    real = lock_manager.acquire_input_lock
+
+    def acquire(path):
+        if path == str(extra):
+            raise PermissionError("lock dir not writable")
+        return real(path)
+
+    monkeypatch.setattr(lock_manager, "acquire_input_lock", acquire)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+
+    await _run(lib)
+
+    assert lock_manager.check_file_status(str(tree / "ps2" / "Cove.chd"))[1] is False
+
+
+@pytest.mark.asyncio
+async def test_an_image_checked_long_ago_and_now_inconclusive_rotates(
+    tree: Path, ready, sent, monkeypatch,
+) -> None:
+    """M4: the order is the later of the check and attempt times, oldest first."""
+    calls: list[str] = []
+    tool = registry.get("chdman")
+
+    async def verify(path, *, cancel_event=None):
+        calls.append(Path(path).name)
+        if Path(path).name == "Aria.chd":
+            return {"valid": False, "inconclusive": True, "message": "timed out"}
+        return {"valid": True, "message": "ok"}
+
+    async def bound(path, *, cancel_event=None):
+        return 0
+
+    monkeypatch.setattr(tool, "verify", verify)
+    monkeypatch.setattr(tool, "verify_timeout", bound)
+    _sparse(tree / "ps2" / "Aria.chd", 9 * GB)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+    _seed(lib, {"ps2/Aria.chd": 60, "ps2/Bolt.chd": 3, "ps2/Cove.chd": 2, "ps2/Dune.chd": 1})
+    for _night in range(3):
+        await _run(lib)
+
+    assert calls == ["Aria.chd", "Bolt.chd", "Cove.chd", "Dune.chd"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_stopped_by_a_romm_change_reports_nothing_it_did_not_write(
+    db: Path, ready, sent, monkeypatch,
+) -> None:
+    """M5: the identity change lands mid-check; the run ends cancelled, counting nothing."""
+    from routes import romm as romm_routes
+    from services import image_checks
+    from services.job_manager import job_manager
+    from services.romm import settings as romm_settings
+    from services.romm.library import romm_library
+    from services.rules import check
+    from services.rules import sweep as rules_sweep
+
+    for name in ("Aria", "Bolt"):
+        _sparse(db / "library" / "roms" / "ps2" / f"{name}.chd", 3 * GB)
+    await romm_settings.save({"url": "http://romm:8080", "library_root": str(db / "library")})
+    roms = [
+        {
+            "id": rom_id, "name": name, "full_path": f"roms/ps2/{name}.chd",
+            "fs_name": f"{name}.chd", "fs_size_bytes": 3 * GB, "platform_slug": "ps2",
+        }
+        for rom_id, name in ((1, "Aria"), (2, "Bolt"))
+    ]
+    calls: list[str] = []
+    tool = registry.get("chdman")
+
+    async def verify(path, *, cancel_event=None):
+        calls.append(Path(path).name)
+        rules_sweep.forget_checks_locked(romm_library)   # the change lands mid-check
+        return {"valid": False, "message": "bad"}
+
+    async def bound(path, *, cancel_event=None):
+        return 0
+
+    monkeypatch.setattr(tool, "verify", verify)
+    monkeypatch.setattr(tool, "verify_timeout", bound)
+    await romm_routes.put_romm_rules({
+        "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
+    })
+    before = {j.id for j in job_manager.get_all_jobs()}
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms):
+        await romm_routes.run_auto_convert(romm_routes.SweepRequest(platform_ids=[7]))
+        await check.drain()
+
+    assert calls == ["Aria.chd"]
+    assert image_checks.last_checked("romm") == {}
+    assert _not_intact() == []
+    assert [e for e in sent if e.kind == "check_failed"] == []
+    (job,) = [j for j in job_manager.get_all_jobs() if j.id not in before]
+    assert job.status.value == "cancelled"
+    assert "not Intact" not in job.message.replace("0 not Intact", "")
+    assert job.message == "Stopped: 0 Intact, 0 not Intact"

@@ -3012,7 +3012,10 @@ window, weekdays, timezone, priority and `enabled`. Its `interval_minutes` is
 fixed at `CHECK_INTERVAL_MINUTES` (a day) but the schedule does not read it: a
 check Rule is due once per window (`schedule._is_due`): the window is open on an
 allowed weekday (an overnight window's tail belongs to the day it opened) and
-`last_run_at` is before the moment this window opened (`_window_opened`; no
+`last_run_at` is before the moment this window opened (`_window_opened`,
+which resolves the wall-clock start with `_instant`: a start in a
+spring-forward gap opens at the first real instant after it, a start in a
+fall-back repeated hour at its first occurrence, so either opens once; no
 window means the whole local day, opened at midnight). A run that starts late
 does not push the next night later, and one that crosses midnight counts for
 the window it started in. Its output folder is never read. Each kind has its own preference rows
@@ -3033,13 +3036,16 @@ both kinds and a check spends another budget. A check Rule's Run now stamps
 `last_run_at`, so the nightly run still comes in its window; a Platform whose tool is not ready and that picked nothing is not
 stamped at all. Before the loop a real sweep calls `_clear_vanished` (bounded,
 detached): `findings.clear_gone(library, NOT_INTACT)` drops a not-Intact
-Finding whose file is missing while its folder is there, so an unmounted share
-clears nothing. A folder walk calls the same after its reconcile. The per-sweep cap counts conversions only, so a
+Finding whose file is missing while its folder lists other entries. A share
+that is not mounted is a missing folder or an empty mount point and clears
+nothing; an Image deleted from a folder it was alone in keeps its Finding until
+it is dismissed. A folder walk calls the same after its reconcile. The per-sweep cap counts conversions only, so a
 check Rule ordered after a capped conversion Rule still runs. `_sweep_check`
 lists the Platform through the same bounded `_list_images` as a conversion,
 reads `image_checks.order_stamps(library.id)`, and walks
-`check.stalest_first` (no row first, then the oldest of `checked_at` and
-`attempted_at`, then the key). An inconclusive check writes only
+`check.stalest_first` (no row first, then by the later of `checked_at` and
+`attempted_at`, oldest first, then the key: an Image checked long ago that is
+now inconclusive goes to the back too). An inconclusive check writes only
 `attempted_at` (`image_checks.record_attempt`): no check time, no Finding,
 nothing cleared, but the Image goes behind the others, so one that never
 reaches a verdict cannot take every night's budget. Each candidate's disk questions go through `check.inspect` on a detached,
@@ -3067,16 +3073,20 @@ nothing left the Image is uncheckable. No per-tool branching: a new tool's
 **Run.** A real sweep passes everything every check Rule picked to
 `check.start` once, after its loop, so a sweep is one run, one external job
 (`ConversionMode.CHECK`, in `_EXTERNAL_JOB_MODES`) and at most one
-notification. For each Image in order the run first takes #306's shared input
-lock (`lock_manager.acquire_input_lock`) on the Image and its files
-(`image_members`) for the whole check, so a delete-source job in any process
-sees it in use and keeps it, then compares it with what the sweep picked
-(`_unchanged`: still a file, same `image_fingerprint`). A lock it cannot get,
-or an Image gone or changed, is `SKIPPED`: nothing written, no notification
-line. Then: `tool.verify(path,
-cancel_event)` on the `verify` workload lane, bounded by
-`tool.verify_timeout(path)`, the same call, lane and bound as the Verify
-action. `check.outcome(result)` reads it:
+notification. For each Image in order the run waits for a slot on the
+`verify` workload lane, the one the Verify action uses, and only then takes
+#306's shared input lock (`lock_manager.acquire_input_lock`) on the Image and
+its files (`image_members`), so nothing is held while it queues. `_hold` lets
+go of what it took if an acquisition raises. It then compares the Image with
+what the sweep picked (`_unchanged`: still a file, same `image_fingerprint`). A
+lock it cannot get, or an Image gone or changed, is `SKIPPED`: nothing written,
+no notification line. Then `tool.verify(path, cancel_event)`, bounded by
+`tool.verify_timeout(path)`, the same call and bound as the Verify action; the
+locks go as soon as it ends, before anything is written. While they are held,
+#306's delete step finds the Source in use: today a delete-source conversion
+that finishes then fails with "Delete path is locked by an active conversion",
+keeping its Source and its output. #306 is changing that step to wait briefly
+and keep the Source without failing the job. `check.outcome(result)` reads it:
 
 | Result | Outcome | Writes |
 |---|---|---|
@@ -3091,7 +3101,8 @@ check's `collect_abandonment` sink saw written off), the run stops, as a batch
 Verify does. Cancel on the
 job sets its cancel event, which the running verify honours. Every write is
 guarded by the Library's generation (`sweep.library_generation`), so a Library
-removed mid-run gets no rows, and `libraries.remove` drops its `image_checks`
+removed mid-run gets no rows (`_apply` reports whether it wrote; when it did
+not, the run ends cancelled and counts nothing for that Image), and `libraries.remove` drops its `image_checks`
 rows with its Findings. RomM's identity cleanup (a new instance or library
 root) calls `sweep.forget_checks_locked(romm_library)`: the generation moves,
 then RomM's not-Intact Findings with their dismissals

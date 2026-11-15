@@ -224,9 +224,12 @@ def clear_gone(
 
     For a kind no walk reconciles (``NOT_INTACT``): a converted or deleted
     Image is never listed or checked again, so its Finding would otherwise
-    stay for good. Gone means the file is missing while its folder is still
-    there, so an unmounted share clears nothing. Dismissals are kept, as
-    :func:`resolve` keeps them. Returns how many were cleared.
+    stay for good. Gone needs evidence the storage is there: the file is
+    missing while its folder lists other entries. A share that is not mounted
+    is a missing folder or an empty mount point, and clears nothing; neither
+    does an Image deleted from a folder it was alone in (dismiss that one).
+    Dismissals are kept, as :func:`resolve` keeps them. Returns how many were
+    cleared.
     """
     with _session() as session:
         rows = session.query(_db.FindingRecord).filter_by(
@@ -235,7 +238,7 @@ def clear_gone(
         candidates = [(row.image_key, row.path) for row in rows]
     gone = [
         key for key, path in candidates
-        if not os.path.lexists(path) and os.path.isdir(os.path.dirname(path))
+        if not os.path.lexists(path) and _lists_entries(os.path.dirname(path))
     ]
     if not gone:
         return 0
@@ -249,6 +252,15 @@ def clear_gone(
         ).delete(synchronize_session=False)
         session.commit()
     return cleared
+
+
+def _lists_entries(folder: str) -> bool:
+    """Whether *folder* is a directory with anything in it."""
+    try:
+        with os.scandir(folder) as entries:
+            return next(entries, None) is not None
+    except OSError:
+        return False
 
 
 def forget_kind(library_id: str, kind: str) -> None:

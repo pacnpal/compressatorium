@@ -71,10 +71,39 @@ def _window_opened(rule: dict, now: datetime) -> datetime:
         zone = timezone.utc
     local = now.astimezone(zone)
     start = _parse_hhmm(rule["window_start"]) or time(0, 0)
-    opened = datetime.combine(local.date(), start, tzinfo=zone)
-    if opened > local:
-        opened -= timedelta(days=1)
+    opened = _instant(datetime.combine(local.date(), start), zone)
+    if opened > now:
+        opened = _instant(datetime.combine(local.date() - timedelta(days=1), start), zone)
     return opened
+
+
+def _instant(wall: datetime, zone) -> datetime:
+    """The first real instant at or after the naive wall-clock time *wall* in *zone*.
+
+    Clock changes make a wall time ambiguous. In the hour a spring-forward
+    skips (02:30 on a US change day) it never happens, and the window opens at
+    the first instant after it (03:00 in the new offset), once. In the hour a
+    fall-back repeats it happens twice, and the window opens at the first.
+    """
+    readings = sorted(
+        (wall.replace(tzinfo=zone, fold=fold).astimezone(timezone.utc) for fold in (0, 1)),
+    )
+    earlier, later = readings
+
+    def local(instant: datetime) -> datetime:
+        return instant.astimezone(zone).replace(tzinfo=None)
+
+    if local(earlier) == wall:
+        return earlier   # it exists; when it happens twice, the first time
+    # Skipped: the transition lies between the two readings. Find, to the
+    # second, the first instant whose wall time is at or past *wall*.
+    while later - earlier > timedelta(seconds=1):
+        middle = earlier + (later - earlier) // 2
+        if local(middle) >= wall:
+            later = middle
+        else:
+            earlier = middle
+    return later
 
 
 def _last_run(state: dict) -> datetime | None:

@@ -88,7 +88,7 @@ async def order_stamps(library_id: str) -> dict[str, str]:
 
 
 def stalest_first(images: list[Image], last: dict[str, str]) -> list[Image]:
-    """Never-checked Images first, then the oldest of last check or attempt, then by key.
+    """Never-checked Images first, then by the later of check and attempt times, oldest first.
 
     *last* is :func:`order_stamps`. An Image whose check was only ever
     inconclusive has an attempt time, so it goes behind the Images never
@@ -140,17 +140,24 @@ def inspect(image: Image) -> dict[str, Any]:
 def _hold(check: Check) -> list[str] | None:
     """Take #306's shared input lock on the Image and its files, or none. Blocking.
 
-    Held for the whole check, so a delete-source job (in this process or
-    another) sees the Image in use and keeps it. None when one cannot be had:
-    a job is writing that path.
+    Taken once the check has its verify slot and held only while the Verify
+    runs, so a delete-source job (in this process or another) sees the Image
+    in use for exactly that long. None when one cannot be had: a job is
+    writing that path. An acquisition that raises lets go of the ones already
+    taken first.
     """
     held: list[str] = []
-    for path in dict.fromkeys((check.path, *check.members)):
-        if not lock_manager.acquire_input_lock(path):
+    ok = False
+    try:
+        for path in dict.fromkeys((check.path, *check.members)):
+            if not lock_manager.acquire_input_lock(path):
+                return None
+            held.append(path)
+        ok = True
+        return held
+    finally:
+        if not ok:
             _let_go(held)
-            return None
-        held.append(path)
-    return held
 
 
 def _let_go(held: list[str]) -> None:
@@ -216,23 +223,21 @@ async def _verify(
 ) -> tuple[str, str, bool]:
     """Run the tool's Verify on one Image: ``(outcome, message, stop)``.
 
-    The same call, lane and bound as the Verify action. An exception the check
+    The same call and bound as the Verify action; the caller holds its lane. An exception the check
     raises (its bound expiring included) becomes a result through #306's
     ``verify_exception_event``, whose allowlist decides whether it is a verdict
     on the file. ``stop`` is #306's ``stops_verify_batch``: something is still
     reading the storage, so the run must not open the next file.
     """
     tool = registry.get(check.tool_id)
-    token = await workload_limiter.acquire("verify")
-    async with token:
-        with collect_abandonment() as abandoned:
-            try:
-                bound = await tool.verify_timeout(check.path, cancel_event=cancel_event)
-                result = await asyncio.wait_for(
-                    tool.verify(check.path, cancel_event=cancel_event), timeout=bound or None,
-                )
-            except Exception as exc:  # noqa: BLE001 - #306's allowlist sorts it
-                result = verify_exception_event(exc, prefix="The check raised")
+    with collect_abandonment() as abandoned:
+        try:
+            bound = await tool.verify_timeout(check.path, cancel_event=cancel_event)
+            result = await asyncio.wait_for(
+                tool.verify(check.path, cancel_event=cancel_event), timeout=bound or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - #306's allowlist sorts it
+            result = verify_exception_event(exc, prefix="The check raised")
     result = result if isinstance(result, dict) else {}
     return (
         outcome(result), str(result.get("message") or ""),
@@ -269,19 +274,23 @@ async def drain() -> None:
         await asyncio.gather(*list(_tasks), return_exceptions=True)
 
 
-def _apply(library_id: str, check: Check, verdict: str, message: str, current) -> None:
-    """Write one verdict: the last check or attempt time and the Finding. Blocking."""
+def _apply(library_id: str, check: Check, verdict: str, message: str, current) -> bool:
+    """Write one verdict: the last check or attempt time and the Finding. Blocking.
+
+    False when nothing was written: the Library changed (removed, or RomM
+    pointed elsewhere) while the Image was being checked.
+    """
     if verdict == INCONCLUSIVE:
         # Only orders the next picks; no check time, no Finding, nothing cleared.
-        image_checks.record_attempt(library_id, check.key, current=current)
-    elif verdict == INTACT:
-        image_checks.record(library_id, check.key, INTACT, current=current)
+        return image_checks.record_attempt(library_id, check.key, current=current)
+    if not image_checks.record(library_id, check.key, verdict, current=current):
+        return False
+    if verdict == INTACT:
         findings.resolve(library_id, check.key, findings.NOT_INTACT, current=current)
-    elif verdict == NOT_INTACT:
-        image_checks.record(library_id, check.key, NOT_INTACT, current=current)
-        findings.observe(
-            library_id, finding_for(check, message or "The check failed"), current=current,
-        )
+        return True
+    return findings.observe(
+        library_id, finding_for(check, message or "The check failed"), current=current,
+    ) is not None
 
 
 async def _run(library: Library, picked: list[Check], job_id: str, generation: int) -> None:
@@ -313,6 +322,13 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
             if verdict == CANCELLED:
                 cancelled = True
                 break
+            if not await run_in_threadpool(
+                _apply, library.id, check, verdict, message, current,
+            ):
+                # The Library changed under the run: nothing was written for
+                # this Image, so it is not counted or reported, and the run ends.
+                cancelled = True
+                break
             counts[verdict] += 1
             if verdict == INTACT:
                 # What the Verify action records for a pass.
@@ -321,7 +337,6 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
                 # The Intact badge no longer holds.
                 await verification_store.clear(check.path)
                 failed.append((check, message))
-            await run_in_threadpool(_apply, library.id, check, verdict, message, current)
             if stop:
                 # Something is still reading this storage; opening the next
                 # file would strand one more reader.
@@ -340,7 +355,7 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
     summary = (
         f"{counts[INTACT]} Intact, {counts[NOT_INTACT]} not Intact"
         + (f", {counts[INCONCLUSIVE]} could not be checked" if counts[INCONCLUSIVE] else "")
-        + (f", {counts[SKIPPED]} gone or changed" if counts[SKIPPED] else "")
+        + (f", {counts[SKIPPED]} gone, changed or in use" if counts[SKIPPED] else "")
     )
     if cancelled:
         await job_manager.finish_external_job_cancelled(job_id, message=f"Stopped: {summary}")
@@ -356,25 +371,29 @@ async def _check_one(
 ) -> tuple[str, str, bool]:
     """Check one picked Image, if it is still the one picked: ``(outcome, message, stop)``.
 
-    The Image and its files are locked for the whole check (:func:`_hold`), then
-    compared with what the sweep picked (:func:`_unchanged`). Gone, changed or
-    being written is ``SKIPPED``: no check time, no Finding, no notification.
+    First a slot on the ``verify`` lane, the one the Verify action uses. Only
+    then the Image and its files are locked (:func:`_hold`), so nothing is held
+    while the check queues, then compared with what the sweep picked
+    (:func:`_unchanged`). Gone, changed or being written is ``SKIPPED``: no
+    check time, no Finding, no notification. The locks go as the Verify ends.
     """
-    held = await run_in_threadpool(_hold, check)
-    if held is None:
-        return SKIPPED, "", False
-    try:
-        try:
-            same = await asyncio.wait_for(
-                run_detached(_unchanged, check), _RECHECK_SECONDS,
-            )
-        except (asyncio.TimeoutError, OSError):
-            same = False
-        if not same:
+    token = await workload_limiter.acquire("verify")
+    async with token:
+        held = await run_in_threadpool(_hold, check)
+        if held is None:
             return SKIPPED, "", False
-        return await _verify(check, cancel_event)
-    finally:
-        await run_in_threadpool(_let_go, held)
+        try:
+            try:
+                same = await asyncio.wait_for(
+                    run_detached(_unchanged, check), _RECHECK_SECONDS,
+                )
+            except (asyncio.TimeoutError, OSError):
+                same = False
+            if not same:
+                return SKIPPED, "", False
+            return await _verify(check, cancel_event)
+        finally:
+            await run_in_threadpool(_let_go, held)
 
 
 def check_failed_event(library: Library, failed: list[tuple[Check, str]]) -> notifications.Event:
