@@ -2678,6 +2678,20 @@ z3ds without `zstd` say so the same way, and the ISO reader behind the
 makeps3iso read-back raises its I/O errors (`read_iso_file(strict=True)`, down
 through `_read_pvd` and `_list_dir`).
 
+A verifier ended by a signal (a negative return code: SIGKILL, the OOM killer)
+is no verdict either (`killed_verify_error`), in both `run_verify` and
+`capture_verify`; a non-zero exit is.
+
+**Which tool checks a file.** A verify run asks `ToolPlugin.claims_check(path)`
+through `registry.tools_checking_path`, which is wider than `verifies_path`
+(the listing's Verify/Info gate, unchanged): romz claims any `.7z`/`.zip` that
+is not a readable non-single-ROM archive (`NotSingleRomArchive`), so a damaged
+ROM archive is checked and fails. A file with a stored check is checked again by
+the tool that claims its name even if no claim matches now, and a folder run
+includes the stored checks under it. Where the extension is shared across
+Platforms (a generic `.iso`), the Image's detected Platform picks among the
+claimants, and an Image no claimant serves is skipped as unsupported.
+
 Readiness is per operation: `ToolPlugin.verify_is_ready()` (default
 `is_ready()`), asked through `registry.tool_is_ready(tool, purpose="verify")`.
 jwud's WUX check needs no JWUDTool or Java; z3ds's needs `zstd`
