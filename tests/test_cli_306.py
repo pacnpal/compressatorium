@@ -702,7 +702,6 @@ def test_a_hangup_stops_the_run_like_sigterm(volume, monkeypatch, capsys, signam
     """Closing the terminal of `docker exec -it ... compressatorium` sends SIGHUP."""
     import asyncio
     import os
-    import os
     import signal
 
     import cli
@@ -1003,7 +1002,6 @@ def test_a_stop_during_queueing_cancels_the_jobs_it_returned(
     one-shot cancel-all ran before the jobs existed, so they must be cancelled
     after the queue call returns, before any runs (Source deletion included)."""
     import asyncio
-    import os
     import os
     import signal
 
@@ -1560,12 +1558,33 @@ def test_an_archive_holding_another_image_is_kept(volume, dolphin, capsys):
     assert code == 1  # a Source that was asked to go was kept
 
 
+@pytest.mark.parametrize("extra", ["Game.gba", "Other.bin", "Other.zip", "readme.txt"])
+def test_an_archive_with_any_other_member_is_kept(volume, dolphin, capsys, extra):
+    """review r9 C1: fail closed. The second member isn't even discovered as
+    an Image here, and the archive still stays."""
+    pack = volume / "gc" / "pack.zip"
+    pack.parent.mkdir()
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 512)
+        zf.writestr(extra, b"other")
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert pack.exists()
+    line = next(x for x in lines if x["path"].endswith("::Game.iso"))
+    assert line["source_deleted"] is False
+    assert extra in line["reason"]
+    assert code == 1
+
+
 def test_a_single_image_archive_is_still_deleted(volume, dolphin, capsys):
     pack = volume / "gc" / "pack.zip"
     pack.parent.mkdir()
     with zipfile.ZipFile(pack, "w") as zf:
         zf.writestr("Game.iso", b"the disc" * 512)
-        zf.writestr("readme.txt", b"notes")
 
     code, lines = _cli(
         capsys, "convert", str(volume), "--to", "rvz", "--delete-source",

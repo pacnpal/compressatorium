@@ -510,7 +510,7 @@ def _decide_deletes(items: list[Item], args) -> None:
 
     if not args.delete_source:
         return
-    from utils.delete_plan import other_images_in_archive
+    from utils.delete_plan import archive_members_beyond_image, describe_extras
 
     routed = [i for i in items if i.mode and not i.status]
     shared = get_disallowed_archive_paths([i.path for i in routed])
@@ -519,12 +519,12 @@ def _decide_deletes(items: list[Item], args) -> None:
             item.reason = f"Source kept: {item.mode} cannot delete its Source"
         elif "::" in item.path and item.path.split("::", 1)[0] in shared:
             item.reason = "Source kept: several Images come from this archive"
-        elif others := other_images_in_archive(item.path):
-            # The archive's whole membership, whatever routing kept: an archive
-            # goes only when this is the only Image in it (the delete plan's
-            # own rule, which the web submit hits too).
+        elif others := archive_members_beyond_image(item.path):
+            # Fail closed: an archive goes only when every member belongs to
+            # this Image (the delete plan's own rule, which the web submit
+            # hits too).
             archive = os.path.basename(item.path.split("::", 1)[0])
-            item.reason = f"Source kept: {archive} also holds {', '.join(others[:3])}"
+            item.reason = f"Source kept: {archive} also holds {describe_extras(others)}"
         else:
             item.delete_source = True
             continue

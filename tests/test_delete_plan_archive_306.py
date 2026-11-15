@@ -1,29 +1,130 @@
-"""Deleting an archive Source never takes another Image with it (#306)."""
+"""Deleting an archive Source never takes anything else with it (#306).
+
+Fail closed (review r9 C1): an archive may be deleted only when every member
+belongs to the Image that was converted, meaning its own file, the tracks its
+sheet names (through ``utils.sheet_text.resolve_track``) and its split parts.
+Any other member, whatever its type, keeps the archive. There is no list of
+harmless sidecars.
+"""
 from __future__ import annotations
 
 import zipfile
+from unittest.mock import AsyncMock
+
+import pytest
+from fastapi import HTTPException
 
 from utils.delete_plan import build_delete_plan
+
+_CUE = (
+    'FILE "Game (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+    'FILE "Game (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n'
+)
 
 
 def _zip(path, members):
     with zipfile.ZipFile(path, "w") as zf:
-        for name in members:
-            zf.writestr(name, b"x" * 64)
+        for name, data in members.items():
+            zf.writestr(name, data)
     return path
 
 
-def test_an_archive_with_another_image_is_not_deleted(tmp_path):
-    pack = _zip(tmp_path / "pack.zip", ["Game.iso", "Other.nsp"])
-
-    plan = build_delete_plan(f"{pack}::Game.iso")
-
-    assert any("Other.nsp" in error for error in plan["errors"])
+def _errors(source):
+    return build_delete_plan(source)["errors"]
 
 
-def test_a_track_set_or_notes_beside_the_image_are_not_other_images(tmp_path):
-    cue = _zip(tmp_path / "cd.zip", ["Game.cue", "Game.bin", "readme.txt"])
-    single = _zip(tmp_path / "one.zip", ["Game.iso", "__MACOSX/._Game.iso"])
+@pytest.mark.parametrize("extra", [
+    "Other.nsp",                              # another disc Image
+    "Game.gba",                               # a cartridge ROM
+    "Other.bin",                              # a loose raw image
+    "Other.zip",                              # a nested archive
+    "BLES00001/PS3_GAME/USRDIR/EBOOT.BIN",    # a PS3 disc folder
+    "readme.txt",                             # notes: no harmless sidecars
+    "__MACOSX/._Game.iso",                    # not even junk
+])
+def test_any_other_member_keeps_the_archive(tmp_path, extra):
+    pack = _zip(tmp_path / "pack.zip", {"Game.iso": b"x" * 64, extra: b"y"})
 
-    for source in (f"{cue}::Game.cue", f"{single}::Game.iso"):
-        assert build_delete_plan(source)["errors"] == [], source
+    errors = _errors(f"{pack}::Game.iso")
+
+    assert any(extra in error for error in errors), errors
+
+
+def test_an_image_alone_is_deleted(tmp_path):
+    pack = _zip(tmp_path / "pack.zip", {"Game.iso": b"x" * 64})
+
+    assert _errors(f"{pack}::Game.iso") == []
+
+
+def test_a_cue_and_the_tracks_it_names_are_deleted(tmp_path):
+    pack = _zip(tmp_path / "cd.zip", {
+        "Game.cue": _CUE,
+        "Game (Track 1).bin": b"1" * 64,
+        "Game (Track 2).bin": b"2" * 64,
+    })
+
+    assert _errors(f"{pack}::Game.cue") == []
+
+
+def test_a_cue_set_in_a_folder_is_deleted(tmp_path):
+    pack = _zip(tmp_path / "cd.zip", {
+        "disc/": b"",
+        "disc/Game.cue": _CUE,
+        "disc/Game (Track 1).bin": b"1" * 64,
+        "disc/Game (Track 2).bin": b"2" * 64,
+    })
+
+    assert _errors(f"{pack}::disc/Game.cue") == []
+
+
+def test_a_bin_the_cue_does_not_name_keeps_the_archive(tmp_path):
+    pack = _zip(tmp_path / "cd.zip", {
+        "Game.cue": _CUE,
+        "Game (Track 1).bin": b"1" * 64,
+        "Game (Track 2).bin": b"2" * 64,
+        "Bonus.bin": b"3" * 64,
+    })
+
+    errors = _errors(f"{pack}::Game.cue")
+
+    assert any("Bonus.bin" in error for error in errors), errors
+
+
+def test_the_summary_names_the_first_few_extra_members(tmp_path):
+    pack = _zip(tmp_path / "pack.zip", {
+        "Game.iso": b"x", "a.txt": b"1", "b.txt": b"2", "c.txt": b"3", "d.txt": b"4",
+    })
+
+    (error,) = [e for e in _errors(f"{pack}::Game.iso") if "a.txt" in e]
+
+    assert "b.txt" in error and "c.txt" in error and "d.txt" not in error
+    assert "..." in error
+
+
+@pytest.mark.asyncio
+async def test_the_web_batch_refuses_it_too(tmp_path, monkeypatch):
+    """The second layer: a web batch with delete-on-verify is refused, naming
+    the extra member."""
+    from app.models import BatchJobCreateRequest, ConversionMode, DuplicateAction
+    from app.routes import convert as convert_routes
+
+    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
+    monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
+    monkeypatch.setattr(convert_routes.job_manager, "get_queue_depth", lambda: 0)
+    monkeypatch.setattr(
+        convert_routes.job_manager, "create_jobs_atomic", AsyncMock(return_value=[]),
+    )
+    pack = _zip(tmp_path / "pack.zip", {"Game.iso": b"x" * 64, "Game.gba": b"rom"})
+
+    with pytest.raises(HTTPException) as exc:
+        await convert_routes.create_batch_jobs(BatchJobCreateRequest(
+            file_paths=[f"{pack}::Game.iso"],
+            mode=ConversionMode.CREATEDVD,
+            duplicate_action=DuplicateAction.SKIP,
+            delete_on_verify=True,
+        ))
+
+    assert exc.value.status_code == 400
+    assert "Game.gba" in exc.value.detail
+    assert pack.exists()

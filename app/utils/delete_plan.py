@@ -1,5 +1,5 @@
 import os
-import re
+import posixpath
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -52,41 +52,106 @@ def sheet_track_paths(sheet_path: str) -> list[str]:
     return [str(track) for track in tracks] if tracks else []
 
 
-def other_images_in_archive(source_path: str) -> List[str]:
-    """Other Images held by the archive an archive-member Source lives in.
+def _image_members(archive: str, member: str, names: set[str]) -> set[str]:
+    """The members that belong to the Image ``member``: itself, the tracks its
+    sheet names, and its split parts. Raises when the sheet can't be read.
 
-    Deleting an archive member's Source deletes the whole archive, so the
-    archive may only go when this member is the only Image in it (#306). An
-    Image is a member some Auto-eligible mode reads from an archive, the same
-    test discovery uses, so a ``.cue``'s ``.bin`` tracks and a ``readme.txt``
-    are not Images and junk (``__MACOSX/``, ``.DS_Store``) never counts. An
-    archive that cannot be listed answers with itself, so the plan refuses.
-    Empty for a plain file.
+    The sheet is extracted to a temp dir and its references resolved there
+    through ``resolve_track``, confined to that dir, so a ``..`` or absolute
+    reference names nothing in the archive. Split parts come from the
+    registry's ``source_companions``, by name, against the same temp layout.
+    """
+    import shutil
+    import tempfile
+
+    from services.archive import archive_service
+    from services.tools import registry
+
+    owned = {member}
+    parent = posixpath.dirname(member)
+    temp_root = tempfile.mkdtemp(prefix="delete-plan-")
+    try:
+        if posixpath.splitext(member)[1].lower() in {".cue", ".gdi"}:
+            extracted, temp_dir = archive_service.extract_file(archive, member)
+            try:
+                parse = cue_tracks if member.lower().endswith(".cue") else _gdi_tracks_from_text
+                # Every spelling of the sheet (chdman opens one of them).
+                refs = [ref for text in _read_sheet(Path(extracted)) for ref in parse(text)]
+                sheet_dir = os.path.dirname(extracted)
+                for ref in refs:
+                    try:
+                        track = resolve_track(sheet_dir, ref, within=[temp_dir])
+                    except ValueError:
+                        continue  # names nothing in the archive
+                    rel = os.path.relpath(str(track), sheet_dir).replace(os.sep, "/")
+                    owned.add(posixpath.normpath(posixpath.join(parent, rel)))
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        # Split parts: lay the member names out as empty files, so the
+        # registry's name math sees the same siblings the archive holds.
+        for name in names:
+            if name.endswith("/"):
+                continue
+            target = os.path.join(temp_root, *name.split("/"))
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                open(target, "ab").close()
+            except OSError:
+                continue
+        for part in registry.source_companions(os.path.join(temp_root, *member.split("/"))):
+            rel = os.path.relpath(part, temp_root).replace(os.sep, "/")
+            owned.add(posixpath.normpath(rel))
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+    return owned
+
+
+def describe_extras(extras: List[str], limit: int = 3) -> str:
+    """The first few extra members, for a summary line."""
+    shown = ", ".join(extras[:limit])
+    return shown + (", ..." if len(extras) > limit else "")
+
+
+def archive_members_beyond_image(source_path: str) -> List[str]:
+    """Members of an archive-member Source's archive that are not that Image.
+
+    Deleting an archive member's Source deletes the whole archive, so it may
+    go only when every member belongs to the Image that was converted: its own
+    file, the tracks its sheet names (``resolve_track``) and its split parts
+    (#306, review r9 C1). Anything else keeps the archive, whatever its type:
+    another disc, a ROM, a loose ``.bin``, a nested archive, a PS3 folder, a
+    ``readme.txt``, junk. There is no list of harmless sidecars. A directory
+    entry counts only when nothing of the Image lives under it. An archive or
+    sheet that can't be read answers with the archive's own name, so the plan
+    refuses. Empty for a plain file.
     """
     if "::" not in source_path:
         return []
     archive, member = source_path.split("::", 1)
     from services.archive_members import read_archive_members
-    from services.tools import registry
-    from utils.junk import is_junk_path
-    from utils.path_utils import match_extension
 
     try:
         members = read_archive_members(archive)
+        names = {m.name + ("/" if m.is_dir and not m.name.endswith("/") else "")
+                 for m in members}
+        owned = _image_members(archive, member, names)
     except Exception:  # noqa: BLE001 - unknown contents: keep the archive
         return [os.path.basename(archive)]
-    readers = [
-        registry.mode_reads_extensions(spec.mode)
-        for spec in registry.mode_specs()
-        if spec.auto_target and spec.allows_archive_input
-    ]
-    others = []
-    for entry in members:
-        if entry.is_dir or entry.name == member or is_junk_path(entry.name):
+    owned_dirs = set()
+    for name in owned:
+        folder = posixpath.dirname(name)
+        while folder:
+            owned_dirs.add(folder)
+            folder = posixpath.dirname(folder)
+    extras = []
+    for name in sorted(names):
+        if name.endswith("/"):
+            if name.rstrip("/") in owned_dirs:
+                continue
+        elif posixpath.normpath(name) in owned:
             continue
-        if any(match_extension(entry.name, reads) is not None for reads in readers):
-            others.append(entry.name)
-    return others
+        extras.append(name)
+    return extras
 
 
 def build_delete_plan(source_path: str) -> Dict[str, object]:
@@ -122,14 +187,11 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
             warnings.append(
                 "Archive input detected; delete-on-verify will remove the entire archive"
             )
-            # Never take another Image with it (#306): the archive goes only
-            # when this member is the only Image in it.
-            others = other_images_in_archive(original_source)
+            # Never take anything else with it (#306): the archive goes only
+            # when every member belongs to this Image.
+            others = archive_members_beyond_image(original_source)
             if others:
-                shown = ", ".join(others[:3]) + (", ..." if len(others) > 3 else "")
-                errors.append(
-                    f"The archive also holds {shown}; it is kept",
-                )
+                errors.append(f"The archive also holds {describe_extras(others)}; it is kept")
             return {
                 "source_path": original_source,
                 "delete_paths": delete_paths,

@@ -2749,6 +2749,20 @@ Volume root, and refuses with 409 when another process holds one. So a CLI job
 packing a folder blocks a web rename or delete inside it. The exact-path check
 (`check_file_status`) runs first, as before.
 
+**Archive deletion fails closed.** Deleting an archive member's Source deletes
+the archive, so `build_delete_plan` (shared by the web batch, the job's
+delete-time recheck, Rule sweeps and the CLI) refuses unless every member
+belongs to the converted Image. `utils.delete_plan.archive_members_beyond_image`
+lists the rest: the owned set is the member itself, the tracks its sheet names
+(the sheet is extracted to a temp dir and each reference resolved with
+`resolve_track`, confined there, in every spelling the sheet reads as), and its
+`source_companions` split parts (by name, against the archive's names laid out
+as empty files). A directory entry counts only when nothing owned lives under
+it. Everything else, of any type and junk included, is an extra; there is no
+list of harmless sidecars. An archive or sheet that can't be read counts as an
+extra (the archive's own name). The error and the CLI line name the first three
+(`describe_extras`).
+
 **Input locks.** Every file-input job, whichever entry point queued it, holds a
 *shared* flock on each file it reads (`JobManager._hold_inputs`: the Source, or
 the archive for a member, plus `_track_candidate_paths`' cue/gdi tracks and
