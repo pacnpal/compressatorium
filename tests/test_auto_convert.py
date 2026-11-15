@@ -19,21 +19,10 @@ from .test_disc_id import _make_iso
 from .test_platform_detect import _blank, _gamecube, _ps1, _ps2, _psp, _wii, _write
 from .test_xiso_service import build_image
 
-
-@pytest.fixture(autouse=True)
-def _fresh_cache():
-    platform_detect.clear_cache()
-    yield
-    platform_detect.clear_cache()
-
-
-@pytest.fixture(autouse=True)
-def _volume(tmp_path, monkeypatch):
-    """``tmp_path`` is the configured Volume, so the folder walk reaches every
-    folder a test builds under it (and nothing above it)."""
-    from config import settings
-
-    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+# The detection cache is cleared and tmp_path is the configured Volume
+# (tests/conftest.py), so the folder walk reaches every folder a test
+# builds under it and nothing above it.
+pytestmark = pytest.mark.usefixtures("fresh_detect_cache", "tmp_volume")
 
 
 def _by_path(plan):
@@ -247,34 +236,6 @@ def test_no_saved_compression_means_the_tool_default(tmp_path):
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
-
-@pytest.fixture(name="route_env")
-def _route_env(tmp_path: Path, monkeypatch):
-    """Routes confined to ``tmp_path``; the queue and preferences stubbed."""
-    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
-    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
-    monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
-    monkeypatch.setattr(convert_routes.job_manager, "get_queue_depth", lambda: 0)
-
-    queued: list[dict] = []
-
-    async def fake_atomic(job_specs, mode, **kwargs):
-        queued.append({
-            "mode": mode.value,
-            "files": [Path(s["file_path"]).name for s in job_specs],
-            "compression": kwargs.get("compression"),
-        })
-        return []
-
-    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
-
-    async def fake_prefs(key):
-        assert key == "conversion"
-        return {"chdman": "zlib,lzma", "dolphin": "zstd:19"}
-
-    monkeypatch.setattr(convert_routes.preferences_store, "get", fake_prefs)
-    return {"tmp_path": tmp_path, "queued": queued}
-
 
 def _mixed_selection(tmp_path: Path) -> list[str]:
     return [

@@ -288,7 +288,7 @@ def _csv_cell(value):
         value = "; ".join(str(v) for v in value)
     if value is None:
         return ""
-    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r", "\n"):
         # Stops a spreadsheet from running a cell as a formula.
         return "'" + value
     return value

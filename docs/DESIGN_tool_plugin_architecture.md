@@ -2553,7 +2553,7 @@ an earlier run left for that path is dropped. `ConversionJob.check_passed`
 (and so the Ledger row) still says `"intact"`, because the container check did
 pass.
 
-### 3.3.13 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
+### 3.3.14 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
 
 `detect_platform(path) -> Detection` is the one place an Image's Platform is
 worked out without a library manager. The convert panel's Auto choice uses it
@@ -2829,10 +2829,13 @@ succeeded or not. It takes the caller's AbortSignal: `ConvertPanel` aborts it
 in `onDestroy`, so leaving the view mid-plan aborts the plan request, never
 opens the modal afterwards, resolves a pending confirmation as cancelled, and
 clears `autoInFlight` (the store stops waiting at the abort even when a request
-ignores the signal); `jobs.adopt` applies the same freshness rule as `refresh()`
+ignores the signal, and including a RomM snapshot that stalls: its rows are
+retired on their own when it returns, never touching a newer run's state);
+`jobs.adopt` applies the same freshness rule as `refresh()`
 (`snapshotIsNewer`) and never adopts an unknown job the store saw evicted
-from history (bounded eviction tombstones), so a response built before a job
-finished and was pruned cannot put it back in the queue. That holds only while
+from history or removed by Clear completed (bounded tombstones, one helper),
+so a response built before a job finished and was pruned or cleared cannot
+put it back in the queue. That holds only while
 the job's tombstone is kept: the store keeps the newest 2000, so a response
 delayed past that many evictions can still restore the job. `refresh()` infers
 an eviction (and tombstones it) only for jobs it knew before it sent the
