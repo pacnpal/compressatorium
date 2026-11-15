@@ -774,6 +774,8 @@ async def test_platforms_have_display_names(psx: Path) -> None:
 def test_every_platform_has_a_display_name() -> None:
     names = {slug: platform_detect.platform_name(slug) for slug in platform_detect._ALIASES}
     assert all(name and name != slug for slug, name in names.items()), names
+    # A slug a tool can declare without an alias (#324's eXoDOS) has one too.
+    assert platform_detect.platform_name("dos") == "DOS"
 
 
 @pytest.mark.asyncio
@@ -831,15 +833,23 @@ async def test_the_engine_refuses_an_unsupported_policy_on_submission(tree: Path
 
 
 def _finishes(func, seconds: float = 2.0):
-    """Run *func* in a thread; return (finished in time, its result or exception)."""
+    """Run *func* in a thread; return (finished in time, its result or exception).
+
+    The Library errors these tests expect (a listing still running, a refused
+    registration) are handed back for the test to assert on; anything else
+    stays an error in the thread.
+    """
     import threading
+
+    from services.libraries import LibraryPathError
+    from services.rules import LibraryUnreadable
 
     box: dict = {}
 
     def run():
         try:
             box["value"] = func()
-        except Exception as exc:  # noqa: BLE001 - handed back to the test
+        except (LibraryUnreadable, LibraryPathError) as exc:
             box["value"] = exc
 
     worker = threading.Thread(target=run, daemon=True)
