@@ -123,6 +123,14 @@ class MakePs3IsoService:
                 return parts
         return []
 
+    @classmethod
+    def _split_set_damage(cls, iso_path: str) -> str | None:
+        """Why the split set ``iso_path`` belongs to is damaged, or None when it
+        holds or ``iso_path`` is no split output. Blocking: discovery and check
+        together, for one detached thread."""
+        parts = cls.split_set_of(iso_path)
+        return cls.check_split_set(parts) if parts else None
+
     @staticmethod
     def check_split_set(parts: list[str]) -> str | None:
         """Why a split set is damaged, or None when its structure holds.
@@ -425,26 +433,28 @@ class MakePs3IsoService:
             # A split build: the TITLE_ID readback only reads part 0, so the
             # whole set's structure is checked too (#306). A split Image is
             # never Intact when a later part is damaged.
-            parts = self.split_set_of(iso_path)
-            if parts:
-                try:
-                    damage = await run_detached(
-                        self.check_split_set, parts, cancel_event=cancel_event,
-                    )
-                except ReadCancelled:
-                    return {
-                        "valid": False,
-                        "cancelled": True,
-                        "message": "Verification cancelled",
-                    }
-                except OSError as exc:
-                    return {
-                        "valid": False,
-                        "inconclusive": True,
-                        "message": f"Could not read the split ISO: {exc}",
-                    }
-                if damage:
-                    return {"valid": False, "message": damage}
+            # Finding the set stats the disk too, so it runs on the same
+            # detached thread as the check, never on the event loop: a hung
+            # mount then meets the verify's bound and cancel like the
+            # readback above (codex 4577688831).
+            try:
+                damage = await run_detached(
+                    self._split_set_damage, iso_path, cancel_event=cancel_event,
+                )
+            except ReadCancelled:
+                return {
+                    "valid": False,
+                    "cancelled": True,
+                    "message": "Verification cancelled",
+                }
+            except OSError as exc:
+                return {
+                    "valid": False,
+                    "inconclusive": True,
+                    "message": f"Could not read the split ISO: {exc}",
+                }
+            if damage:
+                return {"valid": False, "message": damage}
             return {"valid": True, "message": f"PS3 ISO TITLE_ID {title_id}"}
         return {
             "valid": False,
