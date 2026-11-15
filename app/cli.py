@@ -995,13 +995,22 @@ def _split_owner(path: str) -> tuple[str, str] | None:
         return None
     real = os.path.realpath(path)
     for spec in registry.mode_specs():
-        try:
-            parts = registry.for_mode(spec.mode).companion_outputs(base, spec.mode)
-        except Exception:  # noqa: BLE001 - a tool that can't answer owns nothing
-            continue
+        parts = _companion_outputs(spec.mode, base)
         if real in {os.path.realpath(part) for part in parts}:
             return base, spec.mode
     return None
+
+
+def _companion_outputs(mode: str, base: str) -> list[str]:
+    """A mode's companion outputs for ``base``; [] when the tool's disk probe
+    fails (it owns nothing then), said at debug level."""
+    from services.tools import registry
+
+    try:
+        return registry.for_mode(mode).companion_outputs(base, mode)
+    except OSError as exc:
+        logger.debug("No companion outputs from %s for %s: %s", mode, base, exc)
+        return []
 
 
 def _is_split_part(path: str) -> bool:
@@ -1035,7 +1044,8 @@ def _stored_logical(stored: str, record: dict) -> str | None:
         return None
     try:
         target = registry.for_mode(mode).verify_target(stored, mode)
-    except Exception:  # noqa: BLE001 - an unknown mode finds nothing
+    except (KeyError, OSError) as exc:  # a mode no longer registered, a dead disk
+        logger.debug("Stored output %s not found through %s: %s", stored, mode, exc)
         return None
     return mode if target and target != stored and os.path.isfile(target) else None
 
