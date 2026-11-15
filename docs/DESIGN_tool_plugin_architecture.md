@@ -2518,15 +2518,16 @@ Precedence is fixed and never guesses:
    layout, or a trimmed image's boot executable). A probe that raises is
    treated as no answer. A new console is taught to detection by its tool's
    override, not by an edit here.
-2. **The user's mapping** (#304, §3.3.14). The nearest folder above the Image
-   that the user set to a Platform. When one applies, the folder name is not
-   consulted.
-3. **Folder name.** The nearest parent folder whose name is a key or alias in
-   `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
-   name for it (the tools' own spellings and the folder names ES-DE and
-   Batocera use: `ps1`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
-   `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
-   header and use the archive's folder.
+2. **The nearest folder that says** (`_place`). Walking up from the Image's
+   folder, the first folder that either carries the user's mapping (#304,
+   §3.3.14) or has a name that is a key or alias in `_ALIASES` decides. At the
+   same folder the mapping wins. `_ALIASES` holds RomM's slug for each
+   Platform a tool declares, with every other name for it (the tools' own
+   spellings and the folder names ES-DE and Batocera use: `ps1`, `gc`,
+   `megacd`, `pcenginecd`, `cdi`, `megadrive`, `mastersystem`, `n3ds`, ...).
+   A mapping on `roms/` therefore names `roms/misc/x.iso` and leaves
+   `roms/ps2/x.iso` to its folder name. Archive members (`a.zip::disc.iso`)
+   skip the header and use the archive's folder.
 
 Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
 and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
@@ -2538,8 +2539,8 @@ the table does not cover, so a new Platform brings its folder names with it.
 `platform_name(slug)` gives the display name from `_NAMES` (a test fails when a
 slug has none). `detect_uncached` is the same decision without the shared LRU,
 for a caller (the folder Library) that keeps its own per-file cache. A header
-that disagrees with the mapping or the folder, or two headers that disagree,
-is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
+that disagrees with the deciding folder, or two headers that disagree (kept
+in `Detection.headers`), is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
 changes; `clear_cache()` exists for tests. A header probe that reads other
 files declares them through `ToolPlugin.header_reads(path)` (default empty;
@@ -2650,16 +2651,18 @@ separators, `""` for the root), and a Platform slug checked with
 finds the folder Library that holds it (403 outside the Volumes, 404 outside
 every folder Library, 422 for an unknown Platform), and clears the mapping
 when `platform` is None. The rows are kept in memory as an index of absolute
-folder paths, rebuilt on first use after any change; `mapping_for(path)` walks
-the Image's parents and returns the nearest mapped one. Removing a Library
-deletes its rows.
+folder paths, rebuilt on first use after any change; `mapped_folders()`
+returns it, and detection's `_place` walks the Image's parents against it and
+the Platform folder names together. Removing a Library deletes its rows.
 
 Detection reads the mapping as evidence inside `_decide`, never as an override
 applied afterwards, so a mapping that disagrees with a header is a conflict in
-the same way a folder name is. `detection_key` includes the mapping that
-applies, which is how a changed mapping invalidates both caches: the shared
-LRU and a folder Library's per-file cache see a new key for exactly the Images
-under that folder. `set_mapping` also calls `FolderLibrary.invalidate()`,
+the same way a folder name is. `detection_key` includes the deciding folder
+evidence as `(source, folder path, slug)`, which is how a changed mapping
+invalidates both caches: the shared LRU and a folder Library's per-file cache
+see a new key for exactly the Images it decides. The path, not the name, is in
+the key, because where a mapping sits relative to a Platform-named folder
+changes the answer. `set_mapping` also calls `FolderLibrary.invalidate()`,
 which bumps the Library's generation so the next listing walks again instead
 of serving the last walk (`SCAN_TTL_SECONDS`).
 
@@ -2672,7 +2675,13 @@ that Library) are deleted; new ones get `first_seen`; every observed row gets
 (for a Platform Finding: `how`, `header`, `folder`, `mapped`), not of the
 `reason` text, so a reworded message does not resurface a dismissed row.
 `dismiss(id)` copies the fingerprint into `dismissed_fingerprint`; the row is
-hidden while the two match and shows again once the cause changes. Kinds today
+hidden while the two match and shows again once the cause changes. A changed
+fingerprint also clears `dismissed_fingerprint`, so a cause that changes and
+then changes back stays shown. `undismiss(id)` clears it by hand.
+`reconcile(..., keep_under=[...])` leaves alone every row whose `image_key`
+sits under a folder the producer could not look in, dismissal included.
+`reconcile(..., current=...)` asks the producer, under the store's write lock,
+whether it may still write; `forget_library` takes the same lock. Kinds today
 are `platform_conflict` and `unsorted`; later producers (RomM, the Inbox, Check
 Rules) add their own kinds and pass them in `kinds`, so one producer never
 clears another's rows.
@@ -2680,9 +2689,18 @@ clears another's rows.
 **The producer.** The folder Library's walk (§3.3.11, #303) is the only one: at
 the end of `_walk` it reconciles a `platform_conflict` per conflicted Entry, an
 `unsorted` per Entry with no Platform, and an `unsorted` per Image file the walk
-could not read. A listing served from the last walk writes nothing, and a walk
-that fails (root unavailable) never reaches the reconcile, so a mount blip
-clears no Finding. A database error while reconciling is logged and costs only
+could not read (not a track a readable sheet lists: that is not an Image). A
+listing served from the last walk writes nothing, and a walk that fails (root
+unavailable) never reaches the reconcile. A subfolder that does not list is
+passed as `keep_under`, so a mount blip at any depth clears no Finding.
+
+The walk's `current` check refuses the write in two cases. The Library was
+removed (`FolderLibrary.mark_removed()`, set by `libraries.remove` before its
+Findings are dropped; #303's Library generation token is meant to take this
+over). Or the Library's generation moved since the walk started: a mapping was
+set while it ran, so its detections are out of date. The walk then marks its
+Scan `stale` and, once its lock is released, `_schedule_rewalk` walks again on
+a daemon thread. A database error while reconciling is logged and costs only
 the Findings; the walk still serves the Rules. Nothing that reads the store
 moves, renames or deletes a file.
 
@@ -2693,7 +2711,11 @@ as #303's listings are, and reports each Library's status
 (`listing_in_progress`, `root_unavailable`, ...); `GET /api/platforms` lists
 what a folder can be set to; `GET`/`PUT /api/platform-mappings` lists and sets
 mappings, and a `PUT` walks the Library again right away so its Findings
-follow.
+follow. When a walk is already running the `PUT` still saves and answers
+`walk.status: "listing_in_progress"` with "A listing is running; Findings
+refresh after it."; the running walk drops its stale Findings and walks again.
+`POST /api/findings/{id}/undismiss` shows a dismissed Finding again. Check now
+walks the Libraries side by side.
 
 ### 3.4 `registry.py`
 
