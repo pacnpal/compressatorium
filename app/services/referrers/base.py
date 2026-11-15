@@ -27,6 +27,8 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
+from utils.path_utils import FileIdentity, file_identity, same_identity
+
 
 class ReferrerError(Exception):
     """A Referrer could not be planned or applied. ``target`` names what failed."""
@@ -75,15 +77,6 @@ class Referrer(ABC):
         """Write *change* atomically with a one-time backup, or raise ReferrerError."""
 
 
-def file_identity(path: str) -> tuple[int, int, int, int] | None:
-    """``(st_dev, st_ino, size, mtime_ns)`` of *path*, or None if it's gone."""
-    try:
-        st = os.stat(path)
-    except (OSError, ValueError):
-        return None
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
-
-
 @dataclass
 class WriteGuard:
     """What must still hold when a Referrer writes, checked under its lock.
@@ -92,17 +85,18 @@ class WriteGuard:
     job lets go of the output lock and another conversion may replace the
     output, so a late write could point a playlist at a different disc.
     ``abandoned`` is set by the hook when it stops waiting; ``outputs`` holds
-    each output's identity captured when the hook started.
+    each output's identity captured when the hook started, compared with
+    ``same_identity`` (which tolerates the unstable inodes of FUSE/SMB mounts).
     """
 
     abandoned: threading.Event
-    outputs: dict[str, tuple[int, int, int, int] | None]
+    outputs: dict[str, FileIdentity | None]
 
     def check(self, target: str) -> None:
         if self.abandoned.is_set():
             raise ReferrerError(target, "the job stopped waiting for it; not writing")
         for path, identity in self.outputs.items():
-            if file_identity(path) != identity:
+            if not same_identity(file_identity(path), identity):
                 raise ReferrerError(
                     target, f"the output {os.path.basename(path)} changed after its check",
                 )

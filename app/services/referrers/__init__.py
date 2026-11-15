@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from logging_setup import get_logger
 from services.subprocess_runner import ReadCancelled, run_detached_within_stall_bound
+from utils.path_utils import file_identity
 
 from .base import (
     Referrer,
@@ -22,7 +23,6 @@ from .base import (
     ReferrerError,
     WriteGuard,
     atomic_write_bytes,
-    file_identity,
     write_guard,
 )
 from .m3u import M3uReferrer

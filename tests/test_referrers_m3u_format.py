@@ -937,6 +937,74 @@ async def test_a_stray_nul_in_an_unrelated_playlist_does_not_block(tmp_path):
     assert other.read_bytes() == b"Other.cue\n\x00"
 
 
+def _unstable_inodes(monkeypatch, root: Path) -> None:
+    """Simulate a FUSE/SMB mount (Unraid's shfs user shares) where st_ino can
+    change between two stats of the same file."""
+    import itertools
+
+    real_stat = os.stat
+    counter = itertools.count(10_000_000)
+    root_real = os.path.realpath(root)
+
+    def unstable_stat(path, *args, **kwargs):
+        st = real_stat(path, *args, **kwargs)
+        if not stat.S_ISREG(st.st_mode) or not os.path.realpath(path).startswith(root_real):
+            return st
+        fields = list(st)
+        fields[stat.ST_INO] = next(counter)
+        return os.stat_result(fields, {
+            "st_atime_ns": st.st_atime_ns,
+            "st_mtime_ns": st.st_mtime_ns,
+            "st_ctime_ns": st.st_ctime_ns,
+        })
+
+    monkeypatch.setattr(os, "stat", unstable_stat)
+
+
+@pytest.mark.asyncio
+async def test_unstable_inodes_on_a_fuse_share_still_rewrite(tmp_path, monkeypatch):
+    """On shfs the same file can report a new st_ino on every stat. Matching
+    falls back to (realpath, size, mtime), so the playlist is still rewritten
+    and the output check still passes."""
+    _disc(tmp_path, "Game.cue")
+    out = _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\nOther.cue\n")
+    _unstable_inodes(monkeypatch, tmp_path)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    monkeypatch.undo()
+    assert outcome.ok, outcome.reason
+    assert playlist.read_text() == "Game.chd\nOther.cue\n"
+    assert os.path.samefile(tmp_path / _reader_entries(playlist.read_bytes())[0], out)
+
+
+@pytest.mark.asyncio
+async def test_unstable_inodes_still_catch_a_replaced_output(tmp_path, monkeypatch):
+    """The fallback still sees a different disc written at the same path."""
+    _disc(tmp_path, "Game.cue")
+    out = _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+    _unstable_inodes(monkeypatch, tmp_path)
+    entered, release, _finished = _stall_reads(monkeypatch)
+
+    hook = asyncio.create_task(referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+    ))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        _replace_output(out)
+    finally:
+        release.set()
+    outcome = await asyncio.wait_for(hook, timeout=10)
+
+    monkeypatch.undo()
+    assert not outcome.ok
+    assert playlist.read_text() == "Game.cue\n"
+
+
 def _stall_reads(monkeypatch):
     """Block the first playlist read; signal entry and the worker's end."""
     import threading
