@@ -49,6 +49,7 @@ from services.subprocess_runner import (
     run_detached,
     run_detached_within_stall_bound,
     verify_preflight,
+    verify_exception_event,
 )
 from utils.path_utils import (
     is_same_file,
@@ -105,6 +106,12 @@ _ENTRY_HEADER = struct.Struct("<HHIIBB")  # left, right, sector, size, attr, nam
 # multi-gigabyte allocation or a stack overflow. Real discs sit orders of
 # magnitude under each (Halo 3: 167 entries, deepest directory 3 levels).
 _MAX_DIR_TABLE = 64 * 1024 * 1024
+# The Platform-detection probe (``detect_console``) runs on any .iso Auto is
+# pointed at, including through an unauthenticated ``/api/jobs/auto-plan``, so
+# it walks with much smaller limits: a real XISO's directory tables are a few
+# KiB each, and the probe only needs the root to find the boot executable.
+_PROBE_MAX_DIR_TABLE = 1 * 1024 * 1024
+_PROBE_MAX_TABLE_BYTES = 4 * 1024 * 1024
 _MAX_ENTRIES = 1_000_000
 _MAX_DEPTH = 64
 
@@ -153,7 +160,13 @@ def is_optimized(path: str) -> bool:
         return handle.read(len(_OPTIMIZED_TAG)) == _OPTIMIZED_TAG
 
 
-def walk_image(path: str) -> dict:
+def walk_image(
+    path: str,
+    *,
+    max_table: int = _MAX_DIR_TABLE,
+    max_total: int | None = None,
+    root_only: bool = False,
+) -> dict:
     """Walk the XDVDFS directory tree of ``path`` without extracting anything.
 
     Returns ``file_count``, ``data_bytes`` (the sum of every file's size, which
@@ -162,6 +175,13 @@ def walk_image(path: str) -> dict:
     the root executable's name, and whether a ``$SystemUpdate`` folder exists.
     Blocking; call it off the event loop. Raises :class:`XisoImageError` on any
     structural inconsistency.
+
+    ``max_table`` caps one directory table and ``max_total`` the bytes of all
+    tables read in this walk; a table past either is a structural error.
+    ``root_only`` reads the root table and none of its children (the counts
+    then cover the root only). The conversion and info paths use the
+    defaults; the detection probe passes small limits and ``root_only``
+    (``detect_console``), since the boot executable sits in the root.
     """
     offset, layout, console = detect_layout(path)
     file_size = os.path.getsize(path)
@@ -177,6 +197,7 @@ def walk_image(path: str) -> dict:
         "has_system_update": False,
     }
     entries_seen = 0
+    table_bytes = 0
     visited: set[int] = set()
 
     with open(path, "rb") as handle:
@@ -189,9 +210,13 @@ def walk_image(path: str) -> dict:
             raise XisoImageError("XDVDFS volume contains no files")
 
         def read_table(sector: int, size: int) -> bytes:
+            nonlocal table_bytes
             start = offset + sector * _SECTOR
-            if size > _MAX_DIR_TABLE or start + size > file_size:
+            if size > max_table or start + size > file_size:
                 raise XisoImageError("Directory table lies outside the image")
+            table_bytes += size
+            if max_total is not None and table_bytes > max_total:
+                raise XisoImageError("Directory tables exceed the read budget")
             handle.seek(start)
             table = handle.read(size)
             if len(table) < size:
@@ -258,6 +283,8 @@ def walk_image(path: str) -> dict:
                 if at_root and name.lower() in {"default.xex", "default.xbe"}:
                     stats["root_executable"] = name
             del table
+            if root_only:
+                return
             for child_sector, child_size in children:
                 walk_dir(child_sector, child_size, depth + 1, at_root=False)
 
@@ -270,6 +297,25 @@ def walk_image(path: str) -> dict:
             "Xbox 360" if stats["root_executable"].lower().endswith(".xex") else "Xbox"
         )
     return stats
+
+
+def detect_console(path: str) -> str | None:
+    """``"Xbox"`` or ``"Xbox 360"`` for an Xbox disc image, else None.
+
+    The layout names the console for a full disc image. A trimmed XISO has no
+    layout to go on, so its boot executable decides (``walk_image``). Never
+    raises: a file that is not an Xbox image, or cannot be read, is None.
+    """
+    try:
+        _offset, _layout, console = detect_layout(path)
+        if console:
+            return console
+        return walk_image(
+            path, max_table=_PROBE_MAX_DIR_TABLE, max_total=_PROBE_MAX_TABLE_BYTES,
+            root_only=True,
+        )["console"]
+    except (XisoImageError, OSError):
+        return None
 
 
 @lru_cache(maxsize=4096)
@@ -715,8 +761,11 @@ class ExtractXisoService:
                 "message": "Verification cancelled",
             }
             return
-        except (XisoImageError, OSError) as exc:
+        except XisoImageError as exc:
             yield {"type": "error", "valid": False, "message": f"Invalid XISO: {exc}"}
+            return
+        except OSError as exc:  # the image could not be read: no verdict (#306)
+            yield verify_exception_event(exc, prefix="Could not read the XISO")
             return
 
         # nice/ionice as command wrappers, never preexec_fn (the maxcso / chdman /
@@ -742,7 +791,7 @@ class ExtractXisoService:
                 yield update
         except Exception as exc:
             logger.exception("Error during XISO verification: %s", exc)
-            yield {"type": "error", "valid": False, "message": f"Verification error: {exc}"}
+            yield verify_exception_event(exc)
 
 
 # Global service instance

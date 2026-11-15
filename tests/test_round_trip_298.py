@@ -17,6 +17,14 @@ from services.tools.base import ContentDigest, ContentDigestUnavailable
 DOLPHIN_MODES = ("dolphin_rvz", "dolphin_wia", "dolphin_gcz", "dolphin_iso")
 
 
+# Kept in step with test_round_trip_301 as each tool gains its digest.
+ROUND_TRIP_301 = {
+    "cso_compress", "cso2_compress", "zso_compress", "dax_compress",
+    "z3ds_compress", "jwud_compress", "nsz_compress", "romz_7z", "romz_zip",
+    "cso_to_chd", "createhd", "createraw", "copy",
+}
+
+
 def _dolphin():
     return registry.get("dolphin")
 
@@ -108,8 +116,12 @@ def test_every_dolphin_mode_declares_round_trip():
 
 
 def test_modes_without_a_content_digest_do_not_declare_round_trip():
+    # Dolphin (#298), chdman's CD/DVD create modes (#300) and the rest of the
+    # delete-source modes (#301) have a content digest on both sides; every
+    # other mode keeps the container check.
+    with_digest = set(DOLPHIN_MODES) | {"createcd", "createdvd"} | ROUND_TRIP_301
     for spec in registry.mode_specs():
-        if spec.tool_id != "dolphin":
+        if spec.mode not in with_digest:
             assert not registry.mode_supports_round_trip(spec.mode), spec.mode
 
 
@@ -465,9 +477,13 @@ async def test_container_only_opt_out_skips_the_comparison(e2e):
 
 
 @pytest.mark.asyncio
-async def test_a_mode_without_a_digest_keeps_the_container_check(e2e):
+async def test_a_mode_without_a_digest_keeps_the_container_check(e2e, monkeypatch):
     rom = e2e["tmp_path"] / "Game.3ds"
     rom.write_bytes(b"cartridge")
+    # z3ds Round-trips since #301; a mode with no digest stands in for it.
+    monkeypatch.setattr(
+        registry, "mode_supports_round_trip", lambda mode: mode != "z3ds_compress",
+    )
 
     job = await _run(e2e, rom, "z3ds_compress", delete_on_verify=True)
 
@@ -526,6 +542,25 @@ async def test_batch_route_carries_the_container_only_opt_out(e2e):
     assert e2e["calls"] == []
 
 
+@pytest.mark.asyncio
+async def test_a_failed_round_trip_keeps_what_made_the_output(e2e):
+    """A failed check keeps provenance (#305 ruling, on #306): after a
+    Round-trip mismatch the output is not verified, but its record still
+    names the mode that made it, so the next check goes to that tool."""
+    from services.verification_store import verification_store
+
+    iso, _ = _source_iso(e2e)
+    e2e["stdout"] = f"{'0' * 40}\n".encode()
+
+    job = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
+
+    assert job.status.value == "failed"
+    assert await verification_store.get_record(job.output_path) is None
+    assert not await verification_store.is_verified(job.output_path)
+    meta = verification_store.produced_meta_blocking(job.output_path)
+    assert (meta or {}).get("mode") == "dolphin_rvz"
+
+
 # ---------------------------------------------------------------------------
 # within: where a tool may read a Source's sheet and tracks (#294 contract)
 # ---------------------------------------------------------------------------
@@ -541,6 +576,9 @@ class _RecordingTool:
 
     async def verify_timeout(self, path, *, cancel_event=None):
         return 0
+
+    async def source_problem(self, path, *, cancel_event=None, within=None):
+        return None
 
     async def content_digest(self, path, *, cancel_event=None, within=None):
         self.calls.append((path, within))

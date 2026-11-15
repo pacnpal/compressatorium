@@ -14,7 +14,7 @@ import { STORAGE_KEYS, readBool, writeBool, readString, writeString } from '$lib
 import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
 
-const VIEWS = Object.freeze(['dashboard', 'workspace', 'romm', 'dat', 'settings', 'help']);
+const VIEWS = Object.freeze(['dashboard', 'workspace', 'romm', 'rules', 'dat', 'ledger', 'settings', 'help']);
 // Tool ids come from the registry, single source of truth, no
 // hardcoded set to keep in sync when a 4th tool is added.
 const VALID_TOOLS = registry.ids();
@@ -28,6 +28,8 @@ function loadPrimaryTool() {
 class UIStore {
   // Routing
   activeView = $state(DEFAULT_VIEW);
+  // The Library a `#/rules/<id>` link names; the Rules view selects it.
+  rulesTarget = $state(null);
   workspaceTool = $state(loadPrimaryTool());
   // Tool ids the backend reports unavailable (e.g. Switch with no prod.keys).
   // Empty until the first /api/tools fetch, so nothing flickers hidden->shown.
@@ -129,6 +131,7 @@ class UIStore {
     const [view, sub] = cleaned.split('/');
     if (VIEWS.includes(view)) {
       this.activeView = view;
+      if (view === 'rules') this.rulesTarget = sub ? decodeURIComponent(sub) : null;
       if (view === 'workspace' && sub && VALID_TOOLS.has(sub)) {
         this.workspaceTool = sub;
         writeString(STORAGE_KEYS.PRIMARY_TOOL, sub);

@@ -55,6 +55,7 @@ from services.subprocess_runner import (
     ioprio_prefix,
     nice_prefix,
 )
+from utils.sheet_text import cue_tracks, gdi_tracks, sheet_readings, sheet_tracks
 
 logger = get_logger("disc_id")
 
@@ -191,12 +192,60 @@ _DC_HWID_NEEDLE = b"SEGA SEGAKATANA"
 # Low-level ISO 9660 helpers
 # ===========================================================================
 
-def _read_pvd(f) -> Optional[bytes]:
-    """Return the 2048-byte PVD sector from a seekable ISO 9660 stream, or None."""
+# Every length these helpers read comes out of the image (the PVD's root
+# directory size, a directory record's extent size), so every read is bounded
+# before it happens: by this parser limit, and by what the image actually holds
+# past the offset. A directory record table is a few KiB on a real disc and the
+# files read through here (SYSTEM.CNF, PARAM.SFO) are smaller still, so 1 MiB
+# leaves wide headroom. A size outside either bound is a parse failure, which
+# callers already treat as "no header": a planted image claiming 0xffffffff
+# bytes costs nothing, instead of a 4 GiB allocation.
+_MAX_ISO_READ = 1024 * 1024
+
+
+def _stream_size(f) -> int | None:
+    """Logical size of an ISO 9660 stream in bytes, when it can be known."""
+    size = getattr(f, "logical_size", None)
+    if size is not None:
+        return size
+    try:
+        return os.fstat(f.fileno()).st_size
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _bounded_read(f, offset: int, size: int, *, strict: bool = False) -> bytes | None:
+    """``size`` bytes at ``offset``, or None when the image cannot hold them.
+
+    Refuses a size above ``_MAX_ISO_READ`` or running past the end of the
+    image, without reading anything. ``strict`` raises an I/O error instead of
+    answering None (#306: a verify must tell "cannot read" from "not there").
+    """
+    if size < 0 or size > _MAX_ISO_READ:
+        return None
+    total = _stream_size(f)
+    if total is not None and offset + size > total:
+        return None
+    try:
+        f.seek(offset)
+        return f.read(size)
+    except OSError:
+        if strict:
+            raise
+        return None
+
+
+def _read_pvd(f, *, strict: bool = False) -> bytes | None:
+    """Return the 2048-byte PVD sector from a seekable ISO 9660 stream, or None.
+
+    ``strict`` raises an I/O error instead of answering None.
+    """
     try:
         f.seek(_PVD_SECTOR * _SECTOR_SIZE)
         pvd = f.read(_SECTOR_SIZE)
     except OSError:
+        if strict:
+            raise
         return None
     if len(pvd) < 190 or pvd[:7] != _PVD_MAGIC:
         return None
@@ -211,15 +260,16 @@ def _pvd_root_dir(pvd: bytes) -> tuple[int, int]:
     return lba, size
 
 
-def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
+def _list_dir(
+    f, lba: int, size: int, *, strict: bool = False,
+) -> list[tuple[str, int, int, bool]]:
     """
     Yield (name, lba, size, is_dir) for each entry in an ISO 9660 directory.
-    Skips the '.' and '..' self-referencing entries.
+    Skips the '.' and '..' self-referencing entries. ``strict`` raises an I/O
+    error instead of answering an empty listing.
     """
-    try:
-        f.seek(lba * _SECTOR_SIZE)
-        data = f.read(size)
-    except OSError:
+    data = _bounded_read(f, lba * _SECTOR_SIZE, size, strict=strict)
+    if data is None:
         return []
 
     entries: list[tuple[str, int, int, bool]] = []
@@ -268,7 +318,9 @@ def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
     return entries
 
 
-def read_iso_file(iso_path: str, path_parts: list[str]) -> Optional[bytes]:
+def read_iso_file(
+    iso_path: str, path_parts: list[str], *, strict: bool = False,
+) -> Optional[bytes]:
     """Read one file's bytes from an ISO 9660 image by path, or ``None``.
 
     The shared, format-only ISO 9660 path lookup: open the image, walk the PVD
@@ -277,37 +329,40 @@ def read_iso_file(iso_path: str, path_parts: list[str]) -> Optional[bytes]:
     built ISO (PS3 ``TITLE_ID`` readback in ``services.ps3``) reuse this rather
     than re-implementing the ISO 9660 walk, per the repo's "modularity is key"
     rule. Returns ``None`` for a non-ISO / unreadable image or a missing path.
+    ``strict`` raises an I/O error instead, for a caller that has to tell "the
+    image does not hold it" from "the image could not be read" (a verify).
     """
     try:
         with open(iso_path, "rb") as f:
-            pvd = _read_pvd(f)
+            pvd = _read_pvd(f, strict=strict)
             if not pvd:
                 return None
             root_lba, root_size = _pvd_root_dir(pvd)
-            return _find_file(f, root_lba, root_size, path_parts)
+            return _find_file(f, root_lba, root_size, path_parts, strict=strict)
     except OSError:
+        if strict:
+            raise
         return None
 
 
-def _find_file(f, root_lba: int, root_size: int, path_parts: list[str]) -> Optional[bytes]:
+def _find_file(
+    f, root_lba: int, root_size: int, path_parts: list[str], *, strict: bool = False,
+) -> Optional[bytes]:
     """
     Walk an ISO 9660 directory tree and return the raw bytes of the file at
     *path_parts* (e.g. ["PSP_GAME", "PARAM.SFO"]), or None if not found.
     """
     cur_lba, cur_size = root_lba, root_size
     for i, part in enumerate(path_parts):
-        entries = _list_dir(f, cur_lba, cur_size)
+        entries = _list_dir(f, cur_lba, cur_size, strict=strict)
         hit = next((e for e in entries if e[0] == part.upper()), None)
         if hit is None:
             return None
         _name, lba, size, is_dir = hit
         if i == len(path_parts) - 1:
-            # Final component, read and return the file
-            try:
-                f.seek(lba * _SECTOR_SIZE)
-                return f.read(size)
-            except OSError:
-                return None
+            # Final component, read and return the file (bounded, see
+            # _MAX_ISO_READ: None when its recorded size is implausible).
+            return _bounded_read(f, lba * _SECTOR_SIZE, size, strict=strict)
         if not is_dir:
             return None
         cur_lba, cur_size = lba, size
@@ -479,10 +534,107 @@ def _parse_ipbin(data: bytes) -> dict:
 
 
 # ===========================================================================
+# Platform headers: which console a disc belongs to, from a few bytes
+# ===========================================================================
+#
+# These answer "whose disc is this" and nothing else. The names they return are
+# this module's own vocabulary (the same one ``_parse_system_cnf`` already uses:
+# "ps1", "ps2", "psp", "dreamcast"); ``services.platform_detect`` maps them onto
+# Platform slugs.
+
+# GameCube / Wii disc header magic numbers (big-endian u32). The same values
+# nkit2iso reads, because an NKit image keeps the original disc header.
+GAMECUBE_MAGIC = 0xC2339F3D   # at 0x1C
+WII_MAGIC = 0x5D1C9EA3        # at 0x18
+
+# Sega sector-0 system ids, at the start of the first data sector.
+_SEGA_SECTOR0_IDS = (
+    (b"SEGA SEGASATURN", "saturn"),
+    (b"SEGADISCSYSTEM", "segacd"),
+    (_DC_HWID_NEEDLE, "dreamcast"),
+)
+# Where sector 0's user data starts: a cooked 2048-byte image, a raw Mode 1
+# track (16-byte sync + header), a raw Mode 2 Form 1 track (24 bytes).
+_SECTOR0_OFFSETS = (0, _RAW_SECTOR_HEADER_SIZE_MODE1, _RAW_SECTOR_HEADER_SIZE_MODE2)
+
+
+def nintendo_disc_platform(path: str) -> str | None:
+    """``"gamecube"`` or ``"wii"`` from a raw GC/Wii disc header, else None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(0x20)
+    except OSError:
+        return None
+    if len(head) < 0x20:
+        return None
+    if struct.unpack_from(">I", head, 0x18)[0] == WII_MAGIC:
+        return "wii"
+    if struct.unpack_from(">I", head, 0x1C)[0] == GAMECUBE_MAGIC:
+        return "gamecube"
+    return None
+
+
+def _cue_track_paths(path: str, within=None) -> list[Path]:
+    """Every track file a cue sheet names, resolved beside the sheet.
+
+    Decoded the shared way (``utils.sheet_text``: UTF-8 with a BOM stripped,
+    cp1252 when not UTF-8, Latin-1 last); the first spelling that exists on
+    disk wins, and a track none of whose spellings exists keeps the first.
+    ``within`` names the trusted roots (``utils.sheet_text.resolve_track``);
+    None means the configured Volumes.
+    """
+    return sheet_tracks(path, cue_tracks, within=within) or []
+
+
+def _cue_data_file(path: str) -> str | None:
+    """The first ``FILE`` a cue sheet names, when it exists beside the sheet."""
+    tracks = _cue_track_paths(path)
+    if not tracks:
+        return None
+    return str(tracks[0]) if tracks[0].is_file() else None
+
+
+def sega_sector0_platform(path: str) -> str | None:
+    """Saturn, Sega CD or Dreamcast from the system id at the start of sector 0.
+
+    Reads one sector. A ``.cue`` is followed to its first data file.
+    """
+    if Path(path).suffix.lower() == ".cue":
+        resolved = _cue_data_file(path)
+        if resolved is None:
+            return None
+        path = resolved
+    try:
+        with open(path, "rb") as f:
+            head = f.read(_RAW_SECTOR_HEADER_SIZE_MODE2 + 0x20)
+    except OSError:
+        return None
+    for offset in _SECTOR0_OFFSETS:
+        window = head[offset:offset + 0x10]
+        for needle, platform in _SEGA_SECTOR0_IDS:
+            if window.startswith(needle):
+                return platform
+    return None
+
+
+def disc_platform(path: str) -> str | None:
+    """The console of a CD/DVD source image, from its own header, or None.
+
+    PS1 / PS2 through ``SYSTEM.CNF``, PSP through ``PARAM.SFO`` and Dreamcast
+    through a ``.gdi``'s ``IP.BIN`` (all the existing extractor), then the Sega
+    sector-0 ids (Saturn, Sega CD, a Dreamcast track read directly).
+    """
+    found = extract_from_source(path)
+    if found and found.get("platform"):
+        return found["platform"]
+    return sega_sector0_platform(path)
+
+
+# ===========================================================================
 # Public synchronous extractor: source files
 # ===========================================================================
 
-def extract_from_source(path: str) -> Optional[dict]:
+def extract_from_source(path: str, *, within=None) -> Optional[dict]:
     """
     Extract game ID (and optionally title) from a source disc image file.
 
@@ -494,14 +646,18 @@ def extract_from_source(path: str) -> Optional[dict]:
       .cue  → Follows the DATA track .bin reference
 
     Returns a dict with at least ``game_id`` and ``platform`` keys, or None.
+
+    ``within`` is passed to the track-sheet readers: the roots a .cue/.gdi's
+    tracks must resolve under. None (the default) means the configured
+    Volumes; the job worker passes the archive extraction dir it created.
     """
     ext = Path(path).suffix.lower()
     if ext == ".iso":
         return _extract_iso(path)
     if ext == ".gdi":
-        return _extract_gdi(path)
+        return _extract_gdi(path, within=within)
     if ext == ".cue":
-        return _extract_cue(path)
+        return _extract_cue(path, within=within)
     if ext == ".bin":
         return _extract_bin(path)
     return None
@@ -582,6 +738,15 @@ class _BinSectorStream:
         self._sector_size = sector_size
         self._header_size = header_size
         self._pos = 0  # logical position
+
+    @property
+    def logical_size(self) -> int | None:
+        """Bytes of 2048-byte user data the raw track holds (for read bounds)."""
+        try:
+            physical = os.fstat(self._f.fileno()).st_size
+        except (AttributeError, OSError, ValueError):
+            return None
+        return (physical // self._sector_size) * _SECTOR_SIZE
 
     def seek(self, pos: int) -> None:
         self._pos = pos
@@ -1005,31 +1170,23 @@ def _extract_from_chd_sectors(chd_path: str) -> Optional[dict]:
     return None
 
 
-def _extract_cue(path: str) -> Optional[dict]:
+def _extract_cue(path: str, within=None) -> Optional[dict]:
     """
     Parse a .cue sheet, find the first DATA track's BIN file, and extract.
     """
     try:
-        cue_dir = Path(path).parent
-        with open(path, encoding="latin-1") as cue:
-            for line in cue:
-                line = line.strip()
-                if line.upper().startswith("FILE "):
-                    # FILE "track.bin" BINARY
-                    parts = line.split('"')
-                    if len(parts) >= 2:
-                        bin_path = cue_dir / parts[1]
-                        if bin_path.exists():
-                            result = _extract_bin(str(bin_path))
-                            if result:
-                                return result
-                            break
+        for bin_path in _cue_track_paths(path, within):
+            if bin_path.exists():
+                result = _extract_bin(str(bin_path))
+                if result:
+                    return result
+                break
     except Exception as e:
         logger.debug("disc_id: CUE extraction failed for %s: %s", path, e)
     return None
 
 
-def _extract_gdi(path: str) -> Optional[dict]:
+def _extract_gdi(path: str, within=None) -> Optional[dict]:
     """
     Parse a Dreamcast .gdi file and extract game ID from the first track's
     IP.BIN header.  The .gdi format is a plain-text index:
@@ -1038,18 +1195,17 @@ def _extract_gdi(path: str) -> Optional[dict]:
     Track 1 is always the first data area (IP.BIN).
     """
     try:
-        gdi_dir = Path(path).parent
-        with open(path, encoding="latin-1") as f:
-            lines = [line.strip() for line in f if line.strip()]
-
-        for line in lines[1:]:  # skip track count on first line
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            track_num = parts[0]
-            sector_size = int(parts[3]) if parts[3].isdigit() else 2352
-            filename = parts[4].strip('"')
-            bin_path = gdi_dir / filename
+        # The shared sheet parsing (utils.sheet_text): quoted names keep their
+        # spaces, and the first spelling of a name that exists on disk wins.
+        files = sheet_tracks(
+            path, lambda text: [t.name for t in gdi_tracks(text)], within=within,
+        )
+        if not files:
+            return None   # unreadable, or a track refused: say nothing
+        entries = gdi_tracks(sheet_readings(path)[0])
+        for track, bin_path in zip(entries, files):
+            track_num = track.number
+            sector_size = track.sector_size or 2352
             if not bin_path.exists():
                 continue
             if track_num == "1":

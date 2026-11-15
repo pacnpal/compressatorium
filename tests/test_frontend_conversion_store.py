@@ -1,0 +1,809 @@
+"""Behavioural guards for the convert store's submit paths.
+
+``src/lib/stores/conversion.svelte.js`` queues conversions. When the rows come
+from a RomM platform listing it first records each source's RomM metadata
+(``planRommRepin``) so the output can be re-identified after RomM rescans, then
+reconciles those records against the jobs actually created. Auto must do the
+same for each target it planned, through the same code.
+
+Evaluated with Node, like ``test_frontend_romm_store``: imports dropped, runes
+reduced to their initial values, sibling modules stubbed. Skipped without Node.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+_STORE_JS = Path(__file__).resolve().parents[1] / "src" / "lib" / "stores" / "conversion.svelte.js"
+
+
+def _find_node() -> str | None:
+    found = shutil.which("node")
+    if found:
+        return found
+    for cand in (os.environ.get("NODE"), "/opt/node22/bin/node", "/usr/bin/node"):
+        if cand and os.path.exists(cand):
+            return cand
+    return None
+
+
+def _plain_js() -> str:
+    src = _STORE_JS.read_text(encoding="utf-8")
+    body = re.sub(r"^import[\s\S]*?from\s+'[^']+';\s*$", "", src, flags=re.MULTILINE)
+    body = re.sub(r"\$state\.raw\(", "(", body)
+    body = re.sub(r"\$state\(", "(", body)
+    leftover = [r for r in ("$state(", "$derived(", "$effect(") if r in body]
+    assert not leftover, f"conversion.svelte.js grew runes this harness does not reduce: {leftover}"
+    return body
+
+
+_STUBS = """
+const toasts = [];
+const toast = {
+  success: (m) => toasts.push(['success', m]),
+  warning: (m) => toasts.push(['warning', m]),
+  error: (m) => toasts.push(['error', m]),
+  info: (m) => toasts.push(['info', m]),
+};
+const STORAGE_KEYS = { PRIMARY_TOOL: 'p', AUTO_CONVERT: 'a' };
+const readString = (_k, fallback) => fallback;
+const writeString = () => {};
+const readBool = (_k, fallback) => fallback;
+const writeBool = () => {};
+const DEFAULT_COMPRESSION_LEVEL_RANGE = { min: 1, max: 22, default: 19 };
+const registry = {
+  forTool: (id) => ({
+    id, compressionStyle: 'multi', defaultCompression: ['zlib'],
+    // makeps3iso's folder_to_iso is the registry's folder-input mode.
+    modes: id === 'makeps3iso'
+      ? [{ mode: 'folder_to_iso', inputKinds: ['directory'] }]
+      : [{ mode: 'createcd' }],
+  }),
+  defaultMode: () => 'createcd',
+  specFor: () => ({ supportsCompression: true }),
+  maxCodecsFor: () => 4,
+};
+const calls = { plan: [], cancel: [], auto: [] };
+let planAnswer = () => ({});
+let autoAnswer = () => ({ plan: [], jobs: [] });
+const api = {
+  async planRommRepin(...args) {
+    calls.plan.push(args);
+    const answer = planAnswer(...args);   // may throw, like a failed request
+    events.push(`plan:${args[1]}`);
+    return answer;
+  },
+  async cancelRommRepin(ids) {
+    calls.cancel.push(ids);
+    return { pending: 0 };
+  },
+  async createAutoJobs(...args) {
+    calls.auto.push(args);
+    events.push('queue');
+    return autoAnswer(...args);
+  },
+  async getAutoPlan(paths) {
+    calls.autoPlan.push([...paths]);
+    return autoPlanAnswer(paths);
+  },
+};
+// One ordered log of the calls whose order matters.
+const events = [];
+calls.autoPlan = [];
+let autoPlanAnswer = (paths) => paths.map((p) => ({ file_path: p, mode: 'createdvd' }));
+const adopted = [];
+const jobs = {
+  adopt: (list) => adopted.push(...list),
+  async createBatch() { return []; },
+};
+"""
+
+
+def _run(tmp_path: Path, scenario: str) -> dict:
+    node = _find_node()
+    if node is None:
+        pytest.skip("node not available to evaluate the conversion store")
+    script = tmp_path / "conversion_store_eval.mjs"
+    script.write_text(_STUBS + _plain_js() + scenario, encoding="utf-8")
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, timeout=30, check=False,
+    )
+    if proc.returncode != 0:
+        pytest.fail(f"Could not evaluate the conversion store via node:\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+_AUTO_REPIN = """
+const plan = [
+  { file_path: '/v/ps2/a.iso', mode: 'createdvd' },
+  { file_path: '/v/gc/b.iso', mode: 'dolphin_rvz' },
+  { file_path: '/v/x/c.iso', mode: null, skip_reason: 'Unsorted' },
+];
+// One plan call per target mode; each records its own sources.
+planAnswer = (paths, mode) => {
+  const ids = { '/v/ps2/a.iso': 11, '/v/gc/b.iso': 22 };
+  const out = { createdvd: '.chd', dolphin_rvz: '.rvz' }[mode];
+  return {
+    recorded: paths.length,
+    pending: 2,
+    recorded_paths: Object.fromEntries(paths.map((p) => [p, p.replace(/\\.iso$/, out)])),
+    recorded_ids: Object.fromEntries(paths.map((p) => [p, ids[p]])),
+  };
+};
+// The backend queued only a.iso; b.iso was skipped (its output exists).
+autoAnswer = () => ({
+  plan,
+  jobs: [{ id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a.chd' }],
+});
+
+const store = new ConversionStore();
+await store.submitAuto(
+  ['/v/ps2/a.iso', '/v/gc/b.iso', '/v/x/c.iso'],
+  { plan, rommRepin: true, rommPlatformId: 7 },
+);
+
+process.stdout.write(JSON.stringify({
+  plans: calls.plan.map(([paths, mode, outDir, dup, platform]) => ({
+    paths, mode, outDir, dup, platform,
+  })),
+  events,
+  cancelled: calls.cancel.flat(),
+  recorded: store.lastRepinRecorded,
+  adopted: adopted.map((j) => j.id),
+}));
+"""
+
+
+def test_auto_records_romm_metadata_per_target_and_reconciles(tmp_path):
+    data = _run(tmp_path, _AUTO_REPIN)
+
+    assert data["plans"] == [
+        {"paths": ["/v/ps2/a.iso"], "mode": "createdvd", "outDir": None,
+         "dup": "skip", "platform": 7},
+        {"paths": ["/v/gc/b.iso"], "mode": "dolphin_rvz", "outDir": None,
+         "dup": "skip", "platform": 7},
+    ], data
+    # Metadata for every target is recorded before anything is queued.
+    assert data["events"] == ["plan:createdvd", "plan:dolphin_rvz", "queue"], data
+    # b.iso never became a job, so its row is retired; a.iso's is kept.
+    assert data["cancelled"] == [22], data
+    assert data["recorded"] == 1, data
+    assert data["adopted"] == ["j1"], data
+
+
+_AUTO_MISDIRECTED = """
+const plan = [{ file_path: '/v/ps2/a.iso', mode: 'createdvd' }];
+planAnswer = (paths, mode, _o, _d, _p, misdirected) => {
+  const dest = misdirected ? misdirected['/v/ps2/a.iso'] : '/v/ps2/a.chd';
+  return {
+    recorded: 1, pending: 1,
+    recorded_paths: { '/v/ps2/a.iso': dest },
+    recorded_ids: { '/v/ps2/a.iso': misdirected ? 12 : 11 },
+  };
+};
+// The queue wrote somewhere else (Rename picked a new name).
+autoAnswer = () => ({
+  plan,
+  jobs: [{ id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a_1.chd' }],
+});
+const store = new ConversionStore();
+await store.submitAuto(['/v/ps2/a.iso'], { plan, rommRepin: true, rommPlatformId: 7 });
+process.stdout.write(JSON.stringify({
+  replanModes: calls.plan.map((args) => args[1]),
+  replanMisdirected: calls.plan[1]?.[5] ?? null,
+  cancelled: calls.cancel.flat(),
+}));
+"""
+
+
+_MANUAL_REPIN = """
+planAnswer = (paths) => ({
+  recorded: paths.length, pending: 1,
+  recorded_paths: { '/v/a.iso': '/v/a.chd' }, recorded_ids: { '/v/a.iso': 5 },
+});
+jobs.createBatch = async () => [{ id: 'j', file_path: '/v/a.iso', output_path: '/v/a.chd' }];
+const store = new ConversionStore();
+store.mode = 'createdvd';
+await store.submit(['/v/a.iso'], { duplicateAction: 'rename', rommRepin: true, rommPlatformId: 3 });
+process.stdout.write(JSON.stringify({ plans: calls.plan, cancelled: calls.cancel.flat() }));
+"""
+
+
+def test_manual_submit_still_records_once_for_the_selected_mode(tmp_path):
+    data = _run(tmp_path, _MANUAL_REPIN)
+
+    # The same five arguments as before the shared path existed.
+    assert data["plans"] == [[["/v/a.iso"], "createdvd", None, "rename", 3]], data
+    assert data["cancelled"] == [], data
+
+
+_PARTIAL_SNAPSHOT = """
+const plan = [
+  { file_path: '/v/ps2/a.iso', mode: 'createdvd' },
+  { file_path: '/v/gc/b.iso', mode: 'dolphin_rvz' },
+];
+// The first target's snapshot is saved; the second one's request fails.
+planAnswer = (paths, mode) => {
+  if (mode === 'dolphin_rvz') throw new Error('RomM went away');
+  return {
+    recorded: 1, pending: 1,
+    recorded_paths: { '/v/ps2/a.iso': '/v/ps2/a.chd' },
+    recorded_ids: { '/v/ps2/a.iso': 11 },
+  };
+};
+// ...and then the queue refuses the whole submission.
+autoAnswer = () => { throw new Error('queue full'); };
+const store = new ConversionStore();
+let failed = false;
+try {
+  await store.submitAuto(['/v/ps2/a.iso', '/v/gc/b.iso'], {
+    plan, rommRepin: true, rommPlatformId: 7,
+  });
+} catch (_e) {
+  failed = true;
+}
+process.stdout.write(JSON.stringify({
+  failed,
+  cancelled: calls.cancel.flat(),
+  warned: toasts.some(([kind, m]) => kind === 'warning' && m.includes('RomM metadata')),
+}));
+"""
+
+
+def test_a_failed_later_snapshot_keeps_the_saved_rows_for_reconciliation(tmp_path):
+    data = _run(tmp_path, _PARTIAL_SNAPSHOT)
+
+    assert data["failed"] is True, data
+    assert data["warned"] is True, data
+    # Nothing was queued, so the row the first snapshot saved is retired.
+    assert data["cancelled"] == [11], data
+
+
+def test_a_saved_row_survives_a_later_failed_snapshot_when_its_job_queued(tmp_path):
+    scenario = _PARTIAL_SNAPSHOT.replace(
+        "autoAnswer = () => { throw new Error('queue full'); };",
+        "autoAnswer = () => ({ plan, jobs: [\n"
+        "  { id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a.chd' },\n"
+        "] });",
+    ).replace(
+        "  warned: toasts",
+        "  recorded: store.lastRepinRecorded,\n  warned: toasts",
+    )
+    data = _run(tmp_path, scenario)
+
+    assert data["failed"] is False, data
+    assert data["cancelled"] == [], data
+    assert data["recorded"] == 1, data
+
+
+def test_auto_re_records_a_redirected_output_under_its_own_mode(tmp_path):
+    data = _run(tmp_path, _AUTO_MISDIRECTED)
+
+    assert data["replanModes"] == ["createdvd", "createdvd"], data
+    assert data["replanMisdirected"] == {"/v/ps2/a.iso": "/v/ps2/a_1.chd"}, data
+    # The superseded row (11) is retired once the new one exists.
+    assert data["cancelled"] == [11], data
+
+
+_KEPT_AFTER_FAILURE = """
+const plan = [
+  { file_path: '/v/ps2/a.iso', mode: 'createdvd' },
+  { file_path: '/v/gc/b.iso', mode: 'dolphin_rvz' },
+];
+planAnswer = (paths, mode) => {
+  const ids = { '/v/ps2/a.iso': 11, '/v/gc/b.iso': 22 };
+  const out = { createdvd: '.chd', dolphin_rvz: '.rvz' }[mode];
+  return {
+    recorded: paths.length, pending: 2,
+    recorded_paths: Object.fromEntries(paths.map((p) => [p, p.replace(/\\.iso$/, out)])),
+    recorded_ids: Object.fromEntries(paths.map((p) => [p, ids[p]])),
+  };
+};
+// The route's answer when the dolphin_rvz group is refused after the
+// createdvd job already finished: a 409 whose detail carries the kept job in
+// the shape a success returns (what client.fetchJson attaches as err.detail).
+autoAnswer = () => {
+  const err = new Error('taken by another job. Already finished and kept: a.iso.');
+  err.status = 409;
+  err.detail = {
+    message: err.message,
+    jobs: [{ id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a.chd' }],
+  };
+  throw err;
+};
+const store = new ConversionStore();
+let failed = false;
+try {
+  await store.submitAuto(['/v/ps2/a.iso', '/v/gc/b.iso'], {
+    plan, rommRepin: true, rommPlatformId: 7,
+  });
+} catch (_e) {
+  failed = true;
+}
+process.stdout.write(JSON.stringify({
+  failed,
+  cancelled: calls.cancel.flat(),
+  adopted: adopted.map((j) => j.id),
+  recorded: store.lastRepinRecorded,
+}));
+"""
+
+
+def test_a_job_kept_after_an_auto_failure_keeps_its_re_pin_record(tmp_path):
+    data = _run(tmp_path, _KEPT_AFTER_FAILURE)
+
+    assert data["failed"] is True, data
+    # a.iso's job finished and was kept: its snapshot (11) stays. Only b.iso's
+    # (22), which never became a job, is retired.
+    assert data["cancelled"] == [22], data
+    assert data["adopted"] == ["j1"], data
+    assert data["recorded"] == 1, data
+
+
+_EXPLICIT_TARGET = """
+const store = new ConversionStore();
+store.auto = true;
+store.setMode('createcd');            // programmatic (platform adoption): Auto stays on
+const afterSetMode = store.auto;
+store.chooseTarget('cso_compress');   // an explicit choice in any selector
+process.stdout.write(JSON.stringify({
+  afterSetMode,
+  auto: store.auto,
+  mode: store.mode,
+  toasts,
+}));
+"""
+
+
+def test_an_explicit_target_choice_turns_auto_off_and_says_so(tmp_path):
+    data = _run(tmp_path, _EXPLICIT_TARGET)
+
+    assert data["afterSetMode"] is True, data
+    assert data["auto"] is False, data
+    assert data["mode"] == "cso_compress", data
+    assert any(kind == "info" and "Auto is off" in msg for kind, msg in data["toasts"]), data
+
+
+def test_every_target_selector_goes_through_choose_target():
+    src = Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
+    for rel in ("panels/ModeSelect.svelte", "views/RommView.svelte"):
+        text = (src / rel).read_text(encoding="utf-8")
+        assert "conversion.chooseTarget(" in text, rel
+        assert "conversion.setMode(" not in text, rel
+
+
+_AUTO_SELECTION = """
+const store = new ConversionStore();
+store.auto = true;
+const gate = (entry) => store.allowsInputEntry(entry);
+process.stdout.write(JSON.stringify({
+  file: gate({ type: 'file', path: '/v/a.iso' }),
+  ps3Folder: gate({ type: 'directory', path: '/v/Game', convertible_by: ['makeps3iso'] }),
+  plainFolder: gate({ type: 'directory', path: '/v/stuff', convertible_by: [] }),
+  fileToolFolder: gate({ type: 'directory', path: '/v/x', convertible_by: ['chdman'] }),
+  archive: gate({ type: 'archive', path: '/v/a.zip' }),
+}));
+"""
+
+
+def test_auto_offers_a_folder_only_a_folder_mode_can_convert(tmp_path):
+    data = _run(tmp_path, _AUTO_SELECTION)
+
+    assert data == {
+        "file": True,
+        # The backend marked it convertible by a tool with a folder-input mode.
+        "ps3Folder": True,
+        "plainFolder": False,
+        "fileToolFolder": False,
+        "archive": False,
+    }, data
+
+
+_RUN_AUTO_GUARD = """
+const store = new ConversionStore();
+let release;
+const confirm = () => new Promise((resolve) => { release = resolve; });
+const selection = ['/v/a.iso'];
+const first = store.runAuto({ paths: selection, rommPlatformId: null, confirm });
+// A second Start while the first is still planning / waiting for confirmation.
+const second = await store.runAuto({ paths: ['/v/b.iso'], rommPlatformId: null, confirm });
+const inFlight = store.autoInFlight;
+// The user changes the selection while the plan modal is open.
+selection.push('/v/c.iso');
+await new Promise((resolve) => setTimeout(resolve, 0));   // the modal is up
+release(true);
+await first;
+process.stdout.write(JSON.stringify({
+  second,
+  inFlight,
+  after: store.autoInFlight,
+  planned: calls.autoPlan,
+  queued: calls.auto.map((args) => args[0].map((item) => item.file_path)),
+}));
+"""
+
+
+def test_run_auto_blocks_a_second_start_and_submits_the_planned_selection(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_GUARD)
+
+    assert data["second"] is None, data           # refused, not queued twice
+    assert data["inFlight"] is True, data
+    assert data["after"] is False, data            # released in finally
+    assert data["planned"] == [["/v/a.iso"]], data
+    assert data["queued"] == [["/v/a.iso"]], data  # the snapshot, not the live selection
+
+
+_RUN_AUTO_BADGE_ON_FAILURE = """
+planAnswer = (paths) => ({
+  recorded: 1, pending: 4,
+  recorded_paths: { '/v/a.iso': '/v/a.chd' }, recorded_ids: { '/v/a.iso': 11 },
+});
+autoAnswer = () => {
+  const err = new Error('later group refused. Already finished and kept: a.iso.');
+  err.detail = { message: err.message, jobs: [
+    { id: 'j1', file_path: '/v/a.iso', output_path: '/v/a.chd' },
+  ] };
+  throw err;
+};
+const badge = [];
+const store = new ConversionStore();
+await store.runAuto({
+  paths: ['/v/a.iso'], rommPlatformId: 7,
+  confirm: async () => true,
+  onRepinPending: (n) => badge.push(n),
+});
+process.stdout.write(JSON.stringify({ badge, after: store.autoInFlight }));
+"""
+
+
+def test_run_auto_updates_the_repin_badge_even_when_queueing_fails(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_BADGE_ON_FAILURE)
+
+    assert data["badge"] == [4], data
+    assert data["after"] is False, data
+
+
+# --- An aborted Auto run (Codex 4576827983) ----------------------------------
+# The panel passes an AbortSignal and aborts it when it unmounts. An aborted
+# run never opens the confirmation, resolves a pending one as cancelled, and
+# clears autoInFlight, so Start works again when the panel comes back. The
+# stubbed getAutoPlan ignores the signal, so the store must not rely on the
+# request itself rejecting.
+
+_RUN_AUTO_ABORT_MID_PLAN = """
+const store = new ConversionStore();
+let answerPlan;
+autoPlanAnswer = (paths) => new Promise((resolve) => {
+  answerPlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
+});
+let confirmCalls = 0;
+const confirm = () => { confirmCalls += 1; return Promise.resolve(true); };
+const controller = new AbortController();
+const run = store.runAuto({ paths: ['/v/a.iso'], confirm, signal: controller.signal });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
+const during = store.autoInFlight;
+controller.abort();                                       // the panel unmounts
+const result = await run;
+const afterAbort = store.autoInFlight;
+answerPlan();                                             // the plan lands late
+await new Promise((resolve) => setTimeout(resolve, 0));
+// Back on the workspace: Start runs a fresh flow.
+autoPlanAnswer = (paths) => paths.map((p) => ({ file_path: p, mode: 'createdvd' }));
+const again = await store.runAuto({ paths: ['/v/b.iso'], confirm: () => Promise.resolve(true) });
+process.stdout.write(JSON.stringify({
+  during, result, afterAbort, confirmCalls,
+  planAfter: store.autoPlan,
+  queued: calls.auto.map((args) => args[0].map((item) => item.file_path)),
+  againQueued: again !== null,
+  errors: toasts.filter(([kind]) => kind === 'error'),
+}));
+"""
+
+
+def test_an_aborted_auto_run_mid_plan_never_confirms_and_frees_start(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ABORT_MID_PLAN)
+
+    assert data["during"] is True, data
+    assert data["result"] is None, data
+    assert data["afterAbort"] is False, data       # Start is enabled again
+    assert data["confirmCalls"] == 0, data         # the modal never opened
+    assert data["planAfter"] is None, data         # the late plan was dropped
+    assert data["queued"] == [["/v/b.iso"]], data  # only the fresh run queued
+    assert data["againQueued"] is True, data
+    assert data["errors"] == [], data
+
+
+_RUN_AUTO_ABORT_IN_CONFIRM = """
+const store = new ConversionStore();
+let opened = false;
+const confirm = () => { opened = true; return new Promise(() => {}); };  // never answered
+const controller = new AbortController();
+const run = store.runAuto({ paths: ['/v/a.iso'], confirm, signal: controller.signal });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the modal is up
+controller.abort();
+const result = await run;
+process.stdout.write(JSON.stringify({
+  opened, result, after: store.autoInFlight,
+  planAfter: store.autoPlan,
+  queued: calls.auto.length,
+}));
+"""
+
+
+def test_an_aborted_auto_run_resolves_a_pending_confirm_as_cancelled(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ABORT_IN_CONFIRM)
+
+    assert data == {
+        "opened": True, "result": None, "after": False, "planAfter": None, "queued": 0,
+    }, data
+
+
+# --- The target is captured before the first await (CodeRabbit 4576895563/5) --
+# The user can change the mode, its options or the output folder while the
+# RomM snapshot or the Auto plan request is pending. What is queued must be
+# what was planned: everything target-dependent is read once, up front.
+
+_SUBMIT_CAPTURES_TARGET = """
+registry.specFor = () => ({
+  supportsCompression: true, supportsDeleteOnVerify: true,
+  supportsSplit: true, supportsRoundTrip: true,
+});
+const store = new ConversionStore();
+store.mode = 'createcd';
+store.outputDir = '/out/old';
+store.deleteOnVerify = true;
+store.split = false;
+store.containerOnly = false;
+let release;
+planAnswer = (paths) => new Promise((resolve) => {
+  release = () => resolve({
+    recorded: 1, pending: 1,
+    recorded_paths: { [paths[0]]: '/out/old/a.chd' },
+    recorded_ids: { [paths[0]]: 7 },
+  });
+});
+const batches = [];
+jobs.createBatch = async (paths, mode, opts) => {
+  batches.push({ paths, mode, ...opts });
+  return [{ id: 'j1', file_path: paths[0], output_path: '/out/old/a.chd' }];
+};
+const run = store.submit(['/v/a.iso'], { rommRepin: true, rommPlatformId: 3 });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the snapshot is pending
+// The user switches target, options and folder meanwhile.
+store.mode = 'createdvd';
+store.outputDir = '/out/new';
+store.deleteOnVerify = false;
+store.split = true;
+store.containerOnly = true;
+release();
+await run;
+process.stdout.write(JSON.stringify({
+  planned: calls.plan.map((args) => [args[1], args[2]]),
+  batch: batches[0],
+}));
+"""
+
+
+def test_submit_queues_the_target_it_planned(tmp_path):
+    data = _run(tmp_path, _SUBMIT_CAPTURES_TARGET)
+
+    assert data["planned"] == [["createcd", "/out/old"]], data
+    batch = data["batch"]
+    assert batch["mode"] == "createcd", data
+    assert batch["outputDir"] == "/out/old", data
+    assert batch["deleteOnVerify"] is True, data
+    assert batch["split"] is False, data
+    assert batch["containerOnly"] is False, data
+
+
+_RUN_AUTO_CAPTURES_OUTPUT_DIR = """
+const store = new ConversionStore();
+store.outputDir = '/out/old';
+let releasePlan;
+const planDirs = [];
+api.getAutoPlan = (paths, outputDir) => {
+  planDirs.push(outputDir);
+  return new Promise((resolve) => {
+    releasePlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
+  });
+};
+planAnswer = (paths) => ({
+  recorded: 1, pending: 1,
+  recorded_paths: { [paths[0]]: '/out/old/a.chd' }, recorded_ids: { [paths[0]]: 9 },
+});
+autoAnswer = (paths) => ({
+  plan: [], jobs: [{ id: 'j1', file_path: paths[0], output_path: '/out/old/a.chd' }],
+});
+const run = store.runAuto({
+  paths: ['/v/a.iso'], rommPlatformId: 3, confirm: () => Promise.resolve(true),
+});
+await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
+store.outputDir = '/out/new';                             // edited meanwhile
+releasePlan();
+await run;
+process.stdout.write(JSON.stringify({
+  planDirs,
+  repinDirs: calls.plan.map((args) => args[2]),
+  queueDirs: calls.auto.map((args) => args[1]),
+}));
+"""
+
+
+def test_run_auto_uses_the_output_folder_it_previewed(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_CAPTURES_OUTPUT_DIR)
+
+    assert data == {
+        "planDirs": ["/out/old"], "repinDirs": ["/out/old"], "queueDirs": ["/out/old"],
+    }, data
+
+
+# --- The server enforces the confirmed plan (Codex 4576967499) ----------------
+# Only the confirmed plan's actionable rows are sent, each with the target the
+# user saw; an Image the preview skipped is never sent. When the server's
+# replan differs it answers 409 with the new plan, and the flow shows that plan
+# and asks again.
+
+_RUN_AUTO_SENDS_CONFIRMED_ITEMS = """
+const store = new ConversionStore();
+autoPlanAnswer = () => [
+  { file_path: '/v/a.iso', mode: 'createdvd' },
+  { file_path: '/v/x.iso', mode: null, how: 'unsorted', skip_reason: 'Unsorted' },
+];
+await store.runAuto({ paths: ['/v/a.iso', '/v/x.iso'], confirm: () => Promise.resolve(true) });
+process.stdout.write(JSON.stringify({ sent: calls.auto.map((args) => args[0]) }));
+"""
+
+
+def test_run_auto_sends_only_the_confirmed_actionable_items(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_SENDS_CONFIRMED_ITEMS)
+
+    assert data["sent"] == [[{"file_path": "/v/a.iso", "mode": "createdvd"}]], data
+
+
+_RUN_AUTO_REASKS_ON_A_CHANGED_PLAN = """
+const store = new ConversionStore();
+autoPlanAnswer = () => [{ file_path: '/v/a.iso', mode: 'createdvd' }];
+const newPlan = [{ file_path: '/v/a.iso', mode: 'dolphin_rvz' }];
+let attempts = 0;
+autoAnswer = (items) => {
+  attempts += 1;
+  if (attempts === 1) {
+    const err = new Error('The plan changed since you confirmed it.');
+    err.status = 409;
+    err.detail = { message: err.message, plan: newPlan };
+    throw err;
+  }
+  return { plan: newPlan, jobs: [{ id: 'j1', file_path: items[0].file_path }] };
+};
+const shown = [];
+const confirm = () => { shown.push(store.autoPlan); return Promise.resolve(true); };
+const result = await store.runAuto({ paths: ['/v/a.iso'], confirm });
+process.stdout.write(JSON.stringify({
+  shown,
+  sent: calls.auto.map((args) => args[0]),
+  queued: result !== null,
+  inFlight: store.autoInFlight,
+}));
+"""
+
+
+def test_a_changed_plan_reopens_confirmation_with_the_new_plan(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_REASKS_ON_A_CHANGED_PLAN)
+
+    assert data["shown"] == [
+        [{"file_path": "/v/a.iso", "mode": "createdvd"}],
+        [{"file_path": "/v/a.iso", "mode": "dolphin_rvz"}],    # the new plan, asked again
+    ], data
+    assert data["sent"] == [
+        [{"file_path": "/v/a.iso", "mode": "createdvd"}],
+        [{"file_path": "/v/a.iso", "mode": "dolphin_rvz"}],
+    ], data
+    assert data["queued"] is True, data
+    assert data["inFlight"] is False, data
+
+
+_RUN_AUTO_DECLINES_THE_CHANGED_PLAN = """
+const store = new ConversionStore();
+autoPlanAnswer = () => [{ file_path: '/v/a.iso', mode: 'createdvd' }];
+autoAnswer = () => {
+  const err = new Error('The plan changed since you confirmed it.');
+  err.status = 409;
+  err.detail = { message: err.message, plan: [{ file_path: '/v/a.iso', mode: null }] };
+  throw err;
+};
+let asked = 0;
+const confirm = () => { asked += 1; return Promise.resolve(asked === 1); };
+const result = await store.runAuto({ paths: ['/v/a.iso'], confirm });
+process.stdout.write(JSON.stringify({
+  asked, result, sent: calls.auto.length, inFlight: store.autoInFlight, plan: store.autoPlan,
+}));
+"""
+
+
+def test_declining_the_changed_plan_queues_nothing(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_DECLINES_THE_CHANGED_PLAN)
+
+    assert data == {
+        "asked": 2, "result": None, "sent": 1, "inFlight": False, "plan": None,
+    }, data
+
+
+# --- Auto turned off mid-run; abort during the RomM snapshot ------------------
+# CodeRabbit 4577045040: picking a target by hand turns Auto off; a run whose
+# plan was still loading then ends without a modal or a queue.
+# CodeRabbit 4577045042: an abort while the RomM snapshot is being taken stops
+# the run before createAutoJobs, and the recorded metadata is retired.
+
+_RUN_AUTO_ENDS_WHEN_AUTO_TURNS_OFF = """
+const store = new ConversionStore();
+store.auto = true;
+let answerPlan;
+autoPlanAnswer = (paths) => new Promise((resolve) => {
+  answerPlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
+});
+let asked = 0;
+const run = store.runAuto({
+  paths: ['/v/a.iso'], confirm: () => { asked += 1; return Promise.resolve(true); },
+});
+await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
+store.chooseTarget('createcd');                           // a hand-picked target
+answerPlan();
+const result = await run;
+process.stdout.write(JSON.stringify({
+  auto: store.auto, asked, result, queued: calls.auto.length,
+  inFlight: store.autoInFlight, plan: store.autoPlan,
+}));
+"""
+
+
+def test_turning_auto_off_while_the_plan_loads_ends_the_run(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ENDS_WHEN_AUTO_TURNS_OFF)
+
+    assert data == {
+        "auto": False, "asked": 0, "result": None, "queued": 0,
+        "inFlight": False, "plan": None,
+    }, data
+
+
+_RUN_AUTO_ABORT_DURING_THE_SNAPSHOT = """
+const store = new ConversionStore();
+let releaseSnapshot;
+planAnswer = (paths) => new Promise((resolve) => {
+  releaseSnapshot = () => resolve({
+    recorded: 1, pending: 1,
+    recorded_paths: { [paths[0]]: '/out/a.chd' }, recorded_ids: { [paths[0]]: 42 },
+  });
+});
+const controller = new AbortController();
+const run = store.runAuto({
+  paths: ['/v/a.iso'], rommPlatformId: 3, confirm: () => Promise.resolve(true),
+  signal: controller.signal,
+});
+for (let i = 0; i < 5 && !releaseSnapshot; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 0));  // the snapshot is pending
+}
+controller.abort();
+releaseSnapshot();
+const result = await run;
+process.stdout.write(JSON.stringify({
+  result,
+  queued: calls.auto.length,
+  retired: calls.cancel,
+  errors: toasts.filter(([kind]) => kind === 'error'),
+  inFlight: store.autoInFlight,
+}));
+"""
+
+
+def test_an_abort_during_the_snapshot_never_queues_and_retires_the_metadata(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ABORT_DURING_THE_SNAPSHOT)
+
+    assert data == {
+        "result": None, "queued": 0, "retired": [[42]], "errors": [], "inFlight": False,
+    }, data

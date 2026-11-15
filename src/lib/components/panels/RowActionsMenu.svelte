@@ -11,12 +11,14 @@
   import { registry } from '$lib/tools/registry.js';
   import { verification } from '$lib/stores/verification.svelte.js';
   import { ui } from '$lib/stores/ui.svelte.js';
+  import { libraries } from '$lib/stores/libraries.svelte.js';
   import { toast } from 'svelte-sonner';
   import MoreHorizontal from '@lucide/svelte/icons/ellipsis';
   import Info from '@lucide/svelte/icons/info';
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import Pencil from '@lucide/svelte/icons/pencil';
   import Trash2 from '@lucide/svelte/icons/trash-2';
+  import FolderCog from '@lucide/svelte/icons/folder-cog';
 
   /** @type {{ entry: any }} */
   let { entry } = $props();
@@ -121,6 +123,13 @@
           description: 'Intact',
           duration: 4000,
         });
+      } else if (result?.uncheckable) {
+        // Refused by a safety rule, not damaged: no verdict either way.
+        toast.warning(name, {
+          id: toastId,
+          description: result.message || "Can't be checked here",
+          duration: 6000,
+        });
       } else {
         toast.error(name, {
           id: toastId,
@@ -148,6 +157,21 @@
       ui.infoTarget = { ...entry, _infoTool: infoTool.id };
     } else {
       ui.infoTarget = entry;
+    }
+  }
+
+  // A folder (not an archive, not inside one) can become a Library (#303).
+  // The backend checks it against the Volumes and refuses an overlap.
+  const canRegister = $derived(entry?.type === 'directory' && !inArchive);
+
+  async function handleRegister() {
+    try {
+      const library = await libraries.register(path);
+      toast.success(`${library.name} is now a Library`, {
+        action: { label: 'Open Rules', onClick: () => libraries.open(library.id) },
+      });
+    } catch (e) {
+      toast.error(e?.message ?? 'Could not register the Library');
     }
   }
 
@@ -187,6 +211,12 @@
         <ShieldCheck size={14} aria-hidden="true" />
         <span>Verify</span>
       </DropdownMenu.Item>
+      {#if canRegister}
+        <DropdownMenu.Item class="row-actions-item" onSelect={handleRegister}>
+          <FolderCog size={14} aria-hidden="true" />
+          <span>Register as a Library</span>
+        </DropdownMenu.Item>
+      {/if}
       <DropdownMenu.Separator class="row-actions-sep" />
       <DropdownMenu.Item
         class="row-actions-item"

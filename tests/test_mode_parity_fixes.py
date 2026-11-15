@@ -766,6 +766,9 @@ async def test_z3ds_delete_on_verify_marks_output_verified(tmp_path: Path, monke
         output_path=str(output_path),
         delete_on_verify=True,
         delete_snapshot=snapshot,
+        # The fake output holds no ROM; this test is about the delete step,
+        # so it takes the container-only opt-out from the Round-trip (#301).
+        container_only=True,
     )
 
     await manager._process_job(job.id)
@@ -773,8 +776,7 @@ async def test_z3ds_delete_on_verify_marks_output_verified(tmp_path: Path, monke
     assert job.status == JobStatus.COMPLETED
     # Delete-on-verify also records a produced_meta snapshot (mode + shaping +
     # source/output fingerprints) so a later re-queue can no-op safely (#184).
-    # z3ds has no content digest, so the job keeps the container check and
-    # the stored verification says Intact (#298).
+    # Container check only, so the stored verification says Intact (#298).
     mark_verified.assert_called_once_with(
         str(output_path),
         source_path=str(source_path),
@@ -922,6 +924,9 @@ async def test_delete_on_verify_rejects_inode_device_fingerprint_mismatch(
         output_path=str(output_path),
         delete_on_verify=True,
         delete_snapshot=snapshot,
+        # The fake output holds no ROM; this test is about the delete step,
+        # so it takes the container-only opt-out from the Round-trip (#301).
+        container_only=True,
     )
 
     await manager._process_job(job.id)

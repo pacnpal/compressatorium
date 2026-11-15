@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator
+import re
+from collections.abc import AsyncGenerator, Sequence
+from functools import partial
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
@@ -19,13 +21,24 @@ from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
 from services.disc_id import (
     DiscIdStorageAbandoned,
     clear_embedded_disc_id,
+    disc_platform,
     embed_in_chd,
     extract_from_source,
     read_embedded_game_id,
 )
+from services.disk import InsufficientDiskSpace, headroom_scratch_dir
+from services.file_hasher import compute_files_sha1_sync
 from services.lock_manager import lock_manager
+from services.subprocess_runner import ReadCancelled, run_detached
+from utils.disc_sheet import read_disc_sheet
+from utils.sheet_text import sheet_track_list
 
-from .base import BaseTool
+from .base import (
+    IMAGE_DATA_SHA1_KIND,
+    BaseTool,
+    ContentDigest,
+    ContentDigestUnavailable,
+)
 from .spec import ModeKind, ModeSpec
 
 logger = get_logger()
@@ -57,13 +70,35 @@ _DVD_PLATFORMS = frozenset({"ps2", "psp"})
 _HD_PLATFORMS = frozenset({"arcade", "mame"})
 _LD_PLATFORMS = frozenset({"laseractive"})
 
-# mode -> (label, the platforms that mode's media command actually serves).
+# mode -> (label, the platforms that mode's media command actually serves,
+#          what the command can actually read, whether Auto may default to it).
+#
+# Manual selection still offers every create mode on all four source
+# extensions (``input_extensions``); the read set is what Auto checks. chdman
+# ``createcd`` parses a track sheet (``.cue``/``.gdi``) or a single-track
+# ``.iso``; a bare ``.bin`` has no table of contents, so the ``.cue`` beside it
+# is the Image. ``createdvd`` copies a flat 2048-byte image, so only ``.iso``.
+# The hard-disk, raw and laserdisc commands are never a default: they claim
+# the arcade Platforms, but a CD image in an ``arcade`` folder is a CD.
+#
+# The last column is the Platforms a mode is an Auto target for without being
+# offered for them by hand. Some PS2 titles shipped on CD-ROM and are kept as
+# cue/bin; only createcd reads those. Claiming ``ps2`` in ``platform_slugs``
+# instead would make createcd, the first create mode, the default of every
+# platform-narrowed PS2 panel and rule. Auto still sends a PS2 ``.iso`` to
+# createdvd, the smaller reader. PSP (UMD), PS3 and the Nintendo and Xbox discs
+# are never CDs chdman reads, so ``ps2`` is the only one.
+_CD_READS = frozenset({".cue", ".gdi", ".iso"})
+# Track sheets: the probe reads the tracks they name (``header_reads``).
+_SHEET_EXTS = frozenset({".cue", ".gdi"})
+_DVD_READS = frozenset({".iso"})
+_NONE: frozenset[str] = frozenset()
 _CREATE_MODES = {
-    "createraw": ("Create Raw", _HD_PLATFORMS),
-    "createhd": ("Create HD", _HD_PLATFORMS),
-    "createcd": ("Create CD", _CD_PLATFORMS),
-    "createdvd": ("Create DVD", _DVD_PLATFORMS),
-    "createld": ("Create LD", _LD_PLATFORMS),
+    "createraw": ("Create Raw", _HD_PLATFORMS, _NONE, False, _NONE),
+    "createhd": ("Create HD", _HD_PLATFORMS, _NONE, False, _NONE),
+    "createcd": ("Create CD", _CD_PLATFORMS, _CD_READS, True, frozenset({"ps2"})),
+    "createdvd": ("Create DVD", _DVD_PLATFORMS, _DVD_READS, True, _NONE),
+    "createld": ("Create LD", _LD_PLATFORMS, _NONE, False, _NONE),
 }
 # mode -> (label, primary output ext, companion exts). extractcd is the only
 # multi-file extract: chdman writes the .cue track sheet plus a sibling .bin
@@ -77,6 +112,32 @@ _EXTRACT_MODES = {
 }
 _CHD = frozenset({".chd"})
 
+# The Round-trip check (#300) compares the image a CHD decodes to with its
+# Source image. One digest kind covers every shape: SHA1 of the image's bytes as
+# files on disk, track files laid end to end in sheet order. A plain .iso/.bin
+# is its own one file; a DVD/HD CHD's data SHA1 is that hash of its image; a CD
+# CHD is extracted and its track files hashed the same way as a Source cue.
+# The kind (IMAGE_DATA_SHA1_KIND) lives in base.py, shared with other tools.
+# The modes whose Source and output both have that digest: CD and DVD (#300),
+# hard disk, raw and CHD-to-CHD copy (#301). A raw or HD CHD's data SHA1 is the
+# SHA1 of the input bytes; a copy keeps the Source CHD's data.
+_ROUND_TRIP_MODES = frozenset({"createcd", "createdvd", "createhd", "createraw", "copy"})
+# Create LD has no comparable digest: its Source is an AVI, the CHD's data SHA1
+# covers chdman's A/V hunk encoding, and extractld does not rebuild the AVI byte
+# for byte. Deleting the AVI on the container check alone is not offered (#301).
+_NO_DELETE_SOURCE_MODES = frozenset({"createld"})
+_SHEET_EXTS = frozenset({".cue", ".gdi"})
+_RAW_IMAGE_EXTS = frozenset({".iso", ".bin"})
+# CHD metadata tags (MAME src/lib/util/chd.h), read strictly from the
+# `Metadata: Tag='XXXX'` lines `chdman info` prints. DVD and hard-disk CHDs
+# store the image bytes as-is, so their data SHA1 is the image's SHA1. CD CHDs
+# store 2448-byte frames padded per track, so theirs never is.
+_IMAGE_TAGS = frozenset({"DVD ", "GDDD"})
+_CD_TAGS = frozenset({"CHCD", "CHTR", "CHT2"})
+_GDROM_TAGS = frozenset({"CHGT", "CHGD"})
+_TAG_RE = re.compile(r"^\s*Metadata:\s*Tag='(.{4})'", re.MULTILINE)
+_SHA1_RE = re.compile(r"[0-9a-fA-F]{40}")
+
 
 def _build_modes() -> list[ModeSpec]:
     modes: list[ModeSpec] = [
@@ -89,11 +150,15 @@ def _build_modes() -> list[ModeSpec]:
             output_ext=".chd",
             input_extensions=frozenset(CHDMAN_CONVERTIBLE_EXTENSIONS),
             supports_compression=True,
-            supports_delete_on_verify=True,
+            supports_delete_on_verify=mode not in _NO_DELETE_SOURCE_MODES,
+            supports_round_trip=mode in _ROUND_TRIP_MODES,
             allows_archive_input=True,
             platform_slugs=slugs,
+            reads_extensions=reads,
+            auto_target=auto_target,
+            auto_platform_slugs=auto_slugs,
         )
-        for mode, (label, slugs) in _CREATE_MODES.items()
+        for mode, (label, slugs, reads, auto_target, auto_slugs) in _CREATE_MODES.items()
     ]
     modes += [
         ModeSpec(
@@ -126,6 +191,8 @@ def _build_modes() -> list[ModeSpec]:
             input_extensions=_CHD,
             supports_compression=True,
             supports_delete_on_verify=True,
+            # Source and output are both CHDs, digested the same way.
+            supports_round_trip=True,
         )
     )
     return modes
@@ -157,6 +224,22 @@ class ChdmanTool(BaseTool):
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)
         self._service = chdman_service
+
+    def header_platform(self, path: str) -> str | None:
+        # PS1/PS2/PSP/Dreamcast through the disc-ID parser, Saturn and Sega CD
+        # through their sector-0 system ids.
+        return disc_platform(path)
+
+    def header_reads(self, path: str) -> list[str] | None:
+        # A .cue/.gdi is answered from the tracks it names. None (unknown
+        # dependencies, so the answer is not cached) when the sheet is
+        # unreadable or any track is refused (sheet_track_list keeps that None
+        # apart from "no tracks"): a refused FIFO track later replaced by a
+        # real one must be detected afresh.
+        if Path(path).suffix.lower() not in _SHEET_EXTS:
+            return []
+        tracks = sheet_track_list(path)
+        return None if tracks is None else [str(track) for track in tracks]
 
     # chdman's extract/copy modes take .chd input, but a .chd is not a
     # "convertible-from" source in the file listing, only the create sources
@@ -211,6 +294,7 @@ class ChdmanTool(BaseTool):
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
+        *, within: Sequence[str] | None = None,
     ) -> None:
         """Embed disc-ID GAME/NAME tags into a freshly created CD/DVD CHD.
 
@@ -232,6 +316,11 @@ class ChdmanTool(BaseTool):
 
         ``GAME`` = normalized serial (emulator DB lookup key);
         ``NAME`` = human-readable title when available, serial otherwise.
+
+        ``within``: the trusted root an archive-extracted source sits under
+        (the worker's extraction dir); None means the configured Volumes. A
+        track sheet whose tracks are refused there, or that is unreadable,
+        stops tagging with a warning naming the sheet.
         """
         if mode not in _DISC_ID_MODES:
             return
@@ -240,8 +329,19 @@ class ChdmanTool(BaseTool):
         if not await run_in_threadpool(os.path.exists, output_path):
             return
         try:
-            disc_info = await run_in_threadpool(extract_from_source, input_path)
+            disc_info = await run_in_threadpool(
+                partial(extract_from_source, input_path, within=within),
+            )
             if not (disc_info and disc_info.get("game_id")):
+                if Path(input_path).suffix.lower() in _SHEET_EXTS and (
+                    await run_in_threadpool(
+                        partial(sheet_track_list, input_path, within=within),
+                    )
+                ) is None:
+                    logger.warning(
+                        "Disc ID not tagged for %s: its track sheet is unreadable "
+                        "or names a track outside the trusted roots", input_path,
+                    )
                 return
             game_id = disc_info["game_id"]
             existing = await read_embedded_game_id(output_path, self.binary_path)
@@ -323,6 +423,106 @@ class ChdmanTool(BaseTool):
             out.append((data_sha1, "chd_data_sha1"))
         return out
 
+    async def content_digest(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
+    ) -> ContentDigest | None:
+        # ``within`` is for the Source side: a sheet's tracks must resolve under
+        # it (the job's extraction folder for an archive member, the Volumes
+        # when None). A CHD's own extract is read under its scratch dir instead.
+        ext = Path(path).suffix.lower()
+        if ext in _RAW_IMAGE_EXTS:
+            value = await _hash_files([path], cancel_event)
+        elif ext in _SHEET_EXTS:
+            value = await _hash_sheet(path, cancel_event, within)
+        elif ext == ".chd":
+            value = await self._chd_image_sha1(path, cancel_event)
+        else:
+            return None
+        return ContentDigest(kind=IMAGE_DATA_SHA1_KIND, value=value.lower())
+
+    async def source_problem(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # verifies the CHD file; reads no sheet
+    ) -> str | None:
+        # A CHD Source (Copy) is only a claim until chdman verify recomputes
+        # its data SHA1: a damaged Source must not be compared, and deleted, as
+        # if it were good. An image Source has nothing of its own to check.
+        if Path(path).suffix.lower() != ".chd":
+            return None
+        result = await self.verify(path, cancel_event=cancel_event)
+        if result.get("valid") or result.get("cancelled"):
+            return None
+        return f"the Source CHD is not Intact ({result.get('message') or 'verify failed'})"
+
+    async def _chd_image_sha1(
+        self, path: str, cancel_event: asyncio.Event | None,
+    ) -> str:
+        """The digest value of the image a CHD decodes to.
+
+        DVD/HD: the header's data SHA1. The job only asks after the container
+        check passed, and ``chdman verify`` recomputes exactly that hash from
+        the decoded data; ``ChdmanService.verify`` passes only when chdman said
+        the raw SHA1 matched (it exits 0 on a mismatch), so the header value is
+        proven. CD/GD-ROM: extracted to a scratch dir and digested like a
+        Source sheet, track table included (DESIGN §3.3.12 records why it is
+        not computed in place). Never the overall SHA1: it folds in metadata.
+        """
+        try:
+            info = await self._service.info(path)
+        except Exception as e:  # chdman failed, timed out, or left a child behind
+            raise ContentDigestUnavailable(f"chdman info failed: {e}") from e
+        tags = set(_TAG_RE.findall(info.get("raw_data", "")))
+        # DVD/HD, or no Metadata lines at all (a createraw CHD): the data SHA1
+        # is the SHA1 of the image's bytes, proven by the container check
+        # before this. Metadata lines the tag reader cannot parse are not "no
+        # metadata": they fall through to "not proven" below.
+        if tags & _IMAGE_TAGS or not (tags or info.get("metadata_lines")):
+            data_sha1 = (info.get("data_sha1") or "").strip()
+            if not _SHA1_RE.fullmatch(data_sha1):
+                raise ContentDigestUnavailable("chdman info gave no data SHA1")
+            return data_sha1
+        if tags & (_CD_TAGS | _GDROM_TAGS):
+            sheet_ext = ".gdi" if tags & _GDROM_TAGS else ".cue"
+            return await self._extracted_cd_sha1(
+                path, sheet_ext, _logical_bytes(info), cancel_event,
+            )
+        raise ContentDigestUnavailable(
+            f"no CD, DVD or hard-disk metadata in {Path(path).name}",
+        )
+
+    async def _extracted_cd_sha1(
+        self,
+        path: str,
+        sheet_ext: str,
+        required_bytes: int,
+        cancel_event: asyncio.Event | None,
+    ) -> str:
+        """Extract a CD CHD to a scratch dir and hash its tracks like a Source sheet.
+
+        The dir must pass the shared headroom check first and is removed on
+        every exit (``headroom_scratch_dir``), so a failed, cancelled or
+        timed-out extract leaves nothing behind.
+        """
+        try:
+            async with headroom_scratch_dir("cmptr-roundtrip-", required_bytes) as work:
+                sheet = os.path.join(work, f"image{sheet_ext}")
+                if not await self._service.extract_cd(
+                    path, sheet, cancel_event=cancel_event,
+                ):
+                    raise ContentDigestUnavailable("chdman extractcd did not finish")
+                # The scratch dir is outside the Volumes; it is the one root
+                # this sheet's tracks may resolve under.
+                return await _hash_sheet(sheet, cancel_event, within=[work])
+        except InsufficientDiskSpace as e:
+            raise ContentDigestUnavailable(f"not enough space to extract: {e}") from e
+
     def info_model(self, raw: dict, path: str) -> CHDInfo:
         return CHDInfo(
             file=path,
@@ -346,3 +546,54 @@ class ChdmanTool(BaseTool):
 
     def active_pids(self) -> list[int]:
         return self._service.active_pids()
+
+
+def _logical_bytes(info: dict) -> int:
+    """The CHD's logical size, the most a decode can write.
+
+    For a CD it counts 2448-byte frames, so it bounds the extracted track files
+    (at most 2352 bytes a frame) from above. When it cannot be read the decode
+    cannot be sized, and the headroom check is not skipped for that: the Source
+    is kept.
+    """
+    digits = re.sub(r"\D", "", str(info.get("logical_size") or ""))
+    if not digits:
+        raise ContentDigestUnavailable("chdman info gave no logical size")
+    return int(digits)
+
+
+async def _hash_files(paths: list[str], cancel_event: asyncio.Event | None) -> str:
+    """SHA1 of ``paths`` end to end, on a detached thread (whole-file reads)."""
+    try:
+        return await run_detached(
+            compute_files_sha1_sync, paths, cancel_event=cancel_event,
+        )
+    except (OSError, ReadCancelled) as e:
+        raise ContentDigestUnavailable(f"could not hash the image: {e}") from e
+
+
+async def _hash_sheet(
+    sheet: str,
+    cancel_event: asyncio.Event | None,
+    within: Sequence[str] | None,
+) -> str:
+    """The digest value of a cue/gdi: its track data and its track table.
+
+    ``<sha1 of the track files in sheet order>``, plus ``/<sha1 of the track
+    table>`` unless the table is the one chdman infers for a bare image of those
+    bytes (``utils.disc_sheet.read_disc_sheet``). So equal values mean the same
+    sector bytes *and* the same tracks, types, sector sizes, lengths, index
+    offsets and gaps, however the tracks are split into files.
+
+    The sheet is read through ``utils.sheet_text`` with ``within`` as the
+    trusted roots its tracks may resolve under; anything it refuses is
+    unavailable, so the Source is kept.
+    """
+    try:
+        disc = await run_detached(
+            read_disc_sheet, sheet, within=within, cancel_event=cancel_event,
+        )
+    except (OSError, ValueError, ReadCancelled) as e:
+        raise ContentDigestUnavailable(f"could not read {Path(sheet).name}: {e}") from e
+    data_sha1 = await _hash_files(disc.tracks, cancel_event)
+    return data_sha1 if disc.layout is None else f"{data_sha1}/{disc.layout}"

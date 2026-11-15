@@ -7,12 +7,10 @@ is satisfied by running it in a threadpool.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
-from services.subprocess_runner import run_detached
-
 from models import NszInfo, OutputStatus
 from services.lock_manager import lock_manager
 from services.nsz import (
@@ -21,9 +19,18 @@ from services.nsz import (
     NSZ_OUTPUT_FORMATS,
     nsz_service,
 )
+from services.stream_digest import content_digest_of, file_chunks
+from services.subprocess_runner import run_detached
 
-from .base import BaseTool
+from .base import BaseTool, ContentDigest, ContentDigestUnavailable
 from .spec import ModeKind, ModeSpec
+
+# SHA256 of a whole NSP/XCI image: what nsz -V prints for the NSP it rebuilds.
+SWITCH_IMAGE_SHA256_KIND = "switch_image_sha256"
+# nsz rebuilds an XCI from the XCZ's first 0x200 header bytes, zeros to 0xF000
+# and the partitions back to back (nsz/Fs/Xci.py XciStream), so a real dump
+# rarely comes back byte for byte (DESIGN §3.3.12).
+_XCI_MISMATCH = "nsz did not rebuild this XCI byte-for-byte, so the Source is kept"
 
 
 class NszTool(BaseTool):
@@ -31,6 +38,9 @@ class NszTool(BaseTool):
     platform_slugs = frozenset({"switch", "nintendo-switch"})
     policy_owner = "nsz"
     display_name = "Switch"
+    not_ready_reason = (
+        "no prod.keys was found (set SWITCH_KEYS, or put prod.keys on a mounted volume)"
+    )
     modes = (
         ModeSpec(
             mode="nsz_compress",
@@ -44,6 +54,9 @@ class NszTool(BaseTool):
             # token only when the spec advertises level support.
             supports_compression_level=True,
             supports_delete_on_verify=True,
+            # NSP: compared with the NSP SHA256 nsz -V rebuilds. XCI: the XCZ
+            # is decompressed to scratch and hashed (#301 spike, DESIGN).
+            supports_round_trip=True,
             allows_archive_input=True,
         ),
         ModeSpec(
@@ -65,6 +78,39 @@ class NszTool(BaseTool):
     output_extensions = frozenset({".nsz", ".xcz", ".nsp", ".xci"})
     # nsz -V validates the compressed containers.
     verify_extensions = frozenset({".nsz", ".xcz"})
+
+    async def content_digest(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # reads no sheet, so unused
+    ) -> ContentDigest | None:
+        # Both sides are the SHA256 of the whole NSP/XCI image. The Source is
+        # hashed as a file; an NSZ's rebuilt NSP hash comes from nsz -V (no
+        # temp file), an XCZ is decompressed into a headroom-checked scratch dir.
+        ext = Path(path).suffix.lower()
+        if ext in NSZ_COMPRESS_EXTENSIONS:
+            return await content_digest_of(
+                file_chunks([path]), kind=SWITCH_IMAGE_SHA256_KIND,
+                algorithm="sha256", cancel_event=cancel_event,
+            )
+        reason = ""
+        if ext == ".nsz":
+            rebuild = self._service.rebuilt_nsp_sha256
+        elif ext == ".xcz":
+            rebuild = self._service.decompressed_sha256
+            reason = _XCI_MISMATCH
+        else:
+            return None
+        try:
+            value = await rebuild(path, cancel_event=cancel_event)
+        except (RuntimeError, ValueError, OSError) as e:
+            # ReadCancelled is none of these, so a cancel propagates untouched.
+            raise ContentDigestUnavailable(str(e)) from e
+        return ContentDigest(
+            kind=SWITCH_IMAGE_SHA256_KIND, value=value, mismatch_reason=reason,
+        )
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

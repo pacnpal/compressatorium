@@ -6,26 +6,27 @@ contract is satisfied by running them in a threadpool.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
-
 from models import JwudInfo, OutputStatus
 from services.jwudtool import (
     JWUD_COMPRESS_EXTENSIONS,
     JWUD_DECOMPRESS_EXTENSIONS,
     JWUD_OUTPUT_FORMATS,
     is_split_secondary,
+    iter_wux_image,
     jwudtool_service,
     split_part_index,
     split_set_parts,
     verification_enabled,
 )
-from services.subprocess_runner import run_detached
 from services.lock_manager import lock_manager
+from services.stream_digest import content_digest_of, file_chunks
+from services.subprocess_runner import run_detached
 
-from .base import BaseTool
+from .base import IMAGE_DATA_SHA256_KIND, BaseTool, ContentDigest
 from .spec import ModeKind, ModeSpec
 
 
@@ -37,6 +38,7 @@ class JwudTool(BaseTool):
     default_compression = "verify"
     policy_owner = "jwud"
     display_name = "Wii U"
+    not_ready_reason = "the JWUDTool launcher or its Java runtime is missing"
     modes = (
         ModeSpec(
             mode="jwud_compress",
@@ -53,6 +55,9 @@ class JwudTool(BaseTool):
             # runs JWUDTool's byte-for-byte comparison against the source unless
             # the job explicitly opted out of it.
             supports_delete_on_verify=True,
+            # And the delete itself waits for the Round-trip: the .wux is
+            # decoded to a hashing stream and compared with the .wud set.
+            supports_round_trip=True,
             allows_archive_input=True,
         ),
         ModeSpec(
@@ -92,6 +97,11 @@ class JwudTool(BaseTool):
         # registry, and a stat that never returns must cost a disposable
         # thread rather than one of the shared pool's few workers.
         return await run_detached(self._service.binary_available)
+
+    async def verify_is_ready(self) -> bool:
+        # The WUX check is pure Python (header, index table, size): it never
+        # spawns JWUDTool or Java, so it runs where conversion cannot (#306).
+        return True
 
     def converts_path(self, path: str) -> bool:
         # A split dump is one disc image spread over game_part1…12.wud, and
@@ -212,6 +222,32 @@ class JwudTool(BaseTool):
             **self._basic_info_fields(raw),
             original_size=raw.get("original_size"),
             ratio=raw.get("ratio"),
+        )
+
+    async def content_digest(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # reads no sheet, so unused
+    ) -> ContentDigest | None:
+        # Both sides are the SHA-256 of the 25 GB disc image: a .wud (with every
+        # part of a split set, in order), or what a .wux's sector table
+        # decodes to, hashed as it streams (#301).
+        ext = Path(path).suffix.lower()
+        if ext in JWUD_COMPRESS_EXTENSIONS:
+            def produce(stop):
+                # The sibling parts are found by stat-ing the Source's volume,
+                # so on the detached thread, never on the event loop.
+                return file_chunks([path, *self.source_companions(path)])(stop)
+        elif ext in JWUD_DECOMPRESS_EXTENSIONS:
+            def produce(stop):
+                return iter_wux_image(path, stop)
+        else:
+            return None
+        return await content_digest_of(
+            produce, kind=IMAGE_DATA_SHA256_KIND, algorithm="sha256",
+            cancel_event=cancel_event,
         )
 
     def active_pids(self) -> list[int]:

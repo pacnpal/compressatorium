@@ -260,14 +260,30 @@ async def _send_one(kind: str, url: str, event: Event, slot: str | None = None) 
 _store_lock = asyncio.Lock()
 
 
+# The destination list, read once and kept: every event used to cost a database
+# read on a worker thread, even with no destination configured. Writers go
+# through `_save`, which refreshes it.
+_dest_cache: list[dict] | None = None
+
+
 async def _load() -> list[dict]:
-    stored = await preferences_store.get(PREF_KEY) or {}
-    dests = stored.get("destinations")
-    return [d for d in dests if isinstance(d, dict)] if isinstance(dests, list) else []
+    global _dest_cache
+    if _dest_cache is None:
+        # Once per process, as one primary-key row read on the loop: a worker
+        # thread here would be one more thread per cold start, for every sweep
+        # error report on an install with no destination at all.
+        stored = preferences_store._get_sync(PREF_KEY) or {}
+        dests = stored.get("destinations")
+        _dest_cache = (
+            [d for d in dests if isinstance(d, dict)] if isinstance(dests, list) else []
+        )
+    return [dict(d) for d in _dest_cache]
 
 
 async def _save(dests: list[dict]) -> None:
+    global _dest_cache
     await preferences_store.put(PREF_KEY, {"destinations": dests})
+    _dest_cache = [dict(d) for d in dests]
 
 
 def _hint(dest: dict) -> str:
@@ -756,7 +772,8 @@ async def on_job_finished(job: ConversionJob) -> None:
 
 
 def _reset_for_tests() -> None:
-    global _open_sweep, _reported_errors, _dispatcher
+    global _open_sweep, _reported_errors, _dispatcher, _dest_cache
+    _dest_cache = None
     _open_sweep = None
     _reported_errors = set()
     _dispatcher = None
