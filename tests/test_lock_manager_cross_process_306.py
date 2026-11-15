@@ -938,3 +938,44 @@ def test_the_dispatch_probe_sees_a_symlinked_output_in_a_packed_folder(
     finally:
         packer.release_dir_lock(str(game))
     assert job_manager._blocked_by_dir_lock(job) is False
+
+
+# --------------------------------------------------------------------------- #
+# Recorded paths round-trip any pathname (codex 4578027196)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_lock_on_a_path_with_a_newline_is_found_from_its_folder(tmp_path):
+    folder = tmp_path / "GAME\nDisc"
+    folder.mkdir()
+    image = folder / "Game.wia"
+    image.write_bytes(b"disc")
+    reader, packer = _manager(tmp_path / "locks"), _manager(tmp_path / "locks")
+    assert reader.acquire_input_lock(str(image))
+    try:
+        assert packer.locked_path_below(str(folder)) == os.path.realpath(image)
+        assert packer.acquire_dir_lock(str(folder)) is False
+    finally:
+        reader.release_input_lock(str(image))
+    assert packer.acquire_dir_lock(str(folder))
+    packer.release_dir_lock(str(folder))
+
+
+def test_a_recorded_path_round_trips_any_bytes(tmp_path):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    for name in (b"Caf\xe9\nDisc.bin", b"plain.bin", b"a\x00"[:1] + b"\r\n.iso"):
+        path = os.fsdecode(os.path.join(os.fsencode(str(tmp_path)), name))
+        lock_file = str(lock_dir / "x.lock")
+        with open(lock_file, "wb") as handle:
+            LockManager._record_path(handle, path)
+        assert LockManager._recorded_path(lock_file) == path
+        os.remove(lock_file)
+
+
+def test_a_lock_recorded_the_old_way_still_counts(tmp_path):
+    """A lock file an older process wrote (the plain path and a newline)
+    is still read, so a lock taken during an upgrade is not missed."""
+    lock_file = tmp_path / "old.lock"
+    lock_file.write_bytes(os.fsencode(str(tmp_path / "Caf\udce9.bin")) + b"\n")
+    assert LockManager._recorded_path(str(lock_file)) == str(tmp_path / "Caf\udce9.bin")
