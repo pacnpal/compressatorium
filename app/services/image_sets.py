@@ -8,7 +8,7 @@ whose inputs are a set of files reports the rest of the set through
 (``.m3u``) only point at Images, so they are never Images either.
 
 Shared by anything that lists Images from a folder (the folder Library today).
-The sheet parsing is the delete plan's (``utils.delete_plan.sheet_tracks``),
+The sheet parsing is the delete plan's (``utils.delete_plan.sheet_track_paths``),
 so what a conversion treats as one Image and what delete-on-verify removes
 with it are decided by the same code.
 """
@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from services.tools import registry
-from utils.delete_plan import sheet_tracks
+from utils.delete_plan import sheet_track_paths
 
 # Lists of Images, never Images. Compared on the lowercased suffix.
 PLAYLIST_EXTENSIONS = frozenset({".m3u", ".m3u8"})
@@ -32,7 +32,7 @@ def is_playlist(path: str) -> bool:
 
 def image_members(path: str) -> list[str]:
     """The other files the Image at *path* is made of. Reads the sheet; blocking."""
-    members = [*sheet_tracks(path), *registry.source_companions(path)]
+    members = [*sheet_track_paths(path), *registry.source_companions(path)]
     own = os.path.normpath(path)
     return [m for m in dict.fromkeys(members) if os.path.normpath(m) != own]
 

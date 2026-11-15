@@ -2329,7 +2329,7 @@ sweep on each tick. `main.py` passes `services.libraries.all_libraries` (through
 
 **Images from files** (`services/image_sets.py`). `group_images(paths)`
 returns the Images among a set of files: a sheet owns the tracks it references
-(`utils.delete_plan.sheet_tracks`, the delete plan's own `.cue`/`.gdi` parsers
+(`utils.delete_plan.sheet_track_paths`, the delete plan's own `.cue`/`.gdi` parsers
 and containment rule), a tool's `source_companions` are owned by their primary
 (jwud's split parts), and playlists (`.m3u`) are dropped. An owned file is never
 an Image; a `.bin` no sheet references stays one. `image_members(path)` is the
@@ -2389,125 +2389,6 @@ add only their Platforms and settings; RomM's `afterRun` updates its re-pin
 badge. The RomM view's Automation tab renders
 the same view opened on RomM. Folders get **Register as a Library** in the row
 menu (`RowActionsMenu.svelte`).
-
-### 3.3.13 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
-
-`detect_platform(path) -> Detection` is the one place an Image's Platform is
-worked out without a library manager. The convert panel's Auto choice
-and folder Libraries (#303) use it; the Inbox and the CLI (#306) are meant to call
-the same function. `Detection` is a frozen dataclass: `platform` (a slug, or
-None), `how` (`"header"`, `"folder"`, `"conflict"`, `"unsorted"`), what each
-source said (`header`, `folder`) and a one-line `reason` for the UI.
-
-Precedence is fixed and never guesses:
-
-1. **Header.** Every registered tool whose `input_extensions` match the file is
-   asked `header_platform(path)`. The default answers None; a tool that can tell
-   its consoles apart from the bytes overrides it. chdman answers through
-   `disc_id.disc_platform` (PS1/PS2 from `SYSTEM.CNF`, PSP from `PARAM.SFO`,
-   Dreamcast from a `.gdi`'s `IP.BIN`, all the existing disc-ID parser, plus the
-   Saturn / Sega CD / Dreamcast system id at the start of sector 0). dolphin
-   answers through `disc_id.nintendo_disc_platform` (the GameCube magic at 0x1C,
-   Wii at 0x18). xiso answers through `extract_xiso.detect_console` (the XDVDFS
-   layout, or a trimmed image's boot executable). A probe that raises is
-   treated as no answer. A new console is taught to detection by its tool's
-   override, not by an edit here.
-2. **Folder name.** The nearest parent folder whose name is a key or alias in
-   `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
-   name for it (the tools' own spellings and the folder names ES-DE and
-   Batocera use: `psx`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
-   `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
-   header and use the archive's folder.
-
-Every answer goes through `canonical_slug`, which maps aliases and the tools'
-own vocabulary (`ps1`, `gamecube`, `neogeocd`, `genesis-slash-megadrive`) onto
-RomM's slugs (`psx`, `ngc`, `neo-geo-cd`, `genesis`; RomM's
-`UniversalPlatformSlug`, not IGDB's). A test fails when a tool declares a slug
-the table does not cover, so a new Platform brings its folder names with it.
-`platform_name(slug)` gives the display name from `_NAMES` (a test fails when a
-slug has none). `detect_uncached` is the same decision without the shared LRU,
-for a caller (the folder Library) that keeps its own per-file cache. A header that disagrees with the folder, or two headers that disagree,
-is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
-cached per path in a bounded LRU and dropped when the file's size or mtime
-changes; `clear_cache()` exists for tests.
-
-**Auto targets** (`plan_auto`, `default_mode`). The candidates for an Image with
-a Platform are the create-direction modes (`ModeKind.CREATE` / `COMPRESS`) that
-claim the Platform (`registry.mode_platform_slugs`, or the mode's
-`auto_platform_slugs`), may be an Auto default (`ModeSpec.auto_target`), and
-whose command can read the file (`registry.mode_reads_extensions` plus the
-tool's `converts_path`). Among them:
-
-1. the most specific extension match wins (`.nkit.iso` over `.iso`, the
-   `tool_for_verify` rule);
-2. then the smallest read set, the most specific reader (a PS2 `.iso` goes to
-   `createdvd`, which reads only `.iso`, not `createcd`, which also reads track
-   sheets);
-3. then registration order (`createdvd` before the CSO modes, which also read
-   only `.iso`).
-
-So a PS2 `.iso` gets `createdvd`, a PS2 or PS1 `.cue` `createcd`, a GameCube
-`.iso` `dolphin_rvz`, a `.nkit.iso` `nkit_to_rvz`, a CD image in an `arcade`
-folder `createcd`. `tests/test_auto_routing_table.py` holds the whole table, one
-row per (Platform, readable extension), and fails when a tool or mode changes
-the set of pairs.
-
-`auto_route` wraps `default_mode` and leaves an Image alone when it is already
-in its target's format: when the chosen mode's `output_ext` matches the input
-name, the Image is skipped as "Already <FORMAT>" rather than re-encoded. It is
-read off the spec, so it holds for any tool. Today the only such row is a
-GameCube/Wii `.rvz` under `dolphin_rvz` ("Already RVZ"); a `.wia` or `.gcz`
-still converts to RVZ.
-
-`ModeSpec.reads_extensions` is the mode's real input domain when it is
-narrower than `input_extensions`; empty means "every input extension". It must
-be a subset of `input_extensions`, which keeps gating manual selection and
-`plan_job` exactly as before. chdman uses it because its five create modes all
-accept `.iso/.cue/.bin/.gdi` by hand while the commands differ: `createcd`
-reads a track sheet or a single-track `.iso`, `createdvd` a flat 2048-byte
-`.iso`. A bare `.bin` is read by neither (chdman needs the table of contents),
-so its `.cue` is the Image. `ModeSpec.auto_target` is false for chdman's
-`createraw`, `createhd` and `createld`: they claim the arcade Platforms, but
-are never the right default for an Image.
-
-`ModeSpec.auto_platform_slugs` lets a mode be a Platform's Auto target without
-being offered for it by hand. `createcd` declares `ps2`, because PS2 CD-ROM
-titles are plain Mode 2 CDs kept as cue/bin. Adding `ps2` to its
-`platform_slugs` would have made `createcd`, the first chdman create mode, the
-default of every platform-narrowed PS2 panel and rule, which
-`test_chdman_media_commands_are_narrowed_per_platform` forbids.
-
-Two Images whose targets would write the same output (`game.iso` and
-`game.nkit.iso` both to `game.rvz`, or two `game.iso` into one output
-directory) cannot both convert. `plan_auto` keeps the one the batch path would
-keep (`output_conflicts.input_priority`: `.cue`/`.gdi` over `.iso` over `.bin`,
-then the earlier in the selection) and skips the other with a reason naming the
-output. The compression is the saved per-tool value (the `conversion`
-preference) when the mode takes one, else the tool default; a saved value the
-mode would refuse also falls back to the tool default. Conflicted and Unsorted
-Images get a `skip_reason`, and so does an Image with a Platform but no target:
-"No tool converts <platform> Images" when no mode serves the Platform at all
-(Neo Geo Pocket Color, WonderSwan Color), "No <platform> target reads <ext>
-files" when the file is the problem.
-
-`POST /api/jobs/auto-plan` returns the plan without queueing.
-`POST /api/jobs/auto` groups the planned Images by (mode, compression). The
-batch route is split into `_prepare_batch` (validate and `plan_job` every file,
-queue nothing) and `_queue_prepared` (one atomic `create_jobs_atomic` call);
-`create_batch_jobs` is the two in sequence. Auto prepares every group first, so
-a planning error queues nothing, then checks the whole batch against
-`max_queue_depth`, then queues the groups. Each group is its own atomic call,
-so a later group can still be refused at queue time (409 when another job took
-a destination, 503 when a volume stops answering), and earlier jobs may have
-started by then. On any failure the route withdraws the jobs this request
-queued (`job_manager.cancel_job`) and returns the error. A job that had already
-finished cannot be withdrawn: its output stays, it is logged, and the error
-names it ("Already finished and kept: ..."). Auto never deletes a Source (no
-delete-on-verify), so nothing is lost either way.
-
-The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
-under the `primary_tool_preference` key that now names the selected tool tab;
-its values were tool ids, so a value left from it still loads as a tab.
 
 ### 3.3.12 The Round-trip check (`ToolPlugin.content_digest`, `services/round_trip.py`)
 
@@ -2585,6 +2466,147 @@ check badge, no `produced_meta` for the re-run fast path (§3.3.6), and a record
 an earlier run left for that path is dropped. `ConversionJob.check_passed`
 (and so the Ledger row) still says `"intact"`, because the container check did
 pass.
+
+### 3.3.13 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
+
+`detect_platform(path) -> Detection` is the one place an Image's Platform is
+worked out without a library manager. The convert panel's Auto choice uses it
+today; folder Libraries (#303), the Inbox and the CLI (#306) are meant to call
+the same function. `Detection` is a frozen dataclass: `platform` (a slug, or
+None), `how` (`"header"`, `"folder"`, `"conflict"`, `"unsorted"`), what each
+source said (`header`, `folder`) and a one-line `reason` for the UI.
+
+Precedence is fixed and never guesses:
+
+1. **Header.** Every registered tool whose `input_extensions` match the file is
+   asked `header_platform(path)`. The default answers None; a tool that can tell
+   its consoles apart from the bytes overrides it. chdman answers through
+   `disc_id.disc_platform` (PS1/PS2 from `SYSTEM.CNF`, PSP from `PARAM.SFO`,
+   Dreamcast from a `.gdi`'s `IP.BIN`, all the existing disc-ID parser, plus the
+   Saturn / Sega CD / Dreamcast system id at the start of sector 0). dolphin
+   answers through `disc_id.nintendo_disc_platform` (the GameCube magic at 0x1C,
+   Wii at 0x18). xiso answers through `extract_xiso.detect_console` (the XDVDFS
+   layout, or a trimmed image's boot executable). A probe that raises is
+   treated as no answer. A new console is taught to detection by its tool's
+   override, not by an edit here.
+2. **Folder name.** The nearest parent folder whose name is a key or alias in
+   `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
+   name for it (the tools' own spellings and the folder names ES-DE and
+   Batocera use: `ps1`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
+   `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
+   header and use the archive's folder.
+
+Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
+and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
+`genesis-slash-megadrive`) onto RomM's own slugs (`psx`, `ngc`, `neo-geo-cd`,
+`genesis`). RomM's slug is its `UniversalPlatformSlug` value, which differs
+from IGDB's for PlayStation and Genesis; `test_every_canonical_key_is_a_romm_slug`
+pins every key to RomM's list. A test also fails when a tool declares a slug
+the table does not cover, so a new Platform brings its folder names with it.
+`platform_name(slug)` gives the display name from `_NAMES` (a test fails when a
+slug has none). `detect_uncached` is the same decision without the shared LRU,
+for a caller (the folder Library) that keeps its own per-file cache. A header that disagrees with the folder, or two headers that disagree,
+is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
+cached per path in a bounded LRU and dropped when the file's size or mtime
+changes; `clear_cache()` exists for tests. A header probe that reads other
+files declares them through `ToolPlugin.header_reads(path)` (default empty;
+chdman returns a `.cue`/`.gdi` sheet's tracks via the delete plan's own parser,
+`utils.delete_plan.sheet_track_paths`). Their path, size and mtime join the
+cache key, and while one of them is missing or unreadable (a `.bin` still
+copying in) the answer is not cached at all.
+
+**Auto targets** (`plan_auto`, `default_mode`). The candidates for an Image with
+a Platform are the create-direction modes (`ModeKind.CREATE` / `COMPRESS`) that
+claim the Platform (`registry.mode_platform_slugs`, or the mode's
+`auto_platform_slugs`), may be an Auto default (`ModeSpec.auto_target`), and
+whose command can read the file (`registry.mode_reads_extensions` plus the
+tool's `converts_path`). Among them:
+
+1. the most specific extension match wins (`.nkit.iso` over `.iso`, the
+   `tool_for_verify` rule);
+2. then the smallest read set, the most specific reader (a PS2 `.iso` goes to
+   `createdvd`, which reads only `.iso`, not `createcd`, which also reads track
+   sheets);
+3. then registration order (`createdvd` before the CSO modes, which also read
+   only `.iso`).
+
+So a PS2 `.iso` gets `createdvd`, a PS2 or PS1 `.cue` `createcd`, a GameCube
+`.iso` `dolphin_rvz`, a `.nkit.iso` `nkit_to_rvz`, a CD image in an `arcade`
+folder `createcd`. `tests/test_auto_routing_table.py` holds the whole table, one
+row per (Platform, readable extension), and fails when a tool or mode changes
+the set of pairs.
+
+`auto_route` wraps `default_mode` and leaves an Image alone when it is already
+in its target's format: when the chosen mode's `output_ext` matches the input
+name, the Image is skipped as "Already <FORMAT>" rather than re-encoded. It is
+read off the spec, so it holds for any tool. Today the only such row is a
+GameCube/Wii `.rvz` under `dolphin_rvz` ("Already RVZ"); a `.wia` or `.gcz`
+still converts to RVZ.
+
+`ModeSpec.reads_extensions` is the mode's real input domain when it is
+narrower than `input_extensions`; empty means "every input extension". It must
+be a subset of `input_extensions`, which keeps gating manual selection and
+`plan_job` exactly as before. chdman uses it because its five create modes all
+accept `.iso/.cue/.bin/.gdi` by hand while the commands differ: `createcd`
+reads a track sheet or a single-track `.iso`, `createdvd` a flat 2048-byte
+`.iso`. A bare `.bin` is read by neither (chdman needs the table of contents),
+so its `.cue` is the Image. `ModeSpec.auto_target` is false for chdman's
+`createraw`, `createhd` and `createld`: they claim the arcade Platforms, but
+are never the right default for an Image.
+
+`ModeSpec.auto_platform_slugs` lets a mode be a Platform's Auto target without
+being offered for it by hand. `createcd` declares `ps2`, because PS2 CD-ROM
+titles are plain Mode 2 CDs kept as cue/bin. Adding `ps2` to its
+`platform_slugs` would have made `createcd`, the first chdman create mode, the
+default of every platform-narrowed PS2 panel and rule, which
+`test_chdman_media_commands_are_narrowed_per_platform` forbids.
+
+Two Images whose targets would write the same output (`game.iso` and
+`game.nkit.iso` both to `game.rvz`, or two `game.iso` into one output
+directory) cannot both convert. `plan_auto` keeps the one the batch path would
+keep (`output_conflicts.input_priority`: `.cue`/`.gdi` over `.iso` over `.bin`,
+then the earlier in the selection) and skips the other with a reason naming the
+output. The compression is the saved per-tool value (the `conversion`
+preference) when the mode takes one, else the tool default; a saved value the
+mode would refuse also falls back to the tool default. Conflicted and Unsorted
+Images get a `skip_reason`, and so does an Image with a Platform but no target:
+"No tool converts <platform> Images" when no mode serves the Platform at all
+(Neo Geo Pocket Color, WonderSwan Color), "No <platform> target reads <ext>
+files" when the file is the problem.
+
+A target whose tool cannot run here is skipped too. The route awaits the
+shared, bounded `registry.ready_tool_ids()` and passes it to `plan_auto`
+(`ready_tool_ids=`), which skips the Image with
+"<display_name> isn't ready: <not_ready_reason>". `ToolPlugin.not_ready_reason`
+says why in the user's words; the default names a missing program, nsz names
+`prod.keys`, jwud the JWUDTool launcher and Java. Both Auto routes plan through
+this, so the plan the user confirms and the jobs queued agree.
+
+From a RomM platform listing, Auto records RomM metadata for re-pinning exactly
+as a manual submit does. Both go through one store path,
+`conversion.#queueWithRepin`, which calls `planRommRepin` once per target mode
+before queueing, then reconciles the records against the jobs actually created
+(redirected outputs re-recorded under their own mode, rows for sources that
+never became jobs retired).
+
+`POST /api/jobs/auto-plan` returns the plan without queueing.
+`POST /api/jobs/auto` groups the planned Images by (mode, compression). The
+batch route is split into `_prepare_batch` (validate and `plan_job` every file,
+queue nothing) and `_queue_prepared` (one atomic `create_jobs_atomic` call);
+`create_batch_jobs` is the two in sequence. Auto prepares every group first, so
+a planning error queues nothing, then checks the whole batch against
+`max_queue_depth`, then queues the groups. Each group is its own atomic call,
+so a later group can still be refused at queue time (409 when another job took
+a destination, 503 when a volume stops answering), and earlier jobs may have
+started by then. On any failure the route withdraws the jobs this request
+queued (`job_manager.cancel_job`) and returns the error. A job that had already
+finished cannot be withdrawn: its output stays, it is logged, and the error
+names it ("Already finished and kept: ..."). Auto never deletes a Source (no
+delete-on-verify), so nothing is lost either way.
+
+The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
+under the `primary_tool_preference` key that now names the selected tool tab;
+its values were tool ids, so a value left from it still loads as a tab.
 
 ### 3.4 `registry.py`
 

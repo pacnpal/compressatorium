@@ -90,31 +90,32 @@ def _parse_gdi_tracks(gdi_path: Path) -> List[str]:
     return tracks
 
 
-_SHEET_PARSERS = {".cue": _parse_cue_tracks, ".gdi": _parse_gdi_tracks}
+def sheet_track_paths(sheet_path: str) -> list[str]:
+    """The track files a ``.cue`` or ``.gdi`` sheet names, resolved beside it.
 
-
-def sheet_tracks(sheet_path: str) -> List[str]:
-    """The track files a ``.cue`` / ``.gdi`` sheet references, as paths.
-
-    The same parsing and the same containment rule the delete plan uses: a
-    reference that is absolute or leaves the sheet's folder is dropped, not
-    followed. Empty for any other file, or a sheet that cannot be read.
+    The same parsing and containment rules the delete plan uses, so a track
+    reference that escapes the sheet's folder is left out. Tracks are listed
+    whether or not they exist yet. Empty for any other file, or a sheet that
+    cannot be read.
     """
-    parse = _SHEET_PARSERS.get(Path(sheet_path).suffix.lower())
-    if parse is None:
-        return []
+    sheet = Path(sheet_path)
+    ext = sheet.suffix.lower()
     try:
-        refs = parse(Path(sheet_path))
+        if ext == ".cue":
+            refs = _parse_cue_tracks(sheet)
+        elif ext == ".gdi":
+            refs = _parse_gdi_tracks(sheet)
+        else:
+            return []
     except OSError:
         return []
-    out: List[str] = []
-    base_dir = Path(sheet_path).parent
+    paths: list[str] = []
     for ref in refs:
         try:
-            out.append(str(_resolve_track_path(base_dir, ref)))
+            paths.append(str(_resolve_track_path(sheet.parent, ref)))
         except ValueError:
             continue
-    return out
+    return paths
 
 
 def build_delete_plan(source_path: str) -> Dict[str, object]:

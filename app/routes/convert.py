@@ -25,6 +25,7 @@ from models import (
     JobCreateRequest,
     JobStatus,
 )
+from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
 from services.archive import archive_service
 from services.job_manager import (
     DestinationUnresolvableError,
@@ -32,7 +33,6 @@ from services.job_manager import (
     QueueBackpressureError,
     job_manager,
 )
-from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
 from services.platform_detect import plan_auto
 from services.preferences_store import preferences_store
 from services.romz import romz_service
@@ -1194,9 +1194,12 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
             )
     prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
     output_dir = normalize_output_dir(request.output_dir)
+    # The shared, bounded readiness probe (a tool that cannot run here, such as
+    # nsz without prod.keys, is skipped in the plan instead of queued to fail).
+    ready = await registry.ready_tool_ids()
     plan = await run_in_threadpool(
         plan_auto, list(request.file_paths),
-        compression_prefs=prefs, output_dir=output_dir,
+        compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
     )
     return [
         replace(target, compression=_auto_compression(target)) if target.mode else target

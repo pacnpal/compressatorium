@@ -25,6 +25,7 @@ from services.disc_id import (
     read_embedded_game_id,
 )
 from services.lock_manager import lock_manager
+from utils.delete_plan import sheet_track_paths
 
 from .base import BaseTool
 from .spec import ModeKind, ModeSpec
@@ -186,6 +187,10 @@ class ChdmanTool(BaseTool):
         # PS1/PS2/PSP/Dreamcast through the disc-ID parser, Saturn and Sega CD
         # through their sector-0 system ids.
         return disc_platform(path)
+
+    def header_reads(self, path: str) -> list[str]:
+        # A .cue/.gdi is answered from the tracks it names.
+        return sheet_track_paths(path)
 
     # chdman's extract/copy modes take .chd input, but a .chd is not a
     # "convertible-from" source in the file listing, only the create sources

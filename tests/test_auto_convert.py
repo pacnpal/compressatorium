@@ -451,6 +451,37 @@ async def test_auto_route_withdraws_on_any_failure_not_only_http_errors(
     assert cancelled
 
 
+def test_a_target_whose_tool_is_not_ready_is_skipped(tmp_path):
+    from services.tools import registry
+
+    nsp = _blank(tmp_path / "switch" / "game.nsp")
+    gc = _gamecube(tmp_path / "pile" / "gc.iso")
+    ready = {t.id for t in registry.all()} - {"nsz"}
+
+    plan = _by_path(plan_auto([nsp, gc], ready_tool_ids=ready))
+
+    assert plan["game.nsp"].mode is None
+    assert plan["game.nsp"].skip_reason == (
+        f"Switch isn't ready: {registry.get('nsz').not_ready_reason}"
+    )
+    assert plan["gc.iso"].mode == "dolphin_rvz"
+
+
+@pytest.mark.asyncio
+async def test_auto_route_skips_targets_whose_tool_is_not_ready(route_env, monkeypatch):
+    async def ready_tool_ids():
+        return [t.id for t in convert_routes.registry.all() if t.id != "dolphin"]
+
+    monkeypatch.setattr(convert_routes.registry, "ready_tool_ids", ready_tool_ids)
+    paths = _mixed_selection(route_env["tmp_path"])
+
+    result = await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+
+    assert all(q["mode"] != "dolphin_rvz" for q in route_env["queued"]), route_env["queued"]
+    rows = {Path(p.file_path).name: p for p in result.plan}
+    assert rows["gc.iso"].skip_reason.startswith("Dolphin isn't ready: ")
+
+
 @pytest.mark.asyncio
 async def test_auto_rejects_paths_outside_the_volumes(route_env, tmp_path_factory):
     outside = _ps2(tmp_path_factory.mktemp("elsewhere") / "ps2.iso")

@@ -142,7 +142,7 @@ def test_dreamcast_gdi_reads_its_first_track(tmp_path):
         ("ps2", "ps2"), ("psp", "psp"), ("ngc", "ngc"), ("wii", "wii"),
         ("xbox", "xbox"), ("dc", "dc"), ("saturn", "saturn"), ("segacd", "segacd"),
         # ES-DE / Batocera names for the same consoles.
-        ("psx", "psx"), ("gc", "ngc"), ("gamecube", "ngc"), ("dreamcast", "dc"),
+        ("psx", "psx"), ("ps1", "psx"), ("gc", "ngc"), ("gamecube", "ngc"), ("dreamcast", "dc"),
         ("megacd", "segacd"), ("PS2", "ps2"),
     ],
 )
@@ -161,7 +161,7 @@ def test_folder_name_names_the_platform_when_there_is_no_header(
 FRONTEND_FOLDERS = [
     ("pcenginecd", "turbografx-cd"), ("tg-cd", "turbografx-cd"),
     ("cdi", "philips-cd-i"), ("cdimono1", "philips-cd-i"),
-    ("megadrive", "genesis"), ("genesis", "genesis"),
+    ("megadrive", "genesis"), ("genesis-slash-megadrive", "genesis"),
     ("segamd", "genesis"),
     ("mastersystem", "sms"), ("gg", "gamegear"), ("game-gear", "gamegear"),
     ("atarilynx", "lynx"), ("ngp", "neo-geo-pocket"), ("ngpc", "neo-geo-pocket-color"),
@@ -191,6 +191,26 @@ def test_every_alias_names_its_romm_slug(tmp_path, alias, slug):
     assert platform_detect.canonical_slug(alias) == slug
     path = _blank(tmp_path / alias / "game.bin")
     assert detect_platform(path).platform == slug
+
+
+# RomM's own slugs for every Platform the tools serve: the values of RomM's
+# `UniversalPlatformSlug` enum (rommapp/romm, backend/utils/platform_slugs.py).
+# RomM's slug differs from IGDB's in places (`psx`, not `ps`; `genesis`, not
+# `genesis-slash-megadrive`), and Detection answers in RomM's.
+ROMM_SLUGS = frozenset({
+    "3do", "3ds", "arcade", "atari2600", "atari7800", "c64", "dc", "gamegear",
+    "gb", "gba", "gbc", "genesis", "laseractive", "lynx", "n64", "nds",
+    "neo-geo-cd", "neo-geo-pocket", "neo-geo-pocket-color", "nes",
+    "new-nintendo-3ds", "ngc", "pc-fx", "philips-cd-i", "ps2", "ps3", "psp",
+    "psx", "saturn", "segacd", "sms", "snes", "switch", "turbografx-cd",
+    "virtualboy", "wii", "wiiu", "wonderswan", "wonderswan-color", "xbox",
+    "xbox360",
+})
+
+
+@pytest.mark.parametrize("slug", sorted(platform_detect._ALIASES))
+def test_every_canonical_key_is_a_romm_slug(slug):
+    assert slug in ROMM_SLUGS
 
 
 def test_aliases_are_unambiguous():
@@ -364,3 +384,42 @@ def test_cache_is_dropped_when_the_mtime_changes(tmp_path):
     detect_platform(path, tools=[probe])
 
     assert probe.calls == 2
+
+
+_SATURN_CUE = b'FILE "game.bin" BINARY\n  TRACK 01 MODE1/2352\n'
+
+
+def test_a_cue_whose_track_arrives_later_is_detected_once_it_does(tmp_path):
+    folder = tmp_path / "downloads"
+    cue = _write(folder / "game.cue", _SATURN_CUE)
+
+    assert detect_platform(cue).how == "unsorted"
+
+    _sector0(folder / "game.bin", b"SEGA SEGASATURN ", raw=True)
+
+    assert detect_platform(cue).platform == "saturn"
+
+
+def test_a_cue_is_re_probed_when_its_track_changes(tmp_path):
+    folder = tmp_path / "downloads"
+    cue = _write(folder / "game.cue", _SATURN_CUE)
+    track = _sector0(folder / "game.bin", b"SEGA SEGASATURN ", raw=True)
+    assert detect_platform(cue).platform == "saturn"
+
+    # Same cue sheet, a different disc behind it.
+    _sector0(Path(track), b"SEGADISCSYSTEM  ", raw=True)
+    st = os.stat(track)
+    os.utime(track, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+
+    assert detect_platform(cue).platform == "segacd"
+
+
+def test_a_gdi_lists_its_tracks_as_header_reads(tmp_path):
+    from services.tools import registry
+
+    folder = tmp_path / "dc"
+    gdi = _write(folder / "game.gdi", b"2\n1 0 4 2352 track01.bin 0\n2 600 0 2352 track02.raw 0\n")
+
+    reads = registry.get("chdman").header_reads(gdi)
+
+    assert reads == [str(folder / "track01.bin"), str(folder / "track02.raw")]
