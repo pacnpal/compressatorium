@@ -60,19 +60,41 @@ def _is_absolute_reference(ref: str) -> bool:
     return Path(ref).is_absolute()
 
 
-def resolve_track(sheet_dir: str | Path, ref: str) -> Path:
+def _under_any(real: str, roots: Sequence[str | Path]) -> bool:
+    for root in roots:
+        real_root = os.path.realpath(root)
+        if real == real_root or real.startswith(real_root.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def resolve_track(
+    sheet_dir: str | Path,
+    ref: str,
+    *,
+    within: Sequence[str | Path] | None = None,
+) -> Path:
     """The track a sheet names, resolved beside the sheet, or ``ValueError``.
 
     The one track resolver: the Platform probe, the detection cache's track
     list, the delete plan and the job gate all use it. Refused, so nothing
     opens them: an empty name, an absolute name (``/x``, ``C:\\x``, ``\\\\host``,
     ``~``), a name with any ``..`` segment, and a name whose real path (through
-    a symlink) lies outside the configured Volumes. Returns the path beside
-    the sheet, not its real path, so callers see what the sheet named.
+    a symlink) lies outside the trusted roots. Returns the path beside the
+    sheet, not its real path, so callers see what the sheet named.
+
+    ``within`` names the trusted roots. None (the default, used by the probe
+    and ``header_reads``) means the configured Volumes; a caller whose sheet
+    lives elsewhere (the job worker's extraction dir for an archived set)
+    passes that root. An empty sequence is refused: it would trust nothing
+    and is always a caller bug.
     """
     from utils.path_utils import (
         is_within_configured_volumes,  # local: no cycle at import
     )
+
+    if within is not None and not list(within):
+        raise ValueError("No trusted root to confine the track to")
 
     raw = ref.strip().strip('"')
     if not raw:
@@ -84,27 +106,37 @@ def resolve_track(sheet_dir: str | Path, ref: str) -> Path:
         raise ValueError(f"Track reference escapes source directory: {raw}")
     base = Path(os.path.normpath(str(Path(sheet_dir).absolute())))
     candidate = Path(os.path.normpath(os.path.join(str(base), normalized)))
-    if not is_within_configured_volumes(os.path.realpath(candidate), treat_archives=False):
+    real = os.path.realpath(candidate)
+    if within is None:
+        inside = is_within_configured_volumes(real, treat_archives=False)
+    else:
+        inside = _under_any(real, within)
+    if not inside:
         raise ValueError(f"Track reference resolves outside the volumes: {raw}")
     return candidate
 
 
 def sheet_tracks(
-    path: str | Path, parse: Callable[[str], list[str]],
+    path: str | Path,
+    parse: Callable[[str], list[str]],
+    *,
+    within: Sequence[str | Path] | None = None,
 ) -> list[Path] | None:
     """Every track the sheet names, resolved and confined (``resolve_track``).
 
     None when the sheet is unreadable (missing, or over the size cap) or when
     any track is refused: a reader must then say nothing about the sheet
     rather than act on the tracks it was allowed to see. The first spelling of
-    each name that exists wins (``pick_existing``).
+    each name that exists wins (``pick_existing``). ``within`` is passed to
+    ``resolve_track``: the configured Volumes unless a caller names other
+    trusted roots.
     """
     texts = sheet_readings(path)
     if not texts:
         return None
     readings = [parse(text) for text in texts]
     folder = Path(path).parent
-    tracks = pick_existing(readings, lambda ref: resolve_track(folder, ref))
+    tracks = pick_existing(readings, lambda ref: resolve_track(folder, ref, within=within))
     if len(tracks) != len(readings[0]):
         return None
     return tracks
