@@ -1299,3 +1299,113 @@ def test_a_single_rom_archive_with_an_unsafe_junk_member_is_claimed_and_fails(
     assert [(Path(line["path"]).name, line["status"]) for line in lines] == [
         ("Game.gba.zip", "failed"),
     ]
+
+
+def _store(path, **meta):
+    import asyncio
+
+    import cli
+    from services.verification_store import verification_store
+
+    cli._open_db(False)
+    asyncio.run(verification_store.mark_verified(str(path), **meta))
+
+
+def _stored(path):
+    import asyncio
+
+    from services.verification_store import verification_store
+
+    return asyncio.run(verification_store.get_record(str(path)))
+
+
+def test_a_stored_check_goes_back_to_the_tool_of_its_recorded_mode(
+    volume, dolphin, capsys,
+):
+    """r7 I2 / P9: a PS3 .iso makeps3iso built and checked is checked by
+    makeps3iso again, whatever the Platform narrowing would say."""
+    iso = volume / "ps3" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)  # damaged: no PARAM.SFO any more
+    _store(iso, produced_meta={"mode": "folder_to_iso"})
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1
+    assert (lines[0]["tool"], lines[0]["status"]) == ("makeps3iso", "failed")
+    assert _stored(iso) is None
+
+
+def test_a_stored_check_skips_platform_narrowing(volume, dolphin, capsys):
+    """r7 I2 / P7: a GameCube .iso with a stored Dolphin pass, header gone, in a
+    ps2 folder, still reaches Dolphin and fails."""
+    iso = volume / "ps2" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso)
+    dolphin["valid"] = False
+
+    code, lines = _cli(capsys, "verify", str(iso), "--json")
+
+    assert code == 1
+    assert (lines[0]["tool"], lines[0]["status"]) == ("dolphin", "failed")
+    assert _stored(iso) is None
+
+
+def test_only_the_stored_check_can_reach_a_replaced_archive(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """r7 M1: a stored-pass .gba.zip replaced by a two-ROM zip is no longer
+    romz's by shape; only the stored check routes it, and the check fails."""
+    _stub_7z_passes(monkeypatch)
+    archive = _romz_zip(volume / "gba" / "Game.gba.zip")
+    _store(archive)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("A.gba", b"a" * 64)
+        zf.writestr("B.gba", b"b" * 64)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1
+    assert (lines[0]["path"], lines[0]["status"]) == (str(archive), "failed")
+
+
+def test_a_recorded_mode_that_cannot_verify_is_reported_not_failed(volume, dolphin, capsys):
+    cue = volume / "psx" / "Game.cue"
+    cue.parent.mkdir()
+    cue.write_text("FILE \"Game.bin\" BINARY\n")
+    _store(cue, produced_meta={"mode": "extractcd"})
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 0
+    assert lines[0]["status"] == "skipped"
+    assert "can't be checked" in lines[0]["reason"]
+    assert _stored(cue) is not None
+
+
+def test_a_stored_check_no_tool_reads_is_reported_in_a_folder_run(volume, dolphin, capsys):
+    """r7 M2: it used to vanish from a folder run."""
+    thing = volume / "misc" / "Thing.bin"
+    thing.parent.mkdir()
+    thing.write_bytes(b"x" * 10)
+    _store(thing)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 0
+    assert [(line["path"], line["status"]) for line in lines] == [(str(thing), "skipped")]
+
+
+def test_an_iso_whose_platform_is_unknown_is_skipped_not_failed(volume, dolphin, capsys):
+    """r7 I4 / P1: no stored check and no Platform: never guess Dolphin."""
+    iso = volume / "misc" / "Linux.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 32768 + b"\x01CD001\x01" + b"\0" * 4096)
+    dolphin["valid"] = False
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 0
+    assert lines[0]["status"] == "skipped"
+    assert "Platform" in lines[0]["reason"] and "determined" in lines[0]["reason"]

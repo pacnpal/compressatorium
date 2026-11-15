@@ -2692,15 +2692,24 @@ A verifier ended by a signal (a negative return code: SIGKILL, the OOM killer)
 is no verdict either (`killed_verify_error`), in both `run_verify` and
 `capture_verify`; a non-zero exit is.
 
-**Which tool checks a file.** A verify run asks `ToolPlugin.claims_check(path)`
-through `registry.tools_checking_path`, which is wider than `verifies_path`
-(the listing's Verify/Info gate, unchanged): romz claims any `.7z`/`.zip` that
-is not a readable non-single-ROM archive (`NotSingleRomArchive`), so a damaged
-ROM archive is checked and fails. A file with a stored check is checked again by
-the tool that claims its name even if no claim matches now, and a folder run
-includes the stored checks under it. Where the extension is shared across
-Platforms (a generic `.iso`), the Image's detected Platform picks among the
-claimants, and an Image no claimant serves is skipped as unsupported.
+**Which tool checks a file** (`cli._verify_tool`), in this order:
+
+| Step | When | Verifier |
+| --- | --- | --- |
+| 1. Stored record | the file has a stored check | the tool of the mode in its `produced_meta` (makeps3iso for a PS3 ISO it built); without one, the tool that claims the name. No Platform narrowing. A recorded mode that cannot verify is reported "can't be checked", the record kept, not a failure |
+| 2. Detected Platform | no record, and a tool for another Platform also reads the extension (a generic `.iso`) | the claimants that serve `detect_platform`'s answer; none serves it: skipped as unsupported |
+| 3. Skip | no record, a shared extension, and no Platform (Unsorted or Conflicted) | none: skipped, "its Platform couldn't be determined" |
+
+Otherwise the most specific claimant (`tool_for_verify`) checks it. Claims come
+from `ToolPlugin.claims_check(path)` through `registry.tools_checking_path`,
+wider than `verifies_path` (the listing's Verify/Info gate, unchanged). romz
+decides by shape first (`RomzService.claims_for_verify`, the one place): an
+archive that reads and plainly is not a single-ROM one (no ROM, several files,
+a texture pack, an encrypted header) is not romz's and is skipped; one that
+cannot be read or decoded, or a single-ROM archive a safety rule rejects, is
+claimed and fails. A folder run adds the stored checks under it, and one no
+tool can check is reported, not dropped. "Shared" counts only tools that name
+another Platform, so the Platform-less chain tool does not make `.cso` shared.
 
 Readiness is per operation: `ToolPlugin.verify_is_ready()` (default
 `is_ready()`), asked through `registry.tool_is_ready(tool, purpose="verify")`.
