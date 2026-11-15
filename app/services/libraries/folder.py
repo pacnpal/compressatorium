@@ -24,9 +24,17 @@ walk saw. A repeat walk of a large Library is a stat per file and reads no
 headers.
 
 **No disk on the event loop.** :meth:`FolderLibrary.configured` answers from
-memory (the root was checked against the Volumes when it was registered). A
-root that has gone, or a mount that stops answering, shows up in the walk,
-which the engine runs detached and bounded.
+memory: what the last walk found when it checked the root against the
+configured Volumes (true until a walk says otherwise; the root was checked at
+registration). A root that has gone, or a mount that stops answering, shows up
+in the walk, which the engine runs on a detached daemon thread under a bound.
+
+**One walk at a time.** A second walk of the same Library while one is still
+running fails at once (``LibraryUnreadable``, "previous listing still
+running") instead of queueing behind it. On a mount that stopped answering
+that caps the stuck threads at one per Library, and every later sweep releases
+the sweep lock immediately. Settings (name, schedule switch, cap) change in
+place and never wait for a walk.
 
 Folder Rules support the skip policy only (no ``CONVERTED_HISTORY``), and a
 failed Image waits until its file changes (``FAILED_HOLD``).
@@ -55,7 +63,7 @@ from services.rules.library import (
     QueuedImage,
 )
 from services.tools import registry
-from utils.path_utils import match_extension
+from utils.path_utils import is_within_configured_volumes, match_extension
 
 logger = get_logger("folder_library")
 
@@ -146,8 +154,11 @@ class FolderLibrary:
         self.name = name
         self._schedule_enabled = schedule_enabled
         self._max_per_sweep = max_per_sweep
+        # Held for a whole walk. Only ever acquired without blocking (`scan`).
         self._lock = threading.Lock()
         self._scan: Scan | None = None
+        # Whether the last walk found the root inside the configured Volumes.
+        self._in_volumes = True
         # path -> (size, mtime_ns, value), for the files the last walk saw.
         self._detections: dict[str, tuple[int, int, Detection]] = {}
         self._members: dict[str, tuple[int, int, list[str]]] = {}
@@ -155,18 +166,26 @@ class FolderLibrary:
     def __repr__(self) -> str:
         return f"FolderLibrary(id={self.id!r}, root={self.root!r})"
 
-    def adopt_cache(self, other: FolderLibrary) -> None:
-        """Keep *other*'s walk and caches (the same Library, re-read after an edit)."""
-        with other._lock:
-            self._scan = other._scan
-            self._detections = other._detections
-            self._members = other._members
+    def apply_settings(
+        self, *, name: str | None = None, schedule_enabled: bool | None = None,
+        max_per_sweep: int | None = None,
+    ) -> None:
+        """Change this Library's settings in place. Never waits for a walk."""
+        if name is not None:
+            self.name = name
+        if schedule_enabled is not None:
+            self._schedule_enabled = bool(schedule_enabled)
+        if max_per_sweep is not None:
+            self._max_per_sweep = int(max_per_sweep)
 
     # ---- the walk ----
 
     def _files(self) -> tuple[list[tuple[str, os.stat_result]], int]:
         """Every regular, readable file with an Image extension, and how many were not readable."""
         root = self.root
+        self._in_volumes = is_within_configured_volumes(root, treat_archives=False)
+        if not self._in_volumes:
+            raise LibraryUnreadable(f"{root} is outside the configured Volumes")
         if not os.path.isdir(root):
             raise LibraryUnreadable(f"{root} is not a folder")
         extensions = _image_extensions()
@@ -239,8 +258,16 @@ class FolderLibrary:
         return scan
 
     def scan(self, *, refresh: bool = False) -> Scan:
-        """The latest walk, taking a new one when asked or when it is stale. Blocking."""
-        with self._lock:
+        """The latest walk, taking a new one when asked or when it is stale. Blocking.
+
+        Raises :class:`LibraryUnreadable` at once when another walk of this
+        Library is still running, rather than waiting behind it.
+        """
+        if not self._lock.acquire(blocking=False):
+            raise LibraryUnreadable(
+                f"previous listing of {self.root} still running",
+            )
+        try:
             fresh = (
                 self._scan is not None
                 and time.monotonic() - self._scan.taken_at < SCAN_TTL_SECONDS
@@ -248,6 +275,8 @@ class FolderLibrary:
             if refresh or not fresh:
                 self._scan = self._walk()
             return self._scan
+        finally:
+            self._lock.release()
 
     def summary(self, *, refresh: bool = False) -> dict[str, Any]:
         """Detected Platforms with Image counts, and the Images left out."""
@@ -276,12 +305,13 @@ class FolderLibrary:
     # ---- the Library interface ----
 
     def configured(self) -> bool:
-        """Always: the root was checked when it was registered. No disk access.
+        """Whether the last walk found the root inside the configured Volumes. No disk.
 
-        The engine calls this on the event loop. A root that has gone since is
-        found by the walk, off the loop, and reported as unreadable.
+        The engine calls this on the event loop. True until a walk says
+        otherwise (the root was checked at registration). A root that has gone
+        is found by the walk, off the loop, and reported as unreadable.
         """
-        return True
+        return self._in_volumes
 
     def canonical_platform_id(self, raw: Any) -> str | None:
         if not isinstance(raw, str) or ":" in raw:

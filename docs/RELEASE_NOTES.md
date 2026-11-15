@@ -10,12 +10,16 @@
   Conflicted. A cue/bin or gdi set is one Image, never its tracks. Give a
   Platform a Rule (the same settings RomM Rules have), then Preview, Run now,
   or turn the scheduler on. Folder Rules skip an Image whose output exists, so
-  a second sweep queues nothing, and a failed Image waits until its file
-  changes; Unsorted and Conflicted Images are never queued. Removing a Library removes its Rules and touches no
+  a second sweep queues nothing, and a failed Image waits until one of its
+  files changes (or **Retry failed**); Unsorted and Conflicted Images are
+  never queued. Removing a Library removes its Rules and touches no
   files. The RomM view's Automation tab is now the same view, opened on RomM.
   API: `/api/libraries` (list, register, update, remove, platforms, rules,
   preview, run). Registered folders live in a new `folder_libraries` table
   (migration 0011).
+  - Every Rule sweep now gives a Library 10 minutes to list a Platform, RomM
+    included (RomM's catalog fetch had no limit). Past that the sweep stops
+    with "the library stopped responding" and the next one starts over.
 - **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
   panel, select a mix of files, and each Image goes to its Platform's default
   format with your saved compression. The Platform comes from the Image's own

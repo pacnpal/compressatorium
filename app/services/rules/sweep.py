@@ -40,6 +40,8 @@ from typing import Any
 
 from logging_setup import get_logger
 from models import ConversionMode, JobStatus
+from services import subprocess_runner
+from services.image_sets import image_fingerprint
 from services.job_manager import (
     OutputClaimedError,
     QueueBackpressureError,
@@ -680,6 +682,22 @@ async def note_job_finished(job) -> None:
         await store.write(store.STATE_KEY, library, state)
 
 
+async def _prune_holds(
+    library: Library, platform_id: str, held: dict, images: list[Image],
+) -> dict:
+    """Drop holds for Images *library* no longer lists. Returns the holds kept."""
+    listed = {str(i.key) for i in images}
+    kept = {key: value for key, value in held.items() if key in listed}
+    if len(kept) == len(held):
+        return held
+    state = await get_state(library)
+    entry = dict(state.get(platform_id) or {})
+    entry["failed"] = kept
+    state[platform_id] = entry
+    await store.write(store.STATE_KEY, library, state)
+    return kept
+
+
 async def _note_failure(
     library: Library, platform_id: str, image_key: str, job, *, failed: bool,
 ) -> None:
@@ -695,7 +713,7 @@ async def _note_failure(
         source = getattr(job, "file_path", None)
         if not source:
             return
-        fingerprint = await _probe(path_fingerprint, source, default="")
+        fingerprint = await _probe(image_fingerprint, source, default="")
         if not fingerprint:
             return
     async with _sweep_lock:
@@ -833,9 +851,10 @@ def _inspect_candidate(
         # read to understand why.
         reason = "missing" if not os.path.exists(resolved) else "unconvertible"
         return {**miss, "skip": reason, "path": path}
-    # Its last conversion failed, and the file is the same one: queueing it
-    # again would fail the same way. A changed size or mtime releases it.
-    if failed and failed.get("fingerprint") == path_fingerprint(path):
+    # Its last conversion failed, and the Image is the same one: queueing it
+    # again would fail the same way. A changed size or mtime of any of its
+    # files (a sheet's tracks too) releases it.
+    if failed and failed.get("fingerprint") == image_fingerprint(path):
         return {**miss, "skip": "held_failed", "path": path}
     destination, decision = resolve_destination(
         tool, path, rule["mode"], rule["output_dir"], rule["duplicate_action"],
@@ -1060,14 +1079,14 @@ async def _sweep_locked(
         try:
             # Off the loop and bounded: the sweep holds `_sweep_lock` for the
             # whole call, and a Library on a mount that stops answering must
-            # fail this sweep, not hold the lock until a restart. An executor
-            # future, not `run_in_threadpool`: anyio waits for the thread when
-            # its caller is cancelled, so the timeout would only fire once the
-            # hung listing returned. This one is abandoned on the timeout.
+            # fail this sweep, not hold the lock until a restart. On a detached
+            # daemon thread (process-wide cap), never the shared pool: an
+            # abandoned listing would otherwise keep a pooled worker that
+            # conversions need. Not `run_in_threadpool` either: anyio waits for
+            # the thread when its caller is cancelled. Called through the
+            # module so it is not the candidate probes' `run_detached`.
             images = await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(
-                    None, library.images, platform_id,
-                ),
+                subprocess_runner.run_detached(library.images, platform_id),
                 _LISTING_SECONDS,
             )
         except LibraryUnreadable as exc:
@@ -1127,6 +1146,12 @@ async def _sweep_locked(
             ((await get_state(library)).get(platform_id) or {}).get("failed") or {}
             if holds_failures else {}
         )
+        if held and not dry_run:
+            # A hold for an Image the Library no longer lists (deleted, moved)
+            # can never be released; drop it. Not on a preview, which writes
+            # nothing.
+            held = await _prune_holds(library, platform_id, held, images)
+        held_count = 0
         batch: list[str] = []
         unresponsive = False
         image_by_path: dict[str, Image] = {}
@@ -1188,6 +1213,7 @@ async def _sweep_locked(
                 continue
             if decision["skip"] == "held_failed":
                 result["skipped_failed"] += 1
+                held_count += 1
                 continue
             if decision["resolved"] in active_paths:
                 result["skipped_active"] += 1
@@ -1219,6 +1245,10 @@ async def _sweep_locked(
             **library.summary_fields(),
             "considered": considered,
         }
+        if holds_failures:
+            # Shown per Platform, so a held Image does not vanish from the
+            # result: it is waiting for its files to change or for Forget.
+            summary["skipped_failed"] = held_count
         if rule["delete_on_verify"]:
             # What Preview shows: the check that will actually pass before
             # this batch deletes a Source, not the stored preference (a mode

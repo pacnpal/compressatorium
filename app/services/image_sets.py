@@ -21,6 +21,7 @@ from pathlib import Path
 
 from services.tools import registry
 from utils.delete_plan import sheet_track_paths
+from utils.path_utils import path_fingerprint
 
 # Lists of Images, never Images. Compared on the lowercased suffix.
 PLAYLIST_EXTENSIONS = frozenset({".m3u", ".m3u8"})
@@ -37,6 +38,13 @@ def image_members(path: str) -> list[str]:
     return [m for m in dict.fromkeys(members) if os.path.normpath(m) != own]
 
 
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def group_images(
     paths: Iterable[str], *, members: Callable[[str], list[str]] = image_members,
 ) -> list[str]:
@@ -45,9 +53,36 @@ def group_images(
     Order is kept. A track no sheet references (a loose ``.bin``) stays an
     Image; whether anything can convert it is the Rule's question. *members*
     is :func:`image_members` unless the caller keeps its own cache of it.
+
+    A sheet may name a track in another case (``FILE "game.bin"`` beside
+    ``Game.bin``). It owns that file only where the filesystem says the two
+    names are one file (``samefile``, on a case-insensitive share); on a
+    case-sensitive one they are different names and nothing is hidden.
     """
     files = [p for p in paths if not is_playlist(p)]
     owned: set[str] = set()
+    owned_folded: dict[str, str] = {}
     for path in files:
-        owned.update(os.path.normpath(m) for m in members(path))
-    return [p for p in files if os.path.normpath(p) not in owned]
+        for member in members(path):
+            key = os.path.normpath(member)
+            owned.add(key)
+            owned_folded.setdefault(key.casefold(), key)
+
+    def is_owned(path: str) -> bool:
+        key = os.path.normpath(path)
+        if key in owned:
+            return True
+        other = owned_folded.get(key.casefold())
+        return other is not None and _same_file(other, key)
+
+    return [p for p in files if not is_owned(p)]
+
+
+def image_fingerprint(path: str) -> str:
+    """Size and mtime of every file of the Image at *path* (the file and its members).
+
+    Changes when any of them changes: replacing a bad track changes it even
+    though the sheet did not. Blocking (reads the sheet, stats each file).
+    """
+    files = [path, *sorted(image_members(path))]
+    return "|".join(path_fingerprint(f) for f in files)

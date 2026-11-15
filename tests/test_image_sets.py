@@ -83,3 +83,41 @@ def test_split_parts_belong_to_their_first_part(tmp_path: Path) -> None:
     parts = [_write(tmp_path / "wiiu" / f"game_part{i}.wud") for i in (1, 2, 3)]
 
     assert group_images(parts) == [parts[0]]
+
+
+def _case_insensitive(folder: Path) -> bool:
+    probe = folder / "CaseProbe"
+    probe.write_bytes(b"")
+    try:
+        return (folder / "caseprobe").exists()
+    finally:
+        probe.unlink()
+
+
+def test_a_track_named_in_another_case_is_owned_where_the_filesystem_agrees(
+    tmp_path: Path,
+) -> None:
+    """``FILE "game.bin"`` next to ``Game.bin``: the same file on a case-insensitive share."""
+    folder = tmp_path / "psx"
+    sheet = _write(folder / "Game.cue", 'FILE "game.bin" BINARY\n  TRACK 01 MODE2/2352\n')
+    track = _write(folder / "Game.bin")
+
+    images = group_images([track, sheet])
+
+    if _case_insensitive(folder):
+        assert images == [sheet]
+    else:
+        # A different file name on a case-sensitive filesystem: the sheet does
+        # not own it, so nothing is hidden.
+        assert sorted(images) == sorted([track, sheet])
+
+
+def test_image_fingerprint_covers_the_tracks(tmp_path: Path) -> None:
+    from services.image_sets import image_fingerprint
+
+    files = _psx_tree(tmp_path / "psx")
+    before = image_fingerprint(files["multi_cue"])
+    with open(files["track2"], "ab") as fh:
+        fh.write(b"\0" * 64)
+
+    assert image_fingerprint(files["multi_cue"]) != before

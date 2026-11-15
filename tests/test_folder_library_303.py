@@ -823,3 +823,270 @@ async def test_the_engine_refuses_an_unsupported_policy_on_submission(tree: Path
         )
     assert exc.value.allowed == ("skip",)
     assert await rules_sweep.get_rules(library) == {}
+
+
+# ----------------------------------------------------------------------
+# fix round 2
+# ----------------------------------------------------------------------
+
+
+def _finishes(func, seconds: float = 2.0):
+    """Run *func* in a thread; return (finished in time, its result or exception)."""
+    import threading
+
+    box: dict = {}
+
+    def run():
+        try:
+            box["value"] = func()
+        except Exception as exc:  # noqa: BLE001 - handed back to the test
+            box["value"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    return not worker.is_alive(), box.get("value")
+
+
+@pytest.fixture(name="hung_walk")
+def _hung_walk(monkeypatch):
+    """Make every walk block until released, like a mount that stopped answering."""
+    import threading
+
+    from services.libraries.folder import FolderLibrary, Scan
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def hung(self):
+        started.set()
+        release.wait(30)
+        return Scan()
+
+    monkeypatch.setattr(FolderLibrary, "_walk", hung)
+    yield started
+    release.set()
+
+
+@pytest.mark.asyncio
+async def test_metadata_edits_and_lookups_do_not_wait_for_a_walk(
+    tree: Path, hung_walk,
+) -> None:
+    import threading
+
+    from services import libraries
+
+    lib = await _register(tree / "ps2")
+    library = libraries.get(lib["id"])
+    threading.Thread(target=lambda: library.scan(refresh=True), daemon=True).start()
+    assert hung_walk.wait(2)
+
+    done, renamed = _finishes(lambda: libraries.update(lib["id"], name="PS2 games"))
+    assert done, "update() waited for the walk"
+    assert renamed.name == "PS2 games"
+    done, _ = _finishes(lambda: libraries.update(lib["id"], schedule_enabled=True))
+    assert done
+    assert libraries.get(lib["id"]).schedule_enabled() is True
+    done, found = _finishes(lambda: libraries.get(lib["id"]))
+    assert done and found is not None
+    done, other = _finishes(lambda: libraries.register(str(tree / "gc")))
+    assert done, "register() waited for the walk"
+    assert other.root.endswith("gc")
+
+
+@pytest.mark.asyncio
+async def test_a_hung_romm_root_does_not_block_lookups(db: Path, monkeypatch) -> None:
+    import threading
+
+    from services import libraries
+
+    release = threading.Event()
+
+    def hung_root():
+        release.wait(30)
+
+    monkeypatch.setattr(libraries, "_romm_root", hung_root)
+    (db / "roms").mkdir()
+    blocked = threading.Thread(
+        target=lambda: _finishes(lambda: libraries.register(str(db / "roms")), 60),
+        daemon=True,
+    )
+    blocked.start()
+    try:
+        done, found = _finishes(libraries.all_libraries)
+        assert done, "a registration waiting on RomM's root blocked the catalogue"
+        assert [lib.id for lib in found] == ["romm"]
+    finally:
+        release.set()
+        blocked.join(5)
+
+
+@pytest.mark.asyncio
+async def test_a_second_walk_fails_fast_while_one_is_stuck(tree: Path, hung_walk) -> None:
+    import threading
+
+    from services import libraries
+    from services.rules import LibraryUnreadable
+
+    lib = await _register(tree)
+    library = libraries.get(lib["id"])
+    threading.Thread(target=lambda: library.scan(refresh=True), daemon=True).start()
+    assert hung_walk.wait(2)
+
+    done, outcome = _finishes(lambda: library.images("ps2"), 1.0)
+    assert done, "a second listing waited for the stuck walk"
+    assert isinstance(outcome, LibraryUnreadable)
+    assert "still running" in str(outcome)
+
+
+@pytest.mark.asyncio
+async def test_repeated_sweeps_on_a_hung_mount_strand_one_thread(
+    tree: Path, ready, queue, hung_walk, monkeypatch,
+) -> None:
+    import asyncio
+    import threading
+
+    from routes import libraries as routes
+    from services.rules import sweep as rules_sweep
+
+    lib = await _library_with_rules(tree)
+    monkeypatch.setattr(rules_sweep, "_LISTING_SECONDS", 0.2)
+    before = threading.active_count()
+
+    for _ in range(6):
+        result = await routes.run_library(lib["id"])
+        assert result["queued"] == 0
+        assert not rules_sweep._sweep_lock.locked()
+    await asyncio.sleep(0.2)
+
+    assert threading.active_count() - before <= 1
+    # The shared pool still serves conversions.
+    assert await asyncio.wait_for(asyncio.to_thread(lambda: 1), 2) == 1
+
+
+@pytest.mark.asyncio
+async def test_preview_reports_held_images(tree: Path, ready, queue, monkeypatch) -> None:
+    from models import JobStatus
+    from routes import libraries as routes
+    from services.rules import sweep as rules_sweep
+
+    jobs: dict[str, str] = {}
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch(paths, mode, **kwargs):
+        made = await real_batch(paths, mode, **kwargs)
+        jobs.update({Path(j.file_path).name: j.id for j in made})
+        return made
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch)
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"rules": {"ps2": _RULES["ps2"]}})
+    await routes.run_library(lib["id"])
+    ico = (tree / "ps2" / "Ico.iso").resolve()
+    await rules_sweep.note_job_finished(SimpleNamespace(
+        id=jobs["Ico.iso"], status=JobStatus.FAILED, file_path=str(ico),
+    ))
+    monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
+
+    preview = await routes.preview_library(lib["id"])
+    assert preview["skipped_failed"] == 1
+    assert preview["platforms"][0]["skipped_failed"] == 1
+
+    # Forget history releases it.
+    await routes.forget_library_converted(lib["id"], {"platform_ids": ["ps2"]})
+    assert (await routes.preview_library(lib["id"]))["queued"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_hold_clears_when_a_track_changes(psx: Path, ready, queue, monkeypatch) -> None:
+    from models import JobStatus
+    from routes import libraries as routes
+    from services.rules import sweep as rules_sweep
+
+    lib = await _register(psx)
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "psx": {"mode": "createcd", "enabled": True},
+    }})
+    jobs: dict[str, str] = {}
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch(paths, mode, **kwargs):
+        made = await real_batch(paths, mode, **kwargs)
+        jobs.update({Path(j.file_path).name: j.id for j in made})
+        return made
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch)
+    await routes.run_library(lib["id"])
+    cue = (psx / "psx" / "Multi" / "Multi.cue").resolve()
+    await rules_sweep.note_job_finished(SimpleNamespace(
+        id=jobs["Multi.cue"], status=JobStatus.FAILED, file_path=str(cue),
+    ))
+    monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
+    queue.clear()
+    held = await routes.run_library(lib["id"])
+    assert "Multi.cue" not in [Path(p).name for p in queue], held
+
+    # A bad track is replaced; the sheet itself is untouched.
+    with (psx / "psx" / "Multi" / "Multi (Track 2).bin").open("ab") as fh:
+        fh.write(b"\0" * 2048)
+    queue.clear()
+    await routes.run_library(lib["id"])
+    assert "Multi.cue" in [Path(p).name for p in queue]
+
+
+@pytest.mark.asyncio
+async def test_holds_are_pruned_when_the_image_goes(tree: Path, ready, queue, monkeypatch) -> None:
+    from models import JobStatus
+    from routes import libraries as routes
+    from services.rules import sweep as rules_sweep
+
+    jobs: dict[str, str] = {}
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch(paths, mode, **kwargs):
+        made = await real_batch(paths, mode, **kwargs)
+        jobs.update({Path(j.file_path).name: j.id for j in made})
+        return made
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch)
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"rules": {"ps2": _RULES["ps2"]}})
+    await routes.run_library(lib["id"])
+    ico = tree / "ps2" / "Ico.iso"
+    await rules_sweep.note_job_finished(SimpleNamespace(
+        id=jobs["Ico.iso"], status=JobStatus.FAILED, file_path=str(ico.resolve()),
+    ))
+    state = (await routes.get_library_rules(lib["id"]))["state"]
+    assert list(state["ps2"]["failed"]) == ["ps2/Ico.iso"]
+
+    ico.unlink()
+    await routes.get_library_rules(lib["id"])  # nothing pruned by a read
+    from services import libraries
+
+    libraries.get(lib["id"]).scan(refresh=True)
+    await routes.run_library(lib["id"])
+    state = (await routes.get_library_rules(lib["id"]))["state"]
+    assert state["ps2"].get("failed", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_configured_turns_false_once_the_root_leaves_the_volumes(
+    tree: Path, ready, queue, tmp_path: Path, monkeypatch,
+) -> None:
+    from routes import libraries as routes
+    from services import libraries
+
+    lib = await _library_with_rules(tree)
+    library = libraries.get(lib["id"])
+    assert library.configured() is True
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setattr(app_settings, "chd_volumes", str(elsewhere))
+    with pytest.raises(HTTPException):
+        await routes.library_platforms(lib["id"])
+    assert library.configured() is False
+    result = await routes.run_library(lib["id"])
+    assert result["stopped_reason"] == "not_configured"

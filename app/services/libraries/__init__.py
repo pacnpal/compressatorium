@@ -43,7 +43,13 @@ __all__ = [
 
 # Folder Libraries by row id. None until first read.
 _cache: dict[int, FolderLibrary] | None = None
+# Guards `_cache` and nothing else. The event loop takes it (every `get()`),
+# so it is never held across disk or database access, nor across a lock that
+# is (a Library's walk lock).
 _lock = threading.Lock()
+# Serialises the overlap check and insert of `register()`. Held across a
+# resolve and a database write, so only ever taken in a worker thread.
+_register_lock = threading.Lock()
 
 MAX_PER_SWEEP_LIMIT = 1000
 
@@ -80,12 +86,17 @@ def _loaded() -> dict[int, FolderLibrary]:
     """The cached folder Libraries, read from the database on first use."""
     global _cache
     with _lock:
+        if _cache is not None:
+            return _cache
+    # Read outside the lock; two first reads race harmlessly, the first wins.
+    with _session() as session:
+        rows = session.query(_db.FolderLibraryRecord).order_by(
+            _db.FolderLibraryRecord.id,
+        ).all()
+        loaded = {row.id: _from_row(row) for row in rows}
+    with _lock:
         if _cache is None:
-            with _session() as session:
-                rows = session.query(_db.FolderLibraryRecord).order_by(
-                    _db.FolderLibraryRecord.id,
-                ).all()
-                _cache = {row.id: _from_row(row) for row in rows}
+            _cache = loaded
         return _cache
 
 
@@ -127,8 +138,22 @@ def _overlaps(a: Path, b: Path) -> bool:
     return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
+def _romm_root() -> Path | None:
+    """RomM's library folder, resolved. Touches the disk (RomM's mount)."""
+    from services.romm.library import romm_library
+
+    if not romm_library.root:
+        return None
+    try:
+        return Path(romm_library.root).resolve()
+    except (OSError, RuntimeError):
+        return Path(romm_library.root)
+
+
 def register(path: str, name: str | None = None) -> FolderLibrary:
-    """Register the folder at *path*. Blocking (resolves and stats)."""
+    """Register the folder at *path*. Blocking (resolves and stats); never on the event loop."""
+    from services.romm.library import romm_library
+
     try:
         root = ensure_path_within_volumes(path, treat_archives=False)
     except ValueError:
@@ -138,9 +163,14 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
     label = (name or "").strip() or root.name or str(root)
     _loaded()
     # Check and insert as one step, so two registrations of nested folders
-    # cannot both pass the check.
-    with _lock:
-        for other_name, other_root in _other_roots_locked():
+    # cannot both pass the check. `_register_lock`, not `_lock`: this resolves
+    # RomM's root and writes the database, and `_lock` is taken by the loop.
+    with _register_lock:
+        others = [(lib.name, Path(lib.root)) for lib in folder_libraries()]
+        romm_root = _romm_root()
+        if romm_root is not None:
+            others.append((romm_library.name, romm_root))
+        for other_name, other_root in others:
             if root == other_root:
                 raise LibraryPathError(409, f"Already the Library {other_name!r}")
             if _overlaps(root, other_root):
@@ -160,53 +190,44 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
                 session.rollback()
                 raise LibraryPathError(409, "Already a Library") from None
             library = _from_row(row)
-        if _cache is not None:
-            _cache[library.record_id] = library
+        with _lock:
+            if _cache is not None:
+                _cache[library.record_id] = library
     return library
-
-
-def _other_roots_locked() -> list[tuple[str, Path]]:
-    """``(name, resolved root)`` of every Library a new folder must not overlap.
-
-    For a caller holding ``_lock``: reads the cache directly.
-    """
-    from services.romm.library import romm_library
-
-    roots = [(lib.name, Path(lib.root)) for lib in (_cache or {}).values()]
-    if romm_library.root:
-        try:
-            roots.append((romm_library.name, Path(romm_library.root).resolve()))
-        except (OSError, RuntimeError):
-            roots.append((romm_library.name, Path(romm_library.root)))
-    return roots
 
 
 def update(
     library_id: str, *, name: str | None = None,
     schedule_enabled: bool | None = None, max_per_sweep: int | None = None,
 ) -> FolderLibrary | None:
-    """Change a folder Library's name or settings. None when there is no such Library."""
+    """Change a folder Library's name or settings. None when there is no such Library.
+
+    Writes the row, then changes the cached Library in place: a walk of it may
+    be running (or stuck on a dead mount), and none of these settings needs it.
+    """
     record_id = _record_id(library_id)
     if record_id is None:
         return None
-    _loaded()
-    with _lock, _session() as session:
+    library = _loaded().get(record_id)
+    if library is None:
+        return None
+    if max_per_sweep is not None:
+        max_per_sweep = max(1, min(int(max_per_sweep), MAX_PER_SWEEP_LIMIT))
+    label = name.strip() if name is not None and name.strip() else None
+    with _session() as session:
         row = session.get(_db.FolderLibraryRecord, record_id)
         if row is None:
             return None
-        if name is not None and name.strip():
-            row.name = name.strip()
+        if label is not None:
+            row.name = label
         if schedule_enabled is not None:
             row.schedule_enabled = bool(schedule_enabled)
         if max_per_sweep is not None:
-            row.max_per_sweep = max(1, min(int(max_per_sweep), MAX_PER_SWEEP_LIMIT))
+            row.max_per_sweep = max_per_sweep
         session.commit()
-        library = _from_row(row)
-        if _cache is not None:
-            previous = _cache.get(record_id)
-            if previous is not None:
-                library.adopt_cache(previous)
-            _cache[record_id] = library
+    library.apply_settings(
+        name=label, schedule_enabled=schedule_enabled, max_per_sweep=max_per_sweep,
+    )
     return library
 
 
@@ -222,11 +243,12 @@ async def remove(library_id: str) -> bool:
     await rules_sweep.forget_library(library)
 
     def _delete() -> None:
-        with _lock, _session() as session:
+        with _session() as session:
             row = session.get(_db.FolderLibraryRecord, record_id)
             if row is not None:
                 session.delete(row)
                 session.commit()
+        with _lock:
             if _cache is not None:
                 _cache.pop(record_id, None)
 

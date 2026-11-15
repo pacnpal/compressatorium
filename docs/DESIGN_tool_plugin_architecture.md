@@ -2220,10 +2220,14 @@ what a Library supports. Nothing in `rules/` asks what kind of Library it has.
   `normalize_rule`. `options.duplicate_actions` carries the same set, so the
   editor never offers a policy the Library cannot honour.
 - `FAILED_HOLD`: when a job from this Library's sweep fails,
-  `note_job_finished` stores the Source's fingerprint (size and mtime) under
-  `rules.state[...]["failed"][image key]`; the candidate probe skips the Image
-  (`skipped_failed`) while the file still has that fingerprint, and a later
-  success drops the hold. **Forget history** clears holds too. RomM does not
+  `note_job_finished` stores the Image's fingerprint
+  (`image_sets.image_fingerprint`: size and mtime of the file and every member,
+  so a replaced track counts) under `rules.state[...]["failed"][image key]`;
+  the candidate probe skips the Image (`skipped_failed`, in the result and in
+  each Platform's summary) while the fingerprint is unchanged, and a later
+  success drops the hold. A real run drops holds for Images the Library no
+  longer lists. **Forget history** clears holds too; the editor shows the held
+  count with **Retry failed** whatever the policy. RomM does not
   declare it, so a failed ROM is re-queued every sweep, as it always was;
   turning it on for RomM is adding the capability.
 
@@ -2233,11 +2237,13 @@ passes neither, so a Library that cannot say (nothing matched yet, or its
 match cache could not be read) never has an `only_unmatched` Rule convert
 everything. RomM always answers True or False, so its filters are unchanged.
 
-**Bounded listing.** The sweep calls `library.images` in the threadpool under
-`asyncio.wait_for(..., _LISTING_SECONDS)` (600 s). A timeout reports
-`library_unresponsive` for that Platform and stops the sweep, so a hung mount
-fails the sweep and releases `_sweep_lock`. `configured()` is called on the
-event loop and must not touch the disk.
+**Bounded listing.** The sweep calls `library.images` through
+`subprocess_runner.run_detached` (a daemon thread under the process-wide probe
+cap, never the shared pool that conversions' `asyncio.to_thread` calls need)
+under `asyncio.wait_for(..., _LISTING_SECONDS)` (600 s, RomM included). A
+timeout reports `library_unresponsive` for that Platform and stops the sweep,
+so a hung mount fails the sweep and releases `_sweep_lock`. `configured()` is
+called on the event loop and must not touch the disk.
 
 **Editor helpers** (`rules/editor.py`): `editor_payload(library)` (Rules,
 state, defaults, options), `save_rules` (strict), `forget_converted`,
@@ -2334,7 +2340,9 @@ and containment rule), a tool's `source_companions` are owned by their primary
 (jwud's split parts), and playlists (`.m3u`) are dropped. An owned file is never
 an Image; a `.bin` no sheet references stays one. `image_members(path)` is the
 per-file question, and `group_images` takes a `members` callable so a caller
-can cache it.
+can cache it. A track named in another case owns the listed file only when
+`os.path.samefile` agrees (a case-insensitive share); on a case-sensitive
+filesystem nothing is hidden.
 
 **The folder Library** (`services/libraries/folder.py`). One walk of the root
 (`os.walk`, symlinks not followed, symlinked files skipped) collects every
@@ -2353,8 +2361,13 @@ A file the process cannot read, or a folder it cannot list, is counted as
 (`platform_detect.known_slug` refuses one no Platform has) and its name is
 `platform_name`; an Image key is the posix path relative to the root,
 `added_at` is the mtime. `summary()` gives the Rules view its counts.
-`configured()` answers from memory (the root was checked at registration); a
-missing root is found by the walk and reported as `unreadable`. The Library
+`configured()` answers from memory: whether the last walk found the root inside
+the configured Volumes (true until a walk says otherwise). A missing root is
+found by the walk and reported as `unreadable`. One walk at a time: `scan()`
+takes the Library's walk lock without blocking and raises `LibraryUnreadable`
+("previous listing ... still running") when a walk is already running, so a
+dead mount strands one thread per Library and every later sweep releases the
+sweep lock at once. The Library
 declares `RECOGNIZED_FILTER` and `FAILED_HOLD`, not `CONVERTED_HISTORY`, so its
 Rules are skip-only. `_recognized` returns None for every path when the match
 cache cannot be read.
@@ -2366,8 +2379,13 @@ replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
 browser's check), requires a folder, and refuses the same root or one that
 contains or sits inside another Library's root, a registered folder or RomM's
 library folder (409), since two Libraries would give one Image two Rules. The
-check and the insert run under one lock, and a unique-root `IntegrityError` is
-a 409 too. `remove` calls `sweep.forget_library`, which under the
+check and the insert run under `_register_lock` (only ever taken in a worker
+thread, since it is held across RomM's root resolve and a database write), and
+a unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
+in-memory cache only: the event loop takes it on every `get()`, so it is never
+held across disk or database access or a Library's walk lock. `update()` writes
+the row and changes the cached Library in place (`apply_settings`), never
+waiting for a walk. `remove` calls `sweep.forget_library`, which under the
 sweep lock drops the Library's Rules and state rows and its entries in the
 job-owner index, then deletes the row. No file is touched.
 

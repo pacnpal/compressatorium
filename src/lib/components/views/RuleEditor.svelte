@@ -329,6 +329,19 @@
     }
   }
 
+  /**
+   * Release the Images held after a failed conversion, so the next run tries
+   * them again. The same call as Forget history, which clears holds too.
+   */
+  async function retryFailed(platformId) {
+    try {
+      await source.forgetConverted([String(platformId)]);
+      toast.success('The next run tries those Images again');
+    } catch (e) {
+      toast.error(e?.message ?? 'Failed to release the held Images');
+    }
+  }
+
   /** Why a platform produced nothing, in the operator's terms.
    *
    * These reasons exist precisely because the sweep refuses to queue work it
@@ -423,6 +436,9 @@
         {#if r.skipped_missing}· {r.skipped_missing} listed but gone from disk{/if}
         {#if r.skipped_unconvertible}
           · {r.skipped_unconvertible} the target format cannot take
+        {/if}
+        {#if r.skipped_failed}
+          · {r.skipped_failed} held after a failed conversion
         {/if}
         {#if r.stopped_reason === 'limit'}· stopped at the per-run limit{/if}
         {#if r.stopped_reason === 'queue_full'}· stopped, queue full{/if}
@@ -851,6 +867,22 @@
                 {/if}
 
                 <p class="last-run muted">{lastRunLabel(platform.id)}</p>
+
+                <!-- Whatever the policy: a held Image is skipped until one of
+                     its files changes, and this is how to retry it sooner. -->
+                {#if source.heldCountFor(platform.id) > 0}
+                  {@const held = source.heldCountFor(platform.id)}
+                  <p class="last-run muted forget">
+                    <span>
+                      {source.countLabel(held)} held after a failed conversion. They are
+                      tried again when one of their files changes.
+                    </span>
+                    <Button
+                      variant="ghost"
+                      onclick={() => retryFailed(platform.id)}
+                    >Retry failed</Button>
+                  </p>
+                {/if}
 
                 {#if rule.duplicate_action !== 'skip'}
                   {@const remembered = source.convertedCountFor(platform.id)}

@@ -652,9 +652,10 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
   CHD nightly" is a ps2 Rule with a window of `01:00`–`05:00`. A folder Rule
   always **skips** an Image whose output already exists, so a sweep that runs
   twice queues nothing new. Overwrite and write-alongside are not offered for
-  folder Libraries. An Image whose conversion failed is not queued again until
-  its file changes (size or modified time), or until you press **Forget
-  history**.
+  folder Libraries. An Image whose conversion failed is held: it is not
+  queued again until one of its files changes (size or modified time; a
+  sheet's tracks count), and the Rule shows how many it holds with a **Retry
+  failed** button that releases them. Preview and Run count held Images too.
 - **Only Recognized / not Recognized** filters read the DAT or Hasheous match
   already cached for each file. Listing a Library never hashes anything. A file
   nobody has matched yet is neither: both filters skip it, so run a DAT match

@@ -164,6 +164,12 @@ export class RulesSource {
     return Array.isArray(entry.converted_ids) ? entry.converted_ids.length : 0;
   }
 
+  /** How many Images this platform holds after a failed conversion. */
+  heldCountFor(platformId) {
+    const failed = this.ruleState[String(platformId)]?.failed;
+    return failed && typeof failed === 'object' ? Object.keys(failed).length : 0;
+  }
+
   /**
    * Forget the "already converted" history (and failed holds) for one
    * platform, or all of them.

@@ -68,6 +68,7 @@ const api = {
   runLibrary: __defer('runLibrary'),
   removeLibrary: __defer('removeLibrary'),
   updateLibrary: __defer('updateLibrary'),
+  forgetLibraryConverted: __defer('forgetLibraryConverted'),
 };
 const romm = { isRomm: true };
 const ui = { navigated: null, navigate(v) { this.navigated = v; } };
@@ -182,6 +183,40 @@ const source = new FolderRulesSource({_FOLDER});
 process.stdout.write(JSON.stringify([source.countLabel(1), source.countLabel(2)]));
 """)
     assert data == ["1 Image", "2 Images"]
+
+
+def test_held_images_are_counted_and_released(tmp_path):
+    """Images held after a failed conversion can be seen and retried (round 2, N3)."""
+    data = _run(tmp_path, f"""
+const source = new FolderRulesSource({_FOLDER});
+source.ruleState = {{ ps2: {{ failed: {{ 'ps2/Ico.iso': {{ fingerprint: 'x' }} }} }} }};
+const before = source.heldCountFor('ps2');
+const none = source.heldCountFor('ngc');
+const forgetting = source.forgetConverted(['ps2']);
+await tick();
+__calls[0].resolve({{ cleared: 1, state: {{ ps2: {{}} }} }});
+await forgetting;
+process.stdout.write(JSON.stringify({{
+  before, none, after: source.heldCountFor('ps2'), call: __log[0],
+}}));
+""")
+    assert data["before"] == 1, data
+    assert data["none"] == 0, data
+    assert data["after"] == 0, data
+    assert data["call"] == ["forgetLibraryConverted", "folder:3", ["ps2"]], data
+
+
+def test_the_editor_shows_held_images_whatever_the_policy():
+    src = _EDITOR.read_text(encoding="utf-8")
+    assert "r.skipped_failed" in src, "the sweep summary drops held Images"
+    block = re.search(
+        r"\{#if source\.heldCountFor\(platform\.id\) > 0\}(.*?)\{/if\}", src, re.DOTALL,
+    )
+    assert block, "no held-Images control in the editor"
+    assert "retryFailed(platform.id)" in block.group(1)
+    # Not nested under the overwrite/rename-only history block.
+    before = src[: block.start()]
+    assert before.rfind("{#if rule.duplicate_action !== 'skip'}") < before.rfind("{/if}")
 
 
 def test_both_libraries_share_one_rules_source():
