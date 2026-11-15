@@ -37,6 +37,7 @@ from services.chdman import ConversionCancelled, chdman_service
 from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import lock_manager
+from services import referrers
 from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import ReadCancelled, run_detached
 from services.tools import ModeKind, registry
@@ -2863,6 +2864,69 @@ class JobManager:
         finally:
             self._semaphore.release()
 
+    async def _check_delete_paths(
+        self, job_id: str, paths: list[str], fingerprints: dict, output_real: str,
+    ) -> None:
+        """Raise RuntimeError unless every path is still safe to delete.
+
+        Lock, Volume, other-job, symlink, type, not-the-output, and the
+        snapshot's size / mtime / inode / device. Run before the Referrer hook
+        and again after it (#295), since the hook awaits a worker thread.
+
+        A path in this job's own delete hold (``_delete_holds``, #306) skips
+        the lock probe: its exclusive lock is this job's, and while it is held
+        no other job or process can lock that path. Any other locked path is
+        refused.
+        """
+        own_holds = set(self._delete_holds.get(job_id, ()))
+        for path in paths:
+            if path not in own_holds:
+                _, is_locked = lock_manager.check_file_status(path)
+                if is_locked:
+                    raise RuntimeError("Delete path is locked by an active conversion")
+            within_volumes = await run_in_threadpool(
+                is_within_configured_volumes, path, treat_archives=False,
+            )
+            if not within_volumes:
+                raise RuntimeError(
+                    "Delete path outside configured volumes; refusing to delete"
+                )
+            if self._is_path_in_use_by_other_job(job_id, path):
+                raise RuntimeError("Delete path is still in use by another job")
+            if os.path.islink(path):
+                raise RuntimeError("Delete path is a symlink; refusing to delete")
+            try:
+                st = os.stat(path, follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "Delete path no longer exists; refusing to delete"
+                ) from exc
+            if not os.path.isfile(path):
+                raise RuntimeError("Delete path is not a file; refusing to delete")
+            if os.path.realpath(path) == output_real:
+                raise RuntimeError("Delete path matches output path; refusing to delete")
+            fp = fingerprints.get(path)
+            if not fp:
+                raise RuntimeError("Delete fingerprint missing; refusing to delete")
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+            if (
+                int(fp.get("size", -1)) != int(st.st_size)
+                or int(fp.get("mtime_ns", -1)) != mtime_ns
+            ):
+                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+            snapshot_inode = int(fp.get("inode", 0) or 0)
+            snapshot_device = int(fp.get("device", 0) or 0)
+            current_inode = int(getattr(st, "st_ino", 0) or 0)
+            current_device = int(getattr(st, "st_dev", 0) or 0)
+            if (
+                snapshot_inode > 0 and current_inode > 0
+                and snapshot_inode != current_inode
+            ) or (
+                snapshot_device > 0 and current_device > 0
+                and snapshot_device != current_device
+            ):
+                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,
     ) -> tuple[str, str | None]:
@@ -3720,93 +3784,74 @@ class JobManager:
                         # the unlinks finish (``_hold_delete_paths_waiting``,
                         # above): no job can start reading one between these
                         # checks and its unlink (#306).
-                        for path in expected_paths:
-                            within_volumes = await run_in_threadpool(
-                                is_within_configured_volumes,
-                                path,
-                                treat_archives=False,
+                        await self._check_delete_paths(
+                            job_id, expected_paths, fingerprints, output_real,
+                        )
+
+                        # Referrers (.m3u, ...) move to the output before the
+                        # Source goes; if any can't, the Source stays (#295).
+                        referrer_outcome = await referrers.update_before_source_removal(
+                            source_for_delete,
+                            {path: job.output_path for path in delete_order},
+                            cancel_event=cancel_event,
+                        )
+                        job.referrers_updated = referrer_outcome.records
+                        # The hook awaited a worker thread: re-ask cancel and
+                        # every per-path identity check before removing.
+                        kept_reason = None
+                        if cancel_event.is_set():
+                            kept_reason = (
+                                f"Output is {check_label}. Delete skipped (cancelled)."
                             )
-                            if not within_volumes:
-                                raise RuntimeError(
-                                    "Delete path outside configured volumes; refusing to delete"
-                                )
-                            if self._is_path_in_use_by_other_job(job_id, path):
-                                raise RuntimeError(
-                                    "Delete path is still in use by another job"
-                                )
-                            if os.path.islink(path):
-                                raise RuntimeError(
-                                    "Delete path is a symlink; refusing to delete"
-                                )
+                        elif not referrer_outcome.ok:
+                            kept_reason = referrer_outcome.kept_message
+                        else:
                             try:
-                                st = os.stat(path, follow_symlinks=False)
-                            except FileNotFoundError as exc:
-                                raise RuntimeError(
-                                    "Delete path no longer exists; refusing to delete"
-                                ) from exc
-                            if not os.path.isfile(path):
-                                raise RuntimeError(
-                                    "Delete path is not a file; refusing to delete"
+                                await self._check_delete_paths(
+                                    job_id, expected_paths, fingerprints, output_real,
                                 )
-                            if os.path.realpath(path) == output_real:
-                                raise RuntimeError(
-                                    "Delete path matches output path; refusing to delete"
+                            except RuntimeError as exc:
+                                kept_reason = f"converted, source kept: {exc}"
+                            # That check awaited too; a Cancel there still wins.
+                            if kept_reason is None and cancel_event.is_set():
+                                kept_reason = (
+                                    f"Output is {check_label}. Delete skipped (cancelled)."
                                 )
-                            fp = fingerprints.get(path)
-                            if not fp:
-                                raise RuntimeError(
-                                    "Delete fingerprint missing; refusing to delete"
-                                )
-                            mtime_ns = int(
-                                getattr(
-                                    st,
-                                    "st_mtime_ns",
-                                    int(st.st_mtime * 1_000_000_000),
-                                )
-                            )
-                            if (
-                                int(fp.get("size", -1)) != int(st.st_size)
-                                or int(fp.get("mtime_ns", -1)) != mtime_ns
-                            ):
-                                raise RuntimeError(
-                                    "Delete path fingerprint mismatch; refusing to delete"
-                                )
-                            snapshot_inode = int(fp.get("inode", 0) or 0)
-                            snapshot_device = int(fp.get("device", 0) or 0)
-                            current_inode = int(getattr(st, "st_ino", 0) or 0)
-                            current_device = int(getattr(st, "st_dev", 0) or 0)
-                            if (
-                                (
-                                    snapshot_inode > 0
-                                    and current_inode > 0
-                                    and snapshot_inode != current_inode
-                                )
-                                or (
-                                    snapshot_device > 0
-                                    and current_device > 0
-                                    and snapshot_device != current_device
-                                )
-                            ):
-                                raise RuntimeError(
-                                    "Delete path fingerprint mismatch; refusing to delete"
-                                )
-
-                        if cancel_event.is_set() or job_id in self._cancelled:
-                            # One last look before anything is unlinked.
+                        if kept_reason:
+                            # The Source stays and the job completes: let go
+                            # of the delete holds, and say why where every
+                            # reader of a finished job looks (the CLI's
+                            # report, the job row): job.warning.
                             self._release_delete_holds(job_id)
-                            raise ConversionCancelled("Conversion cancelled")
-                        for path in delete_order:
-                            await run_in_threadpool(os.remove, path)
-                            job.deleted_paths.append(path)
-                        self._release_delete_holds(job_id)
+                            job.message = kept_reason
+                            job.warning = kept_reason
+                            await self._notify_subscribers(
+                                job_id,
+                                {
+                                    "type": "progress",
+                                    "job_id": job_id,
+                                    "progress": job.progress,
+                                    "message": job.message,
+                                },
+                            )
+                        else:
+                            if cancel_event.is_set() or job_id in self._cancelled:
+                                # One last look before anything is unlinked
+                                # (#306): a cancel here ends CANCELLED.
+                                self._release_delete_holds(job_id)
+                                raise ConversionCancelled("Conversion cancelled")
+                            for path in delete_order:
+                                await run_in_threadpool(os.remove, path)
+                                job.deleted_paths.append(path)
+                            self._release_delete_holds(job_id)
 
-                        source_deleted = True
+                            source_deleted = True
 
-                        ext = os.path.splitext(job.file_path)[1].lower()
-                        if ext in registry.verify_extensions():
-                            await verification_store.clear(job.file_path)
-                        if ext == ".chd":
-                            await chd_metadata_store.clear(job.file_path)
+                            ext = os.path.splitext(job.file_path)[1].lower()
+                            if ext in registry.verify_extensions():
+                                await verification_store.clear(job.file_path)
+                            if ext == ".chd":
+                                await chd_metadata_store.clear(job.file_path)
 
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)

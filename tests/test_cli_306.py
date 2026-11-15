@@ -2569,3 +2569,32 @@ def test_a_folder_verify_rechecks_a_ps3_iso_that_failed_last_time(
         (str(iso), "makeps3iso", "intact"),
     ], lines
     assert code == 0
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file permissions",
+)
+def test_a_playlist_that_blocks_the_delete_is_reported(volume, dolphin, capsys):
+    """#295's kept-Source endings set ``job.warning``, so the CLI's line says
+    why the Source stayed."""
+    import stat
+
+    payload = b"the disc" * 512
+    iso = _iso(volume, payload=payload)
+    dolphin["digest"] = hashlib.sha1(payload).hexdigest()
+    playlist = iso.parent / "Game.m3u"
+    playlist.write_bytes(b"Game.iso\n")
+    playlist.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+    try:
+        code, lines = _cli(
+            capsys, "convert", str(volume), "--to", "rvz", "--delete-source", "--json",
+        )
+    finally:
+        playlist.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    assert code == 0, lines
+    assert lines[0]["status"] == "completed"
+    assert lines[0]["source_deleted"] is False
+    assert lines[0]["reason"] == "converted, source kept: couldn't update Game.m3u (is read-only)"
+    assert iso.exists()
+    assert playlist.read_bytes() == b"Game.iso\n"

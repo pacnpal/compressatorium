@@ -475,6 +475,21 @@ checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and CSO;
 verification status persists between sessions, and a long verify can be given a
 timeout so a stalled one doesn't block the queue.
 
+**Multi-disc playlists follow the conversion.** Before a source is deleted, any
+`.m3u` that names it is rewritten to the new file, so disc swapping keeps
+working. The app looks in the disc's own folder and every folder above it up to
+the volume root, so a `psx/Game.m3u` pointing into a hidden `.discs/` folder is
+covered. Only the entries for replaced files change (a RetroArch `path|label`
+entry keeps its label); other lines, line endings and encoding are left as
+they were, and the first rewrite keeps a copy of the original as
+`<name>.m3u.bak`. The delete confirmation lists each playlist edit. If a
+playlist can't be written (read-only, say), or it has a line that names the
+source in a form the app can't follow (an absolute path as the emulator sees
+it, say), the source is kept, the output stays beside it,
+and the job ends as `converted, source kept: couldn't update <playlist>
+(<reason>)`. The Ledger row records each playlist updated, or the one that
+kept the source and why.
+
 ### File info
 
 Click a file to open the inspector — it shows the format/version, compression,
@@ -814,6 +829,12 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 | Light | Dark |
 |-------|------|
 | ![Batch selection, light](docs/screenshots/workspace-batch-light.png) | ![Batch selection, dark](docs/screenshots/workspace-batch-dark.png) |
+
+**Delete-on-verify confirmation.** Before anything is queued, the app lists every file it will delete after the output verifies, and each `.m3u` playlist entry it will point at the new file first.
+
+| Light | Dark |
+|-------|------|
+| ![Delete confirmation, light](docs/screenshots/delete-plan-light.png) | ![Delete confirmation, dark](docs/screenshots/delete-plan-dark.png) |
 
 **Auto.** Tick **Auto** and select a mix of files: each Image goes to its Platform's default format with your saved compression. The Platform comes from the Image's header (GameCube/Wii magic, PS1/PS2 `SYSTEM.CNF`, PSP `PARAM.SFO`, Dreamcast `IP.BIN`, Saturn, Sega CD, Xbox), or from its folder name (`ps2`, `psx`, `gc`, `dreamcast`, … as RomM, ES-DE and Batocera name them) when there is no readable header. A header that disagrees with its folder, or an Image nothing identifies, is skipped and listed in the plan you confirm before anything is queued.
 
@@ -1783,7 +1804,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | POST | `/api/jobs` | Create a single conversion job |
 | POST | `/api/jobs/batch` | Create multiple conversion jobs |
 | POST | `/api/jobs/check-duplicates` | Check for existing output files |
-| POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list |
+| POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list, with each planned `.m3u` edit (`referrer_changes`) |
 | GET | `/api/jobs` | List all jobs |
 | GET | `/api/jobs/{id}` | Get a specific job |
 | DELETE | `/api/jobs/{id}` | Cancel a job |

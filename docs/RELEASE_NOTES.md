@@ -18,6 +18,16 @@
   `CHDMAN_MODE=createdvd` it no longer hands top-level `.cue`/`.gdi` files to
   chdman (that never produced a usable CHD), and one failed file no longer
   stops the rest of the run.
+- **`.m3u` playlists follow a converted disc** (#295). With delete-on-verify,
+  an `.m3u` that names the Source, in its folder or any folder above it up to
+  the volume root, is rewritten to the output before the Source is deleted.
+  Only replaced entries change, the write is atomic, and the original is kept
+  once as `<name>.m3u.bak`. The delete confirmation lists each playlist edit.
+  If a playlist can't be updated, or names the Source in a form the app can't
+  follow, the Source is kept and the job ends as "converted, source kept:
+  couldn't update <file> (<reason>)", shown on the finished job. Ledger rows
+  list the playlists updated, or the one that kept the Source and why. The
+  `compressatorium convert --delete-source` line prints the same reason.
 - **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
   panel, select a mix of files, and each Image goes to its Platform's default
   format with your saved compression. The Platform comes from the Image's own
