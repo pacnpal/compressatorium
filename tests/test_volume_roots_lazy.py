@@ -198,3 +198,64 @@ def test_a_symlink_from_one_volume_into_another_is_accepted(tmp_path, monkeypatc
     assert path_utils.is_within_configured_volumes(str(a / "link" / "game.iso"))
     assert path_utils.containing_volume_root(str(a / "link" / "game.iso")) == b.resolve()
     assert not path_utils.is_within_configured_volumes(str(a / "escape" / "secret.iso"))
+
+
+# --- Cached spellings select; a fresh probe grants (Codex 4577171595) ---------
+# A Volume configured as a symlink can be repointed. The cache would still
+# cover the old target until it refreshes, and ensure_path_within_volumes
+# guards delete_file. So a cached spelling only selects the root; access needs
+# a fresh, bounded resolution of exactly that root, and a probe that times
+# out refuses.
+
+def test_a_repointed_volume_stops_covering_its_old_target_at_once(tmp_path, monkeypatch):
+    from config import settings
+
+    old, new = tmp_path / "old", tmp_path / "new"
+    for target in (old, new):
+        target.mkdir()
+        (target / "game.iso").write_bytes(b"x")
+    volume = tmp_path / "volume"
+    volume.symlink_to(old, target_is_directory=True)
+    monkeypatch.setattr(settings, "chd_volumes", str(volume))
+    path_utils.refresh_volume_roots()
+    assert path_utils.is_within_configured_volumes(str(old / "game.iso"))
+
+    # Repoint the Volume; the cache still says "old" until it refreshes.
+    volume.unlink()
+    volume.symlink_to(new, target_is_directory=True)
+    assert path_utils._resolved_root_spellings()[str(volume)] == str(old)
+
+    assert not path_utils.is_within_configured_volumes(str(old / "game.iso"))
+    with pytest.raises(ValueError):
+        path_utils.ensure_path_within_volumes(str(old / "game.iso"))
+    assert not path_utils.is_within_configured_volumes(str(old))   # the root itself
+    assert path_utils.is_within_configured_volumes(str(volume / "game.iso"))
+
+
+def test_a_fresh_probe_that_times_out_refuses(tmp_path, monkeypatch):
+    import threading
+
+    from config import settings
+
+    root = tmp_path / "volume"
+    root.mkdir()
+    (root / "game.iso").write_bytes(b"x")
+    monkeypatch.setattr(settings, "chd_volumes", str(root))
+    monkeypatch.setattr(path_utils, "ROOT_PROBE_SECONDS", 0.3)
+    wake = threading.Event()
+    real_realpath = os.path.realpath
+
+    def stalling_root(path, *args, **kwargs):
+        if os.fspath(path) == str(root):          # only the root's own probe
+            wake.wait(5)
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", stalling_root)
+    started = time.monotonic()
+    try:
+        ok = path_utils.is_within_configured_volumes(str(root / "game.iso"))
+    finally:
+        wake.set()
+
+    assert not ok                                   # fail closed, never the cache
+    assert time.monotonic() - started < 1.5
