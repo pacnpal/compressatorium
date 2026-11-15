@@ -1305,6 +1305,30 @@ class JobManager:
             for p in paths if p
         )
 
+    async def _fail_before_start(
+        self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
+    ) -> None:
+        """End a job FAILED before its run starts, letting go of everything it
+        holds: the input locks taken so far, its folder and output locks, and
+        its concurrency slot (#306). A job that stays queued holding the slot
+        would stall every later conversion at concurrency 1."""
+        self._release_inputs(job_id)
+        if dir_lock_held:
+            lock_manager.release_dir_lock(job.file_path)
+        if job.output_path:
+            lock_manager.release_lock(job.output_path)
+        job.status = JobStatus.FAILED
+        job.error_message = message
+        job.completed_at = datetime.now(timezone.utc)
+        self._notify_terminal(job)
+        await self._notify_subscribers(
+            job_id, {"type": "error", "job_id": job_id, "error": message},
+        )
+        self._cancel_events.pop(job_id, None)
+        concurrency_manager.release(job_id)
+        await self._cleanup_temp_dir(job)
+        await self._prune_jobs(exclude_id=job_id)
+
     async def _defer_blocked_job(
         self,
         job_id: str,
@@ -3041,9 +3065,17 @@ class JobManager:
         # below owns them: a cancellation here (worker shutdown) releases
         # them, or the Source would stay shared-locked until restart (#306).
         try:
-            if job.input_kind != InputKind.DIRECTORY and not await run_in_threadpool(
-                self._hold_inputs, job_id, job, self._begin_input_attempt(job_id),
-            ):
+            try:
+                inputs_held = job.input_kind == InputKind.DIRECTORY or await run_in_threadpool(
+                    self._hold_inputs, job_id, job, self._begin_input_attempt(job_id),
+                )
+            except Exception as exc:  # noqa: BLE001 - never stay queued holding a slot
+                await self._fail_before_start(
+                    job_id, job, f"Could not lock the Source: {exc}",
+                    dir_lock_held=dir_lock_acquired,
+                )
+                return
+            if not inputs_held:
                 await self._defer_blocked_job(
                     job_id,
                     output_lock_held=True,

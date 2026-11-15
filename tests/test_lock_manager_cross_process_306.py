@@ -628,3 +628,83 @@ def test_a_dead_process_lock_is_cleared_by_the_next_probe(tmp_path):
         if proc.poll() is None:
             proc.kill()
         proc.stdout.close()
+
+
+# --------------------------------------------------------------------------- #
+# Native (non-UTF-8) names in lock identities (codex 4577157688)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_native_name_locks_and_is_seen_by_every_probe(tmp_path):
+    """A sheet's native track name carries surrogate escapes; its lock key,
+    lock file name and recorded path are filesystem bytes, so acquire, the
+    exact probe and the scan below a folder agree, and nothing raises."""
+    holder, probe = _manager(tmp_path / "locks"), _manager(tmp_path / "locks")
+    folder = tmp_path / "games"
+    folder.mkdir()
+    native = os.path.join(str(folder), "Caf\udce9.bin")
+
+    assert holder.acquire_input_lock(native)
+    try:
+        assert probe.check_file_status(native)[1] is True
+        assert probe.locked_path_below(str(folder)) == os.path.realpath(native)
+        assert not probe.acquire_dir_lock(str(folder))
+    finally:
+        holder.release_input_lock(native)
+    assert probe.check_file_status(native)[1] is False
+    assert holder.acquire_lock(native)
+    assert probe.check_file_status(native)[1] is True
+    holder.release_lock(native)
+
+
+def test_a_cue_naming_a_native_track_converts(tmp_path, monkeypatch, db_path, reset_db_engine):
+    """An ASCII-named CUE whose track is ``Caf\\xe9.bin`` (Latin-1 bytes) on a
+    filesystem that allows such names: the job takes its locks and runs."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services import db as _db
+    from services import job_manager as job_manager_module
+    from services.job_manager import job_manager
+    from services.lock_manager import lock_manager
+
+    folder = tmp_path / "games"
+    folder.mkdir()
+    raw = os.path.join(os.fsencode(folder), b"Caf\xe9.bin")
+    try:
+        with open(raw, "wb") as fh:
+            fh.write(b"\0" * 2352)
+    except OSError:
+        pytest.skip("this filesystem refuses non-UTF-8 file names (macOS); runs on Linux")
+    cue = folder / "Game.cue"
+    cue.write_bytes(b'FILE "Caf\xe9.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n')
+    _db.init_engine(db_path)
+    monkeypatch.setattr(lock_manager, "_lock_dir", str(tmp_path / "locks"))
+    monkeypatch.setattr(lock_manager, "_ready", False)
+    for attr in ("chd_volumes", "data_mount_root"):
+        monkeypatch.setattr(
+            job_manager_module.source_companions_are_safe.__globals__["settings"],
+            attr, str(tmp_path),
+        )
+    out = folder / "Game.chd"
+
+    async def fake_convert(*_args, **_kwargs):
+        out.write_bytes(b"chd")
+        yield {"progress": 100, "message": "done"}
+
+    monkeypatch.setattr(
+        job_manager_module.registry.for_mode("createcd"), "convert", fake_convert,
+    )
+    job = ConversionJob(
+        id="nativecue", file_path=str(cue), filename=cue.name,
+        mode=ConversionMode.CREATECD, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(out),
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        asyncio.run(job_manager._process_job(job.id))
+        assert job.status == JobStatus.COMPLETED, job.error_message
+    finally:
+        job_manager.jobs.pop(job.id, None)
+        reset_db_engine()

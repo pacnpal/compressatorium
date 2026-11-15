@@ -2054,3 +2054,38 @@ def test_a_check_lock_that_raises_part_way_leaves_nothing_held(volume, monkeypat
     other = _other_process()
     assert other.acquire_lock(str(first), allow_existing=True)
     other.release_lock(str(first))
+
+
+def test_an_input_lock_that_raises_fails_the_job_and_frees_the_slot(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """codex 4577157688: an exception while taking a job's input locks must
+    not leave it queued holding its output lock and the slot (which stalls
+    every later conversion at concurrency 1). It fails, everything is let go,
+    and the next job runs."""
+    from services.lock_manager import lock_manager
+
+    bad = volume / "gc" / "A.iso"
+    good = volume / "gc" / "B.iso"
+    bad.parent.mkdir()
+    bad.write_bytes(b"the disc" * 512)
+    good.write_bytes(b"the disc" * 512)
+    original = lock_manager.acquire_input_lock
+
+    def raising_for_a(path):
+        if os.path.basename(path) == "A.iso":
+            raise UnicodeEncodeError("utf-8", "x", 0, 1, "surrogates not allowed")
+        return original(path)
+
+    monkeypatch.setattr(lock_manager, "acquire_input_lock", raising_for_a)
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+
+    by_name = {Path(x["path"]).name: x for x in lines}
+    assert by_name["A.iso"]["status"] == "failed", lines
+    assert "lock" in by_name["A.iso"]["reason"].lower()
+    assert by_name["B.iso"]["status"] == "completed", lines
+    assert code == 1
+    other = _other_process()
+    assert other.acquire_lock(str(volume / "gc" / "A.rvz"))  # its output lock is gone
+    other.release_lock(str(volume / "gc" / "A.rvz"))
