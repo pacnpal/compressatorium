@@ -556,7 +556,7 @@ async def test_post_convert_skips_the_write_and_fails_the_job(tmp_path, monkeypa
         AsyncMock(side_effect=lambda *a, **k: wrote.append(a)),
     )
     monkeypatch.setattr(
-        plugin_mod, "extract_from_source", lambda _p: {"game_id": "SLUS-123"},
+        plugin_mod, "extract_from_source", lambda _p, **_k: {"game_id": "SLUS-123"},
     )
 
     # The project logger does not propagate to caplog, so watch it directly.

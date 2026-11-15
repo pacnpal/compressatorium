@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy } from 'svelte';
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { romm } from '$lib/stores/romm.svelte.js';
@@ -10,6 +11,7 @@
   import CompressionPicker from './CompressionPicker.svelte';
   import DuplicateModal from '$lib/components/modals/DuplicateModal.svelte';
   import DeletePlanModal from '$lib/components/modals/DeletePlanModal.svelte';
+  import AutoPlanModal from '$lib/components/modals/AutoPlanModal.svelte';
   import Settings2 from '@lucide/svelte/icons/settings-2';
   import Play from '@lucide/svelte/icons/play';
   import Loader from '@lucide/svelte/icons/loader-circle';
@@ -27,9 +29,10 @@
   const convertibleCount = $derived(selectedPaths.length);
   const incompatibleCount = $derived(selectedCount - convertibleCount);
   const tool = $derived(conversion.currentTool);
-  const supportsDeleteOnVerify = $derived(conversion.supportsDeleteOnVerify);
-  const supportsRoundTrip = $derived(conversion.supportsRoundTrip);
-  const supportsSplit = $derived(conversion.supportsSplit);
+  const auto = $derived(conversion.auto);
+  const supportsDeleteOnVerify = $derived(!auto && conversion.supportsDeleteOnVerify);
+  const supportsRoundTrip = $derived(!auto && conversion.supportsRoundTrip);
+  const supportsSplit = $derived(!auto && conversion.supportsSplit);
   const converting = $derived(conversion.converting);
 
   // Delete-on-verify is validated by the backend against a snapshot of
@@ -37,7 +40,7 @@
   // deletion. The verification store only tracks existing verified outputs,
   // so source inputs must not be pre-filtered or block normal create/compress
   // flows here.
-  const submitDisabled = $derived(convertibleCount === 0 || converting);
+  const submitDisabled = $derived(convertibleCount === 0 || converting || conversion.autoInFlight);
 
   // Duplicate preflight: open the modal when the backend reports any
   // output collision; await the user's pick (skip / overwrite / null
@@ -84,8 +87,57 @@
     });
   }
 
+  // Auto plan preview: same resolver pattern as the two modals above.
+  let autoPlanPrompt = $state(null);
+  const autoPlanModalOpen = $derived(!!autoPlanPrompt);
+
+  function resolveAutoPlan(proceed) {
+    if (autoPlanPrompt) {
+      const resolver = autoPlanPrompt;
+      autoPlanPrompt = null;
+      resolver(proceed);
+    }
+  }
+
+  // The running Auto flow's abort handle. Leaving the view unmounts this
+  // panel while the plan request or its modal may still be pending; aborting
+  // here ends the flow (no modal opens after it, a pending one counts as
+  // cancelled) so the store's autoInFlight clears and Start works on return.
+  let autoAbort = null;
+  onDestroy(() => {
+    autoAbort?.abort();
+    autoAbort = null;
+  });
+
+  async function handleAutoSubmit() {
+    // The store runs the flow: it refuses a second Start while one is in
+    // flight, and plans and queues the selection and RomM context taken here,
+    // before anything is awaited.
+    const controller = new AbortController();
+    autoAbort = controller;
+    let result;
+    try {
+      result = await conversion.runAuto({
+        paths: selectedPaths,
+        rommPlatformId: fileBrowser.rommPlatformId,
+        confirm: () => new Promise((resolve) => {
+          autoPlanPrompt = resolve;
+        }),
+        onRepinPending: (count) => romm.setPendingRepins(count),
+        signal: controller.signal,
+      });
+    } finally {
+      if (autoAbort === controller) autoAbort = null;
+    }
+    if (result && !controller.signal.aborted) fileBrowser.clearSelection();
+  }
+
   async function handleSubmit() {
     if (submitDisabled) return;
+    if (auto) {
+      await handleAutoSubmit();
+      return;
+    }
     try {
       const check = await conversion.checkDuplicates(selectedPaths);
       const conflicts = Array.isArray(check) ? check.filter((d) => d?.exists) : [];
@@ -113,7 +165,7 @@
         const planInputs = selectedPaths.filter((p) => !skippedConflicts.has(p));
         if (planInputs.length > 0) {
           try {
-            await conversion.fetchDeletePlan(planInputs);
+            await conversion.fetchDeletePlan(planInputs, duplicateAction);
           } catch (_e) {
             // toast already raised in fetchDeletePlan
             return;
@@ -165,7 +217,7 @@
 <section class="panel" aria-label="Conversion configuration">
   <h2 class="panel-title">
     <Settings2 size={14} aria-hidden="true" />
-    Convert with {tool?.label ?? '…'}
+    {#if auto}Convert with Auto{:else}Convert with {tool?.label ?? '…'}{/if}
   </h2>
 
   {#if !tool}
@@ -176,8 +228,15 @@
     />
   {:else}
     <div class="fields">
-      <ModeSelect />
-      <CompressionPicker />
+      <Checkbox
+        bind:checked={conversion.auto}
+        label="Auto: pick the format from each Image's Platform"
+        description="Reads each Image's header (or its folder name) and uses that Platform's default format with your saved compression. Images whose Platform is unclear are skipped and listed."
+      />
+      {#if !auto}
+        <ModeSelect />
+        <CompressionPicker />
+      {/if}
 
       <label class="field">
         <span class="label">Output directory</span>
@@ -251,6 +310,7 @@
 
 <DuplicateModal open={duplicateModalOpen} onResolve={resolveDuplicate} />
 <DeletePlanModal open={deletePlanModalOpen} onResolve={resolveDeletePlan} />
+<AutoPlanModal open={autoPlanModalOpen} onResolve={resolveAutoPlan} />
 
 <style>
   .panel {

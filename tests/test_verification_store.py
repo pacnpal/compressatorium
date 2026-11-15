@@ -154,3 +154,77 @@ async def test_concurrent_writers_under_wal(
     # Every write was distinct → exactly 2*n rows.
     all_records = await verification_store.all_records()
     assert len(all_records) == 2 * n
+
+
+
+@pytest.mark.asyncio
+async def test_refreshing_a_check_keeps_its_provenance(db_path, reset_db_engine):
+    """codex 4576728584, review r8 C1: a plain re-check (CLI verify, the web's
+    Verify) never erases the mode that made the file or its Source."""
+    from services import db as _db
+    from services.verification_store import verification_store
+
+    _db.init_engine(db_path)
+    try:
+        await verification_store.mark_verified(
+            "/data/ps3/Game.iso", source_path="/data/ps3/GAME",
+            produced_meta={"mode": "folder_to_iso"}, check="round_tripped",
+        )
+        await verification_store.refresh_check("/data/ps3/Game.iso")
+        record = await verification_store.get_record("/data/ps3/Game.iso")
+        assert record["produced_meta"] == {"mode": "folder_to_iso"}
+        assert record["source_path"] == os.path.realpath("/data/ps3/GAME")
+        assert record["check_passed"] == "intact"
+        # A file checked for the first time gets a plain record.
+        await verification_store.refresh_check("/data/gc/New.rvz")
+        assert (await verification_store.get_record("/data/gc/New.rvz"))["produced_meta"] is None
+    finally:
+        reset_db_engine()
+
+
+@pytest.mark.asyncio
+async def test_a_new_conversion_replaces_stale_provenance(db_path, reset_db_engine):
+    """review r9 M2: an output deleted outside the app and rebuilt at the same
+    path by another mode must not inherit the old mode, even when the new
+    conversion records none."""
+    from services import db as _db
+    from services.verification_store import verification_store
+
+    _db.init_engine(db_path)
+    try:
+        await verification_store.mark_verified(
+            "/data/gc/Game.iso", source_path="/data/ps3/GAME",
+            produced_meta={"mode": "folder_to_iso"},
+        )
+        await verification_store.mark_verified("/data/gc/Game.iso")
+        record = await verification_store.get_record("/data/gc/Game.iso")
+        assert record["produced_meta"] is None
+        assert record["source_path"] is None
+        await verification_store.mark_verified(
+            "/data/gc/Game.iso", produced_meta={"mode": "dolphin_iso"},
+        )
+        record = await verification_store.get_record("/data/gc/Game.iso")
+        assert record["produced_meta"] == {"mode": "dolphin_iso"}
+    finally:
+        reset_db_engine()
+
+
+@pytest.mark.asyncio
+async def test_all_provenance_includes_failed_rows(db_path, reset_db_engine):
+    """all_provenance lists every row, failed ones too; all_records doesn't."""
+    from services import db as _db
+    from services.verification_store import verification_store
+
+    _db.init_engine(db_path)
+    try:
+        await verification_store.mark_verified(
+            "/data/ps3/Game.iso", produced_meta={"mode": "folder_to_iso"},
+        )
+        await verification_store.mark_failed("/data/ps3/Game.iso")
+        provenance = await verification_store.all_provenance()
+        assert [(r["chd_path"], r["produced_meta"]) for r in provenance] == [
+            (os.path.realpath("/data/ps3/Game.iso"), {"mode": "folder_to_iso"}),
+        ]
+        assert await verification_store.all_records() == []
+    finally:
+        reset_db_engine()

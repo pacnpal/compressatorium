@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -49,6 +49,10 @@ class ContentDigest:
 
     kind: str
     value: str
+    # What to tell the user when this digest does not match the other side,
+    # for a tool that knows a mismatch is expected rather than a sign of
+    # damage (nsz rebuilding an XCI). Not part of the comparison.
+    mismatch_reason: str = field(default="", compare=False)
 
     def same_content(self, other: ContentDigest) -> bool:
         if self.kind != other.kind:
@@ -56,6 +60,16 @@ class ContentDigest:
                 f"cannot compare a {self.kind} digest with a {other.kind} digest",
             )
         return self.value == other.value
+
+
+# The digest kind for "SHA1 of the image's bytes", shared by every tool whose
+# Source is a plain image file and whose output decodes back to one (chdman
+# DVD, maxcso, z3ds, JWUDTool). One kind is what lets a chain compare a CSO's
+# decoded image with a CHD's data SHA1 (#301).
+IMAGE_DATA_SHA1_KIND = "image_data_sha1"
+# The same, SHA-256, for a tool whose two sides are both digests it makes
+# itself (z3ds, JWUDTool): no outside SHA-1 to match, so SHA-1 is not used.
+IMAGE_DATA_SHA256_KIND = "image_data_sha256"
 
 
 class ContentDigestUnavailable(Exception):
@@ -96,6 +110,11 @@ class ToolPlugin(Protocol):
     # tool. None means "this tool names no default" -- see
     # BaseTool.default_compression for what that costs.
     default_compression: str | None
+    # What to tell the user when ``is_ready()`` is False: why this tool cannot
+    # run here. Auto shows it beside an Image it skipped for that reason.
+    not_ready_reason: str
+    # The same for ``verify_is_ready()``.
+    verify_not_ready_reason: str
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
@@ -182,6 +201,36 @@ class ToolPlugin(Protocol):
         ``utils.delete_plan``, with its own unsafe-reference handling, rather
         than derived from naming. Folding those into this seam is the obvious
         next consolidation.
+        """
+
+    def header_platform(self, path: str) -> str | None:
+        """The Platform this tool reads from ``path``'s own header, or None.
+
+        How a tool recognises its Images. ``services.platform_detect`` asks
+        every tool whose ``input_extensions`` match the file and maps the
+        answer onto a Platform slug, so a new console is taught to detection
+        by its tool, not by a central list. None means "not mine, or I cannot
+        tell", never a guess. Reads a few bytes from disk; call it off the
+        event loop.
+        """
+
+    def header_reads(self, path: str) -> list[str] | None:
+        """Other files ``header_platform(path)`` reads, besides ``path``.
+
+        A track sheet's answer comes from the tracks it names, so detection
+        keys its cache on their size and mtime too, and does not cache an
+        answer while one is missing. None means "cannot tell" (an unreadable
+        sheet), which is never cached either. Default empty.
+        """
+
+    def claims_check(self, path: str) -> bool:
+        """Whether a verify run must check ``path`` with this tool (#306).
+
+        Wider than :meth:`verifies_path`, which gates the listing's Verify/Info
+        row-actions: a file this tool would recognise if it were intact (a
+        truncated ``.gba.zip``) is claimed, so the check runs and reports the
+        damage instead of the file going unchecked. Defaults to
+        ``verifies_path``.
         """
 
     def verifies_path(self, path: str) -> bool:
@@ -321,6 +370,36 @@ class ToolPlugin(Protocol):
         folder to its own sheet reads. A tool that reads no sheet ignores it.
         """
 
+    async def verify_is_ready(self) -> bool:
+        """Whether this tool can *check* a file here (#306).
+
+        Readiness is per operation: a check can need less than a conversion
+        (jwud's WUX check is pure Python and needs no JWUDTool or Java) or
+        something else (z3ds's check needs ``zstd``). Asked through
+        :meth:`ToolRegistry.tool_is_ready` with ``purpose="verify"``, so the
+        same bound applies. Defaults to ``is_ready()``.
+        """
+
+    async def source_problem(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
+    ) -> str | None:
+        """Why the Round-trip must not trust ``path`` as a Source, or None.
+
+        Asked once, before any digest, under the same bound. A Source whose
+        format carries its own checksum (a CHD for chdman Copy) is checked
+        with it first: a Source that is not Intact would compare its damage
+        with an output that faithfully copied it. Return a reason to keep the
+        Source without comparing; ``BaseTool`` returns None.
+
+        ``within`` is the same trusted root(s) ``content_digest`` gets for the
+        Source: an override that reads a sheet, a track or an archive member
+        passes it to that read and fails closed when the read is refused.
+        """
+
     async def is_ready(self) -> bool:
         """Whether this tool's runtime prerequisites are met.
 
@@ -350,8 +429,14 @@ class ToolPlugin(Protocol):
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
+        *, within: Sequence[str] | None = None,
     ) -> None:
-        """Optional post-processing hook after a successful conversion."""
+        """Optional post-processing hook after a successful conversion.
+
+        ``within`` is the trusted root(s) an archive-extracted source lives
+        under (the job worker's extraction dir). None means the source is in a
+        configured Volume.
+        """
 
     def overwrite_targets(self, output_path: str, mode: str) -> list[str]:
         """Every path to clear before an **authorized** overwrite, primary first.
@@ -451,6 +536,14 @@ class BaseTool:
     # Mirrors `defaultCompression` in `src/lib/tools/registry.js`, which seeds
     # the same choice in the manual picker.
     default_compression: str | None = None
+    # Why ``is_ready()`` answered False, in the user's words. Tools gated on a
+    # user-supplied file or an optional runtime say which one.
+    not_ready_reason: str = "its program is not available on this server"
+
+    @property
+    def verify_not_ready_reason(self) -> str:
+        """Why ``verify_is_ready()`` answered False; the convert reason by default."""
+        return self.not_ready_reason
 
     def __init__(self, binary_path: str) -> None:
         self.binary_path = binary_path
@@ -526,6 +619,19 @@ class BaseTool:
             path, self.policy_owner, cancel_event=cancel_event,
         )
 
+    def header_platform(self, path: str) -> str | None:
+        # Default: no header probe. Tools that can tell their consoles apart
+        # from the image bytes (chdman, dolphin, xiso) override it.
+        return None
+
+    def header_reads(self, path: str) -> list[str] | None:
+        # Default: the probe reads only the file itself.
+        return []
+
+    def claims_check(self, path: str) -> bool:
+        # Default: the listing's own answer.
+        return self.verifies_path(path)
+
     def verifies_path(self, path: str) -> bool:
         # Default: a declared-extension match (suffix-based, so a compound
         # extension resolves — see utils.path_utils.match_extension). Tools that
@@ -545,6 +651,16 @@ class BaseTool:
         # Default: no embedded hash; callers fall back to file-level SHA1.
         return []
 
+    async def source_problem(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
+    ) -> str | None:
+        # Default: a Source carries no checksum of its own to check first.
+        return None
+
     async def content_digest(
         self,
         path: str,
@@ -562,6 +678,10 @@ class BaseTool:
         # an optional binary override this (see nsz / prod.keys).
         return True
 
+    async def verify_is_ready(self) -> bool:
+        # Default: a check needs what a conversion needs.
+        return await self.is_ready()
+
     def expected_output_size(self, input_path: str, mode: str) -> int | None:
         # Default: unknown. Tools whose source header states the output size
         # (maxcso's CSO/ZSO/DAX, nkit2iso's NKit) override it so the chain
@@ -570,6 +690,7 @@ class BaseTool:
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
+        *, within: Sequence[str] | None = None,
     ) -> None:
         return None
 

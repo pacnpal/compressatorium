@@ -49,6 +49,10 @@ class _StubVerStore:
 def _noop_env(tmp_path: Path, monkeypatch):
     """Fresh, isolated JobManager + coordinators; record any convert call."""
     monkeypatch.setattr(jm_mod.settings, "max_queue_depth", 0)
+    # The sources live in tmp_path, which is the Volume: cue tracks resolve
+    # only inside one (utils.sheet_text.resolve_track), and the worker
+    # re-checks every track a sheet names before converting (PR #320).
+    monkeypatch.setattr(jm_mod.settings, "chd_volumes", str(tmp_path))
     lock_dir = tmp_path / "locks"
     monkeypatch.setattr(jm_mod.settings, "concurrency_lock_dir", str(lock_dir))
     monkeypatch.setattr(
@@ -65,7 +69,7 @@ def _noop_env(tmp_path: Path, monkeypatch):
         Path(output_path).write_bytes(b"RECONVERTED")
         yield {"progress": 100, "message": "done"}
 
-    async def noop_post_convert(input_path, output_path, mode):
+    async def noop_post_convert(input_path, output_path, mode, *, within=None):
         return None
 
     tool = jm_mod.registry.get("chdman")

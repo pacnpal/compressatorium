@@ -50,9 +50,11 @@ from services.jwudtool import (
 from services.tools import registry
 from services.tools.base import ToolPlugin
 from services.subprocess_runner import (
+    BATCH_STOPPED_MESSAGE,
     StorageAbandoned,
     bounded_path_check,
     collect_abandonment,
+    stops_verify_batch,
 )
 from services.workload_limiter import WorkloadToken, workload_limiter
 from services.job_manager import ExternalJobCancelled, job_manager
@@ -1616,7 +1618,7 @@ def _sse_from_verify_stream(
                     yield {"event": "verify_progress", "data": json.dumps(update)}
                 elif update.get("type") == "complete":
                     if update.get("valid"):
-                        await verification_store.mark_verified(path)
+                        await verification_store.refresh_check(path)
                     yield {"event": "verify_complete", "data": json.dumps(update)}
                     break
                 elif update.get("type") == "error":
@@ -1662,6 +1664,9 @@ def _sse_batch_from_verify_stream(
         total = len(valid_paths)
         verified_count = 0
         failed_count = 0
+        # Files the tool refused to check here (an archive safety rule): no
+        # verdict, never counted as failed (#306). Reported only when any.
+        uncheckable_count = 0
 
         # Send initial status
         yield {
@@ -1809,30 +1814,34 @@ def _sse_batch_from_verify_stream(
                         lane["token"] = None
 
                 if final_result.get("valid"):
-                    await verification_store.mark_verified(path)
+                    await verification_store.refresh_check(path)
                     verified_count += 1
                     status = "verified"
+                elif final_result.get("uncheckable"):
+                    uncheckable_count += 1
+                    status = "uncheckable"
                 else:
                     failed_count += 1
                     status = "failed"
 
+                file_complete = {
+                    "index": idx,
+                    "path": path,
+                    "filename": filename,
+                    "status": status,
+                    "valid": final_result.get("valid", False),
+                    "message": final_result.get("message"),
+                    "verified": verified_count,
+                    "failed": failed_count,
+                }
+                if uncheckable_count:
+                    file_complete["uncheckable"] = uncheckable_count
                 yield {
                     "event": "verify_batch_file_complete",
-                    "data": json.dumps(
-                        {
-                            "index": idx,
-                            "path": path,
-                            "filename": filename,
-                            "status": status,
-                            "valid": final_result.get("valid", False),
-                            "message": final_result.get("message"),
-                            "verified": verified_count,
-                            "failed": failed_count,
-                        },
-                    ),
+                    "data": json.dumps(file_complete),
                 }
 
-                if final_result.get("abandoned") or abandoned:
+                if stops_verify_batch(final_result, abandoned):
                     # The verifier outlived SIGKILL, so it is still reading the
                     # storage this batch is walking. Every remaining file lives
                     # on that same storage, so continuing would spawn one more
@@ -1845,10 +1854,7 @@ def _sse_batch_from_verify_stream(
                                 "verified": verified_count,
                                 "failed": failed_count,
                                 "aborted": True,
-                                "message": (
-                                    "Batch stopped: a verifier could not be "
-                                    "stopped and is still holding the storage."
-                                ),
+                                "message": BATCH_STOPPED_MESSAGE,
                             },
                         ),
                     }
@@ -1873,11 +1879,12 @@ def _sse_batch_from_verify_stream(
                 }
 
         # Send final completion event
+        summary = {"total": total, "verified": verified_count, "failed": failed_count}
+        if uncheckable_count:
+            summary["uncheckable"] = uncheckable_count
         yield {
             "event": "verify_batch_complete",
-            "data": json.dumps(
-                {"total": total, "verified": verified_count, "failed": failed_count},
-            ),
+            "data": json.dumps(summary),
         }
 
     async def wrapped_event_generator():
@@ -1919,7 +1926,7 @@ def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> tuple:
                 cfg.service().verify(path), timeout=bound or None,
             )
             if result.get("valid"):
-                await verification_store.mark_verified(path)
+                await verification_store.refresh_check(path)
             return result
         except asyncio.TimeoutError:
             # A verdict-shaped answer, not a 500: the file is not known bad, the
