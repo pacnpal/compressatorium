@@ -2192,6 +2192,54 @@ async def test_a_scheduled_check_run_holds_its_window_until_it_ends(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("held_by", ["conversion", "lock"])
+async def test_a_tick_that_finds_its_image_held_by_a_conversion_stays_due(
+    tree: Path, ready, verifier, sent, monkeypatch, held_by,
+) -> None:
+    """Codex 4578154650: an Image a conversion holds (queued or converting
+    here, or locked for writing by another process) is held elsewhere, like
+    one a check run holds. A pick that comes up empty only for that records
+    nothing; once the conversion ends the next tick checks it."""
+    from routes import libraries as routes
+    from services.job_manager import job_manager
+    from services.lock_manager import LockManager, lock_manager
+    from services.rules import check as checks
+    from services.rules import sweep
+    from services.rules.rules import CHECK
+
+    _verdicts, calls = verifier
+    for name in ("Aria", "Bolt", "Dune"):
+        (tree / "ps2" / f"{name}.chd").unlink()
+    cove = str(tree / "ps2" / "Cove.chd")
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+    library = routes._library(lib)
+    writer = LockManager()
+    writer._lock_dir = lock_manager._lock_dir
+    if held_by == "conversion":
+        monkeypatch.setattr(
+            job_manager, "get_active_job_candidates", lambda: [("convert1", [cove])],
+        )
+    else:
+        assert writer.acquire_lock(cove, allow_existing=True)
+
+    tick = await sweep.sweep(library)
+    await checks.drain()
+    assert tick.get("checks", 0) == 0
+    assert calls == []
+    assert not ((await sweep.get_state(library, CHECK)).get("ps2") or {}).get("last_run_at")
+
+    if held_by == "conversion":
+        monkeypatch.setattr(job_manager, "get_active_job_candidates", lambda: [])
+    else:
+        writer.release_lock(cove)
+    again = await sweep.sweep(library)
+    await checks.drain()
+    assert again["checks"] == 1
+    assert calls == ["Cove.chd"]
+    assert ((await sweep.get_state(library, CHECK)).get("ps2") or {}).get("last_run_at")
+
+
+@pytest.mark.asyncio
 async def test_a_check_runs_verdicts_ride_its_terminal_event(
     tree: Path, ready, verifier, sent, monkeypatch,
 ) -> None:

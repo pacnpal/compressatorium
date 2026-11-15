@@ -117,7 +117,8 @@ def inspect(image: Image) -> dict[str, Any]:
     ``{"skip": reason}`` when it cannot be checked here (``unresolvable``:
     no local path inside the Volumes; ``missing``: gone from disk;
     ``uncheckable``: no tool checks this file on its Platform, a folder
-    Image included), else ``{"resolved": path, "check": Check}``.
+    Image included; ``busy``: a job is writing one of its files, here or in
+    another process), else ``{"resolved": path, "check": Check}``.
     """
     path = image.path
     if not path or not is_within_configured_volumes(path):
@@ -144,6 +145,13 @@ def inspect(image: Image) -> dict[str, Any]:
     # split part or track symlinked outside the Volumes skips the whole Image.
     if not all(is_within_configured_volumes(member) for member in members):
         return {"skip": "unresolvable"}
+    # Being written (a rebuild holds the logical `Game.iso` alone): held for
+    # now, which is not the same as nothing to check.
+    if any(
+        lock_manager.is_locked(each)
+        for each in dict.fromkeys((record_path, path, *members))
+    ):
+        return {"skip": "busy"}
     return {
         "resolved": resolved,
         "check": Check(

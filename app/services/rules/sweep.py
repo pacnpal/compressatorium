@@ -1861,7 +1861,7 @@ async def _sweep_check(
             return True
         considered += 1
         if checks.in_flight(library.id, str(image.key)):
-            # Another check run (Run now) has it; that is not this run's pick.
+            # Held elsewhere: another check run (Run now) has it.
             result["skipped_active"] += 1
             held_elsewhere += 1
             continue
@@ -1885,10 +1885,15 @@ async def _sweep_check(
                 result["skipped_missing"] += 1
             elif decision["skip"] == "uncheckable":
                 uncheckable += 1
+            elif decision["skip"] == "busy":
+                # Held elsewhere: a job (maybe in another process) writes it.
+                result["skipped_active"] += 1
+                held_elsewhere += 1
             continue
         if decision["resolved"] in active_paths:
-            # Being converted right now; the next run checks it.
+            # Held elsewhere: queued or being converted; a later run checks it.
             result["skipped_active"] += 1
+            held_elsewhere += 1
             continue
         item: checks.Check = decision["check"]
         if item.tool_id not in ready:
@@ -1937,9 +1942,10 @@ async def _sweep_check(
     if not dry_run:
         picked.extend(chosen)
         # A Platform whose tool is missing waits for the next tick, not a day.
-        # Nor is a pick that came up empty only because another check run holds
-        # its Images the night's run (4578116078): if that run is cancelled,
-        # the Rule must still be due.
+        # Nor is a pick that came up empty only because its Images are held
+        # elsewhere for now (another check run, a conversion queued or running,
+        # a writer's lock) the night's run (4578116078, 4578154650): once they
+        # are free, the Rule must still be due.
         if not unresponsive and not (
             not chosen and (not_ready or held_elsewhere)
         ):
