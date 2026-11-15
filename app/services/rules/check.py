@@ -38,7 +38,7 @@ from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import ConversionMode
 from services import findings, image_checks, notifications
-from services.image_sets import image_fingerprint, image_members
+from services.image_sets import image_fingerprint, image_members, image_size
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.rules.library import Image, Library
@@ -131,14 +131,12 @@ def inspect(image: Image) -> dict[str, Any]:
     if not os.path.isfile(resolved):
         return {"skip": "missing"}
     # A split output (`Game.iso.0`, `.1`) is one Image whose record is kept
-    # under its logical name; a stored check's mode picks the tool (#306).
+    # under its logical name; a stored check's mode picks the tool (#306),
+    # even after a failed check (`mark_failed` keeps it).
     owner = registry.split_owner(path)
     record_path = owner[0] if owner else path
-    stored = verification_store.get_record_blocking(record_path) or {}
-    tool = registry.check_tool(
-        path, image.platform,
-        recorded_mode=(stored.get("produced_meta") or {}).get("mode"),
-    )
+    made_by = verification_store.produced_meta_blocking(record_path) or {}
+    tool = registry.check_tool(path, image.platform, recorded_mode=made_by.get("mode"))
     if tool is None:
         return {"skip": "uncheckable"}
     members = image_members(path)
@@ -151,8 +149,9 @@ def inspect(image: Image) -> dict[str, Any]:
         "check": Check(
             key=str(image.key), name=os.path.basename(path), path=path,
             # A Library that does not know the size (RomM without
-            # fs_size_bytes) still pays for the Image against the budget.
-            size=int(image.size or os.path.getsize(resolved)), tool_id=tool.id,
+            # fs_size_bytes) still pays for the whole Image against the
+            # budget: every file, split parts and tracks included.
+            size=int(image.size or image_size(path)), tool_id=tool.id,
             fingerprint=image_fingerprint(path) or "",
             members=tuple(members),
             record_path=record_path if owner else "",
@@ -414,8 +413,9 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
                     # replaces it.
                     await verification_store.refresh_check(check.record)
                 elif verdict == NOT_INTACT:
-                    # The Intact badge no longer holds.
-                    await verification_store.clear(check.record)
+                    # The Intact badge no longer holds, but what made the file
+                    # stays, so the next check still reaches its tool.
+                    await verification_store.mark_failed(check.record)
                 return True
 
             try:

@@ -3145,7 +3145,7 @@ folds them into one Image on `Game.iso.0`, so the budget pays the parts'
 summed size and the lock and fingerprint cover every part. The check is
 handed `Game.iso.0`, and makeps3iso's verify checks the whole set (#306). The
 record lives under `Game.iso` (`Check.record_path`), so a pass refreshes it
-there and a failure clears it there. `_hold` also takes the shared lock on
+there and a failure marks it failed there. `_hold` also takes the shared lock on
 that logical path, with the first part and every later part, from the verify
 slot through the recorded verdict: a directory-input rebuild locks only
 `Game.iso`, so while one runs the Image is skipped as busy. Every file a check reads (each member,
@@ -3177,10 +3177,21 @@ keeping the Source and its output. `check.outcome(result)` reads it:
 | Result | Outcome | Writes |
 |---|---|---|
 | `valid` | Intact | `image_checks` row (`intact`), `verification_store.refresh_check` (keeps the record's `source_path` and `produced_meta`), `findings.resolve(not_intact)` |
-| not `valid` | not Intact | `image_checks` row (`not_intact`), `verification_store.clear`, `findings.observe(not_intact)` |
+| not `valid` | not Intact | `image_checks` row (`not_intact`), `verification_store.mark_failed` (keeps `produced_meta` and `source_path`), `findings.observe(not_intact)` |
 | `inconclusive`, `abandoned` or `uncheckable` flag (#306: a verifier killed by a signal via `verify_exit_event`; an allowlisted exception or a timeout via `verify_exception_event`; a file this app's own rules refuse, such as an archive over the safety limits) | inconclusive | `attempted_at` only |
 | any other exception from the check (`verify_exception_event` reads it as the tool rejecting the data) | not Intact | as not `valid` |
 | `cancelled` | the run stops | nothing for that Image |
+
+A failed check keeps the Verify row with `check_passed = "failed"`
+(`verification_store.FAILED`, migration 0010's column): `is_verified`,
+`get_record` and `all_records` skip it, so the Intact badge, the re-run fast
+path and the CLI's `--since` all treat the file as unverified, while
+`produced_meta_blocking` still returns the producing mode. A PS3 ISO that
+failed therefore goes back to makeps3iso on the next run, and a pass
+(`refresh_check`) restores the row and clears the Finding. With no size from
+the Library (a RomM ROM without `fs_size_bytes`), `check.inspect` charges
+`image_sets.image_size`: every file of the Image, split parts and tracks
+included.
 
 When `stops_verify_batch` says so (an `abandoned` result, or a read the
 check's `collect_abandonment` sink saw written off), the run stops, as a batch

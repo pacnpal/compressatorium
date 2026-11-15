@@ -1993,6 +1993,76 @@ async def test_a_split_iso_being_rebuilt_is_skipped_as_busy(db: Path, ready, sen
     assert [e for e in sent if e.kind == "check_failed"] == []
 
 
+@pytest.mark.asyncio
+async def test_an_image_with_no_library_size_is_charged_for_every_file(db: Path) -> None:
+    """Codex 4577598584: with no size from the Library (a RomM ROM without
+    fs_size_bytes) the budget pays for the whole Image, every split part, not
+    only the first."""
+    from services.rules import check
+    from services.rules.library import Image
+    from services.verification_store import verification_store
+
+    from .test_cli_306 import _real_split_iso
+
+    folder = db / "roms" / "ps3"
+    iso = _real_split_iso(folder)
+    await verification_store.mark_verified(
+        str(iso), produced_meta={"mode": "folder_to_iso", "tool": "makeps3iso"},
+    )
+    parts = [folder / "GAME.iso.0", folder / "GAME.iso.1"]
+    image = Image(
+        key="7", name="GAME.iso.0", platform="ps3", path=str(parts[0]), size=0,
+    )
+
+    seen = check.inspect(image)
+
+    assert seen["check"].size == sum(p.stat().st_size for p in parts)
+    assert seen["check"].size > parts[0].stat().st_size
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ps3_iso_is_checked_again_once_repaired(db: Path, ready, sent) -> None:
+    """Codex 4577598580: a failure takes away the pass but keeps what made the
+    file, so the next sweep still routes the ISO to makeps3iso, and a pass after
+    the repair clears its Finding."""
+    from routes import libraries as routes
+    from services import image_checks
+    from services.verification_store import verification_store
+
+    from .test_cli_306 import _real_split_iso
+
+    roms = db / "roms"
+    iso = _real_split_iso(roms / "ps3")
+    meta = {"mode": "folder_to_iso", "tool": "makeps3iso"}
+    await verification_store.mark_verified(str(iso), produced_meta=meta)
+    part1 = roms / "ps3" / "GAME.iso.1"
+    good = part1.read_bytes()
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    lib = created["id"]
+    await routes.put_library_rules(lib, {"check_rules": {"ps3": {
+        "enabled": True, "check_budget_gb": 1,
+    }}})
+
+    part1.write_bytes(good[: 2048 * 3])  # damaged
+    await _run(lib)
+    (finding,) = _not_intact()
+    assert finding["image_key"] == "ps3/GAME.iso.0"
+    # No longer passing: no Intact badge, no re-run fast path...
+    assert await verification_store.get_record(str(iso)) is None
+    assert not await verification_store.is_verified(str(iso))
+    # ...but the producing mode is kept.
+    assert verification_store.produced_meta_blocking(str(iso)) == meta
+
+    part1.write_bytes(good)  # repaired
+    image_checks.record(lib, "ps3/GAME.iso.0", "not_intact", at=_ago(2))  # next night
+    await _run(lib)
+
+    assert _not_intact() == []
+    record = await verification_store.get_record(str(iso))
+    assert record["produced_meta"] == meta
+    assert record["check_passed"] == "intact"
+
+
 def test_a_numbered_file_is_a_split_part_only_beside_a_modes_output_name(db: Path) -> None:
     """#306 ab2d818: ``save.0`` is no split part, so a folder Library never lists
     it; ``Game.iso.0`` with its ``.1`` is."""

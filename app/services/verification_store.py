@@ -21,6 +21,13 @@ from services import db as _db
 logger = get_logger("verification_store")
 
 
+# ``check_passed`` of a record whose last check failed (#305). The row stays so
+# the provenance (the producing mode and tool in ``produced_meta``, the Source)
+# survives the failure, but every read that means "this file passed" skips it:
+# no Intact badge, no re-run fast path, no ``--since`` skip.
+FAILED = "failed"
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -129,6 +136,26 @@ class VerificationStore:
             self._mark_sync, chd_path, None, None, check, True,
         )
 
+    def _mark_failed_sync(self, chd_path: str) -> None:
+        normalized = self._normalize(chd_path)
+        with self._session() as session:
+            row = session.get(_db.Verification, normalized)
+            if row is not None:
+                row.check_passed = FAILED
+                session.commit()
+
+    async def mark_failed(self, chd_path: str) -> None:
+        """Record that ``chd_path`` failed a check (#305).
+
+        It is no longer verified (:meth:`is_verified`, :meth:`get_record` and
+        :meth:`all_records` skip it), but ``produced_meta`` and ``source_path``
+        are kept, as :meth:`refresh_check` keeps them: a check that fails
+        never erases what made the file, so the next check still goes to the
+        tool that made it, and a later pass (:meth:`refresh_check`) restores
+        the record. A file with no record stays without one.
+        """
+        await run_in_threadpool(self._mark_failed_sync, chd_path)
+
     def _clear_sync(self, chd_path: str) -> None:
         normalized = self._normalize(chd_path)
         with self._session() as session:
@@ -183,7 +210,8 @@ class VerificationStore:
     def _is_verified_sync(self, chd_path: str) -> bool:
         normalized = self._normalize(chd_path)
         with self._session() as session:
-            return session.get(_db.Verification, normalized) is not None
+            row = session.get(_db.Verification, normalized)
+            return row is not None and row.check_passed != FAILED
 
     async def is_verified(self, chd_path: str) -> bool:
         return await run_in_threadpool(self._is_verified_sync, chd_path)
@@ -192,7 +220,7 @@ class VerificationStore:
         normalized = self._normalize(chd_path)
         with self._session() as session:
             row = session.get(_db.Verification, normalized)
-            if row is None:
+            if row is None or row.check_passed == FAILED:
                 return None
             return {
                 "chd_path": row.chd_path,
@@ -205,9 +233,16 @@ class VerificationStore:
     async def get_record(self, chd_path: str) -> dict[str, str | None] | None:
         return await run_in_threadpool(self._get_record_sync, chd_path)
 
-    def get_record_blocking(self, chd_path: str) -> dict[str, str | None] | None:
-        """:meth:`get_record` for a caller already off the event loop."""
-        return self._get_record_sync(chd_path)
+    def produced_meta_blocking(self, chd_path: str) -> dict | None:
+        """What made ``chd_path``, passing or not: its ``produced_meta``. Blocking.
+
+        Kept through a failed check (:meth:`mark_failed`), so a check Rule
+        still routes the file to the tool that made it (#305).
+        """
+        normalized = self._normalize(chd_path)
+        with self._session() as session:
+            row = session.get(_db.Verification, normalized)
+            return row.produced_meta if row is not None else None
 
     async def all_records(self) -> list[dict[str, str | None]]:
         return await run_in_threadpool(self._all_records_sync)
@@ -215,7 +250,9 @@ class VerificationStore:
     def _all_records_sync(self) -> list[dict[str, str | None]]:
         """Synchronous fetch of every verification record (internal seam for tests)."""
         with self._session() as session:
-            rows = session.scalars(select(_db.Verification)).all()
+            rows = session.scalars(
+                select(_db.Verification).where(_db.Verification.check_passed != FAILED),
+            ).all()
             return [
                 {
                     "chd_path": r.chd_path,
