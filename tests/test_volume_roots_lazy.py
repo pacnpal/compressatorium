@@ -319,3 +319,48 @@ def test_refreshes_over_a_blocked_root_keep_one_live_probe(tmp_path, monkeypatch
         assert live_probes() == 1
     finally:
         wake.set()
+
+
+def test_a_probe_started_before_the_check_never_authorises(tmp_path, monkeypatch):
+    # CodeRabbit 4577602604: a probe resolved /vol to /old, then paused; /vol
+    # is repointed to /new. A check that starts after that must not take the
+    # paused probe's /old as a fresh observation.
+    import threading
+
+    from config import settings
+
+    old, new = tmp_path / "old", tmp_path / "new"
+    for target in (old, new):
+        target.mkdir()
+        (target / "game.iso").write_bytes(b"x")
+    volume = tmp_path / "volume"
+    volume.symlink_to(old, target_is_directory=True)
+    monkeypatch.setattr(settings, "chd_volumes", str(volume))
+    path_utils.refresh_volume_roots()            # cache: volume -> old
+    monkeypatch.setattr(path_utils, "ROOT_PROBE_SECONDS", 3.0)
+
+    hold = threading.Event()
+    held_once = threading.Event()
+    real_realpath = os.path.realpath
+
+    def pausing_realpath(path, *args, **kwargs):
+        answer = real_realpath(path, *args, **kwargs)
+        if os.fspath(path) == str(volume) and not held_once.is_set():
+            held_once.set()
+            hold.wait(5)                          # resolved to /old, then paused
+        return answer
+
+    monkeypatch.setattr(os.path, "realpath", pausing_realpath)
+    path_utils._root_probe(str(volume))          # the probe that will report /old
+    assert held_once.wait(2)
+    volume.unlink()
+    volume.symlink_to(new, target_is_directory=True)
+    threading.Timer(0.2, hold.set).start()       # it finishes during the check
+
+    try:
+        accepted = path_utils.is_within_configured_volumes(str(old / "game.iso"))
+    finally:
+        hold.set()
+
+    assert not accepted
+    assert path_utils.is_within_configured_volumes(str(volume / "game.iso"))
