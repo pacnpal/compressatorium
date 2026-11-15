@@ -1906,3 +1906,74 @@ def test_a_folder_of_chds_is_discovered_for_an_extract_mode(volume, capsys):
     assert sorted(Path(x["path"]).name for x in lines) == ["A.chd", "B.chd"]
     assert {x["mode"] for x in lines} == {"extractdvd"}
     assert {x["status"] for x in lines} == {"planned"}
+
+
+def _other_process():
+    from services.lock_manager import LockManager, lock_manager
+
+    other = LockManager()
+    other._lock_dir = lock_manager._lock_dir
+    return other
+
+
+def test_a_verify_holds_the_file_against_writers_until_it_ends(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """codex 4577087047: while the CLI checks a file, no other process can
+    take it to overwrite or replace it; once the check ends, it can."""
+    rvz = _rvz(volume, "gc/Game.rvz")
+    other = _other_process()
+    tool = registry.get("dolphin")
+    original = tool.verify
+    seen = []
+
+    async def watching_verify(path, *args, **kwargs):
+        seen.append(other.acquire_lock(path, allow_existing=True))
+        return await original(path, *args, **kwargs)
+
+    monkeypatch.setattr(tool, "verify", watching_verify)
+
+    code, lines = _cli(capsys, "verify", str(rvz), "--json")
+
+    assert code == 0, lines
+    assert lines[0]["status"] == "intact"
+    assert seen == [False]  # the replacement could not start mid-check
+    assert other.acquire_lock(str(rvz), allow_existing=True)
+    other.release_lock(str(rvz))
+
+
+def test_a_file_a_writer_holds_is_skipped_as_busy(volume, dolphin, capsys):
+    """A writer in another process holds the file: the check is skipped as
+    busy, not failed, and the stored record is left alone."""
+    rvz = _rvz(volume, "gc/Game.rvz")
+    _store(rvz)
+    other = _other_process()
+    assert other.acquire_lock(str(rvz), allow_existing=True)
+    try:
+        code, lines = _cli(capsys, "verify", str(rvz), "--json")
+    finally:
+        other.release_lock(str(rvz))
+
+    assert code == 0, lines
+    assert lines[0]["status"] == "skipped"
+    assert "busy" in lines[0]["reason"].lower()
+    assert dolphin["runs"] == [] or all("verify" not in str(r) for r in dolphin["runs"])
+    assert _stored(rvz) is not None
+
+
+def test_a_verify_lets_go_of_its_lock_when_the_check_raises(
+    volume, dolphin, capsys, monkeypatch,
+):
+    rvz = _rvz(volume, "gc/Game.rvz")
+    tool = registry.get("dolphin")
+
+    async def broken_verify(path, *args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tool, "verify", broken_verify)
+
+    _cli(capsys, "verify", str(rvz), "--json")
+
+    other = _other_process()
+    assert other.acquire_lock(str(rvz), allow_existing=True)
+    other.release_lock(str(rvz))

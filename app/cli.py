@@ -954,10 +954,36 @@ def _checked_at(record: dict | None) -> datetime | None:
         return None
 
 
+def _hold_for_check(path: str) -> list[str] | None:
+    """Take the shared read lock jobs use on ``path`` and its companions.
+
+    Held through the check and its record, so no other process can overwrite
+    or replace the file meanwhile (#306). None, holding nothing, when a writer
+    holds one of them.
+    """
+    from services.lock_manager import lock_manager
+    from services.tools import registry
+
+    held: list[str] = []
+    for each in dict.fromkeys([path, *registry.source_companions(path)]):
+        if not lock_manager.acquire_input_lock(each):
+            _let_go_of(held)
+            return None
+        held.append(each)
+    return held
+
+
+def _let_go_of(held: list[str]) -> None:
+    from services.lock_manager import lock_manager
+
+    for each in held:
+        lock_manager.release_input_lock(each)
+
+
 async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> dict:
     """Check one Image. The line carries ``_stop`` when the run must end."""
+    from fastapi.concurrency import run_in_threadpool
     from services.lock_manager import lock_manager
-    from services.subprocess_runner import collect_abandonment, stops_verify_batch
     from services.verification_store import verification_store
 
     line = {"path": path, "status": None, "tool": tool.id, "reason": None}
@@ -967,12 +993,29 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
             line["status"] = "skipped"
             line["reason"] = f"Checked {checked.isoformat(timespec='seconds')}"
             return line
-    if lock_manager.is_locked(path):
-        line["status"], line["reason"] = "skipped", "Being written by another job"
-        return line
     if dry_run:
-        line["status"] = "planned"
+        # Read-only: look, take nothing.
+        if lock_manager.is_locked(path):
+            line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
+        else:
+            line["status"] = "planned"
         return line
+    held = await run_in_threadpool(_hold_for_check, path)
+    if held is None:
+        # A writer has it: no verdict either way, and what was stored stays.
+        line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
+        return line
+    try:
+        return await _check_held(path, tool, line, verification_store)
+    finally:
+        # Every exit, a cancel or a stop included.
+        _let_go_of(held)
+
+
+async def _check_held(path: str, tool, line: dict, verification_store) -> dict:
+    """The check and its record, run while ``_verify_one`` holds the file."""
+    from services.subprocess_runner import collect_abandonment, stops_verify_batch
+
     bound = await tool.verify_timeout(path)
     # The sink sees what the check wrote off on the way, including a detached
     # read left behind when this deadline cancels it; no result says so.

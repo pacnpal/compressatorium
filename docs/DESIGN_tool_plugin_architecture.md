@@ -2959,6 +2959,15 @@ call (`romz._no_prompt_switch()`; no password literal), so an encrypted archive
 fails at once instead of prompting. `7z a` names none:
 there the switch would encrypt the archive being written.
 
+**A check holds its file.** The CLI's `verify` takes the shared read lock jobs
+use (`acquire_input_lock`) on the file and its `source_companions` before the
+check (`cli._hold_for_check`) and holds it through the check and the
+verification-store update, releasing it on every exit (a `finally`, so a
+cancel or a stop too). No other process can take the file for writing in the
+meantime, so a replacement can't be recorded as Intact. A file a writer holds
+is skipped as "Busy: another job is writing it": no verdict, the record
+untouched, not a failure. A dry run takes nothing and only looks.
+
 **Provenance.** A plain re-check that passes (the CLI's `verify`, the web's
 Verify, single and batch) records it with `verification_store.refresh_check`,
 which updates when and which check passed and keeps the stored `produced_meta`
