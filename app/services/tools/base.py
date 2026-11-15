@@ -58,6 +58,13 @@ class ContentDigest:
         return self.value == other.value
 
 
+# The digest kind for "SHA1 of the image's bytes", shared by every tool whose
+# Source is a plain image file and whose output decodes back to one (chdman
+# DVD, maxcso, z3ds, JWUDTool). One kind is what lets a chain compare a CSO's
+# decoded image with a CHD's data SHA1 (#301).
+IMAGE_DATA_SHA1_KIND = "image_data_sha1"
+
+
 class ContentDigestUnavailable(Exception):
     """A tool should have a content digest for this file but could not get one.
 

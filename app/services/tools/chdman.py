@@ -31,7 +31,12 @@ from services.subprocess_runner import ReadCancelled, run_detached
 from utils.delete_plan import sheet_track_paths
 from utils.disc_sheet import layout_fingerprint
 
-from .base import BaseTool, ContentDigest, ContentDigestUnavailable
+from .base import (
+    IMAGE_DATA_SHA1_KIND,
+    BaseTool,
+    ContentDigest,
+    ContentDigestUnavailable,
+)
 from .spec import ModeKind, ModeSpec
 
 logger = get_logger()
@@ -88,7 +93,7 @@ _CHD = frozenset({".chd"})
 # files on disk, track files laid end to end in sheet order. A plain .iso/.bin
 # is its own one file; a DVD/HD CHD's data SHA1 is that hash of its image; a CD
 # CHD is extracted and its track files hashed the same way as a Source cue.
-IMAGE_DATA_SHA1_KIND = "image_data_sha1"
+# The kind (IMAGE_DATA_SHA1_KIND) lives in base.py, shared with other tools.
 # The modes whose Source and output both have that digest.
 _ROUND_TRIP_MODES = frozenset({"createcd", "createdvd"})
 _SHEET_EXTS = frozenset({".cue", ".gdi"})

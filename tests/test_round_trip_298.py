@@ -17,6 +17,12 @@ from services.tools.base import ContentDigest, ContentDigestUnavailable
 DOLPHIN_MODES = ("dolphin_rvz", "dolphin_wia", "dolphin_gcz", "dolphin_iso")
 
 
+# Kept in step with test_round_trip_301 as each tool gains its digest.
+ROUND_TRIP_301 = {
+    "cso_compress", "cso2_compress", "zso_compress", "dax_compress",
+}
+
+
 def _dolphin():
     return registry.get("dolphin")
 
@@ -108,9 +114,10 @@ def test_every_dolphin_mode_declares_round_trip():
 
 
 def test_modes_without_a_content_digest_do_not_declare_round_trip():
-    # Dolphin (#298) and chdman's CD/DVD create modes (#300) have a content
-    # digest on both sides; every other mode keeps the container check.
-    with_digest = set(DOLPHIN_MODES) | {"createcd", "createdvd"}
+    # Dolphin (#298), chdman's CD/DVD create modes (#300) and the rest of the
+    # delete-source modes (#301) have a content digest on both sides; every
+    # other mode keeps the container check.
+    with_digest = set(DOLPHIN_MODES) | {"createcd", "createdvd"} | ROUND_TRIP_301
     for spec in registry.mode_specs():
         if spec.mode not in with_digest:
             assert not registry.mode_supports_round_trip(spec.mode), spec.mode

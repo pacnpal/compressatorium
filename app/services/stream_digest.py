@@ -96,6 +96,31 @@ def file_chunks(paths: list[str], *, offset: int = 0) -> Producer:
     return produce
 
 
+async def content_digest_of(
+    produce: Producer,
+    *,
+    kind: str,
+    algorithm: str = "sha1",
+    cancel_event=None,
+):
+    """A ``ContentDigest`` of ``kind`` over what ``produce`` yields.
+
+    The common tail of every streamed digest: a decoder's ``ValueError`` (a
+    corrupt or truncated container) and an ``OSError`` become
+    ``ContentDigestUnavailable``, so the Source is kept. A cancel is left to
+    propagate as :class:`ReadCancelled`; the Round-trip reads the event itself.
+    """
+    from services.tools.base import ContentDigest, ContentDigestUnavailable
+
+    try:
+        value = await hash_stream(
+            produce, algorithm=algorithm, cancel_event=cancel_event,
+        )
+    except (ValueError, OSError) as e:
+        raise ContentDigestUnavailable(str(e)) from e
+    return ContentDigest(kind=kind, value=value)
+
+
 async def hash_files(
     paths: list[str], *, algorithm: str = "sha1", cancel_event=None,
 ) -> str:
