@@ -39,7 +39,7 @@
   // deletion. The verification store only tracks existing verified outputs,
   // so source inputs must not be pre-filtered or block normal create/compress
   // flows here.
-  const submitDisabled = $derived(convertibleCount === 0 || converting);
+  const submitDisabled = $derived(convertibleCount === 0 || converting || conversion.autoInFlight);
 
   // Duplicate preflight: open the modal when the backend reports any
   // output collision; await the user's pick (skip / overwrite / null
@@ -99,30 +99,18 @@
   }
 
   async function handleAutoSubmit() {
-    try {
-      await conversion.fetchAutoPlan(selectedPaths);
-    } catch (_e) {
-      return; // toast already raised
-    }
-    const proceed = await new Promise((resolve) => {
-      autoPlanPrompt = resolve;
+    // The store runs the flow: it refuses a second Start while one is in
+    // flight, and plans and queues the selection and RomM context taken here,
+    // before anything is awaited.
+    const result = await conversion.runAuto({
+      paths: selectedPaths,
+      rommPlatformId: fileBrowser.rommPlatformId,
+      confirm: () => new Promise((resolve) => {
+        autoPlanPrompt = resolve;
+      }),
+      onRepinPending: (count) => romm.setPendingRepins(count),
     });
-    const plan = conversion.autoPlan ?? [];
-    conversion.clearAutoPlan();
-    if (!proceed) return;
-    try {
-      // Same RomM metadata snapshot as a manual submit, per planned target.
-      const fromRomm = fileBrowser.rommPlatformId !== null;
-      await conversion.submitAuto(selectedPaths, {
-        plan,
-        rommRepin: fromRomm,
-        rommPlatformId: fileBrowser.rommPlatformId,
-      });
-      if (fromRomm) romm.setPendingRepins(conversion.lastRepinPending);
-      fileBrowser.clearSelection();
-    } catch (_e) {
-      // toast already raised in conversion.submitAuto
-    }
+    if (result) fileBrowser.clearSelection();
   }
 
   async function handleSubmit() {

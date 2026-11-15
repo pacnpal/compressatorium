@@ -596,7 +596,7 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
             by_path[item.path] = item
             by_path.setdefault(os.path.realpath(item.path), item)
         for batch in await _prepare_group(request, group):
-            for path, reason in batch.skipped:
+            for path, reason in batch.skipped.items():
                 item = by_path.get(path)
                 if item is None:
                     continue

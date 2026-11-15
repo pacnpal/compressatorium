@@ -7,6 +7,8 @@ the delete plan and header-dependency list (``utils.delete_plan``).
 """
 from __future__ import annotations
 
+import os
+import re
 import shlex
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -22,12 +24,21 @@ def sheet_readings(path: str | Path) -> list[str]:
 
     First the sheet as UTF-8 with a BOM stripped, or as cp1252 when it is not
     valid UTF-8; then Latin-1, which decodes any bytes and is the reading the
-    disc-ID probe always used. Empty when the sheet cannot be read.
+    disc-ID probe always used.
+
+    Empty when the sheet cannot be read, and when it is larger than
+    ``MAX_SHEET_BYTES``: never a partial parse. A sheet cut at the cap would
+    hide every track after it (a delete plan that orphans them, or a
+    ``FILE "/etc/..."`` behind a megabyte of ``REM`` lines that the tool
+    reading the whole sheet still opens), so an oversized sheet is unreadable
+    and every reader built on this treats it as unknown or unsafe.
     """
     try:
         with open(path, "rb") as fh:
-            raw = fh.read(MAX_SHEET_BYTES)
+            raw = fh.read(MAX_SHEET_BYTES + 1)
     except OSError:
+        return []
+    if len(raw) > MAX_SHEET_BYTES:
         return []
     raw = raw.removeprefix(_UTF8_BOM)
     try:
@@ -35,6 +46,105 @@ def sheet_readings(path: str | Path) -> list[str]:
     except UnicodeDecodeError:
         first = raw.decode("cp1252", errors="replace")
     return [first, raw.decode("latin-1")]
+
+
+_WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
+
+
+def _is_absolute_reference(ref: str) -> bool:
+    ref = ref.strip()
+    if not ref:
+        return False
+    if ref.startswith(("~", "\\\\")) or _WIN_ABS_RE.match(ref):
+        return True
+    return Path(ref).is_absolute()
+
+
+def _under_any(real: str, roots: Sequence[str | Path]) -> bool:
+    for root in roots:
+        real_root = os.path.realpath(root)
+        if real == real_root or real.startswith(real_root.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def resolve_track(
+    sheet_dir: str | Path,
+    ref: str,
+    *,
+    within: Sequence[str | Path] | None = None,
+) -> Path:
+    """The track a sheet names, resolved beside the sheet, or ``ValueError``.
+
+    The one track resolver: the Platform probe, the detection cache's track
+    list, the delete plan and the job gate all use it. Refused, so nothing
+    opens them: an empty name, an absolute name (``/x``, ``C:\\x``, ``\\\\host``,
+    ``~``), a name with any ``..`` segment, and a name whose real path (through
+    a symlink) lies outside the trusted roots. Returns the path beside the
+    sheet, not its real path, so callers see what the sheet named.
+
+    ``within`` names the trusted roots. None (the default, used by the probe
+    and ``header_reads``) means the configured Volumes; a caller whose sheet
+    lives elsewhere (the job worker's extraction dir for an archived set)
+    passes that root. An empty sequence is refused: it would trust nothing
+    and is always a caller bug.
+    """
+    from utils.path_utils import (
+        is_within_configured_volumes,  # local: no cycle at import
+    )
+
+    if within is not None and not list(within):
+        raise ValueError("No trusted root to confine the track to")
+
+    raw = ref.strip().strip('"')
+    if not raw:
+        raise ValueError("Empty track reference")
+    normalized = raw.replace("\\", "/")
+    if _is_absolute_reference(normalized):
+        raise ValueError(f"Absolute track reference is not allowed: {raw}")
+    if ".." in normalized.split("/"):
+        raise ValueError(f"Track reference escapes source directory: {raw}")
+    base = Path(os.path.normpath(str(Path(sheet_dir).absolute())))
+    candidate = Path(os.path.normpath(os.path.join(str(base), normalized)))
+    real = os.path.realpath(candidate)
+    if within is None:
+        inside = is_within_configured_volumes(real, treat_archives=False)
+    else:
+        inside = _under_any(real, within)
+    if not inside:
+        raise ValueError(f"Track reference resolves outside the volumes: {raw}")
+    return candidate
+
+
+def sheet_tracks(
+    path: str | Path,
+    parse: Callable[[str], list[str]],
+    *,
+    within: Sequence[str | Path] | None = None,
+) -> list[Path] | None:
+    """Every track the sheet names, resolved and confined (``resolve_track``).
+
+    None when the sheet is unreadable (missing, or over the size cap) or when
+    any track is refused: a reader must then say nothing about the sheet
+    rather than act on the tracks it was allowed to see. The first spelling of
+    each name that exists wins (``pick_existing``). ``within`` is passed to
+    ``resolve_track``: the configured Volumes unless a caller names other
+    trusted roots.
+    """
+    texts = sheet_readings(path)
+    if not texts:
+        return None
+    readings = [parse(text) for text in texts]
+    folder = Path(path).parent
+    tracks = pick_existing(readings, lambda ref: resolve_track(folder, ref, within=within))
+    if len(tracks) != len(readings[0]):
+        return None
+    return tracks
+
+
+def sheet_is_readable(path: str | Path) -> bool:
+    """Whether the sheet can be read whole (exists, readable, within the cap)."""
+    return bool(sheet_readings(path))
 
 
 def cue_tracks(text: str) -> list[str]:
@@ -92,6 +202,12 @@ def _split_line(line: str) -> list[str]:
         return line.split()
 
 
+def _is_number(field: str) -> bool:
+    # isdigit() is True for "²" and friends, which int() refuses; a sheet field
+    # is a number only when it is plain ASCII decimal digits.
+    return field.isascii() and field.isdecimal()
+
+
 def gdi_tracks(text: str) -> list[GdiTrack]:
     """Every track line of a ``.gdi`` sheet, in order.
 
@@ -102,7 +218,7 @@ def gdi_tracks(text: str) -> list[GdiTrack]:
     if not lines:
         return []
     head = _split_line(lines[0])
-    start = 1 if head and head[0].isdigit() else 0
+    start = 1 if head and _is_number(head[0]) else 0
     tracks: list[GdiTrack] = []
     for line in lines[start:]:
         parts = _split_line(line)
@@ -111,7 +227,7 @@ def gdi_tracks(text: str) -> list[GdiTrack]:
         name = parts[4].strip('"').strip()
         if not name:
             continue
-        size = int(parts[3]) if parts[3].isdigit() else None
+        size = int(parts[3]) if _is_number(parts[3]) else None
         tracks.append(GdiTrack(parts[0], size, name))
     return tracks
 

@@ -380,6 +380,55 @@ class ConversionStore {
     this.autoPlan = null;
   }
 
+  // True from Start until the Auto flow ends: a second Start while the plan is
+  // loading or the modal is open is refused instead of racing the first.
+  #autoInFlight = $state(false);
+
+  get autoInFlight() {
+    return this.#autoInFlight;
+  }
+
+  /**
+   * The whole Auto flow: plan, confirm, queue.
+   *
+   * The selection and the RomM context are captured before the first await,
+   * so what is queued is exactly what the confirmed plan showed, whatever the
+   * selection becomes while the modal is open. `confirm()` resolves true to
+   * queue. `onRepinPending(count)` runs after queueing for a RomM listing,
+   * on failure too (a failed batch can still have kept jobs whose metadata
+   * was reconciled). Returns `submitAuto`'s result, or null when nothing was
+   * queued (refused, cancelled, or failed).
+   */
+  async runAuto({ paths, rommPlatformId = null, confirm, onRepinPending } = {}) {
+    if (this.#autoInFlight || !paths?.length) return null;
+    this.#autoInFlight = true;
+    const snapshot = [...paths];
+    const platformId = rommPlatformId;
+    const fromRomm = platformId !== null && platformId !== undefined;
+    try {
+      try {
+        await this.fetchAutoPlan(snapshot);
+      } catch (_e) {
+        return null; // toast already raised
+      }
+      const proceed = await confirm();
+      const plan = this.autoPlan ?? [];
+      this.clearAutoPlan();
+      if (!proceed) return null;
+      try {
+        return await this.submitAuto(snapshot, {
+          plan, rommRepin: fromRomm, rommPlatformId: platformId,
+        });
+      } catch (_e) {
+        return null; // toast already raised in submitAuto
+      } finally {
+        if (fromRomm) onRepinPending?.(this.lastRepinPending);
+      }
+    } finally {
+      this.#autoInFlight = false;
+    }
+  }
+
   /**
    * The user picked a target by hand (the mode dropdown, RomM's "Convert to").
    * That choice wins over Auto, so Auto turns off and says so; every selector
