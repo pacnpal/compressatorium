@@ -3082,6 +3082,15 @@ leaves its detached read behind without saying so in any result). The web UI's
 batch verify and the CLI's `verify` both wrap each check in the sink and end
 there.
 
+**Terminal listeners hear each job once.** `_notify_terminal` announces a job's
+end exactly once, whichever path gets there first: a flag per job id
+(`_terminal_announced`), set under `_terminal_mutex` before notifying, so a
+queued job cancelled while the start path runs (the cancel path, then
+`_fail_before_start` or the run's own terminal path) is announced once, with
+the ending that won. `_fail_before_start` keeps an ending that already
+happened and only lets go of what the job still holds. The id leaves the set
+when the job is deleted.
+
 **`JobManager.drain()`** waits until every queued run has ended, cleanup
 included: a job notifies its listeners before `_process_job` removes its temp
 dir and prunes history, so a caller that leaves on the notification alone
