@@ -55,7 +55,7 @@ from services.subprocess_runner import (
     ioprio_prefix,
     nice_prefix,
 )
-from utils.sheet_text import gdi_tracks, pick_existing, sheet_readings
+from utils.sheet_text import cue_tracks, gdi_tracks, pick_existing, sheet_readings
 
 logger = get_logger("disc_id")
 
@@ -574,17 +574,6 @@ def nintendo_disc_platform(path: str) -> str | None:
     return None
 
 
-def _cue_file_names(text: str) -> list[str]:
-    """The quoted name of every ``FILE`` line, in order."""
-    names = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        parts = stripped.split('"')
-        if stripped.upper().startswith("FILE ") and len(parts) >= 2:
-            names.append(parts[1])
-    return names
-
-
 def _cue_track_paths(path: str) -> list[Path]:
     """Every track file a cue sheet names, resolved beside the sheet.
 
@@ -593,7 +582,7 @@ def _cue_track_paths(path: str) -> list[Path]:
     disk wins, and a track none of whose spellings exists keeps the first.
     """
     folder = Path(path).parent
-    readings = [_cue_file_names(text) for text in sheet_readings(path)]
+    readings = [cue_tracks(text) for text in sheet_readings(path)]
     return pick_existing(readings, lambda name: folder / name)
 
 
