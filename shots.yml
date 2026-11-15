@@ -209,6 +209,36 @@
       await new Promise(r => setTimeout(r, 500));
     })()
 
+# --- Workspace: eXoDOS (eXoDOS volume selected) ---------------------------
+- url: http://127.0.0.1:8099/?s=workspace-exodos-light#/workspace/exodos
+  output: docs/screenshots/workspace-exodos-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      localStorage.setItem('theme-preference', 'light');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
+      await new Promise(r => setTimeout(r, 400));
+      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'eXoDOS');
+      if (vol) vol.click();
+      await new Promise(r => setTimeout(r, 500));
+    })()
+- url: http://127.0.0.1:8099/?s=workspace-exodos-dark#/workspace/exodos
+  output: docs/screenshots/workspace-exodos-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      localStorage.setItem('theme-preference', 'dark');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
+      await new Promise(r => setTimeout(r, 400));
+      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'eXoDOS');
+      if (vol) vol.click();
+      await new Promise(r => setTimeout(r, 500));
+    })()
+
 # --- Dashboard ------------------------------------------------------------
 - url: http://127.0.0.1:8099/?s=dashboard-light#/dashboard
   output: docs/screenshots/dashboard-light.png

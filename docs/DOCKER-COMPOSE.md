@@ -226,6 +226,7 @@ Volume behavior:
 | `NKIT2ISO_RECOVERY` | `none` | What nkit2iso does with a Wii image whose update partition was removed: `none` zero-fills it (fully offline; playable but not redump-verifiable), `download` fetches the publicly archived recovery partition for a bit-exact restore. `download` is the only path on which the tool uses the network. |
 | `SWITCH_KEYS` | *(unset)* | Directory holding your own Switch `prod.keys`. Source of truth for Switch (nsz); mount it read-only. When unset, the app best-effort checks `~/.switch` and your mounted volumes. No keys ship with the image. |
 | `NSZ_COMPRESSION_LEVEL` | `18` | zstandard level for Switch compression (1-22) |
+| `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder (holding `<Game>/dosbox.conf`) for the eXoDOS repack. Must be inside a mounted volume; unset hides the tool. Nothing from eXoDOS ships with the image. |
 | `MAX_CONCURRENT_JOBS` | `1` | Parallel conversion jobs |
 | `MAX_JOB_HISTORY` | `500` | Finished jobs to retain in history (the counts stay true past the cap; only the listed rows are trimmed) |
 | `COMPRESSATORIUM_TOOL_NICE` | `10` | Nice level for all tools (0-19). Legacy alias: `CHD_CHDMAN_NICE`. |

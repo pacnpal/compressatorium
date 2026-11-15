@@ -2,7 +2,7 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), and **extract-xiso** (Xbox / Xbox 360 disc image → XISO). Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), and **extract-xiso** (Xbox / Xbox 360 disc image → XISO). It also repacks **eXoDOS** game zips so RomM's in-browser DOS player can start them. Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
@@ -30,6 +30,7 @@ A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool**
 | **Wii U** | Wii U disc images | .wud, .wux | .wux, .wud | None (fixed); a verify-after-conversion toggle | None | `JWUDTool` (Java) |
 | **NKit** | NKit-shrunk GameCube / Wii discs | .nkit.iso, .nkit.gcz | .iso, .rvz (via the `nkit_to_rvz` chain) | None (fixed) | None | `nkit2iso` (+ dolphin-tool for `nkit_to_rvz`) |
 | **Xbox** | Xbox / Xbox 360 disc images | .iso (only images holding an Xbox filesystem) | .xiso.iso | None (fixed) | None | `extract-xiso` |
+| **eXoDOS** | eXoDOS DOS game zips, for RomM | .zip (only zips holding one game folder with a template in `EXODOS_DOS_DIR`) | .dosz | None (fixed) | Your own eXoDOS `!dos` folder (`EXODOS_DOS_DIR`) | none (built in) |
 
 Most conversions above are lossless and fully reversible, including **3DS**, which
 now decompresses back to the original ROM as well. This uses
@@ -838,6 +839,12 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 |-------|------|
 | ![Wii U tool, light](docs/screenshots/workspace-wiiu-light.png) | ![Wii U tool, dark](docs/screenshots/workspace-wiiu-dark.png) |
 
+**eXoDOS.** Repack eXoDOS game zips into `.dosz` files RomM's in-browser DOS player can start.
+
+| Light | Dark |
+|-------|------|
+| ![eXoDOS tool, light](docs/screenshots/workspace-exodos-light.png) | ![eXoDOS tool, dark](docs/screenshots/workspace-exodos-dark.png) |
+
 #### Dashboard
 
 An at-a-glance view of the job queue, verification cache, mounted volumes, recent conversions, and quick tool shortcuts.
@@ -1574,6 +1581,57 @@ goes from 7.3 GB to 5.7 GB.
 
 extract-xiso is distributed under a modified BSD license; its license text ships
 in the image at `/usr/share/doc/extract-xiso/LICENSE.TXT`.
+
+## eXoDOS Support (.zip → .dosz)
+
+The eXoDOS tool repacks [eXoDOS](https://www.retro-exo.com/exodos.html) game zips
+so RomM's in-browser DOS player (EmulatorJS running DOSBox Pure) can start them on
+their own.
+
+eXoDOS ships each game as a zip holding one folder (`Abaron/`) and keeps the game's
+DOSBox setup in a separate `!dos` folder, at `!dos/Abaron/dosbox.conf`. That config
+mounts paths inside the whole collection (`mount c .\eXoDOS\Abaron`), so a game zip
+copied into RomM alone does not start.
+
+- **What the repack writes.** DOSBox Pure mounts the loaded file as drive C: and,
+  with its core option `dosbox_pure_conf` set to `inside`, loads `C:\DOSBOX.CONF`:
+  `dosbox.conf` at the root of the file. So the repack moves the game's files out of
+  their folder to the root, and writes the game's template there as `dosbox.conf`
+  with its mount paths rewritten (`mount c .\eXoDOS\Abaron` becomes `mount c .\`,
+  `imgmount d .\eXoDOS\Abaron\CD\GAME.CUE` becomes `imgmount d .\CD\GAME.CUE`).
+- **Only mount lines change.** Only `mount`, `imgmount` and `boot` lines are
+  rewritten. Comments, every other line, the file's encoding and its line endings
+  are kept exactly. A path into a different game's folder is left alone.
+- **It tells you when a game reaches outside itself.** If the config still points
+  into `.\eXoDOS\` after the rewrite, the job finishes with a warning naming the
+  line, because that game will probably not start.
+- **Output is `Game.dosz`**, beside the source or in the chosen output directory.
+  A `.dosz` is a zip under the name DOSBox Pure documents for one, so the product
+  can never replace its source, and its Verify action never claims other zips.
+- **The source is only ever read.** The file is written under a hidden temporary
+  name and moved into place only once it is complete, so a cancelled or failed job
+  leaves nothing that looks finished. There is no delete-after-verify option: the
+  product differs from the source by design, and the source is your eXoDOS install.
+- **Verify** tests every member's CRC, checks the member names, and checks that
+  `dosbox.conf` sits at the root.
+- **Offered only on eXoDOS game zips.** A `.zip` is offered when it holds one game
+  folder and that game's template is in `EXODOS_DOS_DIR`. Member names are checked
+  with the same rules as archive extraction (no absolute paths, no `..`), the
+  archive size limits apply, and the template must resolve inside `EXODOS_DOS_DIR`.
+- **Not from archives**: the repack needs the zip itself and the `!dos` folder.
+
+**In RomM**, set DOSBox Pure's core option `dosbox_pure_conf` to `inside` (it is off
+by default), then put the `.dosz` files in RomM's `dos` platform folder.
+
+Only eXoDOS is supported. eXoWin3x and the other eXo packs use the same pattern and
+can be added later. The behaviour is modelled on
+[eXo2romm](https://github.com/derkommutator/eXo2romm) (Unlicense); no code is shared.
+
+### eXoDOS Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EXODOS_DOS_DIR` | *(unset)* | Your eXoDOS `!dos` folder (the one holding `<Game>/dosbox.conf`). Must be inside a volume. Unset hides the tool. Nothing from eXoDOS ships with the image. |
 
 ## CLI Mode (Batch Processing)
 

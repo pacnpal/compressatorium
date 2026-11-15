@@ -2361,6 +2361,63 @@ an earlier run left for that path is dropped. `ConversionJob.check_passed`
 (and so the Ledger row) still says `"intact"`, because the container check did
 pass.
 
+### 3.3.13 Editing a zip (`services/archive_edit.py`) and the eXoDOS repack
+
+`rewrite_zip(src, dst, *, rename, add, is_cancelled, on_progress)` is the shared
+way to produce an edited copy of a zip. The first user is the eXoDOS repack
+(`exodos_repack`, #323); the planned Patch bench is the next.
+
+- **Through zipfile's public API.** Each member is read (zipfile checks its CRC
+  at the end of the read) and written back with its own compression method,
+  timestamp and attributes. Member content is identical; compressed bytes may
+  differ. A corrupt Source member fails the copy instead of reaching the product.
+- **`rename`** maps a member name to its new name, or to `None` to drop it.
+  **`add`** holds new members; an added name replaces any copied member that
+  would have taken it. Two copied members renamed onto one name raise
+  `ValueError`.
+- **Nothing that looks finished appears early.** The archive is written to a
+  `mkstemp` file named `.<dst name>.partial-*` in the destination directory,
+  fsynced, then placed with `utils.path_utils.place_without_clobbering`, the
+  atomic no-replace move, and the directory is fsynced. Any failure, including
+  `ConversionCancelled` from `is_cancelled`, unlinks the temporary file. An
+  existing file at `dst` raises `FileExistsError` and is never replaced; the job
+  pipeline's authorized-overwrite sweep clears it first.
+
+`archive_service.member_segments(name)` is the public face of the extract path's
+member-name rules (no backslashes, absolute paths, `..`, empty segments or drive
+letters), for callers that read archives themselves.
+
+**The eXoDOS repack** (`services/exodos.py`, `tools/exodos.py`) is a pure-Python
+tool: it registers with an empty binary path and reports no pids.
+
+- **Gating.** `EXODOS_DOS_DIR` is the only source of the template tree. It must
+  be a directory inside a configured Volume; otherwise `is_ready` is false (run
+  through `run_detached`, since it stats a possibly dead mount) and the tool is
+  hidden.
+- **Content-refined source.** `.zip` is romz's archive extension too, so
+  `converts_path` reads the zip's directory: every name passes
+  `member_segments` and `enforce_archive_limits`, every member sits in one game
+  folder (a loose root file refuses it), and `<tree>/<game>/dosbox.conf`
+  resolves (realpath) inside the tree. The answer is cached per (path, size,
+  mtime). `_NOT_CONVERTIBLE_REASON["exodos"]` names the plan-time reason.
+- **The product.** DOSBox Pure mounts the loaded file as C: and, with the
+  `dosbox_pure_conf=inside` core option, loads `C:\DOSBOX.CONF`. So the members
+  are re-rooted (`<game>/x` becomes `x`) and the template is added as
+  `dosbox.conf` at the root, its `mount`/`imgmount`/`boot` lines rewritten by
+  `rewrite_conf` (bytes in, bytes out; CRLF and encoding kept). The product is
+  `<name>.dosz` beside the Source, the extension DOSBox Pure documents as a zip,
+  so it can never share its Source's path.
+- **Warnings.** Lines that still point into `.\eXoDOS\` after the rewrite end
+  the job with a `warning` update, the same shape a chain uses for a caveat.
+- **Check.** `verify_stream` tests every CRC, the member names and limits, and
+  the root `dosbox.conf`. The mode sets `supports_verify` without
+  `supports_delete_on_verify` (listed in the registry test's declined set): the
+  product differs from its Source by design, and the Source is the operator's
+  eXoDOS install.
+- **Extending.** The pack-specific facts (template folder, path token, conf
+  name, Platform slug) live in a `CollectionProfile`. eXoWin3x and the other eXo
+  packs are a new profile, not new logic. Only eXoDOS ships.
+
 ### 3.4 `registry.py`
 
 ```python

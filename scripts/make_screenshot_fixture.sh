@@ -23,7 +23,8 @@ mkdir -p \
   "$root/Arcade CHD" \
   "$root/GameCube" \
   "$root/Nintendo 3DS" \
-  "$root/Wii U"
+  "$root/Wii U" \
+  "$root/eXoDOS/!dos/SQuest"
 
 # Placeholder file sizes are in KiB. `dd` is used rather than `head -c` because
 # the latter's byte count is a GNU extension the BSD `head` on macOS lacks.
@@ -47,5 +48,18 @@ placeholder "$root/Nintendo 3DS/mario-3d-land.cci" 2048
 # shippable nor needed to render the row.
 placeholder "$root/Wii U/splatoon.wud" 3072
 placeholder "$root/Wii U/mario-maker.wux" 1024
+
+# eXoDOS: a synthetic game zip (one game folder) and its template in the !dos
+# tree, which the workflow points EXODOS_DOS_DIR at. Nothing from eXoDOS itself.
+printf '[autoexec]\r\nmount c .\\eXoDOS\\SQuest\r\nc:\r\nSQUEST.EXE\r\n' \
+  > "$root/eXoDOS/!dos/SQuest/dosbox.conf"
+python3 - "$root/eXoDOS/Sample Quest (1993).zip" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as zf:
+    zf.writestr("SQuest/SQUEST.EXE", b"\0" * 4096)
+    zf.writestr("SQuest/README.TXT", b"Sample Quest placeholder")
+PY
 
 echo "Fixture volume created under: $root"
