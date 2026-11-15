@@ -95,6 +95,14 @@ class _SourceDelete:
     referrer_records: List[dict] = field(default_factory=list)
 
 
+def _check_satisfies(check_passed: Optional[str], required: Optional[str]) -> bool:
+    """Whether a recorded check meets a required check level: Round-tripped
+    meets either level, Intact only ``container_only``."""
+    if required == "round_trip":
+        return check_passed == "round_tripped"
+    return check_passed in _CHECK_LABELS
+
+
 def _let_go(paths: Optional[Iterable[str]]) -> None:
     """Release the exclusive locks :meth:`JobManager._take_exclusively` took."""
     for path in paths or ():
@@ -3220,7 +3228,7 @@ class JobManager:
             return KEPT_DELETE_UNANSWERED
 
     async def retry_kept_delete(
-        self, *, source_path: str, output_path: str,
+        self, *, source_path: str, output_path: str, required_check: Optional[str] = None,
     ) -> KeptDeleteRetry:
         """Retry only the delete step for a Source a reader kept (#329).
 
@@ -3234,6 +3242,11 @@ class JobManager:
         (:meth:`_delete_source_set`, with its ``mutation_guard`` and Referrer
         hook). Never raises for a refusal: the outcome says whether to try
         again (``reader``, ``kept``) or never (``stale``).
+
+        *required_check* is the check the Rule asks for now (its
+        ``effective_check_level``): ``round_trip`` takes a Round-tripped
+        record, ``container_only`` an Intact or a Round-tripped one. A record
+        that falls short is ``stale`` (codex 4579636593).
         """
         if "::" in source_path:
             return KeptDeleteRetry(
@@ -3263,6 +3276,7 @@ class JobManager:
             if (
                 not record
                 or check not in _CHECK_LABELS
+                or not _check_satisfies(check, required_check)
                 or record.get("source_path") != source_path
                 or not isinstance(meta, dict)
                 or not meta.get("source")

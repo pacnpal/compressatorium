@@ -4109,12 +4109,20 @@ job keeps its Source for a reader, the sweep's terminal listener
 (`note_job_finished`) records it in that Platform's Rule state, the same
 `rules.state` row (`services/rules/store.py`) that holds the converted
 history and the failed holds: `kept_sources[image key] = {source, output,
-job_id, kept_at, attempts, rule_identity, library_identity}`.
-`rule_identity` is the Rule's `_output_identity` when the job was queued, and
-`library_identity` the Library's (`_library_identity`: its id and root, plus
-`decision_identity()` where a Library has one, RomM's instance URL), taken
-when the job was queued; a job that ends after either changed records
-nothing. Every later sweep, the web app's and
+job_id, kept_at, attempts, decision, decision_generation}`.
+
+`decision` is the delete decision identity (`_delete_decision_identity(rule,
+library)`): every input to whether the delete is allowed. The Rule's
+`DELETE_DECISION_FIELDS` (`OUTPUT_IDENTITY_FIELDS`: mode, output_dir,
+compression, compression_level, split, duplicate_action; plus
+delete_on_verify and check_level), the effective check level as the registry
+answers it now (`effective_check_level`), and the Library
+(`_library_identity`: its id and root, plus `decision_identity()` where a
+Library has one, RomM's instance URL). `decision_generation` is a counter per
+(Library, Platform) in `rules.state`, moved on by every invalidation
+(`_invalidate_decisions`, which also drops the Platform's pending deletes).
+Both are stamped on the job when it is queued (`_job_decision`), and a job
+that ends after either moved records nothing, checked under `_sweep_lock`. Every later sweep, the web app's and
 `compressatorium run-rules`'s alike (`_retry_kept_deletes`, before any
 planning, never in a preview), calls `JobManager.retry_kept_delete(source,
 output)` for each, at most `KEPT_DELETES_PER_SWEEP` a sweep:
@@ -4143,13 +4151,19 @@ It may only proceed while the decision that kept the Source still stands:
 - A paused Rule waits: the same `_rule_paused` gate as the Platform pass (an
   operator's pause holds unless the Platform is named, a validation pause
   always), and its entries are neither retried nor dropped.
-- A Rule that is gone, no longer deletes its Sources, or asks for another
-  output (`rule_identity` differs), or a Library that is another one now
-  (`library_identity` differs), drops its entries without deleting. So does a
+- An entry whose `decision` differs from the one recomputed from the current
+  Rule and Library, or whose generation is not the current one, is dropped
+  without deleting. So is one whose Rule is gone or keeps its Sources.
+- Apart from that, the record's check must meet the Rule's current effective
+  check level (`retry_kept_delete(required_check=...)`, `_check_satisfies`):
+  Round-tripped meets either level, Intact only the container check. So does a
   Source no longer inside the Library's root as it resolves now (checked
   fresh, bounded; an unanswered volume is an attempt).
-- `forget_converted_locked` is the one point that invalidates a Rule's
-  decisions, pending deletes included, so every caller drops them: Forget
+- Invalidations move the generation on: `forget_converted_locked` for every
+  Platform it targets, and `set_rules` for a Platform whose decision identity
+  changed (a retarget through `forget_converted_locked`, any other decision
+  field directly). So every caller of `forget_converted_locked` drops pending
+  deletes and outruns in-flight completions: Forget
   history (`forget_converted`, the Rules and Libraries routes, RomM's), a
   Rule's retarget (`set_rules`), and RomM's identity cleanup
   (`routes/romm.py::_run_identity_cleanup`). `forget_checks_locked`, which

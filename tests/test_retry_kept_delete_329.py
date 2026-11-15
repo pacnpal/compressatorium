@@ -209,14 +209,30 @@ def test_a_retargeted_rule_drops_the_entry_without_deleting(env, dolphin, capsys
     assert kept["iso"].exists()
 
 
-def test_an_entry_from_a_former_rule_identity_is_dropped_at_retry(
-    env, dolphin, capsys, kept,
+_DECISION_INPUTS = [
+    ("rule", "mode"), ("rule", "output_dir"), ("rule", "compression"),
+    ("rule", "compression_level"), ("rule", "split"), ("rule", "duplicate_action"),
+    ("rule", "delete_on_verify"), ("rule", "check_level"), ("check", None),
+    ("library", None),
+]
+
+
+@pytest.mark.parametrize(("part", "field"), _DECISION_INPUTS)
+def test_an_entry_decided_under_any_other_input_is_dropped_at_retry(
+    env, dolphin, capsys, kept, part, field,
 ):
+    """Each input to the delete decision, toggled on its own in the stored
+    entry: the retry recomputes the decision from the current Rule and
+    Library, finds it differs, and drops the entry without deleting."""
     from services.rules import sweep as rules_sweep
 
     async def tamper():
         state = await rules_sweep.get_state(env["shelf"])
-        state["gc"]["kept_sources"]["Game.iso"]["rule_identity"] = ["dolphin_wia"]
+        decision = state["gc"]["kept_sources"]["Game.iso"]["decision"]
+        if field is None:
+            decision[part] = "something else"
+        else:
+            decision[part][field] = "something else"
         await rules_sweep.store.write(rules_sweep.store.STATE_KEY, env["shelf"], state)
 
     asyncio.run(tamper())
@@ -225,6 +241,87 @@ def test_an_entry_from_a_former_rule_identity_is_dropped_at_retry(
 
     assert code == 0, lines
     assert kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_the_decision_identity_covers_every_listed_input():
+    from services.rules import sweep as rules_sweep
+
+    assert {f for part, f in _DECISION_INPUTS if part == "rule"} == set(
+        rules_sweep.DELETE_DECISION_FIELDS,
+    )
+
+
+def test_a_new_check_level_keeps_the_source_and_drops_the_entry(
+    env, dolphin, capsys, kept,
+):
+    """Kept under the container check; the Rule now asks for the Round-trip,
+    which the Intact record never passed (codex 4579636593)."""
+    _store_rules(env, {"shelf": _rule(env, check_level="round_trip")})
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_a_round_trip_rule_takes_no_intact_only_record(env, dolphin, capsys, kept):
+    """The retry's own check, apart from the identity: a Rule that asks for
+    the Round-trip refuses an Intact record."""
+    from services.job_manager import KEPT_STALE, job_manager
+
+    outcome = asyncio.run(job_manager.retry_kept_delete(
+        source_path=str(kept["iso"]), output_path=str(kept["output"]),
+        required_check="round_trip",
+    ))
+
+    assert outcome.status == KEPT_STALE
+    assert kept["iso"].exists()
+
+
+def test_forget_history_while_a_completion_waits_records_nothing(
+    env, dolphin, capsys, monkeypatch,
+):
+    """Forget history runs while a finished job's listener waits for the
+    sweep lock: the entry it was about to write is not written after the
+    clear (codex 4579636594)."""
+    from services import job_manager as job_manager_module
+    from services.job_manager import JobManager
+    from services.lock_manager import LockManager, lock_manager
+    from services.rules import sweep as rules_sweep
+
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.05)
+    iso = _iso(env)
+    (env["vol"] / "out").mkdir()
+    _store_rules(env, {"shelf": _rule(env)})
+    reader = LockManager()
+    reader._lock_dir = lock_manager._lock_dir
+    original_release = JobManager._release_inputs
+    taken = []
+
+    def release_then_read(self, job_id):
+        original_release(self, job_id)
+        if not taken:
+            taken.append(reader.acquire_dir_lock(str(iso.parent)))
+
+    original_remember = rules_sweep._remember_kept_source
+
+    async def forget_first(library, *args, **kwargs):
+        # What the operator's Forget history does while this listener waits.
+        await rules_sweep.forget_converted(library)
+        return await original_remember(library, *args, **kwargs)
+
+    monkeypatch.setattr(JobManager, "_release_inputs", release_then_read)
+    monkeypatch.setattr(rules_sweep, "_remember_kept_source", forget_first)
+    try:
+        _cli(capsys, "run-rules", "--json")
+    finally:
+        reader.release_dir_lock(str(iso.parent))
+
+    assert taken == [True]
+    assert iso.exists()
     assert not _rule_state(env)["gc"].get("kept_sources")
 
 
@@ -355,7 +452,7 @@ def _seed_kept(library, source="/v/Game.iso", output="/v/out/Game.rvz", pid="gc"
         entry = dict(state.get(pid) or {})
         entry[rules_sweep.KEPT_SOURCES] = {"Game.iso": {
             "source": source, "output": output, "attempts": 0,
-            "rule_identity": [], "library_identity": [],
+            "decision": {}, "decision_generation": 0,
         }}
         state[pid] = entry
         await rules_sweep.store.write(rules_sweep.store.STATE_KEY, library, state)

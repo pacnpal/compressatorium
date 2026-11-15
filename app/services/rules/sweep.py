@@ -74,6 +74,7 @@ from services.rules.rules import (
     CHECK,
     CONVERT,
     RULE_KINDS,
+    OUTPUT_IDENTITY_FIELDS,
     _output_identity,
     _validation_paused,
     effective_check_level,
@@ -190,9 +191,10 @@ _active_check_runs: set[tuple[str, str]] = set()
 # by `_mark_converted`; see there. Bounded by the same thing that bounds
 # `_job_owners`: one entry per queued conversion, removed when it is applied.
 _late_verdicts: dict[str, bool] = {}
-# The Library's identity (`_library_identity`) when each owned job was queued:
-# a job that ends after its Library changed records no pending delete (#329).
-_job_library: dict[str, list] = {}
+# What each owned job's delete was decided under, stamped when it was queued:
+# ``(_delete_decision_identity, decision generation)``. A job that ends after
+# either moved records no pending delete (#329).
+_job_decision: dict[str, tuple[dict, int]] = {}
 
 
 async def get_rules(library: Library, kind: str = CONVERT) -> dict[str, dict]:
@@ -380,6 +382,17 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
         if stale:
             # Its pending deletes too: they were decided under the former output.
             await forget_converted_locked(library, stale)
+        # A change to anything else the delete is decided on (deleting at all,
+        # the check level) invalidates the pending deletes, not the history.
+        redecided = [
+            pid for pid in previous if pid not in stale
+            and _delete_decision_identity(previous[pid], library)
+            != _delete_decision_identity(rules.get(pid), library)
+        ]
+        if redecided:
+            state = await get_state(library)
+            _invalidate_decisions(state, redecided)
+            await store.write(store.STATE_KEY, library, state)
         await store.write(store.RULES_KEY, library, rules)
         return rules
 
@@ -410,14 +423,14 @@ async def forget_converted_locked(
     """
     state = await get_state(library)
     targets = (
-        [str(p) for p in platform_ids] if platform_ids is not None else list(state)
+        [str(p) for p in platform_ids] if platform_ids is not None
+        else sorted({*state, *(await get_rules(library))})
     )
     cleared = 0
     for pid in targets:
         entry = state.get(pid)
         if isinstance(entry, dict) and (
             entry.get("converted") or entry.get("converted_ids") or entry.get("failed")
-            or entry.get(KEPT_SOURCES)
         ):
             entry = dict(entry)
             entry.pop("converted", None)
@@ -425,12 +438,11 @@ async def forget_converted_locked(
             # The failed hold too: "forget" is how an operator retries an
             # Image without changing its file.
             entry.pop("failed", None)
-            # And a pending delete: the decision that kept the Source no
-            # longer stands once its history is forgotten.
-            entry.pop(KEPT_SOURCES, None)
             state[pid] = entry
             cleared += 1
-    if cleared:
+    # Every decision made for these Platforms is invalid now, pending deletes
+    # and jobs still running alike (the generation moves on).
+    if _invalidate_decisions(state, targets) or cleared:
         await store.write(store.STATE_KEY, library, state)
     return cleared
 
@@ -458,7 +470,7 @@ async def forget_library(library: Library) -> None:
         for job_id, owner in list(_job_owners.items()):
             if owner[0].id == library.id:
                 _job_owners.pop(job_id, None)
-                _job_library.pop(job_id, None)
+                _job_decision.pop(job_id, None)
         for key in [k for k in _unreadable if k[0] == library.id]:
             _unreadable.pop(key, None)
         for kind in RULE_KINDS:
@@ -774,7 +786,7 @@ async def note_job_finished(job) -> None:
     # `_mark_converted` indexes every one of those. So a miss means the job is
     # not ours, and there is nothing to write.
     owner = _job_owners.pop(job_id, None)
-    library_identity = _job_library.pop(job_id, None)
+    decision = _job_decision.pop(job_id, None)
     if owner is None:
         return
     library, platform_id, rom_id, identity, queued_fingerprint = owner
@@ -785,9 +797,7 @@ async def note_job_finished(job) -> None:
         done and getattr(job, "delete_on_verify", False)
         and getattr(job, "warning", None) == SOURCE_KEPT_FOR_READERS
     ):
-        await _remember_kept_source(
-            library, platform_id, rom_id, job, generation, identity, library_identity,
-        )
+        await _remember_kept_source(library, platform_id, rom_id, job, generation, decision)
     if (
         FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED
         and await _same_rule(library, platform_id, identity)
@@ -832,46 +842,90 @@ async def note_job_finished(job) -> None:
 
 async def _remember_kept_source(
     library: Library, platform_id: str, image_key: str, job, generation: int,
-    identity: tuple | None, library_identity: list | None,
+    decision: tuple[dict, int] | None,
 ) -> None:
     """Note a Source the delete step kept for a reader, for a later sweep to
     retry (#329). Any Library: it needs no converted history.
 
-    Bound to the Rule that queued the job (*identity*, its
-    ``_output_identity``): a retry deletes only while the Rule still asks for
-    the same output, and a job that ends after its Rule was retargeted
-    records nothing (codex 4579529043). Likewise bound to the Library as it
-    was when the job was queued (*library_identity*): a job that ends after
-    the Library changed (its root, RomM's instance) records nothing
-    (codex 4579589757).
+    *decision* is what the job's delete was decided under, stamped when it was
+    queued: the delete decision identity and the decision generation. Recorded
+    only while both still hold, checked under ``_sweep_lock``: a job that ends
+    after its Rule, its Library or its history changed (a retarget, a new
+    check level, Forget history, RomM's identity cleanup) records nothing
+    (codex 4579636593, 4579636594).
     """
-    if identity is None or library_identity is None:
-        return  # nothing to bind it to: never retried
+    if decision is None:
+        return  # not decided by a Rule this process queued: never retried
+    identity, queued_generation = decision
     pending = {
         "source": getattr(job, "file_path", None),
         "output": getattr(job, "output_path", None),
         "job_id": getattr(job, "id", None),
         "kept_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "attempts": 0,
-        "rule_identity": list(identity),
-        "library_identity": library_identity,
+        "decision": identity,
+        "decision_generation": queued_generation,
     }
     if not pending["source"] or not pending["output"]:
         return
     async with _sweep_lock:
         if _generations.get(library.id, 0) != generation:
             return  # removed meanwhile
-        if not await _same_rule(library, platform_id, identity):
-            return  # retargeted meanwhile: the old decision no longer stands
-        if _library_identity(library) != library_identity:
-            return  # the Library changed meanwhile
         state = await get_state(library)
         entry = dict(state.get(platform_id) or {})
+        if _decision_generation(entry) != queued_generation:
+            return  # invalidated meanwhile
+        rule = (await get_rules(library)).get(platform_id)
+        if _delete_decision_identity(rule, library) != identity:
+            return  # the Rule or the Library changed meanwhile
         kept = dict(entry.get(KEPT_SOURCES) or {})
         kept[str(image_key)] = pending
         entry[KEPT_SOURCES] = kept
         state[platform_id] = entry
         await store.write(store.STATE_KEY, library, state)
+
+
+# Every Rule field that decides whether a delete is allowed (#329): what the
+# job produces (``OUTPUT_IDENTITY_FIELDS``), whether it deletes at all, and
+# the check it must pass first. ``_delete_decision_identity`` adds the
+# effective check level and the Library.
+DELETE_DECISION_FIELDS = (*OUTPUT_IDENTITY_FIELDS, "delete_on_verify", "check_level")
+DECISION_GENERATION = "decision_generation"
+
+
+def _delete_decision_identity(rule: dict | None, library: Library) -> dict:
+    """Every input to a Rule's delete decision, for a pending delete (#329).
+
+    The Rule's ``DELETE_DECISION_FIELDS``, the check its job passes before
+    deleting as the registry answers it now (``effective_check_level``), and
+    the Library (``_library_identity``). A kept Source is deleted only while
+    this is unchanged.
+    """
+    rule = rule or {}
+    return {
+        "rule": {field: rule.get(field) for field in DELETE_DECISION_FIELDS},
+        "check": effective_check_level(rule) if rule else None,
+        "library": _library_identity(library),
+    }
+
+
+def _decision_generation(entry: dict | None) -> int:
+    """A Platform's decision generation, from its Rule state entry."""
+    try:
+        return int((entry or {}).get(DECISION_GENERATION) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _invalidate_decisions(state: dict, platform_ids) -> bool:
+    """Move each Platform's decision generation on and drop its pending
+    deletes, in *state* (written by the caller). True when anything changed."""
+    for pid in platform_ids:
+        entry = dict(state.get(str(pid)) or {})
+        entry[DECISION_GENERATION] = _decision_generation(entry) + 1
+        entry.pop(KEPT_SOURCES, None)
+        state[str(pid)] = entry
+    return bool(platform_ids)
 
 
 def _rule_paused(rule: dict, wanted: set[str] | None) -> bool:
@@ -936,12 +990,13 @@ async def _retry_kept_deletes(
             if (
                 not rule or not rule.get("delete_on_verify")
                 or not isinstance(pending, dict)
-                or pending.get("rule_identity") != list(_output_identity(rule))
-                or pending.get("library_identity") != _library_identity(library)
+                or pending.get("decision") != _delete_decision_identity(rule, library)
+                or pending.get(DECISION_GENERATION) != _decision_generation(entry)
             ):
-                # The Rule is gone, keeps its Sources now, or asks for another
-                # output, or the Library is another one now: the decision that
-                # kept this Source no longer stands.
+                # The Rule is gone or keeps its Sources now, or anything the
+                # delete was decided on changed (the Rule, the check, the
+                # Library), or it was invalidated: that decision no longer
+                # stands.
                 remaining.pop(image_key)
                 continue
             # And the Source is still inside the Library as it is now, checked
@@ -960,6 +1015,7 @@ async def _retry_kept_deletes(
                 outcome = await job_manager.retry_kept_delete(
                     source_path=str(pending.get("source") or ""),
                     output_path=str(pending.get("output") or ""),
+                    required_check=effective_check_level(rule),
                 )
             except Exception as exc:
                 # One entry's failure (an unlink refused, an I/O error) is that
@@ -1096,6 +1152,7 @@ async def _same_rule(library: Library, platform_id: str, identity: tuple | None)
 def _own_jobs(
     library: Library, platform_id: str, entries: dict, identity: tuple | None = None,
     *, fingerprints: dict[str, str | None] | None = None,
+    decision: tuple[dict, int] | None = None,
 ) -> None:
     """Register `note_job_finished`'s owner map for these queued conversions.
 
@@ -1126,7 +1183,8 @@ def _own_jobs(
             _job_owners[job_id] = (
                 library, str(platform_id), str(rom_id), own_identity, fingerprint,
             )
-            _job_library.setdefault(job_id, _library_identity(library))
+            if decision is not None:
+                _job_decision.setdefault(job_id, decision)
 
 
 def _converted_entries(produced: list[tuple]) -> dict:
@@ -1802,6 +1860,10 @@ async def _sweep_locked(
                         str(image_by_path[path].key): fingerprint_by_path.get(path)
                         for path in batch
                     },
+                    decision=(
+                        _delete_decision_identity(rule, library),
+                        _decision_generation(states[kind].get(platform_id)),
+                    ),
                 )
                 notifications.sweep_jobs_queued(jobs)  # sync, before any await
 
