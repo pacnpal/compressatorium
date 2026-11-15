@@ -57,4 +57,14 @@ placeholder "$root/ROM Library/roms/ps2/okami.iso" 2048
 placeholder "$root/ROM Library/roms/gc/metroid-prime.iso" 2048
 placeholder "$root/ROM Library/roms/mystery-disc.iso" 1024
 
+# A GameCube disc filed under ps2 (#304): its header (game ID, then the
+# GameCube magic C2339F3D at 0x1C) disagrees with its folder, so the Findings
+# view shows a Platform conflict. Octal escapes: portable across printf builds.
+{
+  printf 'GALE01'
+  dd if=/dev/zero bs=1 count=22 2>/dev/null
+  printf '\302\063\237\075'
+  dd if=/dev/zero bs=1 count=1056 2>/dev/null
+} > "$root/ROM Library/roms/ps2/melee.iso"
+
 echo "Fixture volume created under: $root"

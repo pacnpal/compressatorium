@@ -7,17 +7,21 @@ choice and folder Libraries, and (later) the Inbox and the CLI. It never guesses
    through ``ToolPlugin.header_platform`` (chdman: PS1/PS2/PSP/Dreamcast/
    Saturn/Sega CD, dolphin: GameCube/Wii, xiso: Xbox/Xbox 360). The registry
    decides who is asked, so a new console is taught here by its tool.
-2. **Folder name.** The nearest parent folder whose name is a Platform slug a
-   tool declares, or a name RomM, ES-DE or Batocera use for one (``psx``,
-   ``gc``, ``megacd``, ...).
+2. **The nearest folder that says.** Walking up from the Image's folder, the
+   first folder that either has the user's mapping ("this folder is PSP",
+   :mod:`services.platform_mappings`, #304) or a name that is a Platform slug
+   a tool declares, or a name RomM, ES-DE or Batocera use for one (``psx``,
+   ``gc``, ``megacd``, ...). At the same folder the mapping beats the name. A
+   mapping on ``roms/`` therefore names the Images in ``roms/misc/`` but not
+   those in ``roms/ps2/``.
 
-The header wins. A folder name is only used when no header can be read. A
-header that disagrees with the folder, or two headers that disagree with each
-other, is a conflict and names no Platform. When nothing answers the Image is
-Unsorted.
+The header wins. The folder is only used when no header can be read. A header
+that disagrees with the deciding folder, or two headers that disagree with
+each other, is a conflict and names no Platform. When nothing answers the
+Image is Unsorted.
 
 Results are cached per path and thrown away when the file's size or mtime
-changes.
+changes, or the folder evidence that decides it does.
 """
 from __future__ import annotations
 
@@ -36,6 +40,7 @@ logger = get_logger("platform_detect")
 
 HEADER = "header"
 FOLDER = "folder"
+MAPPING = "mapping"
 CONFLICT = "conflict"
 UNSORTED = "unsorted"
 
@@ -163,6 +168,14 @@ def platform_name(slug: str | None) -> str | None:
     return _NAMES.get(slug, slug)
 
 
+def platforms() -> list[dict[str, str]]:
+    """Every Platform with a display name, sorted by name (the mapping picker)."""
+    return sorted(
+        ({"slug": slug, "name": name} for slug, name in _NAMES.items()),
+        key=lambda p: p["name"].lower(),
+    )
+
+
 def known_slug(name: str | None) -> str | None:
     """The Platform slug *name* stands for, or None when no Platform has it.
 
@@ -182,9 +195,9 @@ def known_slug(name: str | None) -> str | None:
 class Detection:
     """What :func:`detect_platform` worked out, and how.
 
-    ``platform`` is set only when ``how`` is ``"header"`` or ``"folder"``.
-    ``header`` and ``folder`` keep what each source said, so a conflict can be
-    explained ("in the ps2 folder, header says ngc").
+    ``platform`` is set only when ``how`` is ``"header"``, ``"mapping"`` or
+    ``"folder"``. ``header``, ``folder`` and ``mapped`` keep what each source
+    said, so a conflict can be explained ("in the ps2 folder, header says ngc").
     """
 
     platform: str | None
@@ -192,6 +205,16 @@ class Detection:
     header: str | None
     folder: str | None
     reason: str
+    # The Platform the user's mapping gave the deciding folder, when a
+    # mapping is the folder evidence that decides.
+    mapped: str | None = None
+    # Every header's answer, when two or more disagree.
+    headers: tuple[str, ...] = ()
+    # The folder evidence that decided (a mapping or a Platform name): the
+    # folder's path and the Platform it named. ``folder`` above is only the
+    # nearest Platform name, which a nearer mapping may have overruled.
+    place: str | None = None
+    place_platform: str | None = None
 
     @property
     def decided(self) -> bool:
@@ -254,24 +277,34 @@ def _header(path: str, tools: Iterable) -> tuple[set[str], list[str]]:
     return found, sources
 
 
-def _candidate_folders(path: str) -> list[str]:
-    """Folder names the walk may read for ``path``, nearest first.
+def _candidate_paths(path: str) -> list[PurePath]:
+    """The folders the walk may read for ``path``, nearest first.
 
     From the Image's own folder up to the root of the Volume that holds it,
     root included, never above: a Volume mounted under ``/mnt/md/...`` must not
-    make every Image in it a Genesis Image. A path in no configured Volume
-    uses only its own folder.
+    make every Image in it a Genesis Image. Resolved, so a mapping (stored
+    under a Library's resolved root) matches an Image reached through a
+    symlink too. A path in no configured Volume uses only its own folder.
     """
     parent = PurePath(path).parent
+    own = [parent] if parent.name else []
     root = containing_volume_root(path)
     if root is None:
-        return [parent.name] if parent.name else []
+        return own
     resolved = Path(os.path.realpath(path)).parent
     try:
         below = resolved.relative_to(root).parts
     except ValueError:
-        return [parent.name] if parent.name else []
-    return [*reversed(below), root.name]
+        return own
+    out = [resolved]
+    for _part in below:
+        out.append(out[-1].parent)
+    return out
+
+
+def _candidate_folders(path: str) -> list[str]:
+    """Folder names the walk may read for ``path``, nearest first."""
+    return [p.name for p in _candidate_paths(path)]
 
 
 def _folder_context(path: str) -> tuple[str, str | None]:
@@ -290,31 +323,71 @@ def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _mapped_folders() -> dict[str, str]:
+    """The user's mappings: absolute folder path -> Platform slug."""
+    from services import platform_mappings
+
+    return platform_mappings.mapped_folders()
+
+
+def _place(
+    disk_path: str, names: dict[str, str], mapped: dict[str, str],
+) -> tuple[str, str, str, str] | None:
+    """The nearest folder above the Image that names a Platform.
+
+    ``(how, slug, folder path, folder name)``: ``how`` is ``"mapping"`` or
+    ``"folder"``. Walking up from the Image's folder, the first folder with a
+    mapping or a Platform name decides; at the same folder the mapping wins.
+    """
+    for parent in _candidate_paths(disk_path):
+        label = parent.name or str(parent)
+        slug = mapped.get(str(parent)) if mapped else None
+        if slug:
+            return MAPPING, slug, str(parent), label
+        slug = names.get(parent.name.lower()) if parent.name else None
+        if slug:
+            return FOLDER, slug, str(parent), label
+    return None
+
+
 def _decide(path: str, tools: list) -> Detection:
     disk_path, member = _split_member(path)
     headers: set[str] = set()
     sources: list[str] = []
     if not member:
         headers, sources = _header(disk_path, tools)
-    folder, folder_name = _folder(disk_path, _folder_names(tools))
+    names = _folder_names(tools)
+    folder, _folder_name = _folder(disk_path, names)
+    found = _place(disk_path, names, _mapped_folders())
+    place = how = where = mapped = place_path = None
+    if found:
+        how, place, place_path, label = found
+        if how == MAPPING:
+            mapped = place
+            where = f"you set the {label} folder to {place}"
+        else:
+            where = f"in the {label} folder"
 
+    decided_by = {"place": place_path, "place_platform": place}
     if len(headers) > 1:
         return Detection(
             None, CONFLICT, None, folder,
-            f"headers disagree ({', '.join(sorted(sources))})",
+            f"headers disagree ({', '.join(sorted(sources))})", mapped,
+            tuple(sorted(headers)), **decided_by,
         )
     header = next(iter(headers), None)
-    if header and folder and header != folder:
+    if header and place and header != place:
         return Detection(
             None, CONFLICT, header, folder,
-            f"in the {folder_name} folder, but the header says {header}",
+            f"{where}, but the header says {header}", mapped, **decided_by,
         )
     if header:
-        return Detection(header, HEADER, header, folder, f"header says {header}")
-    if folder:
         return Detection(
-            folder, FOLDER, None, folder,
-            f"no readable header; in the {folder_name} folder",
+            header, HEADER, header, folder, f"header says {header}", mapped, **decided_by,
+        )
+    if place:
+        return Detection(
+            place, how, None, folder, f"no readable header; {where}", mapped, **decided_by,
         )
     return Detection(
         None, UNSORTED, None, None,
@@ -396,20 +469,29 @@ def detection_key(
 ) -> tuple | None:
     """What a cached Detection for *path* is valid for, or None when it must not be cached.
 
-    The file's size and mtime (*st*, the caller's stat of it) and those of
+    The file's size and mtime (*st*, the caller's stat of it), those of
     every other file its header probe reads (``ToolPlugin.header_reads``: a
-    sheet's tracks), and the probe set itself: the same file asked of other
-    tools can answer differently. The tool objects are compared by identity
-    and kept alive by the key, so an id is never reused. None when one of the
-    files cannot be stat'ed. The shared cache here and a folder Library's own
-    cache both key on it, so a changed track or probe set re-detects in either.
+    sheet's tracks), the probe set itself (the same file asked of other tools
+    can answer differently; the tool objects are compared by identity and kept
+    alive by the key, so an id is never reused), and the folder evidence that
+    decides it (the user's mapping or a Platform folder name, by source and
+    path). None when one of the files cannot be stat'ed. The shared cache here
+    and a folder Library's own cache both key on it, so a changed track, probe
+    set or mapping re-detects the Image in either.
     """
     tool_list = list(tools) if tools is not None else _default_tools()
     disk_path, member = _split_member(path)
     deps = () if member else _header_dependencies(disk_path, tool_list)
     if deps is None:
         return None
-    return (st.st_size, st.st_mtime_ns, deps, tuple(tool_list))
+    # The deciding folder evidence by path and source: where a mapping sits
+    # relative to a Platform-named folder changes the answer, so a name alone
+    # would not do. With no mapping anywhere the folder evidence is the path's
+    # own, already what the key is for: skip the walk (a resolve) on every
+    # stat-only rewalk.
+    mapped = _mapped_folders()
+    found = _place(disk_path, _folder_names(tool_list), mapped) if mapped else None
+    return (st.st_size, st.st_mtime_ns, deps, tuple(tool_list), found[:3] if found else None)
 
 
 def _header_dependencies(path: str, tools: Iterable) -> tuple | None:
