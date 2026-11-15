@@ -467,3 +467,39 @@ def test_a_name_with_a_pipe_is_refused_because_readers_split_it_as_a_label(vol: 
     paths = _discs(vol, "a|b (Disc 1).cue", "a|b (Disc 2).cue")
     with pytest.raises(disc_playlist.PlaylistError, match="can't be written"):
         disc_playlist.plan_playlist(paths)
+
+
+# --- PR review: a playlist name near the limit must still get a backup ------
+
+
+def test_the_writer_handles_a_target_name_at_the_file_name_limit(tmp_path: Path):
+    from app.services.referrers import atomic_write_bytes
+
+    name = "x" * 251 + ".bak"  # 255 bytes
+    assert len(name.encode()) == 255
+    target = tmp_path / name
+    atomic_write_bytes(str(target), b"first")
+    atomic_write_bytes(str(target), b"second")  # replace of an existing file
+    assert target.read_bytes() == b"second"
+    assert [p.name for p in tmp_path.iterdir()] == [name]  # no temp litter
+
+
+def test_a_longest_allowed_playlist_can_follow_a_conversion(vol: Path):
+    from app.services.referrers.m3u import M3uReferrer
+
+    stem = "x" * 247  # the playlist's name is 251 bytes, its .bak 255
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    disc_playlist.create_playlist(paths, f"{stem}.m3u")
+    out = vol / "Game (Disc 1).chd"
+    out.write_bytes(b"chd")
+    referrer = M3uReferrer()
+    [change] = referrer.plan({str(vol / "Game (Disc 1).cue"): str(out)})
+    referrer.apply(change)  # backup plus replace, no ENAMETOOLONG
+    assert (vol / f"{stem}.m3u.bak").exists()
+    assert "Game (Disc 1).chd" in (vol / f"{stem}.m3u").read_text()
+
+
+def test_a_name_with_no_room_for_its_backup_is_refused(vol: Path):
+    paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
+    with pytest.raises(disc_playlist.PlaylistError, match="too long"):
+        disc_playlist.create_playlist(paths, "x" * 248 + ".m3u")
