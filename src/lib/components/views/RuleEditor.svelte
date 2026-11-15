@@ -503,7 +503,11 @@
         {@const open = expanded.has(platform.id)}
         <article class="rule" class:configured>
           <header>
-            <button class="row-toggle" type="button" onclick={() => toggle(platform.id)}>
+            <!-- data-platform-id: a stable handle (the label is a display name). -->
+            <button
+              class="row-toggle" type="button" data-platform-id={platform.id}
+              onclick={() => toggle(platform.id)}
+            >
               <ChevronDown size={16} class={open ? 'chev open' : 'chev'} />
               <span class="pname">{platform.name}</span>
               {#if source.imageCount(platform)}

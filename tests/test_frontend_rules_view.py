@@ -285,6 +285,15 @@ def test_folder_endpoints_read_the_librarys_own_id():
     assert "api.getLibraryRules(this.id)" in src
 
 
+def test_the_rules_screenshot_finds_its_row_by_platform_id():
+    """The shot opens the ps2 row by id; rows show display names, not slugs."""
+    editor = _EDITOR.read_text(encoding="utf-8")
+    assert "data-platform-id={platform.id}" in editor
+    shots = (_SRC.parent / "shots.yml").read_text(encoding="utf-8")
+    assert """.row-toggle[data-platform-id="ps2"]""" in shots
+    assert "b.textContent.includes('ps2')" not in shots
+
+
 def test_both_libraries_share_one_rules_source():
     """The Rule bookkeeping exists once (fix round 1, I1)."""
     folder = _STORE.read_text(encoding="utf-8")
