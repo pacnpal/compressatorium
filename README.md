@@ -699,8 +699,10 @@ A Platform can have one beside its conversion Rule, so "convert PS2 to CHD" and
 folder Library or on RomM, tick **Check these Images are Intact**, and set how
 much to read a night ("check 50 GB a night"), a time window and weekdays:
 
-- A check Rule runs once a day, inside its window, on its own clock: the
-  conversion Rule on the same Platform keeps its own. Nightly runs need **Run
+- A check Rule runs once per window, on each weekday you allow, on its own
+  clock: the conversion Rule on the same Platform keeps its own. A run that
+  starts late in the window, or carries on past midnight, does not move the
+  next night's run. Nightly runs need **Run
   automatically** on for the Library. **Run now** runs both, and the check
   spends another budget's worth on top of the nightly run, which still comes
   when it is due.

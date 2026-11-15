@@ -2980,9 +2980,14 @@ A Rule has a kind, `rules.CONVERT` or `rules.CHECK`, and its identity is
 Rule. A check Rule has no target format (`rules.is_check_rule`).
 `normalize_rule(raw, kind=...)` drops a `CONVERT` Rule with no mode and gives a
 `CHECK` Rule none, with `check_budget_gb` (1 to 1048576, default 50), the usual
-window, weekdays, timezone, priority and `enabled`, and `interval_minutes`
-fixed at `CHECK_INTERVAL_MINUTES` (a day): the budget is nightly. Its output
-folder is never read. Each kind has its own preference rows
+window, weekdays, timezone, priority and `enabled`. Its `interval_minutes` is
+fixed at `CHECK_INTERVAL_MINUTES` (a day) but the schedule does not read it: a
+check Rule is due once per window (`schedule._is_due`): the window is open on an
+allowed weekday (an overnight window's tail belongs to the day it opened) and
+`last_run_at` is before the moment this window opened (`_window_opened`; no
+window means the whole local day, opened at midnight). A run that starts late
+does not push the next night later, and one that crosses midnight counts for
+the window it started in. Its output folder is never read. Each kind has its own preference rows
 (`store.rules_key(kind)`, `store.state_key(kind)`: `rules` / `rules.state` and
 `rules.check` / `rules.check.state`), each keyed `"<library id>:<platform id>"`,
 so the two kinds never overwrite each other and run on their own clocks. No
@@ -2996,8 +3001,8 @@ check times. `sweep.get_rules` / `get_state` take the kind;
 kind order, gating each on its own `enabled` and its own kind's state, and
 hands a check Rule to `_sweep_check`. Run now ignores both clocks, so it runs
 both kinds and a check spends another budget. A check Rule's Run now stamps
-`last_manual_run_at`, not `last_run_at`, so `_is_due` still fires the nightly
-run on time; a Platform whose tool is not ready and that picked nothing is not
+`last_manual_run_at`, not `last_run_at`, and `_is_due` reads only
+`last_run_at`, so the nightly run still comes in its window; a Platform whose tool is not ready and that picked nothing is not
 stamped at all. Before the loop a real sweep calls `_clear_vanished` (bounded,
 detached): `findings.clear_gone(library, NOT_INTACT)` drops a not-Intact
 Finding whose file is missing while its folder is there, so an unmounted share

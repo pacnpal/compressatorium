@@ -80,6 +80,91 @@ def test_a_check_rule_keeps_no_conversion_filters() -> None:
         assert rule[field] == defaults[field], field
 
 
+# ----------------------------------------------------------------------
+# the nightly schedule: once per window, never drifting
+# ----------------------------------------------------------------------
+
+
+def _at(day: int, hhmm: str) -> datetime:
+    """2026-11-<day> at hh:mm UTC. The 16th is a Monday."""
+    hour, minute = (int(x) for x in hhmm.split(":"))
+    return datetime(2026, 11, day, hour, minute, tzinfo=timezone.utc)
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def _nightly(**extra) -> dict:
+    from services.rules.rules import CHECK, normalize_rule
+
+    return normalize_rule({
+        "enabled": True, "window_start": "22:00", "window_end": "02:00",
+        "timezone": "UTC", **extra,
+    }, kind=CHECK)
+
+
+def test_a_late_run_does_not_push_the_next_night_later() -> None:
+    from services.rules.schedule import _is_due
+
+    rule = _nightly()
+    ran = {"last_run_at": _stamp(_at(16, "23:50"))}
+
+    # The next night opens at 22:00, ten minutes short of 24 hours later.
+    assert _is_due(rule, ran, _at(17, "22:00"))
+    assert not _is_due(rule, ran, _at(17, "21:59"))
+
+
+def test_a_run_that_crossed_midnight_counts_for_the_window_it_started_in() -> None:
+    from services.rules.schedule import _is_due
+
+    rule = _nightly()
+    ran = {"last_run_at": _stamp(_at(16, "23:50"))}
+
+    # Still Monday night's window after midnight: already run.
+    assert not _is_due(rule, ran, _at(17, "00:30"))
+    assert not _is_due(rule, ran, _at(17, "01:59"))
+    # A run that started after midnight belongs to the night before, too.
+    after_midnight = {"last_run_at": _stamp(_at(17, "00:10"))}
+    assert not _is_due(rule, after_midnight, _at(17, "01:00"))
+    assert _is_due(rule, after_midnight, _at(17, "22:00"))
+
+
+def test_a_nightly_run_honours_its_weekdays() -> None:
+    from services.rules.schedule import _is_due
+
+    rule = _nightly(days=[0])   # Monday nights only
+    never: dict = {}
+
+    assert _is_due(rule, never, _at(16, "22:30"))
+    # Tuesday 01:00 is the tail of Monday night's window.
+    assert _is_due(rule, never, _at(17, "01:00"))
+    # Tuesday night is not allowed.
+    assert not _is_due(rule, never, _at(17, "22:30"))
+    ran = {"last_run_at": _stamp(_at(16, "22:30"))}
+    assert not _is_due(rule, ran, _at(23, "21:00"))
+    assert _is_due(rule, ran, _at(23, "22:00"))
+
+
+def test_a_run_now_does_not_count_as_the_nightly_run() -> None:
+    from services.rules.schedule import _is_due
+
+    rule = _nightly()
+
+    assert _is_due(rule, {"last_manual_run_at": _stamp(_at(16, "22:10"))}, _at(16, "22:20"))
+
+
+def test_a_check_rule_with_no_window_runs_once_a_day() -> None:
+    from services.rules.rules import CHECK, normalize_rule
+    from services.rules.schedule import _is_due
+
+    rule = normalize_rule({"enabled": True, "timezone": "UTC"}, kind=CHECK)
+    ran = {"last_run_at": _stamp(_at(16, "10:00"))}
+
+    assert not _is_due(rule, ran, _at(16, "23:59"))
+    assert _is_due(rule, ran, _at(17, "00:01"))
+
+
 def test_each_kind_keeps_to_its_own_shape() -> None:
     """A conversion Rule needs a target; a check Rule never has one."""
     from services.rules.rules import CHECK, CONVERT, normalize_rule

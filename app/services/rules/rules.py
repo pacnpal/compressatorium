@@ -58,8 +58,9 @@ _BOUNDS = {
     "check_budget_gb": (1, 1024 * 1024),
 }
 
-# A check Rule (no target format) runs at most once a day: its budget is a
-# nightly one, so its interval is fixed rather than editable.
+# A check Rule (no target format) runs once per window, not on an interval
+# (`schedule._is_due`). Its stored interval is fixed at a day, for display and
+# for a reader that only knows intervals; the schedule does not read it.
 CHECK_INTERVAL_MINUTES = 24 * 60
 DEFAULT_CHECK_BUDGET_GB = 50
 
@@ -677,7 +678,7 @@ def normalize_rule(
         "check_budget_gb", raw.get("check_budget_gb"), DEFAULT_CHECK_BUDGET_GB,
     )
     if is_check_rule(out):
-        # The budget is nightly, so the interval is a day.
+        # Once per window (schedule._is_due); the interval is only a label.
         out["interval_minutes"] = CHECK_INTERVAL_MINUTES
 
     out["only_unmatched"] = bool(raw.get("only_unmatched", False))
