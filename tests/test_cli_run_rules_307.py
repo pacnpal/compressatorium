@@ -147,7 +147,7 @@ def _env(tmp_path, monkeypatch, reset_db_engine):
 @pytest.fixture(name="dolphin")
 def _dolphin(monkeypatch):
     service = registry.get("dolphin")._service
-    state = {"fail": False, "runs": [], "seconds": 0}
+    state = {"fail": False, "runs": [], "seconds": 0, "valid": True}
 
     async def fake_run(cmd, *, input_path, output_path, **kwargs):
         state["runs"].append((input_path, output_path))
@@ -169,7 +169,10 @@ def _dolphin(monkeypatch):
         yield {"progress": 100, "message": "Conversion complete"}
 
     async def fake_verify(cmd, *, path, **kwargs):
-        yield {"type": "complete", "valid": True, "message": "Disc image is Intact"}
+        yield {
+            "type": "complete", "valid": state["valid"],
+            "message": "Disc image is Intact" if state["valid"] else "Disc is damaged",
+        }
 
     monkeypatch.setattr(service._runner, "run", fake_run)
     monkeypatch.setattr(service._runner, "run_verify", fake_verify)
@@ -534,6 +537,31 @@ def test_a_job_announced_twice_is_reported_once(env, dolphin, capsys, monkeypatc
 
     assert code == 0, lines
     assert [line["path"] for line in lines if line.get("path")] == [str(iso)]
+
+
+def test_an_output_that_fails_its_check_is_a_failure_and_keeps_the_source(
+    env, dolphin, capsys,
+):
+    """A Rule that deletes its Source checks the output first. A check that
+    finds it damaged fails the job (#306 now also keeps the failed check's
+    provenance): run-rules reports it failed, exits 1, and the Source stays."""
+    iso = _iso(env)
+    _store_rules(env, {"shelf": {"gc": {
+        "mode": "dolphin_rvz", "enabled": True, "delete_on_verify": True,
+        "check_level": "container_only",
+    }}})
+    dolphin["valid"] = False
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1, lines
+    jobs = [line for line in lines if line.get("path")]
+    assert [(j["path"], j["status"], j["source_deleted"]) for j in jobs] == [
+        (str(iso), "failed", False),
+    ]
+    assert jobs[0]["reason"]
+    assert iso.exists()
+    assert [r["status"] for r in _ledger_rows()] == ["failed"]
 
 
 def test_a_failed_job_exits_1(env, dolphin, capsys):
