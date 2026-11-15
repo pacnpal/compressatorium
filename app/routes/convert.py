@@ -2,7 +2,7 @@ import asyncio
 from logging_setup import get_logger
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -999,6 +999,9 @@ class PreparedBatch:
     request: BatchJobCreateRequest
     compression: str | None
     plans: list[JobPlan]
+    # file path -> why planning skipped it (the same words a single-job
+    # request would get), so Auto can say so in its plan.
+    skipped: dict[str, str] = field(default_factory=dict)
 
     @property
     def job_specs(self) -> list[dict]:
@@ -1120,7 +1123,7 @@ async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
             detail=f"Conversion queue full ({max_depth} jobs). Retry later.",
         )
 
-    skipped = []
+    skipped: dict[str, str] = {}
     candidates: list[JobPlan] = []
 
     for file_path in request.file_paths:
@@ -1133,8 +1136,8 @@ async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                 duplicate_action=request.duplicate_action,
                 delete_on_verify=request.delete_on_verify,
             )
-        except SkipFile:
-            skipped.append(file_path)
+        except SkipFile as skip:
+            skipped[file_path] = _SKIP_HTTP.get(skip.reason, (0, skip.reason.value))[1]
             continue
         except DeleteSnapshotError as exc:
             raise HTTPException(
@@ -1162,6 +1165,7 @@ async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
         request=request,
         compression=compression,
         plans=[selected[key] for key in order],
+        skipped=skipped,
     )
 
 
@@ -1263,6 +1267,16 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
         for (mode, compression), paths in groups.items()
     ]
     _check_queue_room(sum(len(batch.plans) for batch in prepared))
+    # An Image preparation skipped (its output appeared after planning, say)
+    # is reported in the plan, not shown as headed for a target it never got.
+    skipped_now = {
+        path: reason for batch in prepared for path, reason in batch.skipped.items()
+    }
+    plan = [
+        replace(t, mode=None, tool_id=None, compression=None, skip_reason=skipped_now[t.file_path])
+        if t.mode and t.file_path in skipped_now else t
+        for t in plan
+    ]
 
     jobs: list[ConversionJob] = []
     for batch in prepared:
@@ -1280,9 +1294,27 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
                     "jobs": [job.model_dump(mode="json") for job in kept],
                 }
             raise
+        except Exception as exc:
+            # An unexpected failure: withdraw, log the original error with its
+            # traceback, and still hand back any job that finished, in the
+            # same shape as above, so the client keeps its re-pin records.
+            kept = await _cancel_queued(jobs)
+            logger.error(
+                "Auto batch failed after %d job(s) were queued", len(jobs), exc_info=exc,
+            )
+            if not kept:
+                raise
+            names = ", ".join(job.filename or job.id for job in kept)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": f"Auto batch failed. Already finished and kept: {names}.",
+                    "jobs": [job.model_dump(mode="json") for job in kept],
+                },
+            ) from exc
         except BaseException:
-            # Anything else, a client disconnect's CancelledError included:
-            # still withdraw what this request queued, then let it propagate.
+            # A client disconnect's CancelledError and the like: still withdraw
+            # what this request queued, then let it propagate.
             await _cancel_queued(jobs)
             raise
     return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)
