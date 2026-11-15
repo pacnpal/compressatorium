@@ -23,6 +23,7 @@ from services.tools import registry
 from services.verification_store import verification_store
 from utils.junk import is_junk_entry
 from utils.path_utils import (
+    match_extension,
     containing_volume_root,
     ensure_path_within_volumes,
     get_volume_name_for_path,
@@ -522,6 +523,8 @@ async def archive_summary_batch(request: MetadataBatchRequest) -> dict:
 def scan_tree(
     root_path: str, recursive_scan: bool = True, include_archive_scan: bool = True,
     *, purpose: str = "convert",
+    also_reads: frozenset[str] | None = None,
+    unreadable: list[tuple[str, str]] | None = None,
 ) -> tuple[list[dict], list[dict], list[str]]:
     """Every convertible thing under ``root_path``: the recursive search walk.
 
@@ -534,6 +537,12 @@ def scan_tree(
     (``ToolRegistry.tools_verifying_path``) though none converts it: a
     ``.chd``, which chdman leaves out of its inputs. Blocking; call it off the
     event loop.
+
+    ``also_reads`` (the CLI's ``--to``, #306) also lists every file whose name
+    ends with one of those extensions though no tool-wide input matches it (a
+    ``.chd`` for chdman's extract modes), in the same single walk. A folder
+    that can't be read is skipped as always; with ``unreadable`` given, it is
+    appended there as ``(path, reason)`` so a caller can report it.
     """
     if purpose not in ("convert", "verify"):
         raise ValueError(f"unknown scan purpose {purpose!r}")
@@ -605,6 +614,22 @@ def scan_tree(
                                     "in_archive": False,
                                     "convertible_by": convertible_by,
                                     "outputs": outputs,
+                                    "verifiable_by": claims(item_path),
+                                },
+                            )
+                        elif (
+                            also_reads and not is_archive
+                            and match_extension(item, also_reads) is not None
+                        ):
+                            files.append(
+                                {
+                                    "name": item,
+                                    "path": item_path,
+                                    "size": os.path.getsize(item_path),
+                                    "extension": ext,
+                                    "in_archive": False,
+                                    "convertible_by": [],
+                                    "outputs": [],
                                     "verifiable_by": claims(item_path),
                                 },
                             )
@@ -692,9 +717,10 @@ def scan_tree(
                 except OSError:
                     # Skip archive entries that cannot be accessed
                     continue
-        except (PermissionError, FileNotFoundError, OSError):
+        except (PermissionError, FileNotFoundError, OSError) as exc:
             # Directory is not accessible or disappeared during scanning; skip it.
-            pass
+            if unreadable is not None:
+                unreadable.append((dir_path, exc.strerror or str(exc)))
 
     _scan(root_path)
     return files, archives, sorted(archives_truncated)

@@ -251,7 +251,8 @@ def _discover(
     member listing hit the per-archive cap gets a line saying so. ``reads``
     (``--to``'s accepted extensions) also lists every file in a walked folder
     with one of them, which the tool-wide walk leaves out when the mode reads
-    what its tool doesn't (a ``.chd`` for chdman's extract modes).
+    what its tool doesn't (a ``.chd`` for chdman's extract modes), in the same
+    walk. A folder that can't be read is reported as skipped.
     """
     from routes.files import scan_tree
     from services.archive import archive_service
@@ -276,17 +277,20 @@ def _discover(
             if not for_verify and registry.tools_for_directory(path):
                 add(path, True)
                 continue
+            unreadable: list[tuple[str, str]] = []
             files, members, cut = scan_tree(
                 path, recurse, archives,
                 purpose="verify" if for_verify else "convert",
+                also_reads=reads, unreadable=unreadable,
             )
+            for folder, why in unreadable:
+                item = add(folder, False)
+                item.status = "skipped"
+                item.reason = f"This folder can't be read: {why}"
             for entry in files:
                 if for_verify and not entry.get("verifiable_by"):
                     continue
                 add(entry["path"], False)
-            if reads:
-                for file_path in _files_reading(path, reads, recurse):
-                    add(file_path, False)
             if not for_verify:  # a check reads files, never archive members
                 for entry in members:
                     add(entry["path"], False)
@@ -311,27 +315,6 @@ def _discover(
             if i.explicit or not archive_service.is_archive(i.path.split("::", 1)[0])
         ]
     return list(found.values())
-
-
-def _files_reading(root: str, reads: frozenset[str], recurse: bool) -> list[str]:
-    """Files under ``root`` whose name ends with one of ``reads``, in the same
-    sorted walk order as ``scan_tree``: junk skipped, symlinked folders not
-    followed, a folder that is itself an Image not walked into."""
-    from services.tools import registry
-    from utils.junk import is_junk_entry
-    from utils.path_utils import match_extension
-
-    found = []
-    for name in sorted(os.listdir(root)):
-        if is_junk_entry(name):
-            continue
-        path = os.path.join(root, name)
-        if os.path.isdir(path):
-            if recurse and not os.path.islink(path) and not registry.tools_for_directory(path):
-                found += _files_reading(path, reads, recurse)
-        elif os.path.isfile(path) and match_extension(name, reads) is not None:
-            found.append(path)
-    return found
 
 
 # --------------------------------------------------------------------------- #
@@ -556,7 +539,7 @@ def _decide_deletes(items: list[Item], args) -> None:
 
     if not args.delete_source:
         return
-    from utils.delete_plan import archive_members_beyond_image, describe_extras
+    from utils.delete_plan import archive_kept_summary
 
     routed = [i for i in items if i.mode and not i.status]
     shared = get_disallowed_archive_paths([i.path for i in routed])
@@ -565,12 +548,12 @@ def _decide_deletes(items: list[Item], args) -> None:
             item.reason = f"Source kept: {item.mode} cannot delete its Source"
         elif "::" in item.path and item.path.split("::", 1)[0] in shared:
             item.reason = "Source kept: several Images come from this archive"
-        elif others := archive_members_beyond_image(item.path):
+        elif kept := archive_kept_summary(item.path):
             # Fail closed: an archive goes only when every member belongs to
             # this Image (the delete plan's own rule, which the web submit
             # hits too).
             archive = os.path.basename(item.path.split("::", 1)[0])
-            item.reason = f"Source kept: {archive} also holds {describe_extras(others)}"
+            item.reason = f"Source kept: {archive} {kept}"
         else:
             item.delete_source = True
             continue
@@ -989,10 +972,42 @@ def _checked_at(record: dict | None) -> datetime | None:
         return None
 
 
+def _hold_for_check(path: str) -> list[str] | None:
+    """Take the shared read lock jobs use on ``path`` and its companions.
+
+    Held through the check and its record, so no other process can overwrite
+    or replace the file meanwhile (#306). None, holding nothing, when a writer
+    holds one of them.
+    """
+    from services.lock_manager import lock_manager
+    from services.tools import registry
+
+    held: list[str] = []
+    try:
+        for each in dict.fromkeys([path, *registry.source_companions(path)]):
+            if not lock_manager.acquire_input_lock(each):
+                _let_go_of(held)
+                return None
+            held.append(each)
+    except BaseException:
+        # Taking one raised part way (an OSError on the lock dir, say): let go
+        # of the ones already held before the error goes on.
+        _let_go_of(held)
+        raise
+    return held
+
+
+def _let_go_of(held: list[str]) -> None:
+    from services.lock_manager import lock_manager
+
+    for each in held:
+        lock_manager.release_input_lock(each)
+
+
 async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> dict:
     """Check one Image. The line carries ``_stop`` when the run must end."""
+    from fastapi.concurrency import run_in_threadpool
     from services.lock_manager import lock_manager
-    from services.subprocess_runner import collect_abandonment, stops_verify_batch
     from services.verification_store import verification_store
 
     line = {"path": path, "status": None, "tool": tool.id, "reason": None}
@@ -1002,12 +1017,29 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
             line["status"] = "skipped"
             line["reason"] = f"Checked {checked.isoformat(timespec='seconds')}"
             return line
-    if lock_manager.is_locked(path):
-        line["status"], line["reason"] = "skipped", "Being written by another job"
-        return line
     if dry_run:
-        line["status"] = "planned"
+        # Read-only: look, take nothing.
+        if lock_manager.is_locked(path):
+            line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
+        else:
+            line["status"] = "planned"
         return line
+    held = await run_in_threadpool(_hold_for_check, path)
+    if held is None:
+        # A writer has it: no verdict either way, and what was stored stays.
+        line["status"], line["reason"] = "skipped", "Busy: another job is writing it"
+        return line
+    try:
+        return await _check_held(path, tool, line, verification_store)
+    finally:
+        # Every exit, a cancel or a stop included.
+        _let_go_of(held)
+
+
+async def _check_held(path: str, tool, line: dict, verification_store) -> dict:
+    """The check and its record, run while ``_verify_one`` holds the file."""
+    from services.subprocess_runner import collect_abandonment, stops_verify_batch
+
     bound = await tool.verify_timeout(path)
     # The sink sees what the check wrote off on the way, including a detached
     # read left behind when this deadline cancels it; no result says so.
@@ -1065,6 +1097,10 @@ async def verify(args, printer: Printer, state: RunState) -> int:
     for item in items:
         if state.stopping:
             break
+        if item.status:  # decided in discovery (a folder that can't be read)
+            printer.line({"path": item.path, "status": item.status, "tool": None,
+                          "reason": item.reason})
+            continue
         record = await verification_store.get_record(item.path) if has_db else None
         tool, unsupported = await run_in_threadpool(_verify_tool, item.path, record)
         if tool is None:
