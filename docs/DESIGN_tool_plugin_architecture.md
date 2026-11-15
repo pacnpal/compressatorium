@@ -2817,9 +2817,8 @@ Since both sides lock before they look, two racing acquirers can't both miss
 each other; at worst both back off. The job manager defers a job that hit
 such a conflict (`_blocked_by_dir_lock` now also asks `folder_locked_above`)
 and re-queues it after the retry delay plus random jitter, so two processes
-don't retry in lockstep. The delete-on-verify check also asks
-`folder_locked_above` for each delete path, for a folder another process took
-after the job let go of its read locks.
+don't retry in lockstep. The delete-on-verify step takes an exclusive lock on
+each delete path (below), which also asks `folder_locked_above`.
 
 **Limits of the lock dir.**
 
@@ -2833,10 +2832,14 @@ after the job let go of its read locks.
   wrapper's `gosu converter` drop ensure.
 
 A job that cannot take its input locks (another job holds the path for
-writing) is deferred and re-queued, like a folder-lock block. Before the
-delete-on-verify step checks its delete paths with `check_file_status`, the job
-lets go of its own input locks, so it does not find its Source held by itself;
-another job still reading it does hold it, and the delete is refused.
+writing) is deferred and re-queued, like a folder-lock block. At the
+delete-on-verify step the job trades its shared read locks for exclusive ones
+on every delete path (`JobManager._hold_for_delete`, through `acquire_lock(path,
+allow_existing=True)`) and holds them until the unlinks finish
+(`_release_delete_holds`, also run in the job's `finally`). Any reader in any
+process, or a folder lock above, refuses the delete; and no job can start
+reading a path between the check and its unlink, since a new reader's shared
+lock is refused while the exclusive one is held.
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`

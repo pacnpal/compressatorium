@@ -351,6 +351,8 @@ class JobManager:
         self._output_keys: Dict[str, Tuple[str, ...]] = {}
         # The files each running job holds a shared input lock on (#306).
         self._input_locks: Dict[str, List[str]] = {}
+        # The delete paths a job holds exclusively while it unlinks them.
+        self._delete_holds: Dict[str, List[str]] = {}
         # Jobs currently inside the verify phase, mapped to the monotonic clock
         # reading when that phase began. Verification emits no progress and can
         # legitimately run for many minutes, so the stalled-job warning reports
@@ -1425,6 +1427,19 @@ class JobManager:
     def _release_inputs(self, job_id: str) -> None:
         for path in self._input_locks.pop(job_id, []):
             lock_manager.release_input_lock(path)
+
+    def _hold_for_delete(self, job_id: str, paths: Iterable[str]) -> None:
+        """Lock every delete path exclusively, or raise and hold none."""
+        held = self._delete_holds.setdefault(job_id, [])
+        for path in paths:
+            if not lock_manager.acquire_lock(path, allow_existing=True):
+                self._release_delete_holds(job_id)
+                raise RuntimeError("Delete path is locked by an active conversion")
+            held.append(path)
+
+    def _release_delete_holds(self, job_id: str) -> None:
+        for path in self._delete_holds.pop(job_id, []):
+            lock_manager.release_lock(path)
 
     def _candidate_paths(self, job: ConversionJob) -> List[str]:
         paths = []
@@ -3481,20 +3496,14 @@ class JobManager:
                         else:
                             delete_order = expected_paths
 
-                        # Let go of this job's own read locks first, or the
-                        # check below would find its Source held by itself.
-                        # Another job reading it still holds its own.
+                        # Trade this job's shared read locks for exclusive
+                        # ones on every delete path, held until the unlinks
+                        # finish (#306): a reader in any process, or a folder
+                        # lock above, refuses the delete, and no job can start
+                        # reading a path between this check and its unlink.
                         self._release_inputs(job_id)
+                        await run_in_threadpool(self._hold_for_delete, job_id, expected_paths)
                         for path in expected_paths:
-                            _, is_locked = lock_manager.check_file_status(path)
-                            # A folder above it that another process took
-                            # once this job let go of its read locks (#306).
-                            if is_locked or await run_in_threadpool(
-                                lock_manager.folder_locked_above, path,
-                            ):
-                                raise RuntimeError(
-                                    "Delete path is locked by an active conversion"
-                                )
                             within_volumes = await run_in_threadpool(
                                 is_within_configured_volumes,
                                 path,
@@ -3568,6 +3577,7 @@ class JobManager:
                         for path in delete_order:
                             await run_in_threadpool(os.remove, path)
                             job.deleted_paths.append(path)
+                        self._release_delete_holds(job_id)
 
                         source_deleted = True
 
@@ -3623,6 +3633,7 @@ class JobManager:
             if dir_lock_acquired:
                 lock_manager.release_dir_lock(job.file_path)
             self._release_inputs(job_id)
+            self._release_delete_holds(job_id)
 
             concurrency_manager.release(job_id)
 

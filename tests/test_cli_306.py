@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -1728,3 +1729,37 @@ def test_a_fifo_named_like_an_image_is_skipped_without_hanging(
     assert code == 0, lines
     assert all(line["status"] == "skipped" for line in lines), lines
     assert dolphin["runs"] == []
+
+
+def test_delete_paths_are_held_exclusively_until_unlinked(volume, dolphin, capsys, monkeypatch):
+    """review r9 M1: between the delete check and the unlink, no job in any
+    process can start reading the Source. Another manager trying to take a
+    shared read lock on it at unlink time is refused."""
+    from services.lock_manager import LockManager, lock_manager
+
+    iso = volume / "gc" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"the disc" * 512)
+    reader = LockManager()
+    reader._lock_dir = lock_manager._lock_dir
+    real_remove = os.remove
+    seen = []
+
+    def remove_watching(path, *args, **kwargs):
+        if os.path.realpath(path) == os.path.realpath(iso):
+            got = reader.acquire_input_lock(str(iso))
+            seen.append(got)
+            if got:
+                reader.release_input_lock(str(iso))
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", remove_watching)
+    code, lines = _cli(
+        capsys, "convert", str(iso), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert code == 0, lines
+    assert seen == [False]
+    assert not iso.exists()
+    assert reader.acquire_input_lock(str(volume / "gc" / "Game.rvz"))
