@@ -337,6 +337,30 @@ def test_an_output_another_process_is_writing_is_skipped_not_failed(env, dolphin
     assert dolphin["runs"] == []
 
 
+def test_a_job_that_cannot_lock_its_source_is_a_failure(env, dolphin, capsys, monkeypatch):
+    """#306: an input lock that errors fails the job before it starts
+    ("Could not lock the Source: ..."). run-rules counts it: exit 1."""
+    from services.job_manager import JobManager
+
+    iso = _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+
+    def cannot_lock(self, *args, **kwargs):
+        raise OSError("disk I/O error")
+
+    monkeypatch.setattr(JobManager, "_hold_inputs", cannot_lock)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    jobs = [line for line in lines if line.get("path")]
+    assert [(j["status"], j["reason"]) for j in jobs] == [
+        ("failed", "Could not lock the Source: disk I/O error"),
+    ]
+    assert dolphin["runs"] == []
+    assert not iso.with_suffix(".rvz").exists()
+
+
 def test_a_failed_job_exits_1(env, dolphin, capsys):
     _iso(env)
     _store_rules(env, {"shelf": RVZ_RULE})
