@@ -3293,8 +3293,13 @@ it, and with `scan_tree(unreadable=[...])` the CLI reports it as a skipped line
 `Game.iso.0`, `.1`, ... and no `Game.iso`, but its check is recorded under
 `Game.iso`. A verify treats the parts as that one Image, registry-driven, with
 the split-part lookup the delete and overwrite paths use: `cli._split_owner`
-maps a numbered part to its output when a mode's `companion_outputs` for the
-name without its last suffix lists it. The walk lists such parts
+maps a numbered part to its output when the name without its last suffix
+carries a mode's declared output extension (`.iso` for folder_to_iso, so
+`save.0` never qualifies and stays a plain file) and that mode's
+`companion_outputs` for it lists the part. Containment
+(`_skip_outside_volumes`) checks every real file such an Image's check reads
+(`_logical_files`: the verify target and every part), named or found, and one
+outside the Volumes skips the whole Image. The walk lists such parts
 (`scan_tree(also_include=...)`), a named part maps the same way, and
 `_to_logical` folds them into one item; a stored record whose own path is gone
 is kept when its recorded mode's `verify_target` finds the file
