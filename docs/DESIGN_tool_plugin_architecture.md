@@ -4155,11 +4155,30 @@ tries them once it has let go of the lock (`_run_kept_deletes`, codex
 `finish_kept_delete` also run through), which re-runs the output's check and
 can take as long as a verify; only then does it take `_sweep_lock`, confirm
 the entry is still the one planned (`_still_pending`: same Library
-generation, same entry), delete (`run.delete()`), and record the outcome
-(`_settle_kept`). A long check never holds up another sweep, a Rule edit or
-a job completion, and anything that changed the entry meanwhile (and
-reported a started delete) wins. An entry being tried is skipped by a
-concurrent sweep (`_kept_running`). The preparation:
+generation, same Rule revision, same entry), delete (`run.delete()`), and
+record the outcome (`_settle_kept`). A long check never holds up another
+sweep, a Rule edit or a job completion, and anything that changed the entry
+meanwhile (and reported a started delete) wins. An entry being tried is
+skipped by a concurrent sweep (`_kept_running`).
+
+- **Any Rule change re-plans** (codex 4580441297). `set_rules` moves a
+  Platform's `rule_revision` (in its Rule state entry) on for any change to
+  its Rule, whatever the field: a selection filter, the schedule, the
+  priority (only where the Platform has pending deletes, the only place a
+  try can be under way, so no other state moves). The try records the revision it was planned under, and under
+  `_sweep_lock`, right before the unlinks, a different one means it does not
+  delete: the entry stays, and the next sweep plans it again under the Rule
+  as it is. That comparison is the authority, so no field can be missed; the
+  delete decision identity stays the cross-sweep pre-check.
+- **A stop deletes nothing new** (codex 4580441303). The sweep's
+  `should_stop` (`run-rules` on SIGTERM) reaches the tries: asked before
+  each one, before its output check (`kept_delete(stopping=...)`), and at the
+  last look before its unlinks (`_delete_source_set`'s `cancelled`). Once
+  true, nothing new starts, no unlink begins, and the outcome is
+  `KEPT_STOPPED`: not an attempt, nothing recorded. Unlinks already handed to
+  their worker carry on and are recorded as in flight.
+
+The preparation:
 
 - It takes the output's lock and every delete path's, exclusively and without
   waiting, as the job did. One still held is `reader`: try again next sweep.
@@ -4214,6 +4233,20 @@ concurrent sweep (`_kept_running`). The preparation:
   job, the retry and the finish alike, recorded as `deleting` or as the
   started-delete Finding; the next finish, or `clear_gone`, settles it
   against what actually remains, so a delete that went through just clears.
+- **A job whose Library was removed reports its own partial delete** (codex
+  4580441301). `forget_library` drops the Library's jobs from `_job_owners`
+  and clears their `_sweep_owner` (`_orphan_job`), so `job._sweep_owner` only
+  ever names a live owner: a job that stops part way afterwards files the
+  started-delete Finding under `NO_LIBRARY` itself. A plan the job had
+  already handed over is reported there by `_orphan_job`, and one whose
+  `note_job_finished` finds the Library removed under `_sweep_lock` by
+  `_remember_kept_source`.
+- **A job's cleanup releases everything, cancel or not** (codex 4580441305).
+  In `_process_job`'s `finally`, each release runs in its own enclosing
+  `finally` (the output locks' bounded wait, then the folder lock, the input
+  locks, the concurrency slot and the runtime bookkeeping,
+  `_forget_job_runtime`, then the temp folder and the prune), so a cancel
+  during one await skips none of the others; it goes on once they ran.
 
 It may only proceed while the decision that kept the Source still stands:
 

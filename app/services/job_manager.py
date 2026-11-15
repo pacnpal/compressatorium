@@ -89,6 +89,9 @@ KEPT_UNKNOWN = "unknown"
 # Some planned files are removed, not all (an unlink failed after another
 # succeeded): the delete has started, and is finished on the next sweep.
 KEPT_STARTED = "started"
+# The caller stopped (``run-rules`` on SIGTERM) before anything was decided or
+# removed: not an attempt, and nothing to record (codex 4580441303).
+KEPT_STOPPED = "stopped"
 # How long a retry waits for the Source's volume to answer its stat checks.
 KEPT_DELETE_PROBE_SECONDS = 30.0
 KEPT_DELETE_UNANSWERED = "the Source's volume did not answer"
@@ -3496,6 +3499,7 @@ class JobManager:
     async def kept_delete(
         self, *, source_path: str, output_path: str,
         required_check: Optional[str] = None, planned: Optional[List[str]] = None,
+        stopping: Callable[[], bool] = lambda: False,
     ):
         """Prepare a retried delete (#329) and yield a :class:`KeptDeleteRun`.
 
@@ -3507,6 +3511,8 @@ class JobManager:
         so a caller can run the long check without its own lock and take that
         lock only to delete (the sweep's ``_sweep_lock``). *planned* finishes a
         delete that already started (:meth:`finish_kept_delete`) instead.
+        *stopping* is asked before the output's check and before the unlinks:
+        once true, the outcome is ``stopped`` and nothing is removed.
         """
         run = KeptDeleteRun()
         owner_id = f"kept-delete:{uuid.uuid4().hex}"
@@ -3517,11 +3523,12 @@ class JobManager:
             if planned is None:
                 run.refused = await self._prepare_retry(
                     run, owner_id, travelling, source_path, output_path, required_check,
+                    stopping,
                 )
             else:
                 run.refused = await self._prepare_finish(
                     run, owner_id, travelling, source_path, output_path, planned,
-                    required_check,
+                    required_check, stopping,
                 )
             yield run
         finally:
@@ -3649,6 +3656,7 @@ class JobManager:
     async def _prepare_retry(
         self, run: "KeptDeleteRun", owner_id: str, travelling: HeldLocks,
         source_path: str, output_path: str, required_check: Optional[str],
+        stopping: Callable[[], bool],
     ) -> Optional[KeptDeleteRetry]:
         """:meth:`kept_delete` for a Source that is whole. Sets ``run``'s delete."""
         if "::" in source_path:
@@ -3706,6 +3714,8 @@ class JobManager:
         if isinstance(again, str):
             status = KEPT_KEPT if again == KEPT_DELETE_UNANSWERED else KEPT_STALE
             return KeptDeleteRetry(status, again)
+        if stopping():
+            return KeptDeleteRetry(KEPT_STOPPED, "stopped before the output's check")
         refused = await self._recheck_output(source_path, output_path, meta, required_check)
         if refused is not None:
             return refused
@@ -3731,7 +3741,8 @@ class JobManager:
                     fingerprints=snapshot.get("fingerprints") or {},
                     check_label=_CHECK_LABELS[check],
                     cancel_event=asyncio.Event(),
-                    cancelled=lambda: False,
+                    # A stop seen at the last look keeps the Source whole.
+                    cancelled=stopping,
                     deleted=deleted,
                     probe_seconds=KEPT_DELETE_PROBE_SECONDS,
                     travelling_locks=travelling,
@@ -3766,6 +3777,8 @@ class JobManager:
                     return KeptDeleteRetry(KEPT_STARTED, str(exc), tuple(deleted), tuple(rest))
                 # A refusal before any file went: an attempt (codex 4579529048).
                 return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(deleted))
+            if removal.cancelled:
+                return KeptDeleteRetry(KEPT_STOPPED, "stopped before the unlinks")
             if removal.kept_reason:
                 return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)
             return KeptDeleteRetry(KEPT_DELETED, None, tuple(deleted))
@@ -3856,7 +3869,7 @@ class JobManager:
     async def _prepare_finish(
         self, run: "KeptDeleteRun", owner_id: str, travelling: HeldLocks,
         source_path: str, output_path: str, planned: List[str],
-        required_check: Optional[str],
+        required_check: Optional[str], stopping: Callable[[], bool],
     ) -> Optional[KeptDeleteRetry]:
         """:meth:`kept_delete` for a Source whose delete started. The
         Round-trip cannot run against a part-deleted Source, so the output's
@@ -3905,6 +3918,8 @@ class JobManager:
         refused = await problem()
         if refused is not None:
             return refused
+        if stopping():
+            return KeptDeleteRetry(KEPT_STOPPED, "stopped before the output's check")
         refused = await self._recheck_output(None, output_path, meta, required_check)
         if refused is not None:
             if refused.status == KEPT_STALE:
@@ -3917,6 +3932,8 @@ class JobManager:
             refused_now = await problem()
             if refused_now is not None:
                 return refused_now
+            if stopping():
+                return KeptDeleteRetry(KEPT_STOPPED, "stopped before the unlinks")
             removed: List[str] = []
             try:
                 await run_detached_mutation(
@@ -4933,33 +4950,45 @@ class JobManager:
             # Only release lock if we acquired it. The output locks (unless an
             # unlink took them) and the delete holds, in the background like
             # a retry's: lock-file I/O never on the loop.
+            # Each release in its own `finally` (codex 4580441305): a cancel
+            # while one awaits (the output locks' bounded wait) must not skip
+            # the input and folder locks, or the concurrency slot, after it.
+            # The cancel goes on once all of them ran.
             held_outputs = self._output_locks.pop(job.id, None) if lock_acquired else None
-            await self._let_go_in_background([
-                *(held_outputs.take() if held_outputs is not None else []),
-                *self._delete_holds.pop(job_id, []),
-            ])
-            # Release the directory subtree lock held by a folder->iso job.
-            if dir_lock_acquired:
-                lock_manager.release_dir_lock(job.file_path)
-            self._release_inputs(job_id)
-
-            concurrency_manager.release(job_id)
-
-            self._delete_plans.pop(job_id, None)
-            self._output_keys.pop(job_id, None)
-            if job_id in self._cancel_events:
-                del self._cancel_events[job_id]
-            self._last_progress_at.pop(job_id, None)
-            self._last_progress_log_at.pop(job_id, None)
-            self._last_stall_log_at.pop(job_id, None)
-            self._last_output_size.pop(job_id, None)
-            self._last_output_size_at.pop(job_id, None)
-
-            # Clean up temp directory if this was an archive extraction
-            await self._cleanup_temp_dir(job)
-            await self._prune_jobs(exclude_id=job_id)
+            try:
+                await self._let_go_in_background([
+                    *(held_outputs.take() if held_outputs is not None else []),
+                    *self._delete_holds.pop(job_id, []),
+                ])
+            finally:
+                try:
+                    # Release the directory subtree lock held by a folder->iso job.
+                    if dir_lock_acquired:
+                        lock_manager.release_dir_lock(job.file_path)
+                finally:
+                    try:
+                        self._release_inputs(job_id)
+                    finally:
+                        concurrency_manager.release(job_id)
+                        self._forget_job_runtime(job_id)
+                try:
+                    # Clean up temp directory if this was an archive extraction
+                    await self._cleanup_temp_dir(job)
+                finally:
+                    await self._prune_jobs(exclude_id=job_id)
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug("Job %s finished status=%s", job_id, job.status.value)
+
+    def _forget_job_runtime(self, job_id: str) -> None:
+        """Drop a finished job's in-memory runtime bookkeeping. Never raises."""
+        self._delete_plans.pop(job_id, None)
+        self._output_keys.pop(job_id, None)
+        self._cancel_events.pop(job_id, None)
+        self._last_progress_at.pop(job_id, None)
+        self._last_progress_log_at.pop(job_id, None)
+        self._last_stall_log_at.pop(job_id, None)
+        self._last_output_size.pop(job_id, None)
+        self._last_output_size_at.pop(job_id, None)
 
 
 job_manager = JobManager(

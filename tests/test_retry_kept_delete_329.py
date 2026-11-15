@@ -2157,3 +2157,148 @@ def test_a_retry_cancelled_during_its_first_unlink_is_finished_later(
     assert code == 0, lines
     assert not kept["iso"].exists()
     assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+# --------------------------------------------------------------------------- #
+# Codex on ee7142ac: a Rule change, a removed Library, a stop and a cancel
+# during the off-lock part of a delete (4580441297, 4580441301, 4580441303,
+# 4580441305)
+# --------------------------------------------------------------------------- #
+
+
+def _during_recheck(monkeypatch, action):
+    """Run *action* (a coroutine function) while the retry re-checks the
+    output, off the sweep lock. Returns the list of rechecks seen."""
+    from services.job_manager import JobManager
+
+    real = JobManager._recheck_output
+    seen: list = []
+
+    async def recheck(self, *args, **kwargs):
+        seen.append(args)
+        await action()
+        return await real(self, *args, **kwargs)
+
+    monkeypatch.setattr(JobManager, "_recheck_output", recheck)
+    return seen
+
+
+@pytest.mark.parametrize("change", [
+    {"exclude_pattern": "Game"},  # Codex's repro: the Source is deselected
+    {"priority": 7},  # a field no delete decision reads: still re-planned
+])
+def test_a_rule_saved_during_the_recheck_keeps_the_source(
+    env, dolphin, capsys, kept, monkeypatch, change,
+):
+    from services.rules import sweep as rules_sweep
+
+    async def save():
+        await rules_sweep.set_rules(env["shelf"], _rule(env, **change))
+
+    _during_recheck(monkeypatch, save)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+
+
+def test_a_removed_librarys_job_reports_its_partial_delete(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    """Codex's repro: the owned job's Library is removed before the job runs,
+    and its delete stops part way. No owner takes the plan, so it is
+    reported under no Library."""
+    import cli
+    from models import ConversionMode, DuplicateAction, JobCreateRequest
+    from routes import convert as convert_routes
+    from services import findings
+    from services.rules import sweep as rules_sweep
+
+    cli._open_db(False)
+    iso, part = _iso(env), _part2(env)
+    _refuse_unlink(monkeypatch, iso)
+
+    async def run():
+        job = await convert_routes.create_job(JobCreateRequest(
+            file_path=str(iso), mode=ConversionMode.DOLPHIN_RVZ,
+            duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+            container_only=True,
+        ))
+        job._sweep_owner = "shelf"
+        rules_sweep._job_owners[job.id] = (env["shelf"], "gc", "Game.iso", None, None)
+        await rules_sweep.forget_library(env["shelf"])
+        await convert_routes.job_manager._process_job(job.id)
+
+    asyncio.run(run())
+
+    assert not part.exists() and iso.exists()
+    reported = [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
+    assert [f["library_id"] for f in reported] == [findings.NO_LIBRARY]
+    assert reported[0]["cause"][findings.REMAINING] == [str(iso)]
+
+
+def test_a_stop_during_the_recheck_deletes_nothing(env, dolphin, capsys, kept, monkeypatch):
+    """Codex's repro: ``run-rules`` is told to stop while the retry re-checks
+    the output. Nothing is unlinked, no attempt is counted, and no further
+    retry starts."""
+    from services.rules import sweep as rules_sweep
+
+    stop = []
+
+    async def stop_now():
+        stop.append(True)
+
+    seen = _during_recheck(monkeypatch, stop_now)
+
+    result = asyncio.run(rules_sweep.sweep(env["shelf"], should_stop=lambda: bool(stop)))
+
+    assert kept["iso"].exists()
+    assert len(seen) == 1
+    assert result["stopped_reason"] == "stopped"
+    pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+    assert pending["attempts"] == 0
+
+
+def test_a_cancel_while_letting_go_of_output_locks_still_frees_the_slot(
+    env, dolphin, monkeypatch,
+):
+    """Codex's repro: the job is cancelled while its cleanup waits for the
+    output locks to be let go. The concurrency slot, the input and folder
+    locks are released all the same."""
+    import threading
+
+    import cli
+    from models import ConversionMode, DuplicateAction, JobCreateRequest
+    from routes import convert as convert_routes
+    from services import job_manager as job_manager_module
+    from services.concurrency_manager import concurrency_manager
+
+    cli._open_db(False)
+    iso = _iso(env)
+    reached, go = threading.Event(), threading.Event()
+    real = job_manager_module._let_go
+
+    def slow_let_go(paths):
+        if paths:
+            reached.set()
+            go.wait(10)
+        return real(paths)
+
+    monkeypatch.setattr(job_manager_module, "_let_go", slow_let_go)
+
+    async def run():
+        job = await convert_routes.create_job(JobCreateRequest(
+            file_path=str(iso), mode=ConversionMode.DOLPHIN_RVZ,
+            duplicate_action=DuplicateAction.SKIP,
+        ))
+        task = asyncio.ensure_future(convert_routes.job_manager._process_job(job.id))
+        try:
+            await _cancel_once(task, reached)
+            return job.id, job.id in concurrency_manager._lock_handles
+        finally:
+            go.set()
+
+    job_id, slot_held = asyncio.run(run())
+
+    assert not slot_held, job_id
