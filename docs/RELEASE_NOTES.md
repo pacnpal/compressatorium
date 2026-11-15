@@ -39,8 +39,8 @@
   can't be read, the Source is kept and the job says why.
   - **Container check only (faster, weaker)** in the convert panel skips the
     comparison and deletes once the output passes its own container check.
-  - Tools other than Dolphin and chdman (below) keep the container check for
-    now. A job that keeps its Source reads nothing extra.
+  - The other tools followed (#300, #301, below). A job that keeps its Source
+    reads nothing extra.
   - The job, the Ledger row, Verify results and the file badge now say **Intact** (passed its
     container check) or **Round-tripped** (decoded to the same content as its
     Source) instead of "verified". Existing checked files show as Intact.
@@ -80,6 +80,36 @@
   - **RomM Rules:** delete-source Rules on Create CD and Create DVD now
     Round-trip too unless the Rule is set to Container check only, so their
     sweeps need the scratch space and take longer.
+- **Round-trip now covers every tool that has delete-source** (#301). Before a
+  delete-source job removes its Source, the output is decoded and compared with
+  it: CSO/ZSO/DAX (maxcso), 3DS (z3ds) and WUX (JWUDTool) are decoded to a
+  hashing stream with no temp file; an NSZ is compared through the NSP SHA256
+  that `nsz -V` rebuilds; a 7z/zip ROM archive's members (name, size, CRC) must
+  match the ROM exactly; CSO/ZSO/DAX to CHD compares the decoded disc with the
+  CHD; chdman Create HD and Create raw compare the image with the CHD's data
+  SHA1, and Copy compares the two CHDs. On a mismatch the Source is kept.
+  Container check only skips it, as before. PS3 folder to ISO and the XISO trim
+  still offer no delete-source.
+  - **chdman Create LD no longer offers delete-source.** Its Source is an AVI,
+    and nothing a LaserDisc CHD decodes to can be compared with the AVI byte
+    for byte, so the AVI cannot be proven and is never deleted. Rules on Create
+    LD lose their delete-source setting.
+  - chdman Copy first checks the Source CHD with chdman verify; a Source that
+    is not Intact is kept and the job says so. A Copy of a LaserDisc CHD always
+    keeps its Source: a LaserDisc CHD has no content digest to compare.
+  - **Behaviour change:** these delete-source jobs read the Source and the
+    output once more, so they take longer, RomM Rule sweeps included.
+  - An XCZ is decompressed to the scratch volume to be compared, so an XCI job
+    needs about the XCI's size free there, or it keeps the Source.
+  - Kept with "content differs": NSPs whose delta fragments nsz drops (update
+    NSPs, unless compressed with `--keep`). XCIs nsz does not rebuild byte for
+    byte (it rewrites the area before the partitions and does not pad to the
+    cart size) are kept with "nsz did not rebuild this XCI byte-for-byte". Use
+    Container check only for those.
+  - A large ZSO decodes slowly (LZ4 is decoded in Python) and may hit the
+    verify time limit, which keeps the Source.
+  - A 7z/zip ROM archive is checked by CRC32 and size per member, the weakest
+    of these checks; every other tool compares a SHA1 or SHA256.
 - **chdman verify is stricter** (#300). chdman reports a data SHA1 mismatch, and
   a CHD with no checksum, while still exiting with success. Verify now passes a
   CHD only when chdman says the raw SHA1 matched, and fails on any error line.

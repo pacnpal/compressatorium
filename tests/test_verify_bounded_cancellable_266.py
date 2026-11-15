@@ -265,6 +265,9 @@ async def _run_delete_on_verify_job(tmp_path: Path, monkeypatch, fake_verify):
         output_path=str(output_path),
         delete_on_verify=True,
         delete_snapshot=build_delete_snapshot(str(source_path)),
+        # The fake output holds no ROM; these tests are about the container
+        # check, so the job skips the Round-trip (#301).
+        container_only=True,
     )
     await manager._process_job(job.id)
     return manager, job, source_path
@@ -1040,7 +1043,18 @@ async def _z3ds_feeder_cancel_abandons_handle(tmp_path: Path, monkeypatch):
             # can assert the cancelled path never gets here.
             closed.append("closed")
 
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self.close()
+
     monkeypatch.setattr(z3ds_module, "open", lambda *_a, **_k: _StuckHandle(), raising=False)
+    # The feeder is the shared subprocess_runner.feed_stdin_from_file (#301),
+    # which opens the file through subprocess_runner.open_input_at.
+    from services import subprocess_runner as runner_module
+
+    monkeypatch.setattr(runner_module, "open_input_at", lambda *_a, **_k: _StuckHandle())
 
     async def _fake_exec(*_args, **_kwargs):
         return child

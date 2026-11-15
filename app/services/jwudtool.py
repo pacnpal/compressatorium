@@ -300,6 +300,44 @@ def _scan_index_table(file_path: str, header: dict) -> int:
     return highest
 
 
+def iter_wux_image(file_path: str, stop=None):
+    """Yield the disc image a WUX container decodes to, in order (#301).
+
+    The Round-trip check hashes this stream, so no 25 GB ``.wud`` is written.
+    JWUDTool cannot decode to a pipe: it writes a fixed ``game.wud`` into a
+    folder and refuses a target that already exists. The layout is the one
+    ``read_wux_header`` checks: logical sector ``i`` is stored at
+    ``sector_array_offset + index[i] * sector_size`` (deduplicated sectors
+    share an index), and the last sector is cut to ``uncompressed_size``.
+    Raises ``ValueError`` on a header that is not a WUX's or a sector that
+    lies past the end of the file.
+    """
+    header = read_wux_header(file_path)
+    size = header["sector_size"]
+    count = header["entry_count"]
+    total = header["uncompressed_size"]
+    base = header["sector_array_offset"]
+    batch = 32  # sectors per yield: 1 MiB
+    with open(file_path, "rb") as fh:
+        fh.seek(header["index_table_offset"])
+        table = fh.read(count * 4)
+        if len(table) != count * 4:
+            raise ValueError("sector index table is truncated")
+        index = struct.unpack(f"<{count}I", table)
+        for first in range(0, count, batch):
+            if stop is not None and stop.is_set():
+                return
+            out = bytearray()
+            for i in range(first, min(first + batch, count)):
+                want = min(size, total - i * size)
+                fh.seek(base + index[i] * size)
+                sector = fh.read(size)
+                if len(sector) < want:
+                    raise ValueError(f"sector {i} lies past the end of the file")
+                out += sector[:want]
+            yield bytes(out)
+
+
 class JwudToolService:
     """Wrapper for the JWUDTool CLI."""
 

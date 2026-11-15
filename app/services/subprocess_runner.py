@@ -47,7 +47,6 @@ from services.timeout_policy import (
     compute_size_scaled_timeout,
 )
 
-
 class ConversionCancelled(Exception):
     """Raised when a conversion is cancelled before completion."""
 
@@ -735,6 +734,77 @@ async def run_detached(
             _note_abandoned("detached read")
 
 
+def open_input_at(path: str, offset: int = 0):
+    """A buffered read handle on ``path``, positioned at ``offset``.
+
+    For a reader that outlives any one block: the stdin feeder reads it chunk
+    by chunk on detached threads and must be able to abandon it with a stuck
+    read, so no ``with`` block can own it. The caller closes it.
+    """
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    if offset:
+        handle.seek(offset)
+    return handle
+
+
+async def feed_stdin_from_file(
+    process,
+    path: str,
+    *,
+    offset: int = 0,
+    cancel_event: asyncio.Event | None = None,
+    chunk_size: int = 1 << 20,
+) -> None:
+    """Copy ``path`` from ``offset`` into ``process.stdin``, then close stdin.
+
+    The shared feeder for a child that reads a file on stdin (``zstd -t`` in
+    z3ds verify, ``zstd -dc`` in the Round-trip). Reads go through
+    :func:`run_detached`, so a read on a mount that stopped answering never
+    blocks the event loop. Such a read can only be abandoned, never closed:
+    closing the handle waits on the lock the stuck read holds, which would turn
+    the cleanup into another unbounded wait holding a probe slot. So the handle
+    is closed only when no read is in flight; when this is cancelled or
+    ``cancel_event`` fires during a read, it is abandoned with its thread.
+    A child that stops reading (broken pipe) ends the feed quietly; its exit
+    code says why.
+    """
+    handle = await run_detached(
+        open_input_at, path, offset, cancel_event=cancel_event,
+    )
+    abandon = False
+    try:
+        while not (cancel_event is not None and cancel_event.is_set()):
+            abandon = True  # a read is in flight from here
+            try:
+                chunk = await run_detached(
+                    handle.read, chunk_size, cancel_event=cancel_event,
+                )
+            except ReadCancelled:
+                break
+            abandon = False
+            if not chunk:
+                break
+            try:
+                process.stdin.write(chunk)
+                await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                break
+    except (asyncio.CancelledError, GeneratorExit):
+        abandon = True
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            process.stdin.close()
+        if not abandon:
+            with contextlib.suppress(Exception):
+                await run_detached(handle.close)
+
+
 async def run_detached_within_stall_bound(
     func: Callable,
     *args: object,
@@ -1110,6 +1180,29 @@ class SubprocessRunner:
         _note_abandoned(f"pid {process.pid}")
         return False
 
+    @staticmethod
+    async def _spawn_piped(
+        cmd: list[str],
+        *,
+        stdin=None,
+        stderr=asyncio.subprocess.PIPE,
+        preexec_fn: Callable[[], None] | None = None,
+        env: Mapping[str, str] | None = None,
+    ):
+        """Spawn ``cmd`` (a list argv, never a shell) with stdout on a pipe.
+
+        The one spawn site :meth:`run_capture` and :meth:`hash_stdout` share,
+        so the argv-from-the-tool's-config spawn exists once in this module.
+        """
+        return await asyncio.create_subprocess_exec(  # nosemgrep
+            cmd[0], *cmd[1:],
+            stdin=stdin,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=stderr,
+            preexec_fn=preexec_fn,
+            env=env,
+        )
+
     async def run_capture(
         self,
         cmd: list[str],
@@ -1180,9 +1273,8 @@ class SubprocessRunner:
 
         use_preexec = os.name == "posix" and not nice_via_wrapper
 
-        process = await asyncio.create_subprocess_exec(  # nosemgrep
-            cmd[0], *cmd[1:],
-            stdout=asyncio.subprocess.PIPE,
+        process = await self._spawn_piped(
+            cmd,
             stderr=(
                 asyncio.subprocess.STDOUT
                 if stderr_to_stdout
@@ -1230,6 +1322,114 @@ class SubprocessRunner:
                 await comm
             self.untrack_pid(process.pid)
 
+    async def hash_stdout(
+        self,
+        cmd: list[str],
+        *,
+        algorithm: str = "sha1",
+        stdin_path: str | None = None,
+        stdin_offset: int = 0,
+        timeout: float | None = None,
+        cancel_event: asyncio.Event | None = None,
+        nice_via_wrapper: bool = False,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
+        """Run a decoder that writes the decoded image to stdout; hash the stream.
+
+        The streaming counterpart to :meth:`run_capture` for the Round-trip
+        check (#301): stdout is read in chunks and hashed as it arrives, never
+        buffered and never written to a temp file. ``stdin_path`` feeds the
+        child that file from ``stdin_offset`` on (a container whose payload
+        follows a header, piped to ``zstd -dc``), read on detached threads.
+
+        Returns the hex digest (``services.stream_digest.new_hasher`` names).
+        Raises :class:`ReadCancelled` when ``cancel_event`` fires,
+        :class:`asyncio.TimeoutError` past ``timeout`` seconds, and
+        ``RuntimeError`` (with the child's stderr tail) on a non-zero exit. The
+        child is PID-tracked and stopped through the bounded :meth:`reap`
+        ladder on every exit, so a cancel or a deadline stops the decoder.
+        """
+        from services.stream_digest import new_hasher  # import cycle
+
+        if cancel_event is not None and cancel_event.is_set():
+            raise ReadCancelled("Read cancelled")
+        label = os.path.basename(cmd[0])
+        # Command wrappers, never a preexec_fn: see run_verify.
+        if not nice_via_wrapper:
+            cmd = nice_prefix(self._owner) + ioprio_prefix(self._owner) + cmd
+        process = await self._spawn_piped(
+            cmd,
+            stdin=(
+                asyncio.subprocess.PIPE
+                if stdin_path is not None
+                else asyncio.subprocess.DEVNULL
+            ),
+            env=env,
+        )
+        self.track_pid(process.pid)
+        hasher = new_hasher(algorithm)
+        stderr_tail = bytearray()
+
+        async def _feed() -> None:
+            await feed_stdin_from_file(process, stdin_path, offset=stdin_offset)
+
+        async def _drain_stdout() -> None:
+            while True:
+                chunk = await process.stdout.read(1 << 20)
+                if not chunk:
+                    return
+                hasher.update(chunk)
+
+        async def _drain_stderr() -> None:
+            while True:
+                chunk = await process.stderr.read(4096)
+                if not chunk:
+                    return
+                stderr_tail.extend(chunk)
+                del stderr_tail[:-4096]
+
+        async def _run() -> None:
+            parts = [_drain_stdout(), _drain_stderr()]
+            if stdin_path is not None:
+                parts.append(_feed())
+            await asyncio.gather(*parts)
+            await process.wait()
+
+        work = asyncio.ensure_future(_run())
+        cancel_wait = (
+            asyncio.ensure_future(cancel_event.wait())
+            if cancel_event is not None
+            else None
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                [work] + ([cancel_wait] if cancel_wait is not None else []),
+                timeout=timeout or None,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if work not in done:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ReadCancelled("Read cancelled")
+                raise asyncio.TimeoutError(f"decoder did not finish in {timeout}s")
+            work.result()
+        finally:
+            for helper in (cancel_wait, work):
+                if helper is not None and not helper.done():
+                    helper.cancel()
+            await self.reap(process, exit_timeout=0)
+            for helper in (cancel_wait, work):
+                if helper is not None:
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await helper
+            self.untrack_pid(process.pid)
+        if process.returncode != 0:
+            tail = stderr_tail.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"{label} exited with {process.returncode}"
+                + (f": {tail.splitlines()[-1]}" if tail else ""),
+            )
+        return hasher.hexdigest()
+
     # --- verify ----------------------------------------------------------
     #
     # Two shared shapes cover every tool's verify subprocess, so the bound and
@@ -1271,6 +1471,7 @@ class SubprocessRunner:
         nice_via_wrapper: bool = False,
         env: Mapping[str, str] | None = None,
         start_message: str = "Verifying integrity...",
+        on_success_output: Callable[[bytes], None] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Run a one-shot verifier, yielding this tool's verify events.
 
@@ -1282,6 +1483,10 @@ class SubprocessRunner:
         events the SSE routes expect. ``run_capture`` reports both an abort and
         a timeout as a ``None`` return code, so the two are told apart here by
         asking the cancel event which one happened.
+
+        ``on_success_output`` gets the verifier's output after a passing run,
+        for a tool whose verifier also prints a hash the Round-trip can reuse
+        (nsz's ``[NSP SHA256]``), so that verifier runs once per job.
         """
         yield {"type": "progress", "progress": 0, "message": start_message}
         timeout = await resolve_verify_timeout(
@@ -1309,6 +1514,8 @@ class SubprocessRunner:
             yield abandoned_verify_error(abandoned_pid[0])
             return
         if returncode == 0:
+            if on_success_output is not None:
+                on_success_output(stdout or b"")
             yield {"type": "progress", "progress": 100, "message": "Integrity check passed"}
             yield {"type": "complete", "valid": True, "message": success_message}
             return
