@@ -3481,7 +3481,25 @@ free one if it was taken since, never picking a different name on its own.
   its quotes kept (RetroArch's `rm3u.c`). If either reaches or names a
   replaced file (a Source literally named `A|B.cue` or `"Game.cue"`) the
   Source is kept.
-- *UTF-16 and NUL bytes.* Such a playlist is never rewritten. It is UTF-16
+- *UTF-16 with a BOM* (#334). `FF FE` or `FE FF` names the byte order. The
+  text after it is decoded strictly, rewritten and read back exactly like a
+  UTF-8 playlist (`_rewrite_utf16` transcodes to UTF-8, runs `_rewrite`, and
+  encodes the result back), then written with the same BOM and byte order.
+  Line endings are part of the text, so they survive too. The UTF-8 stand-in
+  gets a BOM of its own, so `_rewrite` strips exactly that one and a first
+  filename that itself starts with U+FEFF keeps it. One rule covers readers
+  that ignore the BOM (an 8-bit line appended to the file): the bytes that
+  would be left on disk, rewritten or not, are read back as the UTF-16 text
+  and as the NUL-stripped bytes in UTF-8 and cp1252. Every reading goes
+  through `_text_reaches_replaced`, which runs each entry line through
+  `_entry_reaches_replaced`: the one check that `_rewrite` also uses for its
+  own lines. It asks whether a line reaches a replaced file by any reading a
+  player could use: the parsed path, the literal line, the label-split path
+  with quotes kept, and an unresolved name. If any reading still reaches a
+  replaced file, or a new entry can't be encoded in UTF-16, the Source is
+  kept. Text that doesn't decode strictly falls to the rule below.
+- *UTF-16 without a BOM, and NUL bytes.* Such a playlist is never rewritten:
+  without a BOM the encoding can't be known safely. It is UTF-16
   only with a BOM, or when NULs fill most of the odd (little-endian) or even
   (big-endian) byte positions, and then it is decoded strictly (or with
   replacements if that fails). The NUL-stripped UTF-8 and cp1252 readings are
@@ -4428,7 +4446,11 @@ bounded thread, as a conversion candidate's do. It returns a skip reason
 (`unresolvable`, `missing`, `uncheckable`) or a `Check`: the Image key, path,
 size, the checking tool and the Image's file fingerprint. An Image already
 being checked (`check.in_flight`) or converted (the active-path set) is
-skipped. Readiness is the verifier's (`registry.tool_is_ready(tool,
+skipped. The other way round too (#330): every file of an Image a running
+check picked (`check.in_flight_paths`) joins the sweep's active-path set
+(`sweep._active_source_paths`) beside the queued and converting Sources, so a
+conversion Rule on the same Platform skips it as active, records no failure
+hold, and queues it on a sweep after the check is done. Readiness is the verifier's (`registry.tool_is_ready(tool,
 purpose="verify")`), not conversion's: jwud checks WUX in pure Python without
 JWUDTool, and z3ds needs zstd to check. A tool that is not ready skips its
 Images and reports
