@@ -1355,7 +1355,6 @@ async def plan_auto_targets(
 
 
 def _with_checked_compression(plan: list) -> list:
-    """Each target's saved compression, checked against its mode."""
     return [
         replace(target, compression=checked_compression(target.mode, target.compression))
         if target.mode else target

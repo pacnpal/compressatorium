@@ -2927,10 +2927,21 @@ Events are a registry: `register_event(key, title)` adds one, `event_list()`
 feeds Settings. A later ticket (check failed, with check Rules) registers its own
 event and calls `notify`; no transport changes.
 
-Transports are `TRANSPORTS[kind](url, event)`, blocking and raising on failure:
-`webhook` (`http.client`, JSON `POST`, http/https only) and `apprise` (imported
-inside the function; without the package `validate` refuses Apprise URLs with a
-clear message). Tests replace entries in `TRANSPORTS` with a recorder. The webhook
+Destination types are rows of one table, `_KINDS` (`Kind(key, label, placeholder,
+send, check, hint)`); `KINDS`, `TRANSPORTS` and `kind_list()` (which Settings reads
+to build its picker) derive from it, so adding a type is one row and nothing else
+branches on the kind. Transports are `TRANSPORTS[kind](url, event)`, blocking and
+raising on failure. `webhook` and `discord` share one HTTP path, `_post_json`
+(`http.client`, JSON `POST`, http/https only, one overall deadline) and differ only
+in the payload builder: `generic_payload` is `{"event", "title", "message", "data"}`
+(example in the README); `discord_payload` is one embed (colour by outcome, at most
+10 scalar `data` fields, a UTC timestamp) with `allowed_mentions: {"parse": []}`,
+truncated with an ellipsis to Discord's limits (content 2000, title 256,
+description 4096, field value 1024, 6000 over one embed). `discord` requires https
+when a destination is saved or tested. 200 and 204 are success; 429 is an error
+naming Retry-After and is never retried. `apprise` is imported inside the function;
+without the package its `check` refuses Apprise URLs with a
+clear message. Tests replace entries in `TRANSPORTS` with a recorder. The webhook
 never follows redirects (any status of 300 or more is an error, and `Location` is
 never read), does not use `HTTP(S)_PROXY`, and runs under one overall deadline: a
 timer shuts the socket down at 0.9 x `SEND_TIMEOUT_S`. Apprise keeps its own
@@ -2946,7 +2957,9 @@ messages already queued and a destination deleted meanwhile is skipped;
 `remove_destination` also drops its queue. Empty queues and finished workers are
 removed.
 
-Sends run in a private thread pool (`MAX_DESTINATIONS` + 12 workers). A thread cannot be killed: if a send outlives `SEND_TIMEOUT_S` the
+Sends run on `run_detached`'s daemon threads (`services/subprocess_runner.py`), never a
+thread pool: pool workers are joined at interpreter exit, so one send that never returns
+would hold a CLI command open after its work finished. A thread cannot be killed: if a send outlives `SEND_TIMEOUT_S` the
 destination is marked busy until its thread really ends, and queued sends to it
 fail fast ("still running") instead of stacking threads. Errors are scrubbed: a
 destination URL is a secret and appears in no log line, no API response and no
@@ -3015,10 +3028,26 @@ Precedence is fixed and never guesses:
    skip the header and use the archive's folder. The walk runs over the
    resolved folders from the Image's own folder up to the root of the Volume
    that holds it, root included, and never above
-   (`utils.path_utils.containing_volume_root`, `_candidate_paths`), so a Volume
+   (`utils.path_utils.platform_boundary_root`, the deepest root; `_candidate_paths`), so a Volume
    mounted under `/mnt/md/...` does not make every Image in it a Genesis Image,
    and a mapping matches whether the Image was reached through a symlink or
    not. A path in no configured Volume uses only its own folder.
+   That
+   boundary is for Platform inference only: a lock walk (another process
+   packing a folder, the delete/rename guards, the dispatch probe) stops at
+   `lock_boundary_root`, the outermost root over the path with every
+   overlapping root considered, so a folder locked above an inner Volume (with
+   `/mnt` and `/games -> /mnt/MyGame/PS3_GAME`, a lock on `/mnt/MyGame`) is
+   still found. Containment has a three-way form,
+   `utils.path_utils.volume_containment(path)`: True inside, False only on
+   positive evidence of outside (a `..` segment, a path under no configured or
+   cached root spelling while every root's spelling is known, or freshly
+   resolved roots that don't hold it), None whenever the gate gave up on an
+   error instead (a root probe that failed or went over its bound, an OSError
+   resolving the path, a root missing from the resolved-spelling cache; each
+   is noted through `_note_unknown`). `is_within_configured_volumes` is that answer with None
+   counted as outside; a caller that must not mistake a stalled mount for
+   "outside" (the `.m3u` Referrer, §3.3.15) uses the three-way form.
 
 Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
 (a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
@@ -3371,15 +3400,40 @@ be set on the temp file aborts the write (`PermissionError` "can't keep its
 group"), which keeps the Source. A crash leaves the old file or the new one,
 never half of one.
 
+`write_new_bytes(path, data)` is its no-overwrite sibling: the same temp file
+and fsync, then `utils.path_utils.place_without_clobbering` (a hard link or a
+no-replace rename), so "is the name free" and "create it" are one atomic step and
+a file or symlink already at `path` raises `FileExistsError` untouched.
+`m3u.playlist_bytes(entries)` builds a fresh playlist in the encoding the
+Referrer reads and rewrites with. **Create an `.m3u` from selected discs** (#299,
+`services/disc_playlist.py`, `POST /api/files/playlist/preview` and
+`/api/files/playlist`) is built on these two, not a second writer. It accepts two
+or more files directly in one folder inside a Volume whose extension is in
+`registry.disc_extensions()`, the union of each tool's `disc_extensions` (chdman
+`.cue .gdi .iso .chd`, Dolphin `.iso .gcz .wia .rvz .wbfs`, maxcso `.cso .zso`; a
+tool with no standalone disc files declares nothing). `registry.js` mirrors it as
+`discExts` (checked by `tests/test_frontend_parity_186.py`), and the file list
+shows **Create .m3u** only for two or more such files in one folder. Order is by
+`(Disc N)` / `Disc N` / `CD N`, then name. A ticked `.bin` that a ticked `.cue` /
+`.gdi` names is dropped from the selection with a warning; two files for one disc
+(a `.cue` and its `.chd`, or one disc number twice) are refused. Entries are file
+names beside the playlist. The preview computes a free name (`<Title> (2).m3u`);
+the create call writes exactly the previewed name and answers 409 with the next
+free one if it was taken since, never picking a different name on its own.
+
 **The `.m3u` Referrer** (`m3u.py`) is always on.
 
 - *Where it looks.* The replaced file's resolved folder and each folder above
-  it up to and including its Volume root (`utils.path_utils.volume_root_for`,
+  it up to and including its Volume root (`utils.path_utils.lock_boundary_root`,
   with nested Volumes the outermost one wins, so `/roms/All.m3u` is found for
   a disc under a `/roms/psx` Volume). Only the `*.m3u` files directly in those folders,
   no recursive walk, so the cost is one `scandir` per level. This covers a
   playlist beside the discs and the Batocera / ES-DE layout (`psx/Game.m3u`
   naming `.discs/Game (Disc 1).cue`). `detect` looks at the same folders.
+  If the boundary can't be determined the Referrer fails (Source kept). Each
+  playlist found is checked with `volume_containment`: confirmed outside is
+  left alone, "couldn't tell" fails (Source kept); `apply` checks again right
+  before writing and refuses unless confirmed inside.
 - *What it rewrites.* Only entries whose path (as the reader below reads it)
   resolves exactly to a replaced file, matched by `(st_dev, st_ino)` so any
   spelling that reaches the file counts (relative, absolute, `./`, other case

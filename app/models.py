@@ -189,11 +189,6 @@ class ConversionJob(BaseModel):
     # no check ran.
     check_passed: str | None = None
     deleted_paths: list[str] = []
-    # Who queued the job when it is not a person (a sweep passes its token), so a
-    # terminal listener can tell the two apart from the first moment the job
-    # exists. A private attribute: not a field, so it is in neither the API schema
-    # nor any serialized form.
-    _sweep_owner: str | None = PrivateAttr(default=None)
     # A finished job that did less than asked without failing, such as a
     # delete-source run that kept its Source because another job was reading
     # it (#306). None when there is nothing to say.
@@ -202,6 +197,11 @@ class ConversionJob(BaseModel):
     # {"referrer": id, "target": file, "status": "updated" | "failed" |
     # "skipped", "reason": why, for failed and skipped}.
     referrers_updated: list[dict] = []
+    # Who queued the job when it is not a person (a sweep passes its token), so a
+    # terminal listener can tell the two apart from the first moment the job
+    # exists. A private attribute: not a field, so it is in neither the API schema
+    # nor any serialized form.
+    _sweep_owner: str | None = PrivateAttr(default=None)
 
 
 class JobCreateRequest(BaseModel):
@@ -332,6 +332,20 @@ class BulkVerifyRequest(BaseModel):
 
 class MetadataBatchRequest(BaseModel):
     paths: list[str]
+
+
+class PlaylistPreviewRequest(BaseModel):
+    """Disc Images (full paths, one folder) to list in a new .m3u."""
+
+    paths: list[str]
+    # Playlist title without ".m3u"; omitted, it comes from the disc names.
+    title: str | None = None
+
+
+class PlaylistCreateRequest(BaseModel):
+    paths: list[str]
+    # The file name the preview showed, so what is written is what was shown.
+    file_name: str
 
 
 class DeletePlanRequest(BaseModel):

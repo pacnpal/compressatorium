@@ -190,6 +190,59 @@
       await sleep(1200);
     })()
 
+# --- Create .m3u from selected discs (three discs ticked, preview dialog) ---
+# Ticks the discs of Star Saga on the PlayStation volume, in scrambled
+# fixture order, and presses Create .m3u. The dialog previews the name and
+# the entries in disc order; nothing is written.
+- url: http://127.0.0.1:8099/?s=playlist-light#/workspace/chdman
+  output: docs/screenshots/playlist-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      localStorage.setItem('theme-preference', 'light');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
+      await sleep(400);
+      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'PlayStation');
+      if (vol) vol.click();
+      await sleep(800);
+      for (const n of ['Star Saga (Disc 1).cue', 'Star Saga (Disc 2).cue', 'Star Saga (Disc 3).cue']) {
+        const row = [...document.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes(n));
+        const pick = row?.querySelector('input[type="checkbox"]');
+        if (pick && !pick.checked) pick.click();
+        await sleep(200);
+      }
+      await sleep(300);
+      [...document.querySelectorAll('button')].find(b => b.textContent.includes('Create .m3u'))?.click();
+      await sleep(1200);
+    })()
+- url: http://127.0.0.1:8099/?s=playlist-dark#/workspace/chdman
+  output: docs/screenshots/playlist-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      localStorage.setItem('theme-preference', 'dark');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
+      await sleep(400);
+      const vol = [...document.querySelectorAll('button.item')].find(b => b.textContent.trim() === 'PlayStation');
+      if (vol) vol.click();
+      await sleep(800);
+      for (const n of ['Star Saga (Disc 1).cue', 'Star Saga (Disc 2).cue', 'Star Saga (Disc 3).cue']) {
+        const row = [...document.querySelectorAll('tbody tr')].find(tr => tr.textContent.includes(n));
+        const pick = row?.querySelector('input[type="checkbox"]');
+        if (pick && !pick.checked) pick.click();
+        await sleep(200);
+      }
+      await sleep(300);
+      [...document.querySelectorAll('button')].find(b => b.textContent.includes('Create .m3u'))?.click();
+      await sleep(1200);
+    })()
+
 # --- Workspace: Dolphin (GameCube volume selected) -------------------------
 - url: http://127.0.0.1:8099/?s=workspace-dolphin-light#/workspace/dolphin
   output: docs/screenshots/workspace-dolphin-light.png

@@ -122,6 +122,8 @@ class MaxcsoTool(BaseTool):
     output_extensions = frozenset({".cso", ".zso", ".dax", ".iso"})
     # maxcso --crc validates the compressed containers.
     verify_extensions = frozenset(MAXCSO_DECOMPRESS_EXTENSIONS)
+    # A compressed disc image each (the decompressed .iso is chdman's).
+    disc_extensions = frozenset({".cso", ".zso"})
 
     def __init__(self, binary_path: str) -> None:
         super().__init__(binary_path)

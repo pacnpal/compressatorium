@@ -183,11 +183,10 @@ async def test_an_unrelated_run_does_not_re_alert_a_known_failure(tmp_path, sent
 async def test_a_sweep_job_that_fails_during_batch_creation_is_not_sent_twice(
     tmp_path, sent, monkeypatch,
 ):
-    """A job can fail inside the queue call, before the sweep has seen it return.
-
-    #306 moved the history prune ahead of the enqueue, so the call no longer
-    awaits after it; the wrapper below keeps that window open, so the
-    notification side still holds if the call ever awaits again."""
+    """A job can fail in a window after the queue accepts it and before the
+    sweep has seen the batch call return. The queue has no await there today
+    (#306 moved the history prune before registration), so the window is
+    simulated by an await added after create_jobs_atomic."""
     import asyncio
 
     from models import ConversionMode
@@ -201,18 +200,18 @@ async def test_a_sweep_job_that_fails_during_batch_creation_is_not_sent_twice(
     await preferences_store.put(notifications.PREF_KEY, {"destinations": [
         {"id": "d1", "kind": "webhook", "url": "https://hooks.example/t", "label": ""}]})
 
-    real_create = manager.create_jobs_atomic
+    real_atomic = manager.create_jobs_atomic
 
-    async def failing_create(*args, **kwargs):
-        created = await real_create(*args, **kwargs)
-        for job in created:
+    async def atomic_then_a_window(*args, **kwargs):
+        jobs = await real_atomic(*args, **kwargs)
+        for job in jobs:
             job.status = JobStatus.FAILED
             job.error_message = "no disc"
             manager._notify_terminal(job)
         await asyncio.sleep(0.05)  # the listener task runs before the call returns
-        return created
+        return jobs
 
-    monkeypatch.setattr(manager, "create_jobs_atomic", failing_create)
+    monkeypatch.setattr(manager, "create_jobs_atomic", atomic_then_a_window)
     owner = notifications.sweep_owner()
     jobs = await manager.create_batch_jobs(
         [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},
@@ -263,17 +262,17 @@ async def test_a_sweep_job_whose_listener_runs_after_the_batch_returns_is_not_se
         {"id": "d1", "kind": "webhook", "url": "https://hooks.example/t", "label": ""}]})
     loop = asyncio.get_running_loop()
 
-    real_create = manager.create_jobs_atomic
+    real_atomic = manager.create_jobs_atomic
 
-    async def late_listener_create(*args, **kwargs):
-        created = await real_create(*args, **kwargs)
-        for job in created:
+    async def atomic_with_a_late_listener(*args, **kwargs):
+        jobs = await real_atomic(*args, **kwargs)
+        for job in jobs:
             job.status = JobStatus.FAILED
             job.error_message = "no disc"
             loop.call_later(0.1, manager._notify_terminal, job)  # after the call returns
-        return created
+        return jobs
 
-    monkeypatch.setattr(manager, "create_jobs_atomic", late_listener_create)
+    monkeypatch.setattr(manager, "create_jobs_atomic", atomic_with_a_late_listener)
     owner = notifications.sweep_owner()
     jobs = await manager.create_batch_jobs(
         [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},

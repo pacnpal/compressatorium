@@ -14,10 +14,20 @@ from models import (
     FileEntry,
     MetadataBatchRequest,
     OutputStatus,
+    PlaylistCreateRequest,
+    PlaylistPreviewRequest,
     Volume,
 )
 from services.archive import ARCHIVE_EXTENSIONS, archive_service
 from services.chd_metadata_store import chd_metadata_store
+from services.disc_playlist import (
+    PlaylistBusy,
+    PlaylistError,
+    PlaylistNameError,
+    PlaylistNameTaken,
+    create_playlist,
+    plan_playlist,
+)
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.mutation_guard import locked_for_mutation
@@ -26,7 +36,7 @@ from services.verification_store import verification_store
 from utils.junk import is_junk_entry
 from utils.path_utils import (
     match_extension,
-    containing_volume_root,
+    lock_boundary_root,
     ensure_path_within_volumes,
     get_volume_name_for_path,
     is_configured_volume_root,
@@ -280,7 +290,7 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     # and of each folder above it, up to the Volume root (#306). Off the event
     # loop: resolving the Volume roots touches the disk.
     def _locked_folder_above() -> str | None:
-        volume_root = containing_volume_root(path)
+        volume_root = lock_boundary_root(path)
         return lock_manager.locked_folder_above(
             path, str(volume_root) if volume_root is not None else None,
         )
@@ -1055,3 +1065,47 @@ async def delete_files_batch(request: Request, payload: BulkDeleteRequest) -> di
         "failed": failed_count,
         "results": results,
     }
+
+
+@router.post("/files/playlist/preview")
+async def playlist_preview(payload: PlaylistPreviewRequest) -> dict:
+    """The ``.m3u`` the selected discs would make: name, folder, ordered entries.
+
+    Writes nothing. If ``<title>.m3u`` is taken, ``file_name`` is the next free
+    name and ``name_taken`` is true.
+    """
+    try:
+        plan = await run_in_threadpool(plan_playlist, payload.paths, payload.title)
+    except PlaylistNameError as exc:
+        # Apart from selection errors (plain text) so the UI keeps the name
+        # field, prefilled with the refused title, for the user to fix.
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "code": "invalid_name", "title": exc.title},
+        ) from None
+    except PlaylistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return plan.to_dict()
+
+
+@router.post("/files/playlist")
+async def playlist_create(payload: PlaylistCreateRequest) -> dict:
+    """Write the previewed ``.m3u`` beside the discs. Never overwrites a file:
+    a taken name is a 409 whose ``detail.suggested_name`` is the next free one."""
+    try:
+        plan = await run_in_threadpool(create_playlist, payload.paths, payload.file_name)
+    except PlaylistNameTaken as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "suggested_name": exc.suggested_name},
+        ) from None
+    except PlaylistBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except PlaylistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except OSError as exc:
+        logger.warning("Playlist write failed: %s", exc)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to write playlist: {exc.strerror or exc}",
+        ) from None
+    return {**plan.to_dict(), "path": os.path.join(plan.directory, plan.file_name)}

@@ -562,6 +562,54 @@ def test_webhook_has_an_overall_deadline_against_a_slow_drip(monkeypatch):
     assert time.monotonic() - started < 3
 
 
+@pytest.mark.asyncio
+async def test_a_connection_close_response_with_a_dripping_body_cannot_outlive_the_deadline(
+        client, monkeypatch):
+    """Headers complete, `Connection: close`, then the body drips: http.client
+    detaches the socket, so the deadline's abort cannot reach it."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    hits = []
+    stop = threading.Event()
+
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            hits.append(time.monotonic())
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.flush()
+            for _ in range(40):  # about 4 s of one byte every 100 ms
+                if stop.is_set():
+                    return
+                try:
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                except OSError:
+                    return
+                time.sleep(0.1)
+
+        def log_message(self, *a):
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setattr(notifications, "SEND_TIMEOUT_S", 0.6)
+    try:
+        await _add(client, f"http://127.0.0.1:{srv.server_port}/hook")
+        started = time.monotonic()
+        await notifications.deliver(_event())
+        assert time.monotonic() - started < 1.5  # not held until the body ends
+        await notifications.deliver(_event())  # the destination is free again
+        assert len(hits) == 2
+    finally:
+        stop.set()
+        srv.shutdown()
+
+
 def test_webhook_does_not_follow_redirects():
     target, reached = _serve()
     redirecting, _ = _serve(

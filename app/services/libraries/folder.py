@@ -79,9 +79,9 @@ from services.rules.library import (
 )
 from services.tools import registry
 from utils.path_utils import (
-    containing_volume_root,
     is_within_configured_volumes,
     match_extension,
+    platform_boundary_root,
 )
 
 logger = get_logger("folder_library")
@@ -359,9 +359,10 @@ class FolderLibrary(LibraryDefaults):
         # own stat: where the root really is (an ancestor renamed and replaced
         # by a symlink keeps the Library path and every file stat, while the
         # folders around the Image change) and the Volume root the fallback
-        # stops at. Resolved once per walk, not per Image: the walk does not
+        # stops at (`platform_boundary_root`, the same boundary detection
+        # uses). Resolved once per walk, not per Image: the walk does not
         # follow symlinks below the root, so every path under it shares this.
-        context = (os.path.realpath(root), str(containing_volume_root(root) or ""))
+        context = (os.path.realpath(root), str(platform_boundary_root(root) or ""))
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
             # Detection's own key: the file and the tracks its header probe
