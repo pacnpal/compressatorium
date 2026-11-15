@@ -100,6 +100,12 @@
   web UI refuses such a request with the names of the other Images; the CLI
   converts the member, keeps the archive, says so on that line and exits 1.
   Junk such as `__MACOSX/` and a disc's own `.bin` tracks don't count.
+- **An archive the safety rules refuse is skipped by `verify`, not failed**
+  (#306). A single-ROM archive with a symlink, an absolute or `..` path, an
+  encrypted member, or over a `CHD_ARCHIVE_MAX_*` limit you set is reported as
+  "can't be checked (refused by the archive safety rules: ...)". Its stored
+  check is kept and the exit code is unaffected. 7z is never left waiting for a
+  password: it reads no terminal input, and an encrypted archive fails at once.
 - **Auto converts a PS3 disc folder to an ISO** (#306). The Auto choice now
   sends a PS3 disc folder to `folder_to_iso`; it used to leave it alone.
 - A single convert request for an output another job is writing now says

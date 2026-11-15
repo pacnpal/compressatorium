@@ -57,6 +57,9 @@ class ArchiveMember(NamedTuple):
     size: int | None  # uncompressed size; None when the format omits it
     is_dir: bool
     is_symlink: bool
+    # Its content needs a password (zip flag bit 0, an encrypted 7z, a RAR
+    # member that asks for one). The listing itself still reads.
+    is_encrypted: bool = False
 
 
 # Module-global so the cache is shared across every consumer and threadpool
@@ -126,6 +129,7 @@ def _read_zip(archive_path: str) -> list[ArchiveMember]:
             members.append(
                 ArchiveMember(
                     info.filename, int(info.file_size), info.is_dir(), is_symlink,
+                    bool(info.flag_bits & 0x1),
                 ),
             )
     return members
@@ -135,6 +139,8 @@ def _read_7z(archive_path: str) -> list[ArchiveMember]:
     """Read every 7z member; ``uncompressed`` is ``None`` when the archive omits it."""
     members: list[ArchiveMember] = []
     with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
+        # py7zr knows encryption per archive, not per entry.
+        encrypted = bool(zf.needs_password())
         for entry in zf.list():
             size = entry.uncompressed
             members.append(
@@ -143,6 +149,7 @@ def _read_7z(archive_path: str) -> list[ArchiveMember]:
                     int(size) if size is not None else None,
                     entry.is_directory,
                     bool(entry.is_symlink),
+                    encrypted and not entry.is_directory,
                 ),
             )
     return members
@@ -158,9 +165,11 @@ def _read_rar(archive_path: str) -> list[ArchiveMember]:
             # ignores the flag anyway; romz only reads .zip/.7z).
             is_symlink_attr = getattr(info, "is_symlink", None)
             is_symlink = bool(is_symlink_attr()) if callable(is_symlink_attr) else False
+            needs_password = getattr(info, "needs_password", None)
             members.append(
                 ArchiveMember(
                     info.filename, int(info.file_size), info.is_dir(), is_symlink,
+                    bool(needs_password()) if callable(needs_password) else False,
                 ),
             )
     return members

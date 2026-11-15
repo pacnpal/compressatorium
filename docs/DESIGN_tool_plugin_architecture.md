@@ -2713,8 +2713,28 @@ makeps3iso read-back raises its I/O errors (`read_iso_file(strict=True)`, down
 through `_read_pvd` and `_list_dir`).
 
 A verifier ended by a signal (a negative return code: SIGKILL, the OOM killer)
-is no verdict either (`killed_verify_error`), in both `run_verify` and
-`capture_verify`; a non-zero exit is.
+is no verdict either; a non-zero exit is. One helper decides it from the return
+code, `subprocess_runner.verify_exit_event(returncode, message)` (through
+`killed_verify_error` for a negative one), used by `run_verify`,
+`capture_verify` and z3ds's own zstd pipeline.
+
+**Can't be checked here.** `_verify_error(..., uncheckable=True)`, kept by
+`collect_verify`, says the tool refuses to check this file at all, and nothing
+will change that on a retry. romz sets it when an archive safety rule refuses
+the archive (`services.archive.ArchiveSafetyRefused`, a `ValueError` carrying
+`rule`): a symlink member, an absolute or `..` member path, an encrypted member,
+or `CHD_ARCHIVE_MAX_ENTRIES` / `_MAX_MEMBER_SIZE` / `_MAX_TOTAL_SIZE`. The
+message is "This archive can't be checked (refused by the archive safety rules:
+<rule>)". The CLI reports it as skipped: exit code unaffected, a stored pass
+kept. Only an archive whose bytes cannot be read or decoded fails. Encryption
+comes from the listing (`ArchiveMember.is_encrypted`: zip flag bit 0, py7zr's
+`needs_password()`, rarfile's), so it is known before `7z t` runs.
+
+**Nothing waits on a terminal.** Every child the shared runner starts (`run`,
+`run_capture`, `run_verify`) gets `/dev/null` for stdin, and every 7z command
+that reads an archive (`x`, `t`) names a dummy password (`romz._NO_PASSWORD`),
+so an encrypted archive fails at once instead of prompting. `7z a` names none:
+there the switch would encrypt the archive being written.
 
 **Which tool checks a file** (`cli._verify_tool`), in this order:
 
@@ -2730,8 +2750,8 @@ wider than `verifies_path` (the listing's Verify/Info gate, unchanged). romz
 decides by shape first (`RomzService.claims_for_verify`, the one place): an
 archive that reads and plainly is not a single-ROM one (no ROM, several files,
 a texture pack, an encrypted header) is not romz's and is skipped; one that
-cannot be read or decoded, or a single-ROM archive a safety rule rejects, is
-claimed and fails. A folder run adds the stored checks under it, and one no
+cannot be read or decoded is claimed and fails; a single-ROM archive a safety
+rule rejects is claimed and reported "can't be checked" (above). A folder run adds the stored checks under it, and one no
 tool can check is reported, not dropped. "Shared" counts only tools that name
 another Platform, so the Platform-less chain tool does not make `.cso` shared.
 

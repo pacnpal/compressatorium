@@ -948,6 +948,11 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
         line["status"], line["reason"] = "intact", result.get("message")
         await verification_store.mark_verified(path)
         return line
+    if result.get("uncheckable"):
+        # The tool won't check it here (an archive safety rule refused it):
+        # not a failure, and what was stored stays.
+        line["status"], line["reason"] = "skipped", result.get("message")
+        return line
     line["status"] = "failed"
     no_verdict = ("cancelled", "abandoned", "inconclusive")
     if "error" in result or any(result.get(flag) for flag in no_verdict):

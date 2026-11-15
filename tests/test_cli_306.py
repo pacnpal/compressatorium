@@ -1283,22 +1283,114 @@ def test_a_7z_with_an_encrypted_header_is_not_a_rom_archive(
     assert (code, lines) == (0, [])
 
 
-def test_a_single_rom_archive_with_an_unsafe_junk_member_is_claimed_and_fails(
+def _assert_refused(lines, code, archive, calls, rule):
+    """review r8 I1: a safety rule refused it, so it can't be checked here:
+    skipped, no failure, the stored pass kept, and 7z never run."""
+    assert code == 0, lines
+    assert [(Path(line["path"]).name, line["status"]) for line in lines] == [
+        (archive.name, "skipped"),
+    ]
+    reason = lines[0]["reason"]
+    assert "can't be checked" in reason and "archive safety rules" in reason
+    assert rule in reason
+    assert calls == []
+    assert _stored(archive) is not None
+
+
+def test_a_single_rom_archive_with_an_unsafe_junk_member_is_skipped(
     volume, dolphin, capsys, monkeypatch,
 ):
-    _stub_7z_passes(monkeypatch)
+    calls = _stub_7z_passes(monkeypatch)
     archive = volume / "gba" / "Game.gba.zip"
     archive.parent.mkdir(parents=True)
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("Game.gba", b"rom" * 64)
         zf.writestr("__MACOSX/../../victim.gba", b"x")
+    _store(archive)
 
     code, lines = _cli(capsys, "verify", str(volume), "--json")
 
-    assert code == 1
-    assert [(Path(line["path"]).name, line["status"]) for line in lines] == [
-        ("Game.gba.zip", "failed"),
-    ]
+    _assert_refused(lines, code, archive, calls, "..")
+
+
+def test_a_healthy_rom_archive_over_a_size_cap_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """review r8 Q2: an operator's size cap is not damage."""
+    from config import settings
+
+    calls = _stub_7z_passes(monkeypatch)
+    archive = volume / "nds" / "Game.nds.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("Game.nds", b"rom" * 4096)
+    _store(archive)
+    monkeypatch.setattr(settings, "archive_max_member_size", 1024)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "CHD_ARCHIVE_MAX_MEMBER_SIZE")
+
+
+def _encrypt_zip_members(path):
+    """Set the encryption bit on every member, as an encrypting zip tool does."""
+    data = bytearray(path.read_bytes())
+    for signature, flag_at in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        start = 0
+        while (at := data.find(signature, start)) != -1:
+            data[at + flag_at] |= 0x01
+            start = at + 4
+    path.write_bytes(bytes(data))
+
+
+def test_a_rom_archive_with_an_encrypted_member_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    calls = _stub_7z_passes(monkeypatch)
+    archive = _romz_zip(volume / "gba" / "Game.gba.zip")
+    _encrypt_zip_members(archive)
+    _store(archive)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "encrypted")
+
+
+def test_a_7z_rom_archive_with_encrypted_content_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    py7zr = pytest.importorskip("py7zr")
+    calls = _stub_7z_passes(monkeypatch)
+    rom = volume / "Game.gba"
+    rom.write_bytes(b"rom" * 64)
+    archive = volume / "gba" / "Game.gba.7z"
+    archive.parent.mkdir()
+    with py7zr.SevenZipFile(archive, "w", password="pw") as z:
+        z.write(rom, "Game.gba")
+    rom.unlink()
+    _store(archive)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "encrypted")
+
+
+def test_7z_never_waits_for_a_password(monkeypatch):
+    """review r8: every 7z command that reads an archive names a password, so
+    an encrypted one fails at once instead of prompting. Compressing names
+    none: there the switch would encrypt the new archive."""
+    from services.romz import ROMZ_EXTRACT_MODE, romz_service
+
+    def password_switches(cmd):
+        return [a for a in cmd[: cmd.index("--")] if a.startswith("-p")]
+
+    for cmd in (
+        romz_service._build_command("/i/Game.gba.7z", "/o", ROMZ_EXTRACT_MODE, None),
+        romz_service._test_command("/i/Game.gba.7z"),
+    ):
+        assert [len(a) > 2 for a in password_switches(cmd)] == [True], cmd
+    compress = romz_service._build_command("Game.gba", "/o/Game.gba.7z", "romz_7z", None)
+    assert password_switches(compress) == []
 
 
 def _store(path, **meta):
