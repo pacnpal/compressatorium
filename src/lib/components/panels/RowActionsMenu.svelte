@@ -59,24 +59,11 @@
   // Try the registry's verify match first; if that fails, fall back
   // to any tool that lists the row's extension as a source. The
   // Info action targets the row's own path.
-  const infoTool = $derived.by(() => {
-    if (directVerifyTool) return directVerifyTool;
-    // Source-row Info (z3ds .3ds/.cci, etc.). Skip the source fallback on
-    // archive rows: romz lists .7z/.zip as a source extension, so without
-    // this a non-single-ROM archive (directVerifyTool already null via
-    // verifiable_by) would re-acquire romz Info here. Archive Info is
-    // owned solely by the backend-gated directVerifyTool above.
-    if (!isArchive && path && typeof path === 'string') {
-      const matches = registry.toolsForSourcePath(path);
-      // Prefer tools that actually expose Info for that source, for
-      // the current registry, every tool exposes `getInfo`, so the
-      // first match is fine. Future tools can opt out by leaving
-      // getInfo undefined.
-      const t = matches.find((tool) => typeof tool.getInfo === 'function');
-      if (t) return t;
-    }
-    return null;
-  });
+  // The rule (verify owner first, then a source claim, and only a tool with
+  // a getInfo binding) lives in the registry so it is tested there.
+  const infoTool = $derived(
+    registry.infoToolForRow(path, entry?.verifiable_by, isArchive),
+  );
   const canGetInfo = $derived(!!infoTool && !inArchive);
 
   // A folded makeps3iso split set (Game.iso.0/.1/…) is shown as one row whose

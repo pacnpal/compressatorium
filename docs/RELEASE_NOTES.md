@@ -14,8 +14,9 @@
     are kept. A game whose config still points outside itself finishes with a
     warning.
   - The output is written beside the source as `Game.dosz`; the source is only
-    read, and delete-source is not offered. Verify checks every CRC and that
-    `dosbox.conf` is at the root.
+    read, and delete-source is not offered. Every repack checks every CRC and
+    that `dosbox.conf` is at the root before keeping its output, and Verify on
+    a `.dosz` runs the same check.
   - Behaviour modelled on eXo2romm (Unlicense); no code is shared.
 - **Ledger: a permanent record of every finished job** (#292). Each job that
   completes, fails or is cancelled writes one row (finish time, tool, mode,

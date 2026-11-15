@@ -2372,12 +2372,16 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   timestamp and attributes. Member content is identical; compressed bytes may
   differ. A corrupt Source member fails the copy instead of reaching the product.
 - **`rename`** maps a member name to its new name, or to `None` to drop it.
-  **`add`** holds new members; an added name replaces any copied member that
-  would have taken it. Two copied members renamed onto one name raise
+  **`add`** holds new members, written *first* (a reader that takes the first
+  file of a kind finds them) and stamped `added_date_time` (the zip epoch by
+  default), so a product does not depend on the clock. An added name replaces
+  any copied member that would have taken it. Two copied members renamed onto one name raise
   `ValueError`.
 - **Nothing that looks finished appears early.** The archive is written to a
-  `mkstemp` file named `.<dst name>.partial-*` in the destination directory,
-  fsynced, then placed with `utils.path_utils.place_without_clobbering`, the
+  `mkstemp` file named `.<dst name>.partial-*.tmp` in the destination
+  directory (hidden, and ending in `.tmp`, which RomM's scanner skips by
+  default, so a partial file is never listed as a game), fsynced, passed to
+  the caller's optional `check(temp_path)`, then placed with `utils.path_utils.place_without_clobbering`, the
   atomic no-replace move, and the directory is fsynced. Any failure, including
   `ConversionCancelled` from `is_cancelled`, unlinks the temporary file. An
   existing file at `dst` raises `FileExistsError` and is never replaced; the job
@@ -2415,7 +2419,13 @@ tool: it registers with an empty binary path and reports no pids.
 - **Warnings.** Lines that still point into `.\eXoDOS\` after the rewrite end
   the job with a `warning` update, the same shape a chain uses for a caveat.
 - **Check.** `verify_stream` tests every CRC, the member names and limits, and
-  the root `dosbox.conf`. The mode sets `supports_verify` without
+  the root `dosbox.conf`. It is served by the shared verify routes
+  (`_VERIFY_CONFIG["exodos"]`, `/api/exodos-verify`), and `convert` passes the
+  same check to `rewrite_zip`, so every job checks its own product before it
+  is placed; a failure fails the job and leaves no output. The frontend
+  descriptor has no `getInfo`, and `registry.infoToolForRow` (the row menu's
+  Info rule) only resolves to a tool that has one, so `.dosz` rows offer Verify
+  and no Info. The mode sets `supports_verify` without
   `supports_delete_on_verify` (listed in the registry test's declined set): the
   product differs from its Source by design, and the Source is the operator's
   eXoDOS install.

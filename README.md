@@ -1612,8 +1612,10 @@ copied into RomM alone does not start.
   name and moved into place only once it is complete, so a cancelled or failed job
   leaves nothing that looks finished. There is no delete-after-verify option: the
   product differs from the source by design, and the source is your eXoDOS install.
-- **Verify** tests every member's CRC, checks the member names, and checks that
-  `dosbox.conf` sits at the root.
+- **Checked before it is kept.** Every repack tests every member's CRC, checks
+  the member names, and checks that `dosbox.conf` sits at the root before the
+  file is moved into place; a file that fails is removed and the job fails.
+  The same check runs from **Verify** on any `.dosz` row.
 - **Only eXoDOS game zips are queued.** Any `.zip` can be ticked in this mode; one
   is queued when it holds one game folder and that game's template is in
   `EXODOS_DOS_DIR`, and skipped with the reason otherwise. Member names are checked

@@ -60,6 +60,14 @@ _TOOLS = {
         "events": "verify_xiso_events",
         "batch": "verify_xiso_batch_events",
     },
+    # The eXoDOS repack's product, checked in Python with no subprocess.
+    "exodos": {
+        "ext": ".dosz",
+        "service_attr": "exodos_service",
+        "sync": "verify_exodos",
+        "events": "verify_exodos_events",
+        "batch": "verify_exodos_batch_events",
+    },
 }
 
 

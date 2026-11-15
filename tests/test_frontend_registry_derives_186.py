@@ -101,6 +101,15 @@ def _dump(tmp_path: Path) -> dict:
         " ].map(([n, e, t]) => [`${t}:${n}`,"
         "   registry.displayExtension({ name: n, extension: e, type: t })])),"
         " content_refined: registry.all().filter((t) => t.contentRefined).map((t) => t.id),"
+        " verify_bindings: registry.all().filter((t) => (t.verifyExts ?? []).length)"
+        "   .map((t) => [t.id, typeof t.verify, typeof t.verifyBatch]),"
+        " info_rows: Object.fromEntries(["
+        "   ['dosz', 'Abaron (1995).dosz', ['exodos'], false],"
+        "   ['xiso', 'Halo.xiso.iso', ['xiso'], false],"
+        "   ['source3ds', 'Game.3ds', [], false],"
+        "   ['zip_archive', 'Bundle.zip', [], true],"
+        " ].map(([k, p, by, arch]) => [k,"
+        "   registry.infoToolForRow(p, by, arch)?.id ?? null])),"
         " content_refined_inputs: registry.all().filter((t) => t.contentRefined)"
         "   .flatMap((t) => t.modes.flatMap((m) => m.inputExtensions ?? [])),"
         " content_claims: Object.fromEntries(["
@@ -318,3 +327,32 @@ def test_no_content_refined_tool_takes_an_archive_as_input(tmp_path):
     inputs = set(_dump(tmp_path)["content_refined_inputs"])
 
     assert not inputs & {".zip", ".7z", ".rar"}
+
+
+def test_every_tool_that_claims_a_verify_extension_can_verify(tmp_path):
+    """A row whose extension a tool claims for verify gets a Verify action.
+
+    That action calls the tool's ``verify`` (and bulk verify its
+    ``verifyBatch``), so a tool with ``verifyExts`` but no binding would offer
+    a Verify that throws "tool.verify is not a function".
+    """
+    bindings = _dump(tmp_path)["verify_bindings"]
+
+    broken = [b for b in bindings if b[1] != "function" or b[2] != "function"]
+    assert broken == []
+
+
+def test_row_info_only_lands_on_a_tool_with_info(tmp_path):
+    """Info on a row resolves to a tool that has ``getInfo``, or to nothing.
+
+    The eXoDOS product (``.dosz``) is verifiable but has no Info to show, so
+    its row must not offer an Info action that calls an undefined binding.
+    """
+    rows = _dump(tmp_path)["info_rows"]
+
+    assert rows == {
+        "dosz": None,
+        "xiso": "xiso",
+        "source3ds": "z3ds",
+        "zip_archive": None,
+    }

@@ -714,9 +714,10 @@ export const TOOLS = [
     id: 'exodos',
     label: 'eXoDOS',
     hint: 'Repack eXoDOS game zips so RomM\'s in-browser DOS player can start them.',
-    // No verify route: the product is checked by the job itself (CRC and
-    // structure) when "verify each result" is on.
-    verifyPrefix: '',
+    // /api/exodos-verify: every member's CRC, the member names and limits, and
+    // dosbox.conf at the root. Every repack also runs it before keeping its
+    // output.
+    verifyPrefix: 'exodos',
     sourceExts: EXODOS_INPUT_EXTS,
     verifyExts: EXODOS_VERIFY_EXTS,
     // Not contentRefined, unlike xiso: a .zip is an archive row, and the
@@ -742,9 +743,11 @@ export const TOOLS = [
         // The repack needs the zip itself and the template tree beside it.
         allowsArchiveInput: false },
     ],
+    // No Info: the product is a zip with a known layout, so there is nothing
+    // beyond name and size to show. infoToolForRow then offers no Info action.
     getInfo: undefined,
-    verify: undefined,
-    verifyBatch: undefined,
+    verify: (path, opts) => api.verifyExodos(path, opts),
+    verifyBatch: (paths, opts) => api.verifyBatchExodos(paths, opts),
     // `Game (1995).zip` -> `Game (1995).dosz`; a product maps to itself.
     productPath: (path) => {
       if (/\.dosz$/i.test(path)) return path;
@@ -859,6 +862,23 @@ export const registry = {
       return null;
     }
     return tool;
+  },
+
+  /**
+   * The tool whose Info a file row's Info action calls, or null for none.
+   * The row's verify owner wins (it reads the product it made), then, on a
+   * plain file row, the first source-claiming tool. Either way only a tool
+   * with a `getInfo` binding qualifies, so a verifiable product with nothing
+   * to describe (the eXoDOS `.dosz`) gets no Info action rather than one that
+   * throws. Archive rows skip the source fallback: romz lists `.7z`/`.zip` as
+   * sources, and archive Info belongs to the backend-gated verify owner.
+   */
+  infoToolForRow: (path, verifiableBy, isArchive) => {
+    const hasInfo = (t) => typeof t?.getInfo === 'function';
+    const owner = registry.verifyToolForPath(path, verifiableBy);
+    if (owner) return hasInfo(owner) ? owner : null;
+    if (isArchive || !path || typeof path !== 'string') return null;
+    return sourceToolsBySpecificity(path).find(hasInfo) ?? null;
   },
 
   /** Tools whose source extensions match the given path (convertible sources),
