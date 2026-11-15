@@ -577,11 +577,16 @@ def _extension_match(spec, path: str, reads) -> str | None:
     """The extension of ``path`` that ``spec`` reads, by name only.
 
     A directory mode (makeps3iso's folder->iso) reads folders, not suffixes:
-    it answers ``""`` for a directory on disk and None for anything else.
+    it answers ``""`` for a directory on disk and None for anything else. A
+    file mode never reads a directory, whatever its name: a PS3 folder named
+    ``Game.iso`` is a folder, not an ISO (#294's 5eef3f3).
     """
     disk_path, member = _split_member(path)
+    is_dir = not member and os.path.isdir(disk_path)
     if InputKind.DIRECTORY in spec.input_kinds:
-        return "" if not member and os.path.isdir(disk_path) else None
+        return "" if is_dir else None
+    if is_dir:
+        return None
     name = path.split("::", 1)[1] if member else disk_path
     return match_extension(name, reads)
 
