@@ -254,21 +254,39 @@ def _resolve_volume(volume_path: str) -> Optional[Path]:
         return None
 
 
-def _volume_root_spellings() -> list[str]:
-    """Every configured Volume root, as configured and as resolved.
+def _configured_root(volume: str) -> str:
+    """A Volume root as configured, made absolute; no filesystem call."""
+    return os.path.normpath(os.path.abspath(os.path.expanduser(volume)))
 
-    Both are trusted (they come from the deployment, not a request). Keeping
-    both lets a path spelled either way pass the lexical check below; the
-    resolved check afterwards is what decides.
+
+def _lexically_under(candidate: str, root: str) -> bool:
+    return candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _matching_volumes(candidate: str) -> list[str]:
+    """The Volumes whose root spells a prefix of ``candidate``, laziest first.
+
+    The configured spellings first, with no filesystem call, so a path on a
+    healthy Volume never waits on another Volume's stalled mount. Only when
+    none matches are the other roots resolved (a root configured through a
+    symlink, with the path spelled through its target), stopping at the
+    first match. Both spellings are trusted (they come from the deployment,
+    not a request); the resolved check afterwards is what decides. Nothing is
+    cached: mounts change.
     """
-    roots: list[str] = []
-    for volume in settings.volumes:
-        configured = os.path.normpath(os.path.abspath(os.path.expanduser(volume)))
-        roots.append(configured)
-        real = os.path.realpath(configured)
-        if real != configured:
-            roots.append(real)
-    return roots
+    volumes = list(settings.volumes)
+    matching = [v for v in volumes if _lexically_under(candidate, _configured_root(v))]
+    if matching:
+        return matching
+    for volume in volumes:
+        configured = _configured_root(volume)
+        try:
+            real = os.path.realpath(configured)
+        except (OSError, ValueError):
+            continue
+        if real != configured and _lexically_under(candidate, real):
+            return [volume]
+    return []
 
 
 def _has_parent_segment(raw_path: str) -> bool:
@@ -276,16 +294,27 @@ def _has_parent_segment(raw_path: str) -> bool:
     return ".." in raw_path.replace(os.sep, "/").split("/")
 
 
-def _real_inside_volumes(path: str, *, strict: bool) -> Path | None:
-    """``path`` resolved on disk (symlinks followed), if that is inside a Volume."""
+def _contains(real_volume: Path | None, real_path: Path) -> bool:
+    return real_volume is not None and (
+        real_path == real_volume or real_volume in real_path.parents
+    )
+
+
+def _real_inside_volumes(
+    path: str, *, strict: bool, first: Sequence[str] = (),
+) -> Path | None:
+    """``path`` resolved on disk (symlinks followed), if that is inside a Volume.
+
+    The Volumes in ``first`` (the ones the path is spelled under) are
+    resolved first, then the rest, one at a time, stopping at the first
+    resolved root that holds the path: the common case resolves one root.
+    """
     real_path = _resolve_path(path, strict=strict)
     if real_path is None:
         return None
-    for volume in settings.volumes:
-        real_volume = _resolve_volume(volume)
-        if real_volume is not None and (
-            real_path == real_volume or real_volume in real_path.parents
-        ):
+    rest = [v for v in settings.volumes if v not in first]
+    for volume in [*first, *rest]:
+        if _contains(_resolve_volume(volume), real_path):
             return real_path
     return None
 
@@ -300,26 +329,27 @@ def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
        ``/vol/link/../x`` normalises to ``/vol/x`` while the OS opens the
        link target's parent.
     2. The path, made absolute and normalised, must equal a Volume root or
-       start with ``root + os.sep`` (roots in their configured and resolved
-       spellings, both trusted). A path outside every Volume never reaches the
-       filesystem.
+       start with ``root + os.sep`` (``_matching_volumes``: configured
+       spellings first, with no filesystem call; resolved ones only when no
+       configured one matches). A path outside every Volume never reaches the
+       filesystem, and a path on a healthy Volume never waits on another
+       Volume's stalled mount.
     3. The path is resolved on disk and the real path must lie inside a
        resolved Volume root, which catches a symlink inside a Volume pointing
-       out of it. With ``..`` refused, normalising only drops ``.`` segments
-       and repeated separators, so this resolves exactly the path the OS
-       would open for ``raw_path``.
+       out of it. The matching root is resolved first and the search stops at
+       the first root that holds the path. With ``..`` refused, normalising
+       only drops ``.`` segments and repeated separators, so this resolves
+       exactly the path the OS would open for ``raw_path``.
 
     Returns the resolved path, or None.
     """
     if _has_parent_segment(raw_path):
         return None
     candidate = os.path.normpath(os.path.abspath(os.path.expanduser(raw_path)))
-    for root in _volume_root_spellings():
-        if candidate == root:
-            return _real_inside_volumes(root, strict=strict)
-        if candidate.startswith(root.rstrip(os.sep) + os.sep):
-            return _real_inside_volumes(candidate, strict=strict)
-    return None
+    matching = _matching_volumes(candidate)
+    if not matching:
+        return None
+    return _real_inside_volumes(candidate, strict=strict, first=matching)
 
 
 def containing_volume_root(path: str) -> Path | None:
@@ -328,14 +358,21 @@ def containing_volume_root(path: str) -> Path | None:
     The most specific one when Volumes nest. ``path`` may be an archive member
     (``a.zip::disc.iso``); the archive's own location decides.
     """
-    real_path = _confined_real_path(strip_archive_path(path))
+    disk_path = strip_archive_path(path)
+    real_path = _confined_real_path(disk_path)
     if real_path is None:
         return None
-    holders = [
-        root for root in map(_resolve_volume, settings.volumes)
-        if root is not None and (real_path == root or root in real_path.parents)
-    ]
-    return max(holders, key=lambda root: len(root.parts), default=None)
+    # Only the Volumes the path is spelled under are resolved (no stalled
+    # mount elsewhere is waited on); the rest only if none of those holds it.
+    candidate = os.path.normpath(os.path.abspath(os.path.expanduser(disk_path)))
+    first = _matching_volumes(candidate)
+    for volumes in (first, [v for v in settings.volumes if v not in first]):
+        holders = [
+            root for root in map(_resolve_volume, volumes) if _contains(root, real_path)
+        ]
+        if holders:
+            return max(holders, key=lambda root: len(root.parts))
+    return None
 
 
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:

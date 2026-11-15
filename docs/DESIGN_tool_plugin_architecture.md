@@ -2609,6 +2609,19 @@ as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
 the probe says nothing, so a planted sheet cannot make the probe read a file
 outside the Volumes.
 
+Sheets are read exactly the way chdman 0.285 reads them
+(`src/lib/util/cdrom.cpp` at mame0285), because chdman opens the tracks
+itself and any difference lets a name pass `resolve_track` while chdman opens
+another. `fgets(buf, 511)` reads at most 510 bytes per line (`CHD_READ_BYTES`),
+so a sheet with a longer line (a `REM` padded to hide a `FILE`) or a NUL byte
+is unreadable. `chd_tokens` is chdman's `tokenize`: C-locale whitespace,
+`"` and `'` each toggle a quoted run and are dropped, no comment syntax (a GDI
+`#name` is a name). A CUE track is the token after an exact `FILE`; a GDI
+track is a line's fifth token. `resolve_track` checks the name verbatim (no
+trimming, `\` a filename character on POSIX), and every spelling of every
+track is checked, including the raw-byte one (`os.fsdecode`) chdman opens for
+a sheet that is not UTF-8: one refused spelling refuses the sheet.
+
 Special files are never opened. Opening a FIFO with no writer blocks forever,
 which would strand the threadpool worker an Auto request runs detection on.
 `path_utils.is_special_file` (`lstat`, a symlink judged by its target) is
