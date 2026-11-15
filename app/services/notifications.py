@@ -573,6 +573,7 @@ class _Sweep:
         self.has_new_errors = False
         self.sent = False
         self.token: str | None = None
+        self.seen: set[str] = set()  # every job id counted, so an announcement twice is one
         # Jobs that ended before `sweep_jobs_queued` saw them.
         self.early: dict[str, ConversionJob] = {}
 
@@ -622,6 +623,16 @@ _TERMINAL = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
 _job_sweeps: dict[str, _Sweep] = {}
 
 
+_counted: dict[str, None] = {}  # job ids a sweep counted, bounded (insertion order)
+_COUNTED_MAX = 5000
+
+
+def _remember_counted(job_id: str) -> None:
+    _counted[job_id] = None
+    while len(_counted) > _COUNTED_MAX:
+        del _counted[next(iter(_counted))]
+
+
 def sweep_owner() -> str:
     """Sweep hook 0: the owner token to pass to the queue call (``owner=``).
     Every job created with it is the sweep's, however fast it ends."""
@@ -644,9 +655,11 @@ def sweep_jobs_queued(jobs: list[ConversionJob]) -> None:
         if job.id in _open_sweep.early:  # already counted by the listener
             continue
         _open_sweep.jobs.append(job)
+        _open_sweep.seen.add(job.id)
         # The job is the sweep's from here on, whatever its status, so its
         # terminal listener (which may not have run yet) never sends it alone.
         _job_sweeps[job.id] = _open_sweep
+        _remember_counted(job.id)
         # A job that already ended is counted but not waited on.
         if getattr(job, "status", None) not in _TERMINAL:
             _open_sweep.pending.add(job.id)
@@ -709,14 +722,24 @@ async def on_job_finished(job: ConversionJob) -> None:
     if job.status not in _TERMINAL:
         return
     sweep = _job_sweeps.pop(job.id, None)
-    if sweep is None and getattr(job, "owner", None):
-        # A sweep's job (decided by its owner token alone, never by its Source):
-        # it ended inside the queue call, before the sweep got the job back, or
-        # it is announced again. Never a standalone message.
-        claimed = _owners.get(job.owner)
-        if claimed is not None and job.id not in claimed.early:
-            claimed.early[job.id] = job
-            claimed.jobs.append(job)
+    owner = getattr(job, "_sweep_owner", None)
+    if sweep is None and owner:
+        # A sweep's job (decided by its owner token alone, never by its Source).
+        claimed = _owners.get(owner)
+        if claimed is not None:
+            # Ended inside the queue call, before the sweep got the job back, or
+            # announced a second time: counted once, never sent alone.
+            if job.id not in claimed.seen:
+                claimed.seen.add(job.id)
+                claimed.early[job.id] = job
+                _remember_counted(job.id)
+                claimed.jobs.append(job)
+            return
+        if job.id in _counted or job.status != JobStatus.FAILED:
+            return  # counted by a closed sweep already, or not news
+        # Its sweep closed without ever receiving this job (the pass died after
+        # the batch was accepted): its failure is its own news.
+    if sweep is None and job.id in _counted:
         return
     if sweep is not None:
         sweep.pending.discard(job.id)
@@ -733,6 +756,7 @@ def _reset_for_tests() -> None:
     _inbox.clear()
     _job_sweeps.clear()
     _owners.clear()
+    _counted.clear()
     _queues.clear()
     _workers.clear()
     _in_flight.clear()

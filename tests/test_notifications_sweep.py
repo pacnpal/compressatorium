@@ -38,7 +38,7 @@ def _env(tmp_path: Path):
 
 class _Job:
     def __init__(self, path: str, job_id: str, owner: str | None = None) -> None:
-        self.file_path, self.id, self.owner = path, job_id, owner
+        self.file_path, self.id, self._sweep_owner = path, job_id, owner
         self.filename = Path(path).name
         self.status = JobStatus.PROCESSING
         self.mode = "dolphin_rvz"
@@ -344,7 +344,7 @@ async def test_a_manual_job_that_fails_during_preflight_is_not_absorbed_into_the
         owner=owner,
     )
     try:
-        assert [j.owner for j in jobs] == [owner]
+        assert [j._sweep_owner for j in jobs] == [owner]
         notifications.sweep_jobs_queued(jobs)
         notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
         jobs[0].status = JobStatus.COMPLETED
@@ -357,3 +357,85 @@ async def test_a_manual_job_that_fails_during_preflight_is_not_absorbed_into_the
     assert kinds == ["job_failed", "sweep_finished"]
     summary = next(e for e in sent if e.kind == "sweep_finished")
     assert summary.data["queued"] == 1 and summary.data["completed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_double_terminal_announcement_does_not_double_count_a_sweep_job(sent):
+    from datetime import datetime, timezone
+
+    from models import ConversionJob, ConversionMode
+    from services.preferences_store import preferences_store
+
+    await preferences_store.put(notifications.PREF_KEY, {"destinations": [
+        {"id": "d1", "kind": "webhook", "url": "https://hooks.example/t", "label": ""}]})
+    now = datetime.now(timezone.utc)
+    job = ConversionJob(
+        id="j1", file_path="/x/Game.iso", filename="Game.iso", mode=ConversionMode.CREATECD,
+        status=JobStatus.PROCESSING, created_at=now,
+    )
+    owner = notifications.sweep_owner()
+    job._sweep_owner = owner
+    notifications.sweep_jobs_queued([job])
+    job.status = JobStatus.FAILED
+    job.error_message = "boom"
+    await notifications.on_job_finished(job)
+    await notifications.on_job_finished(job)  # a queued cancel announces twice
+    notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
+    await notifications.on_job_finished(job)  # and once more after the sweep closed
+    await notifications.drain()
+    assert [e.kind for e in sent] == ["sweep_finished"]
+    assert sent[0].data["queued"] == 1 and sent[0].data["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_owned_job_that_never_reached_its_sweep_is_sent_alone_after_it_closes(sent):
+    from datetime import datetime, timezone
+
+    from models import ConversionJob, ConversionMode
+    from services.preferences_store import preferences_store
+
+    await preferences_store.put(notifications.PREF_KEY, {"destinations": [
+        {"id": "d1", "kind": "webhook", "url": "https://hooks.example/t", "label": ""}]})
+    now = datetime.now(timezone.utc)
+    job = ConversionJob(
+        id="lost", file_path="/x/Lost.iso", filename="Lost.iso", mode=ConversionMode.CREATECD,
+        status=JobStatus.FAILED, created_at=now, completed_at=now, error_message="boom",
+    )
+    job._sweep_owner = notifications.sweep_owner()
+    # The batch was accepted but the sweep died before sweep_jobs_queued.
+    notifications.sweep_finished({"errors": [{"platform_id": None, "error": "sweep_failed"}]})
+    await notifications.on_job_finished(job)
+    await notifications.drain()
+    assert "job_failed" in [e.kind for e in sent]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_batch_through_the_real_sweep_reports_once_and_queues_nothing(
+    tmp_path, sent,
+):
+    from services.job_manager import OutputClaimedError
+    from services.romm import auto as romm_auto
+
+    roms = await _setup(tmp_path)
+
+    async def _refuse(paths, mode, **kwargs):
+        raise OutputClaimedError("taken")
+
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
+            patch.object(job_manager, "create_batch_jobs", _refuse), \
+            patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
+            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
+        for _ in range(3):
+            result = await romm_auto.sweep(ignore_schedule=True)
+            assert result["errors"] == [{"platform_id": 7, "error": "destination_claimed"}]
+    await notifications.drain()
+    assert len(sent) == 1 and "destination_claimed" in sent[0].body
+    assert not notifications._owners  # the sweep's token is gone
+
+
+def test_the_owner_token_is_not_part_of_the_api_schema():
+    from models import ConversionJob
+
+    assert "owner" not in str(ConversionJob.model_json_schema())
+    assert "_sweep_owner" not in str(ConversionJob.model_json_schema())
+    assert "owner" not in ConversionJob.model_fields

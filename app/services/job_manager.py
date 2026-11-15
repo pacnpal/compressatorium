@@ -464,8 +464,8 @@ class JobManager:
             verify_after=verify_after,
             split=split,
             input_kind=input_kind,
-            owner=owner,
         )
+        job._sweep_owner = owner
 
         self.jobs[job_id] = job
         # Every key this job claims -- its destination and the sidecars the

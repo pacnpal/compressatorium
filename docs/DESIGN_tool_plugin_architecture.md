@@ -2381,8 +2381,8 @@ never see a transport:
   enqueues and then awaits, so a job can end before it returns. Ownership is
   therefore set at creation: `sweep_owner()` returns a token, the sweep passes it as
   `owner=` through `create_batch_jobs` and `create_jobs_atomic`, and
-  `JobManager._queue_job_locked` sets `ConversionJob.owner` before the job is
-  enqueued (the field is never serialized; callers that pass nothing behave as
+  `JobManager._queue_job_locked` sets `ConversionJob._sweep_owner` before the job is
+  enqueued (`_sweep_owner` is a private attribute, in no schema or serialized form; callers that pass nothing behave as
   before). The terminal listener decides by `job.owner` alone: an owned job is never
   sent as a lone `job_failed`, and a manual job on the same Source is never
   absorbed. Once `sweep_jobs_queued` has the jobs, each is the sweep's by id
