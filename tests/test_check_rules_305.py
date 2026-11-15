@@ -1919,6 +1919,41 @@ async def test_a_split_ps3_iso_is_one_image_and_a_short_later_part_fails_it(
     assert await verification_store.get_record(str(iso)) is None
 
 
+@pytest.mark.asyncio
+async def test_a_split_set_counts_as_one_image_for_a_conversion_rule(db: Path, ready) -> None:
+    """Supervisor ruling 3: a split set is exactly one Image in a conversion
+    Rule's ``considered`` and ``skipped_unconvertible``, the same as an unsplit
+    GAME.iso. The ``.1`` part is never counted on its own."""
+    from routes import libraries as routes
+
+    from .test_cli_306 import _real_split_iso
+
+    split_root, whole_root = db / "split", db / "whole"
+    _real_split_iso(split_root / "ps3")
+    (whole_root / "ps3").mkdir(parents=True)
+    (whole_root / "ps3" / "GAME.iso").write_bytes(
+        (split_root / "ps3" / "GAME.iso.0").read_bytes()
+        + (split_root / "ps3" / "GAME.iso.1").read_bytes()
+    )
+
+    async def counts(root: Path) -> tuple:
+        created = await routes.register_library(routes.RegisterLibraryRequest(path=str(root)))
+        await routes.put_library_rules(created["id"], {"rules": {"ps3": {
+            "mode": "folder_to_iso", "enabled": True,
+        }}})
+        result = await routes.preview_library(created["id"])
+        (summary,) = result["platforms"]
+        return (
+            summary["considered"], result["considered"], result["skipped_unconvertible"],
+            result["queued"],
+        )
+
+    split, whole = await counts(split_root), await counts(whole_root)
+
+    assert split == whole
+    assert split[:3] == (1, 1, 1)
+
+
 def test_a_numbered_file_is_a_split_part_only_beside_a_modes_output_name(db: Path) -> None:
     """#306 ab2d818: ``save.0`` is no split part, so a folder Library never lists
     it; ``Game.iso.0`` with its ``.1`` is."""
