@@ -6,6 +6,7 @@ of a `.cue` / `.gdi` collapse into their sheet by the shared reader's rules.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -93,3 +94,29 @@ def test_an_iso_no_selected_sheet_names_is_still_a_disc(vol: Path):
     paths.append(str(vol / "Game (Disc 2).iso"))
     plan = disc_playlist.plan_playlist(paths)
     assert plan.entries == ["Game (Disc 1).cue", "Game (Disc 2).iso"]
+
+
+def test_a_track_in_a_subfolder_does_not_hide_a_same_named_disc_beside_the_sheet(vol: Path):
+    # The sheet names tracks/Game (Disc 2).iso; the selected Game (Disc 2).iso next
+    # to it is a different file, so it stays a disc.
+    (vol / "tracks").mkdir()
+    (vol / "tracks" / "Game (Disc 2).iso").write_bytes(b"track")
+    (vol / "Game (Disc 1).cue").write_text(
+        'FILE "tracks/Game (Disc 2).iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n',
+    )
+    for n in ("Game (Disc 2).iso", "Game (Disc 3).iso"):
+        (vol / n).write_bytes(b"disc")
+    paths = [str(vol / n) for n in ("Game (Disc 1).cue", "Game (Disc 2).iso", "Game (Disc 3).iso")]
+    plan = disc_playlist.plan_playlist(paths)
+    assert plan.entries == ["Game (Disc 1).cue", "Game (Disc 2).iso", "Game (Disc 3).iso"]
+
+
+def test_a_track_reached_through_a_symlink_is_still_recognised(vol: Path):
+    (vol / "real").mkdir()
+    (vol / "real" / "t.bin").write_bytes(b"x")
+    os.symlink(vol / "real" / "t.bin", vol / "t.bin")
+    (vol / "A (Disc 1).cue").write_text('FILE "t.bin" BINARY\n  TRACK 01 MODE1/2048\n')
+    (vol / "A (Disc 2).cue").write_text('FILE "t2.bin" BINARY\n  TRACK 01 MODE1/2048\n')
+    (vol / "t2.bin").write_bytes(b"x")
+    paths = [str(vol / n) for n in ("A (Disc 1).cue", "A (Disc 2).cue", "t.bin")]
+    assert disc_playlist.plan_playlist(paths).entries == ["A (Disc 1).cue", "A (Disc 2).cue"]
