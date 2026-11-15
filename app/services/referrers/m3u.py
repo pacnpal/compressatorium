@@ -415,39 +415,41 @@ def _rewrite_utf16(
     None when the text doesn't decode strictly (the caller's fail-safe for
     undecodable playlists then applies).
 
-    A line reader that ignores the BOM could see a different line (an 8-bit
-    line appended to the file). The entries of the NUL-stripped readings are
-    compared with the UTF-16 entries (``_replaced_reached``, comments and
-    blank lines skipped): if they reach a replaced file the UTF-16 entries
-    don't, the Source is kept.
+    One rule guards the readers that don't honour the BOM (a line reader can
+    see an 8-bit line appended to the file): the bytes that would be left on
+    disk, rewritten or not, are read back every way the checker knows (the
+    UTF-16 text, and the NUL-stripped bytes as UTF-8 and as cp1252). If any
+    reading still reaches a replaced file, the Source is kept
+    (``_replaced_reached``: the one reader, comments and blank lines skipped).
     """
     try:
         text = data[len(bom):].decode(codec)
     except UnicodeDecodeError:
         return None
-    reached = _replaced_reached(text, playlist_dir, renames)
-    stripped = data.replace(b"\x00", b"")
-    for other in (stripped.decode("utf-8", errors="replace"),
-                  stripped.decode("cp1252", errors="replace")):
-        extra = _replaced_reached(other, playlist_dir, renames) - reached
-        if extra:
-            raise ReferrerError(
-                playlist,
-                f"isn't plain UTF-16, and a line read as 8-bit text names "
-                f"{os.path.basename(min(extra))}",
-            )
     # The UTF-8 stand-in gets a BOM of its own, so `_rewrite` strips exactly
     # that one: a first filename that itself starts with U+FEFF stays part of
     # the name for matching and read-back.
     updated, edits = _rewrite(
         playlist, _BOM + text.encode("utf-8"), playlist_dir, renames, strict=strict,
     )
-    if not edits:
-        return data, []
-    try:
-        return bom + updated[len(_BOM):].decode(*_ENC).encode(codec), edits
-    except UnicodeEncodeError as exc:
-        raise ReferrerError(playlist, "the new entry can't be written in UTF-16") from exc
+    result = data
+    if edits:
+        try:
+            result = bom + updated[len(_BOM):].decode(*_ENC).encode(codec)
+        except UnicodeEncodeError as exc:
+            raise ReferrerError(playlist, "the new entry can't be written in UTF-16") from exc
+    stale = _replaced_reached(result[len(bom):].decode(codec), playlist_dir, renames)
+    stripped = result.replace(b"\x00", b"")
+    for other in (stripped.decode("utf-8", errors="replace"),
+                  stripped.decode("cp1252", errors="replace")):
+        stale |= _replaced_reached(other, playlist_dir, renames)
+    if stale:
+        raise ReferrerError(
+            playlist,
+            "would still name a replaced file when read another way "
+            f"({os.path.basename(min(stale))})",
+        )
+    return result, edits
 
 
 def _replaced_reached(text: str, playlist_dir: str, renames: _Renames) -> set[str]:

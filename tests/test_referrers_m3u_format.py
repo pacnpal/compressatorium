@@ -590,6 +590,23 @@ async def test_a_utf16_comment_doesnt_hide_an_appended_8_bit_entry(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_an_appended_8_bit_entry_survives_no_rewrite_of_the_utf16_part(tmp_path):
+    """Codex's repro: the UTF-16 part has a real entry for the Source and an
+    8-bit copy is appended. Rewriting the UTF-16 entry would leave the 8-bit
+    one pointing at the deleted Source, so the result is read back every way
+    and the Source is kept."""
+    _disc(tmp_path, "Game.cue")
+    playlist = tmp_path / "Game.m3u"
+    data = "#EXTM3U\nGame.cue\n".encode("utf-16") + b"\nGame.cue\n"
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
 async def test_a_leading_feff_in_the_first_utf16_entry_is_part_of_its_name(tmp_path, codec):
     """After the BOM, a first filename that itself starts with U+FEFF names a

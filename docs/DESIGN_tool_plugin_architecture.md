@@ -3487,11 +3487,12 @@ free one if it was taken since, never picking a different name on its own.
   encodes the result back), then written with the same BOM and byte order.
   Line endings are part of the text, so they survive too. The UTF-8 stand-in
   gets a BOM of its own, so `_rewrite` strips exactly that one and a first
-  filename that itself starts with U+FEFF keeps it. The entries of the
-  NUL-stripped readings are compared with the UTF-16 entries
-  (`_replaced_reached`, the one reader, comments skipped): if they reach a
-  replaced file the UTF-16 entries don't (an 8-bit line appended to the
-  file), or a new entry can't be encoded in UTF-16, the Source is kept. Text that doesn't decode strictly falls to the rule below.
+  filename that itself starts with U+FEFF keeps it. One rule covers readers
+  that ignore the BOM (an 8-bit line appended to the file): the bytes that
+  would be left on disk, rewritten or not, are read back as the UTF-16 text
+  and as the NUL-stripped bytes in UTF-8 and cp1252 (`_replaced_reached`, the
+  one reader, comments skipped). If any reading still reaches a replaced
+  file, or a new entry can't be encoded in UTF-16, the Source is kept. Text that doesn't decode strictly falls to the rule below.
 - *UTF-16 without a BOM, and NUL bytes.* Such a playlist is never rewritten:
   without a BOM the encoding can't be known safely. It is UTF-16
   only with a BOM, or when NULs fill most of the odd (little-endian) or even
