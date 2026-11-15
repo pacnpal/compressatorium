@@ -188,7 +188,9 @@ def _iter_ciso(fh, stop) -> Iterator[bytes]:
             if end < start:
                 raise ValueError("block index is not increasing")
             if end - start > max_stored:
-                raise ValueError(f"stored block {i} spans {end - start} bytes, more than a block can")
+                raise ValueError(
+                    f"stored block {i} spans {end - start} bytes, more than a block can",
+                )
         lo = (index[first] & _LOW) << shift
         hi = (index[last] & _LOW) << shift
         if hi > file_size:
