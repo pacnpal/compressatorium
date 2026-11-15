@@ -57,6 +57,10 @@ class ExodosTool(BaseTool):
             # The repack reads the zip's own directory and the template tree
             # beside it; a zip inside another archive has neither.
             allows_archive_input=False,
+            # Manual only: a Rule over RomM's dos folder would write a second
+            # copy of every game beside it, and its verify step would hide the
+            # conf warning nobody is there to read.
+            automatable=False,
         ),
     )
     output_extensions = frozenset({OUTPUT_EXTENSION})

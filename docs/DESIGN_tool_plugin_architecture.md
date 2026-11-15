@@ -2600,6 +2600,14 @@ database: `normalize_rule` drops such a rule, and the editor omits the mode
 needs the tool's `output_path` and cannot be mirrored in JS). Extract modes are
 a *separate*, UI-side exclusion — they terminate, and rules using them work.
 
+**A mode can also opt out by policy.** `ModeSpec.automatable` (default `True`,
+mirrored on `ChainSpec`) set `False` makes `mode_is_automatable` answer no
+before the termination test runs, so the same two enforcement points refuse
+it. The eXoDOS repack (`exodos_repack`) is the one mode that sets it: it is
+manual only, because a Rule over RomM's `dos` folder would write a second copy
+of every game beside it, and the Rule's verify step would hide the conf warning
+nobody is there to read.
+
 #### Asking a tool whether it can run (`registry.tool_is_ready`)
 
 `ToolPlugin.is_ready()` is a coroutine, which makes it look bounded and does

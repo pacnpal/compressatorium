@@ -87,3 +87,19 @@ def test_plan_reasons_are_the_tools_own():
     assert convert_routes._NOT_CONVERTIBLE_REASON["exodos"] is (
         convert_routes.SkipReason.EXODOS_NOT_REPACKABLE
     )
+
+
+def test_rules_can_never_run_the_repack():
+    """Manual only: no Rule may run it, however the rule arrives."""
+    from services.romm import auto as romm_auto
+
+    assert registry.spec("exodos_repack").automatable is False
+    assert registry.mode_is_automatable("exodos_repack") is False
+    assert romm_auto.normalize_rule({"mode": "exodos_repack", "enabled": True}) is None
+    assert romm_auto.normalize_rules({"9": {"mode": "exodos_repack", "enabled": True}}) == {}
+
+
+def test_every_other_mode_keeps_the_default():
+    assert all(
+        spec.automatable for spec in registry.mode_specs() if spec.mode != "exodos_repack"
+    )

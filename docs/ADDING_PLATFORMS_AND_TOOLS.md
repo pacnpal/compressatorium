@@ -204,6 +204,10 @@ class ModeSpec:
     companion_exts: tuple[str, ...] = ()
     # FILE by default. A folder-input mode (makeps3iso) sets {InputKind.DIRECTORY}.
     input_kinds: frozenset[InputKind] = frozenset({InputKind.FILE})
+    # False keeps the mode out of Rules entirely (editor, normalize_rule, sweep),
+    # for a mode meant to be run by hand (exodos_repack). See DESIGN, "What may
+    # run unattended".
+    automatable: bool = True
 ```
 
 A composite mode uses **`ChainSpec`** instead, which is a structural superset of

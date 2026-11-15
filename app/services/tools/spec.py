@@ -70,6 +70,12 @@ class ModeSpec:
     # mode on GameCube, and a saved rule would convert a disc to a format for
     # the wrong console.
     platform_slugs: frozenset[str] = frozenset()
+    # Whether an unattended Rule may run this mode at all. True for every mode
+    # whose only question is termination, which the registry derives
+    # (`mode_is_automatable`). False opts a mode out by policy: it is meant to
+    # be run by hand (the eXoDOS repack writes a second, playable copy of every
+    # game beside its Source, which a Rule over a RomM folder would multiply).
+    automatable: bool = True
 
 
 @dataclass(frozen=True)
@@ -126,3 +132,5 @@ class ChainSpec:
     # each composite mode has to name its own system or it is offered on every
     # one of them.
     platform_slugs: frozenset[str] = frozenset()
+    # Structural parity with ModeSpec.automatable.
+    automatable: bool = True
