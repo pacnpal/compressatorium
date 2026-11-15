@@ -142,10 +142,16 @@ def _env(tmp_path, monkeypatch, reset_db_engine):
     # The real list (RomM plus the registered folder Libraries) for the tests
     # that run against it; the others sweep the two shelves.
     real_libraries = libraries.all_libraries
+    real_without_a_database = getattr(libraries, "without_a_database", None)
     monkeypatch.setattr(libraries, "all_libraries", lambda: list(shelves.values()))
+    # With no database the CLI lists the Libraries that need none; here, the shelves.
+    monkeypatch.setattr(
+        libraries, "without_a_database", lambda: list(shelves.values()), raising=False,
+    )
     yield {
         "vol": vol, "config": config, "locks": locks, **shelves,
         "real_libraries": real_libraries,
+        "real_without_a_database": real_without_a_database,
     }
     libraries.reset_for_tests()
     romm_settings.reset_for_tests()
@@ -1385,3 +1391,57 @@ def test_a_folder_library_has_the_contracts_no_op_before_pass(mixed, dolphin, ca
     assert code == 0, (lines, err)
     assert [(line["status"], line["queued"]) for line in lines
             if line.get("platform_id") == "ngc"] == [("planned", 1)]
+
+
+def test_a_dry_run_on_a_fresh_data_dir_lists_libraries_without_a_database(
+    env, dolphin, capsys, monkeypatch,
+):
+    """codex 4577832438: folder Libraries live in the database, so with none
+    there are only the Libraries that need none (RomM). A dry run reports
+    no_rules instead of failing, and --library is still checked."""
+    from services import libraries
+
+    monkeypatch.setattr(libraries, "all_libraries", env["real_libraries"])
+    monkeypatch.setattr(libraries, "without_a_database", env["real_without_a_database"])
+
+    code, lines, err = _cli(capsys, "run-rules", "--dry-run", "--json")
+    assert code == 0, err
+    assert [(line["library"], line["reason"]) for line in lines] == [("romm", "no_rules")]
+
+    code, lines, err = _cli(capsys, "run-rules", "--dry-run", "--library", "folder:1", "--json")
+    assert (code, lines) == (2, [])
+    assert "folder:1" in err and "romm" in err
+    assert not (env["config"] / "compressatorium.db").exists()
+
+
+def test_run_rules_restores_the_saved_hasheous_toggle_before_sweeping(
+    env, dolphin, capsys, monkeypatch,
+):
+    """codex 4577832444: folder-Library recognition reads the Hasheous toggle.
+    The server restores the one saved in the web UI at startup; run-rules must
+    too, or a Rule's only_unmatched filter decides differently."""
+    from routes.dat import HASHEOUS_PREF_KEY
+    from services import hasheous
+    from services.preferences_store import preferences_store
+
+    from config import settings
+
+    monkeypatch.setattr(settings, "hasheous_enabled", False)
+    hasheous.set_enabled_override(None)
+    _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+    asyncio.run(preferences_store.put(HASHEOUS_PREF_KEY, {"enabled": True}))
+    seen = []
+
+    async def note_hasheous(*, dry_run):
+        seen.append((dry_run, hasheous.enabled()))
+
+    env["shelf"].before_pass = note_hasheous
+    try:
+        code, _lines, _err = _cli(capsys, "run-rules", "--json")
+        dry_code, _lines, _err = _cli(capsys, "run-rules", "--dry-run", "--json")
+    finally:
+        hasheous.set_enabled_override(None)
+
+    assert (code, dry_code) == (0, 0)
+    assert seen == [(False, True), (True, True)]

@@ -1346,13 +1346,15 @@ async def verify(args, printer: Printer, state: RunState) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _choose_libraries(wanted: str | None) -> list:
+def _choose_libraries(wanted: str | None, *, has_db: bool) -> list:
     """The Libraries to sweep: ``services.libraries.all_libraries()``, the list
     the server's scheduler sweeps (RomM and every folder Library, #303). Asked
-    once the database is open, where the folder Libraries are stored."""
+    once the database is open, where the folder Libraries are stored. With no
+    database (a dry run on a fresh data dir) only the Libraries that need none
+    exist (``without_a_database``), and ``--library`` is checked against them."""
     from services import libraries
 
-    every = libraries.all_libraries()
+    every = libraries.all_libraries() if has_db else libraries.without_a_database()
     if wanted is None:
         return every
     chosen = [library for library in every if library.id == wanted]
@@ -1507,10 +1509,16 @@ async def run_rules(args, printer: Printer, state: RunState) -> int:
             # Before the database is opened: a refused run touches nothing.
             held.callback(scheduler_lock.acquire("run-rules").release)
         has_db = _open_db(args.dry_run)
-        # Listed once the database is open (a Library list can live there);
-        # with none, `all_libraries` lists the Libraries that need none, so a
-        # mistyped --library is still refused.
-        chosen = _choose_libraries(args.library)
+        # Listed once the database is open (the folder Libraries live there);
+        # with none, only the Libraries that need none, so a mistyped
+        # --library is still refused.
+        chosen = _choose_libraries(args.library, has_db=has_db)
+        if has_db:
+            # As the server does at startup: the Hasheous toggle saved in the
+            # web UI, which folder-Library recognition reads. Read only.
+            from routes.dat import load_hasheous_override
+
+            await load_hasheous_override()
         if not has_db:
             # A dry run with no database: nothing is stored, so no Rules.
             for library in chosen:

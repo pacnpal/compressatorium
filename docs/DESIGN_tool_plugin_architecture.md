@@ -3621,10 +3621,12 @@ is a terminal listener, as in `main.py`, and the jobs are waited for with
 `JobManager.drain()`. Each job's line is printed as it ends, under the Library
 whose sweep queued it.
 
-Compared with the server, a pass does the RomM upkeep `before_pass` covers
-(identity-cleanup replay, one settle pass) and nothing else the server starts:
-no DAT sync, no Hasheous override load, no re-pin settler loop, so re-pins this
-pass records wait for the next pass or the server.
+Compared with the server, a pass restores the Hasheous toggle saved in the web
+UI (`routes.dat.load_hasheous_override`, as startup does; folder-Library
+recognition reads it) and does the RomM upkeep `before_pass` covers
+(identity-cleanup replay, one settle pass), and nothing else the server starts:
+no DAT sync, no re-pin settler loop, so re-pins this pass records wait for the
+next pass or the server.
 
 Errors and exit status. As in `run_forever`, an exception from one Library's
 hook or sweep is caught (`cli._sweep_one`), reported as an `error` line for
@@ -3660,8 +3662,8 @@ lands in an in-memory overlay that later reads return, so the database is left
 as it was. The overlay is on the store instance, not per task, so it is for a
 process doing one thing (the CLI), never the server. Unlike the editor's
 Preview it keeps the Rule clock (`ignore_schedule` is not set). With no
-database a dry run still lists the Libraries (`all_libraries()` must answer
-with no database, giving the ones that need none), so an unknown `--library`
+database a dry run lists `services.libraries.without_a_database()` (RomM: the
+folder Libraries are rows of the database), so an unknown `--library` still
 exits 2, then reports `no_rules` for each.
 
 **One scheduler per data directory (`services/scheduler_lock.py`).** The server
