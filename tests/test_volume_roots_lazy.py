@@ -259,3 +259,43 @@ def test_a_fresh_probe_that_times_out_refuses(tmp_path, monkeypatch):
 
     assert not ok                                   # fail closed, never the cache
     assert time.monotonic() - started < 1.5
+
+
+def test_refreshes_over_a_blocked_root_keep_one_live_probe(tmp_path, monkeypatch):
+    # CodeRabbit 4577311054: each refresh used to start its own probe thread,
+    # so a mount that stays blocked accumulated one stuck thread per refresh.
+    import threading
+
+    from config import settings
+
+    root = tmp_path / "blocked"
+    root.mkdir()
+    monkeypatch.setattr(settings, "chd_volumes", str(root))
+    wake = threading.Event()
+    real_realpath = os.path.realpath
+
+    def blocking_root(path, *args, **kwargs):
+        if os.fspath(path) == str(root):
+            wake.wait(10)
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", blocking_root)
+    monkeypatch.setattr(path_utils, "ROOT_PROBE_SECONDS", 0.05)
+
+    def live_probes() -> int:
+        # Named per root by the registry; an unnamed probe thread (one started
+        # outside it) shows up as "Thread-N (_resolve_root_into)".
+        return sum(
+            1 for t in threading.enumerate()
+            if t.is_alive() and (
+                t.name == f"volume-root-probe:{root}" or "_resolve_root_into" in t.name
+            )
+        )
+
+    try:
+        for _ in range(5):
+            path_utils.refresh_volume_roots(timeout=0.05)
+        path_utils.is_within_configured_volumes(str(root / "game.iso"))   # _fresh_root too
+        assert live_probes() == 1
+    finally:
+        wake.set()
