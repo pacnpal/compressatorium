@@ -432,29 +432,33 @@ class ConversionStore {
     const platformId = rommPlatformId;
     const fromRomm = platformId !== null && platformId !== undefined;
     const outputDir = this.outputDir || null;
+    // A target picked by hand turns Auto off (`chooseTarget`); a run that saw
+    // Auto on when it started then ends without a modal or a queue.
+    const autoAtStart = this.auto;
     try {
       try {
         await untilAborted(this.fetchAutoPlan(snapshot, { signal, outputDir }), signal);
       } catch (_e) {
         return null; // toast already raised
       }
-      if (signal?.aborted) {
+      if (signal?.aborted || (autoAtStart && !this.auto)) {
         this.clearAutoPlan();
-        return null; // the panel is gone: never open its modal
+        return null; // the panel is gone, or Auto is off: never open the modal
       }
       // Confirm, then queue the confirmed plan. When the server finds the plan
       // changed since (409, with the new plan), show that plan and ask again.
       for (;;) {
         const answer = await untilAborted(confirm(), signal);
         // An abort resolves the confirmation as cancelled.
-        const proceed = !signal?.aborted && !answer?.aborted && Boolean(answer);
+        const proceed = !signal?.aborted && !answer?.aborted && Boolean(answer)
+          && !(autoAtStart && !this.auto);
         const plan = this.autoPlan ?? [];
         this.clearAutoPlan();
         if (!proceed) return null;
         let replanned = null;
         try {
           return await this.submitAuto(snapshot, {
-            plan, rommRepin: fromRomm, rommPlatformId: platformId, outputDir,
+            plan, rommRepin: fromRomm, rommPlatformId: platformId, outputDir, signal,
           });
         } catch (e) {
           // Toast already raised in submitAuto.
@@ -674,15 +678,18 @@ class ConversionStore {
    * its reconciliation run exactly as for `submit()`, once per target mode.
    * `outputDir` is the folder the plan was made for (`runAuto` captures it
    * before planning); by default the current one, read before any await.
+   * `signal` (from `runAuto`) is checked again after the RomM snapshot,
+   * right before queueing: an abort there queues nothing and retires the
+   * metadata the snapshot recorded.
    */
   async submitAuto(
     filePaths,
     {
       plan = [], rommRepin = false, rommPlatformId = null,
-      outputDir = this.outputDir || null,
+      outputDir = this.outputDir || null, signal = null,
     } = {},
   ) {
-    if (!filePaths?.length) return null;
+    if (!filePaths?.length || signal?.aborted) return null;
     const wanted = new Set(filePaths);
     // Only the confirmed plan's actionable rows go to the server, each with the
     // target the user saw: an Image the preview skipped is never sent. The
@@ -703,6 +710,14 @@ class ConversionStore {
       async () => {
         let result;
         try {
+          // After the RomM snapshot, right before queueing: an abort (the
+          // panel unmounted) stops here. Nothing becomes a job, so the shared
+          // path retires the metadata just recorded, without an error toast.
+          if (signal?.aborted) {
+            const stopped = new Error('Auto run aborted');
+            stopped.aborted = true;
+            throw stopped;
+          }
           result = await api.createAutoJobs(items, outputDir, 'skip');
         } catch (e) {
           // A later group was refused after earlier jobs had already
@@ -996,7 +1011,8 @@ class ConversionStore {
       if (error) throw error;
       return result;
     } catch (e) {
-      toast.error(e?.message ?? 'Failed to create jobs');
+      // An aborted run is not a failure the user needs told about.
+      if (!e?.aborted) toast.error(e?.message ?? 'Failed to create jobs');
       throw e;
     } finally {
       this.converting = false;

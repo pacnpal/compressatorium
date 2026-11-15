@@ -732,3 +732,78 @@ def test_declining_the_changed_plan_queues_nothing(tmp_path):
     assert data == {
         "asked": 2, "result": None, "sent": 1, "inFlight": False, "plan": None,
     }, data
+
+
+# --- Auto turned off mid-run; abort during the RomM snapshot ------------------
+# CodeRabbit 4577045040: picking a target by hand turns Auto off; a run whose
+# plan was still loading then ends without a modal or a queue.
+# CodeRabbit 4577045042: an abort while the RomM snapshot is being taken stops
+# the run before createAutoJobs, and the recorded metadata is retired.
+
+_RUN_AUTO_ENDS_WHEN_AUTO_TURNS_OFF = """
+const store = new ConversionStore();
+store.auto = true;
+let answerPlan;
+autoPlanAnswer = (paths) => new Promise((resolve) => {
+  answerPlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
+});
+let asked = 0;
+const run = store.runAuto({
+  paths: ['/v/a.iso'], confirm: () => { asked += 1; return Promise.resolve(true); },
+});
+await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
+store.chooseTarget('createcd');                           // a hand-picked target
+answerPlan();
+const result = await run;
+process.stdout.write(JSON.stringify({
+  auto: store.auto, asked, result, queued: calls.auto.length,
+  inFlight: store.autoInFlight, plan: store.autoPlan,
+}));
+"""
+
+
+def test_turning_auto_off_while_the_plan_loads_ends_the_run(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ENDS_WHEN_AUTO_TURNS_OFF)
+
+    assert data == {
+        "auto": False, "asked": 0, "result": None, "queued": 0,
+        "inFlight": False, "plan": None,
+    }, data
+
+
+_RUN_AUTO_ABORT_DURING_THE_SNAPSHOT = """
+const store = new ConversionStore();
+let releaseSnapshot;
+planAnswer = (paths) => new Promise((resolve) => {
+  releaseSnapshot = () => resolve({
+    recorded: 1, pending: 1,
+    recorded_paths: { [paths[0]]: '/out/a.chd' }, recorded_ids: { [paths[0]]: 42 },
+  });
+});
+const controller = new AbortController();
+const run = store.runAuto({
+  paths: ['/v/a.iso'], rommPlatformId: 3, confirm: () => Promise.resolve(true),
+  signal: controller.signal,
+});
+for (let i = 0; i < 5 && !releaseSnapshot; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 0));  // the snapshot is pending
+}
+controller.abort();
+releaseSnapshot();
+const result = await run;
+process.stdout.write(JSON.stringify({
+  result,
+  queued: calls.auto.length,
+  retired: calls.cancel,
+  errors: toasts.filter(([kind]) => kind === 'error'),
+  inFlight: store.autoInFlight,
+}));
+"""
+
+
+def test_an_abort_during_the_snapshot_never_queues_and_retires_the_metadata(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ABORT_DURING_THE_SNAPSHOT)
+
+    assert data == {
+        "result": None, "queued": 0, "retired": [[42]], "errors": [], "inFlight": False,
+    }, data
