@@ -542,3 +542,102 @@ def test_an_aborted_auto_run_resolves_a_pending_confirm_as_cancelled(tmp_path):
     assert data == {
         "opened": True, "result": None, "after": False, "planAfter": None, "queued": 0,
     }, data
+
+
+# --- The target is captured before the first await (CodeRabbit 4576895563/5) --
+# The user can change the mode, its options or the output folder while the
+# RomM snapshot or the Auto plan request is pending. What is queued must be
+# what was planned: everything target-dependent is read once, up front.
+
+_SUBMIT_CAPTURES_TARGET = """
+registry.specFor = () => ({
+  supportsCompression: true, supportsDeleteOnVerify: true,
+  supportsSplit: true, supportsRoundTrip: true,
+});
+const store = new ConversionStore();
+store.mode = 'createcd';
+store.outputDir = '/out/old';
+store.deleteOnVerify = true;
+store.split = false;
+store.containerOnly = false;
+let release;
+planAnswer = (paths) => new Promise((resolve) => {
+  release = () => resolve({
+    recorded: 1, pending: 1,
+    recorded_paths: { [paths[0]]: '/out/old/a.chd' },
+    recorded_ids: { [paths[0]]: 7 },
+  });
+});
+const batches = [];
+jobs.createBatch = async (paths, mode, opts) => {
+  batches.push({ paths, mode, ...opts });
+  return [{ id: 'j1', file_path: paths[0], output_path: '/out/old/a.chd' }];
+};
+const run = store.submit(['/v/a.iso'], { rommRepin: true, rommPlatformId: 3 });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the snapshot is pending
+// The user switches target, options and folder meanwhile.
+store.mode = 'createdvd';
+store.outputDir = '/out/new';
+store.deleteOnVerify = false;
+store.split = true;
+store.containerOnly = true;
+release();
+await run;
+process.stdout.write(JSON.stringify({
+  planned: calls.plan.map((args) => [args[1], args[2]]),
+  batch: batches[0],
+}));
+"""
+
+
+def test_submit_queues_the_target_it_planned(tmp_path):
+    data = _run(tmp_path, _SUBMIT_CAPTURES_TARGET)
+
+    assert data["planned"] == [["createcd", "/out/old"]], data
+    batch = data["batch"]
+    assert batch["mode"] == "createcd", data
+    assert batch["outputDir"] == "/out/old", data
+    assert batch["deleteOnVerify"] is True, data
+    assert batch["split"] is False, data
+    assert batch["containerOnly"] is False, data
+
+
+_RUN_AUTO_CAPTURES_OUTPUT_DIR = """
+const store = new ConversionStore();
+store.outputDir = '/out/old';
+let releasePlan;
+const planDirs = [];
+api.getAutoPlan = (paths, outputDir) => {
+  planDirs.push(outputDir);
+  return new Promise((resolve) => {
+    releasePlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
+  });
+};
+planAnswer = (paths) => ({
+  recorded: 1, pending: 1,
+  recorded_paths: { [paths[0]]: '/out/old/a.chd' }, recorded_ids: { [paths[0]]: 9 },
+});
+autoAnswer = (paths) => ({
+  plan: [], jobs: [{ id: 'j1', file_path: paths[0], output_path: '/out/old/a.chd' }],
+});
+const run = store.runAuto({
+  paths: ['/v/a.iso'], rommPlatformId: 3, confirm: () => Promise.resolve(true),
+});
+await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
+store.outputDir = '/out/new';                             // edited meanwhile
+releasePlan();
+await run;
+process.stdout.write(JSON.stringify({
+  planDirs,
+  repinDirs: calls.plan.map((args) => args[2]),
+  queueDirs: calls.auto.map((args) => args[1]),
+}));
+"""
+
+
+def test_run_auto_uses_the_output_folder_it_previewed(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_CAPTURES_OUTPUT_DIR)
+
+    assert data == {
+        "planDirs": ["/out/old"], "repinDirs": ["/out/old"], "queueDirs": ["/out/old"],
+    }, data

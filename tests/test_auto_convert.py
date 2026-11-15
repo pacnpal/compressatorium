@@ -475,6 +475,37 @@ async def test_auto_route_withdraws_on_any_failure_not_only_http_errors(
     assert cancelled
 
 
+@pytest.mark.asyncio
+async def test_auto_route_withdraws_earlier_groups_when_cancelled(route_env, monkeypatch):
+    # A client disconnect cancels the request mid-loop: the groups already
+    # queued are withdrawn, then the cancellation propagates.
+    import asyncio
+
+    paths = _mixed_selection(route_env["tmp_path"])
+    queued_ids: list[str] = []
+    cancelled: list[str] = []
+
+    async def fake_atomic(job_specs, mode, **_kwargs):
+        if mode.value == "dolphin_rvz":
+            raise asyncio.CancelledError
+        job_id = f"job-{mode.value}"
+        queued_ids.append(job_id)
+        return [type("Job", (), {"id": job_id, "filename": "x"})()]
+
+    async def fake_cancel(job_id):
+        cancelled.append(job_id)
+        return True
+
+    monkeypatch.setattr(convert_routes.job_manager, "create_jobs_atomic", fake_atomic)
+    monkeypatch.setattr(convert_routes.job_manager, "cancel_job", fake_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+
+    assert queued_ids, "the cancelled group must not be the first one queued"
+    assert sorted(cancelled) == sorted(queued_ids)
+
+
 def test_a_target_whose_tool_is_not_ready_is_skipped(tmp_path):
     from services.tools import registry
 
@@ -527,6 +558,42 @@ def test_a_ps3_disc_folder_goes_to_folder_to_iso(tmp_path):
 
     assert (entry.detection.platform, entry.detection.how) == ("ps3", "header")
     assert entry.mode == "folder_to_iso"
+
+
+def test_a_ps3_folder_named_like_an_iso_is_not_already_an_iso(tmp_path):
+    # The "already the target format" check reads a file's name; a folder's
+    # name says nothing about what it holds (CodeRabbit 4576895545).
+    from .ps3_helpers import make_ps3_folder
+
+    folder = make_ps3_folder(tmp_path / "downloads" / "Game.iso")
+
+    [entry] = plan_auto([str(folder)])
+
+    assert entry.mode == "folder_to_iso"
+    assert entry.skip_reason is None
+
+
+def test_an_iso_file_under_folder_to_iso_is_still_already_an_iso(tmp_path, monkeypatch):
+    from services.tools import registry
+
+    iso = _write(tmp_path / "Game.iso", b"\0" * 2048)
+    monkeypatch.setattr(platform_detect, "default_mode", lambda *_a: "folder_to_iso")
+
+    assert platform_detect.auto_route(iso, "ps3", registry) == (None, "Already ISO")
+
+
+def test_a_custom_probe_set_does_not_reuse_the_shared_cache(tmp_path):
+    # Same file, two probe sets: the second must not get the first's answer
+    # (CodeRabbit 4576895544).
+    from services.tools import registry
+
+    iso = _gamecube(tmp_path / "neutral" / "game.iso")
+    chdman_only = [registry.get("chdman")]
+    dolphin_only = [registry.get("dolphin")]
+
+    assert platform_detect.detect_platform(iso, tools=chdman_only).platform is None
+    assert platform_detect.detect_platform(iso, tools=dolphin_only).platform == "ngc"
+    assert platform_detect.detect_platform(iso).platform == "ngc"
 
 
 def test_a_plain_folder_is_not_a_ps3_image(tmp_path):

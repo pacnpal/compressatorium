@@ -4,12 +4,28 @@ Sheets come in UTF-8 (with or without a BOM) and in Windows-1252, and a track
 name decoded the wrong way names a file that is not there. Every reader of a
 sheet decodes it through here: the disc-ID probe (``services.disc_id``) and
 the delete plan and header-dependency list (``utils.delete_plan``).
+
+The converter opens the files a sheet names itself, so a sheet is read here
+exactly the way chdman 0.285 reads it (``src/lib/util/cdrom.cpp`` at
+mame0285: ``parse_cue``, ``parse_gdi``, ``tokenize``). A difference would let a
+name pass ``resolve_track`` while chdman opens another one:
+
+* framing: ``fgets(linebuffer, 511)`` reads at most ``CHD_READ_BYTES`` (510)
+  bytes, ending at ``\\n``. A longer line is read in pieces and each piece is
+  parsed as a line, so a ``REM`` padded past 510 bytes would hide a ``FILE``.
+  A sheet with such a line, or with a NUL byte (which ends chdman's token
+  early), is unreadable, never partly parsed;
+* tokens (``chd_tokens``): C-locale whitespace separates them; ``"`` and
+  ``'`` each toggle a quoted run in which the other kind is literal, and are
+  dropped; there is no comment syntax;
+* a CUE track is the token after a ``FILE`` token (case-sensitive); a GDI
+  track is the fifth token of a track line;
+* the file opened is the sheet's folder plus that token, verbatim.
 """
 from __future__ import annotations
 
 import os
 import re
-import shlex
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +33,58 @@ from pathlib import Path
 _UTF8_BOM = b"\xef\xbb\xbf"
 # A track sheet is a few hundred bytes; anything far larger is not one.
 MAX_SHEET_BYTES = 1024 * 1024
+# chdman's `fgets(linebuffer, 511, ...)`: the most bytes one read returns,
+# newline included. A line that needs a second read makes the sheet unreadable.
+CHD_READ_BYTES = 510
+# C `isspace` in the "C" locale, which chdman's `tokenize` uses.
+_C_SPACE = frozenset(" \t\n\v\f\r")
+
+
+def _chd_framing_ok(raw: bytes) -> bool:
+    """Whether chdman reads every line of ``raw`` in one ``fgets`` call."""
+    if b"\0" in raw:
+        return False
+    # A line plus its "\n" must fit one read; the last line may lack the "\n".
+    return all(len(line) < CHD_READ_BYTES for line in raw.split(b"\n"))
+
+
+def chd_tokens(line: str) -> list[str]:
+    """Every token of ``line`` as chdman 0.285's ``tokenize`` returns them.
+
+    Leading C-locale whitespace is skipped; a token runs to the next
+    whitespace outside quotes. ``"`` toggles a double-quoted run unless inside
+    single quotes, ``'`` a single-quoted run unless inside double quotes; the
+    toggling quote characters are dropped and everything else is kept, so
+    ``a"b c"d`` is ``ab cd`` and an unclosed quote runs to the end of the line.
+    A quoted empty string is an empty token.
+    """
+    tokens: list[str] = []
+    i, end = 0, len(line)
+    while True:
+        while i < end and line[i] in _C_SPACE:
+            i += 1
+        if i >= end:
+            return tokens
+        token: list[str] = []
+        single = double = False
+        while i < end:
+            char = line[i]
+            if not single and char == '"':
+                double = not double
+            elif not double and char == "'":
+                single = not single
+            elif not single and not double and char in _C_SPACE:
+                break
+            else:
+                token.append(char)
+            i += 1
+        tokens.append("".join(token))
+
+
+def _sheet_lines(text: str) -> list[str]:
+    # fgets splits on "\n" only; "\r" and the other line breaks str.splitlines
+    # knows are ordinary characters (and "\r" is whitespace to the tokenizer).
+    return text.split("\n")
 
 
 def sheet_readings(path: str | Path) -> list[str]:
@@ -24,28 +92,36 @@ def sheet_readings(path: str | Path) -> list[str]:
 
     First the sheet as UTF-8 with a BOM stripped, or as cp1252 when it is not
     valid UTF-8; then Latin-1, which decodes any bytes and is the reading the
-    disc-ID probe always used.
+    disc-ID probe always used; then, when it differs from both, the
+    filesystem decoding (``os.fsdecode``), which spells each name as the raw
+    bytes chdman opens. A safety check reads every spelling.
 
-    Empty when the sheet cannot be read, and when it is larger than
-    ``MAX_SHEET_BYTES``: never a partial parse. A sheet cut at the cap would
-    hide every track after it (a delete plan that orphans them, or a
-    ``FILE "/etc/..."`` behind a megabyte of ``REM`` lines that the tool
-    reading the whole sheet still opens), so an oversized sheet is unreadable
-    and every reader built on this treats it as unknown or unsafe.
+    Empty when the sheet cannot be read, when it is larger than
+    ``MAX_SHEET_BYTES``, and when chdman would not read it the way this module
+    does (a line needing more than one ``CHD_READ_BYTES`` read, or a NUL
+    byte): never a partial parse. A sheet cut at the cap would hide every
+    track after it (a delete plan that orphans them, or a ``FILE "/etc/..."``
+    behind a megabyte of ``REM`` lines that the tool reading the whole sheet
+    still opens), so such a sheet is unreadable and every reader built on this
+    treats it as unknown or unsafe.
     """
     try:
         with open(path, "rb") as fh:
             raw = fh.read(MAX_SHEET_BYTES + 1)
     except OSError:
         return []
-    if len(raw) > MAX_SHEET_BYTES:
+    if len(raw) > MAX_SHEET_BYTES or not _chd_framing_ok(raw):
         return []
     raw = raw.removeprefix(_UTF8_BOM)
     try:
         first = raw.decode("utf-8")
     except UnicodeDecodeError:
         first = raw.decode("cp1252", errors="replace")
-    return [first, raw.decode("latin-1")]
+    readings = [first, raw.decode("latin-1")]
+    native = os.fsdecode(raw)
+    if native not in readings:
+        readings.append(native)
+    return readings
 
 
 _WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
@@ -99,7 +175,12 @@ def resolve_track(
     if within is not None and not list(within):
         raise ValueError("No trusted root to confine the track to")
 
-    raw = ref.strip().strip('"')
+    # Verbatim: the name chdman opens is the sheet's folder plus the token,
+    # untrimmed and unquoted (`chd_tokens` already dropped the quotes). The
+    # checks below read it with "\" as a separator too, which only refuses
+    # more; the path checked is the literal one ("\" is a filename character
+    # on POSIX, so "sub\x.bin" is one name there, as chdman opens it).
+    raw = ref
     if not raw:
         raise ValueError("Empty track reference")
     normalized = raw.replace("\\", "/")
@@ -108,7 +189,7 @@ def resolve_track(
     if ".." in normalized.split("/"):
         raise ValueError(f"Track reference escapes source directory: {raw}")
     base = Path(os.path.normpath(str(Path(sheet_dir).absolute())))
-    candidate = Path(os.path.normpath(os.path.join(str(base), normalized)))
+    candidate = Path(os.path.normpath(os.path.join(str(base), raw)))
     real = os.path.realpath(candidate)
     if within is None:
         inside = is_within_configured_volumes(real, treat_archives=False)
@@ -130,18 +211,25 @@ def sheet_tracks(
 ) -> list[Path] | None:
     """Every track the sheet names, resolved and confined (``resolve_track``).
 
-    None when the sheet is unreadable (missing, or over the size cap) or when
-    any track is refused: a reader must then say nothing about the sheet
-    rather than act on the tracks it was allowed to see. The first spelling of
-    each name that exists wins (``pick_existing``). ``within`` is passed to
-    ``resolve_track``: the configured Volumes unless a caller names other
-    trusted roots.
+    None when the sheet is unreadable (missing, over the size cap, or framed
+    in a way chdman would read differently) or when any spelling of any track
+    is refused: chdman opens one of those spellings, so a reader must then say
+    nothing about the sheet rather than act on the ones it was allowed to see.
+    The first spelling of each name that exists wins (``pick_existing``).
+    ``within`` is passed to ``resolve_track``: the configured Volumes unless a
+    caller names other trusted roots.
     """
     texts = sheet_readings(path)
     if not texts:
         return None
     readings = [parse(text) for text in texts]
     folder = Path(path).parent
+    for names in readings:
+        for ref in names:
+            try:
+                resolve_track(folder, ref, within=within)
+            except ValueError:
+                return None
     tracks = pick_existing(readings, lambda ref: resolve_track(folder, ref, within=within))
     if len(tracks) != len(readings[0]):
         return None
@@ -171,37 +259,20 @@ def sheet_is_readable(path: str | Path) -> bool:
 def cue_tracks(text: str) -> list[str]:
     """The file name of every ``FILE`` line of a ``.cue`` sheet, in order.
 
-    ``FILE "name" TYPE``: the name is everything between the quotes, spaces
-    included. Unquoted, ``FILE name TYPE``: everything before the last word
-    (the file type), so ``FILE Game (Track 1).bin BINARY`` keeps its spaces; a
-    line with no type keeps the whole rest. ``REM`` lines and other commands
-    are not tracks. The one CUE FILE-line parser: the disc-ID probe, the delete
-    plan and the detection cache's track list all read sheets through it.
+    As chdman's ``parse_cue`` reads it: a line whose first token
+    (``chd_tokens``) is exactly ``FILE`` names the file in its second token.
+    So ``FILE "Game (Track 1).bin" BINARY`` names ``Game (Track 1).bin``,
+    ``FILE '../x.bin' BINARY`` names ``../x.bin``, and unquoted
+    ``FILE Game (Track 1).bin BINARY`` names ``Game``. ``REM`` lines, other
+    commands and a lowercase ``file`` are not tracks. The one CUE FILE-line
+    parser: the disc-ID probe, the delete plan, the job gate and the
+    detection cache's track list all read sheets through it.
     """
     names: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        head, _, rest = stripped.partition(" ")
-        if head.upper() != "FILE":
-            # A tab after FILE is as valid as a space.
-            head, _, rest = stripped.partition("\t")
-            if head.upper() != "FILE":
-                continue
-        rest = rest.strip()
-        if rest.startswith('"'):
-            body = rest[1:]
-            closing = body.find('"')
-            if closing >= 0:
-                name = body[:closing]
-            else:  # an unbalanced quote: read it as unquoted
-                parts = body.rsplit(None, 1)
-                name = parts[0] if len(parts) == 2 else body
-        else:
-            parts = rest.rsplit(None, 1)
-            name = parts[0] if len(parts) == 2 else rest
-        name = name.strip()
-        if name:
-            names.append(name)
+    for line in _sheet_lines(text):
+        tokens = chd_tokens(line)
+        if len(tokens) >= 2 and tokens[0] == "FILE" and tokens[1]:
+            names.append(tokens[1])
     return names
 
 
@@ -212,15 +283,6 @@ class GdiTrack:
     number: str
     sector_size: int | None
     name: str
-
-
-def _split_line(line: str) -> list[str]:
-    # Quoted names keep their spaces; a line shlex can't parse (an unbalanced
-    # quote) falls back to whitespace splitting.
-    try:
-        return shlex.split(line, comments=True, posix=True)
-    except ValueError:
-        return line.split()
 
 
 def _is_number(field: str) -> bool:
@@ -247,24 +309,23 @@ def _as_number(field: str) -> int | None:
 def gdi_tracks(text: str) -> list[GdiTrack]:
     """Every track line of a ``.gdi`` sheet, in order.
 
-    The first line is the track count and is skipped when it is a number.
-    Lines with fewer than five fields, or no file name, are left out.
+    As chdman's ``parse_gdi`` reads it, token by token (``chd_tokens``): the
+    name is the fifth token, so ``"Track 01.bin"`` keeps its space and
+    ``#link/x.bin`` is a name (there is no comment syntax). The first
+    non-blank line is the track count and is skipped when it is a number
+    (chdman opens nothing for a sheet whose count is not one, so reading that
+    line as a track only checks more). Lines with fewer than five tokens, or
+    an empty name, are left out.
     """
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [tokens for tokens in map(chd_tokens, _sheet_lines(text)) if tokens]
     if not lines:
         return []
-    head = _split_line(lines[0])
-    start = 1 if head and _is_number(head[0]) else 0
+    start = 1 if _is_number(lines[0][0]) else 0
     tracks: list[GdiTrack] = []
-    for line in lines[start:]:
-        parts = _split_line(line)
-        if len(parts) < 5:
+    for parts in lines[start:]:
+        if len(parts) < 5 or not parts[4]:
             continue
-        name = parts[4].strip('"').strip()
-        if not name:
-            continue
-        size = _as_number(parts[3])
-        tracks.append(GdiTrack(parts[0], size, name))
+        tracks.append(GdiTrack(parts[0], _as_number(parts[3]), parts[4]))
     return tracks
 
 
