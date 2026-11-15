@@ -3315,6 +3315,15 @@ names, and every probe (`check_file_status`, `locked_folder_above`,
 real path, or packing the real parent, sees it. The identity is fixed when the
 lock is taken (`_lock_keys` for outputs, the key stored beside each input
 handle) and the release uses exactly that, even if a symlink changed since.
+The identity is filesystem bytes: `_lock_file_path` hashes
+`os.fsencode(realpath)` and the recorded path is written with `os.fsencode`
+and read back with `os.fsdecode`, so a native name a sheet reads (`Caf\xe9.bin`,
+a surrogate escape in Python) locks, records and probes like any other path.
+If taking a job's input locks raises anyway, `JobManager._fail_before_start`
+ends the job FAILED and lets go of everything it holds (the input locks taken
+so far, its folder and output locks, its concurrency slot): a job never stays
+queued holding the slot, which would stall every later conversion at
+concurrency 1.
 
 **Archive deletion fails closed.** Deleting an archive member's Source deletes
 the archive, so `build_delete_plan` (shared by the web batch, the job's
