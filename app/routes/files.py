@@ -2,6 +2,7 @@ from logging_setup import get_logger
 import os
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 from config import settings
@@ -524,6 +525,7 @@ def scan_tree(
     root_path: str, recursive_scan: bool = True, include_archive_scan: bool = True,
     *, purpose: str = "convert",
     also_reads: frozenset[str] | None = None,
+    also_include: Callable[[str], bool] | None = None,
     unreadable: list[tuple[str, str]] | None = None,
 ) -> tuple[list[dict], list[dict], list[str]]:
     """Every convertible thing under ``root_path``: the recursive search walk.
@@ -540,7 +542,9 @@ def scan_tree(
 
     ``also_reads`` (the CLI's ``--to``, #306) also lists every file whose name
     ends with one of those extensions though no tool-wide input matches it (a
-    ``.chd`` for chdman's extract modes), in the same single walk. A folder
+    ``.chd`` for chdman's extract modes), in the same single walk;
+    ``also_include`` likewise lists a file it answers True for (the CLI's
+    verify: a numbered part of a split output). A folder
     that can't be read is skipped as always; with ``unreadable`` given, it is
     appended there as ``(path, reason)`` so a caller can report it.
     """
@@ -617,9 +621,9 @@ def scan_tree(
                                     "verifiable_by": claims(item_path),
                                 },
                             )
-                        elif (
-                            also_reads and not is_archive
-                            and match_extension(item, also_reads) is not None
+                        elif not is_archive and (
+                            (also_reads and match_extension(item, also_reads) is not None)
+                            or (also_include and also_include(item_path))
                         ):
                             files.append(
                                 {
