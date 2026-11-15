@@ -208,6 +208,21 @@ def _is_number(field: str) -> bool:
     return field.isascii() and field.isdecimal()
 
 
+# A GDI sector size is 2048 or 2352; nothing real needs more digits than this,
+# and int() refuses strings past Python's 4,300-digit limit anyway.
+_MAX_NUMBER_DIGITS = 18
+
+
+def _as_number(field: str) -> int | None:
+    """``field`` as an int when it is a plausible ASCII decimal, else None."""
+    if not _is_number(field) or len(field) > _MAX_NUMBER_DIGITS:
+        return None
+    try:
+        return int(field)
+    except ValueError:
+        return None
+
+
 def gdi_tracks(text: str) -> list[GdiTrack]:
     """Every track line of a ``.gdi`` sheet, in order.
 
@@ -227,7 +242,7 @@ def gdi_tracks(text: str) -> list[GdiTrack]:
         name = parts[4].strip('"').strip()
         if not name:
             continue
-        size = int(parts[3]) if _is_number(parts[3]) else None
+        size = _as_number(parts[3])
         tracks.append(GdiTrack(parts[0], size, name))
     return tracks
 
