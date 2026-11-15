@@ -558,6 +558,9 @@ class _RecordingTool:
     async def verify_timeout(self, path, *, cancel_event=None):
         return 0
 
+    async def source_problem(self, path, *, cancel_event=None, within=None):
+        return None
+
     async def content_digest(self, path, *, cancel_event=None, within=None):
         self.calls.append((path, within))
         return ContentDigest(kind="k", value="v")

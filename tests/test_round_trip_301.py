@@ -1308,5 +1308,138 @@ async def test_chdman_copy_compares_the_data_sha1_of_both_chds(
         _assert_kept(job, source)
 
 
+# ---------------------------------------------------------------------------
+# within (#294 confines sheet and track reads to the Volumes unless a caller
+# passes the trusted roots): every Round-trip hook takes it and passes it on
+# ---------------------------------------------------------------------------
+
+
+def _round_trip_tools():
+    return sorted(
+        {registry.for_mode(s.mode).id for s in registry.mode_specs() if s.supports_round_trip},
+    )
+
+
+@pytest.mark.parametrize("tool_id", _round_trip_tools())
+def test_every_round_trip_tool_takes_within_on_both_hooks(tool_id):
+    import inspect
+
+    tool = registry.get(tool_id)
+    for hook in (tool.content_digest, tool.source_problem):
+        param = inspect.signature(hook).parameters.get("within")
+        assert param is not None, f"{tool_id}.{hook.__name__} takes no within"
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY and param.default is None
+
+
+@pytest.mark.asyncio
+async def test_round_trip_passes_within_to_the_source_check_too():
+    from services.round_trip import round_trip
+
+    calls: list[tuple[str, object]] = []
+
+    class Recorder:
+        display_name = "Recorder"
+
+        async def verify_timeout(self, path, *, cancel_event=None):
+            return 0
+
+        async def source_problem(self, path, *, cancel_event=None, within=None):
+            calls.append(("source_problem", within))
+
+        async def content_digest(self, path, *, cancel_event=None, within=None):
+            return ContentDigest(kind="k", value="v")
+
+    outcome = await round_trip(
+        Recorder(), "/scratch/job/Game.chd", "/vol/Game_copy.chd", within=["/scratch/job"],
+    )
+    assert outcome.passed
+    assert calls == [("source_problem", ["/scratch/job"])]
+
+
+@pytest.mark.asyncio
+async def test_a_chain_passes_within_on_to_its_first_steps_tool(tmp_path, monkeypatch):
+    """A chain's Source is digested by its first step's tool; the job's trusted
+    root for that Source must reach that tool, or a sheet in an extraction
+    folder would be refused."""
+    cso_tool = registry.get("cso")
+    seen: list[object] = []
+    original = cso_tool.content_digest
+
+    async def recording(path, *, cancel_event=None, within=None):
+        seen.append(within)
+        return await original(path, cancel_event=cancel_event, within=within)
+
+    monkeypatch.setattr(cso_tool, "content_digest", recording)
+    cso = tmp_path / "Game.cso"
+    write_ciso(cso, _image())
+
+    digest = await registry.get("chain").content_digest(str(cso), within=[str(tmp_path)])
+
+    assert digest.value == _sha1(_image())
+    assert seen == [[str(tmp_path)]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool_id", "name", "write"), [
+    ("cso", "Game.iso", lambda p: p.write_bytes(_image())),
+    ("z3ds", "Game.3ds", lambda p: p.write_bytes(b"cartridge" * 999)),
+    ("jwud", "game.wud", lambda p: p.write_bytes(b"\x00" * 4096)),
+    ("nsz", "Game.nsp", lambda p: p.write_bytes(b"PFS0" + b"switch" * 99)),
+    ("romz", "Game.gba", lambda p: p.write_bytes(b"cartridge" * 77)),
+])
+async def test_each_tool_digests_a_source_in_an_extraction_folder(
+    tmp_path, tool_id, name, write,
+):
+    """An archive-member Source sits in the job's extraction folder, outside
+    the Volumes. With that folder as ``within`` every tool digests it. None of
+    these reads a sheet, so ``within`` only has to be accepted and passed on."""
+    folder = tmp_path / "cmptr-extract-job"
+    folder.mkdir()
+    source = folder / name
+    write(source)
+
+    tool = registry.get(tool_id)
+    with_root = await tool.content_digest(str(source), within=[str(folder)])
+    assert with_root is not None
+    assert with_root == await tool.content_digest(str(source))
+
+
+@pytest.mark.asyncio
+async def test_an_archive_member_iso_round_trips_through_cso_compress(e2e, monkeypatch):
+    """End to end: a zip holding an ISO, converted to CSO with delete-source.
+    The Source is the extracted member in the job's folder, digested with that
+    folder as ``within``; the output side gets the Volumes."""
+    import os
+
+    from app.models import ConversionMode, DuplicateAction, JobCreateRequest
+
+    archive = e2e["tmp_path"] / "Game.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("Game.iso", _image())
+    e2e["writer"] = lambda src, out: write_ciso(out, src.read_bytes())
+
+    seen: list[tuple[str, object]] = []
+    tool = _cso()
+    original = tool.content_digest
+
+    async def recording(path, *, cancel_event=None, within=None):
+        seen.append((path, within))
+        return await original(path, cancel_event=cancel_event, within=within)
+
+    monkeypatch.setattr(tool, "content_digest", recording)
+    routes = e2e["routes"]
+    job = await routes.create_job(JobCreateRequest(
+        file_path=f"{archive}::Game.iso", mode=ConversionMode.CSO_COMPRESS,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=True,
+    ))
+    await routes.job_manager._process_job(job.id)
+
+    assert job.status.value == "completed", job.error_message
+    assert job.check_passed == "round_tripped"
+    (source_path, source_within), (output_path, output_within) = seen
+    assert source_within == [os.path.dirname(source_path)]
+    assert output_path == job.output_path and output_within is None
+
+
 # The real-binary tests, run through each service's production convert, are
 # in tests/test_round_trip_301_real.py.

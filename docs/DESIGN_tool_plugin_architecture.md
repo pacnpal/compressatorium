@@ -2342,13 +2342,20 @@ result to the Ledger and to the job's `complete` event. On a pass,
 `check_passed="intact"`, stores nothing for the output (see below), keeps the
 Source and fails the job with the reason.
 
-**`ToolPlugin.source_problem(path)`** (#301) is asked once before any
-digest, under the same `verify_timeout` bound: a reason the Source must not be
-trusted, or None (`BaseTool`'s default). chdman answers it for a `.chd` Source
-(Copy) by running its verify; every other tool has nothing to check. A reason
-keeps the Source with "Round-trip failed: <reason>. Source kept.", an
-exception or a timeout counts as a reason, and a cancel is reported as
-cancelled.
+**`ToolPlugin.source_problem(path, *, within=None)`** (#301) is asked once
+before any digest, under the same `verify_timeout` bound: a reason the Source
+must not be trusted, or None (`BaseTool`'s default). chdman answers it for a
+`.chd` Source (Copy) by running its verify; every other tool has nothing to
+check. A reason keeps the Source with "Round-trip failed: <reason>. Source
+kept.", an exception or a timeout counts as a reason, and a cancel is reported
+as cancelled. It gets the same `within` as the Source's `content_digest` (the
+job's extraction folder for an archive member, the Volumes otherwise); an
+override that reads a sheet, a track or an archive member passes it to that
+read and fails closed. `ChainTool` passes `within` unchanged to the tool that
+reads the path, for both hooks. maxcso, z3ds, JWUDTool, nsz and romz read no
+sheet: they read the Source file itself, their own decoder output or their own
+scratch folder directly, none of which goes through the Volume-confined sheet
+reader, so they accept `within` and ignore it.
 
 **`services/round_trip.round_trip(tool, source, output)`** owns everything a
 tool should not repeat: one side at a time (both are usually on the same

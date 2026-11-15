@@ -6,7 +6,7 @@ contract is satisfied by running them in a threadpool.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
@@ -220,7 +220,11 @@ class JwudTool(BaseTool):
         )
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # reads no sheet, so unused
     ) -> ContentDigest | None:
         # Both sides are the SHA1 of the 25 GB disc image: a .wud (with every
         # part of a split set, in order), or what a .wux's sector table

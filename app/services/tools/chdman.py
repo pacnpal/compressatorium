@@ -445,7 +445,11 @@ class ChdmanTool(BaseTool):
         return ContentDigest(kind=IMAGE_DATA_SHA1_KIND, value=value.lower())
 
     async def source_problem(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # verifies the CHD file; reads no sheet
     ) -> str | None:
         # A CHD Source (Copy) is only a claim until chdman verify recomputes
         # its data SHA1: a damaged Source must not be compared, and deleted, as

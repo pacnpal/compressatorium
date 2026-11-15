@@ -10,7 +10,7 @@ import asyncio
 import hashlib
 import os
 import unicodedata
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
@@ -224,7 +224,11 @@ class RomzTool(BaseTool):
         )
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # reads no sheet, so unused
     ) -> ContentDigest | None:
         # The member set: an archive's members as it lists them, a loose ROM
         # as the one member it is archived as (its basename). A missing, extra

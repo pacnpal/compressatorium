@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -409,14 +409,31 @@ class ChainTool(BaseTool):
         return self._final_tool(path)
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
     ) -> ContentDigest | None:
         # A chain compares the first step's decoded Source with the final
         # output, each digested by the tool that reads it. They must agree on
         # the digest kind (cso_to_chd: maxcso and chdman both give
         # image_data_sha1), or the check refuses to compare and keeps the Source.
+        # ``within`` goes through unchanged: the delegate decides what to read.
         return await self._tool_for_path(path).content_digest(
-            path, cancel_event=cancel_event,
+            path, cancel_event=cancel_event, within=within,
+        )
+
+    async def source_problem(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
+    ) -> str | None:
+        # The tool that reads the Source checks it, with the same roots.
+        return await self._tool_for_path(path).source_problem(
+            path, cancel_event=cancel_event, within=within,
         )
 
     async def verify(

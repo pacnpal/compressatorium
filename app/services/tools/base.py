@@ -356,7 +356,11 @@ class ToolPlugin(Protocol):
         """
 
     async def source_problem(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
     ) -> str | None:
         """Why the Round-trip must not trust ``path`` as a Source, or None.
 
@@ -365,6 +369,10 @@ class ToolPlugin(Protocol):
         with it first: a Source that is not Intact would compare its damage
         with an output that faithfully copied it. Return a reason to keep the
         Source without comparing; ``BaseTool`` returns None.
+
+        ``within`` is the same trusted root(s) ``content_digest`` gets for the
+        Source: an override that reads a sheet, a track or an archive member
+        passes it to that read and fails closed when the read is refused.
         """
 
     async def is_ready(self) -> bool:
@@ -610,7 +618,11 @@ class BaseTool:
         return []
 
     async def source_problem(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
     ) -> str | None:
         # Default: a Source carries no checksum of its own to check first.
         return None

@@ -7,7 +7,7 @@ is satisfied by running it in a threadpool.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
@@ -80,7 +80,11 @@ class NszTool(BaseTool):
     verify_extensions = frozenset({".nsz", ".xcz"})
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # reads no sheet, so unused
     ) -> ContentDigest | None:
         # Both sides are the SHA256 of the whole NSP/XCI image. The Source is
         # hashed as a file; an NSZ's rebuilt NSP hash comes from nsz -V (no

@@ -9,7 +9,7 @@ synchronous; the async contract is satisfied by running it in a threadpool.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
@@ -193,7 +193,11 @@ class MaxcsoTool(BaseTool):
         return CsoInfo(**self._basic_info_fields(raw))
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # reads no sheet, so unused
     ) -> ContentDigest | None:
         # Both sides are the SHA1 of the ISO image. An .iso is that image; a
         # CSO/ZSO/DAX is decoded block by block and hashed as it streams

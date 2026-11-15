@@ -81,13 +81,17 @@ async def _digest(
 
 
 async def _source_problem(
-    tool: ToolPlugin, path: str, cancel_event: asyncio.Event | None,
+    tool: ToolPlugin,
+    path: str,
+    cancel_event: asyncio.Event | None,
+    within: Sequence[str] | None = None,
 ) -> str | None:
-    """The tool's own check of the Source, under the same bound as a digest."""
+    """The tool's own check of the Source, under the same bound as a digest,
+    with the same trusted root(s) the Source's digest gets."""
     try:
         bound = await tool.verify_timeout(path, cancel_event=cancel_event)
         return await asyncio.wait_for(
-            tool.source_problem(path, cancel_event=cancel_event),
+            tool.source_problem(path, cancel_event=cancel_event, within=within),
             timeout=bound or None,
         )
     except asyncio.TimeoutError:
@@ -123,7 +127,7 @@ async def round_trip(
     def _is_cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()
 
-    problem = await _source_problem(tool, source_path, cancel_event)
+    problem = await _source_problem(tool, source_path, cancel_event, within)
     if _is_cancelled():
         return cancelled
     if problem:
