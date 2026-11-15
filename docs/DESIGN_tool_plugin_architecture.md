@@ -3266,11 +3266,17 @@ Queueing an Image the user never saw would also skip its RomM metadata
 snapshot. Nothing in either Auto endpoint, or in the
 batch preparation they share, touches a Volume on the event loop: the per-path
 Volume checks run together with planning (`_checked_auto_plan`) or on their
-own (`_check_within_volumes`) through `_off_loop_bounded`, a `run_detached`
-call bounded by `VOLUME_PROBE_TIMEOUT_SECONDS` (30 s, beside
+own (`_check_within_volumes`) through `routes.volume_guard.off_loop_bounded`,
+a `run_detached` call bounded by `VOLUME_PROBE_TIMEOUT_SECONDS` (30 s, beside
 `ROLLBACK_WAIT_CAP_SECONDS` in `job_manager`). Past the bound the request
 answers 503 "A Volume isn't responding"; the abandoned thread may linger until
 the mount answers, holding no shared pool worker, and its result is dropped.
+That helper is the one copy of the rule for every route (#327): single-job
+create, the delete plan, check-duplicates, `plan_job`'s same-path check, and
+the file browser's listing, search and archive routes run their containment
+and `realpath` work through it too. `tests/test_routes_off_loop_327.py` walks
+every `async def` in `app/routes` and fails on a containment or `realpath`
+call made on the loop rather than handed to a thread.
 An Image that preparation skipped (its output
 appeared after planning) is marked skipped in the returned plan with
 preparation's reason. In the browser, `conversion.runAuto` runs the flow once

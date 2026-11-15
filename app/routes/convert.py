@@ -27,10 +27,10 @@ from models import (
     JobStatus,
 )
 from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
+from routes.volume_guard import off_loop_bounded
 from services.archive import archive_service
 from services.job_manager import (
     ROLLBACK_WAIT_CAP_SECONDS,
-    VOLUME_PROBE_TIMEOUT_SECONDS,
     DestinationUnresolvableError,
     OutputClaimedError,
     QueueBackpressureError,
@@ -41,7 +41,6 @@ from services import referrers
 from services.platform_detect import plan_auto
 from services.preferences_store import preferences_store
 from services.romz import romz_service
-from services.subprocess_runner import run_detached
 from services.output_conflicts import (
     OutputPathExhausted,
     OutputPathLocked,
@@ -787,7 +786,7 @@ async def plan_job(
         spec.kind != ModeKind.COPY
         and duplicate_action == DuplicateAction.OVERWRITE
         and output_path
-        and _is_same_path(output_path, file_path)
+        and await off_loop_bounded(_is_same_path, output_path, file_path)
     ):
         # Any non-copy mode writing over its own source would destroy it; only
         # chdman copy (.chd -> .chd) is an intentional in-place recompress, and
@@ -844,17 +843,12 @@ async def check_duplicates(request: CheckDuplicatesRequest):
     results = []
     mode = request.mode.value
     output_dir = normalize_output_dir(request.output_dir)
+    # Containment off the event loop, bounded (#327).
+    await off_loop_bounded(_check_within_volumes, [], output_dir)
+    inside = await off_loop_bounded(_paths_inside, request.file_paths)
 
-    if output_dir and not is_within_configured_volumes(
-        output_dir, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: output directory outside configured volumes",
-        )
-
-    for file_path in request.file_paths:
-        if not is_within_configured_volumes(file_path):
+    for file_path, ok in zip(request.file_paths, inside):
+        if not ok:
             continue
 
         output_path = await _planned_output_path(mode, file_path, output_dir)
@@ -947,13 +941,9 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
         )
 
     output_dir = normalize_output_dir(request.output_dir)
-    if output_dir and not is_within_configured_volumes(
-        output_dir, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: output directory outside configured volumes",
-        )
+    # Containment off the event loop, bounded (#327).
+    await off_loop_bounded(_check_within_volumes, [], output_dir)
+    inside = await off_loop_bounded(_paths_inside, request.file_paths)
 
     disallowed_archives = get_disallowed_archive_paths(request.file_paths)
 
@@ -961,9 +951,9 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
     blocked = False
     total_delete_count = 0
 
-    for file_path in request.file_paths:
+    for file_path, ok in zip(request.file_paths, inside):
         item = None
-        if not is_within_configured_volumes(file_path):
+        if not ok:
             item = {
                 "source_path": file_path,
                 "delete_paths": [],
@@ -1013,19 +1003,8 @@ async def create_job(request: JobCreateRequest):
     spec = registry.spec(mode)
     _validate_request_compression(spec, mode, compression, request.delete_on_verify)
     _validate_delete_on_verify(spec, request.delete_on_verify)
-    if not is_within_configured_volumes(request.file_path):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: file path outside configured volumes",
-        )
-
-    if output_dir and not is_within_configured_volumes(
-        output_dir, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: output directory outside configured volumes",
-        )
+    # Containment off the event loop, bounded (#327).
+    await off_loop_bounded(_check_job_paths, request.file_path, output_dir)
 
     # Proactive queue-depth check: reject with 429 *before* planning if the
     # queue is already at capacity, so a full-queue submit doesn't pay for the
@@ -1172,7 +1151,7 @@ def _check_within_volumes(file_paths, output_dir: str | None = None) -> None:
     """403 unless every path (and the output dir) is inside the Volumes.
 
     Blocking (``is_within_configured_volumes`` stats and resolves); run it
-    through ``_off_loop_bounded``, never on the event loop.
+    through ``off_loop_bounded``, never on the event loop.
     """
     for file_path in file_paths:
         if not is_within_configured_volumes(file_path):
@@ -1189,23 +1168,22 @@ def _check_within_volumes(file_paths, output_dir: str | None = None) -> None:
         )
 
 
-async def _off_loop_bounded(func, *args, **kwargs):
-    """Run blocking Volume work off the event loop, bounded; 503 past the bound.
+def _paths_inside(file_paths) -> list[bool]:
+    """Whether each path is inside the Volumes. Blocking; via ``off_loop_bounded``."""
+    return [is_within_configured_volumes(file_path) for file_path in file_paths]
 
-    On a disposable thread (``run_detached``), so a Volume that stops answering
-    holds neither the loop nor a shared pool worker. Past
-    ``VOLUME_PROBE_TIMEOUT_SECONDS`` the request answers 503 and the thread is
-    abandoned; it may linger until the mount answers, and its result is
-    dropped. A process-wide probe ceiling being full answers 503 the same way.
+
+def _check_job_paths(file_path: str, output_dir: str | None) -> None:
+    """403 unless the job's source (and output dir) is inside the Volumes.
+
+    Blocking; via ``off_loop_bounded``.
     """
-    try:
-        return await asyncio.wait_for(
-            run_detached(func, *args, **kwargs), VOLUME_PROBE_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
+    if not is_within_configured_volumes(file_path):
         raise HTTPException(
-            status_code=503, detail="A Volume isn't responding. Try again later.",
-        ) from None
+            status_code=403,
+            detail="Access denied: file path outside configured volumes",
+        )
+    _check_within_volumes([], output_dir)
 
 
 async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
@@ -1235,7 +1213,7 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                     "same archive"
                 ),
             )
-    await _off_loop_bounded(_check_within_volumes, request.file_paths, output_dir)
+    await off_loop_bounded(_check_within_volumes, request.file_paths, output_dir)
 
     # Fast-fail when the queue is already at capacity, before planning any
     # candidate — planning a PS3 folder walks its whole source tree, so a
@@ -1337,7 +1315,7 @@ async def _plan_auto(request: AutoPlanRequest) -> list:
     # Every filesystem touch (the Volume checks and planning's header reads)
     # runs together off the event loop, bounded: a Volume that stops answering
     # gets a 503, never a frozen API.
-    plan = await _off_loop_bounded(
+    plan = await off_loop_bounded(
         _checked_auto_plan, list(request.file_paths),
         compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
     )

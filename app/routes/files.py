@@ -32,6 +32,7 @@ from services.job_manager import job_manager
 from services.lock_manager import lock_manager
 from services.mutation_guard import locked_for_mutation
 from services.tools import registry
+from routes.volume_guard import off_loop_bounded
 from services.verification_store import verification_store
 from utils.junk import is_junk_entry
 from utils.path_utils import (
@@ -289,15 +290,17 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     # subtree lock lives in that process, so probe the lock file of the path
     # and of each folder above it, up to the Volume root (#306). Off the event
     # loop: resolving the Volume roots touches the disk.
-    def _locked_folder_above() -> str | None:
+    def _locked_folder_above() -> tuple[str | None, str]:
         volume_root = lock_boundary_root(path)
-        return lock_manager.locked_folder_above(
+        locked = lock_manager.locked_folder_above(
             path, str(volume_root) if volume_root is not None else None,
         )
+        # Resolved here, beside the lock walk: never on the event loop (#327).
+        return locked, os.path.realpath(path)
 
-    locked = await run_in_threadpool(_locked_folder_above)
+    locked, real_path = await run_in_threadpool(_locked_folder_above)
     if locked is not None:
-        if os.path.realpath(path) == locked:
+        if real_path == locked:
             detail = "Path is being converted by another process"
         else:
             detail = (
@@ -313,7 +316,7 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
         if below is not None:
             raise HTTPException(
                 status_code=409,
-                detail=f"Folder holds {os.path.relpath(below, os.path.realpath(path))}, "
+                detail=f"Folder holds {os.path.relpath(below, real_path)}, "
                        "which a conversion is using",
             )
 
@@ -373,6 +376,32 @@ async def list_volumes():
     return volumes
 
 
+def _resolve_in_volumes(path: str, *, folder: bool) -> str:
+    """*path* resolved inside the Volumes, as a string: 403 outside, 404 if missing.
+
+    *folder* wants a directory, otherwise a file. Blocking (resolves and
+    stats); run it through ``off_loop_bounded``, never on the event loop.
+    """
+    try:
+        resolved = ensure_path_within_volumes(path, treat_archives=False)
+    except ValueError:
+        raise HTTPException(
+            status_code=403, detail="Access denied: path outside configured volumes",
+        ) from None
+    resolved_str = str(resolved)
+    if folder and not os.path.isdir(resolved_str):
+        raise HTTPException(status_code=404, detail="Directory not found")
+    if not folder and not os.path.isfile(resolved_str):
+        raise HTTPException(status_code=404, detail="Archive not found")
+    return resolved_str
+
+
+def _listing_root(path: str) -> tuple[str, str]:
+    """The listing's resolved folder and its Volume's name. Blocking; via ``off_loop_bounded``."""
+    resolved_str = _resolve_in_volumes(path, folder=True)
+    return resolved_str, get_volume_name_for_path(path) or ""
+
+
 @router.get("/files", response_model=DirectoryListing)
 async def list_files(
     path: str = Query(..., description="Directory path to list"),
@@ -380,19 +409,9 @@ async def list_files(
     summarize_archives: bool = Query(True, description="Include archive summaries"),
 ):
     """List files in a directory."""
-    try:
-        resolved = ensure_path_within_volumes(path, treat_archives=False)
-    except ValueError:
-        raise HTTPException(
-            status_code=403, detail="Access denied: path outside configured volumes",
-        ) from None
-
-    resolved_str = str(resolved)
-    if not os.path.isdir(resolved_str):
-        raise HTTPException(status_code=404, detail="Directory not found")
-
-    # Determine which volume this path belongs to
-    volume_name = get_volume_name_for_path(path) or ""
+    # Containment, the folder check and the Volume's name, off the event loop
+    # and bounded (#327).
+    resolved_str, volume_name = await off_loop_bounded(_listing_root, path)
 
     def scan_directory(
         target_path: str, show_archives_flag: bool, summarize_archives_flag: bool,
@@ -750,16 +769,8 @@ async def search_files(
     include_archives: bool = Query(True, description="Search inside archives"),
 ) -> dict:
     """Search for convertible files in a directory tree."""
-    try:
-        resolved = ensure_path_within_volumes(path, treat_archives=False)
-    except ValueError:
-        raise HTTPException(
-            status_code=403, detail="Access denied: path outside configured volumes",
-        ) from None
-
-    resolved_str = str(resolved)
-    if not os.path.isdir(resolved_str):
-        raise HTTPException(status_code=404, detail="Directory not found")
+    # Off the event loop and bounded (#327).
+    await off_loop_bounded(_resolve_in_volumes, path, folder=True)
 
     files, archives, archives_truncated = await run_in_threadpool(
         scan_tree, path, recursive, include_archives,
@@ -780,16 +791,8 @@ async def list_archive(
     path: str = Query(..., description="Path to archive file"),
 ) -> dict:
     """List convertible files inside an archive."""
-    try:
-        resolved = ensure_path_within_volumes(path, treat_archives=False)
-    except ValueError:
-        raise HTTPException(
-            status_code=403, detail="Access denied: path outside configured volumes",
-        ) from None
-
-    resolved_str = str(resolved)
-    if not os.path.isfile(resolved_str):
-        raise HTTPException(status_code=404, detail="Archive not found")
+    # Off the event loop and bounded (#327).
+    resolved_str = await off_loop_bounded(_resolve_in_volumes, path, folder=False)
 
     if not archive_service.is_archive(resolved_str):
         raise HTTPException(status_code=400, detail="Not a supported archive format")
