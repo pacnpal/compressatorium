@@ -223,6 +223,45 @@ process.stdout.write(JSON.stringify({
     assert data == {"x": None, "y": "round_tripped", "z": "round_tripped", "w": "intact"}
 
 
+def test_a_run_whose_progress_events_were_dropped_is_caught_up_at_its_end(tmp_path) -> None:
+    """Codex 4578664511: every per-Image event is lost (a full stream queue).
+    The terminal event lists the paths the run settled; the store re-reads
+    just those from the database, and the failed Image loses its badge, while
+    a live event that lands during the re-read still wins."""
+    data = _run_verification(tmp_path, """
+let __asked = null;
+let __answer;
+api.getVerifiedFor = (paths) => {
+  __asked = paths;
+  return new Promise((resolve) => { __answer = resolve; });
+};
+const store = new VerificationStore();
+store.markChecked('/v/bolt.chd');
+store.markChecked('/v/cove.chd');
+store.markChecked('/v/keep.chd');
+// The run's progress events never arrive; its end does.
+store.applyJobEvent({ type: 'complete', job: { id: 'check1' },
+  verification_paths: ['/v/bolt.chd', '/v/cove.chd', '/v/new.chd'] });
+// While the re-read is out, a newer pass on Cove lands live.
+store.markChecked('/v/cove.chd', 'round_tripped');
+// The database says: Bolt failed, Cove passed (an older state), New passed.
+__answer({ verified: ['/v/cove.chd', '/v/new.chd'],
+           checks: { '/v/cove.chd': 'intact', '/v/new.chd': 'intact' } });
+await store.pendingLookups();
+process.stdout.write(JSON.stringify({
+  asked: __asked,
+  bolt: store.checkFor('/v/bolt.chd'),
+  cove: store.checkFor('/v/cove.chd'),
+  fresh: store.checkFor('/v/new.chd'),
+  keep: store.checkFor('/v/keep.chd'),
+}));
+""")
+    assert data == {
+        "asked": ["/v/bolt.chd", "/v/cove.chd", "/v/new.chd"],
+        "bolt": None, "cove": "round_tripped", "fresh": "intact", "keep": "intact",
+    }
+
+
 def test_the_jobs_stream_hands_its_job_events_to_the_verification_store() -> None:
     src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "stores"
            / "jobs.svelte.js").read_text(encoding="utf-8")

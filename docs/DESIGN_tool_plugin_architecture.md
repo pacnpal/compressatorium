@@ -4380,7 +4380,13 @@ with its check now, or null once it is no longer Intact) on the run's own
 stream forwards in order. The browser's `verification.applyJobEvent` applies it
 beside a conversion's `verified` / `source_deleted` flags. Nothing is replayed
 at the end, so a newer pass on a file (a repair and a re-verify) is never
-overwritten by the run's older verdict.
+overwritten by the run's older verdict. A subscriber's queue is bounded (100)
+and drops when full, so the terminal event also lists the paths the run
+settled (`verification_paths`, no verdicts). The store re-reads just those from
+the database through `POST /api/verified/lookup` (at most
+`MAX_VERIFIED_LOOKUP` paths a request, chunked by the client), with the same
+`loadVerified` live-log replay a full reload uses, so a live event that lands
+during the re-read still wins.
 `on_finished(attempted)` is called exactly once as the run ends, with the keys
 of the picked Images the run reached and settled (a verdict either way, no
 verdict, or skipped as gone, changed or in use); a crash, a cancelled task or a

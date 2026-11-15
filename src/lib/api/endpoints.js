@@ -525,6 +525,18 @@ export const api = {
   getVerifiedCHDs: () =>
     fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch check results'),
 
+  /** The same answer as getVerifiedCHDs, for just `paths` (at most 2000). */
+  getVerifiedFor: (paths) =>
+    fetchJson(
+      `${API_BASE}/verified/lookup`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths }),
+      },
+      'Failed to fetch check results',
+    ),
+
   // ─── Batch verify (POST + ReadableStream SSE) ─────────────────────────
   verifyBatchCHDs(paths, opts) {
     return runBatchVerify(`${API_BASE}/verify-batch/events`, paths, opts);

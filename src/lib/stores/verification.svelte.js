@@ -7,6 +7,9 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
 
+// At most this many paths per /verified/lookup (the server's MAX_VERIFIED_LOOKUP).
+const LOOKUP_CHUNK = 2000;
+
 class VerificationStore {
   statuses = new SvelteSet();
   // path -> 'intact' | 'round_tripped': which check a stored output passed.
@@ -22,18 +25,39 @@ class VerificationStore {
   // check and a removal all survive it alike (#298, codex 4578598280).
   // A Set, so overlapping loads each keep their own log.
   _liveLogs = new Set();
+  // Re-reads of a check run's paths still in flight (see applyJobEvent).
+  _lookups = new Set();
 
-  async loadVerified() {
+  /**
+   * Replace what the store holds with the server's answer: every path, or,
+   * with `paths`, just those (a check run's, through /verified/lookup, in
+   * chunks the server accepts). Either way the live writes made while the
+   * request was out are replayed over it, since they are newer.
+   */
+  async loadVerified(paths = null) {
     // A plain Map: a transient log nothing renders.
     const live = new Map();
     this._liveLogs.add(live);
     try {
-      const data = await api.getVerifiedCHDs();
-      this.statuses.clear();
-      for (const path of data?.verified ?? []) this.statuses.add(path);
-      this.checks.clear();
-      for (const [path, check] of Object.entries(data?.checks ?? {})) {
-        this.checks.set(path, check);
+      if (paths) {
+        for (let i = 0; i < paths.length; i += LOOKUP_CHUNK) {
+          const chunk = paths.slice(i, i + LOOKUP_CHUNK);
+          const data = await api.getVerifiedFor(chunk);
+          // path -> its check; a path not here has no passing check now.
+          const passed = Object.create(null);
+          for (const path of data?.verified ?? []) {
+            passed[path] = data?.checks?.[path] ?? 'intact';
+          }
+          for (const path of chunk) this._write(path, passed[path] ?? null);
+        }
+      } else {
+        const data = await api.getVerifiedCHDs();
+        this.statuses.clear();
+        for (const path of data?.verified ?? []) this.statuses.add(path);
+        this.checks.clear();
+        for (const [path, check] of Object.entries(data?.checks ?? {})) {
+          this.checks.set(path, check);
+        }
       }
       // What happened while the request was out is newer than its answer.
       for (const [path, check] of live) this._write(path, check);
@@ -42,6 +66,11 @@ class VerificationStore {
     } finally {
       this._liveLogs.delete(live);
     }
+  }
+
+  /** Resolves once every check-run re-read in flight has landed. */
+  async pendingLookups() {
+    await Promise.all([...this._lookups]);
   }
 
   isVerified(path) {
@@ -103,6 +132,15 @@ class VerificationStore {
     for (const [path, check] of Object.entries(data?.verification_changes ?? {})) {
       if (check) this.markChecked(path, check);
       else this.forget(path);
+    }
+    // A check run's end lists the files it settled. Its progress events can
+    // be dropped on a busy stream, so the database answers for those files
+    // again; live events that land meanwhile still win (codex 4578664511).
+    const settled = data?.verification_paths;
+    if (Array.isArray(settled) && settled.length) {
+      const lookup = this.loadVerified(settled);
+      this._lookups.add(lookup);
+      lookup.finally(() => this._lookups.delete(lookup));
     }
   }
 

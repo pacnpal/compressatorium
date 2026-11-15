@@ -2281,6 +2281,37 @@ async def test_each_checked_images_verdict_is_published_as_it_settles(
     )
     (end,) = [e for e in events if e["type"] in ("complete", "error", "cancelled")]
     assert "verification_changes" not in end
+    # Codex 4578664511: the paths it settled, no verdicts, so a page that
+    # missed progress events re-reads them from the database.
+    assert end["verification_paths"] == [os.path.realpath(cove), os.path.realpath(bolt)]
+
+
+@pytest.mark.asyncio
+async def test_the_verified_lookup_answers_for_the_paths_asked(
+    tree: Path, monkeypatch,
+) -> None:
+    """The re-read a page makes after a check run: only the paths it asks for,
+    passing ones listed with their check, a failed or unknown one left out."""
+    from fastapi import HTTPException
+    from routes import info
+    from services.verification_store import verification_store
+
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tree))
+    aria, bolt, cove = (str(tree / "ps2" / f"{n}.chd") for n in ("Aria", "Bolt", "Cove"))
+    await verification_store.mark_verified(aria, produced_meta={"mode": "createcd"})
+    await verification_store.mark_verified(bolt)
+    await verification_store.mark_failed(bolt)
+    await verification_store.mark_verified(cove, check="round_tripped")
+
+    answer = await info.lookup_verified(info.VerifiedLookup(paths=[aria, bolt]))
+
+    assert answer == {"verified": [aria], "checks": {aria: "intact"}}
+    with pytest.raises(HTTPException):
+        await info.lookup_verified(
+            info.VerifiedLookup(paths=["x"] * (info.MAX_VERIFIED_LOOKUP + 1)),
+        )
 
 
 @pytest.mark.asyncio

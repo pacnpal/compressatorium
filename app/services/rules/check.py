@@ -493,6 +493,9 @@ async def _run_checks(
     failed: list[tuple[Check, str]] = []
     # The picked Images the run reached and settled, in any way.
     attempted: set[str] = set()
+    # The Verify records whose state it changed, in order: on the terminal
+    # event, so a page that missed a progress event re-reads them.
+    settled: list[str] = []
     cancelled = False
     try:
         for index, check in enumerate(picked):
@@ -514,12 +517,12 @@ async def _run_checks(
                     # file (its Source and producing mode): only a conversion
                     # replaces it.
                     await verification_store.refresh_check(check.record)
-                    await _publish(job_id, check, INTACT)
+                    await _publish(job_id, check, INTACT, settled)
                 elif verdict == NOT_INTACT:
                     # The Intact badge no longer holds, but what made the file
                     # stays, so the next check still reaches its tool.
                     await verification_store.mark_failed(check.record)
-                    await _publish(job_id, check, None)
+                    await _publish(job_id, check, None, settled)
                 return True
 
             try:
@@ -553,6 +556,7 @@ async def _run_checks(
         _outcomes[job_id] = {"counts": dict(counts), "cancelled": False, "crashed": True}
         await job_manager.finish_external_job(
             job_id, success=False, error_message="The check run stopped on an error",
+            event_extra={"verification_paths": settled},
         )
         return
     finally:
@@ -569,27 +573,40 @@ async def _run_checks(
     if cancelled:
         # Only the Rules whose Images were all reached count as run.
         await report(frozenset(attempted) if current() else frozenset())
-        await job_manager.finish_external_job_cancelled(job_id, message=f"Stopped: {summary}")
+        await job_manager.finish_external_job_cancelled(
+            job_id, message=f"Stopped: {summary}",
+            event_extra={"verification_paths": settled},
+        )
         return
     # The check Rules' runs, recorded for the Images their checks reached.
     await report(frozenset(attempted) if current() else frozenset())
     job = job_manager.get_job(job_id)
     if job is not None:
         job.message = summary
-    await job_manager.finish_external_job(job_id, success=True)
+    await job_manager.finish_external_job(
+        job_id, success=True, event_extra={"verification_paths": settled},
+    )
 
 
-async def _publish(job_id: str, check: Check, state: str | None) -> None:
+async def _publish(
+    job_id: str, check: Check, state: str | None, settled: list[str],
+) -> None:
     """Tell an open page about one Image's new check state, as it settles.
 
     On the run's own ``progress`` event, which the jobs stream forwards in
     order: the Verify record's path, as ``/api/verified`` lists it, with its
     check now, or None once it is no longer Intact. Sent per Image rather than
     as a batch at the end, so a later pass on that file (a repair and a
-    re-verify) is never overwritten by this run's older verdict.
+    re-verify) is never overwritten by this run's older verdict. A stream
+    that drops progress events (a full subscriber queue) is caught up by the
+    terminal event's ``verification_paths``, which the page re-reads from the
+    database (``/api/verified/lookup``).
     """
+    path = os.path.realpath(check.record)
+    if path not in settled:
+        settled.append(path)
     await job_manager.update_external_job(
-        job_id, event_extra={"verification_changes": {os.path.realpath(check.record): state}},
+        job_id, event_extra={"verification_changes": {path: state}},
     )
 
 
