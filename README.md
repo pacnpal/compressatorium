@@ -468,7 +468,9 @@ Nothing leaves the server until you add a destination. You get:
 - one message when a sweep finishes, with its counts and the space it saved;
   anything that failed inside the sweep is listed in that message, not sent
   separately;
-- one message when a job you started by hand fails.
+- one message when a job you started by hand fails;
+- one message when a [check Rule](#check-rules) finds Images that are not
+  Intact, listing them.
 
 A webhook gets a JSON `POST` with `event`, `title`, `message` and `data`. Use
 **Test** to send a sample message and see the error if it fails. Saved URLs are
@@ -689,6 +691,30 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
 
 The RomM view's **Automation** tab is the same Rules view, opened on RomM.
 
+### Check Rules
+
+A Rule with no target format checks Images instead of converting them. Pick
+**Check only** as a Platform's target in the Rules view, on a folder Library or
+on RomM, and set how much to read a night ("check 50 GB a night"), a time
+window and weekdays:
+
+- Once a night, inside the window, the Images never checked go first, then the
+  ones checked longest ago, until the budget is used. The budget counts an
+  Image's full size, every track. One Image larger than the whole budget is
+  still checked, on its own.
+- Each Image goes through its tool's own **Verify**, the same check as the
+  Verify action. A run is one job in the Jobs panel, and Cancel stops it.
+- An Image that fails becomes a **Not Intact** Finding, and the run sends one
+  notification listing every failure. A later check that passes clears the
+  Finding. Dismissing it hides it while the file stays the same.
+- A check that could not run (the tool is missing, it timed out, it was
+  cancelled) changes nothing: no Finding, and the Image stays as stale as it
+  was. An Image no installed tool can check on its Platform (a PS2 `.iso`) is
+  skipped and does not count against the budget.
+- **Preview** lists what tonight's run would check, and checks nothing.
+
+A check never converts, moves, renames or deletes anything.
+
 ### Findings and folder Platforms
 
 The **Findings** view (in the sidebar) lists every Image in a folder Library
@@ -699,6 +725,8 @@ that needs your decision:
   ngc").
 - **Unsorted**: nothing names the Image's Platform, or the file could not be
   read.
+- **Not Intact**: a [check Rule](#check-rules) found the Image fails its
+  tool's check (in a folder or RomM Library). It has no Set Platform action.
 
 Each row shows the Library, the Image, the kind, and when it was first and last
 seen, with three actions: **Open folder** shows it in the Workspace, **Set
@@ -973,6 +1001,14 @@ A folder registered as a Library, with the Platforms found in it, its Unsorted a
 | Light | Dark |
 |-------|------|
 | ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
+
+#### Check Rule
+
+A PS2 Platform given a check Rule: 50 GB a night between 01:00 and 05:00. See [Check Rules](#check-rules).
+
+| Light | Dark |
+|-------|------|
+| ![Check Rule in the rule editor, light](docs/screenshots/rule-editor-check-light.png) | ![Check Rule in the rule editor, dark](docs/screenshots/rule-editor-check-dark.png) |
 
 #### Findings
 

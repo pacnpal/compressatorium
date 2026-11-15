@@ -85,7 +85,7 @@
     const allowedModes = platform?.mode_ids;
     const out = [
       { value: '', label: 'Off — do not convert this platform' },
-      { value: CHECK_RULE, label: 'Check only — check the Images are Intact, convert nothing' },
+      { value: CHECK_RULE, label: 'Check only: check the Images are Intact, convert nothing' },
     ];
     for (const tool of registry.all()) {
       // No opinion from the backend (unknown slug, older server) keeps every

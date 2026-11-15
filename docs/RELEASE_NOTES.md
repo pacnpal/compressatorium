@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Check Rules** (#305). Pick **Check only** as a Platform's target in the
+  Rules view (folder Libraries and RomM) and set a nightly budget in GB, a
+  window and weekdays. Each night the Images never checked go first, then the
+  oldest checks, until the budget is used, and each goes through its tool's
+  own Verify as one job in the queue. An Image that fails becomes a **Not
+  Intact** Finding and the run sends one `check_failed` notification listing
+  the failures; a later pass clears the Finding. A check that could not run
+  changes nothing, and an Image no tool can check is skipped. Each Image's
+  last check time is kept in a new `image_checks` table (migration 0013).
+  Metadata scans, DAT matches and check runs no longer write Ledger rows.
 - **Findings view and folder Platforms** (#304). A new **Findings** view lists
   the Images in your folder Libraries that need a decision: a Platform
   conflict (the header disagrees with the folder) or an Unsorted Image. Each

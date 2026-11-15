@@ -171,7 +171,7 @@ async def _verify(check: Check, cancel_event: asyncio.Event | None) -> tuple[str
             )
         except asyncio.TimeoutError:
             return INCONCLUSIVE, "The check did not finish in time", {}
-        except Exception as exc:  # noqa: BLE001  no verdict from a check that broke
+        except Exception as exc:
             logger.warning(
                 "romm_auto: checking %s raised %s", check.path, type(exc).__name__,
                 exc_info=True,

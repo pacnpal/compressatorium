@@ -2873,6 +2873,84 @@ kind, url, label}]}`). The API (`routes/notifications.py`) returns only
 An edit that omits `url` keeps the stored one. Pending sweeps are in memory, so a
 restart mid-sweep drops that one message.
 
+### 3.3.16 Check Rules (`services/rules/check.py`, `services/image_checks.py`)
+
+A Rule with no target format is a check Rule (`rules.is_check_rule`).
+`normalize_rule` keeps it instead of dropping it, with `check_budget_gb`
+(1 to 1048576, default 50), the usual window, weekdays, timezone, priority and
+`enabled`, and `interval_minutes` fixed at `CHECK_INTERVAL_MINUTES` (a day): the
+budget is nightly. Its output folder is never read. It is stored like any Rule,
+under `"<library id>:<platform id>"`, so a Platform has either a conversion Rule
+or a check Rule.
+
+**Sweep.** `_sweep_locked` hands a check Rule to `_sweep_check` after the
+`enabled` and schedule gates. The per-sweep cap counts conversions only, so a
+check Rule ordered after a capped conversion Rule still runs. `_sweep_check`
+lists the Platform through the same bounded `_list_images` as a conversion,
+reads `image_checks.last_checked(library.id)`, and walks
+`check.stalest_first` (no row first, then the oldest `checked_at`, then the
+key). Each candidate's disk questions go through `check.inspect` on a detached,
+bounded thread, as a conversion candidate's do. It returns a skip reason
+(`unresolvable`, `missing`, `uncheckable`) or a `Check`: the Image key, path,
+size, the checking tool and the Image's file fingerprint. An Image already
+being checked (`check.in_flight`) or converted (the active-path set) is
+skipped. A tool that is not ready skips its Images and reports
+`tool_not_ready`; it never yields a verdict. Images are taken stalest first
+until the next would pass `check_budget_gb`; the first is always taken, so one
+Image larger than the budget is checked alone rather than never. Skipped
+Images cost nothing. The Platform summary carries `check: true`, `checks`,
+`check_bytes`, `budget_bytes`, `skipped_uncheckable` and `candidates`; the
+result gains `checks` only when a check Rule ran, so a conversion sweep keeps
+its shape. A preview stops there.
+
+**Which tool.** `ToolRegistry.check_tool(path, slug)` is the first tool from
+`tools_verifying_path(path)` left after `narrow_to_platform(slug)`. A PS2 `.iso`
+is not given to dolphin-tool for sharing GameCube's extension; with nothing
+left the Image is uncheckable. No per-tool branching: a new tool's
+`verify_extensions`, `verifies_path` and `platform_slugs` are all a check needs.
+
+**Run.** A real sweep passes everything every check Rule picked to
+`check.start` once, after its loop, so a sweep is one run, one external job
+(`ConversionMode.CHECK`, in `_EXTERNAL_JOB_MODES`) and at most one
+notification. The run goes through each Image in order: `tool.verify(path,
+cancel_event)` on the `verify` workload lane, bounded by
+`tool.verify_timeout(path)`, the same call, lane and bound as the Verify
+action. `check.outcome(result)` reads it:
+
+| Result | Outcome | Writes |
+|---|---|---|
+| `valid` | Intact | `image_checks` row (`intact`), `verification_store.mark_verified`, `findings.resolve(not_intact)` |
+| not `valid` | not Intact | `image_checks` row (`not_intact`), `verification_store.clear`, `findings.observe(not_intact)` |
+| `inconclusive` or `abandoned` flag, a timeout, an exception from the tool | inconclusive | nothing |
+| `cancelled` | the run stops | nothing for that Image |
+
+An `abandoned` result also stops the run, as a batch Verify does. Cancel on the
+job sets its cancel event, which the running verify honours. Every write is
+guarded by the Library's generation (`sweep.library_generation`), so a Library
+removed mid-run gets no rows, and `libraries.remove` drops its `image_checks`
+rows with its Findings. The job ends with "N Intact, M not Intact".
+
+**Findings.** `findings.NOT_INTACT` rows are written one Image at a time with
+`findings.observe` (an upsert on `reconcile`'s terms, sharing its `_upsert`) and
+`findings.resolve` (delete the row, keep its dismissal). `KINDS`, what a folder
+walk reconciles, does not include it: a walk sees every Image, a check only a
+few. The cause is `{tool, files}` (the file fingerprint when picked), so a
+dismissal holds while the file is unchanged and a changed file that still fails
+is shown again.
+
+**Notification.** `check.py` registers `check_failed` with
+`notifications.register_event`. A run with failures sends one `Event` listing
+up to `MAX_LISTED_FAILURES` of them, with `data = {library_id, failed: [{image,
+path, error}]}`, through `notifications.notify`. The run's job is external, so
+the sweep's own `sweep_finished` message does not count it.
+
+**Ledger.** `ledger.record` skips external jobs (`job_manager.is_external_mode`):
+a metadata scan, a DAT match or a check run converts nothing.
+
+**Not yet.** #306's `claims_check` and `verify_exception_event` are not on this
+branch. Once they land, `check_tool` should read `tools_checking_path`, and the
+`inconclusive` flag those helpers set is already what `outcome` reads.
+
 ### 3.4 `registry.py`
 
 ```python
