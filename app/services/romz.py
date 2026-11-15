@@ -245,19 +245,42 @@ class RomzService:
     def claims_for_verify(cls, archive_path: str) -> bool:
         """Whether a check of ``archive_path`` belongs to romz (#306).
 
-        Only a readable archive that is plainly not a single-ROM one (no ROM,
-        or more than one file) is someone else's. An archive that cannot be
-        read, or that the single-ROM rules reject for another reason, is
-        claimed, so the check runs and reports it: a truncated ``.gba.zip``
-        must fail, not go unchecked. The listing's ``is_single_rom_archive``
+        The one place romz classifies an archive for a verify run. The shape
+        is decided first, from the raw member listing and before any safety
+        rule: an archive that reads and is plainly not a single-ROM archive
+        (no ROM, more than one file, thousands of members, a symlink or ``..``
+        beside other files, an encrypted header romz never writes) is someone
+        else's (``NotSingleRomArchive``) and is skipped as unsupported. One
+        that cannot be read or decoded (truncated, a bad zip, a CRC or LZMA
+        error) is claimed, and so is a single-ROM archive a safety rule rejects:
+        the check runs and fails it. The listing's ``is_single_rom_archive``
         stays strict.
         """
         try:
-            cls._single_rom_member(archive_path)
+            cls._single_rom_shape(archive_path)
         except NotSingleRomArchive:
             return False
-        except Exception:  # noqa: BLE001 - unreadable or rejected: the check fails it
+        except Exception:  # noqa: BLE001 - unreadable: the check runs and fails it
             return True
+        return True
+
+    @classmethod
+    def _single_rom_shape(cls, archive_path: str) -> None:
+        """Raise ``NotSingleRomArchive`` unless the archive looks single-ROM.
+
+        Reads the member listing only (no limits, no traversal or symlink
+        rules); a read or decode error propagates as itself.
+        """
+        try:
+            members = read_archive_members(archive_path)
+        except Exception as exc:
+            if type(exc).__name__ == "PasswordRequired":
+                # An encrypted header: romz never writes one.
+                raise NotSingleRomArchive("Archive is encrypted") from exc
+            raise
+        files = [(m.name, int(m.size or 0)) for m in members if not m.is_dir]
+        if cls._resolve_single_rom(files) is None:
+            raise NotSingleRomArchive("Archive is not a single-ROM archive")
         return True
 
     @staticmethod

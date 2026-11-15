@@ -1213,3 +1213,89 @@ def test_a_dry_run_leaves_the_legacy_store_alone(volume, dolphin, capsys):
     assert code == 0
     assert legacy.exists()
     assert not Path(settings.db_path).exists()
+
+
+
+# --------------------------------------------------------------------------- #
+# Review r7: what romz claims, stored-check routing, unknown Platforms
+# --------------------------------------------------------------------------- #
+
+
+def _stub_7z_passes(monkeypatch):
+    calls = []
+
+    async def seven_zip_passes(cmd, *, path, success_message, **kwargs):
+        calls.append(path)
+        yield {"type": "complete", "valid": True, "message": success_message}
+
+    monkeypatch.setattr(registry.get("romz")._service._runner, "capture_verify",
+                        seven_zip_passes)
+    return calls
+
+
+def test_healthy_archives_that_are_not_rom_archives_are_not_checked(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """r7 I1: a big texture pack, a zip with a symlink, a zip with a `..` member
+    are plainly not single-ROM archives: skipped, never failed."""
+    _stub_7z_passes(monkeypatch)
+    misc = volume / "misc"
+    misc.mkdir()
+    with zipfile.ZipFile(misc / "Textures.zip", "w") as zf:
+        for i in range(5001):
+            zf.writestr(f"t/{i}.png", b"x")
+    with zipfile.ZipFile(misc / "Tools.zip", "w") as zf:
+        zf.writestr("readme.txt", b"x")
+        link = zipfile.ZipInfo("link")
+        link.external_attr = 0o120777 << 16
+        zf.writestr(link, "readme.txt")
+        zf.writestr("bin/tool", b"y")
+    with zipfile.ZipFile(misc / "Patch.zip", "w") as zf:
+        zf.writestr("../escape.txt", b"x")
+        zf.writestr("other.txt", b"y")
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    assert (code, lines) == (0, [])
+    for name in ("Textures.zip", "Tools.zip", "Patch.zip"):
+        code, lines = _cli(capsys, "verify", str(misc / name), "--json")
+        assert code == 0, name
+        assert lines[0]["status"] == "skipped", name
+
+
+def test_a_7z_with_an_encrypted_header_is_not_a_rom_archive(
+    volume, dolphin, capsys, monkeypatch,
+):
+    py7zr = pytest.importorskip("py7zr")
+    _stub_7z_passes(monkeypatch)
+    misc = volume / "misc"
+    misc.mkdir()
+    for name in ("a.txt", "b.txt"):
+        (misc / name).write_bytes(b"x")
+    archive = misc / "Private.7z"
+    with py7zr.SevenZipFile(archive, "w", password="pw", header_encryption=True) as z:
+        z.write(misc / "a.txt", "a.txt")
+        z.write(misc / "b.txt", "b.txt")
+    (misc / "a.txt").unlink()
+    (misc / "b.txt").unlink()
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert (code, lines) == (0, [])
+
+
+def test_a_single_rom_archive_with_an_unsafe_junk_member_is_claimed_and_fails(
+    volume, dolphin, capsys, monkeypatch,
+):
+    _stub_7z_passes(monkeypatch)
+    archive = volume / "gba" / "Game.gba.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("Game.gba", b"rom" * 64)
+        zf.writestr("__MACOSX/../../victim.gba", b"x")
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1
+    assert [(Path(line["path"]).name, line["status"]) for line in lines] == [
+        ("Game.gba.zip", "failed"),
+    ]
