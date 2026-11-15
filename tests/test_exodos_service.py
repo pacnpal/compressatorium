@@ -329,3 +329,53 @@ def test_a_cancelled_verify_reaches_no_verdict(tree):
     result = _verify(service, output, cancel)
 
     assert result.get("cancelled") is True
+
+
+# --- the job's own check ---------------------------------------------------
+
+
+def test_dosbox_conf_is_the_first_entry(tree):
+    service = ExodosService()
+    source = _game_zip(tree)
+    output = service.get_output_path(source)
+
+    _convert(service, source, output)
+
+    with zipfile.ZipFile(output) as zf:
+        assert zf.namelist()[0] == "dosbox.conf"
+
+
+def test_a_product_that_fails_its_check_is_never_kept(tree, monkeypatch):
+    """Every repack checks its own output before reporting success."""
+    service = ExodosService()
+    source = _game_zip(tree)
+    before = Path(source).read_bytes()
+    output = service.get_output_path(source)
+    real_check = ExodosService._check_product
+
+    def corrupt_then_check(self, path):
+        with open(path, "r+b") as handle:
+            handle.truncate(os.path.getsize(path) // 2)
+        return real_check(self, path)
+
+    monkeypatch.setattr(ExodosService, "_check_product", corrupt_then_check)
+
+    with pytest.raises(RuntimeError, match="failed its own check"):
+        _convert(service, source, output)
+
+    assert sorted(os.listdir(tree["games"])) == ["!dos", "Abaron (1995).zip"]
+    assert Path(source).read_bytes() == before
+
+
+def test_repacking_twice_gives_the_same_bytes(tree, tmp_path):
+    service = ExodosService()
+    source = _game_zip(tree)
+    first = service.get_output_path(source)
+    second_dir = tree["volume"] / "again"
+    second_dir.mkdir()
+    second = service.get_output_path(source, str(second_dir))
+
+    _convert(service, source, first)
+    _convert(service, source, second)
+
+    assert Path(first).read_bytes() == Path(second).read_bytes()

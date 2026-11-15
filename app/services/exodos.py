@@ -321,6 +321,10 @@ class ExodosService:
             rewrite_zip, input_path, output_path,
             rename=rename,
             add={self.profile.conf_name: rewrite.data},
+            # The same CRC and structure check Verify runs, on the finished
+            # temp file: a product that fails it is never placed, so the job
+            # fails and leaves no output. The Source is only ever read.
+            check=self._own_check,
             is_cancelled=is_cancelled,
             on_progress=on_progress,
         ))
@@ -387,6 +391,14 @@ class ExodosService:
             yield {"type": "error", "valid": False, "message": str(exc)}
             return
         yield {"type": "complete", "valid": True, "message": "File is Intact"}
+
+    def _own_check(self, path: str) -> None:
+        try:
+            self._check_product(path)
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            raise RuntimeError(
+                f"The repacked file failed its own check, so it was not kept: {exc}",
+            ) from exc
 
     def _check_product(self, path: str) -> None:
         with zipfile.ZipFile(path) as zf:
