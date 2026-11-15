@@ -49,7 +49,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from services.lock_manager import LockWaitTimeout, lock_manager
-from utils.path_utils import FileIdentity, file_identity, lock_boundary_root, same_identity
+from utils.path_utils import (
+    FileIdentity,
+    file_identity,
+    lock_boundary_root,
+    same_identity,
+)
 
 from .base import (
     Referrer,
