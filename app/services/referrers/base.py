@@ -22,7 +22,7 @@ import os
 import tempfile
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -144,13 +144,21 @@ def _keep_owner(tmp: str, original: os.stat_result) -> None:
         ) from exc
 
 
-def atomic_write_bytes(path: str, data: bytes, *, like: str | None = None) -> None:
+def atomic_write_bytes(
+    path: str, data: bytes, *, like: str | None = None,
+    guard: Callable[[], None] | None = None,
+) -> None:
     """Replace *path* with *data* so a crash leaves the old file or the new one.
 
     Writes a temp file in the same directory, fsyncs it and renames it over
     *path*. The permission bits and group (and owner, when running as root)
     come from *like* when given, else from the file being replaced; a group
     that can't be kept aborts the write. A new file with neither gets 0644.
+
+    *guard* runs once the temp file is fully written and synced, immediately
+    before it is published. If it raises, the temp file is removed and the
+    error propagates, so nothing is published (a write that stalled in fsync
+    while its caller gave up must not land afterwards).
     """
     directory = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(
@@ -172,6 +180,8 @@ def atomic_write_bytes(path: str, data: bytes, *, like: str | None = None) -> No
         if original is not None:
             _keep_owner(tmp, original)
         os.chmod(tmp, original.st_mode & 0o7777 if original is not None else 0o644)
+        if guard is not None:
+            guard()
         os.replace(tmp, path)
     except BaseException:
         with suppress(OSError):
