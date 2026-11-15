@@ -529,8 +529,9 @@ def test_an_entry_that_cannot_reach_the_output_keeps_the_source(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le"])
-async def test_a_utf16_playlist_naming_the_source_keeps_it(tmp_path, encoding):
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+async def test_a_bomless_utf16_playlist_naming_the_source_keeps_it(tmp_path, encoding):
+    """UTF-16 with no BOM can't be detected safely: the fail-safe stays."""
     _disc(tmp_path, "Game.cue")
     playlist = tmp_path / "Game.m3u"
     data = "Game.cue\n".encode(encoding)
@@ -541,6 +542,144 @@ async def test_a_utf16_playlist_naming_the_source_keeps_it(tmp_path, encoding):
     assert not outcome.ok
     assert outcome.failed == str(playlist)
     assert playlist.read_bytes() == data
+
+
+_UTF16_WITH_BOM = {"utf-16-le": b"\xff\xfe", "utf-16-be": b"\xfe\xff"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
+@pytest.mark.parametrize("newline", ["\r\n", "\n"], ids=["crlf", "lf"])
+@pytest.mark.parametrize("disc", ["Game (Disc 1)", "Pokémon (Disc 1)"], ids=["ascii", "accent"])
+async def test_a_utf16_playlist_with_a_bom_is_rewritten_in_its_own_encoding(
+    tmp_path, codec, newline, disc,
+):
+    """#334: a UTF-16 playlist with a BOM is rewritten like a UTF-8 one, and
+    its encoding, BOM and line endings come back byte for byte."""
+    _disc(tmp_path, f"{disc}.cue")
+    _disc(tmp_path, "Game (Disc 2).cue")
+    playlist = tmp_path / "Game.m3u"
+
+    def render(first: str) -> bytes:
+        text = newline.join(["#EXTM3U", first, "Game (Disc 2).cue", ""])
+        return _UTF16_WITH_BOM[codec] + text.encode(codec)
+
+    playlist.write_bytes(render(f"{disc}.cue"))
+
+    outcome = await _replace(tmp_path, f"{disc}.cue", f"{disc}.chd")
+
+    assert outcome.ok, outcome.reason
+    assert playlist.read_bytes() == render(f"{disc}.chd")
+    assert (tmp_path / "Game.m3u.bak").read_bytes() == render(f"{disc}.cue")
+
+
+@pytest.mark.asyncio
+async def test_a_utf16_comment_doesnt_hide_an_appended_8_bit_entry(tmp_path):
+    """Codex's repro: the UTF-16 part only mentions the Source in a comment;
+    the appended 8-bit line is a real entry that a line reader follows. The
+    UTF-16 entries don't reach it, so the Source is kept."""
+    _disc(tmp_path, "Game.cue")
+    playlist = tmp_path / "Game.m3u"
+    data = "# Game.cue\n".encode("utf-16") + b"\nGame.cue\n"
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_an_appended_8_bit_entry_survives_no_rewrite_of_the_utf16_part(tmp_path):
+    """Codex's repro: the UTF-16 part has a real entry for the Source and an
+    8-bit copy is appended. Rewriting the UTF-16 entry would leave the 8-bit
+    one pointing at the deleted Source, so the result is read back every way
+    and the Source is kept."""
+    _disc(tmp_path, "Game.cue")
+    playlist = tmp_path / "Game.m3u"
+    data = "#EXTM3U\nGame.cue\n".encode("utf-16") + b"\nGame.cue\n"
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["A|B.cue", '"Game.cue"'], ids=["label-like", "quoted"])
+async def test_an_appended_8_bit_line_is_read_every_way_a_player_reads_it(tmp_path, name):
+    """Codex's repro: a Source literally named ``A|B.cue`` (or ``"Game.cue"``)
+    in an appended 8-bit line. The label/quote reading cuts it short, but a
+    plain line reader reaches the Source, so it is kept."""
+    try:
+        _disc(tmp_path, name)
+    except OSError:
+        pytest.skip("the filesystem refuses this name")
+    playlist = tmp_path / "Game.m3u"
+    data = "#EXTM3U\n".encode("utf-16") + f"\n{name}\n".encode()
+    if len(data) % 2:
+        data += b"\n"  # even length, so the whole file still decodes as UTF-16
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, name, "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
+async def test_a_leading_feff_in_the_first_utf16_entry_is_part_of_its_name(tmp_path, codec):
+    """After the BOM, a first filename that itself starts with U+FEFF names a
+    different file. Converting Game.cue must leave that entry alone."""
+    _disc(tmp_path, "Game.cue")
+    _disc(tmp_path, "﻿Game.cue")
+    playlist = tmp_path / "Game.m3u"
+    data = _UTF16_WITH_BOM[codec] + "﻿Game.cue\r\n".encode(codec)
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok, outcome.reason
+    assert outcome.updated == []
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
+async def test_a_utf16_entry_after_a_comment_naming_it_is_rewritten(tmp_path, codec):
+    """A genuine UTF-16 reference is still rewritten, comment or not."""
+    _disc(tmp_path, "Game.cue")
+    playlist = tmp_path / "Game.m3u"
+
+    def render(entry: str) -> bytes:
+        return _UTF16_WITH_BOM[codec] + f"# Game.cue\r\n{entry}\r\n".encode(codec)
+
+    playlist.write_bytes(render("Game.cue"))
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok, outcome.reason
+    assert playlist.read_bytes() == render("Game.chd")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
+async def test_a_utf16_playlist_with_a_bom_not_naming_the_source_is_untouched(
+    tmp_path, codec,
+):
+    _disc(tmp_path, "Game.cue")
+    other = tmp_path / "Other.m3u"
+    data = _UTF16_WITH_BOM[codec] + "Other.cue\r\n".encode(codec)
+    other.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok
+    assert outcome.updated == []
+    assert other.read_bytes() == data
+    assert not (tmp_path / "Other.m3u.bak").exists()
 
 
 @pytest.mark.asyncio
