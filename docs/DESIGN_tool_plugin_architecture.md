@@ -3108,7 +3108,17 @@ folder above the key, up to its Volume root), so `GAME/new.rvz ->
 conflict releases every key taken. The dispatch probe
 (`JobManager._blocked_by_dir_lock`) asks the same thing through
 `output_folder_locked_above`, over the same `_output_keys` list (codex
-4577847011). Every output lock goes through this, the CLI's jobs included (they use
+4577847011).
+A split build (folder_to_iso `-s`) locks only its logical output
+(`Game.iso`) and writes its numbered parts as it goes, with no lock file of
+their own. So every guard about to mutate a path (the web's rename and delete,
+`_assert_path_not_in_use`, and the job's delete check, `_check_delete_paths`)
+asks one helper, `services.mutation_guard.locked_for_mutation`: the path's
+own lock, and for a numbered part the lock on its owner, found by name
+(`registry.split_owner_name`: a numeric last suffix on a name carrying a
+mode's output extension, so `save.0` never qualifies). A part made after the
+lock was taken (`Game.iso.3`) is covered too (codex 4577940381). The
+in-process `_split_output_blocks` stays as the same-process check. Every output lock goes through this, the CLI's jobs included (they use
 the same job manager), and companion outputs too.
 The identity is filesystem bytes: `_lock_file_path` hashes
 `os.fsencode(realpath)` and the recorded path is written with `os.fsencode`
