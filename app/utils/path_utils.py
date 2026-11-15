@@ -580,7 +580,7 @@ class FileIdentity(NamedTuple):
     realpath: str
 
 
-def file_identity(path: str) -> Optional[FileIdentity]:
+def file_identity(path: str) -> FileIdentity | None:
     """*path*'s identity (following links), or None if it can't be stat'ed."""
     try:
         st = os.stat(path)
@@ -591,7 +591,7 @@ def file_identity(path: str) -> Optional[FileIdentity]:
     )
 
 
-def same_identity(a: Optional[FileIdentity], b: Optional[FileIdentity]) -> bool:
+def same_identity(a: FileIdentity | None, b: FileIdentity | None) -> bool:
     """Whether two identities are the same, unchanged file.
 
     Size and ``mtime_ns`` must always match, so a file rewritten in place
@@ -614,7 +614,7 @@ def same_file(a: str, b: str) -> bool:
     return same_identity(file_identity(a), file_identity(b))
 
 
-def volume_root_for(path: str) -> Optional[str]:
+def volume_root_for(path: str) -> str | None:
     """The resolved root of the configured Volume holding *path*, or None.
 
     With nested Volumes the outermost one wins: both are Volumes the user
@@ -624,7 +624,7 @@ def volume_root_for(path: str) -> Optional[str]:
     real_path = _resolve_path(path, strict=False)
     if real_path is None:
         return None
-    best: Optional[Path] = None
+    best: Path | None = None
     for volume in settings.volumes:
         real_volume = _resolve_volume(volume)
         if real_volume is None:
