@@ -479,18 +479,30 @@ def test_a_cue_naming_an_accented_track_is_followed(tmp_path, encode):
     assert detect_platform(cue).platform == "saturn"
 
 
-@pytest.mark.parametrize("track_name", ["game.bin", "Game (Track 1).bin"])
-def test_an_unquoted_saturn_cue_is_followed(tmp_path, track_name):
+def test_an_unquoted_saturn_cue_is_followed(tmp_path):
     from services.tools import registry
 
     folder = tmp_path / "downloads"
-    track = _sector0(folder / track_name, b"SEGA SEGASATURN ", raw=True)
-    cue = _write(
-        folder / "game.cue", f"FILE {track_name} BINARY\n  TRACK 01 MODE1/2352\n".encode(),
-    )
+    track = _sector0(folder / "game.bin", b"SEGA SEGASATURN ", raw=True)
+    cue = _write(folder / "game.cue", b"FILE game.bin BINARY\n  TRACK 01 MODE1/2352\n")
 
     assert detect_platform(cue).platform == "saturn"
     assert registry.get("chdman").header_reads(cue) == [track]
+
+
+def test_an_unquoted_name_with_spaces_is_read_as_chdman_reads_it(tmp_path):
+    # chdman's tokenizer splits on the space: it opens "Game", not the whole
+    # name, so the probe follows the same (missing) file and says nothing.
+    from services.tools import registry
+
+    folder = tmp_path / "downloads"
+    _sector0(folder / "Game (Track 1).bin", b"SEGA SEGASATURN ", raw=True)
+    cue = _write(
+        folder / "game.cue", b"FILE Game (Track 1).bin BINARY\n  TRACK 01 MODE1/2352\n",
+    )
+
+    assert registry.get("chdman").header_reads(cue) == [str(folder / "Game")]
+    assert detect_platform(cue).platform is None
 
 
 def test_a_cp1252_cue_lists_its_accented_track_and_is_cached(tmp_path):
