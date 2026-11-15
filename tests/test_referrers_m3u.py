@@ -417,7 +417,9 @@ async def test_cancel_frees_the_slot_while_a_playlist_read_hangs(volume, monkeyp
         assert job.referrers_updated and job.referrers_updated[0]["status"] == "failed"
     finally:
         release.set()
-        await asyncio.to_thread(finished.wait, 10)
+        assert await asyncio.to_thread(finished.wait, 10), (
+            "the abandoned Referrer worker didn't finish within 10 s of release"
+        )
 
     assert (volume / "Game (Disc 1).cue").is_file()
 
