@@ -2773,9 +2773,16 @@ belongs to the converted Image. `utils.delete_plan.archive_members_beyond_image`
 lists the rest: the owned set is the member itself, the tracks its sheet names
 (the sheet is extracted to a temp dir and each reference resolved with
 `resolve_track`, confined there, in every spelling the sheet reads as), and its
-`source_companions` split parts (by name, against the archive's names laid out
-as empty files). A directory entry counts only when nothing owned lives under
-it. Everything else, of any type and junk included, is an extra; there is no
+`source_companions` split parts. Before anything is created from any member
+name, every name must pass the shared extraction validator
+(`ArchiveService._validate_member`: absolute, `..`, a drive letter, a
+backslash, a NUL) and no member may be a symlink; otherwise the archive is
+kept and the summary names those members. Only then is the sheet extracted
+(which validates its destination again), and only then, for the registry's
+on-disk split-part lookup, are the validated names laid out as empty files in
+a fresh temp root, each through `_prepare_destination`, which checks by real
+path that it stays inside that root. A directory entry counts only when
+nothing owned lives under it. Everything else, of any type and junk included, is an extra; there is no
 list of harmless sidecars. An archive or sheet that can't be read counts as an
 extra (the archive's own name). The error and the CLI line name the first three
 (`describe_extras`).

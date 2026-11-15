@@ -1852,3 +1852,38 @@ def test_an_xiso_outside_an_xbox_folder_goes_to_xiso(volume):
 
     assert unsupported is None
     assert tool is not None and tool.id == "xiso"
+
+
+def test_an_archive_with_an_unsafe_member_is_kept_and_nothing_is_written(
+    volume, dolphin, capsys, tmp_path,
+):
+    """codex 4577029535: a member named ``../outside-...`` keeps the archive,
+    exit 1, and no file is created from its name anywhere."""
+    import tempfile
+    import uuid
+
+    escape = f"../outside-{uuid.uuid4().hex}"
+    pack = volume / "gc" / "pack.zip"
+    pack.parent.mkdir()
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 512)
+        zf.writestr(escape, b"payload")
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert code == 1, lines
+    assert pack.exists()
+    line = next(x for x in lines if x["path"].endswith("::Game.iso"))
+    assert escape in line["reason"]
+    for root in (tempfile.gettempdir(), str(volume), str(volume / "gc"), str(tmp_path)):
+        assert not os.path.exists(os.path.join(root, escape[3:])), root
+
+
+def test_the_extraction_validator_refuses_a_nul_in_a_member_name():
+    from services.archive import archive_service
+
+    with pytest.raises(ValueError, match="NUL"):
+        archive_service._validate_member("Game\x00.iso")

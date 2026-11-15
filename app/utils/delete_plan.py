@@ -52,14 +52,39 @@ def sheet_track_paths(sheet_path: str) -> list[str]:
     return [str(track) for track in tracks] if tracks else []
 
 
+def _unsafe_member_reason(entry) -> str | None:
+    """Why an archive member's name or kind is unsafe, or None.
+
+    The shared extraction validator (``ArchiveService._validate_member``:
+    absolute, ``..``, empty or ``.`` segments, a drive letter, a backslash, a
+    NUL) plus symlink entries. A directory entry is checked without its
+    trailing slash.
+    """
+    from services.archive import archive_service
+
+    if entry.is_symlink:
+        return "a symlink"
+    name = entry.name.rstrip("/") if entry.is_dir else entry.name
+    try:
+        archive_service._validate_member(name)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def _image_members(archive: str, member: str, names: set[str]) -> set[str]:
     """The members that belong to the Image ``member``: itself, the tracks its
     sheet names, and its split parts. Raises when the sheet can't be read.
 
-    The sheet is extracted to a temp dir and its references resolved there
-    through ``resolve_track``, confined to that dir, so a ``..`` or absolute
-    reference names nothing in the archive. Split parts come from the
-    registry's ``source_companions``, by name, against the same temp layout.
+    Called only once every member name has passed the extraction validator
+    (``archive_members_beyond_image``). Tracks: the sheet alone is extracted
+    (``ArchiveService.extract_file``, which validates its destination) and its
+    references resolved with ``resolve_track`` confined to that temp dir; a
+    track is matched by name, nothing is created for it. Split parts: the
+    registry's ``source_companions`` looks for siblings on disk, so the
+    validated names are laid out as empty files inside a fresh temp root, each
+    through ``ArchiveService._prepare_destination`` (validated, and checked by
+    real path to stay inside that root).
     """
     import shutil
     import tempfile
@@ -69,38 +94,36 @@ def _image_members(archive: str, member: str, names: set[str]) -> set[str]:
 
     owned = {member}
     parent = posixpath.dirname(member)
+    if posixpath.splitext(member)[1].lower() in {".cue", ".gdi"}:
+        extracted, temp_dir = archive_service.extract_file(archive, member)
+        try:
+            parse = cue_tracks if member.lower().endswith(".cue") else _gdi_tracks_from_text
+            # Every spelling of the sheet (chdman opens one of them).
+            refs = [ref for text in _read_sheet(Path(extracted)) for ref in parse(text)]
+            sheet_dir = os.path.dirname(extracted)
+            for ref in refs:
+                try:
+                    track = resolve_track(sheet_dir, ref, within=[temp_dir])
+                except ValueError:
+                    continue  # names nothing in the archive
+                rel = os.path.relpath(str(track), sheet_dir).replace(os.sep, "/")
+                owned.add(posixpath.normpath(posixpath.join(parent, rel)))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
     temp_root = tempfile.mkdtemp(prefix="delete-plan-")
     try:
-        if posixpath.splitext(member)[1].lower() in {".cue", ".gdi"}:
-            extracted, temp_dir = archive_service.extract_file(archive, member)
-            try:
-                parse = cue_tracks if member.lower().endswith(".cue") else _gdi_tracks_from_text
-                # Every spelling of the sheet (chdman opens one of them).
-                refs = [ref for text in _read_sheet(Path(extracted)) for ref in parse(text)]
-                sheet_dir = os.path.dirname(extracted)
-                for ref in refs:
-                    try:
-                        track = resolve_track(sheet_dir, ref, within=[temp_dir])
-                    except ValueError:
-                        continue  # names nothing in the archive
-                    rel = os.path.relpath(str(track), sheet_dir).replace(os.sep, "/")
-                    owned.add(posixpath.normpath(posixpath.join(parent, rel)))
-            finally:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-        # Split parts: lay the member names out as empty files, so the
-        # registry's name math sees the same siblings the archive holds.
         for name in names:
             if name.endswith("/"):
                 continue
-            target = os.path.join(temp_root, *name.split("/"))
             try:
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                open(target, "ab").close()
-            except OSError:
+                target = archive_service._prepare_destination(temp_root, name)
+                with open(target, "xb"):
+                    pass
+            except (OSError, ValueError):
                 continue
         for part in registry.source_companions(os.path.join(temp_root, *member.split("/"))):
-            rel = os.path.relpath(part, temp_root).replace(os.sep, "/")
-            owned.add(posixpath.normpath(rel))
+            rel = os.path.relpath(os.path.realpath(part), os.path.realpath(temp_root))
+            owned.add(posixpath.normpath(rel.replace(os.sep, "/")))
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
     return owned
@@ -121,9 +144,11 @@ def archive_members_beyond_image(source_path: str) -> List[str]:
     (#306, review r9 C1). Anything else keeps the archive, whatever its type:
     another disc, a ROM, a loose ``.bin``, a nested archive, a PS3 folder, a
     ``readme.txt``, junk. There is no list of harmless sidecars. A directory
-    entry counts only when nothing of the Image lives under it. An archive or
-    sheet that can't be read answers with the archive's own name, so the plan
-    refuses. Empty for a plain file.
+    entry counts only when nothing of the Image lives under it. A member whose
+    name or kind is unsafe (``_unsafe_member_reason``) keeps the archive too,
+    and nothing is created from any name until every one has passed. An
+    archive or sheet that can't be read answers with the archive's own name,
+    so the plan refuses. Empty for a plain file.
     """
     if "::" not in source_path:
         return []
@@ -132,10 +157,18 @@ def archive_members_beyond_image(source_path: str) -> List[str]:
 
     try:
         members = read_archive_members(archive)
-        names = {m.name + ("/" if m.is_dir and not m.name.endswith("/") else "")
-                 for m in members}
-        owned = _image_members(archive, member, names)
     except Exception:  # noqa: BLE001 - unknown contents: keep the archive
+        return [os.path.basename(archive)]
+    # Fail closed on a name or kind the extraction validator refuses, before
+    # anything is created from any name (codex 4577029535).
+    unsafe = [m.name for m in members if _unsafe_member_reason(m)]
+    if unsafe:
+        return unsafe
+    names = {m.name + ("/" if m.is_dir and not m.name.endswith("/") else "")
+             for m in members}
+    try:
+        owned = _image_members(archive, member, names)
+    except Exception:  # noqa: BLE001 - an unreadable sheet: keep the archive
         return [os.path.basename(archive)]
     owned_dirs = set()
     for name in owned:
