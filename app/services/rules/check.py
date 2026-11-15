@@ -167,15 +167,25 @@ def _let_go(held: list[str]) -> None:
         lock_manager.release_input_lock(path)
 
 
-async def _take(check: Check) -> list[str] | None:
+class _LockFailed:
+    """Taking the Image's locks raised (the lock dir, a path the lock manager
+    cannot encode): the check cannot run, which is no verdict on the Image."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.message = f"The Image could not be locked for the check ({type(error).__name__})"
+
+
+async def _take(check: Check) -> list[str] | None | _LockFailed:
     """:func:`_hold` off the loop, bounded and safe to cancel.
 
     On a detached thread, bounded by ``_RECHECK_SECONDS``: taking the locks
     resolves the path and walks its folders, and a mount that stops answering
     must cost this Image, not the run. None when the locks did not come in
-    time (the Image is skipped). If the caller gives up (the bound, or a task
-    cancel) while the thread is still taking them, the thread lets go of them
-    itself when it finishes; if it had already finished, they go here.
+    time (the Image is skipped), a :class:`_LockFailed` when taking them raised
+    (whatever was taken is already released). If the caller gives up (the
+    bound, or a task cancel) while the thread is still taking them, the thread
+    lets go of them itself when it finishes; if it had already finished, they
+    go here.
     """
     guard = threading.Lock()
     state: dict[str, Any] = {"abandoned": False, "held": None}
@@ -200,6 +210,12 @@ async def _take(check: Check) -> list[str] | None:
             _let_go(held)
         if isinstance(exc, asyncio.TimeoutError):
             return None
+        if isinstance(exc, Exception):
+            logger.warning(
+                "romm_auto: locking %s for a check raised %s", check.path,
+                type(exc).__name__, exc_info=True,
+            )
+            return _LockFailed(exc)
         raise
 
 
@@ -442,6 +458,10 @@ async def _check_one(
         held = await _take(check)
         if held is None:
             return SKIPPED, "", False, False
+        if isinstance(held, _LockFailed):
+            # No verdict, and nothing is locked: an attempt time only.
+            written = await persist(INCONCLUSIVE, held.message) if persist else False
+            return INCONCLUSIVE, held.message, False, written
         try:
             try:
                 same = await asyncio.wait_for(

@@ -1232,7 +1232,10 @@ def test_a_not_intact_finding_beside_other_files_is_cleared(db: Path) -> None:
 async def test_a_lock_that_fails_part_way_lets_go_of_the_others(
     tree: Path, ready, verifier, sent, monkeypatch,
 ) -> None:
-    """M3: _hold releases what it took when an acquisition raises."""
+    """M3: _hold releases what it took when an acquisition raises, and the
+    Image gets no verdict (inconclusive) instead of failing the run."""
+    from services import image_checks
+    from services.job_manager import job_manager
     from services.lock_manager import lock_manager
     from services.rules import check as checks
 
@@ -1249,10 +1252,21 @@ async def test_a_lock_that_fails_part_way_lets_go_of_the_others(
     monkeypatch.setitem(vars(lock_manager), "acquire_input_lock", acquire)
     lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
     _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 3, "ps2/Dune.chd": 1})
+    before = {j.id for j in job_manager.get_all_jobs()}
 
     await _run(lib)
 
     assert lock_manager.check_file_status(str(tree / "ps2" / "Cove.chd"))[1] is False
+    # No verdict: inconclusive, so only an attempt time; the run carries on and
+    # ends cleanly rather than failing on the lock error.
+    _verdicts, calls = verifier
+    assert calls == []
+    assert "ps2/Cove.chd" not in image_checks.last_checked(lib)
+    assert "ps2/Cove.chd" in image_checks.order_stamps(lib)
+    assert _not_intact() == []
+    (job,) = [j for j in job_manager.get_all_jobs() if j.id not in before]
+    assert job.status.value == "completed"
+    assert "1 could not be checked" in job.message
 
 
 @pytest.mark.asyncio
