@@ -134,6 +134,8 @@ _NAMES: dict[str, str] = {
     "atari2600": "Atari 2600",
     "atari7800": "Atari 7800",
     "c64": "Commodore 64",
+    # A RomM UniversalPlatformSlug; a tool may declare it (#324).
+    "dos": "DOS",
     "philips-cd-i": "CD-i",
     "3do": "3DO",
     "laseractive": "LaserActive",
