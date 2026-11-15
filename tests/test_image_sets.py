@@ -19,8 +19,8 @@ from config import settings as app_settings
 
 @pytest.fixture(autouse=True)
 def _volume(tmp_path: Path, monkeypatch) -> None:
-    # A sheet's tracks resolve only inside a configured Volume (#306's
-    # utils.sheet_text.resolve_track), as a folder Library's always are.
+    # Tracks resolve only inside a Volume (utils.sheet_text.resolve_track), and
+    # a folder Library is always inside one, so tmp_path is the Volume here.
     monkeypatch.setattr(app_settings, "chd_volumes", str(tmp_path))
 
 

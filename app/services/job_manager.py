@@ -3032,6 +3032,10 @@ class JobManager:
                 return
 
             input_path = job.file_path
+            # Where the source's companions and track references must resolve:
+            # the Volumes, or for an archive member the folder this worker
+            # extracted it into (not a Volume, but created and owned here).
+            containment_root: str | None = None
             if "::" in job.file_path:
                 extract_start = time.monotonic()
                 archive_path, internal_path = job.file_path.split("::", 1)
@@ -3059,6 +3063,7 @@ class JobManager:
                 except asyncio.CancelledError:
                     pass
                 job.temp_dir = temp_dir
+                containment_root = temp_dir
                 await run_in_threadpool(
                     archive_service.extract_related_files,
                     archive_path,
@@ -3090,6 +3095,7 @@ class JobManager:
             # overwrite job leaves the user's prior file intact.
             if not await run_in_threadpool(
                 source_companions_are_safe, input_path, job.mode.value,
+                within=[containment_root] if containment_root else None,
             ):
                 job.status = JobStatus.FAILED
                 job.error_message = (

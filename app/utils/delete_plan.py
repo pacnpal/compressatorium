@@ -1,9 +1,9 @@
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Sequence, Set
 
-from utils.path_utils import is_within_configured_volumes, strip_archive_path
+from utils.path_utils import strip_archive_path
 from utils.sheet_text import (
     cue_tracks,
     gdi_tracks,
@@ -101,17 +101,23 @@ def other_images_in_archive(source_path: str) -> List[str]:
 _SHEET_TEXT_PARSERS = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}
 
 
-def sheet_reference_problems(sheet_path: str) -> list[str]:
+def sheet_reference_problems(
+    sheet_path: str, *, within: Sequence[str] | None = None,
+) -> list[str]:
     """Why a ``.cue`` / ``.gdi`` sheet is unsafe to hand to a converter, or ``[]``.
 
     The converter opens the files a sheet names itself, so each reference has
-    to stay inside the configured Volumes or the job would pack a file from
-    elsewhere into its output. Unsafe: a reference that is absolute, one that
-    leaves the sheet's folder (``..``), and one that resolves (through a
-    symlink) outside the configured Volumes. Every decoding of the sheet is
-    checked (``utils.sheet_text``), so a name cannot hide in one spelling. A
-    sheet that exists but cannot be read is unsafe too: nothing was checked.
-    Empty for any other file. Blocking (reads the sheet, resolves each track).
+    to stay inside the trusted roots or the job would pack a file from
+    elsewhere into its output. Each reference goes through the one confined
+    resolver, ``utils.sheet_text.resolve_track``: unsafe is a reference that
+    is absolute, leaves the sheet's folder (``..``), or resolves (through a
+    symlink) outside the roots. ``within`` names those roots and is passed
+    straight through: the configured Volumes by default, or the job's own
+    extraction folder for a sheet taken out of an archive. Every decoding of
+    the sheet is checked, so a name cannot hide in one spelling. A sheet that
+    exists but cannot be read (or is over the size cap) is unsafe too: nothing
+    was checked. Empty for any other file. Blocking (reads the sheet, resolves
+    each track).
     """
     sheet = Path(sheet_path)
     parse = _SHEET_TEXT_PARSERS.get(sheet.suffix.lower())
@@ -124,14 +130,9 @@ def sheet_reference_problems(sheet_path: str) -> list[str]:
     for text in readings:
         for ref in parse(text):
             try:
-                track = _resolve_track_path(sheet.parent, ref)
+                resolve_track(sheet.parent, ref, within=within)
             except ValueError as exc:
                 problems.append(str(exc))
-                continue
-            if not is_within_configured_volumes(
-                os.path.realpath(track), treat_archives=False,
-            ):
-                problems.append(f"Track reference resolves outside the volumes: {ref}")
     return list(dict.fromkeys(problems))
 
 

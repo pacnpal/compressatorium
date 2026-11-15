@@ -2350,11 +2350,18 @@ filesystem nothing is hidden.
 **Unsafe sheets.** The converter opens every file a sheet names itself, so a
 sheet is checked from its own text before any job runs:
 `delete_plan.sheet_reference_problems` (the delete plan's cue/gdi parsers and
-`utils.sheet_text` decoding) reports a reference that is absolute, leaves the
-sheet's folder, or resolves outside the configured Volumes (a symlinked
+`utils.sheet_text` decoding) runs each reference through the one confined
+resolver, `utils.sheet_text.resolve_track`, and reports one that is absolute,
+leaves the sheet's folder, or resolves outside the trusted roots (a symlinked
 track). `path_utils.source_companions_are_safe`, the gate `plan_job` and the
 worker both call for every job (manual, batch, Auto, Rules), rejects such a
 sheet whatever the tool's companion list says; an empty list never means safe.
+Its companions go through the same resolver. The trusted roots are the
+resolver's `within`: the configured Volumes by default, and for an archive
+member the worker passes `[the folder it extracted the sheet and its tracks
+into]` (its own `mkdtemp`, not a Volume), so every track and companion must
+resolve inside that folder. An empty root list is refused, never read as
+anything goes.
 The sweep asks the same gate per candidate and reports the Image as unsafe
 (`skipped_unsafe`, and each Platform's `unsafe` names) instead of queueing it.
 
@@ -2366,9 +2373,11 @@ regular, readable file whose extension a tool reads or writes
 `platform_detect.detect_uncached`. Detections and Image members are cached on
 the Library per path and pruned to what the last walk saw. A detection is
 checked against `detection_key`; members against the file's size and mtime
-plus its folder's file names (a split set gains its part 2 without part 1
-changing), so the cache is as large as the Library and a repeat walk reads
-no headers (tested at 10,000 files). The walk is kept for `SCAN_TTL_SECONDS`
+plus a marker of its folder's listing (a split set gains its part 2 without
+part 1 changing). The marker is a digest of the folder's sorted file names,
+built once per folder per walk and shared by its files, so the check per file
+is constant-time however large the folder. The cache is as large as the
+Library and a repeat walk reads no headers (tested at 10,000 files). The walk is kept for `SCAN_TTL_SECONDS`
 (30 s): a sweep over several Platforms, and the listing before it, share one
 walk; the platforms endpoint asks for a fresh one. An Image with a Platform
 belongs to it; a Conflicted or Unsorted one belongs to none, so no Rule sees it.
@@ -2812,9 +2821,14 @@ removed: `FolderLibrary` captures the Rule engine's token for its id
 Findings, so a walk of the removed object writes nothing whether it was
 running then or starts later. Or the Library's own generation moved since the
 walk started: a mapping was set while it ran, so its detections are out of
-date. The walk then marks its
-Scan `stale` and, once its lock is released, `_schedule_rewalk` walks again on
-a daemon thread. A database error while reconciling is logged and costs only
+date. The walk then marks its Scan `stale`. Whenever the generation moved
+during a walk (before its Findings were written or after), `scan()` starts
+`_schedule_rewalk` on a daemon thread once its lock is released, and still
+returns the walk to a listing or the Findings path. Rules never get it:
+`images()` (via `_scan_for_rules`) walks once more, and when that walk is
+stale too it raises the transient `listing_in_progress`, so the sweep skips
+the Library this tick and retries on the next instead of converting Images
+under Platforms the new mapping changed. A database error while reconciling is logged and costs only
 the Findings; the walk still serves the Rules. Nothing that reads the store
 moves, renames or deletes a file.
 

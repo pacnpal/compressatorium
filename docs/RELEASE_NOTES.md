@@ -42,7 +42,9 @@
   (migration 0011).
   - A `.cue` or `.gdi` whose tracks point outside the configured volumes (an
     absolute path, `..`, or a symlink) is refused for every conversion, manual
-    or automatic, and a Rule reports it instead of queueing it.
+    or automatic, and a Rule reports it instead of queueing it. A sheet
+    converted from inside an archive is checked against the folder it was
+    extracted into, so its tracks there convert and nothing outside it does.
   - Every Rule sweep now gives a Library 10 minutes to list a Platform, RomM
     included (RomM's catalog fetch had no limit). Past that the sweep stops
     with "the library stopped responding" and the next one starts over.

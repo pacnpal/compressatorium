@@ -22,6 +22,8 @@ from services import platform_detect
 from .test_folder_library_303 import (  # noqa: F401
     _IS_ROOT,
     _db_fixture,
+    _queue,
+    _ready,
     _register,
     _tree,
 )
@@ -1182,4 +1184,93 @@ def test_the_findings_table_uses_sqlite_autoincrement(db: Path) -> None:
             "SELECT sql FROM sqlite_master WHERE name = 'findings'",
         ).scalar()
     assert "AUTOINCREMENT" in sql
+
+
+@pytest.mark.asyncio
+async def test_rules_never_get_platforms_a_mapping_overtook(tree: Path, monkeypatch) -> None:
+    """Codex on PR #322: images() re-walks a stale walk instead of returning it."""
+    from services import libraries
+    from services.libraries.folder import FolderLibrary
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    real = FolderLibrary._findings
+    changed = {"done": False}
+
+    def mapping_lands_mid_walk(self, scan):
+        # Ico.iso was detected as ps2 by its header; the PUT maps its folder
+        # to psp, which makes it a conflict.
+        if not changed["done"]:
+            changed["done"] = True
+            _map(tree / "ps2", "psp")
+        return real(self, scan)
+
+    monkeypatch.setattr(FolderLibrary, "_findings", mapping_lands_mid_walk)
+
+    keys = [image.key for image in library.images("ps2")]
+
+    assert "ps2/Ico.iso" not in keys
+    assert keys == []
+
+
+@pytest.mark.asyncio
+async def test_two_stale_walks_in_a_row_queue_nothing(tree: Path, ready, queue, monkeypatch) -> None:
+    """A mapping lands during the re-walk too: a transient failure, nothing queued."""
+    import itertools
+
+    from routes import libraries as routes
+    from services import libraries
+    from services.libraries.folder import FolderLibrary, ListingInProgress
+
+    from .test_folder_library_303 import _library_with_rules
+
+    lib = await _library_with_rules(tree)
+    library = libraries.folder_libraries()[0]
+    real = FolderLibrary._findings
+    platforms = itertools.cycle(["psp", "ps2"])
+
+    def a_mapping_lands_during_every_walk(self, scan):
+        _map(tree / "ps2", next(platforms))
+        return real(self, scan)
+
+    monkeypatch.setattr(FolderLibrary, "_findings", a_mapping_lands_during_every_walk)
+    monkeypatch.setattr(FolderLibrary, "_schedule_rewalk", lambda self: None)
+
+    with pytest.raises(ListingInProgress):
+        library.images("ps2")
+
+    result = await routes.run_library(lib["id"])
+    assert queue == []
+    assert {"platform_id": "ps2", "error": "listing_in_progress"} in result["errors"]
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_landing_after_the_write_still_walks_again(
+    tree: Path, monkeypatch,
+) -> None:
+    """N3: the walk wrote its Findings, then the mapping landed before its lock was released."""
+    from services import libraries
+    from services.libraries.folder import FolderLibrary
+
+    _blank(tree / "misc" / "Loose.iso")
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    real = FolderLibrary._record_findings
+    changed = {"done": False}
+
+    def mapping_lands_after_the_write(self, scan):
+        real(self, scan)
+        if not changed["done"]:
+            changed["done"] = True
+            _map(tree / "misc", "psp")
+
+    scheduled = []
+    monkeypatch.setattr(FolderLibrary, "_record_findings", mapping_lands_after_the_write)
+    monkeypatch.setattr(FolderLibrary, "_schedule_rewalk", lambda self: scheduled.append(self))
+
+    library.summary(refresh=True)
+
+    assert scheduled == [library]
+    library.summary(refresh=True)
+    assert "misc/Loose.iso" not in _kinds()
 
