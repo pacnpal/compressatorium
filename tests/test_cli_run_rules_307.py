@@ -337,6 +337,58 @@ def test_an_output_another_process_is_writing_is_skipped_not_failed(env, dolphin
     assert dolphin["runs"] == []
 
 
+def test_a_stop_while_the_delete_step_waits_for_a_reader_cancels_and_keeps(
+    env, dolphin, capsys, monkeypatch,
+):
+    """#306 98f5534: a job cancelled while its delete step waits for another
+    reader keeps the Source and ends CANCELLED. A run-rules stop cancels it:
+    exit 1, Source kept, no waiting out the reader."""
+    import os
+    import signal
+    import threading
+    import time
+
+    from services import job_manager as job_manager_module
+    from services.job_manager import JobManager
+    from services.lock_manager import LockManager, lock_manager
+
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_WAIT_SECONDS", 30.0)
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.05)
+    iso = _iso(env)
+    folder = iso.parent
+    out_dir = env["vol"] / "out"
+    out_dir.mkdir()
+    _store_rules(env, {"shelf": {"gc": {
+        "mode": "dolphin_rvz", "enabled": True, "delete_on_verify": True,
+        "check_level": "container_only", "output_dir": str(out_dir),
+    }}})
+    reader = LockManager()
+    reader._lock_dir = lock_manager._lock_dir
+    original = JobManager._release_inputs
+    taken = []
+
+    def release_then_read(self, job_id):
+        original(self, job_id)
+        if not taken:
+            taken.append(reader.acquire_dir_lock(str(folder)))
+            # Stop the run once the delete step is waiting on this reader.
+            threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGTERM)).start()
+
+    monkeypatch.setattr(JobManager, "_release_inputs", release_then_read)
+    started = time.monotonic()
+    try:
+        code, lines, _err = _cli(capsys, "run-rules", "--json")
+    finally:
+        reader.release_dir_lock(str(folder))
+
+    assert taken == [True]
+    assert code == 1
+    assert time.monotonic() - started < 15, "the reader wait was cut short"
+    jobs = [line for line in lines if line.get("path")]
+    assert [(j["status"], j["source_deleted"]) for j in jobs] == [("cancelled", False)]
+    assert iso.exists()
+
+
 def test_a_job_that_cannot_lock_its_source_is_a_failure(env, dolphin, capsys, monkeypatch):
     """#306: an input lock that errors fails the job before it starts
     ("Could not lock the Source: ..."). run-rules counts it: exit 1."""
