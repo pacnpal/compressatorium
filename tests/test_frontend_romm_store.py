@@ -23,6 +23,7 @@ import pytest
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _ROMM_STORE_JS = _SRC / "lib" / "stores" / "romm.svelte.js"
+_RULES_SOURCE_JS = _SRC / "lib" / "rules" / "rulesSource.svelte.js"
 
 
 def _find_node() -> str | None:
@@ -40,8 +41,12 @@ def _plain_js() -> str:
 
     ``$state(x)`` is a reactive box around ``x``; outside a component nothing
     subscribes, so the initialiser alone is the whole behaviour under test.
+
+    The store extends ``RulesSource`` (shared with folder Libraries, #303),
+    so that file goes first; it has no imports.
     """
-    src = _ROMM_STORE_JS.read_text(encoding="utf-8")
+    base = _RULES_SOURCE_JS.read_text(encoding="utf-8").replace("export class ", "class ")
+    src = base + "\n" + _ROMM_STORE_JS.read_text(encoding="utf-8")
     kept = [
         line for line in src.splitlines()
         if not (line.strip().startswith("import ") and line.strip().endswith(";"))
