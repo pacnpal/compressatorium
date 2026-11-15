@@ -1354,10 +1354,17 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
 
     owners: dict[str, str] = {}
     sweeping: list[str] = []
+    reported: set[str] = set()
     failed = False
 
     def on_terminal(job) -> None:
         nonlocal failed
+        # One line per job: the job manager may announce an end twice (a
+        # queued job cancelled before it starts is told by cancel_job and
+        # again by _process_job).
+        if job.id in reported:
+            return
+        reported.add(job.id)
         item = Item(path=job.file_path, mode=getattr(job.mode, "value", job.mode))
         _finish(item, job)
         failed = failed or item.status in ("failed", "cancelled")

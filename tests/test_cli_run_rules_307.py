@@ -511,6 +511,28 @@ def test_the_server_takes_the_scheduler_lock_before_the_database_init_lock(
     assert seen == ["scheduler lock held"]
 
 
+def test_a_job_announced_twice_is_reported_once(env, dolphin, capsys, monkeypatch):
+    """The job manager may announce one job's end twice (a queued job
+    cancelled before it starts hears it from cancel_job and _process_job).
+    run-rules prints one line per job."""
+    from services.job_manager import JobManager
+
+    iso = _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+    real = JobManager._notify_terminal
+
+    def twice(self, job):
+        real(self, job)
+        real(self, job)
+
+    monkeypatch.setattr(JobManager, "_notify_terminal", twice)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert [line["path"] for line in lines if line.get("path")] == [str(iso)]
+
+
 def test_a_failed_job_exits_1(env, dolphin, capsys):
     _iso(env)
     _store_rules(env, {"shelf": RVZ_RULE})
@@ -556,6 +578,9 @@ def test_dry_run_shows_what_each_rule_would_queue_and_writes_nothing(env, dolphi
     iso = _iso(env)
     _store_rules(env, {"shelf": RVZ_RULE})
     before = asyncio.run(preferences_store.get("rules.state"))
+    # Setup opened the database the real way, which made the lock dir and
+    # init.lock (#306); the dry run must add nothing to it.
+    lock_files = sorted(p.name for p in env["locks"].iterdir()) if env["locks"].exists() else []
 
     code, lines, _err = _cli(capsys, "run-rules", "--dry-run", "--json")
 
@@ -568,7 +593,8 @@ def test_dry_run_shows_what_each_rule_would_queue_and_writes_nothing(env, dolphi
     assert dolphin["runs"] == []
     assert sorted(p.name for p in iso.parent.iterdir()) == ["Game.iso"]
     assert asyncio.run(preferences_store.get("rules.state")) == before
-    assert not env["locks"].exists(), "a dry run creates no lock files"
+    after = sorted(p.name for p in env["locks"].iterdir()) if env["locks"].exists() else []
+    assert after == lock_files, "a dry run creates no lock files"
 
 
 def test_dry_run_moves_no_stored_rows(env, dolphin, capsys):
