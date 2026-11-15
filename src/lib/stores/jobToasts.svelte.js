@@ -119,7 +119,10 @@ class JobToastTracker {
       // A warning (a Source kept for a reader, a tool's caveat) is not a
       // plain success.
       const { kind, description, duration } = completionToast(job);
-      toast[kind](title, { id: toastId, description, duration });
+      const options = { id: toastId, description, duration };
+      // An explicit choice, never a property looked up from data.
+      if (kind === 'warning') toast.warning(title, options);
+      else toast.success(title, options);
     } else if (job.status === 'failed') {
       toast.error(title, {
         id: toastId,
