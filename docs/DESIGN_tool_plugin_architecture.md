@@ -4412,7 +4412,11 @@ bounded thread, as a conversion candidate's do. It returns a skip reason
 (`unresolvable`, `missing`, `uncheckable`) or a `Check`: the Image key, path,
 size, the checking tool and the Image's file fingerprint. An Image already
 being checked (`check.in_flight`) or converted (the active-path set) is
-skipped. Readiness is the verifier's (`registry.tool_is_ready(tool,
+skipped. The other way round too (#330): every file of an Image a running
+check picked (`check.in_flight_paths`) joins the sweep's active-path set
+(`sweep._active_source_paths`) beside the queued and converting Sources, so a
+conversion Rule on the same Platform skips it as active, records no failure
+hold, and queues it on a sweep after the check is done. Readiness is the verifier's (`registry.tool_is_ready(tool,
 purpose="verify")`), not conversion's: jwud checks WUX in pure Python without
 JWUDTool, and z3ds needs zstd to check. A tool that is not ready skips its
 Images and reports

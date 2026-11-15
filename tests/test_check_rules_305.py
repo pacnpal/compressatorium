@@ -2488,3 +2488,73 @@ async def test_a_split_part_outside_the_volumes_skips_the_whole_image(
     (summary,) = preview["platforms"]
     assert summary["candidates"] == []
     assert summary["checks"] == 0
+
+
+# ----------------------------------------------------------------------
+# a conversion Rule skips what a running check picked (#330)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_sweep_skips_a_source_a_running_check_holds(
+    db: Path, ready, sent, queue, monkeypatch,
+) -> None:
+    """#330: with a check Rule and a conversion Rule on one Platform, a Source a
+    running check picked is held, like one a job is converting: the conversion
+    sweep does not queue it and records no failure hold. Once the check is
+    done, the next sweep queues it."""
+    from routes import libraries as routes
+    from services.rules import check as checks
+    from services.rules import sweep
+
+    from .test_platform_detect import _gamecube
+
+    roms = db / "roms"
+    (roms / "gc").mkdir(parents=True)
+    _gamecube(roms / "gc" / "Melee.iso")
+    tool = registry.get("dolphin")
+    gate = asyncio.Event()
+    checking: list[str] = []
+
+    async def verify(path, *, cancel_event=None):
+        checking.append(Path(path).name)
+        await gate.wait()
+        return {"valid": True, "message": "Disc image is Intact"}
+
+    async def bound(path, *, cancel_event=None):
+        return 0
+
+    monkeypatch.setitem(vars(tool), "verify", verify)
+    monkeypatch.setitem(vars(tool), "verify_timeout", bound)
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    lib = created["id"]
+    library = routes._library(lib)
+    (platform,) = [p.id for p in library.platforms()]
+    convert = {"mode": "dolphin_rvz", "enabled": True}
+    await routes.put_library_rules(lib, {
+        "rules": {platform: {**convert, "enabled": False}},
+        "check_rules": {platform: {"enabled": True, "check_budget_gb": 1}},
+    })
+
+    started = await sweep.sweep(library, ignore_schedule=True)  # the check picks it
+    assert started["checks"] == 1
+    for _ in range(200):
+        if checking:
+            break
+        await asyncio.sleep(0.01)
+    assert checking == ["Melee.iso"]
+
+    await routes.put_library_rules(lib, {"rules": {platform: convert}})
+    held = await sweep.sweep(library, ignore_schedule=True)
+
+    assert queue == []
+    assert held["skipped_active"] >= 1
+    assert not ((await sweep.get_state(library)).get(platform) or {}).get("failed")
+
+    gate.set()
+    await checks.drain()
+    after = await sweep.sweep(library, ignore_schedule=True)
+
+    assert queue == ["Melee.iso"]
+    assert after["queued"] == 1
+    assert not ((await sweep.get_state(library)).get(platform) or {}).get("failed")
