@@ -62,10 +62,12 @@ async def sweep(**kwargs) -> dict:
 
 
 async def run_forever() -> None:
-    """The server's scheduler, sweeping each Library while its switch is on.
+    """The scheduler over every Library (``services.libraries.run_forever``).
 
-    The same Library list ``compressatorium run-rules`` sweeps (#307).
+    Kept for callers of the old name; ``main.py`` starts
+    ``services.libraries.run_forever`` itself. ``compressatorium run-rules``
+    sweeps the same ``services.libraries.all_libraries()`` list.
     """
-    from services.library_catalog import all_libraries
+    from services import libraries
 
-    await _sweep.run_forever(all_libraries)
+    await libraries.run_forever()

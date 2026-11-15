@@ -1720,11 +1720,13 @@ A check that fails drops the stored result; one that times out or cannot run
 leaves it and reports the error.
 
 **`run-rules [--library ID]`** does one pass over the Rules stored in the web UI
-(RomM automation today), waits for the jobs it queued, and exits. It is the
+for every Library (RomM and each registered folder Library), waits for the jobs
+it queued, and exits. It is the
 same sweep the server's scheduler runs each minute, so each Rule's own on/off
 switch, days, time window, interval and per-run cap still apply; the
 auto-convert master switch does not, because running the command is the
-switch. `--library romm` limits it to one Library. `--dry-run` prints what each
+switch. `--library romm` or `--library folder:1` limits it to one Library (the
+ids are listed by `/api/libraries`). `--dry-run` prints what each
 Rule would queue on this pass and writes nothing. Unlike the editor's Preview it
 keeps each Rule's clock, so a Rule that is not due (outside its window, or run
 within its interval) prints no line. It prints one line per Platform and one per

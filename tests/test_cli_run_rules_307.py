@@ -97,7 +97,7 @@ class _Shelf:
 
 @pytest.fixture(name="env")
 def _env(tmp_path, monkeypatch, reset_db_engine):
-    from services import library_catalog
+    from services import libraries
     from services.job_manager import job_manager
     from services.romm import settings as romm_settings
 
@@ -131,6 +131,7 @@ def _env(tmp_path, monkeypatch, reset_db_engine):
     monkeypatch.setattr(rules_sweep, "_sweep_lock", asyncio.Lock())
     monkeypatch.setattr(rules_store, "_lock", asyncio.Lock())
     romm_settings.reset_for_tests()
+    libraries.reset_for_tests()
 
     shelves = {
         "shelf": _Shelf("shelf", vol / "shelf"),
@@ -138,8 +139,15 @@ def _env(tmp_path, monkeypatch, reset_db_engine):
     }
     for shelf in shelves.values():
         (shelf.root / "gc").mkdir(parents=True)
-    monkeypatch.setattr(library_catalog, "all_libraries", lambda: list(shelves.values()))
-    yield {"vol": vol, "config": config, "locks": locks, **shelves}
+    # The real list (RomM plus the registered folder Libraries) for the tests
+    # that run against it; the others sweep the two shelves.
+    real_libraries = libraries.all_libraries
+    monkeypatch.setattr(libraries, "all_libraries", lambda: list(shelves.values()))
+    yield {
+        "vol": vol, "config": config, "locks": locks, **shelves,
+        "real_libraries": real_libraries,
+    }
+    libraries.reset_for_tests()
     romm_settings.reset_for_tests()
     reset_db_engine()
 
@@ -946,7 +954,7 @@ def test_each_library_runs_its_before_pass_hook_first(env, dolphin, capsys):
 def test_libraries_are_listed_once_the_database_is_open(env, dolphin, capsys, monkeypatch):
     """A Library list read from the database (#303's folder Libraries) works."""
     from services import db as _db
-    from services import library_catalog
+    from services import libraries
 
     shelves = [env["shelf"], env["attic"]]
 
@@ -954,7 +962,7 @@ def test_libraries_are_listed_once_the_database_is_open(env, dolphin, capsys, mo
         assert _db.SessionLocal is not None, "listed before the database was opened"
         return shelves
 
-    monkeypatch.setattr(library_catalog, "all_libraries", from_the_database)
+    monkeypatch.setattr(libraries, "all_libraries", from_the_database)
     iso = _iso(env)
     _store_rules(env, {"shelf": RVZ_RULE})
     _db.SessionLocal = None
@@ -1130,14 +1138,14 @@ def test_a_stop_while_images_are_inspected_ends_the_inspection(
     inspected = []
     real = rules_sweep._inspect_candidate
 
-    def inspect_and_stop(image, *args):
+    def inspect_and_stop(image, *args, **kwargs):
         inspected.append(image.name)
         if len(inspected) == 1:
             os.kill(os.getpid(), signal.SIGTERM)
             import time
 
             time.sleep(0.3)  # the signal handler runs on the loop meanwhile
-        return real(image, *args)
+        return real(image, *args, **kwargs)
 
     monkeypatch.setattr(rules_sweep, "_inspect_candidate", inspect_and_stop)
 
@@ -1294,3 +1302,86 @@ def test_schedulers_before_and_after_db_init_share_one_lock(tmp_path):
                 proc.wait()
 
     assert first_lock == second_lock == str(data_dir / "locks" / "scheduler.lock")
+
+
+# --------------------------------------------------------------------------- #
+# the real Library list: RomM and folder Libraries (#303)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(name="mixed")
+def _mixed(env, monkeypatch):
+    """The server's own Library list: a configured RomM and one registered
+    folder Library, each with a GameCube Image and a Rule for it."""
+    import cli
+    from services import libraries
+    from services.romm import romm_client
+    from services.romm import settings as romm_settings
+    from services.romm.library import romm_library
+    from services.rules import sweep as rules_sweep
+
+    from .test_platform_detect import _gamecube
+
+    monkeypatch.setattr(libraries, "all_libraries", env["real_libraries"])
+    cli._open_db(False)
+
+    romm_root = env["vol"] / "romm"
+    romm_iso = Path(_gamecube(romm_root / "roms" / "gc" / "Melee.iso"))
+    asyncio.run(romm_settings.save({"url": "http://romm:8080", "library_root": str(romm_root)}))
+    roms = [{
+        "id": 4, "name": "Melee", "full_path": "roms/gc/Melee.iso", "fs_name": "Melee.iso",
+        "fs_size_bytes": romm_iso.stat().st_size, "platform_slug": "ngc",
+        "is_identified": True,
+    }]
+    monkeypatch.setattr(romm_client, "roms", lambda platform_id: roms)
+
+    folder_root = env["vol"] / "folder"
+    folder_iso = Path(_gamecube(folder_root / "gc" / "Sunshine.iso"))
+    folder = libraries.register(str(folder_root))
+
+    async def rules():
+        await rules_sweep.set_rules(romm_library, {"7": RVZ_RULE["gc"]})
+        await rules_sweep.set_rules(folder, {"ngc": RVZ_RULE["gc"]})
+
+    asyncio.run(rules())
+    return {"romm_iso": romm_iso, "folder_iso": folder_iso, "folder": folder}
+
+
+def test_run_rules_sweeps_romm_and_every_folder_library(mixed, dolphin, capsys):
+    """The scheduler's list, not a RomM-only one: a folder Library's Rules run."""
+    folder = mixed["folder"]
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    jobs = {line["library"]: line for line in lines if line.get("path")}
+    assert set(jobs) == {"romm", folder.id}
+    assert jobs[folder.id]["path"] == str(mixed["folder_iso"])
+    assert jobs["romm"]["path"] == str(mixed["romm_iso"])
+    assert mixed["folder_iso"].with_suffix(".rvz").exists()
+    assert mixed["romm_iso"].with_suffix(".rvz").exists()
+
+
+def test_library_names_a_folder_library(mixed, dolphin, capsys):
+    folder = mixed["folder"]
+    assert folder.id == "folder:1"
+
+    code, lines, _err = _cli(capsys, "run-rules", "--library", "folder:1", "--json")
+
+    assert code == 0, lines
+    assert {line["library"] for line in lines} == {"folder:1"}
+    assert mixed["folder_iso"].with_suffix(".rvz").exists()
+    assert not mixed["romm_iso"].with_suffix(".rvz").exists()
+
+
+def test_a_folder_library_has_the_contracts_no_op_before_pass(mixed, dolphin, capsys):
+    """before_pass is a default on the Library contract, so a folder Library
+    (which has no upkeep) runs a pass, and a dry run, without error."""
+    folder = mixed["folder"]
+    assert asyncio.run(folder.before_pass(dry_run=False)) is None
+
+    code, lines, err = _cli(capsys, "run-rules", "--library", "folder:1", "--dry-run", "--json")
+
+    assert code == 0, (lines, err)
+    assert [(line["status"], line["queued"]) for line in lines
+            if line.get("platform_id") == "ngc"] == [("planned", 1)]

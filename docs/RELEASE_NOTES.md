@@ -21,8 +21,9 @@
 - **`compressatorium run-rules`** (#307). One pass over your stored Rules, for
   cron or Unraid User Scripts: it queues what each Rule says is due, waits for
   those jobs and exits: 0, or 1 when a job failed or a sweep reported an error
-  (RomM not answering, a tool not installed, ...). `--library romm` limits it
-  to one Library; `--dry-run` shows what each Rule would queue. Before sweeping
+  (RomM not answering, a tool not installed, ...). It sweeps every Library the
+  server does, RomM and each folder Library; `--library romm` or
+  `--library folder:1` limits it to one; `--dry-run` shows what each Rule would queue. Before sweeping
   RomM it finishes an owed identity cleanup and settles pending re-pins once.
   Only one Rule scheduler runs per data directory: the server now holds a lock
   on `/config/locks/scheduler.lock` while it runs, and `run-rules` exits 3

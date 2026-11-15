@@ -23,6 +23,7 @@ from services.rules.library import (
     CONVERTED_HISTORY,
     RECOGNIZED_FILTER,
     Image,
+    LibraryDefaults,
     LibraryUnreadable,
     Platform,
     QueuedImage,
@@ -72,7 +73,7 @@ def image_from_rom(rom: dict) -> Image:
     )
 
 
-class RommLibrary:
+class RommLibrary(LibraryDefaults):
     """The RomM instance configured in the app, as a Library."""
 
     id = "romm"

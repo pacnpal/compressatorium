@@ -19,7 +19,7 @@ drives the same pieces the web UI does, in-process:
   directory (``<data dir>/locks``), so a running server and this process never
   write one output twice;
 * Rules (``run-rules``): ``rules.sweep.sweep``, the server scheduler's own
-  sweep, once per Library from ``services.library_catalog``; the scheduler lock
+  sweep, once per Library from ``services.libraries``; the scheduler lock
   (``services.scheduler_lock``) keeps it from running beside a server.
 
 Exit status: 0 when everything finished or there was nothing to do, 1 when any
@@ -1345,11 +1345,12 @@ async def verify(args, printer: Printer, state: RunState) -> int:
 
 
 def _choose_libraries(wanted: str | None) -> list:
-    """The Libraries to sweep. Asked once the database is open: a Library list
-    may be stored there (folder Libraries, #303)."""
-    from services import library_catalog
+    """The Libraries to sweep: ``services.libraries.all_libraries()``, the list
+    the server's scheduler sweeps (RomM and every folder Library, #303). Asked
+    once the database is open, where the folder Libraries are stored."""
+    from services import libraries
 
-    every = library_catalog.all_libraries()
+    every = libraries.all_libraries()
     if wanted is None:
         return every
     chosen = [library for library in every if library.id == wanted]

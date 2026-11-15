@@ -2231,8 +2231,9 @@ API and the Rules view; the engine never reads those three), and:
   startup or in its background loops. RomM loads its settings and, on a real
   pass, runs `routes.romm.replay_identity_cleanup()` and one
   `routes.romm.settle_once()` (the settler loop's tick, shared with
-  `settle_forever`). A dry run must write nothing. A Library with no upkeep
-  implements it as a no-op.
+  `settle_forever`). A dry run must write nothing. `LibraryDefaults` gives the
+  no-op, and every Library class inherits it (`FolderLibrary`, `RommLibrary`,
+  which overrides it), so `run-rules` calls it on any Library without a check.
 
 Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
 what a Library supports. Nothing in `rules/` asks what kind of Library it has.
@@ -3594,9 +3595,10 @@ lifecycle (Ledger listener, `process_queue()`, cancel, `shutdown()`) for both
 
 **`run-rules` (#307).** One pass over the stored Rules, like one tick of the
 server's scheduler, then exit. Under the scheduler lock and with the database
-open, it lists the Libraries (`services.library_catalog.all_libraries()`, or
-the one `--library` names; listed only now because a Library list can live in
-the database). For each it runs the Library's `before_pass(dry_run=...)` hook
+open, it lists the Libraries from `services.libraries.all_libraries()`, the
+list the server's scheduler sweeps: RomM and every folder Library (§3.3.11),
+or the one `--library` names (`romm`, `folder:<id>`). They are listed only
+now because the folder Libraries are stored in the database. For each it runs the Library's `before_pass(dry_run=...)` hook
 (§3.3.11), then `rules.sweep.sweep(library, should_stop=...)`: the scheduler's
 own sweep, so each Rule's switch, days, window, interval and caps apply, and
 the Ledger rows, `after_queue` hooks and Rule state are written the same way.
