@@ -2438,7 +2438,19 @@ archived set; an empty `within` is refused). When any track of a sheet is
 refused, or the sheet is unreadable (missing, or over `MAX_SHEET_BYTES`, read
 as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
 the probe says nothing, so a planted sheet cannot make the probe read a file
-outside the Volumes. `header_reads` returns None for an unreadable sheet and
+outside the Volumes.
+
+Disc-ID tagging reads the same sheets after a conversion. `_process_job`
+builds `within` once: None for a source in a Volume, `[temp_dir]` (the
+`mkdtemp` root it extracted into) for an archive member, never the input
+file's parent. It passes that one value to the job gate and to
+`post_convert(input_path, output_path, mode, *, within=None)`, which every
+plugin accepts. CHDMAN's hook hands it to `disc_id.extract_from_source`, whose
+cue/gdi readers resolve tracks through `sheet_tracks(..., within=within)`.
+When a refused or unreadable track stops tagging, the hook logs a warning
+naming the sheet (`sheet_text.sheet_track_list` tells that case apart from a
+disc with no ID); it never skips silently, and a refused track is never
+opened. `header_reads` returns None for an unreadable sheet and
 a failing `header_reads` is treated the same way, so neither is cached. A
 folder Image (a PS3 disc folder) is never cached: its answer depends on files
 below it.
