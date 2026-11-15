@@ -355,3 +355,24 @@ def test_the_header_row_lines_up_with_the_rows():
     columns = re.search(r"\.row \{[^}]*grid-template-columns:([^;]+);", view, re.DOTALL).group(1)
     assert "auto" not in columns, columns
     assert 'role="columnheader" class="sr-only"' not in view
+
+
+def test_the_table_fits_beside_the_sidebar_at_the_widest_stacked_break():
+    """At 1181px (just above the stacked layout) the fixed tracks must fit.
+
+    The first fixed-track version summed wider than the table, and the action
+    buttons were clipped at the right edge of the screenshot.
+    """
+    view = _VIEW.read_text(encoding="utf-8")
+    columns = re.search(r"\.row \{[^}]*grid-template-columns:([^;]+);", view, re.DOTALL).group(1)
+    tracks = re.findall(r"minmax\(([\d.]+)rem[^)]*\)|([\d.]+)rem", columns)
+    minimum_px = sum(float(a or b) for a, b in tracks) * 16
+    gaps_px = (len(tracks) - 1) * 12
+    row_padding_px = 2 * 14
+    breakpoint = int(re.search(r"@media \(max-width: (\d+)px\)", view).group(1))
+    # Viewport just above the break, minus the sidebar (240px) and the view's
+    # side padding (2 x 24px).
+    available_px = breakpoint + 1 - 240 - 48
+    assert minimum_px + gaps_px + row_padding_px <= available_px, (
+        minimum_px + gaps_px + row_padding_px, available_px,
+    )

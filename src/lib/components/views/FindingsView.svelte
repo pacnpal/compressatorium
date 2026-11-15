@@ -257,7 +257,7 @@
     display: grid;
     /* Every row is its own grid, so every track has a size that does not
        depend on the row's content: the header lines up with the rows. */
-    grid-template-columns: 7rem minmax(12rem, 1fr) 9.5rem 7.5rem 7.5rem 15rem;
+    grid-template-columns: 6rem minmax(10rem, 1fr) 8.5rem 7rem 7rem 11.5rem;
     gap: var(--space-3, 12px);
     align-items: center;
     padding: 10px 14px;
@@ -287,7 +287,7 @@
     clip: rect(0 0 0 0);
     white-space: nowrap;
   }
-  /* Below this the fixed tracks (about 936px) do not fit beside the sidebar. */
+  /* Below this the tracks (800px at their narrowest) do not fit beside the sidebar. */
   @media (max-width: 1180px) {
     .findings-view { padding: var(--space-4, 16px); }
     .row { grid-template-columns: 1fr; gap: 4px; }
