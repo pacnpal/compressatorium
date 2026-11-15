@@ -325,7 +325,14 @@ async def _verify(
             result = await asyncio.wait_for(
                 tool.verify(check.path, cancel_event=cancel_event), timeout=bound or None,
             )
-        except Exception as exc:  # noqa: BLE001 - #306's allowlist sorts it
+        except Exception as exc:
+            # Any failure becomes a result: #306's allowlist decides whether it
+            # is a verdict on the file. Logged with its traceback, since a
+            # verifier that raises is rare and worth seeing.
+            logger.warning(
+                "romm_auto: checking %s raised %s", check.path, type(exc).__name__,
+                exc_info=True,
+            )
             result = verify_exception_event(exc, prefix="The check raised")
     result = result if isinstance(result, dict) else {}
     return (
