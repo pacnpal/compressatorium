@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -27,6 +27,7 @@ from typing import (
     Optional,
     Set,
     Tuple,
+    Union,
 )
 
 from config import settings
@@ -65,6 +66,33 @@ SOURCE_KEPT_FOR_READERS = "Source kept: it was being read by another job"
 # The glossary names (CONTEXT.md) for each stored check, used in job messages so
 # "verified" never stands in for which check an output passed.
 _CHECK_LABELS = {"intact": "Intact", "round_tripped": "Round-tripped"}
+
+# What a retried delete of a kept Source found (``retry_kept_delete``, #329).
+KEPT_DELETED = "deleted"  # the Source is gone
+KEPT_READER = "reader"  # someone still holds it: try again on a later sweep
+KEPT_KEPT = "kept"  # the delete step kept it (a Referrer, a path check): try again
+KEPT_STALE = "stale"  # what the delete stood on no longer holds: never retry
+# How long a retry waits for the Source's volume to answer its stat checks.
+KEPT_DELETE_PROBE_SECONDS = 30.0
+KEPT_DELETE_UNANSWERED = "the Source's volume did not answer"
+
+
+@dataclass(frozen=True)
+class KeptDeleteRetry:
+    """The outcome of one :meth:`JobManager.retry_kept_delete`."""
+
+    status: str
+    reason: Optional[str] = None
+    deleted: Tuple[str, ...] = ()
+
+
+@dataclass
+class _SourceDelete:
+    """What the shared delete step did (:meth:`JobManager._delete_source_set`)."""
+
+    kept_reason: Optional[str] = None
+    cancelled: bool = False  # a cancel seen at the last look, before any unlink
+    referrer_records: List[dict] = field(default_factory=list)
 
 
 def _source_bytes(path: str) -> Optional[int]:
@@ -3001,6 +3029,227 @@ class JobManager:
             ):
                 raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
 
+    async def _delete_source_set(
+        self,
+        owner_id: str,
+        *,
+        file_path: str,
+        output_path: str,
+        expected_paths: List[str],
+        fingerprints: dict,
+        check_label: str,
+        cancel_event: asyncio.Event,
+        cancelled: Callable[[], bool],
+        deleted: List[str],
+    ) -> _SourceDelete:
+        """The delete step, shared by a job and a retried delete (#329).
+
+        Called holding every path of *expected_paths* exclusively
+        (``_delete_holds[owner_id]``); lets go of them before it returns. The
+        plan is built again and must name the same paths; each path is checked
+        (:meth:`_check_delete_paths`) before the Referrer hook and again after
+        it; then the paths are removed, each appended to *deleted* as it goes.
+        Raises RuntimeError when the plan, or a path before the hook, is no
+        longer safe: nothing is removed. A cancel during the hook, or a
+        Referrer or path check that fails after it, keeps the Source with a
+        reason; a cancel at the last look, before any unlink, is reported as
+        ``cancelled``.
+        """
+        expected_set = set(expected_paths)
+        current_plan = await run_in_threadpool(build_delete_plan, file_path)
+        if (
+            current_plan.get("errors")
+            or current_plan.get("unsafe_paths")
+            or current_plan.get("missing_paths")
+        ):
+            raise RuntimeError("Delete plan no longer safe; refusing to delete")
+        if set(current_plan.get("delete_paths", [])) != expected_set:
+            raise RuntimeError("Delete plan changed; refusing to delete")
+
+        output_real = os.path.realpath(output_path)
+        source_for_delete = (
+            strip_archive_path(file_path) if "::" in file_path else file_path
+        )
+        source_real = os.path.realpath(source_for_delete)
+        delete_order = [p for p in expected_paths if os.path.realpath(p) != source_real]
+        if source_real in expected_set:
+            delete_order.append(source_real)
+        else:
+            delete_order = list(expected_paths)
+
+        await self._check_delete_paths(owner_id, expected_paths, fingerprints, output_real)
+
+        # Referrers (.m3u, ...) move to the output before the Source goes; if
+        # any can't, the Source stays (#295).
+        referrer_outcome = await referrers.update_before_source_removal(
+            source_for_delete,
+            {path: output_path for path in delete_order},
+            cancel_event=cancel_event,
+        )
+        outcome = _SourceDelete(referrer_records=referrer_outcome.records)
+        # The hook awaited a worker thread: re-ask cancel and every per-path
+        # identity check before removing.
+        skipped = f"Output is {check_label}. Delete skipped (cancelled)."
+        if cancel_event.is_set():
+            outcome.kept_reason = skipped
+        elif not referrer_outcome.ok:
+            outcome.kept_reason = referrer_outcome.kept_message
+        else:
+            try:
+                await self._check_delete_paths(
+                    owner_id, expected_paths, fingerprints, output_real,
+                )
+            except RuntimeError as exc:
+                outcome.kept_reason = f"converted, source kept: {exc}"
+            # That check awaited too; a Cancel there still wins.
+            if outcome.kept_reason is None and cancel_event.is_set():
+                outcome.kept_reason = skipped
+        if outcome.kept_reason:
+            self._release_delete_holds(owner_id)
+            return outcome
+        if cancel_event.is_set() or cancelled():
+            self._release_delete_holds(owner_id)
+            outcome.cancelled = True
+            return outcome
+        for path in delete_order:
+            await run_in_threadpool(os.remove, path)
+            deleted.append(path)
+        self._release_delete_holds(owner_id)
+
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in registry.verify_extensions():
+            await verification_store.clear(file_path)
+        if ext == ".chd":
+            await chd_metadata_store.clear(file_path)
+        return outcome
+
+    def _kept_delete_snapshot(
+        self, source_path: str, output_path: str, meta: dict,
+    ) -> Union[Dict[str, object], str]:
+        """What a retried delete of *source_path* stands on, established now:
+        its delete snapshot, or why it no longer holds. Blocking.
+
+        Fails closed on each: the Source is inside the configured Volumes, the
+        output is the very file its check recorded (``produced_meta``: size,
+        mtime, inode, device), and the Source set is byte-for-byte the one
+        that output was made and checked from.
+        """
+        if not is_within_configured_volumes(source_path, treat_archives=False):
+            return "the Source is not inside the configured volumes"
+        if self._output_fingerprint(output_path) != meta.get("output"):
+            return "the output is gone or changed since its check"
+        try:
+            snapshot = build_delete_snapshot(source_path)
+        except (OSError, ValueError) as exc:
+            return f"the Source can no longer be planned for deletion: {exc}"
+        if not snapshot.get("paths") or self._norm_fps(
+            snapshot.get("fingerprints"),
+        ) != meta.get("source"):
+            return "the Source changed since its output was checked"
+        return snapshot
+
+    async def _kept_delete_snapshot_bounded(
+        self, source_path: str, output_path: str, meta: dict,
+    ) -> Union[Dict[str, object], str]:
+        """:meth:`_kept_delete_snapshot` on a detached thread, bounded: a
+        volume that stops answering is a reason to try again later."""
+        try:
+            return await asyncio.wait_for(
+                run_detached(self._kept_delete_snapshot, source_path, output_path, meta),
+                KEPT_DELETE_PROBE_SECONDS,
+            )
+        except (asyncio.TimeoutError, ReadCancelled):
+            return KEPT_DELETE_UNANSWERED
+
+    async def retry_kept_delete(
+        self, *, source_path: str, output_path: str,
+    ) -> KeptDeleteRetry:
+        """Retry only the delete step for a Source a reader kept (#329).
+
+        A job whose delete step found another job still reading its Source
+        completed and kept it (``SOURCE_KEPT_FOR_READERS``); its output is
+        already checked and recorded. This takes the same locks the job held
+        (the output's, then every delete path's, exclusively, without
+        waiting), re-establishes under them everything the delete stood on
+        (:meth:`_kept_delete_snapshot`, plus a passing check record that names
+        this Source), then runs the shared delete step
+        (:meth:`_delete_source_set`, with its ``mutation_guard`` and Referrer
+        hook). Never raises for a refusal: the outcome says whether to try
+        again (``reader``, ``kept``) or never (``stale``).
+        """
+        if "::" in source_path:
+            return KeptDeleteRetry(
+                KEPT_STALE, "an archive member's Source cannot be proven unchanged",
+            )
+        owner_id = f"kept-delete:{uuid.uuid4().hex}"
+        output_held = False
+        deleted: List[str] = []
+        try:
+            try:
+                output_held = await run_in_threadpool(
+                    lock_manager.acquire_lock, output_path, allow_existing=True,
+                )
+            except LockFailed as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
+            if not output_held:
+                return KeptDeleteRetry(KEPT_READER, "the output is in use by another job")
+            record = await verification_store.get_record(output_path)
+            check = (record or {}).get("check_passed")
+            meta = (record or {}).get("produced_meta")
+            if (
+                not record
+                or check not in _CHECK_LABELS
+                or record.get("source_path") != source_path
+                or not isinstance(meta, dict)
+                or not meta.get("source")
+                or not meta.get("output")
+            ):
+                return KeptDeleteRetry(
+                    KEPT_STALE, "the output's check record no longer matches",
+                )
+            snapshot = await self._kept_delete_snapshot_bounded(
+                source_path, output_path, meta,
+            )
+            if snapshot == KEPT_DELETE_UNANSWERED:
+                return KeptDeleteRetry(KEPT_KEPT, snapshot)
+            if isinstance(snapshot, str):
+                return KeptDeleteRetry(KEPT_STALE, snapshot)
+            paths = list(snapshot["paths"])
+            try:
+                held = await run_in_threadpool(self._try_hold_for_delete, owner_id, paths)
+            except LockFailed as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc))
+            if not held:
+                return KeptDeleteRetry(KEPT_READER, SOURCE_KEPT_FOR_READERS)
+            # Once more under the holds: nothing can change the set now.
+            again = await self._kept_delete_snapshot_bounded(
+                source_path, output_path, meta,
+            )
+            if isinstance(again, str):
+                status = KEPT_KEPT if again == KEPT_DELETE_UNANSWERED else KEPT_STALE
+                return KeptDeleteRetry(status, again)
+            try:
+                removal = await self._delete_source_set(
+                    owner_id,
+                    file_path=source_path,
+                    output_path=output_path,
+                    expected_paths=paths,
+                    fingerprints=snapshot.get("fingerprints") or {},
+                    check_label=_CHECK_LABELS[check],
+                    cancel_event=asyncio.Event(),
+                    cancelled=lambda: False,
+                    deleted=deleted,
+                )
+            except RuntimeError as exc:
+                return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(deleted))
+            if removal.kept_reason:
+                return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)
+            return KeptDeleteRetry(KEPT_DELETED, None, tuple(deleted))
+        finally:
+            self._release_delete_holds(owner_id)
+            if output_held:
+                lock_manager.release_lock(output_path)
+
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,
     ) -> tuple[str, str | None]:
@@ -3836,89 +4085,32 @@ class JobManager:
                                 "Delete plan snapshot missing; refusing to delete"
                             )
 
-                        expected_paths = list(snapshot.get("paths", []))
-                        expected_set = set(expected_paths)
-                        fingerprints = snapshot.get("fingerprints") or {}
-
-                        current_plan = await run_in_threadpool(
-                            build_delete_plan, job.file_path
-                        )
-                        if (
-                            current_plan.get("errors")
-                            or current_plan.get("unsafe_paths")
-                            or current_plan.get("missing_paths")
-                        ):
-                            raise RuntimeError(
-                                "Delete plan no longer safe; refusing to delete"
-                            )
-                        current_set = set(current_plan.get("delete_paths", []))
-                        if current_set != expected_set:
-                            raise RuntimeError(
-                                "Delete plan changed; refusing to delete"
-                            )
-
-                        output_real = os.path.realpath(job.output_path)
-                        source_for_delete = (
-                            strip_archive_path(job.file_path)
-                            if "::" in job.file_path
-                            else job.file_path
-                        )
-                        source_real = os.path.realpath(source_for_delete)
-                        delete_order = [
-                            p
-                            for p in expected_paths
-                            if os.path.realpath(p) != source_real
-                        ]
-                        if source_real in expected_set:
-                            delete_order.append(source_real)
-                        else:
-                            delete_order = expected_paths
-
                         # Every delete path is held exclusively from here until
                         # the unlinks finish (``_hold_delete_paths_waiting``,
-                        # above): no job can start reading one between these
+                        # above): no job can start reading one between the
                         # checks and its unlink (#306).
-                        await self._check_delete_paths(
-                            job_id, expected_paths, fingerprints, output_real,
-                        )
-
-                        # Referrers (.m3u, ...) move to the output before the
-                        # Source goes; if any can't, the Source stays (#295).
-                        referrer_outcome = await referrers.update_before_source_removal(
-                            source_for_delete,
-                            {path: job.output_path for path in delete_order},
+                        removal = await self._delete_source_set(
+                            job_id,
+                            file_path=job.file_path,
+                            output_path=job.output_path,
+                            expected_paths=list(snapshot.get("paths", [])),
+                            fingerprints=snapshot.get("fingerprints") or {},
+                            check_label=check_label,
                             cancel_event=cancel_event,
+                            cancelled=lambda: job_id in self._cancelled,
+                            deleted=job.deleted_paths,
                         )
-                        job.referrers_updated = referrer_outcome.records
-                        # The hook awaited a worker thread: re-ask cancel and
-                        # every per-path identity check before removing.
-                        kept_reason = None
-                        if cancel_event.is_set():
-                            kept_reason = (
-                                f"Output is {check_label}. Delete skipped (cancelled)."
-                            )
-                        elif not referrer_outcome.ok:
-                            kept_reason = referrer_outcome.kept_message
-                        else:
-                            try:
-                                await self._check_delete_paths(
-                                    job_id, expected_paths, fingerprints, output_real,
-                                )
-                            except RuntimeError as exc:
-                                kept_reason = f"converted, source kept: {exc}"
-                            # That check awaited too; a Cancel there still wins.
-                            if kept_reason is None and cancel_event.is_set():
-                                kept_reason = (
-                                    f"Output is {check_label}. Delete skipped (cancelled)."
-                                )
-                        if kept_reason:
-                            # The Source stays and the job completes: let go
-                            # of the delete holds, and say why where every
-                            # reader of a finished job looks (the CLI's
-                            # report, the job row): job.warning.
-                            self._release_delete_holds(job_id)
-                            job.message = kept_reason
-                            job.warning = kept_reason
+                        job.referrers_updated = removal.referrer_records
+                        if removal.cancelled:
+                            # One last look before anything is unlinked
+                            # (#306): a cancel here ends CANCELLED.
+                            raise ConversionCancelled("Conversion cancelled")
+                        if removal.kept_reason:
+                            # The Source stays and the job completes: say why
+                            # where every reader of a finished job looks (the
+                            # CLI's report, the job row): job.warning.
+                            job.message = removal.kept_reason
+                            job.warning = removal.kept_reason
                             await self._notify_subscribers(
                                 job_id,
                                 {
@@ -3929,23 +4121,7 @@ class JobManager:
                                 },
                             )
                         else:
-                            if cancel_event.is_set() or job_id in self._cancelled:
-                                # One last look before anything is unlinked
-                                # (#306): a cancel here ends CANCELLED.
-                                self._release_delete_holds(job_id)
-                                raise ConversionCancelled("Conversion cancelled")
-                            for path in delete_order:
-                                await run_in_threadpool(os.remove, path)
-                                job.deleted_paths.append(path)
-                            self._release_delete_holds(job_id)
-
                             source_deleted = True
-
-                            ext = os.path.splitext(job.file_path)[1].lower()
-                            if ext in registry.verify_extensions():
-                                await verification_store.clear(job.file_path)
-                            if ext == ".chd":
-                                await chd_metadata_store.clear(job.file_path)
 
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)

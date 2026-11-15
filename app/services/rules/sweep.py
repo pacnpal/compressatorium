@@ -43,6 +43,9 @@ from models import ConversionMode, JobStatus
 from services import findings, image_checks, notifications, subprocess_runner
 from services.image_sets import image_fingerprint
 from services.job_manager import (
+    KEPT_DELETED,
+    KEPT_STALE,
+    SOURCE_KEPT_FOR_READERS,
     OutputClaimedError,
     QueueBackpressureError,
     job_manager,
@@ -93,6 +96,16 @@ logger = get_logger("romm_auto")
 # unresponsive. Generous for a healthy mount (these are a resolve and two
 # stats) and short enough that a dead one costs a sweep rather than a restart.
 _CANDIDATE_PROBE_SECONDS = 30
+
+# Sources a Rule's delete step kept because another job was reading them
+# (#329), by Platform in the Rule state: ``{image key: {"source", "output",
+# "job_id", "kept_at", "attempts", ...}}``. Each later sweep retries the
+# delete step for them (``job_manager.retry_kept_delete``); one a reader holds
+# again is retried up to KEPT_DELETE_MAX_ATTEMPTS times, then dropped with a
+# ``source_kept`` Finding. At most KEPT_DELETES_PER_SWEEP are tried a sweep.
+KEPT_SOURCES = "kept_sources"
+KEPT_DELETE_MAX_ATTEMPTS = 10
+KEPT_DELETES_PER_SWEEP = 25
 # How long the save-time output-directory validation may take. Generous: it
 # resolves each candidate and stats every configured volume, and a healthy
 # local mount answers instantly. See `normalize_rules_bounded`.
@@ -750,6 +763,11 @@ async def note_job_finished(job) -> None:
     # Captured before any await; see `_generations`.
     generation = _generations.get(library.id, 0)
     if (
+        done and getattr(job, "delete_on_verify", False)
+        and getattr(job, "warning", None) == SOURCE_KEPT_FOR_READERS
+    ):
+        await _remember_kept_source(library, platform_id, rom_id, job, generation)
+    if (
         FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED
         and await _same_rule(library, platform_id, identity)
     ):
@@ -789,6 +807,113 @@ async def note_job_finished(job) -> None:
         record["done"] = done
         state[platform_id]["converted"][rom_id] = record
         await store.write(store.STATE_KEY, library, state)
+
+
+async def _remember_kept_source(
+    library: Library, platform_id: str, image_key: str, job, generation: int,
+) -> None:
+    """Note a Source the delete step kept for a reader, for a later sweep to
+    retry (#329). Any Library: it needs no converted history."""
+    pending = {
+        "source": getattr(job, "file_path", None),
+        "output": getattr(job, "output_path", None),
+        "job_id": getattr(job, "id", None),
+        "kept_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "attempts": 0,
+    }
+    if not pending["source"] or not pending["output"]:
+        return
+    async with _sweep_lock:
+        if _generations.get(library.id, 0) != generation:
+            return  # removed meanwhile
+        state = await get_state(library)
+        entry = dict(state.get(platform_id) or {})
+        kept = dict(entry.get(KEPT_SOURCES) or {})
+        kept[str(image_key)] = pending
+        entry[KEPT_SOURCES] = kept
+        state[platform_id] = entry
+        await store.write(store.STATE_KEY, library, state)
+
+
+async def _retry_kept_deletes(
+    library: Library, rules: dict, wanted: set[str] | None,
+    stopping: Callable[[], bool], result: dict,
+) -> None:
+    """Retry the delete step for every Source a reader kept (#329).
+
+    Only for a Platform whose conversion Rule still deletes its Sources: a
+    Rule turned off or changed to keep them drops the entry. The retry takes
+    the same locks and checks as the job's own delete step and establishes
+    again that the output is the checked one and the Source is unchanged and
+    inside the Volumes; anything that no longer holds drops the entry with the
+    Source kept. A reader again counts an attempt; at the cap the entry is
+    dropped and a ``source_kept`` Finding says so.
+    """
+    state = await get_state(library)
+    budget = KEPT_DELETES_PER_SWEEP
+    changed = False
+    for platform_id in sorted(state):
+        entry = state[platform_id]
+        kept = entry.get(KEPT_SOURCES) if isinstance(entry, dict) else None
+        if not kept or (wanted is not None and platform_id not in wanted):
+            continue
+        rule = rules.get(platform_id) or {}
+        remaining = dict(kept)
+        for image_key in sorted(kept):
+            if stopping() or budget <= 0:
+                break
+            pending = kept[image_key]
+            if not rule.get("delete_on_verify") or not isinstance(pending, dict):
+                remaining.pop(image_key)
+                continue
+            budget -= 1
+            outcome = await job_manager.retry_kept_delete(
+                source_path=str(pending.get("source") or ""),
+                output_path=str(pending.get("output") or ""),
+            )
+            if outcome.status == KEPT_DELETED:
+                remaining.pop(image_key)
+                result["kept_sources_deleted"] = result.get("kept_sources_deleted", 0) + 1
+                continue
+            if outcome.status == KEPT_STALE:
+                logger.info(
+                    "rules: not retrying the delete of %s: %s",
+                    pending.get("source"), outcome.reason,
+                )
+                remaining.pop(image_key)
+                continue
+            attempts = int(pending.get("attempts") or 0) + 1
+            if attempts < KEPT_DELETE_MAX_ATTEMPTS:
+                remaining[image_key] = {
+                    **pending, "attempts": attempts, "last_reason": outcome.reason,
+                }
+                continue
+            remaining.pop(image_key)
+            result["kept_sources_given_up"] = result.get("kept_sources_given_up", 0) + 1
+            await _probe(
+                findings.observe, library.id, findings.Observed(
+                    kind=findings.SOURCE_KEPT, image_key=str(image_key),
+                    path=str(pending.get("source") or ""),
+                    reason=(
+                        f"Source kept: still in use after {attempts} tries to delete it "
+                        f"({outcome.reason})"
+                    ),
+                    cause={"source": pending.get("source"), "output": pending.get("output")},
+                ),
+                default=None,
+            )
+        if remaining != kept:
+            entry = dict(entry)
+            if remaining:
+                entry[KEPT_SOURCES] = remaining
+            else:
+                entry.pop(KEPT_SOURCES, None)
+            state[platform_id] = entry
+            changed = True
+    if changed:
+        await store.write(store.STATE_KEY, library, state)
+    # A Source deleted by hand after the sweep gave up: its Finding goes.
+    await _probe(findings.clear_gone, library.id, findings.SOURCE_KEPT, default=0)
 
 
 async def _prune_holds(
@@ -1205,6 +1330,7 @@ async def _sweep_locked(
     check_runs: list = []
     if not dry_run:
         await _clear_vanished(library)
+        await _retry_kept_deletes(library, rules[CONVERT], wanted, stopping, result)
 
     for kind, platform_id in ordered:
         if stopping():

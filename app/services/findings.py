@@ -41,6 +41,10 @@ KINDS = (PLATFORM_CONFLICT, UNSORTED)
 # a night, never the whole Library, so these are written one Image at a time
 # (`observe`, `resolve`) and never by `reconcile`.
 NOT_INTACT = "not_intact"
+# A Rule's delete step kept the Source for a reader, and every later sweep
+# found one again until it gave up (#329). Written one Image at a time, like
+# NOT_INTACT, and cleared once the Source is gone.
+SOURCE_KEPT = "source_kept"
 
 # Serialises a producer's write against forgetting its Library, so a walk that
 # outlives its Library cannot write after that Library's rows are dropped.

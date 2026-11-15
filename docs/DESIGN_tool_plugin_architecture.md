@@ -4083,6 +4083,40 @@ look just before the unlinks ends the job CANCELLED instead. Two processes
 rewriting one playlist take turns on the cross-process Referrer lock (§3.3.15,
 *Concurrency*), so neither edit is lost.
 
+**A Source kept for a reader is retried (#329).** The delete step itself
+(plan again, `_check_delete_paths` with its `mutation_guard`, the Referrer
+hook, the check again, the unlinks, the store clears) is one method,
+`JobManager._delete_source_set`, shared by a job and a retry. When a Rule's
+job keeps its Source for a reader, the sweep's terminal listener
+(`note_job_finished`) records it in that Platform's Rule state, the same
+`rules.state` row (`services/rules/store.py`) that holds the converted
+history and the failed holds: `kept_sources[image key] = {source, output,
+job_id, kept_at, attempts}`. Every later sweep, the web app's and
+`compressatorium run-rules`'s alike (`_retry_kept_deletes`, before any
+planning, never in a preview), calls `JobManager.retry_kept_delete(source,
+output)` for each, at most `KEPT_DELETES_PER_SWEEP` a sweep:
+
+- It takes the output's lock and every delete path's, exclusively and without
+  waiting, as the job did. One still held is `reader`: try again next sweep.
+- Under those locks it establishes again, failing closed on each
+  (`_kept_delete_snapshot`, bounded on a detached thread): the output has a
+  passing check record naming this Source, with a full `produced_meta`; the
+  output on disk is the very file that record fingerprinted (size, mtime,
+  inode, device); the Source is inside the Volumes
+  (`is_within_configured_volumes`); and a fresh delete snapshot of the Source
+  equals the `produced_meta` Source fingerprints. Any of these not holding is
+  `stale`: the entry is dropped and the Source kept for good. So is an
+  archive member's Source, which has no `produced_meta`.
+- Then `_delete_source_set` runs, as for the job. A Referrer or path check
+  that keeps the Source is `kept`: try again.
+
+A Platform whose conversion Rule no longer deletes its Sources drops its
+entries. `reader` and `kept` count an attempt; at `KEPT_DELETE_MAX_ATTEMPTS`
+(10) the entry is dropped and a `source_kept` Finding (`findings.SOURCE_KEPT`)
+names the Source, cleared once the Source is gone (`findings.clear_gone`).
+The sweep's result counts `kept_sources_deleted` and `kept_sources_given_up`
+when either happened.
+
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
 drop run unchanged, and the re-executed entrypoint hands straight back to the

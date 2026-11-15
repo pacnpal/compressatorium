@@ -4,6 +4,13 @@
 
 ### Added
 
+- **A Source kept because another job was reading it is deleted later**
+  (#329). When a Rule's delete step finds the Source still in use, the job
+  keeps it and says so; now the next sweep (the app's or `compressatorium
+  run-rules`) tries the delete again, under the same locks and checks, after
+  making sure the output is still the checked one and the Source is unchanged.
+  A Source still in use after 10 sweeps stays, with a **Source kept** Finding.
+
 - **eXoDOS repack for RomM** (#323). A new **eXoDOS** tool turns an eXoDOS game
   zip into a `.dosz` laid out for RomM's in-browser DOS player (DOSBox Pure),
   with the game's own `dosbox.conf` as the file's first entry. The game moves
