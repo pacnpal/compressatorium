@@ -331,7 +331,7 @@ export const TOOLS = [
       { mode: 'z3ds_compress', kind: 'compress', label: 'Compress 3DS', group: 'z3ds',
         outputExt: null, inputExtensions: Z3DS_COMPRESS_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true, allowsArchiveInput: true },
       { mode: 'z3ds_decompress', kind: 'extract', label: 'Decompress 3DS', group: 'z3ds',
         outputExt: null, inputExtensions: Z3DS_VERIFY_EXTS,
         supportsCompression: false, supportsCompressionLevel: false,

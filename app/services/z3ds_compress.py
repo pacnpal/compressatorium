@@ -140,6 +140,37 @@ class Z3DSCompressService:
 
         return await run_detached(_read_offset, cancel_event=cancel_event)
 
+    @staticmethod
+    def decode_command() -> list[str] | None:
+        """The decoder the Round-trip pipes a Z3DS payload through, or None.
+
+        The payload after the header and metadata is seekable zstd: ordinary
+        zstd frames holding the ROM, then a skippable seek-table frame that
+        ``zstd -d`` passes over. The same binary ``verify`` uses for ``-t``.
+        """
+        zstd_path = shutil.which("zstd")
+        return [zstd_path, "-d", "-c", "-q"] if zstd_path else None
+
+    async def decoded_sha1(
+        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str:
+        """SHA1 of the ROM a Z3DS container decodes to, streamed (#301).
+
+        The payload is fed to ``zstd -dc`` and its stdout hashed as it arrives
+        (``SubprocessRunner.hash_stdout``), so no decoded ROM is written. The
+        caller bounds the call; a cancel stops zstd and raises ReadCancelled.
+        """
+        cmd = self.decode_command()
+        if cmd is None:
+            raise RuntimeError("zstd not found; the decoded ROM cannot be hashed")
+        offset = await self._get_verify_payload_offset(
+            file_path, cancel_event=cancel_event,
+        )
+        return await self._runner.hash_stdout(
+            cmd, stdin_path=file_path, stdin_offset=offset,
+            cancel_event=cancel_event,
+        )
+
     def get_output_path(self, input_path: str, output_dir: str | None = None) -> str:
         """Calculate output path for a 3DS file.
 

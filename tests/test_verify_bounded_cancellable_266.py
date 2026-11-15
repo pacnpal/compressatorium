@@ -265,6 +265,9 @@ async def _run_delete_on_verify_job(tmp_path: Path, monkeypatch, fake_verify):
         output_path=str(output_path),
         delete_on_verify=True,
         delete_snapshot=build_delete_snapshot(str(source_path)),
+        # The fake output holds no ROM; these tests are about the container
+        # check, so the job skips the Round-trip (#301).
+        container_only=True,
     )
     await manager._process_job(job.id)
     return manager, job, source_path

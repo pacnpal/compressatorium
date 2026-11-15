@@ -299,6 +299,138 @@ async def test_cancel_while_decoding_keeps_the_iso_without_a_verdict(e2e, monkey
     assert await loop.run_in_executor(None, stopped.wait, 5)
 
 
+# ---------------------------------------------------------------------------
+# z3ds: the zstd payload piped through a decoder, stdout hashed
+# ---------------------------------------------------------------------------
+
+
+def _z3ds():
+    return registry.get("z3ds")
+
+
+def write_z3ds(path: Path, payload: bytes, *, metadata: bytes = b"meta" * 8,
+               uncompressed: int = 0) -> None:
+    """A Z3DS container: 0x20-byte header, metadata, then ``payload``."""
+    header = struct.pack(
+        "<4s4sBBHIQQ", b"Z3DS", b"NCSD", 1, 0, 0x20, len(metadata),
+        len(payload), uncompressed,
+    )
+    path.write_bytes(header + metadata + payload)
+
+
+# A stand-in decoder: what a test's "compressed" payload is, it writes back.
+_CAT = [
+    __import__("sys").executable, "-c",
+    "import shutil, sys; shutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)",
+]
+
+
+@pytest.fixture(name="z3ds_decoder")
+def _z3ds_decoder(monkeypatch):
+    monkeypatch.setattr(_z3ds()._service, "decode_command", lambda: list(_CAT))
+
+
+@pytest.mark.asyncio
+async def test_z3ds_rom_digest_is_the_file_sha1(tmp_path):
+    rom = tmp_path / "Game.3ds"
+    rom.write_bytes(b"cartridge" * 999)
+    assert await _z3ds().content_digest(str(rom)) == ContentDigest(
+        kind=IMAGE, value=_sha1(rom.read_bytes()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_z3ds_container_digest_hashes_the_decoded_payload(tmp_path, z3ds_decoder):
+    rom = b"cartridge" * 999
+    out = tmp_path / "Game.z3ds"
+    write_z3ds(out, rom)
+    assert await _z3ds().content_digest(str(out)) == ContentDigest(
+        kind=IMAGE, value=_sha1(rom),
+    )
+
+
+@pytest.mark.asyncio
+async def test_z3ds_decoder_failure_is_unavailable(tmp_path, monkeypatch):
+    out = tmp_path / "Game.z3ds"
+    write_z3ds(out, b"payload")
+    monkeypatch.setattr(
+        _z3ds()._service, "decode_command",
+        lambda: [__import__("sys").executable, "-c", "import sys; sys.exit(1)"],
+    )
+    with pytest.raises(Exception):  # noqa: B017 - any failure is "not proven"
+        await _z3ds().content_digest(str(out))
+
+
+@pytest.mark.asyncio
+async def test_z3ds_without_zstd_is_unavailable(tmp_path, monkeypatch):
+    out = tmp_path / "Game.z3ds"
+    write_z3ds(out, b"payload")
+    monkeypatch.setattr(_z3ds()._service, "decode_command", lambda: None)
+    with pytest.raises(ContentDigestUnavailable, match="zstd"):
+        await _z3ds().content_digest(str(out))
+
+
+def test_z3ds_compress_declares_round_trip():
+    assert registry.mode_supports_round_trip("z3ds_compress")
+
+
+@pytest.mark.asyncio
+async def test_z3ds_job_with_a_matching_container_deletes_the_rom(e2e, z3ds_decoder):
+    rom = e2e["tmp_path"] / "Game.3ds"
+    rom.write_bytes(b"cartridge" * 999)
+    e2e["writer"] = lambda src, out: write_z3ds(out, src.read_bytes())
+
+    _assert_round_tripped(await _run(e2e, rom, "z3ds_compress"), rom)
+
+
+@pytest.mark.asyncio
+async def test_z3ds_job_whose_container_holds_another_rom_keeps_it(e2e, z3ds_decoder):
+    rom = e2e["tmp_path"] / "Game.cci"
+    rom.write_bytes(b"cartridge" * 999)
+    e2e["writer"] = lambda src, out: write_z3ds(out, src.read_bytes()[1:])
+
+    _assert_kept(await _run(e2e, rom, "z3ds_compress"), rom)
+
+
+_ZSTD = _binary("ZSTD_PATH", "/usr/bin/zstd", "zstd")
+
+
+@pytest.mark.skipif(_ZSTD is None, reason="zstd is not installed")
+@pytest.mark.asyncio
+async def test_real_zstd_decodes_a_multi_frame_payload(tmp_path):
+    """Opt-in: the real decoder the tool runs, over a payload of several zstd
+    frames and a skippable frame, as a seekable-zstd Z3DS payload is laid out."""
+    zstandard = pytest.importorskip("zstandard")
+    rom = os.urandom(300_000) + b"\0" * 200_000
+    c = zstandard.ZstdCompressor()
+    payload = c.compress(rom[:250_000]) + c.compress(rom[250_000:])
+    payload += struct.pack("<II", 0x184D2A5E, 8) + b"seektabl"
+    out = tmp_path / "Game.zcci"
+    write_z3ds(out, payload, uncompressed=len(rom))
+
+    digest = await _z3ds().content_digest(str(out))
+
+    assert digest.value == _sha1(rom)
+
+
+_Z3DS_BIN = _binary("Z3DS_COMPRESSOR_PATH", "/usr/local/bin/z3ds_compressor", "z3ds_compressor")
+
+
+@pytest.mark.skipif(_Z3DS_BIN is None or _ZSTD is None, reason="z3ds_compressor is not installed")
+@pytest.mark.asyncio
+async def test_real_z3ds_compressor_output_decodes_to_the_rom(tmp_path):
+    import subprocess
+
+    rom = tmp_path / "Game.3ds"
+    rom.write_bytes(os.urandom(1 << 20) + b"\0" * (1 << 20))
+    out = tmp_path / "Game.z3ds"
+    subprocess.run([_Z3DS_BIN, "-c", str(rom), str(out)], check=True, capture_output=True)
+
+    digest = await _z3ds().content_digest(str(out))
+
+    assert digest.value == _sha1(rom.read_bytes())
+
+
 _MAXCSO = _binary("MAXCSO_PATH", "/usr/local/bin/maxcso", "maxcso")
 
 
