@@ -468,7 +468,9 @@ Nothing leaves the server until you add a destination. You get:
 - one message when a sweep finishes, with its counts and the space it saved;
   anything that failed inside the sweep is listed in that message, not sent
   separately;
-- one message when a job you started by hand fails.
+- one message when a job you started by hand fails;
+- one message when a [check Rule](#check-rules) finds Images that are not
+  Intact, listing them.
 
 There are three destination types. A **generic webhook** gets a JSON `POST`:
 
@@ -775,6 +777,62 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
 
 The RomM view's **Automation** tab is the same Rules view, opened on RomM.
 
+### Check Rules
+
+A check Rule checks Images instead of converting them: it has no target format.
+A Platform can have one beside its conversion Rule, so "convert PS2 to CHD" and
+"check PS2 nightly" work together. Expand a Platform in the Rules view, on a
+folder Library or on RomM, tick **Check these Images are Intact**, and set how
+much to read a night ("check 50 GB a night"), a time window and weekdays:
+
+- A check Rule runs once per window, on each weekday you allow, on its own
+  clock: the conversion Rule on the same Platform keeps its own. A run that
+  starts late in the window, or carries on past midnight, does not move the
+  next night's run. No window, or the same start and end (03:00 to 03:00),
+  means the whole day: once a day from local midnight. (A conversion Rule
+  with the same start and end is paused instead, since there it is a slip.) Nightly runs need **Run
+  automatically** on for the Library. **Run now** runs both, and the check
+  spends another budget's worth on top of the nightly run, which still comes
+  when it is due.
+- The Images never checked go first, then the ones checked longest ago. They
+  are taken in that order until the next one does not fit the budget; a smaller
+  one further down never jumps ahead. The budget counts an Image's full size,
+  every track. An Image larger than the whole budget is checked on its own
+  rather than never.
+- Each Image goes through its tool's own **Verify**, the same check as the
+  Verify action. A run is one job in the Jobs panel, and Cancel stops it.
+  While an Image's Verify runs and its result is recorded (not while it waits
+  its turn) it is held like a file a conversion reads. A conversion that finishes then and would delete
+  that Source waits briefly; if the check is still reading it, the conversion
+  completes with "Source kept: it was being read by another job", leaving the
+  Source and the new file both in place.
+  An Image that is gone or changed by the time its turn comes (converted
+  away, deleted, replaced) is skipped: no Finding and no check time.
+- An Image that fails becomes a **Not Intact** Finding, and the run sends one
+  notification listing every failure. A later check that passes clears the
+  Finding. Dismissing it hides it while the file stays the same.
+- A check that could not run (the tool is missing, it timed out, its
+  verifier was killed) gives no Finding and no check time. The attempt only
+  sends the Image behind the others, so one that never reaches a verdict does
+  not take every night's budget. An Image no installed tool can check on its
+  Platform (a PS2 `.iso`) is skipped and does not count against the budget.
+- A Not Intact Finding whose file is gone (its folder still there) is cleared
+  by the next listing or sweep. Pointing RomM at another instance or library
+  drops RomM's check times and Not Intact Findings, since the new instance
+  reuses ROM ids for other games.
+- **Preview** lists what tonight's run would check, and checks nothing.
+
+A check never converts, moves, renames or deletes anything.
+
+A run on a GBA folder with one damaged ROM archive: its Not Intact row in
+Findings (no Set Platform: the file is the problem, not its folder), and the
+run's Check job in the Jobs panel with its result.
+
+| Light | Dark |
+|-------|------|
+| ![Findings with a Not Intact row, light](docs/screenshots/findings-not-intact-light.png) | ![Findings with a Not Intact row, dark](docs/screenshots/findings-not-intact-dark.png) |
+| ![A Check job in the Jobs panel, light](docs/screenshots/jobs-check-light.png) | ![A Check job in the Jobs panel, dark](docs/screenshots/jobs-check-dark.png) |
+
 ### Findings and folder Platforms
 
 The **Findings** view (in the sidebar) lists every Image in a folder Library
@@ -785,6 +843,8 @@ that needs your decision:
   ngc").
 - **Unsorted**: nothing names the Image's Platform, or the file could not be
   read.
+- **Not Intact**: a [check Rule](#check-rules) found the Image fails its
+  tool's check (in a folder or RomM Library). It has no Set Platform action.
 
 Each row shows the Library, the Image, the kind, and when it was first and last
 seen, with three actions: **Open folder** shows it in the Workspace, **Set
@@ -1071,6 +1131,14 @@ A folder registered as a Library, with the Platforms found in it, its Unsorted a
 | Light | Dark |
 |-------|------|
 | ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
+
+#### Check Rule
+
+A PS2 Platform with a conversion Rule and a check Rule: 50 GB a night between 01:00 and 05:00. See [Check Rules](#check-rules).
+
+| Light | Dark |
+|-------|------|
+| ![Check Rule in the rule editor, light](docs/screenshots/rule-editor-check-light.png) | ![Check Rule in the rule editor, dark](docs/screenshots/rule-editor-check-dark.png) |
 
 #### Findings
 
@@ -1851,7 +1919,10 @@ ids are listed by `/api/libraries`). `--dry-run` prints what each
 Rule would queue on this pass and writes nothing. Unlike the editor's Preview it
 keeps each Rule's clock, so a Rule that is not due (outside its window, or run
 within its interval) prints no line. It prints one line per Platform and one per
-job as it ends.
+job as it ends. A due [check Rule](#check-rules) runs here too, and the pass
+waits for its checks: an Image that is not Intact, or whose check could not
+run, makes it exit `1`, and the check Rule's night counts as done only once its
+checks have finished.
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
 background: it finishes an identity cleanup a crash left owed (otherwise RomM

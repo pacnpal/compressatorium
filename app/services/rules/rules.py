@@ -6,6 +6,12 @@ result, when to run, how much to queue at once, and which Images to consider.
 Platforms are independent, because a Library is not homogeneous and one global
 setting cannot describe it.
 
+A Rule is one of two kinds (#305). A conversion Rule (``CONVERT``) has a
+target format. A check Rule (``CHECK``) has none: once a night, inside its
+window and on its weekdays, it checks the stalest Images of its Platform until
+``check_budget_gb`` is used (see :mod:`services.rules.check`). A Rule's identity
+is (Library, Platform, kind), so one Platform can have one of each.
+
 Pure apart from one thing: an output directory is checked against the
 configured Volumes when a Rule is saved. Nothing here knows which Library a
 Rule belongs to. The few defaults a Library sets come in as ``defaults``.
@@ -49,7 +55,20 @@ _BOUNDS = {
     "min_size_mb": (0, 1024 * 1024),
     "max_size_mb": (0, 1024 * 1024),
     "compression_level": (0, 22),
+    "check_budget_gb": (1, 1024 * 1024),
 }
+
+# A check Rule (no target format) runs once per window, not on an interval
+# (`schedule._is_due`). Its stored interval is fixed at a day, for display and
+# for a reader that only knows intervals; the schedule does not read it.
+CHECK_INTERVAL_MINUTES = 24 * 60
+DEFAULT_CHECK_BUDGET_GB = 50
+
+# The two kinds of Rule. Each kind is stored on its own (``store``), so a
+# Platform can have a conversion Rule and a check Rule at once.
+CONVERT = "convert"
+CHECK = "check"
+RULE_KINDS = (CONVERT, CHECK)
 
 # Cap on a user-supplied filter pattern. A pathological regex is the operator's
 # own doing, but length is a cheap first guard against the obvious ones.
@@ -440,18 +459,32 @@ def default_rule(
         # editor can say why the rule is paused instead of silently widening it.
         "invalid_pattern": False,
         "invalid_window": False,
+        # A check Rule's nightly byte budget, in GB. Read only when the Rule
+        # has no target format (`is_check_rule`).
+        "check_budget_gb": DEFAULT_CHECK_BUDGET_GB,
     }
 
 
+def is_check_rule(rule: Mapping[str, Any]) -> bool:
+    """Whether *rule* checks Images rather than converting them: it has no target."""
+    return not rule.get("mode")
+
+
+def rule_kind(rule: Mapping[str, Any]) -> str:
+    """``CHECK`` for a check Rule, else ``CONVERT``."""
+    return CHECK if is_check_rule(rule) else CONVERT
+
+
 def normalize_rule(
-    raw: Any, *, mode_required: bool = True, check_volumes: bool = True,
+    raw: Any, *, kind: str = CONVERT, check_volumes: bool = True,
     volumes_unreachable: bool = False, defaults: Mapping[str, Any] | None = None,
     duplicate_actions: Iterable[str] = DUPLICATE_ACTIONS,
 ) -> dict[str, Any] | None:
     """Coerce one submitted/stored rule into the full schema.
 
-    Returns None when the rule cannot be honoured at all (no mode, or a mode no
-    registered tool provides). Tolerant elsewhere: a rule naming a stale option
+    *kind* is the Rule's kind. A ``CONVERT`` Rule with no mode, or a mode no
+    registered tool provides, cannot be honoured: None. A ``CHECK`` Rule has no
+    mode, whatever *raw* says. Tolerant elsewhere: a rule naming a stale option
     falls back to that field's default rather than failing the whole sweep,
     because these blobs outlive the tools that were installed when they were
     written. *defaults* is the Library's ``rule_defaults()``.
@@ -460,8 +493,15 @@ def normalize_rule(
     """
     if not isinstance(raw, dict):
         return None
+    if kind == CHECK:
+        # The check sweep reads none of a conversion's selection settings, so
+        # a check Rule takes none (they keep their defaults): what is saved is
+        # what runs, and a stray regex cannot pause it.
+        raw = {k: v for k, v in raw.items() if k not in _CONVERSION_ONLY_FIELDS}
     out = default_rule(defaults=defaults)
-    mode = raw.get("mode")
+    mode = raw.get("mode") if kind == CONVERT else None
+    if kind == CONVERT and not (isinstance(mode, str) and mode):
+        return None
     if isinstance(mode, str) and mode:
         try:
             registry.spec(mode)
@@ -478,8 +518,6 @@ def normalize_rule(
             )
             return None
         out["mode"] = mode
-    elif mode_required:
-        return None
 
     spec = registry.spec(out["mode"]) if out["mode"] else None
 
@@ -501,7 +539,8 @@ def normalize_rule(
         and raw.get("compression_level") is not None
     ):
         out["compression_level"] = _clamp("compression_level", raw["compression_level"], 0)
-    if raw.get("output_dir") and not check_volumes:
+    # A check Rule writes nothing, so its output folder is never read.
+    if out["mode"] and raw.get("output_dir") and not check_volumes:
         # Reading back what was already validated when it was saved. The check
         # below resolves the candidate and stats every configured volume, and
         # `get_rules()` is awaited by the rules API and by every sweep while it
@@ -513,7 +552,7 @@ def normalize_rule(
         if raw.get("invalid_output_dir"):
             out["invalid_output_dir"] = raw["invalid_output_dir"]
             out["enabled"] = False
-    elif raw.get("output_dir"):
+    elif out["mode"] and raw.get("output_dir"):
         candidate = str(raw["output_dir"])
         within = False if volumes_unreachable else is_within_configured_volumes(candidate)
         # The sweep queues through the job manager directly, so it does not get
@@ -598,6 +637,13 @@ def normalize_rule(
     if (out["window_start"] or out["window_end"]) and (starts is None or ends is None):
         out["invalid_window"] = True
         out["enabled"] = False
+    elif kind == CONVERT and starts is not None and starts == ends:
+        # The same start and end is a slip for a conversion: read literally it
+        # opens for one instant, read as "all day" it converts through working
+        # hours, delete-source included. Paused, as half a window is. (A check
+        # Rule reads it as the whole day: `schedule._window`.)
+        out["invalid_window"] = True
+        out["enabled"] = False
     out["timezone"] = _valid_timezone(raw.get("timezone"))
     days = raw.get("days")
     if isinstance(days, list):
@@ -625,15 +671,24 @@ def normalize_rule(
         # Pause rather than run wider than asked. The editor shows why.
         out["invalid_pattern"] = True
         out["enabled"] = False
-    # A refused value is replaced by the wider fallback, so the *reason* has to
+    # A refused pattern is replaced by the wider fallback, so the *reason* has to
     # survive the round trip or the pause becomes unreadable: re-normalizing a
     # stored rule sees `exclude_pattern: None`, finds nothing wrong with it, and
     # clears the flag -- leaving the editor showing a rule paused for no stated
     # reason, and the sweep unable to tell an operator's pause from this one.
-    for flag in ("invalid_pattern", "invalid_window"):
-        if raw.get(flag):
-            out[flag] = True
-            out["enabled"] = False
+    if raw.get("invalid_pattern"):
+        out["invalid_pattern"] = True
+        out["enabled"] = False
+    # `invalid_window` is never read from `raw`. The window is kept as sent, so
+    # the check above recomputes the flag on every save; honouring a sent flag
+    # would keep a corrected window paused for good (Codex 4577383258).
+
+    out["check_budget_gb"] = _clamp(
+        "check_budget_gb", raw.get("check_budget_gb"), DEFAULT_CHECK_BUDGET_GB,
+    )
+    if is_check_rule(out):
+        # Once per window (schedule._is_due); the interval is only a label.
+        out["interval_minutes"] = CHECK_INTERVAL_MINUTES
 
     out["only_unmatched"] = bool(raw.get("only_unmatched", False))
     out["only_matched"] = bool(raw.get("only_matched", False))
@@ -642,6 +697,14 @@ def normalize_rule(
     if out["only_matched"] and out["only_unmatched"]:
         out["only_matched"] = out["only_unmatched"] = False
     return out
+
+
+# What a check Rule never uses: its order is stalest first, its limit the budget.
+_CONVERSION_ONLY_FIELDS = (
+    "duplicate_action", "check_level", "max_per_run", "order", "min_size_mb",
+    "max_size_mb", "include_pattern", "exclude_pattern", "only_unmatched",
+    "only_matched", "invalid_pattern",
+)
 
 
 def takes_container_only(rule: Mapping[str, Any]) -> bool:
@@ -675,8 +738,9 @@ def normalize_rules(
     platform_id: Callable[[Any], str | None],
     defaults: Mapping[str, Any] | None = None,
     duplicate_actions: Iterable[str] = DUPLICATE_ACTIONS,
+    kind: str = CONVERT,
 ) -> dict[str, dict]:
-    """Normalize a whole rule set, keyed by Platform id.
+    """Normalize a whole rule set of one *kind*, keyed by Platform id.
 
     *platform_id* is the Library's ``canonical_platform_id``: a key it does
     not accept is dropped, and the rest are stored in its canonical form.
@@ -698,6 +762,7 @@ def normalize_rules(
             continue
         rule = normalize_rule(
             value,
+            kind=kind,
             check_volumes=check_volumes,
             volumes_unreachable=volumes_unreachable,
             defaults=defaults,

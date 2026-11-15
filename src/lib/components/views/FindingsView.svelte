@@ -5,8 +5,10 @@
    * Each folder Library's walk records a Platform conflict (the header and
    * the folder or mapping disagree) or an Unsorted Image (nobody could tell
    * its Platform). Each row links to what fixes it: open the folder in the
-   * file browser, or set the folder's Platform. Dismiss hides a row until its
-   * cause changes. The app never moves or deletes an Image over a Finding.
+   * file browser, or set the folder's Platform. A check Rule (#305) adds a
+   * "not Intact" row for an Image that failed its check, in any Library.
+   * Dismiss hides a row until its cause changes. The app never moves or
+   * deletes an Image over a Finding.
    */
   import { untrack } from 'svelte';
   import { toast } from 'svelte-sonner';
@@ -24,7 +26,12 @@
   import Eye from '@lucide/svelte/icons/eye';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
-  const KIND_LABEL = { platform_conflict: 'Platform conflict', unsorted: 'Unsorted' };
+  const KIND_LABEL = {
+    platform_conflict: 'Platform conflict',
+    unsorted: 'Unsorted',
+    not_intact: 'Not Intact',
+  };
+  const KIND_TONE = { platform_conflict: 'warning', not_intact: 'error' };
 
   // Lists on open, and again when "Show dismissed" flips.
   $effect(() => {
@@ -153,7 +160,7 @@
             <span class="muted reason">{row.reason}</span>
           </span>
           <span role="cell">
-            <Badge tone={row.kind === 'platform_conflict' ? 'warning' : 'neutral'}>
+            <Badge tone={KIND_TONE[row.kind] ?? 'neutral'}>
               {KIND_LABEL[row.kind] ?? row.kind}
             </Badge>
             {#if row.dismissed}<span class="muted small">dismissed</span>{/if}
@@ -168,13 +175,17 @@
             >
               Open folder
             </Button>
-            <Button
-              variant="ghost" size="sm" icon={mapIcon}
-              ariaLabel={`Set the Platform of the folder holding ${row.image_key}`}
-              onclick={() => findings.openMapping(row.folder)}
-            >
-              Set Platform
-            </Button>
+            <!-- A check Rule's "not Intact" (#305) is about the file, not its
+                 Platform: Open folder reaches Verify and the backup. -->
+            {#if row.kind !== 'not_intact'}
+              <Button
+                variant="ghost" size="sm" icon={mapIcon}
+                ariaLabel={`Set the Platform of the folder holding ${row.image_key}`}
+                onclick={() => findings.openMapping(row.folder)}
+              >
+                Set Platform
+              </Button>
+            {/if}
             {#if row.dismissed}
               <Button
                 variant="ghost" size="sm" icon={showIcon}

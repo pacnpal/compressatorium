@@ -7,6 +7,18 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api } from '$lib/api/endpoints.js';
 import { registry } from '$lib/tools/registry.js';
 
+// At most this many paths per /verified/lookup (the server's MAX_VERIFIED_LOOKUP).
+const LOOKUP_CHUNK = 2000;
+
+/** A `{verified, checks}` answer as path -> its check ('intact' by default). */
+function passedChecks(data) {
+  const passed = Object.create(null);
+  for (const path of data?.verified ?? []) {
+    passed[path] = data?.checks?.[path] ?? 'intact';
+  }
+  return passed;
+}
+
 class VerificationStore {
   statuses = new SvelteSet();
   // path -> 'intact' | 'round_tripped': which check a stored output passed.
@@ -15,52 +27,58 @@ class VerificationStore {
   progress = new SvelteMap();
   batchRun = $state(null);
   _batchAbort = null;
-  // Snapshot of statuses at the moment loadVerified() started, used
-  // to detect paths added mid-flight (a `verifyOne` resolved, a
-  // `complete` SSE arrived, etc.) so the response replay doesn't
-  // erase them. Each loadVerified call overwrites the slot.
-  _loadBaseline = null;
+  // One ordering for every write into `statuses` / `checks` (#298, codex
+  // 4578598280, 4579128146). `_seq` grows with each live write and each
+  // request start; `_versions` holds, per path, the number of the write that
+  // set it. A server answer carries its request's number and only replaces a
+  // path set before that request, so neither an older full reload nor an
+  // older lookup can undo a newer live event or a newer answer, whichever
+  // lands first. Plain object: a bookkeeping table nothing renders.
+  _seq = 0;
+  _versions = Object.create(null);
+  // The number of the newest full answer applied. A full answer speaks for
+  // every path, the ones it never names too (codex 4579151542), so nothing
+  // older than it may set any path afterwards.
+  _floor = 0;
+  // Re-reads of a check run's paths still in flight (see applyJobEvent).
+  _lookups = new Set();
 
-  async loadVerified() {
-    // Snapshot the set we're about to overwrite. Anything in `statuses`
-    // that's NOT in this baseline at completion time was added during
-    // the in-flight request and must survive the replay.
-    const baseline = new Set(this.statuses);
-    // Same for check values: a `complete` event during the request can add a
-    // check or upgrade one (intact -> round_tripped) for a path we already had.
-    const checksBaseline = new Map(this.checks);
-    this._loadBaseline = baseline;
+  /**
+   * Take the server's answer: for every path, or, with `paths`, just those (a
+   * check run's, through /verified/lookup, in chunks the server accepts). It
+   * replaces only what is older than the request (see `_seq`).
+   */
+  async loadVerified(paths = null) {
+    const version = ++this._seq;
     try {
-      const data = await api.getVerifiedCHDs();
-      // Preserve mid-flight additions: paths added to `statuses` after
-      // we snapshotted `baseline` but before the response landed.
-      // Plain object map for the membership check, same reason as
-      // jobs.refresh's remoteIds (svelte/prefer-svelte-reactivity
-      // flags raw Set, and SvelteSet here would be pointless
-      // overhead for a transient local).
-      const addedSince = Object.create(null);
-      for (const p of this.statuses) {
-        if (!baseline.has(p)) addedSince[p] = true;
-      }
-      const checksSince = Object.create(null);
-      for (const [p, check] of this.checks) {
-        if (checksBaseline.get(p) !== check) checksSince[p] = check;
-      }
-      this.statuses.clear();
-      for (const path of data?.verified ?? []) this.statuses.add(path);
-      this.checks.clear();
-      for (const [path, check] of Object.entries(data?.checks ?? {})) {
-        this.checks.set(path, check);
-      }
-      for (const path of Object.keys(addedSince)) this.statuses.add(path);
-      for (const [path, check] of Object.entries(checksSince)) {
-        this.checks.set(path, check);
+      if (paths) {
+        for (let i = 0; i < paths.length; i += LOOKUP_CHUNK) {
+          const chunk = paths.slice(i, i + LOOKUP_CHUNK);
+          const data = await api.getVerifiedFor(chunk);
+          const passed = passedChecks(data);
+          for (const path of chunk) this._set(path, passed[path] ?? null, version);
+        }
+      } else {
+        const data = await api.getVerifiedCHDs();
+        const passed = passedChecks(data);
+        this._floor = Math.max(this._floor, version);
+        // Every path either side knows: the answer's, and ours (a path the
+        // server no longer lists is no longer checked).
+        for (const path of [...this.statuses]) {
+          if (!(path in passed)) this._set(path, null, version);
+        }
+        for (const [path, check] of Object.entries(passed)) {
+          this._set(path, check, version);
+        }
       }
     } catch (_e) {
       // non-fatal, leave whatever we had
-    } finally {
-      if (this._loadBaseline === baseline) this._loadBaseline = null;
     }
+  }
+
+  /** Resolves once every check-run re-read in flight has landed. */
+  async pendingLookups() {
+    await Promise.all([...this._lookups]);
   }
 
   isVerified(path) {
@@ -80,15 +98,66 @@ class VerificationStore {
   /** Record that `path` passed `check`. A manual Verify is 'intact'. */
   markChecked(path, check = 'intact') {
     if (!path) return;
-    this.statuses.add(path);
-    this.checks.set(path, check);
+    this._set(path, check, ++this._seq);
   }
 
   /** Drop everything known about `path` (deleted, or no longer checked). */
   forget(path) {
     if (!path) return;
-    this.statuses.delete(path);
-    this.checks.delete(path);
+    this._set(path, null, ++this._seq);
+  }
+
+  /**
+   * Write `path` unless something newer than `version` already spoke for it:
+   * a write to that path, or a full answer, which covers every path.
+   */
+  _set(path, check, version) {
+    if (version < Math.max(this._versions[path] ?? 0, this._floor)) return;
+    this._versions[path] = version;
+    this._write(path, check);
+  }
+
+  /** Set `path`'s check, or clear it with null. Every write goes through here. */
+  _write(path, check) {
+    if (check) {
+      this.statuses.add(path);
+      this.checks.set(path, check);
+    } else {
+      this.statuses.delete(path);
+      this.checks.delete(path);
+    }
+  }
+
+  /**
+   * Apply what a job's event on the jobs stream says about checks.
+   *
+   * A conversion's `complete` carries `verified` / `check_passed` for its
+   * output and `source_deleted` for its Source. A check Rule's run (#305)
+   * sends one `progress` event per Image as it settles, carrying
+   * `verification_changes`: that Image, by the path `/api/verified` lists it
+   * under, with its check now, or null once it is no longer Intact. Applied in
+   * the order they arrive, so a newer pass (a repair and a re-verify) is never
+   * undone by the run's later events.
+   */
+  applyJobEvent(data) {
+    const job = data?.job;
+    if (data?.verified && job?.output_path) {
+      this.markChecked(job.output_path, data.check_passed ?? 'intact');
+    }
+    if (data?.source_deleted && job?.file_path) this.forget(job.file_path);
+    for (const [path, check] of Object.entries(data?.verification_changes ?? {})) {
+      if (check) this.markChecked(path, check);
+      else this.forget(path);
+    }
+    // A check run's end lists the files it settled. Its progress events can
+    // be dropped on a busy stream, so the database answers for those files
+    // again; live events that land meanwhile still win (codex 4578664511).
+    const settled = data?.verification_paths;
+    if (Array.isArray(settled) && settled.length) {
+      const lookup = this.loadVerified(settled);
+      this._lookups.add(lookup);
+      lookup.finally(() => this._lookups.delete(lookup));
+    }
   }
 
   /** Follow a rename. `keep` carries the check over (same-format rename). */

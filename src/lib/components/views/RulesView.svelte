@@ -126,8 +126,8 @@
       <div class="title">
         <h1>Rules</h1>
         <p class="muted">
-          A Rule converts the Images of one Platform in one Library, on a schedule
-          or when you press Run now.
+          A Rule converts or checks the Images of one Platform in one Library, on a
+          schedule or when you press Run now.
         </p>
       </div>
     {/if}

@@ -155,7 +155,15 @@ async def retention_days() -> int | None:
 
 
 async def record(job: ConversionJob) -> None:
-    """Terminal listener: write *job*'s row. Never raises."""
+    """Terminal listener: write *job*'s row. Never raises.
+
+    Skipped only for a job mode that declares it has no row
+    (``job_manager.EXTERNAL_JOB_MODES``: a check Rule's run).
+    """
+    from services.job_manager import in_ledger
+
+    if not in_ledger(job.mode):
+        return
     try:
         await run_in_threadpool(_insert_sync, row_from_job(job), await retention_days())
     except Exception:

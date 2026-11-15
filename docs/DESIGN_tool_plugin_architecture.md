@@ -4303,6 +4303,247 @@ The stale-lock sweeps leave the file alone (`LockManager` only touches
 `filelock-*`, `ConcurrencyManager` only holders and tickets). `convert` and
 `verify` do not take it: they run beside a server.
 
+### 3.3.18 Check Rules (`services/rules/check.py`, `services/image_checks.py`)
+
+A Rule has a kind, `rules.CONVERT` or `rules.CHECK`, and its identity is
+(Library, Platform, kind): a Platform can have a conversion Rule and a check
+Rule. A check Rule has no target format (`rules.is_check_rule`).
+`normalize_rule(raw, kind=...)` drops a `CONVERT` Rule with no mode and gives a
+`CHECK` Rule none, with `check_budget_gb` (1 to 1048576, default 50), the usual
+window, weekdays, timezone, priority and `enabled`. A conversion Rule whose
+window starts and ends at the same time is refused as `invalid_window`
+(paused, the editor says why) and `_window` keeps it literal, so it never
+converts all day. `invalid_window` is recomputed from the submitted window on
+every save, for every kind, and a client-sent value is ignored, so a corrected
+window re-enables the Rule; the editor never sends the flag
+(`rulesSource.svelte.js`). `invalid_pattern` is the one flag read back from the
+stored Rule, because the refused pattern itself is replaced by none. A check
+Rule's `interval_minutes` is
+fixed at `CHECK_INTERVAL_MINUTES` (a day) but the schedule does not read it: a
+check Rule is due once per window (`schedule._is_due`): the window is open on an
+allowed weekday (an overnight window's tail belongs to the day it opened) and
+`last_run_at` is before the moment this window opened (`_window_opened`,
+which resolves the wall-clock start with `_instant`: a start in a
+spring-forward gap opens at the first real instant after it, a start in a
+fall-back repeated hour at its first occurrence, so either opens once; for a
+check Rule a window whose start equals its end is the whole day
+(`schedule._window`), as is no
+window: the whole local day, opened at midnight). A run that starts late
+does not push the next night later, and one that crosses midnight counts for
+the window it started in. Its output folder is never read. Each kind has its own preference rows
+(`store.rules_key(kind)`, `store.state_key(kind)`: `rules` / `rules.state` and
+`rules.check` / `rules.check.state`), each keyed `"<library id>:<platform id>"`,
+so the two kinds never overwrite each other and run on their own clocks. No
+table change: Rules live in preferences, and migration 0014 (on #304's 0013)
+holds only the check times. `sweep.get_rules` / `get_state` take the kind;
+`sweep.set_check_rules` replaces the check Rules. The editor payload carries
+`check_rules` and `check_state` beside `rules` and `state`, and a save replaces
+`check_rules` only when the submission has it.
+
+**Sweep.** `_sweep_locked` walks every (kind, Platform) in priority, Platform,
+kind order, gating each on its own `enabled` and its own kind's state, and
+hands a check Rule to `_sweep_check`. Run now ignores both clocks, so it runs
+both kinds and a check spends another budget. A check Rule's Run now stamps
+`last_manual_run_at`, not `last_run_at` (either stamped with the `now` the
+sweep found the Rule due at, so a pick that runs past midnight counts for the
+window that selected it), and `_is_due` reads only
+`last_run_at`, so the nightly run still comes in its window; a Platform whose tool is not ready and that picked nothing is not
+stamped at all. Before the loop a real sweep calls `_clear_vanished` (bounded,
+detached): `findings.clear_gone(library, NOT_INTACT)` drops a not-Intact
+Finding whose file is missing while its folder lists other entries. A share
+that is not mounted is a missing folder or an empty mount point and clears
+nothing; an Image deleted from a folder it was alone in keeps its Finding until
+it is dismissed. A folder walk calls the same after its reconcile. The per-sweep cap counts conversions only, so a
+check Rule ordered after a capped conversion Rule still runs. `_sweep_check`
+lists the Platform through the same bounded `_list_images` as a conversion,
+reads `image_checks.order_stamps(library.id)`, and walks
+`check.stalest_first` (no row first, then by the later of `checked_at` and
+`attempted_at`, oldest first, then the key: an Image checked long ago that is
+now inconclusive goes to the back too). An inconclusive check writes only
+`attempted_at` (`image_checks.record_attempt`): no check time, no Finding,
+nothing cleared, but the Image goes behind the others, so one that never
+reaches a verdict cannot take every night's budget. Each candidate's disk questions go through `check.inspect` on a detached,
+bounded thread, as a conversion candidate's do. It returns a skip reason
+(`unresolvable`, `missing`, `uncheckable`) or a `Check`: the Image key, path,
+size, the checking tool and the Image's file fingerprint. An Image already
+being checked (`check.in_flight`) or converted (the active-path set) is
+skipped. Readiness is the verifier's (`registry.tool_is_ready(tool,
+purpose="verify")`), not conversion's: jwud checks WUX in pure Python without
+JWUDTool, and z3ds needs zstd to check. A tool that is not ready skips its
+Images and reports
+`tool_not_ready`; it never yields a verdict. Images are taken stalest first
+until the next would pass `check_budget_gb`, never skipping ahead to a smaller
+one; the first is always taken, so one Image larger than the budget is checked
+alone rather than never. Skipped
+Images cost nothing. The Platform summary carries `check: true`, `checks`,
+`check_bytes`, `budget_bytes`, `skipped_uncheckable` and `candidates`; the
+result gains `checks` only when a check Rule ran, so a conversion sweep keeps
+its shape. A preview stops there.
+
+**Which tool.** `ToolRegistry.check_tool(path, slug)` is the first tool from
+`tools_checking_path(path)` (#306's `claims_check`, so an archive too damaged
+to open is still claimed and fails) left after `narrow_to_platform(slug)`. A
+PS2 `.iso` is not given to dolphin-tool for sharing GameCube's extension; with
+nothing left the Image is uncheckable. No per-tool branching: a new tool's
+`verify_extensions`, `claims_check` and `platform_slugs` are all a check needs.
+A stored check comes first, as in the CLI (#306): `check.inspect` reads the
+Image's Verify record and passes its producing mode as
+`check_tool(..., recorded_mode=...)`, and when that mode can verify its tool
+checks the Image with no Platform narrowing (makeps3iso for a PS3 ISO it
+built, though it claims no extension).
+
+**A split output is one Image.** A split makeps3iso build writes
+`Game.iso.0`, `.1`, ... and no `Game.iso`. `ToolRegistry.split_owner(path)`
+maps a numbered part to `(Game.iso, mode)` when the name without its last
+suffix carries a mode's declared output extension (so `save.0` never
+qualifies) and that mode's `companion_outputs` lists the part, the same rule
+as `cli._split_owner`; `split_members(path)` gives the later parts for the
+first one. The folder Library's walk lists such parts and `image_members`
+folds them into one Image on `Game.iso.0`, so the budget pays the parts'
+summed size and the lock and fingerprint cover every part. The check is
+handed `Game.iso.0`, and makeps3iso's verify checks the whole set (#306). The
+record lives under `Game.iso` (`Check.record_path`), so a pass refreshes it
+there and a failure marks it failed there. `ToolRegistry.output_exists(path)`
+is the presence rule for a stored record: the path is on disk, or it is the
+logical name of a split output whose first part is (the same rule as
+`split_owner`, read the other way). `verification_store.prune_missing`, run
+by `/api/verified`, drops only records it answers False for, so a split ISO's
+record and its producing mode survive a page load. `_hold` also takes the shared lock on
+that logical path, with the first part and every later part, from the verify
+slot through the recorded verdict: a directory-input rebuild locks only
+`Game.iso`, so while one runs the Image is skipped as busy. Every file a check reads (each member,
+split part or track) must be inside the Volumes, or the Image is skipped as
+`unresolvable`.
+
+**Run.** A real sweep passes everything every check Rule picked to
+`check.start` once, after its loop, so a sweep is one run, one external job
+(`ConversionMode.CHECK`, in `_EXTERNAL_JOB_MODES`) and at most one
+notification. Each check Rule's run is recorded only once that job has
+reached every Image the Rule picked (`check.start(..., on_finished=...)`, under the
+sweep lock), so a run cut short by a cancel, a stop or a restart leaves its
+Rule due. A sweep that picked nothing records at once. The stamp is still the
+moment the sweep found the Rule due, so a night's run that ends past midnight
+counts for the window that picked it. Until the run ends, its scheduled Rules
+are held in `sweep._active_check_runs` (by Library and Platform), and the
+scheduler picks nothing more for them, so the budget applies once per window.
+A scheduled pick that comes up empty only because its Images are held
+elsewhere for now records nothing, so the Rule is still due once they are
+free. Held elsewhere is one count for every such reason: another check run
+(Run now, `check.in_flight`), a conversion queued or running (the sweep's
+active paths), or a writer's lock on any of the Image's files, which
+`check.inspect` reports as `busy`. A pick that is empty because nothing is
+eligible records as before. Each Image's new state goes to an open page as it
+settles: `check._publish` sends `verification_changes` (the Verify record path
+with its check now, or null once it is no longer Intact) on the run's own
+`progress` event (`update_external_job(..., event_extra=...)`), which the jobs
+stream forwards in order. The browser's `verification.applyJobEvent` applies it
+beside a conversion's `verified` / `source_deleted` flags. Nothing is replayed
+at the end, so a newer pass on a file (a repair and a re-verify) is never
+overwritten by the run's older verdict. A subscriber's queue is bounded (100)
+and drops when full, so the terminal event also lists the paths the run
+settled (`verification_paths`, no verdicts). The store re-reads just those from
+the database through `POST /api/verified/lookup` (at most
+`MAX_VERIFIED_LOOKUP` paths a request, chunked by the client), with the same
+`loadVerified` live-log replay a full reload uses, so a live event that lands
+during the re-read still wins.
+`on_finished(attempted)` is called exactly once as the run ends, with the keys
+of the picked Images the run reached and settled (a verdict either way, no
+verdict, or skipped as gone, changed or in use); a crash, a cancelled task or a
+changed Library reports none. A Rule is recorded only when every Image it
+picked is in that set, so a run that stops early (an abandoned verifier, a
+cancel) leaves the Rules it never reached due; the stop itself still ends the
+run at once. The hold is let go either way. Run now is not held back by it. The hold is in memory: one scheduler runs per data directory
+(#307's scheduler lock), and a restart ends every run. A stop (#307's
+`should_stop`, asked before each Platform, while a Platform lists, before each
+Image is inspected and once more after the loop) starts nothing new: the
+picked Images are dropped and no run is recorded, so the next sweep picks them
+again.
+
+**`run-rules`.** A check run is its own task, not a queued job, so
+`JobManager.drain` does not wait for it. `_run_rules_pass` awaits
+`check.drain(should_stop=...)` after the jobs, still inside the job runner, so
+its terminal listener hears the run end. A stop cancels the running check jobs
+there (their cancel event reaches the slot wait and the verifier), and nothing
+is recorded for the Image in hand. `check.run_outcome(job_id)` holds each
+run's counts; `cli._finish_check_run` fails the pass under the CLI's rule
+(exit 1 when any Image failed, as `verify` does): an Image not Intact, or one
+whose check reached no verdict. A cancelled or crashed run is already a
+cancelled or failed job. The run's `check_failed` alert goes through the queued
+`notifications.notify`, so `cli._job_runner` awaits `notifications.drain()`
+before `job_manager.shutdown()` for every command that runs jobs, bounded by
+three `SEND_TIMEOUT_S` sends in a row. For each Image in order the run waits for a slot on the
+`verify` workload lane, the one the Verify action uses (raced against the job's
+cancel event, so Cancel ends a queued run at once), and only then takes
+#306's shared input lock (`lock_manager.acquire_input_lock`) on the Image and
+its files (`image_members`), so nothing is held while it queues. `_hold` lets
+go of what it took if an acquisition raises. It then compares the Image with
+what the sweep picked (`_unchanged`: still a file, same `image_fingerprint`). A
+lock it cannot get, or an Image gone or changed, is `SKIPPED`: nothing written,
+no notification line. Then `tool.verify(path, cancel_event)`, bounded by
+`tool.verify_timeout(path)`, the same call and bound as the Verify action. The
+verdict is written (`_apply`, then `refresh_check` or `clear`) while the locks
+are still held, so an overwrite conversion cannot replace the file between the
+Verify and the record that describes it; the locks go once it is written,
+cancel included. While they are held,
+#306's delete step finds the Source in use: a delete-source conversion that
+finishes then waits briefly (`_hold_delete_paths_waiting`) and, if the check
+still holds it, completes with `SOURCE_KEPT_FOR_READERS` as its warning,
+keeping the Source and its output. `check.outcome(result)` reads it:
+
+| Result | Outcome | Writes |
+|---|---|---|
+| `valid` | Intact | `image_checks` row (`intact`), `verification_store.refresh_check` (keeps the record's `source_path` and `produced_meta`), `findings.resolve(not_intact)` |
+| not `valid` | not Intact | `image_checks` row (`not_intact`), `verification_store.mark_failed` (keeps `produced_meta` and `source_path`), `findings.observe(not_intact)` |
+| `inconclusive`, `abandoned` or `uncheckable` flag (#306: a verifier killed by a signal via `verify_exit_event`; an allowlisted exception or a timeout via `verify_exception_event`; a file this app's own rules refuse, such as an archive over the safety limits) | inconclusive | `attempted_at` only |
+| any other exception from the check (`verify_exception_event` reads it as the tool rejecting the data) | not Intact | as not `valid` |
+| `cancelled` | the run stops | nothing for that Image |
+
+A failed check keeps the Verify row with `check_passed = "failed"`
+(`verification_store.FAILED`, migration 0010's column): `is_verified`,
+`get_record` and `all_records` skip it, so the Intact badge, the re-run fast
+path and the CLI's `--since` all treat the file as unverified, while
+`produced_meta_blocking` still returns the producing mode. A PS3 ISO that
+failed therefore goes back to makeps3iso on the next run, and a pass
+(`refresh_check`) restores the row and clears the Finding. With no size from
+the Library (a RomM ROM without `fs_size_bytes`), `check.inspect` charges
+`image_sets.image_size`: every file of the Image, split parts and tracks
+included.
+
+When `stops_verify_batch` says so (an `abandoned` result, or a read the
+check's `collect_abandonment` sink saw written off), the run stops, as a batch
+Verify does. Cancel on the
+job sets its cancel event, which the running verify honours. Every write is
+guarded by the Library's generation (`sweep.library_generation`), so a Library
+removed mid-run gets no rows (`_apply` reports whether it wrote; when it did
+not, the run ends cancelled and counts nothing for that Image), and `libraries.remove` drops its `image_checks`
+rows with its Findings. RomM's identity cleanup (a new instance or library
+root) calls `sweep.forget_checks_locked(romm_library)`: the generation moves,
+then RomM's not-Intact Findings with their dismissals
+(`findings.forget_kind`) and its `image_checks` rows go, since ROM ids are
+reused by the new instance. The job ends with "N Intact, M not Intact".
+
+**Findings.** `findings.NOT_INTACT` rows are written one Image at a time with
+`findings.observe` (an upsert on `reconcile`'s terms, sharing its `_upsert`) and
+`findings.resolve` (delete the row, keep its dismissal). `KINDS`, what a folder
+walk reconciles, does not include it: a walk sees every Image, a check only a
+few. The cause is `{tool, files}` (the file fingerprint when picked), so a
+dismissal holds while the file is unchanged and a changed file that still fails
+is shown again.
+
+**Notification.** `check.py` registers `check_failed` with
+`notifications.register_event`. A run with failures sends one `Event` listing
+up to `MAX_LISTED_FAILURES` of them, with `data = {library_id, failed: [{image,
+path, error}]}`, through `notifications.notify`. The run's job is external, so
+the sweep's own `sweep_finished` message does not count it.
+
+**Ledger.** Each external job mode declares itself in
+`job_manager.EXTERNAL_JOB_MODES` (`ExternalMode`). `CHECK` sets
+`in_ledger=False`, since a check run converts nothing, and `ledger.record`
+skips a job only when `job_manager.in_ledger(mode)` says so. Metadata scans and
+DAT matches keep their rows. `CHECK` also sets `started_by_hand=False`, so a
+failed run is not #293's "A job you started failed"
+(`notifications._started_by_hand`).
+
 ### 3.4 `registry.py`
 
 ```python

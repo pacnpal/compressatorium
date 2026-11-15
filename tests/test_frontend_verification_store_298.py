@@ -80,12 +80,11 @@ store.statuses.add('/v/redone.rvz');
 store.checks.set('/v/redone.rvz', 'intact');
 
 const load = store.loadVerified();
-// While /api/verified is in flight, two `complete` events land (the same
-// writes jobs.svelte.js makes): a new Round-tripped output, and a re-run that
-// upgrades a path the store already had.
-store.statuses.add('/v/new.rvz');
-store.checks.set('/v/new.rvz', 'round_tripped');
-store.checks.set('/v/redone.rvz', 'round_tripped');
+// While /api/verified is in flight, two `complete` events land (applied by
+// the store's own writer, as jobs.svelte.js does): a new Round-tripped
+// output, and a re-run that upgrades a path the store already had.
+store.markChecked('/v/new.rvz', 'round_tripped');
+store.markChecked('/v/redone.rvz', 'round_tripped');
 
 // The server's answer predates both.
 __resolve({

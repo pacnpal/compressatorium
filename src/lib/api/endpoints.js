@@ -545,6 +545,18 @@ export const api = {
   getVerifiedCHDs: () =>
     fetchJson(`${API_BASE}/verified`, undefined, 'Failed to fetch check results'),
 
+  /** The same answer as getVerifiedCHDs, for just `paths` (at most 2000). */
+  getVerifiedFor: (paths) =>
+    fetchJson(
+      `${API_BASE}/verified/lookup`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths }),
+      },
+      'Failed to fetch check results',
+    ),
+
   // ─── Batch verify (POST + ReadableStream SSE) ─────────────────────────
   verifyBatchCHDs(paths, opts) {
     return runBatchVerify(`${API_BASE}/verify-batch/events`, paths, opts);
@@ -647,13 +659,16 @@ export const api = {
   getRommRules: () =>
     fetchJson(`${API_BASE}/romm/rules`, undefined, 'Failed to load RomM rules'),
 
-  saveRommRules: (rules) =>
+  // `checkRules` (#305) is sent when given; without it the server keeps them.
+  saveRommRules: (rules, checkRules) =>
     fetchJson(
       `${API_BASE}/romm/rules`,
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules }),
+        body: JSON.stringify(
+          checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
+        ),
       },
       'Failed to save RomM rules',
     ),
@@ -727,13 +742,15 @@ export const api = {
       'Failed to load the Rules',
     ),
 
-  saveLibraryRules: (id, rules) =>
+  saveLibraryRules: (id, rules, checkRules) =>
     fetchJson(
       `${API_BASE}/libraries/${encodeURIComponent(id)}/rules`,
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules }),
+        body: JSON.stringify(
+          checkRules === undefined ? { rules } : { rules, check_rules: checkRules },
+        ),
       },
       'Failed to save the Rules',
     ),

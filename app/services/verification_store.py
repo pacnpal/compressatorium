@@ -282,9 +282,15 @@ class VerificationStore:
             ]
 
     def _prune_missing_sync(self) -> int:
+        # The registry's presence rule, not a bare exists(): a split output's
+        # check is stored under its logical name (`Game.iso`), which is never
+        # on disk while its parts are (#305). Imported here, as the registry
+        # pulls in every tool.
+        from services.tools import registry
+
         with self._session() as session:
             paths = session.scalars(select(_db.Verification.chd_path)).all()
-            missing = [p for p in paths if not os.path.exists(p)]
+            missing = [p for p in paths if not registry.output_exists(p)]
             if not missing:
                 return 0
             # Chunk to stay under SQLite's bind-parameter limit (default 999).

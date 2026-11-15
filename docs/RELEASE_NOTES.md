@@ -4,6 +4,24 @@
 
 ### Added
 
+- **Check Rules** (#305). A Platform in the Rules view (folder Libraries and
+  RomM) can have a check Rule beside its conversion Rule: tick **Check these
+  Images are Intact** and set a nightly budget in GB, a window and weekdays.
+  Once a day the Images never checked go first, then the oldest checks, until
+  the next one does not fit the budget (one larger than the whole budget goes
+  alone), and each goes through its tool's own Verify as one job in the queue.
+  Run now spends another budget's worth and leaves the nightly run when it
+  is due. A check Rule whose window starts and ends at the same time runs all
+  day (once a day from midnight); a conversion Rule with such a window is
+  paused with the reason shown, since there it is a slip. #306's verdict rules decide: a verifier killed by a signal is no
+  verdict, and an Image whose check never reaches one goes behind the others.
+  An Image gone or changed by its turn is skipped. While an Image's Verify
+  runs and its result is recorded it is held like a file a conversion reads. An Image that fails becomes a **Not
+  Intact** Finding and the run sends one `check_failed` notification listing
+  the failures; a later pass clears the Finding. A check that could not run
+  changes nothing, and an Image no tool can check is skipped. Each Image's
+  last check time is kept in a new `image_checks` table (migration 0014,
+  on top of #304's 0013).
 - **Findings view and folder Platforms** (#304). A new **Findings** view lists
   the Images in your folder Libraries that need a decision: a Platform
   conflict (the header disagrees with the folder) or an Unsorted Image. Each
@@ -291,6 +309,12 @@
 - **The RomM version shows again** (#335). RomM 5.x nests it under
   `SYSTEM.VERSION` in its heartbeat; the flat key older releases send is still
   read.
+- **A split PS3 ISO keeps its check** (#305). A PS3 ISO built past 4 GB is
+  written as `Game.iso.0`, `.1` and so on, and its check is stored under
+  `Game.iso`. Opening the web UI used to delete that record, because no
+  `Game.iso` file exists, so the ISO lost its Intact badge and the mode that
+  made it. A stored check is now kept while its split parts are on disk, and
+  removed once they are gone.
 
 ### Security
 
