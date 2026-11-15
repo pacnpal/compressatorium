@@ -18,7 +18,8 @@
     is still to be confirmed.
   - Only `mount`, `imgmount` and `boot` lines change; line endings and encoding
     are kept. A game whose config still points outside itself, or mounts a
-    folder on a drive other than C:, finishes with a warning.
+    folder on a drive other than C:, finishes with a warning, which stays on
+    the finished job's row.
   - The output is written beside the source as `Game.dosz`; the source is only
     read, and delete-source is not offered. Every repack checks every CRC and
     that `dosbox.conf` is at the root before keeping its output, and Verify on

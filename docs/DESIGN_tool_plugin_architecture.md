@@ -2424,8 +2424,13 @@ tool: it registers with an empty binary path and reports no pids.
   out; CRLF and encoding kept). The product is
   `<name>.dosz` beside the Source, the extension DOSBox Pure documents as a zip,
   so it can never share its Source's path.
-- **Warnings.** Lines that still point into `.\eXoDOS\` after the rewrite end
-  the job with a `warning` update, the same shape a chain uses for a caveat.
+- **Warnings.** Lines that still point into `.\eXoDOS\` after the rewrite,
+  and folder mounts on a drive other than C:, end the job with a `warning`
+  update, the same shape a chain uses for a caveat. `JobManager._process_job`
+  copies any update carrying `warning` onto `ConversionJob.warning` (the field
+  #306 adds for a kept Source), so the caveat outlives later messages such as
+  the verify step's; the job row shows it under the output path
+  (`src/lib/util/jobDetail.js`).
 - **Check.** `verify_stream` tests every CRC, the member names and limits, and
   the root `dosbox.conf`. It is served by the shared verify routes
   (`_VERIFY_CONFIG["exodos"]`, `/api/exodos-verify`), and `convert` passes the
