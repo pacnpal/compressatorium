@@ -136,3 +136,15 @@ def test_a_check_job_shows_its_name_and_result() -> None:
 
 def test_shots_capture_the_check_rule_form() -> None:
     assert "rule-editor-check" in _SHOTS.read_text(encoding="utf-8")
+
+
+def test_shots_capture_a_not_intact_finding_and_a_check_job() -> None:
+    """M10: both surfaces are captured and shown where the README describes check Rules."""
+    shots = _SHOTS.read_text(encoding="utf-8")
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    section = readme.split("### Check Rules", 1)[1].split("\n### ", 1)[0]
+    for name in ("findings-not-intact", "jobs-check"):
+        for theme in ("light", "dark"):
+            image = f"docs/screenshots/{name}-{theme}.png"
+            assert image in shots, image
+            assert image in section, image

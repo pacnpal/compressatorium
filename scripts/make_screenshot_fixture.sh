@@ -67,4 +67,18 @@ placeholder "$root/ROM Library/roms/mystery-disc.iso" 1024
   dd if=/dev/zero bs=1 count=1056 2>/dev/null
 } > "$root/ROM Library/roms/ps2/melee.iso"
 
+# A check Rule (#305) on GBA: one ROM archive that reads back cleanly and one
+# whose archive is damaged, so a run checks both through romz's own Verify (pure
+# Python, no tool to install) and the Findings view shows a Not Intact row.
+mkdir -p "$root/ROM Library/roms/gba"
+python3 - "$root/ROM Library/roms/gba/tiny-golf.zip" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as archive:
+    archive.writestr("Tiny Golf.gba", bytes(range(256)) * 64)
+PY
+{ printf 'PK\003\004'; dd if=/dev/zero bs=1 count=60 2>/dev/null; } \
+  > "$root/ROM Library/roms/gba/pocket-racer.zip"
+
 echo "Fixture volume created under: $root"

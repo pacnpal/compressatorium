@@ -733,6 +733,15 @@ much to read a night ("check 50 GB a night"), a time window and weekdays:
 
 A check never converts, moves, renames or deletes anything.
 
+A run on a GBA folder with one damaged ROM archive: its Not Intact row in
+Findings (no Set Platform: the file is the problem, not its folder), and the
+run's Check job in the Jobs panel with its result.
+
+| Light | Dark |
+|-------|------|
+| ![Findings with a Not Intact row, light](docs/screenshots/findings-not-intact-light.png) | ![Findings with a Not Intact row, dark](docs/screenshots/findings-not-intact-dark.png) |
+| ![A Check job in the Jobs panel, light](docs/screenshots/jobs-check-light.png) | ![A Check job in the Jobs panel, dark](docs/screenshots/jobs-check-dark.png) |
+
 ### Findings and folder Platforms
 
 The **Findings** view (in the sidebar) lists every Image in a folder Library
