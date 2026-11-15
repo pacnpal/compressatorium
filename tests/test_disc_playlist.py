@@ -325,7 +325,7 @@ def test_a_disc_that_is_a_symlink_into_another_folder_is_refused(vol: Path):
 
 def test_an_entry_that_would_not_resolve_to_the_selected_file_is_refused(vol, monkeypatch):
     paths = _discs(vol, "Game (Disc 1).cue", "Game (Disc 2).cue")
-    monkeypatch.setattr(disc_playlist.os.path, "samefile", lambda a, b: False)
+    monkeypatch.setattr(disc_playlist, "same_file", lambda a, b: False)
     with pytest.raises(disc_playlist.PlaylistError, match="resolve"):
         disc_playlist.plan_playlist(paths)
 
@@ -447,8 +447,8 @@ def test_a_symlinked_folder_that_resolves_to_the_source_folder_is_allowed(vol: P
 
 @pytest.mark.parametrize(
     "awkward",
-    ["a\\b (Disc 1).cue", "#a (Disc 1).cue", "\ufeffa (Disc 1).cue", "\u3000a (Disc 1).cue", "\u00a0a (Disc 1).cue",
-     " a (Disc 1).cue", "a (Disc 1) .cue", "\u00e9 (Disc 1).cue"],
+    ["a\\b (Disc 1).cue", "#a (Disc 1).cue", "\ufeffa (Disc 1).cue",
+     "\u3000a (Disc 1).cue", "\u00a0a (Disc 1).cue", " a (Disc 1).cue", "a (Disc 1) .cue", "\u00e9 (Disc 1).cue"],
 )
 def test_awkward_names_read_back_to_the_selected_files(vol: Path, awkward):
     from app.services.referrers.m3u import entries

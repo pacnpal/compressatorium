@@ -8,7 +8,7 @@ import stat
 import sys
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from config import settings
 
@@ -255,6 +255,47 @@ def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> b
             continue
 
     return False
+
+
+class FileIdentity(NamedTuple):
+    """What identifies a file across two stats of it."""
+
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+    realpath: str
+
+
+def file_identity(path: str) -> Optional[FileIdentity]:
+    """*path*'s identity (following links), or None if it can't be stat'ed."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return FileIdentity(
+        st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, os.path.realpath(path),
+    )
+
+
+def same_identity(a: Optional[FileIdentity], b: Optional[FileIdentity]) -> bool:
+    """Whether two identities are the same file.
+
+    Same ``(st_dev, st_ino)``, or, because FUSE/SMB mounts such as Unraid's
+    shfs user shares can report a different ``st_ino`` for the same file on
+    each stat, the same resolved path with the same size and ``mtime_ns``.
+    A missing file (None) is never the same as anything.
+    """
+    if a is None or b is None:
+        return False
+    if (a.dev, a.ino) == (b.dev, b.ino):
+        return True
+    return (a.realpath, a.size, a.mtime_ns) == (b.realpath, b.size, b.mtime_ns)
+
+
+def same_file(a: str, b: str) -> bool:
+    """``os.path.samefile`` that tolerates unstable inodes (see ``same_identity``)."""
+    return same_identity(file_identity(a), file_identity(b))
 
 
 def volume_root_for(path: str) -> Optional[str]:

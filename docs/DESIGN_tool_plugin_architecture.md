@@ -2491,7 +2491,12 @@ free one if it was taken since, never picking a different name on its own.
 - *What it rewrites.* Only entries whose path (as the reader below reads it)
   resolves exactly to a replaced file, matched by `(st_dev, st_ino)` so any
   spelling that reaches the file counts (relative, absolute, `./`, other case
-  on a case-insensitive volume). A `path|label` entry and a quoted path are
+  on a case-insensitive volume). Every file comparison in the Referrer (entry
+  to replaced file, entry to output, the write guard's output check) goes
+  through `utils.path_utils.same_identity`: same `(st_dev, st_ino)`, or the
+  same resolved path with the same size and `mtime_ns`, because FUSE/SMB
+  mounts such as Unraid's shfs user shares can report a new `st_ino` for the
+  same file on each stat. A `path|label` entry and a quoted path are
   rewritten with their label and quotes kept. Everything else is kept byte
   for byte: `#` lines, other entries, blank lines, line endings and a UTF-8
   BOM.

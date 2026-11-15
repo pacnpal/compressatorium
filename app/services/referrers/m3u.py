@@ -46,7 +46,7 @@ import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from utils.path_utils import volume_root_for
+from utils.path_utils import FileIdentity, file_identity, same_identity, volume_root_for
 
 from .base import (
     Referrer,
@@ -81,8 +81,14 @@ class _Target:
 
 @dataclass(frozen=True)
 class _Renames:
-    by_key: dict[tuple[int, int], _Target]
+    # Each replaced file's identity and where it goes. Matched with
+    # `same_identity`, which tolerates the unstable inodes of FUSE/SMB mounts.
+    replaced: tuple[tuple[FileIdentity, _Target], ...]
     names: frozenset[str]  # casefolded file names of the replaced files
+
+    def target_for(self, identity: FileIdentity | None) -> _Target | None:
+        """The rename for the file *identity* is, if it is a replaced file."""
+        return next((t for old, t in self.replaced if same_identity(identity, old)), None)
 
 
 def _playlists(directory: str) -> list[str]:
@@ -111,14 +117,6 @@ def _search_dirs(path: str) -> list[str]:
         current = parent
         dirs.append(current)
     return dirs
-
-
-def _file_key(path: str) -> tuple[int, int] | None:
-    try:
-        st = os.stat(path)
-    except (OSError, ValueError):
-        return None
-    return (st.st_dev, st.st_ino)
 
 
 def _fold(name: str) -> str:
@@ -277,9 +275,9 @@ def _points_at(playlist_dir: str, entry: str, target: _Target, *, strict: bool) 
     resolved paths are compared.
     """
     path = os.path.join(playlist_dir, entry)
-    output_key = _file_key(target.new)
-    if output_key is not None:
-        return _file_key(path) == output_key
+    output = file_identity(target.new)
+    if output is not None:
+        return same_identity(file_identity(path), output)
     if strict:
         return False
     return os.path.realpath(path) == target.new
@@ -372,10 +370,10 @@ def _raw_names_a_source(entry: str, playlist_dir: str, renames: _Renames) -> boo
     """Whether the whole trimmed *entry*, read literally (label and quotes
     kept), reaches or names a replaced file."""
     posix = entry.replace("\\", "/") if "\\" in entry and "/" not in entry else entry
-    key = _file_key(os.path.join(playlist_dir, posix))
-    if key is not None and key in renames.by_key:
+    identity = file_identity(os.path.join(playlist_dir, posix))
+    if identity is not None and renames.target_for(identity) is not None:
         return True
-    return key is None and _named_file(entry) in renames.names
+    return identity is None and _named_file(entry) in renames.names
 
 
 def _rewrite(
@@ -398,11 +396,11 @@ def _rewrite(
             out.append(prefix + line)
             continue
         position += 1
-        key = _file_key(os.path.join(playlist_dir, parsed.posix))
-        target = renames.by_key.get(key) if key else None
+        identity = file_identity(os.path.join(playlist_dir, parsed.posix))
+        target = renames.target_for(identity)
         if target is None:
             named = None
-            if key is None and _named_file(parsed.path) in renames.names:
+            if identity is None and _named_file(parsed.path) in renames.names:
                 named = _named_file(parsed.path)
             elif parsed.path != parsed.entry:
                 # Other readers read this line differently: a plain line
@@ -471,20 +469,20 @@ class M3uReferrer(Referrer):
         return any(_playlists(d) for d in _search_dirs(image_path))
 
     def plan(self, renames: Mapping[str, str]) -> list[ReferrerChange]:
-        by_key: dict[tuple[int, int], _Target] = {}
+        replaced: list[tuple[FileIdentity, _Target]] = []
         dirs: list[str] = []
         for old, new in renames.items():
-            key = _file_key(old)
-            if key:
-                by_key[key] = _Target(
+            identity = file_identity(old)
+            if identity is not None:
+                replaced.append((identity, _Target(
                     os.path.realpath(os.path.dirname(old)), os.path.realpath(new),
-                )
+                )))
             for d in _search_dirs(old):
                 if d not in dirs:
                     dirs.append(d)
         # Names as written and as a reader trims them, so a leading ASCII
         # space doesn't hide a mention.
-        targets = _Renames(by_key, frozenset(
+        targets = _Renames(tuple(replaced), frozenset(
             _fold(name)
             for old in renames
             for name in (os.path.basename(old), os.path.basename(old).strip(_WS))

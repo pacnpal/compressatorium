@@ -24,7 +24,7 @@ from services.referrers import write_new_bytes
 from services.referrers.m3u import PLAYLIST_EXT, entry_for, playlist_bytes
 from services.tools import registry
 from utils.delete_plan import _parse_cue_tracks, _parse_gdi_tracks
-from utils.path_utils import is_within_configured_volumes, match_extension
+from utils.path_utils import is_within_configured_volumes, match_extension, same_file
 
 _DISC = r"(?:disc|disk|cd)[\s_-]*(\d+)(?:\s*of\s*\d+)?"
 # "(Disc 1)", "[CD 2]", "(Disc 1 of 3)": the whole bracket group goes.
@@ -183,7 +183,7 @@ def _validated_files(paths: list[str]) -> tuple[str, dict[str, str]]:
         name = os.path.basename(raw)
         if any(ch in name for ch in "\r\n\0"):
             raise PlaylistError(f"{name} has a line break in its name")
-        if not os.path.samefile(os.path.join(directory, name), raw):
+        if not same_file(os.path.join(directory, name), raw):
             raise PlaylistError(f"{name} would not resolve from the playlist's folder")
         files[name] = raw
     return directory, files
