@@ -1,46 +1,82 @@
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
 import time
 
 from config import settings
+from services.lock_manager import unlink_held
+
+# How often one process sweeps the queue for tickets whose holder died.
+_PRUNE_INTERVAL = 1.0
 
 
 class ConcurrencyManager:
-    """Coordinates a global concurrency limit and FIFO ordering across processes."""
+    """Coordinates a global concurrency limit and FIFO ordering across processes.
 
-    def __init__(self, max_concurrent: int, lock_dir: str):
+    Everything lives in the shared lock directory (``<data dir>/locks`` by
+    default), so the server and any CLI process, in this container or another
+    that mounts the same ``/config``, share one queue (#306):
+
+    * **Slots** are ``convert_slot_<i>.lock``, held by ``flock`` while a job
+      runs. They are a fixed set and are never unlinked, so a slot lock is
+      always on the file every process opens.
+    * **Tickets** are ``queue_<ticket>_<seq>_<key>.ticket``, one per queued job,
+      in FIFO order. The holder keeps an ``flock`` on its ticket for the job's
+      whole life and unlinks it while still holding it. A ticket nobody holds
+      belongs to a process that died without cleanup (SIGKILL, SIGHUP, the OOM
+      killer): the kernel dropped its lock, in any container, so any waiter that
+      can flock it removes it (``_prune_dead_tickets``). PIDs are not used: they
+      mean nothing across PID namespaces.
+    """
+
+    def __init__(self, max_concurrent: int, lock_dir: str, *, lazy: bool = False):
         self.max_concurrent = max(1, max_concurrent)
         self.lock_dir = lock_dir
-        # Create lock directory with restrictive permissions (owner only)
-        os.makedirs(self.lock_dir, mode=0o700, exist_ok=True)
         self._slot_paths = [
             os.path.join(self.lock_dir, f"convert_slot_{idx}.lock")
             for idx in range(self.max_concurrent)
         ]
         self._lock_handles: dict[str, tuple[int, object]] = {}
-        self._ticket_handles: dict[str, tuple[int, str]] = {}
+        # key -> (ticket, path, open handle holding the ticket's flock or None)
+        self._ticket_handles: dict[str, tuple[int, str, object]] = {}
         self._ticket_counter_path = os.path.join(self.lock_dir, "queue_counter")
-        self._cleanup_stale_locks()
+        # Per-reservation sequence: a uniqueness tiebreaker baked into each
+        # ticket filename so two reservations never sort to the same slot.
+        self._seq = 0
+        self._fallback_ticket = 0
+        self._last_prune = 0.0
+        # A lazy manager (the module singleton) touches the lock directory on
+        # first use, not at import, so a process that only plans (a CLI dry run)
+        # creates, prunes and removes nothing.
+        self._ready = False
+        if not lazy:
+            self._ensure_ready()
+
+    def _ensure_ready(self) -> None:
+        if self._ready:
+            return
+        # Create lock directory with restrictive permissions (owner only)
+        os.makedirs(self.lock_dir, mode=0o700, exist_ok=True)
+        self._ready = True
+        self._prune_dead_tickets(force=True)
         if not os.path.exists(self._ticket_counter_path):
             try:
                 with open(self._ticket_counter_path, "w", encoding="utf-8") as fh:
                     fh.write("0")
             except OSError:
                 pass
-        # Per-reservation sequence: a uniqueness tiebreaker baked into each
-        # ticket filename so two reservations never sort to the same slot.
-        self._seq = 0
         # Seed the in-process fallback ticket above any value already on disk
-        # AND above any live ticket file preserved across a restart, so a later
-        # counter-read failure -- or a missing/corrupt counter at startup while a
-        # slot is still busy -- still issues strictly-increasing tickets that
-        # sort after older queued work (see _next_ticket).
-        self._fallback_ticket = self._highest_known_ticket()
+        # AND above any live ticket file, so a later counter-read failure -- or a
+        # missing/corrupt counter at startup while other work is queued -- still
+        # issues strictly-increasing tickets that sort after older queued work
+        # (see _next_ticket).
+        self._fallback_ticket = max(self._fallback_ticket, self._highest_known_ticket())
 
     def reserve_ticket(self, key: str) -> int:
-        """Reserve a FIFO ticket for the job."""
+        """Reserve a FIFO ticket for the job, held under its flock until released."""
+        self._ensure_ready()
         if key in self._ticket_handles:
             return self._ticket_handles[key][0]
 
@@ -50,21 +86,30 @@ class ConcurrencyManager:
         ticket_path = os.path.join(
             self.lock_dir, f"queue_{ticket}_{seq}_{key}.ticket"
         )
-        self._create_ticket_file(ticket_path, ticket)
-        self._ticket_handles[key] = (ticket, ticket_path)
+        handle = self._create_ticket_file(ticket_path, ticket)
+        self._ticket_handles[key] = (ticket, ticket_path, handle)
         return ticket
 
     def release_ticket(self, key: str):
-        """Release the FIFO ticket for the job."""
+        """Release the FIFO ticket for the job: unlink it while holding it."""
         info = self._ticket_handles.pop(key, None)
         if not info:
             return
-        _, ticket_path = info
+        _, ticket_path, handle = info
+        self._drop(handle, ticket_path)
+
+    @staticmethod
+    def _drop(handle, ticket_path: str) -> None:
+        if handle is None:
+            return
         try:
-            if os.path.exists(ticket_path):
-                os.remove(ticket_path)
+            unlink_held(handle, ticket_path)
         except OSError:
             pass
+        with contextlib.suppress(OSError):
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            handle.close()
 
     async def acquire(
         self, key: str, cancel_event: asyncio.Event | None = None,
@@ -82,7 +127,7 @@ class ConcurrencyManager:
                 try:
                     # Binary mode avoids an "unspecified-encoding" lint warning; this
                     # handle is used only for fcntl.flock(), no text is read or written.
-                    handle = open(path, "ab")
+                    handle = open(path, "ab")  # noqa: SIM115,ASYNC230 - held for the slot
                 except OSError:
                     continue
                 try:
@@ -123,6 +168,7 @@ class ConcurrencyManager:
         while True:
             if cancel_event and cancel_event.is_set():
                 return False
+            self._prune_dead_tickets()
             queued_keys = self._list_tickets()
             if key not in queued_keys:
                 self._restore_ticket_file(key, ticket)
@@ -131,6 +177,47 @@ class ConcurrencyManager:
             if key in queued_keys[: self.max_concurrent]:
                 return True
             await asyncio.sleep(0.2)
+
+    def _prune_dead_tickets(self, *, force: bool = False) -> int:
+        """Remove tickets no process holds; their holders died without cleanup.
+
+        A live holder keeps its ticket's flock, so a ticket this process can
+        flock is dead. It is unlinked while held (``unlink_held``), so a ticket
+        being re-created at the same path is never removed. Throttled to once
+        per ``_PRUNE_INTERVAL`` unless ``force``. Returns how many went.
+        """
+        now = time.monotonic()
+        if not force and now - self._last_prune < _PRUNE_INTERVAL:
+            return 0
+        self._last_prune = now
+        own = {info[1] for info in self._ticket_handles.values()}
+        removed = 0
+        try:
+            names = os.listdir(self.lock_dir)
+        except OSError:
+            return 0
+        for name in names:
+            if not (name.startswith("queue_") and name.endswith(".ticket")):
+                continue
+            path = os.path.join(self.lock_dir, name)
+            if path in own:
+                continue
+            try:
+                # Binary mode: flock-only handle, no text is read or written.
+                with open(path, "ab") as handle:
+                    try:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError:
+                        continue  # held: its owner is alive
+                    try:
+                        if unlink_held(handle, path):
+                            removed += 1
+                    finally:
+                        with contextlib.suppress(OSError):
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                continue
+        return removed
 
     def _list_tickets(self) -> list[str]:
         """Return queued job keys in FIFO order.
@@ -238,186 +325,61 @@ class ConcurrencyManager:
             self._fallback_ticket += 1
             return self._fallback_ticket
 
-    def _create_ticket_file(self, ticket_path: str, ticket: int) -> None:
-        tmp_path = f"{ticket_path}.tmp"
+    def _create_ticket_file(self, ticket_path: str, ticket: int):
+        """Write the ticket and return its open handle, already flock-held.
+
+        Written under a private temp name, locked, then renamed into place, so
+        the ticket is never visible unlocked: a pruner could otherwise take it
+        for a dead one. None when it could not be written; ``_wait_for_turn``
+        writes it again.
+        """
+        tmp_path = f"{ticket_path}.{os.getpid()}.tmp"
+        handle = None
         try:
             payload = {
                 "ticket": ticket,
                 "pid": os.getpid(),
                 "created_at": time.time(),
             }
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(payload))
-                fh.flush()
-                os.fsync(fh.fileno())
+            handle = open(tmp_path, "w", encoding="utf-8")  # noqa: SIM115 - held while queued
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            handle.write(json.dumps(payload))
+            handle.flush()
+            os.fsync(handle.fileno())
             os.replace(tmp_path, ticket_path)
+            return handle
         except OSError:
+            if handle is not None:
+                with contextlib.suppress(OSError):
+                    handle.close()
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except OSError:
                 # Best-effort cleanup: failure to delete the temp file is non-fatal.
                 pass
+            return None
 
     def _restore_ticket_file(self, key: str, ticket: int) -> None:
         info = self._ticket_handles.get(key)
         if not info:
             return
-        _, ticket_path = info
-        if os.path.exists(ticket_path):
+        _, ticket_path, handle = info
+        if handle is not None and os.path.exists(ticket_path):
             return
-        self._create_ticket_file(ticket_path, ticket)
-        self._ticket_handles[key] = (ticket, ticket_path)
-
-    def _cleanup_stale_locks(self):
-        """Remove stale queue tickets and slot locks from previous runs."""
-        try:
-            slot_handles = []
-            slots_busy = False
-            for path in self._slot_paths:
-                try:
-                    # Binary mode avoids an "unspecified-encoding" lint warning; this
-                    # handle is used only for fcntl.flock(), no text is read or written.
-                    handle = open(path, "ab")
-                except OSError:
-                    continue
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    slot_handles.append((path, handle))
-                except BlockingIOError:
-                    handle.close()
-                    slots_busy = True
-                    break
-                except OSError:
-                    handle.close()
-                    continue
-
-            if slots_busy:
-                for _, handle in slot_handles:
-                    try:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                    except OSError:
-                        # Best-effort unlock; closing the file descriptor below will release the
-                        # lock if still held.
-                        pass
-                    finally:
-                        try:
-                            handle.close()
-                        except OSError:
-                            # Best-effort close; ignore errors during cleanup
-                            pass
-                slot_handles = []
-
-            try:
-                for name in os.listdir(self.lock_dir):
-                    if not (name.startswith("queue_") and name.endswith(".ticket")):
-                        continue
-                    ticket_path = os.path.join(self.lock_dir, name)
-                    if not slots_busy:
-                        try:
-                            os.remove(ticket_path)
-                        except OSError:
-                            # Best-effort stale ticket cleanup; ignore if the file was already
-                            # removed.
-                            pass
-                        continue
-                    payload, legacy = self._load_ticket_payload(ticket_path)
-                    if payload:
-                        pid = payload.get("pid")
-                        if isinstance(pid, int) and pid > 0:
-                            if self._pid_is_alive(pid):
-                                continue
-                        else:
-                            if legacy and self._ticket_locked(ticket_path):
-                                continue
-                            if not legacy:
-                                continue
-                        try:
-                            os.remove(ticket_path)
-                        except OSError:
-                            # Best-effort stale ticket cleanup; ignore if the file was already
-                            # removed by another process or cannot be deleted.
-                            pass
-                    elif legacy:
-                        if self._ticket_locked(ticket_path):
-                            continue
-                        try:
-                            os.remove(ticket_path)
-                        except OSError:
-                            # Best-effort stale ticket cleanup; ignore if the file was already
-                            # removed.
-                            pass
-            finally:
-                for path, handle in slot_handles:
-                    if not slots_busy:
-                        try:
-                            if os.path.exists(path):
-                                os.remove(path)
-                        except OSError:
-                            # Best-effort cleanup: ignore failures to remove temporary slot lock
-                            # files.
-                            pass
-                    try:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                    except OSError:
-                        # Best-effort unlock; closing the file descriptor below will release the
-                        # lock if still held.
-                        pass
-                    finally:
-                        try:
-                            handle.close()
-                        except OSError:
-                            # Best-effort cleanup: ignore errors when closing the handle
-                            pass
-        except OSError:
-            # Best-effort cleanup: ignore top-level errors during stale ticket cleanup
-            pass
-
-    @staticmethod
-    def _pid_is_alive(pid: int) -> bool:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
-
-    def _load_ticket_payload(self, ticket_path: str) -> tuple[dict | None, bool]:
-        try:
-            with open(ticket_path, encoding="utf-8") as fh:
-                content = fh.read().strip()
-        except OSError:
-            return None, False
-        if not content:
-            return None, False
-        try:
-            payload = json.loads(content)
-            if isinstance(payload, dict):
-                return payload, False
-        except json.JSONDecodeError:
-            # If JSON parsing fails, fall back to interpreting legacy numeric ticket format below.
-            pass
-        if content.isdigit():
-            return {"ticket": int(content)}, True
-        return None, False
-
-    @staticmethod
-    def _ticket_locked(ticket_path: str) -> bool:
-        try:
-            with open(ticket_path, "ab") as handle:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except (BlockingIOError, OSError):
-                    return True
-        except OSError:
-            return True
-        return False
+        if handle is not None:
+            with contextlib.suppress(OSError):
+                handle.close()
+        self._ticket_handles[key] = (
+            ticket, ticket_path, self._create_ticket_file(ticket_path, ticket),
+        )
 
     def stats(self) -> dict:
         return {"tickets": len(self._list_tickets()), "slots": len(self._slot_paths)}
 
 
+
+# Lazy: importing this module touches nothing on disk.
 concurrency_manager = ConcurrencyManager(
-    settings.max_concurrent_jobs, settings.concurrency_lock_dir,
+    settings.max_concurrent_jobs, settings.concurrency_lock_dir, lazy=True,
 )

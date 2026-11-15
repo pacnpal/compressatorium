@@ -10,7 +10,11 @@ from __future__ import annotations
 import asyncio
 
 from services import subprocess_runner as runner_mod
-from services.subprocess_runner import SubprocessRunner, collect_verify, verify_preflight
+from services.subprocess_runner import (
+    SubprocessRunner,
+    collect_verify,
+    verify_preflight,
+)
 
 
 def test_verify_error_carries_the_inconclusive_flag():

@@ -635,3 +635,102 @@ def test_entrypoint_and_wrapper_diagnostics_go_to_stderr():
                 if re.search(r'echo "\$mount_opts" \|', code):
                     continue  # piped into grep, not printed
                 raise AssertionError(f"{name}:{number} prints to stdout: {line.strip()}")
+
+
+def _point_locks_at(monkeypatch, lock_dir):
+    """Aim the process-wide lock managers at ``lock_dir``, not yet set up."""
+    from services.concurrency_manager import concurrency_manager
+    from services.lock_manager import lock_manager
+
+    monkeypatch.setattr(lock_manager, "_lock_dir", str(lock_dir))
+    monkeypatch.setattr(lock_manager, "_ready", False)
+    monkeypatch.setattr(concurrency_manager, "lock_dir", str(lock_dir))
+    monkeypatch.setattr(
+        concurrency_manager, "_slot_paths", [str(lock_dir / "convert_slot_0.lock")],
+    )
+    monkeypatch.setattr(
+        concurrency_manager, "_ticket_counter_path", str(lock_dir / "queue_counter"),
+    )
+    monkeypatch.setattr(concurrency_manager, "_ready", False)
+
+
+def test_dry_run_creates_no_lock_dir(volume, dolphin, capsys, monkeypatch, tmp_path):
+    lock_dir = tmp_path / "config" / "locks"
+    _point_locks_at(monkeypatch, lock_dir)
+    _iso(volume)
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--dry-run", "--json")
+    assert (code, lines[0]["status"]) == (0, "planned")
+    code, _ = _cli(capsys, "verify", str(volume), "--dry-run", "--json")
+
+    assert code == 0
+    assert not lock_dir.exists()
+
+
+def test_dry_run_leaves_a_running_servers_lock_files_alone(
+    volume, dolphin, capsys, monkeypatch, tmp_path,
+):
+    """No ticket pruned, no stale lock file removed, no lock probed or taken."""
+    from services.lock_manager import LockManager
+
+    lock_dir = tmp_path / "shared-locks"
+    lock_dir.mkdir()
+    _point_locks_at(monkeypatch, lock_dir)
+    iso = _iso(volume)
+    # Left by others: a ticket nobody holds, and a stale output lock file.
+    (lock_dir / "queue_3_1_serverjob.ticket").write_text("{}")
+    stale = LockManager()
+    stale._lock_dir = str(lock_dir)
+    (lock_dir / Path(stale._lock_file_path(str(iso.with_suffix(".rvz")))).name).write_bytes(b"")
+    before = sorted(p.name for p in lock_dir.iterdir())
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--dry-run", "--json")
+
+    assert code == 0
+    assert sorted(p.name for p in lock_dir.iterdir()) == before
+    # The lock file is there, so the dry run reports the output as taken.
+    assert lines[0]["status"] == "skipped"
+
+
+@pytest.mark.parametrize("signame", ["SIGHUP", "SIGTERM"])
+def test_a_hangup_stops_the_run_like_sigterm(volume, monkeypatch, capsys, signame):
+    """Closing the terminal of `docker exec -it ... compressatorium` sends SIGHUP."""
+    import asyncio
+    import os
+    import signal
+
+    import cli
+
+    async def waits_forever(args, printer, state):
+        os.kill(os.getpid(), getattr(signal, signame))
+        await asyncio.sleep(30)
+        return 0
+
+    monkeypatch.setattr(cli, "convert", waits_forever)
+
+    assert cli.main(["convert", str(volume), "--to", "rvz"]) == 1
+    assert "stopped" in capsys.readouterr().err
+
+
+def test_only_a_small_window_of_jobs_is_queued_at_once(volume, dolphin, capsys, monkeypatch):
+    """Each queued job holds a ticket in the queue the server shares: a run over
+    a whole library must not put every job ahead of the web UI's."""
+    from routes import convert as convert_routes
+    from services.job_manager import job_manager
+
+    isos = [_iso(volume, f"gc/G{i}.iso") for i in range(5)]
+    real = convert_routes.queue_prepared
+    depths = []
+
+    async def watching(batch):
+        jobs = await real(batch)
+        depths.append(job_manager.get_queue_depth())
+        return jobs
+
+    monkeypatch.setattr(convert_routes, "queue_prepared", watching)
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+
+    assert code == 0, lines
+    assert all(iso.with_suffix(".rvz").exists() for iso in isos)
+    assert max(depths) <= 2, depths

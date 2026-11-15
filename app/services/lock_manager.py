@@ -18,17 +18,52 @@ from config import settings
 logger = get_logger("lock_manager")
 
 
+def still_linked(handle, path: str) -> bool:
+    """Whether the file ``handle`` holds is still the one at ``path``.
+
+    Compares device and inode; a missing path (ENOENT) is a mismatch. Shared
+    by every flock-based lock file here and in ``concurrency_manager``: after
+    an flock succeeds, a mismatch means the lock is on a file its last holder
+    unlinked, which no other process can see.
+    """
+    try:
+        held = os.fstat(handle.fileno())
+        current = os.stat(path)
+    except OSError:
+        return False
+    return (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+
+
+def unlink_held(handle, path: str) -> bool:
+    """Unlink the lock file ``handle`` holds, before letting go of it.
+
+    Removes it only when ``path`` still names the held file. Call it while the
+    flock is held, then unlock. True when the file was removed.
+    """
+    if not still_linked(handle, path):
+        return False
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
 class LockManager:
     """Manages file locks to prevent concurrent conversions of the same file."""
 
-    def __init__(self):
+    def __init__(self, *, lazy: bool = False):
         self._lock_dir = (
             settings.concurrency_lock_dir
             or str(Path(settings.data_dir) / "locks")
         )
-        # Create lock directory with restrictive permissions (owner only)
-        # to address security concerns about predictable temp directories
-        os.makedirs(self._lock_dir, mode=0o700, exist_ok=True)
+        # A lazy manager (the module singleton) creates its directory and
+        # sweeps stale lock files on first use, not at import, so a process
+        # that only plans (a CLI dry run) leaves the shared lock dir alone.
+        self._ready = False
+        # Read-only: report a lock file as held without probing or removing it,
+        # and take no locks. Set for a CLI dry run (`read_only()`).
+        self.is_read_only = False
         self._locks: set[str] = set()
         # Directory subtree locks: a directory-input job (makeps3iso
         # folder->iso) locks its whole source tree here so a concurrent
@@ -41,7 +76,28 @@ class LockManager:
         self._lock_mutex = threading.Lock()
         self._lock_handles = {}
         self._dir_lock_handles = {}
+        if not lazy:
+            self._ensure_ready()
+
+    def _ensure_ready(self) -> None:
+        """Create the lock directory (owner only) and sweep stale lock files, once."""
+        if self._ready:
+            return
+        # Create lock directory with restrictive permissions (owner only)
+        # to address security concerns about predictable temp directories
+        os.makedirs(self._lock_dir, mode=0o700, exist_ok=True)
+        self._ready = True
         self._cleanup_stale_locks()
+
+    @contextlib.contextmanager
+    def read_only(self):
+        """Within the block, look at lock files but never take, probe or remove one."""
+        previous = self.is_read_only
+        self.is_read_only = True
+        try:
+            yield self
+        finally:
+            self.is_read_only = previous
 
     @staticmethod
     def _path_within(child: str, parent: str) -> bool:
@@ -123,35 +179,8 @@ class LockManager:
     #    rule 1 this means a lock taken is a lock on the file every other
     #    process opens.
 
-    @staticmethod
-    def _still_linked(lock_handle, lock_file_path: str) -> bool:
-        """Whether the file we hold ``flock`` on is still the one at its path.
-
-        False when the path is gone (ENOENT) or names another file: the lock we
-        hold is on a file the last holder unlinked, which no one else can see.
-        """
-        try:
-            held = os.fstat(lock_handle.fileno())
-            current = os.stat(lock_file_path)
-        except OSError:
-            return False
-        return (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
-
-    @classmethod
-    def _unlink_held(cls, lock_handle, lock_file_path: str) -> bool:
-        """Unlink the lock file we hold, before letting go of it.
-
-        Removes it only when the path still names the file we hold (rule 1
-        above); call it while the flock is held, then unlock. True when the
-        file was removed.
-        """
-        if not cls._still_linked(lock_handle, lock_file_path):
-            return False
-        try:
-            os.remove(lock_file_path)
-        except FileNotFoundError:
-            return False
-        return True
+    _still_linked = staticmethod(still_linked)
+    _unlink_held = staticmethod(unlink_held)
 
     def _remove_if_stale(self, lock_file_path: str) -> bool | None:
         """Remove a lock file no process holds.
@@ -224,6 +253,9 @@ class LockManager:
         Returns:
             Number of stale locks removed
         """
+        if self.is_read_only:
+            return 0
+        self._ensure_ready()
         return self._cleanup_stale_locks(log_level="debug")
 
     def is_locked(self, output_path: str) -> bool:
@@ -263,6 +295,10 @@ class LockManager:
         lock_file_path = self._lock_file_path(normalized_path)
         if not os.path.exists(lock_file_path):
             return False
+        if self.is_read_only:
+            # No probe (that would take the lock for a moment) and no cleanup:
+            # a lock file that is there counts as held.
+            return True
         removed = self._remove_if_stale(lock_file_path)
         if removed and logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -282,6 +318,9 @@ class LockManager:
             not allowed
 
         """
+        if self.is_read_only:
+            return False
+        self._ensure_ready()
         normalized_path = os.path.normpath(output_path)
 
         with self._lock_mutex:
@@ -414,6 +453,9 @@ class LockManager:
         directory lock (in either nesting direction), or an external process
         already holds the directory's lock file.
         """
+        if self.is_read_only:
+            return False
+        self._ensure_ready()
         # Store and compare directory locks resolved, so containment holds
         # through symlinks.
         normalized = self._resolve(dir_path)
@@ -488,4 +530,5 @@ class LockManager:
             return {"locks": len(self._locks), "dir_locks": len(self._dir_locks)}
 
 
-lock_manager = LockManager()
+# Lazy: importing this module touches nothing on disk.
+lock_manager = LockManager(lazy=True)

@@ -17,7 +17,9 @@ def test_default_lock_dir_is_under_the_data_dir(tmp_path, monkeypatch):
     settings = Settings(data_dir=str(tmp_path))
 
     assert settings.concurrency_lock_dir == str(tmp_path / "locks")
-    assert (tmp_path / "locks").is_dir()
+    # Choosing it creates nothing: the lock managers make it on first use, so
+    # a process that only plans (a CLI dry run) leaves /config alone.
+    assert not (tmp_path / "locks").exists()
 
 
 def test_an_explicit_lock_dir_wins(tmp_path, monkeypatch):

@@ -432,6 +432,7 @@ def _route_to(items: list[Item], args, prefs: dict, ready: list[str]) -> list[It
         detect_platform,
         format_candidates,
         format_route,
+        serves_platform,
     )
     from services.tools import registry
 
@@ -441,7 +442,8 @@ def _route_to(items: list[Item], args, prefs: dict, ready: list[str]) -> list[It
         if item.status:  # a line already decided in discovery
             kept.append(item)
             continue
-        if not item.explicit and not format_candidates(item.path, target, registry):
+        candidates = format_candidates(item.path, target, registry)
+        if not item.explicit and not candidates:
             continue
         if args.any_platform:
             platform = None
@@ -454,11 +456,11 @@ def _route_to(items: list[Item], args, prefs: dict, ready: list[str]) -> list[It
                 kept.append(item)
                 continue
             platform = detection.platform
+            if not item.explicit and platform and not any(
+                serves_platform(spec, platform, registry) for spec in candidates
+            ):
+                continue  # another Platform's Image: not in scope for this target
         item.mode, item.reason = format_route(item.path, target, platform, registry)
-        if not item.mode and not item.explicit and item.reason and (
-            item.reason.startswith("No ") or "does not convert" in item.reason
-        ):
-            continue  # another Platform's Image: not in scope for this target
         tool = registry.for_mode(item.mode) if item.mode else None
         if tool is not None and tool.id not in ready:
             item.mode = None
@@ -591,6 +593,17 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
     return prepared
 
 
+def _in_flight_window(settings) -> int:
+    """How many of this run's jobs may be queued at once.
+
+    Twice the conversion slots, so a slot never waits on this process, and
+    never more than MAX_QUEUE_DEPTH when that is set.
+    """
+    window = max(2, 2 * max(1, int(getattr(settings, "max_concurrent_jobs", 1) or 1)))
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    return min(window, max_depth) if max_depth else window
+
+
 def _chunks(prepared: list[tuple], size: int) -> list[tuple]:
     """Split prepared batches so none queues more than ``size`` jobs at once."""
     if size <= 0:
@@ -646,15 +659,19 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
             await changed.wait()
         report()
 
-    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
+    window = _in_flight_window(settings)
     try:
-        for batch, planned in _chunks(prepared, max_depth):
-            # The queue cap protects a server's memory; here it paces the feed.
+        for batch, planned in _chunks(prepared, window):
+            # Each queued job holds a ticket in the queue a running server
+            # shares, so only a small window is queued at a time (below
+            # MAX_QUEUE_DEPTH when that is set) and web UI work can interleave.
             while (
-                max_depth and not state.stopping
-                and job_manager.get_queue_depth() + len(batch.plans) > max_depth
+                not state.stopping
+                and job_manager.get_queue_depth() + len(batch.plans) > window
             ):
                 await wait_for_an_end()
+                # Never spin: if nothing pending can end, give the loop a turn.
+                await asyncio.sleep(0 if pending else 0.2)
             if state.stopping:
                 for plan in batch.plans:
                     item = planned.get(plan.file_path)
@@ -848,7 +865,10 @@ def _logging(verbose: bool):
 
 @contextlib.contextmanager
 def _signals(state: RunState):
-    """SIGINT/SIGTERM for the whole run (the CLI is PID 1 under CHD_MODE=cli).
+    """SIGINT, SIGTERM and SIGHUP for the whole run.
+
+    The CLI is PID 1 under CHD_MODE=cli, and a closed terminal sends SIGHUP to
+    a `docker exec -it` run; each is handled like SIGTERM.
 
     Before any job starts the run is cancelled at once; once jobs run they are
     cancelled through the job manager, nothing more is queued, and the run
@@ -867,7 +887,7 @@ def _signals(state: RunState):
         asyncio.ensure_future(job_manager.cancel_all_jobs())
 
     installed = []
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
             loop.add_signal_handler(sig, on_signal)
             installed.append(sig)
@@ -880,9 +900,15 @@ def _signals(state: RunState):
 
 
 async def _run(args) -> int:
+    from services.lock_manager import lock_manager
+
     printer = Printer(args.json)
     state = RunState()
-    with _signals(state):
+    # A dry run takes no locks and removes no lock files: the lock directory
+    # is shared with a server that may be running (#306). Tickets and slots are
+    # never touched either, because a dry run queues nothing.
+    readonly = lock_manager.read_only() if args.dry_run else contextlib.nullcontext()
+    with _signals(state), readonly:
         if args.command == "convert":
             return await convert(args, printer, state)
         return await verify(args, printer, state)

@@ -14,7 +14,10 @@
   do, 1 on a failure, 2 on bad arguments. Safe beside a running server: both
   take the same output locks. Started as root, it drops to the `converter` user
   (`PUID`/`PGID`) the way the server does. `CHD_MODE=cli` keeps today's scope
-  and defaults; it now runs through this command.
+  and defaults; it now runs through this command. Two differences: with
+  `CHDMAN_MODE=createdvd` it no longer hands top-level `.cue`/`.gdi` files to
+  chdman (that never produced a usable CHD), and one failed file no longer
+  stops the rest of the run.
 - **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
   panel, select a mix of files, and each Image goes to its Platform's default
   format with your saved compression. The Platform comes from the Image's own
@@ -79,7 +82,10 @@
   unset, output locks and conversion slots move from `/tmp/chd-locks` to
   `<data dir>/locks`, so a CLI container that mounts the same `/config` as the
   web UI shares its locks. When `/config` is not writable the old `/tmp`
-  location is used.
+  location is used, with a warning. Queue tickets are now held by a file lock
+  for as long as their job is queued, so a process killed without cleanup
+  (closed terminal, SIGKILL, out of memory) no longer stalls the other
+  process's conversions; its tickets are cleared by the next job that waits.
 - **Auto converts a PS3 disc folder to an ISO** (#306). The Auto choice now
   sends a PS3 disc folder to `folder_to_iso`; it used to leave it alone.
 - A single convert request for an output another job is writing now says

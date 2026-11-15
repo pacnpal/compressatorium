@@ -2517,7 +2517,7 @@ caller of the same seams the routes use, not a second conversion path:
 | Queue and run | `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
 | Delete | `JobManager._delete_check`, so `--delete-source` gets the Round-trip check where the mode has one and `--container-only` is the job's `container_only` |
 | Ledger | `ledger.record` as a terminal listener, as in `main.py` |
-| Verify | `ToolPlugin.verify` bounded by `verify_timeout`, then `verification_store.mark_verified` (or `clear` on a failure) |
+| Verify | `ToolPlugin.verify` bounded by `verify_timeout`, then `verification_store.mark_verified`, or `clear` on a conclusive failure only |
 
 **`format_route(path, target, platform, registry)`** returns `(mode, None)` or
 `(None, reason)`. The CLI calls it after `detect_platform`: a Conflicted Image
@@ -2558,13 +2558,45 @@ file meaningful across processes (`LockManager`):
    retries on a mismatch.
 
 Unlinking after the unlock let a second process lock the doomed file and a
-third create and lock a new one at the same path. The concurrency manager's
-slot and ticket files still unlink after unlocking; see the follow-ups.
+third create and lock a new one at the same path. `lock_manager.still_linked`
+and `unlink_held` are module functions, shared with the concurrency manager.
+
+**Slots and tickets (`ConcurrencyManager`).** Slot files
+(`convert_slot_<i>.lock`) are a fixed set held by `flock` and are never
+unlinked. A ticket (`queue_<ticket>_<seq>_<key>.ticket`) is written under a
+private temp name, flock-held, then renamed into place, and its holder keeps the
+flock until `release_ticket` unlinks it while still holding it. Liveness is the
+flock, not a PID (PIDs mean nothing across containers): a ticket another process
+can flock belongs to a holder that died without cleanup, and
+`_prune_dead_tickets` removes it, at construction and at most once a second
+from `_wait_for_turn`. So a CLI killed by SIGKILL, SIGHUP or the OOM killer stops
+blocking the server's queue as soon as the server's next job waits. One open
+file per queued job is the cost, so the CLI keeps at most twice
+`MAX_CONCURRENT_JOBS` of its jobs queued (never more than `MAX_QUEUE_DEPTH`).
+
+**Lazy, and read-only for a dry run.** Choosing the lock dir creates nothing
+(`config._default_lock_dir`; it warns when it falls back to `$TMPDIR`). The
+module singletons `lock_manager` and `concurrency_manager` are built
+`lazy=True`: the directory, `queue_counter`, the stale sweep and the ticket
+prune happen on first use. A dry run wraps the run in `lock_manager.read_only()`,
+in which no lock is taken or probed and no lock file removed; a lock file that
+is present counts as held. A dry run queues nothing, so tickets and slots are
+never touched.
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
 drop run unchanged, and the re-executed entrypoint hands straight back to the
 command before printing anything to stdout.
+
+**No verdict is not a failure.** The shared verify error
+(`SubprocessRunner._verify_error`) takes `inconclusive=True` next to
+`cancelled` and `abandoned`, and `collect_verify` keeps it. It is set when the
+check ended without judging the file: the runner's overall timeout and stall
+bound in `run_verify`, the one-shot timeout in `capture_verify`, z3ds's own
+timeout, and `verify_preflight`'s stat/read errors ("File not found", "Error
+reading file"); not for an empty file or a wrong extension, which are verdicts.
+`valid` stays False, so nothing is deleted on it, but the CLI's verify keeps a
+stored check unless the failure is conclusive.
 
 **`JobManager.drain()`** waits until every queued run has ended, cleanup
 included: a job notifies its listeners before `_process_job` removes its temp

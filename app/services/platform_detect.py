@@ -488,6 +488,9 @@ def _serves(spec, platform: str, tools_registry) -> bool:
     return not any(platform in claimed(s) for s in tools_registry.mode_specs())
 
 
+serves_platform = _serves
+
+
 def format_route(
     path: str, target: str, platform: str | None, tools_registry,
 ) -> tuple[str | None, str | None]:

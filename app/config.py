@@ -1,5 +1,6 @@
 """Application configuration settings for the CHD converter."""
 
+import logging
 import os
 from pathlib import Path
 
@@ -12,22 +13,31 @@ def _default_lock_dir(data_dir: str) -> str:
 
     ``<data dir>/locks``, so every process that shares the ``/config`` mount
     (the server, ``docker exec compressatorium ...``, a separate CLI container)
-    contends for the same output locks and conversion slots (#306). The
-    directory is created owner-only. When the data dir cannot hold it (a
-    read-only or missing ``/config`` on a dev machine) the old per-host
-    default, ``$TMPDIR/chd-locks``, is used; every process on that host makes
-    the same choice.
+    contends for the same output locks and conversion slots (#306). Nothing is
+    created here: the lock managers make the directory (owner only) on first
+    use, so a process that only plans leaves ``/config`` alone. When the data
+    dir cannot hold it (a read-only or missing ``/config`` on a dev machine)
+    the old per-host default, ``$TMPDIR/chd-locks``, is used, with a warning,
+    because the processes then stop sharing locks with any other container.
     """
     preferred = os.path.join(data_dir, "locks")
-    try:
-        os.makedirs(preferred, mode=0o700, exist_ok=True)
-        if os.path.isdir(preferred) and os.access(preferred, os.W_OK | os.X_OK):
-            return preferred
-    except OSError:
-        pass
+    if os.path.isdir(preferred):
+        usable = os.access(preferred, os.W_OK | os.X_OK)
+    else:
+        usable = os.path.isdir(data_dir) and os.access(data_dir, os.W_OK | os.X_OK)
+    if usable:
+        return preferred
     # Bandit B108: a fixed path is intended here, so separate processes on one
     # host share it; lock_manager and concurrency_manager create it 0o700.
-    return os.path.join(os.environ.get("TMPDIR", "/tmp"), "chd-locks")  # nosec B108
+    fallback = os.path.join(os.environ.get("TMPDIR", "/tmp"), "chd-locks")  # nosec B108
+    if os.path.isdir(data_dir):
+        # Only worth saying when there is a data dir to share: on a dev machine
+        # without /config the fallback is the normal case.
+        logging.getLogger("compressatorium.config").warning(
+            "%s is not writable by this user; job locks go to %s, so they are "
+            "not shared with other containers", preferred, fallback,
+        )
+    return fallback
 
 
 class Settings(BaseSettings):
