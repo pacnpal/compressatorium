@@ -354,7 +354,8 @@ def _skip_outside_volumes(items) -> None:
 
 def _logical_files(item) -> list[str]:
     """The real files a logical Image's check reads: its producing tool's
-    verify target and every split part (``companion_outputs``)."""
+    verify target (the first part) and every later part
+    (``registry.split_members``)."""
     from services.tools import registry
 
     mode = item.logical_mode
@@ -363,8 +364,9 @@ def _logical_files(item) -> list[str]:
     except (KeyError, OSError) as exc:
         logger.debug("No verify target for %s through %s: %s", item.path, mode, exc)
         return []
-    files = [target] if target else []
-    return files + [p for p in registry._companions(mode, item.path) if p not in files]
+    if not target:
+        return []
+    return [target, *registry.split_members(target)]
 
 
 # --------------------------------------------------------------------------- #
@@ -1272,8 +1274,8 @@ async def verify(args, printer: Printer, state: RunState) -> int:
         # rebuild locks alone, and every part: an in-progress build makes the
         # check skip as busy rather than judge a half-written set.
         also_lock = (
-            [item.path, *registry._companions(item.logical_mode, item.path)]
-            if item.logical_mode else []
+            [item.path, target, *registry.split_members(target)]
+            if item.logical_mode and target else []
         )
         line = await _verify_one(
             item.path, tool, has_db, since, args.dry_run, target=target,
