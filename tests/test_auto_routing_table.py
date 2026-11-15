@@ -50,7 +50,7 @@ ROM = dict.fromkeys(
 
 ROUTES: dict[str, dict[str, str]] = {
     # Sony
-    "ps": CD,
+    "psx": CD,
     "ps2": {".cue": "createcd", ".gdi": "createcd", ".iso": "createdvd", **CSO_TO_CHD},
     "psp": {".iso": "createdvd", **CSO_TO_CHD},
     # Sega, NEC, SNK, Philips, Panasonic, arcade: CD images
@@ -68,7 +68,7 @@ ROUTES: dict[str, dict[str, str]] = {
         slug: ROM
         for slug in (
             "gb", "gbc", "gba", "nds", "nes", "snes", "n64", "virtualboy",
-            "sms", "genesis-slash-megadrive", "gamegear", "wonderswan",
+            "sms", "genesis", "gamegear", "wonderswan",
             "neo-geo-pocket", "lynx", "c64", "atari2600", "atari7800",
         )
     },

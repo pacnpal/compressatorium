@@ -38,14 +38,16 @@ FOLDER = "folder"
 CONFLICT = "conflict"
 UNSORTED = "unsorted"
 
-# Platform slug (RomM's, which is IGDB's) -> every other name for the same
-# console: the tools' and the disc-ID parser's own vocabulary, and the folder
-# names ES-DE (es_systems.xml) and Batocera use. Detection always answers with
-# the key. Every slug a tool declares must appear here, as a key or an alias;
+# Platform slug -> every other name for the same console: IGDB's slug where
+# RomM's differs, the tools' and the disc-ID parser's own vocabulary, and the
+# folder names ES-DE (es_systems.xml) and Batocera use. Each key is RomM's own
+# slug (its ``UniversalPlatformSlug`` value, e.g. ``psx`` and ``genesis`` where
+# IGDB says ``ps`` and ``genesis-slash-megadrive``), and Detection always
+# answers with the key. Every slug a tool declares must appear here, as a key or an alias;
 # tests/test_platform_detect.py fails when a new tool brings one that is not.
 _ALIASES: dict[str, tuple[str, ...]] = {
     # Sony
-    "ps": ("psx", "ps1", "playstation", "sony-playstation"),
+    "psx": ("ps", "ps1", "playstation", "sony-playstation"),
     "ps2": ("playstation2", "playstation-2"),
     "psp": ("playstation-portable",),
     "ps3": ("playstation3", "playstation-3"),
@@ -68,8 +70,9 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "dc": ("dreamcast", "sega-dreamcast"),
     "saturn": ("segasaturn", "sega-saturn", "saturnjp"),
     "segacd": ("sega-cd", "megacd", "mega-cd", "megacdjp"),
-    "genesis-slash-megadrive": (
-        "genesis", "megadrive", "mega-drive", "megadrivejp", "segamd", "md",
+    "genesis": (
+        "genesis-slash-megadrive", "megadrive", "mega-drive", "megadrivejp",
+        "segamd", "md",
     ),
     "sms": ("mastersystem", "master-system", "sega-master-system"),
     "gamegear": ("gg", "game-gear"),

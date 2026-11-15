@@ -2386,15 +2386,17 @@ Precedence is fixed and never guesses:
 2. **Folder name.** The nearest parent folder whose name is a key or alias in
    `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
    name for it (the tools' own spellings and the folder names ES-DE and
-   Batocera use: `psx`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
+   Batocera use: `ps1`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
    `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
    header and use the archive's folder.
 
-Every answer goes through `canonical_slug`, which maps aliases and the tools'
-own vocabulary (`ps1`, `gamecube`, `neogeocd`, `genesis`) onto RomM's slugs
-(`ps`, `ngc`, `neo-geo-cd`, `genesis-slash-megadrive`). A test fails when a
-tool declares a slug the table does not cover, so a new Platform brings its
-folder names with it. A header that disagrees with the folder, or two headers that disagree,
+Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
+and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
+`genesis-slash-megadrive`) onto RomM's own slugs (`psx`, `ngc`, `neo-geo-cd`,
+`genesis`). RomM's slug is its `UniversalPlatformSlug` value, which differs
+from IGDB's for PlayStation and Genesis; `test_every_canonical_key_is_a_romm_slug`
+pins every key to RomM's list. A test also fails when a tool declares a slug
+the table does not cover, so a new Platform brings its folder names with it. A header that disagrees with the folder, or two headers that disagree,
 is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
 changes; `clear_cache()` exists for tests. A header probe that reads other

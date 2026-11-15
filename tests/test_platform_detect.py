@@ -81,7 +81,7 @@ def _sector0(path: Path, magic: bytes, *, raw: bool = False) -> str:
         (_gamecube, "game.iso", "ngc"),
         (_wii, "game.iso", "wii"),
         (_ps2, "game.iso", "ps2"),
-        (_ps1, "game.iso", "ps"),
+        (_ps1, "game.iso", "psx"),
         (_psp, "game.iso", "psp"),
         (lambda p: _sector0(p, b"SEGA SEGASATURN "), "game.iso", "saturn"),
         (lambda p: _sector0(p, b"SEGA SEGASATURN ", raw=True), "game.bin", "saturn"),
@@ -142,7 +142,7 @@ def test_dreamcast_gdi_reads_its_first_track(tmp_path):
         ("ps2", "ps2"), ("psp", "psp"), ("ngc", "ngc"), ("wii", "wii"),
         ("xbox", "xbox"), ("dc", "dc"), ("saturn", "saturn"), ("segacd", "segacd"),
         # ES-DE / Batocera names for the same consoles.
-        ("psx", "ps"), ("gc", "ngc"), ("gamecube", "ngc"), ("dreamcast", "dc"),
+        ("psx", "psx"), ("ps1", "psx"), ("gc", "ngc"), ("gamecube", "ngc"), ("dreamcast", "dc"),
         ("megacd", "segacd"), ("PS2", "ps2"),
     ],
 )
@@ -161,8 +161,8 @@ def test_folder_name_names_the_platform_when_there_is_no_header(
 FRONTEND_FOLDERS = [
     ("pcenginecd", "turbografx-cd"), ("tg-cd", "turbografx-cd"),
     ("cdi", "philips-cd-i"), ("cdimono1", "philips-cd-i"),
-    ("megadrive", "genesis-slash-megadrive"), ("genesis", "genesis-slash-megadrive"),
-    ("segamd", "genesis-slash-megadrive"),
+    ("megadrive", "genesis"), ("genesis-slash-megadrive", "genesis"),
+    ("segamd", "genesis"),
     ("mastersystem", "sms"), ("gg", "gamegear"), ("game-gear", "gamegear"),
     ("atarilynx", "lynx"), ("ngp", "neo-geo-pocket"), ("ngpc", "neo-geo-pocket-color"),
     ("wonderswancolor", "wonderswan-color"), ("n3ds", "3ds"),
@@ -191,6 +191,26 @@ def test_every_alias_names_its_romm_slug(tmp_path, alias, slug):
     assert platform_detect.canonical_slug(alias) == slug
     path = _blank(tmp_path / alias / "game.bin")
     assert detect_platform(path).platform == slug
+
+
+# RomM's own slugs for every Platform the tools serve: the values of RomM's
+# `UniversalPlatformSlug` enum (rommapp/romm, backend/utils/platform_slugs.py).
+# RomM's slug differs from IGDB's in places (`psx`, not `ps`; `genesis`, not
+# `genesis-slash-megadrive`), and Detection answers in RomM's.
+ROMM_SLUGS = frozenset({
+    "3do", "3ds", "arcade", "atari2600", "atari7800", "c64", "dc", "gamegear",
+    "gb", "gba", "gbc", "genesis", "laseractive", "lynx", "n64", "nds",
+    "neo-geo-cd", "neo-geo-pocket", "neo-geo-pocket-color", "nes",
+    "new-nintendo-3ds", "ngc", "pc-fx", "philips-cd-i", "ps2", "ps3", "psp",
+    "psx", "saturn", "segacd", "sms", "snes", "switch", "turbografx-cd",
+    "virtualboy", "wii", "wiiu", "wonderswan", "wonderswan-color", "xbox",
+    "xbox360",
+})
+
+
+@pytest.mark.parametrize("slug", sorted(platform_detect._ALIASES))
+def test_every_canonical_key_is_a_romm_slug(slug):
+    assert slug in ROMM_SLUGS
 
 
 def test_aliases_are_unambiguous():
@@ -238,7 +258,7 @@ def test_archive_member_uses_the_archive_folder(tmp_path):
 
     result = detect_platform(f"{archive}::disc.cue")
 
-    assert (result.platform, result.how) == ("ps", "folder")
+    assert (result.platform, result.how) == ("psx", "folder")
 
 
 def test_missing_file_is_unsorted(tmp_path):
