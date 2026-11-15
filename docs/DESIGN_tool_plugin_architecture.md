@@ -2302,12 +2302,20 @@ class ContentDigest:
     value: str   # lowercase hex
     def same_content(self, other) -> bool: ...   # ValueError on a kind mismatch
 
-async def content_digest(self, path, *, cancel_event=None) -> ContentDigest | None
+async def content_digest(self, path, *, cancel_event=None, within=None) -> ContentDigest | None
 ```
 
 - `content_digest(path)` hashes what `path` decodes to. `None` means the tool
   has no digest for this kind of file; `ContentDigestUnavailable` means it
   should have one and could not get it. `BaseTool` returns `None`.
+- `within` (a sequence of folders, or `None`) is where a sheet's track
+  references may resolve, with the same meaning as `post_convert`'s: `None`
+  confines them to the configured Volumes. `round_trip(..., within=)` passes
+  the job's value to the Source side only: `[job.temp_dir]` for an
+  archive-member Source, else `None`. The output always lives in a Volume, so
+  its side gets `None`. A tool that extracts an output into its own scratch
+  folder before hashing it passes that folder to its own sheet reads. A tool
+  that reads no sheet, like Dolphin, accepts the argument and ignores it.
 - `kind` keeps digests of different shapes apart. `same_content` raises
   `ValueError` rather than answer "different" for, say, a CD track hash against
   a disc-image hash, and the check treats that as "not proven".

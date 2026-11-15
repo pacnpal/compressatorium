@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
@@ -229,7 +229,11 @@ class DolphinTool(BaseTool):
         return [(h, "dolphin_disc_sha1") for h in hashes]
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,  # reads no sheet, so unused
     ) -> ContentDigest | None:
         # Both sides of every Dolphin mode reduce to the SHA1 of the whole disc
         # image. A plain .iso *is* that image, so it is hashed directly, with no

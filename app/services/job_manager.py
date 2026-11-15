@@ -2902,8 +2902,12 @@ class JobManager:
         # no progress, exactly like the container check before it.
         self._verifying[job.id] = time.monotonic()
         try:
+            # An archive-member Source (and any sheet it names) lives in the
+            # job's extraction folder, outside the Volumes; the tool may read
+            # it there. Anything else stays confined to the Volumes (None).
             outcome = await round_trip(
                 tool, source_path, output_path, cancel_event=cancel_event,
+                within=[job.temp_dir] if job.temp_dir else None,
             )
         finally:
             self._verifying.pop(job.id, None)
