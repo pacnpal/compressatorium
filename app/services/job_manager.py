@@ -50,6 +50,14 @@ from utils.path_utils import (
 
 logger = get_logger("job_manager")
 
+# Delete-on-verify and readers (#306): a Source another job (in any process)
+# is reading when the delete step comes is waited for, polling without
+# blocking, up to this bound. Still held then, it is kept and the job still
+# completes: the conversion succeeded.
+DELETE_READER_WAIT_SECONDS = 60.0
+DELETE_READER_POLL_SECONDS = 0.5
+SOURCE_KEPT_FOR_READERS = "Source kept: it was being read by another job"
+
 # The glossary names (CONTEXT.md) for each stored check, used in job messages so
 # "verified" never stands in for which check an output passed.
 _CHECK_LABELS = {"intact": "Intact", "round_tripped": "Round-tripped"}
@@ -351,6 +359,8 @@ class JobManager:
         self._output_keys: Dict[str, Tuple[str, ...]] = {}
         # The files each running job holds a shared input lock on (#306).
         self._input_locks: Dict[str, List[str]] = {}
+        # The delete paths a job holds exclusively while it unlinks them.
+        self._delete_holds: Dict[str, List[str]] = {}
         # Jobs currently inside the verify phase, mapped to the monotonic clock
         # reading when that phase began. Verification emits no progress and can
         # legitimately run for many minutes, so the stalled-job warning reports
@@ -1425,6 +1435,43 @@ class JobManager:
     def _release_inputs(self, job_id: str) -> None:
         for path in self._input_locks.pop(job_id, []):
             lock_manager.release_input_lock(path)
+
+    def _try_hold_for_delete(self, job_id: str, paths: Iterable[str]) -> bool:
+        """Lock every delete path exclusively, or hold none and say so."""
+        held = self._delete_holds.setdefault(job_id, [])
+        for path in paths:
+            if not lock_manager.acquire_lock(path, allow_existing=True):
+                self._release_delete_holds(job_id)
+                return False
+            held.append(path)
+        return True
+
+    async def _hold_delete_paths_waiting(
+        self, job_id: str, cancel_event: asyncio.Event | None = None,
+    ) -> bool:
+        """Trade this job's shared read locks for exclusive locks on every path
+        of its delete plan, held until the unlinks finish (#306).
+
+        A path another job reads (a shared lock in any process), or one under a
+        folder another process packs, can't be held; this polls, without
+        blocking, up to ``DELETE_READER_WAIT_SECONDS`` for it to be let go.
+        False when it is still held then (or the job is cancelled meanwhile):
+        the caller keeps the Source and the job still completes.
+        """
+        snapshot = self._delete_plans.get(job_id) or {}
+        paths = list(snapshot.get("paths") or [])
+        self._release_inputs(job_id)
+        deadline = time.monotonic() + DELETE_READER_WAIT_SECONDS
+        while True:
+            if await run_in_threadpool(self._try_hold_for_delete, job_id, paths):
+                return True
+            if time.monotonic() >= deadline or (cancel_event and cancel_event.is_set()):
+                return False
+            await asyncio.sleep(DELETE_READER_POLL_SECONDS)
+
+    def _release_delete_holds(self, job_id: str) -> None:
+        for path in self._delete_holds.pop(job_id, []):
+            lock_manager.release_lock(path)
 
     def _candidate_paths(self, job: ConversionJob) -> List[str]:
         paths = []
@@ -2964,45 +3011,52 @@ class JobManager:
         # web guard's exact-path probe refuses to rename or delete them, and a
         # job writing one of those paths can't take its output lock. Readers
         # share it. A folder input already holds its subtree lock above.
-        if job.input_kind != InputKind.DIRECTORY and not await run_in_threadpool(
-            self._hold_inputs, job_id, job,
-        ):
-            await self._defer_blocked_job(
+        # From the moment the input locks may be taken until the try/finally
+        # below owns them: a cancellation here (worker shutdown) releases
+        # them, or the Source would stay shared-locked until restart (#306).
+        try:
+            if job.input_kind != InputKind.DIRECTORY and not await run_in_threadpool(
+                self._hold_inputs, job_id, job,
+            ):
+                await self._defer_blocked_job(
+                    job_id,
+                    output_lock_held=True,
+                    message="Waiting for another job using this Source or its folder...",
+                )
+                return
+
+            job.status = JobStatus.PROCESSING
+            job.started_at = datetime.now(timezone.utc)
+            # Restart the progress clock at the moment work actually begins. It was
+            # last set when the job was created, so a job that waited in the queue
+            # longer than debug_progress_timeout -- routine on a deep queue -- would
+            # otherwise be reported stalled the instant it started running.
+            self._last_progress_at[job_id] = time.monotonic()
+            processing_now = sum(
+                1 for candidate in self.jobs.values() if candidate.status == JobStatus.PROCESSING
+            )
+            if processing_now > self.max_concurrent:
+                logger.error(
+                    "Processing concurrency invariant violated: processing=%d max_concurrent=%d",
+                    processing_now,
+                    self.max_concurrent,
+                )
+
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Job %s acquired locks and started processing", job_id)
+
+            await self._notify_subscribers(
                 job_id,
-                output_lock_held=True,
-                message="Waiting for another job using this Source or its folder...",
+                {
+                    "type": "status",
+                    "job_id": job_id,
+                    "status": job.status.value,
+                    "progress": 0,
+                },
             )
-            return
-
-        job.status = JobStatus.PROCESSING
-        job.started_at = datetime.now(timezone.utc)
-        # Restart the progress clock at the moment work actually begins. It was
-        # last set when the job was created, so a job that waited in the queue
-        # longer than debug_progress_timeout -- routine on a deep queue -- would
-        # otherwise be reported stalled the instant it started running.
-        self._last_progress_at[job_id] = time.monotonic()
-        processing_now = sum(
-            1 for candidate in self.jobs.values() if candidate.status == JobStatus.PROCESSING
-        )
-        if processing_now > self.max_concurrent:
-            logger.error(
-                "Processing concurrency invariant violated: processing=%d max_concurrent=%d",
-                processing_now,
-                self.max_concurrent,
-            )
-
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Job %s acquired locks and started processing", job_id)
-
-        await self._notify_subscribers(
-            job_id,
-            {
-                "type": "status",
-                "job_id": job_id,
-                "status": job.status.value,
-                "progress": 0,
-            },
-        )
+        except BaseException:
+            self._release_inputs(job_id)
+            raise
 
         try:
             # Ledger bookkeeping (#292): size the Source set before anything can
@@ -3418,6 +3472,21 @@ class JobManager:
                                 "message": job.message,
                             },
                         )
+                    elif not await self._hold_delete_paths_waiting(job_id, cancel_event):
+                        # Another job is still reading the Source (or a folder
+                        # above it): the output is done and checked, so the job
+                        # completes, keeping the Source.
+                        job.warning = SOURCE_KEPT_FOR_READERS
+                        job.message = f"Output is {check_label}. {SOURCE_KEPT_FOR_READERS}."
+                        await self._notify_subscribers(
+                            job_id,
+                            {
+                                "type": "progress",
+                                "job_id": job_id,
+                                "progress": job.progress,
+                                "message": job.message,
+                            },
+                        )
                     else:
                         delete_label = (
                             "source archive"
@@ -3481,20 +3550,11 @@ class JobManager:
                         else:
                             delete_order = expected_paths
 
-                        # Let go of this job's own read locks first, or the
-                        # check below would find its Source held by itself.
-                        # Another job reading it still holds its own.
-                        self._release_inputs(job_id)
+                        # Every delete path is held exclusively from here until
+                        # the unlinks finish (``_hold_delete_paths_waiting``,
+                        # above): no job can start reading one between these
+                        # checks and its unlink (#306).
                         for path in expected_paths:
-                            _, is_locked = lock_manager.check_file_status(path)
-                            # A folder above it that another process took
-                            # once this job let go of its read locks (#306).
-                            if is_locked or await run_in_threadpool(
-                                lock_manager.folder_locked_above, path,
-                            ):
-                                raise RuntimeError(
-                                    "Delete path is locked by an active conversion"
-                                )
                             within_volumes = await run_in_threadpool(
                                 is_within_configured_volumes,
                                 path,
@@ -3568,6 +3628,7 @@ class JobManager:
                         for path in delete_order:
                             await run_in_threadpool(os.remove, path)
                             job.deleted_paths.append(path)
+                        self._release_delete_holds(job_id)
 
                         source_deleted = True
 
@@ -3623,6 +3684,7 @@ class JobManager:
             if dir_lock_acquired:
                 lock_manager.release_dir_lock(job.file_path)
             self._release_inputs(job_id)
+            self._release_delete_holds(job_id)
 
             concurrency_manager.release(job_id)
 

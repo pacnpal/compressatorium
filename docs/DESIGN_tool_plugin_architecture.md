@@ -2590,7 +2590,14 @@ queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
 returns it, for an HTTP error from the queue and for an unexpected exception
 alike (the latter logged with its traceback and returned as a 500; a
-cancellation still propagates). Nothing in either Auto endpoint, or in the
+cancellation still propagates). `/jobs/auto` queues only the plan the user
+confirmed: the client sends the confirmed plan's actionable rows as
+`items: [{file_path, mode}]` (an Image the preview skipped is never sent), the
+route replans those paths, and if any target differs (another tool, or now
+skipped) it answers 409 with `detail = {"message", "plan"}` before queueing
+anything. `conversion.runAuto` then shows the new plan and asks again.
+Queueing an Image the user never saw would also skip its RomM metadata
+snapshot. Nothing in either Auto endpoint, or in the
 batch preparation they share, touches a Volume on the event loop: the per-path
 Volume checks run together with planning (`_checked_auto_plan`) or on their
 own (`_check_within_volumes`) through `_off_loop_bounded`, a `run_detached`
@@ -2763,6 +2770,30 @@ Volume root, and refuses with 409 when another process holds one. So a CLI job
 packing a folder blocks a web rename or delete inside it. The exact-path check
 (`check_file_status`) runs first, as before.
 
+**Lock identity is the real path.** Output and input locks are keyed, named
+and recorded by `os.path.realpath` of the path, as folder locks always were
+(the same rule `resolve_track` uses). A path reached through a symlinked folder
+(`/volume/alias/Game.wia` into `/volume/real`) therefore locks the file it
+names, and every probe (`check_file_status`, `locked_folder_above`,
+`locked_path_below`) realpaths its query the same way, so a delete through the
+real path, or packing the real parent, sees it. The identity is fixed when the
+lock is taken (`_lock_keys` for outputs, the key stored beside each input
+handle) and the release uses exactly that, even if a symlink changed since.
+
+**Archive deletion fails closed.** Deleting an archive member's Source deletes
+the archive, so `build_delete_plan` (shared by the web batch, the job's
+delete-time recheck, Rule sweeps and the CLI) refuses unless every member
+belongs to the converted Image. `utils.delete_plan.archive_members_beyond_image`
+lists the rest: the owned set is the member itself, the tracks its sheet names
+(the sheet is extracted to a temp dir and each reference resolved with
+`resolve_track`, confined there, in every spelling the sheet reads as), and its
+`source_companions` split parts (by name, against the archive's names laid out
+as empty files). A directory entry counts only when nothing owned lives under
+it. Everything else, of any type and junk included, is an extra; there is no
+list of harmless sidecars. An archive or sheet that can't be read counts as an
+extra (the archive's own name). The error and the CLI line name the first three
+(`describe_extras`).
+
 **Input locks.** Every file-input job, whichever entry point queued it, holds a
 *shared* flock on each file it reads (`JobManager._hold_inputs`: the Source, or
 the archive for a member, plus `_track_candidate_paths`' cue/gdi tracks and
@@ -2807,9 +2838,8 @@ Since both sides lock before they look, two racing acquirers can't both miss
 each other; at worst both back off. The job manager defers a job that hit
 such a conflict (`_blocked_by_dir_lock` now also asks `folder_locked_above`)
 and re-queues it after the retry delay plus random jitter, so two processes
-don't retry in lockstep. The delete-on-verify check also asks
-`folder_locked_above` for each delete path, for a folder another process took
-after the job let go of its read locks.
+don't retry in lockstep. The delete-on-verify step takes an exclusive lock on
+each delete path (below), which also asks `folder_locked_above`.
 
 **Limits of the lock dir.**
 
@@ -2823,10 +2853,19 @@ after the job let go of its read locks.
   wrapper's `gosu converter` drop ensure.
 
 A job that cannot take its input locks (another job holds the path for
-writing) is deferred and re-queued, like a folder-lock block. Before the
-delete-on-verify step checks its delete paths with `check_file_status`, the job
-lets go of its own input locks, so it does not find its Source held by itself;
-another job still reading it does hold it, and the delete is refused.
+writing) is deferred and re-queued, like a folder-lock block. At the
+delete-on-verify step the job trades its shared read locks for exclusive ones
+on every delete path (`JobManager._hold_delete_paths_waiting`, through
+`acquire_lock(path, allow_existing=True)`) and holds them until the unlinks
+finish (`_release_delete_holds`, also run in the job's `finally`); no job can
+start reading a path between the checks and its unlink, since a new reader's
+shared lock is refused while the exclusive one is held. A path another job is
+still reading (a shared lock in any process), or one under a folder another
+process packs, is waited for, polling without blocking, up to
+`DELETE_READER_WAIT_SECONDS` (60 s). Still held then, the Source is kept and the
+job ends COMPLETED with `job.warning` set to "Source kept: it was being read by
+another job": the conversion succeeded, so it never fails for this. The CLI
+reports it as a kept Source (exit 1).
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
@@ -2878,6 +2917,14 @@ that reads an archive (`x`, `t`) names a throwaway random password, built per
 call (`romz._no_prompt_switch()`; no password literal), so an encrypted archive
 fails at once instead of prompting. `7z a` names none:
 there the switch would encrypt the archive being written.
+
+**Provenance.** A plain re-check that passes (the CLI's `verify`, the web's
+Verify, single and batch) records it with `verification_store.refresh_check`,
+which updates when and which check passed and keeps the stored `produced_meta`
+and `source_path`: refreshing a check never erases the mode that made the file,
+which step 1 below routes by. A conversion records with `mark_verified`, which
+replaces both, `None` included, so an output rebuilt at the same path by
+another mode never inherits the old one.
 
 **Which tool checks a file** (`cli._verify_tool`), in this order:
 

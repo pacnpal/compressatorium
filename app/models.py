@@ -186,6 +186,10 @@ class ConversionJob(BaseModel):
     # no check ran.
     check_passed: str | None = None
     deleted_paths: list[str] = []
+    # A finished job that did less than asked without failing, such as a
+    # delete-source run that kept its Source because another job was reading
+    # it (#306). None when there is nothing to say.
+    warning: str | None = None
 
 
 class JobCreateRequest(BaseModel):
@@ -223,7 +227,23 @@ class AutoPlanRequest(BaseModel):
     output_dir: str | None = None
 
 
-class AutoJobCreateRequest(AutoPlanRequest):
+class AutoJobItem(BaseModel):
+    """One Image of a confirmed Auto plan and the target the user saw for it."""
+
+    file_path: str
+    mode: str
+
+
+class AutoJobCreateRequest(BaseModel):
+    """Queue the Auto plan the user confirmed.
+
+    ``items`` are the plan's actionable rows only (an Image the preview
+    skipped is never sent). The route replans them and refuses with 409 when
+    any target changed, so what is queued is what was confirmed.
+    """
+
+    items: list[AutoJobItem]
+    output_dir: str | None = None
     duplicate_action: DuplicateAction = DuplicateAction.SKIP
 
 

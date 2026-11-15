@@ -1618,7 +1618,7 @@ def _sse_from_verify_stream(
                     yield {"event": "verify_progress", "data": json.dumps(update)}
                 elif update.get("type") == "complete":
                     if update.get("valid"):
-                        await verification_store.mark_verified(path)
+                        await verification_store.refresh_check(path)
                     yield {"event": "verify_complete", "data": json.dumps(update)}
                     break
                 elif update.get("type") == "error":
@@ -1664,6 +1664,9 @@ def _sse_batch_from_verify_stream(
         total = len(valid_paths)
         verified_count = 0
         failed_count = 0
+        # Files the tool refused to check here (an archive safety rule): no
+        # verdict, never counted as failed (#306). Reported only when any.
+        uncheckable_count = 0
 
         # Send initial status
         yield {
@@ -1811,27 +1814,31 @@ def _sse_batch_from_verify_stream(
                         lane["token"] = None
 
                 if final_result.get("valid"):
-                    await verification_store.mark_verified(path)
+                    await verification_store.refresh_check(path)
                     verified_count += 1
                     status = "verified"
+                elif final_result.get("uncheckable"):
+                    uncheckable_count += 1
+                    status = "uncheckable"
                 else:
                     failed_count += 1
                     status = "failed"
 
+                file_complete = {
+                    "index": idx,
+                    "path": path,
+                    "filename": filename,
+                    "status": status,
+                    "valid": final_result.get("valid", False),
+                    "message": final_result.get("message"),
+                    "verified": verified_count,
+                    "failed": failed_count,
+                }
+                if uncheckable_count:
+                    file_complete["uncheckable"] = uncheckable_count
                 yield {
                     "event": "verify_batch_file_complete",
-                    "data": json.dumps(
-                        {
-                            "index": idx,
-                            "path": path,
-                            "filename": filename,
-                            "status": status,
-                            "valid": final_result.get("valid", False),
-                            "message": final_result.get("message"),
-                            "verified": verified_count,
-                            "failed": failed_count,
-                        },
-                    ),
+                    "data": json.dumps(file_complete),
                 }
 
                 if stops_verify_batch(final_result, abandoned):
@@ -1872,11 +1879,12 @@ def _sse_batch_from_verify_stream(
                 }
 
         # Send final completion event
+        summary = {"total": total, "verified": verified_count, "failed": failed_count}
+        if uncheckable_count:
+            summary["uncheckable"] = uncheckable_count
         yield {
             "event": "verify_batch_complete",
-            "data": json.dumps(
-                {"total": total, "verified": verified_count, "failed": failed_count},
-            ),
+            "data": json.dumps(summary),
         }
 
     async def wrapped_event_generator():
@@ -1918,7 +1926,7 @@ def register_verify_routes(router_: APIRouter, tool: ToolPlugin) -> tuple:
                 cfg.service().verify(path), timeout=bound or None,
             )
             if result.get("valid"):
-                await verification_store.mark_verified(path)
+                await verification_store.refresh_check(path)
             return result
         except asyncio.TimeoutError:
             # A verdict-shaped answer, not a 500: the file is not known bad, the

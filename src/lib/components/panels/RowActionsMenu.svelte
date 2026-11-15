@@ -121,6 +121,13 @@
           description: 'Intact',
           duration: 4000,
         });
+      } else if (result?.uncheckable) {
+        // Refused by a safety rule, not damaged: no verdict either way.
+        toast.warning(name, {
+          id: toastId,
+          description: result.message || "Can't be checked here",
+          duration: 6000,
+        });
       } else {
         toast.error(name, {
           id: toastId,

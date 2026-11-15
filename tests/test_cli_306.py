@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -702,7 +703,6 @@ def test_a_hangup_stops_the_run_like_sigterm(volume, monkeypatch, capsys, signam
     """Closing the terminal of `docker exec -it ... compressatorium` sends SIGHUP."""
     import asyncio
     import os
-    import os
     import signal
 
     import cli
@@ -1003,7 +1003,6 @@ def test_a_stop_during_queueing_cancels_the_jobs_it_returned(
     one-shot cancel-all ran before the jobs existed, so they must be cancelled
     after the queue call returns, before any runs (Source deletion included)."""
     import asyncio
-    import os
     import os
     import signal
 
@@ -1560,12 +1559,33 @@ def test_an_archive_holding_another_image_is_kept(volume, dolphin, capsys):
     assert code == 1  # a Source that was asked to go was kept
 
 
+@pytest.mark.parametrize("extra", ["Game.gba", "Other.bin", "Other.zip", "readme.txt"])
+def test_an_archive_with_any_other_member_is_kept(volume, dolphin, capsys, extra):
+    """review r9 C1: fail closed. The second member isn't even discovered as
+    an Image here, and the archive still stays."""
+    pack = volume / "gc" / "pack.zip"
+    pack.parent.mkdir()
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 512)
+        zf.writestr(extra, b"other")
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert pack.exists()
+    line = next(x for x in lines if x["path"].endswith("::Game.iso"))
+    assert line["source_deleted"] is False
+    assert extra in line["reason"]
+    assert code == 1
+
+
 def test_a_single_image_archive_is_still_deleted(volume, dolphin, capsys):
     pack = volume / "gc" / "pack.zip"
     pack.parent.mkdir()
     with zipfile.ZipFile(pack, "w") as zf:
         zf.writestr("Game.iso", b"the disc" * 512)
-        zf.writestr("readme.txt", b"notes")
 
     code, lines = _cli(
         capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
@@ -1649,9 +1669,12 @@ def test_delete_on_verify_keeps_a_source_whose_folder_another_process_locked(
     """codex 4576810647: in the window after the job lets go of its read locks,
     another process takes the Source's folder (makeps3iso packing it). The
     delete check sees that lock above the Source and keeps it."""
+    from services import job_manager as job_manager_module
     from services.job_manager import JobManager
     from services.lock_manager import LockManager, lock_manager
 
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.05)
     game = volume / "gc" / "GAME"
     game.mkdir(parents=True)
     iso = game / "Game.iso"
@@ -1680,6 +1703,7 @@ def test_delete_on_verify_keeps_a_source_whose_folder_another_process_locked(
     assert taken == [True]
     assert iso.exists(), lines
     assert lines[0]["source_deleted"] is False
+    assert lines[0]["status"] == "completed"
 
 
 @pytest.mark.parametrize("command", [["verify"], ["convert", "--to", "rvz"]])
@@ -1709,3 +1733,103 @@ def test_a_fifo_named_like_an_image_is_skipped_without_hanging(
     assert code == 0, lines
     assert all(line["status"] == "skipped" for line in lines), lines
     assert dolphin["runs"] == []
+
+
+def test_delete_paths_are_held_exclusively_until_unlinked(volume, dolphin, capsys, monkeypatch):
+    """review r9 M1: between the delete check and the unlink, no job in any
+    process can start reading the Source. Another manager trying to take a
+    shared read lock on it at unlink time is refused."""
+    from services.lock_manager import LockManager, lock_manager
+
+    iso = volume / "gc" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"the disc" * 512)
+    reader = LockManager()
+    reader._lock_dir = lock_manager._lock_dir
+    real_remove = os.remove
+    seen = []
+
+    def remove_watching(path, *args, **kwargs):
+        if os.path.realpath(path) == os.path.realpath(iso):
+            got = reader.acquire_input_lock(str(iso))
+            seen.append(got)
+            if got:
+                reader.release_input_lock(str(iso))
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", remove_watching)
+    code, lines = _cli(
+        capsys, "convert", str(iso), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert code == 0, lines
+    assert seen == [False]
+    assert not iso.exists()
+    assert reader.acquire_input_lock(str(volume / "gc" / "Game.rvz"))
+
+
+def _reader_on(path):
+    from services.lock_manager import LockManager, lock_manager
+
+    reader = LockManager()
+    reader._lock_dir = lock_manager._lock_dir
+    assert reader.acquire_input_lock(str(path))
+    return reader
+
+
+def test_delete_waits_for_a_reader_that_finishes_within_the_bound(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """#305 review: a Source another process is reading is not a failure; the
+    delete waits a short bound for the reader, then deletes."""
+    import threading
+
+    from services import job_manager as job_manager_module
+
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_WAIT_SECONDS", 10.0)
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.05)
+    iso = volume / "gc" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"the disc" * 512)
+    reader = _reader_on(iso)
+    timer = threading.Timer(1.0, reader.release_input_lock, args=[str(iso)])
+    timer.start()
+    try:
+        code, lines = _cli(
+            capsys, "convert", str(iso), "--to", "rvz", "--delete-source",
+            "--container-only", "--json",
+        )
+    finally:
+        timer.join()
+
+    assert code == 0, lines
+    assert (lines[0]["status"], lines[0]["source_deleted"]) == ("completed", True)
+    assert not iso.exists()
+
+
+def test_a_reader_past_the_bound_keeps_the_source_and_the_job_completes(
+    volume, dolphin, capsys, monkeypatch,
+):
+    from services import job_manager as job_manager_module
+
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(job_manager_module, "DELETE_READER_POLL_SECONDS", 0.05)
+    iso = volume / "gc" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"the disc" * 512)
+    reader = _reader_on(iso)
+    try:
+        code, lines = _cli(
+            capsys, "convert", str(iso), "--to", "rvz", "--delete-source",
+            "--container-only", "--json",
+        )
+    finally:
+        reader.release_input_lock(str(iso))
+
+    assert lines[0]["status"] == "completed", lines
+    assert lines[0]["source_deleted"] is False
+    assert "Source kept: it was being read by another job" in lines[0]["reason"]
+    assert iso.exists()
+    assert (volume / "gc" / "Game.rvz").exists()
+    assert code == 1  # a Source asked to go was kept
