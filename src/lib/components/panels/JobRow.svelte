@@ -1,5 +1,6 @@
 <script>
   import { jobs } from '$lib/stores/jobs.svelte.js';
+  import { EXTERNAL_MODE_LABELS } from '$lib/stores/jobConstants.js';
   import { registry } from '$lib/tools/registry.js';
   import { formatSize } from '$lib/api/format.js';
   import Badge from '$lib/components/ui/Badge.svelte';
@@ -32,8 +33,12 @@
     isActive && typeof job?.progress === 'number' ? job.progress : null,
   );
 
+  // An external job (a check Rule's run) has no file of its own: its name
+  // says what it does.
   const filename = $derived(
-    job?.file_path?.split(/[/\\]/).pop() ?? job?.file_path ?? '(unknown)',
+    !spec && job?.filename
+      ? job.filename
+      : job?.file_path?.split(/[/\\]/).pop() ?? job?.file_path ?? '(unknown)',
   );
 
   function statusIcon(s) {
@@ -78,8 +83,8 @@
     <div class="meta">
       <div class="filename" title={job?.file_path}>{filename}</div>
       <div class="sub">
-        {tool?.label ?? ''} ·
-        {spec?.label ?? mode}
+        {#if tool}{tool.label} ·{/if}
+        {spec?.label ?? EXTERNAL_MODE_LABELS[mode] ?? mode}
         {#if job?.compression}· {job.compression}{/if}
         {#if job?.output_size}· {formatSize(job.output_size)}{/if}
       </div>
@@ -111,6 +116,8 @@
     <div class="error-message">{job.error_message}</div>
   {:else if status === 'completed' && job?.output_path}
     <div class="message muted" title={job.output_path}>→ {job.output_path}</div>
+  {:else if status === 'completed' && !spec && job?.message}
+    <div class="message muted">{job.message}</div>
   {/if}
 </li>
 

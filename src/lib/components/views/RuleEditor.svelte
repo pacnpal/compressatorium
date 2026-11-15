@@ -12,6 +12,9 @@
    *
    * `source` is the Library's rules source (see `libraries.svelte.js`): the
    * RomM store for RomM, a `FolderRulesSource` for a folder Library.
+   *
+   * A Platform's Rule can also be a check Rule (#305): no target format, a
+   * nightly byte budget, a window and weekdays. See `$lib/rules/checkRule.js`.
    */
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
@@ -19,6 +22,9 @@
   import { DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
   import { ruleNotices } from '$lib/stores/ruleNotices.svelte.js';
   import { CHECK_LEVEL, CHECK_LEVEL_LABELS } from '$lib/util/checkLevels.js';
+  import {
+    CHECK_RULE, checkRuleFrom, checkSummary, isCheckRule, selectValue,
+  } from '$lib/rules/checkRule.js';
   import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -77,7 +83,10 @@
     // apart. Both come from the backend registry rather than a second copy of
     // the platform table here.
     const allowedModes = platform?.mode_ids;
-    const out = [{ value: '', label: 'Off — do not convert this platform' }];
+    const out = [
+      { value: '', label: 'Off — do not convert this platform' },
+      { value: CHECK_RULE, label: 'Check only — check the Images are Intact, convert nothing' },
+    ];
     for (const tool of registry.all()) {
       // No opinion from the backend (unknown slug, older server) keeps every
       // tool, matching narrow_to_platform's conservative contract.
@@ -124,9 +133,18 @@
         : {}),
       ...patch,
     };
-    // `setRule` / `removeRule` raise the store's dirty flag themselves.
-    if (!rule.mode) source.removeRule(platformId);
-    else source.setRule(platformId, rule);
+    // `setRule` raises the store's dirty flag itself. A Rule with no mode is a
+    // check Rule, so it stays; "Off" goes through `setTarget`.
+    source.setRule(platformId, rule);
+  }
+
+  /** The target select: off removes the Rule, check makes it a check Rule. */
+  function setTarget(platformId, value) {
+    if (value === '') source.removeRule(platformId);
+    else if (value === CHECK_RULE) {
+      const current = source.ruleFor(platformId);
+      update(platformId, checkRuleFrom(current));
+    } else update(platformId, { mode: value });
   }
 
   /**
@@ -283,8 +301,7 @@
     if (!(await commitPendingEdits())) return;
     try {
       const r = await source.previewSweep();
-      const n = r?.queued ?? 0;
-      toast.info(n ? `Would queue ${n} conversion${n === 1 ? '' : 's'}` : 'Nothing to convert');
+      toast.info(sweepToast(r, 'Would queue', 'Would check'));
     } catch (e) {
       toast.error(e?.message ?? 'Preview failed');
     }
@@ -294,12 +311,23 @@
     if (!(await commitPendingEdits())) return;
     try {
       const r = await source.runSweep();
-      const n = r?.queued ?? 0;
-      if (n) toast.success(`Queued ${n} conversion${n === 1 ? '' : 's'}`);
-      else toast.info('Nothing to convert right now');
+      if (r?.queued || r?.checks) toast.success(sweepToast(r, 'Queued', 'Checking'));
+      else toast.info('Nothing to convert or check right now');
     } catch (e) {
       toast.error(e?.message ?? 'Run failed');
     }
+  }
+
+  /** "Queued 3 conversions, checking 12 Images", or what is empty. */
+  function sweepToast(r, queuedVerb, checkVerb) {
+    const parts = [];
+    const n = r?.queued ?? 0;
+    const c = r?.checks ?? 0;
+    if (n) parts.push(`${queuedVerb} ${n} conversion${n === 1 ? '' : 's'}`);
+    if (c) parts.push(`${checkVerb.toLowerCase()} ${c} Image${c === 1 ? '' : 's'}`);
+    if (!parts.length) return 'Nothing to convert or check';
+    const text = parts.join(', ');
+    return text[0].toUpperCase() + text.slice(1);
   }
 
   async function toggleAuto(enabled) {
@@ -376,6 +404,9 @@
     if (!state?.last_run_at) return 'never run';
     const when = new Date(state.last_run_at);
     if (Number.isNaN(when.getTime())) return 'never run';
+    if (state.last_checks !== undefined) {
+      return `last run ${when.toLocaleString()} · checked ${state.last_checks}`;
+    }
     return `last run ${when.toLocaleString()} · queued ${state.last_queued ?? 0}`;
   }
 </script>
@@ -433,6 +464,7 @@
     <section class="sweep">
       <strong>{r.dry_run ? 'Preview' : 'Last run'}:</strong>
       {r.queued ?? 0} queued
+      {#if r.checks !== undefined}· {r.checks} to check{/if}
       <span class="muted">
         · {r.skipped_existing ?? 0} already converted
         · {r.skipped_filtered ?? 0} filtered out
@@ -466,7 +498,7 @@
         {#if p.candidates?.length}
           <details class="candidates">
             <summary>
-              {source.platformName(p.platform_id)}: {p.queued}
+              {source.platformName(p.platform_id)}: {p.check ? `${p.checks} to check` : p.queued}
               {#if p.check_level}
                 <span class="muted">· {CHECK_LEVEL_LABELS[p.check_level] ?? p.check_level}</span>
               {/if}
@@ -499,6 +531,7 @@
       {#each platforms as platform (platform.id)}
         {@const rule = source.ruleFor(platform.id)}
         {@const configured = !!source.rules[String(platform.id)]}
+        {@const checking = isCheckRule(rule, configured)}
         {@const spec = specFor(rule.mode)}
         {@const open = expanded.has(platform.id)}
         <article class="rule" class:configured>
@@ -515,7 +548,10 @@
               {/if}
             </button>
             <div class="row-summary">
-              {#if configured && rule.enabled}
+              {#if checking && rule.enabled}
+                <Badge tone="success">Check</Badge>
+                <span class="muted">{checkSummary(rule)}</span>
+              {:else if configured && rule.enabled}
                 <Badge tone="success">{spec?.label ?? rule.mode}</Badge>
                 <span class="muted">every {rule.interval_minutes} min</span>
               {:else if configured}
@@ -532,10 +568,10 @@
                 <label class="field wide">
                   <span>Convert to</span>
                   <Select
-                    value={rule.mode ?? ''}
+                    value={selectValue(rule, configured)}
                     options={modeOptionsFor(platform)}
                     ariaLabel="Target format"
-                    onchange={(v) => update(platform.id, { mode: v })}
+                    onchange={(v) => setTarget(platform.id, v)}
                   />
                 </label>
               </div>
@@ -651,54 +687,7 @@
                     />
                   </label>
 
-                  <label class="field">
-                    <span>Only between</span>
-                    <div class="pair">
-                      <input
-                        type="time" value={rule.window_start ?? ''}
-                        onchange={(e) => update(platform.id, {
-                          window_start: e.currentTarget.value || null,
-                        })}
-                      />
-                      <span class="muted">and</span>
-                      <input
-                        type="time" value={rule.window_end ?? ''}
-                        onchange={(e) => update(platform.id, {
-                          window_end: e.currentTarget.value || null,
-                        })}
-                      />
-                    </div>
-                    <span class="hint">
-                      Leave blank to run at any hour. Times are
-                      {rule.timezone || browserZone}.
-                    </span>
-                  </label>
-
-                  <div class="field wide">
-                    <span>On these days</span>
-                    <div class="days">
-                      {#each DAY_LABELS as label, day (label)}
-                        <button
-                          type="button"
-                          class="day"
-                          class:on={(rule.days ?? []).includes(day)}
-                          aria-pressed={(rule.days ?? []).includes(day)}
-                          onclick={() => toggleDay(platform.id, day)}
-                        >{label}</button>
-                      {/each}
-                    </div>
-                    <!-- An empty selection is honoured rather than widened
-                         back to every day, so it has to say what it means:
-                         the scheduler will never fire this rule. -->
-                    <span class="hint">
-                      {#if (rule.days ?? []).length === 0}
-                        No days selected — the scheduler will never run this
-                        rule. <strong>Run now</strong> still works.
-                      {:else}
-                        Scheduled runs only happen on the days selected here.
-                      {/if}
-                    </span>
-                  </div>
+                  {@render schedule(platform.id, rule)}
 
                   <label class="field">
                     <span>Convert in this order</span>
@@ -916,6 +905,51 @@
                     </p>
                   {/if}
                 {/if}
+              {:else if checking}
+                <!-- A check Rule (#305): a budget, a window and weekdays. -->
+                <div class="grid">
+                  <label class="field">
+                    <span>Check up to (GB a night)</span>
+                    <input
+                      type="number" min="1"
+                      value={rule.check_budget_gb}
+                      onchange={(e) => update(platform.id, {
+                        check_budget_gb: Number(e.currentTarget.value),
+                      })}
+                    />
+                    <span class="hint">
+                      Counts each Image's full size, every track.
+                    </span>
+                  </label>
+
+                  {@render schedule(platform.id, rule)}
+                </div>
+
+                <p class="hint">
+                  Once a night, the Images never checked go first, then the ones
+                  checked longest ago, until this many GB have been read. Each goes
+                  through its tool's own Verify. One that fails shows up in
+                  <strong>Findings</strong> as not Intact, and a later pass clears
+                  it. An Image no tool here can check is skipped. Nothing is
+                  converted, moved or deleted.
+                </p>
+
+                <div class="toggles">
+                  <Checkbox
+                    checked={rule.enabled}
+                    label="Enabled"
+                    onchange={(v) => update(platform.id, { enabled: v })}
+                  />
+                </div>
+
+                {#if rule.invalid_window}
+                  <p class="warn" role="alert">
+                    Only one end of the time window is set, so this rule is
+                    paused. A window needs both a start and an end.
+                  </p>
+                {/if}
+
+                <p class="last-run muted">{lastRunLabel(platform.id)}</p>
               {:else}
                 <p class="muted">Pick a target format to configure this platform.</p>
               {/if}
@@ -931,6 +965,58 @@
     </div>
   {/if}
 </div>
+
+<!-- The window and weekdays, shared by the conversion and check forms. -->
+{#snippet schedule(platformId, rule)}
+  <label class="field">
+    <span>Only between</span>
+    <div class="pair">
+      <input
+        type="time" value={rule.window_start ?? ''}
+        onchange={(e) => update(platformId, {
+          window_start: e.currentTarget.value || null,
+        })}
+      />
+      <span class="muted">and</span>
+      <input
+        type="time" value={rule.window_end ?? ''}
+        onchange={(e) => update(platformId, {
+          window_end: e.currentTarget.value || null,
+        })}
+      />
+    </div>
+    <span class="hint">
+      Leave blank to run at any hour. Times are
+      {rule.timezone || browserZone}.
+    </span>
+  </label>
+
+  <div class="field wide">
+    <span>On these days</span>
+    <div class="days">
+      {#each DAY_LABELS as label, day (label)}
+        <button
+          type="button"
+          class="day"
+          class:on={(rule.days ?? []).includes(day)}
+          aria-pressed={(rule.days ?? []).includes(day)}
+          onclick={() => toggleDay(platformId, day)}
+        >{label}</button>
+      {/each}
+    </div>
+    <!-- An empty selection is honoured rather than widened
+         back to every day, so it has to say what it means:
+         the scheduler will never fire this rule. -->
+    <span class="hint">
+      {#if (rule.days ?? []).length === 0}
+        No days selected — the scheduler will never run this
+        rule. <strong>Run now</strong> still works.
+      {:else}
+        Scheduled runs only happen on the days selected here.
+      {/if}
+    </span>
+  </div>
+{/snippet}
 
 {#snippet playIcon()}<Play size={14} />{/snippet}
 {#snippet eyeIcon()}<Eye size={14} />{/snippet}
