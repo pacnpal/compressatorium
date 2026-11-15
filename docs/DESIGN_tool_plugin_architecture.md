@@ -3344,9 +3344,12 @@ The package exposes the registry and two entry points:
   `_update_sync` runs under a `base.WriteGuard` holding an `abandoned` event
   (set by the hook on a timeout or Cancel) and each output's identity
   (`st_dev`, `st_ino`, size, `mtime_ns`) captured when the hook started.
-  `apply` calls `base.check_write` under the playlist's lock right before every
-  write (backup and playlist), so once the job has let go, or another
-  conversion has replaced the output, nothing more is written.
+  `apply` passes `base.check_write` as the `guard` of `atomic_write_bytes`,
+  which runs it under the playlist's lock after the temp file is written and
+  synced, immediately before `os.replace` publishes it (backup and playlist).
+  A refusal removes the temp file and publishes nothing, so a write that
+  stalled in fsync while the job let go, or another conversion replaced the
+  output, never lands.
   Because the hook awaits a worker thread, the job re-asks two things after
   it and before `os.remove`: a Cancel pressed meanwhile keeps the Source
   ("Delete skipped (cancelled)"), and `JobManager._check_delete_paths` (lock,

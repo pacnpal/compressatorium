@@ -23,8 +23,6 @@ os.environ.setdefault(
     "CHD_CONCURRENCY_LOCK_DIR", tempfile.mkdtemp(prefix="compressatorium-test-locks-"),
 )
 
-from services import db as _db  # noqa: E402
-
 
 @pytest.fixture(autouse=True)
 def _release_leaked_tickets():
@@ -76,6 +74,10 @@ def reset_db_engine():
     fresh.
     """
     def _reset() -> None:
+        # Imported here, never at module level: the lock dir above must be set
+        # before anything imports config.
+        from services import db as _db
+
         if _db.engine is not None:
             _db.engine.dispose()
         _db.engine = None
