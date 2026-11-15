@@ -122,6 +122,83 @@ async def test_playlist_in_an_ancestor_folder_is_rewritten(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_an_unavailable_volume_boundary_keeps_the_source(tmp_path, monkeypatch):
+    """If the fresh Volume-root probe can't answer (it went over its bound),
+    the folders above the disc can't be searched, so the Source is kept."""
+    from utils import path_utils
+
+    (tmp_path / "discs").mkdir()
+    _disc(tmp_path / "discs", "Game.cue")
+    _disc(tmp_path / "discs", "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_bytes(b"discs/Game.cue\n")
+    monkeypatch.setattr(path_utils, "_fresh_root", lambda _configured: None)
+
+    outcome = await _replace(tmp_path / "discs", "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == b"discs/Game.cue\n"
+
+
+@pytest.mark.asyncio
+async def test_a_playlist_outside_the_volumes_now_is_left_alone(tmp_path, monkeypatch):
+    """Codex's repro: Volumes /all -> data and /inner -> data/roms, the root
+    cache populated, then /all repointed elsewhere. data/All.m3u is no longer
+    inside any Volume, so it is neither read for planning nor written."""
+    from utils import path_utils
+
+    data = tmp_path / "data"
+    (data / "roms").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "all").symlink_to(data)
+    (tmp_path / "inner").symlink_to(data / "roms")
+    _disc(data / "roms", "Game.cue")
+    _disc(data / "roms", "Game.chd")
+    outer = data / "All.m3u"
+    outer.write_bytes(b"roms/Game.cue\n")
+    monkeypatch.setattr(settings, "chd_volumes", f"{tmp_path / 'all'},{tmp_path / 'inner'}")
+    path_utils.refresh_volume_roots()
+    (tmp_path / "all").unlink()
+    (tmp_path / "all").symlink_to(tmp_path / "elsewhere")
+    assert not path_utils.is_within_configured_volumes(str(outer), treat_archives=False)
+
+    outcome = await referrers.update_before_source_removal(
+        str(data / "roms" / "Game.cue"),
+        {str(data / "roms" / "Game.cue"): str(data / "roms" / "Game.chd")},
+    )
+
+    assert outer.read_bytes() == b"roms/Game.cue\n"
+    assert all(r["target"] != str(outer) for r in outcome.updated)
+
+
+def test_a_playlist_that_leaves_the_volumes_after_planning_is_not_written(
+    tmp_path, monkeypatch,
+):
+    """The Volume check runs again right before the write."""
+    from utils import path_utils
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (tmp_path / "all").symlink_to(data)
+    (tmp_path / "elsewhere").mkdir()
+    _disc(data, "Game.cue")
+    _disc(data, "Game.chd")
+    playlist = data / "Game.m3u"
+    playlist.write_bytes(b"Game.cue\n")
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path / "all"))
+    path_utils.refresh_volume_roots()
+    m3u = M3uReferrer()
+    [change] = m3u.plan({str(data / "Game.cue"): str(data / "Game.chd")})
+
+    (tmp_path / "all").unlink()
+    (tmp_path / "all").symlink_to(tmp_path / "elsewhere")
+
+    with pytest.raises(referrers.ReferrerError, match="Volumes"):
+        m3u.apply(change)
+    assert playlist.read_bytes() == b"Game.cue\n"
+
+
+@pytest.mark.asyncio
 async def test_playlists_above_the_volume_root_are_not_read(tmp_path, monkeypatch):
     volume = tmp_path / "vol"
     volume.mkdir()
