@@ -2419,7 +2419,15 @@ take `_register_lock`: `register` in its worker thread, held across RomM's
 root resolve and the database write, and the RomM save through
 `romm_root_claim`, which polls for the lock without parking a thread, so a
 cancelled request never leaves it held, and keeps it until the settings are
-saved. A unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
+saved. The route takes the claim before the settle lock and the sweep pause,
+and the root check inside it is bounded (`ROOT_CHECK_SECONDS`, #294's
+`VOLUME_PROBE_TIMEOUT_SECONDS`): a root on a mount that stopped answering is
+refused with 503 and every lock is released. Registration and root-check
+workers go through `libraries.run_admitted`: a disposable thread under a
+bound, and at most `MAX_PENDING_WORKERS` outstanding. A slot is held until
+the worker returns, even after its request timed out, so retries against a
+dead mount cannot pile up threads; when every slot is taken the request is
+refused with 503 at once. A unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
 in-memory cache only: the event loop takes it on every `get()`, so it is never
 held across disk or database access or a Library's walk lock. `update()` writes
 the row and changes the cached Library in place (`apply_settings`), as one
