@@ -592,3 +592,29 @@ def test_a_check_that_errors_keeps_the_stored_result(volume, dolphin, capsys, mo
     assert lines[0]["status"] == "failed"
     assert "No such file" in lines[0]["reason"]
     assert asyncio.run(verification_store.get_record(str(rvz))) is not None
+
+
+def test_a_stalled_check_keeps_the_stored_result(volume, dolphin, capsys, monkeypatch):
+    """The runner's own stall bound is no verdict on the file."""
+    import asyncio
+
+    from services.subprocess_runner import SubprocessRunner
+    from services.verification_store import verification_store
+
+    rvz = _rvz(volume)
+    _cli(capsys, "verify", str(volume), "--json")
+    service = registry.get("dolphin")._service
+
+    async def stalls(cmd, *, path, **kwargs):
+        yield SubprocessRunner._verify_error(
+            "Verification stalled: no output for 300s", inconclusive=True,
+        )
+
+    monkeypatch.setattr(service._runner, "run_verify", stalls)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1
+    assert lines[0]["status"] == "failed"
+    assert "stalled" in lines[0]["reason"]
+    assert asyncio.run(verification_store.get_record(str(rvz))) is not None

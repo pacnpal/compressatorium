@@ -559,11 +559,12 @@ class Z3DSCompressService:
                             "message": "Verification cancelled",
                         }
                     else:
-                        yield {
-                            "type": "error",
-                            "valid": False,
-                            "message": f"Verification timed out after {overall_timeout}s",
-                        }
+                        # The shared shape, so the bound expiring is marked
+                        # inconclusive like every other verifier's (#306).
+                        yield SubprocessRunner._verify_error(
+                            f"Verification timed out after {overall_timeout}s",
+                            inconclusive=True,
+                        )
                     return
 
                 _stdout, stderr = feed.result()

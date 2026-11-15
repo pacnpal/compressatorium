@@ -829,10 +829,14 @@ async def verify_preflight(
             ),
         }, 0
     except FileNotFoundError:
-        return {"type": "error", "valid": False, "message": "File not found"}, 0
+        return {
+            "type": "error", "valid": False, "message": "File not found",
+            "inconclusive": True,
+        }, 0
     except OSError as e:
         return {
             "type": "error", "valid": False, "message": f"Error reading file: {e}",
+            "inconclusive": True,
         }, 0
     if size == 0:
         return {"type": "error", "valid": False, "message": "File is empty"}, 0
@@ -895,6 +899,8 @@ async def collect_verify(
         result["cancelled"] = True
     if final.get("abandoned"):
         result["abandoned"] = True
+    if final.get("inconclusive"):
+        result["inconclusive"] = True
     return result
 
 
@@ -1244,8 +1250,15 @@ class SubprocessRunner:
     @staticmethod
     def _verify_error(
         message: str, *, cancelled: bool = False, abandoned: bool = False,
+        inconclusive: bool = False,
     ) -> dict:
         event = {"type": "error", "valid": False, "message": message}
+        if inconclusive:
+            # The check ended without a verdict on the file: its own bound
+            # expired, it stalled, or the file could not be read. "valid":
+            # False still stops a delete, but a caller holding a stored result
+            # (the CLI's verify, #306) must not drop it on this.
+            event["inconclusive"] = True
         if cancelled:
             # Distinguishes "the operator stopped this" from "this file is
             # bad": job_manager turns the flag into a CANCELLED job rather than
@@ -1316,7 +1329,9 @@ class SubprocessRunner:
             if cancel_event is not None and cancel_event.is_set():
                 yield self._verify_error("Verification cancelled", cancelled=True)
             else:
-                yield self._verify_error(f"Verification timed out after {timeout}s")
+                yield self._verify_error(
+                    f"Verification timed out after {timeout}s", inconclusive=True,
+                )
             return
         output = (stdout or b"").decode("utf-8", errors="replace").strip()
         tail = "\n".join(output.splitlines()[-5:]) if output else "verification failed"
@@ -1419,10 +1434,12 @@ class SubprocessRunner:
             elif overall_timeout > 0 and now - start >= overall_timeout:
                 terminal = self._verify_error(
                     f"Verification timed out after {overall_timeout}s",
+                    inconclusive=True,
                 )
             elif stall_timeout > 0 and now - last_output_at >= stall_timeout:
                 terminal = self._verify_error(
                     f"Verification stalled: no output for {stall_timeout}s",
+                    inconclusive=True,
                 )
             else:
                 return False

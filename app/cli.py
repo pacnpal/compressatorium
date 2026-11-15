@@ -786,8 +786,10 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
         await verification_store.mark_verified(path)
         return line
     line["status"] = "failed"
-    if "error" in result or result.get("cancelled") or result.get("abandoned"):
-        # No verdict: a timeout, a tool that would not run, a check cut short.
+    no_verdict = ("cancelled", "abandoned", "inconclusive")
+    if "error" in result or any(result.get(flag) for flag in no_verdict):
+        # No verdict: a timeout or stall, a file that could not be read, a tool
+        # that would not run, a check cut short.
         # The file is not known bad, so what was stored stays.
         line["reason"] = result.get("error") or result.get("message")
         return line
