@@ -254,6 +254,11 @@ def test_converts_from_inside_an_archive(volume, dolphin, capsys):
     assert lines[0]["path"] == f"{gc / 'pack.zip'}::Game.iso"
     assert lines[0]["status"] == "completed"
     assert (gc / "Game.rvz").exists()
+    # The job's extracted copy is cleaned up before the CLI exits.
+    from config import settings
+
+    temp = Path(settings.temp_dir)
+    assert not temp.exists() or list(temp.iterdir()) == []
 
 
 def test_an_output_another_process_is_writing_is_left_alone(volume, dolphin, capsys):

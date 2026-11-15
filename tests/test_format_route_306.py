@@ -113,3 +113,43 @@ def test_every_target_format_some_mode_writes_resolves_for_its_own_input(tmp_pat
             continue
         mode, reason = format_route(path, fmt, None, registry)
         assert mode is not None, (spec.mode, fmt, reason)
+
+
+def test_generic_archive_formats_are_targets():
+    from services.platform_detect import target_formats
+
+    formats = target_formats(registry)
+    assert ".7z" in formats and ".zip" in formats
+    assert "_copy.chd" not in formats
+
+
+@pytest.mark.parametrize(("name", "target", "platform", "mode"), [
+    ("Game.gba", "7z", "gba", "romz_7z"),
+    ("Game.sfc", "zip", "snes", "romz_zip"),
+    ("Game.nes", "7z", None, "romz_7z"),
+])
+def test_generic_archive_formats_resolve_per_image(
+    tmp_path, name, target, platform, mode,
+):
+    path = _touch(tmp_path, name)
+    assert format_route(path, target, platform, registry) == (mode, None)
+
+
+def test_a_mode_id_needs_a_command_that_reads_the_image(tmp_path):
+    # createdvd accepts a .cue by hand, but its command reads only a flat .iso.
+    path = _touch(tmp_path, "Game.cue")
+    assert format_candidates(path, "createdvd", registry) == []
+    mode, reason = format_route(path, "createdvd", None, registry)
+    assert mode is None and reason == "createdvd does not read .cue files"
+
+
+def test_auto_sends_a_ps3_disc_folder_to_folder_to_iso(tmp_path):
+    """The shared reader ranking reads folders too, so Auto (and --to iso)
+    now route a PS3 disc folder to makeps3iso instead of leaving it alone."""
+    from services.platform_detect import default_mode
+
+    from tests.ps3_helpers import make_ps3_folder
+
+    folder = make_ps3_folder(tmp_path / "ps3" / "Game")
+    assert default_mode(str(folder), "ps3", registry) == "folder_to_iso"
+    assert format_route(str(folder), "iso", "ps3", registry) == ("folder_to_iso", None)

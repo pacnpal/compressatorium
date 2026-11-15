@@ -410,6 +410,9 @@ def target_formats(tools_registry) -> list[str]:
 
     Read from each mode's ``output_path`` over its own inputs, so a tool whose
     output extension follows its input (z3ds, nsz) is covered without a list.
+    A compound output (romz's ``Game.gba.7z``) also lists its last extension,
+    so ``7z`` and ``zip`` name the archive whatever the ROM inside; a name
+    that is not an extension (chdman copy's ``Game_copy.chd``) is left out.
     """
     found: set[str] = set()
     for spec in tools_registry.mode_specs():
@@ -423,8 +426,10 @@ def target_formats(tools_registry) -> list[str]:
             except (KeyError, ValueError, OSError):
                 continue
             stem = "/compressatorium-format-probe/Game"
-            if out.startswith(stem) and len(out) > len(stem):
-                found.add(out[len(stem):].lower())
+            suffix = out[len(stem):].lower() if out.startswith(stem) else ""
+            if suffix.startswith(".") and len(suffix) > 1:
+                found.add(suffix)
+                found.add(os.path.splitext(suffix)[1])
     return sorted(found)
 
 
@@ -438,13 +443,16 @@ def format_candidates(path: str, target: str, tools_registry) -> list:
 
     ``target`` is a format (``chd``, ``.rvz``) or a mode id (``createcd``). A
     format matches every Auto-eligible mode whose command reads the Image and
-    whose output has that extension; a mode id matches itself when it accepts
-    the Image. Empty means the Image is not in scope for ``target``.
+    whose output has that extension; a mode id matches itself when its
+    command reads the Image (``mode_reads_extensions``: createdvd takes a
+    ``.cue`` by hand but cannot read one). Empty means the Image is not in
+    scope for ``target``.
     """
     fmt, mode = _parse_target(target, tools_registry)
     if mode is not None:
         spec = tools_registry.spec(mode)
-        if _extension_match(spec, path, spec.input_extensions) is None:
+        reads = tools_registry.mode_reads_extensions(mode)
+        if _extension_match(spec, path, reads) is None:
             return []
         return [spec] if _can_read(spec, path, tools_registry) else []
     found = []

@@ -321,6 +321,9 @@ class JobManager:
         # only keeps a weak ref to a bare create_task(), so it can be GC'd before
         # it runs (a cancel notification or history prune silently dropped).
         self._background_tasks: Set[asyncio.Task] = set()
+        # Runs started as their own task (max_concurrent > 1), so `drain` can
+        # wait for each one to finish, its cleanup included.
+        self._job_tasks: Set[asyncio.Task] = set()
         self._delete_plans: Dict[str, Dict[str, object]] = {}
         # job id -> the canonical key its output was reserved under. Recorded
         # at queue time because the reservation's pre-flight map is built
@@ -2028,6 +2031,24 @@ class JobManager:
                 )
         await self._dispatcher_task
 
+    async def drain(self) -> None:
+        """Wait until every queued job has run to its very end.
+
+        A terminal notification fires before a run is over: `_process_job`
+        still removes the job's temp dir (an archive's extracted copy) and
+        prunes history after it. A caller that leaves the loop once its jobs
+        report finished (the CLI, #306) waits here first, or that cleanup is
+        cancelled half-way. Covers inline runs (the queue's `task_done` follows
+        them), runs started as tasks, and jobs waiting to be re-queued behind
+        a folder lock. Needs the dispatcher running.
+        """
+        while True:
+            await self._queue.join()
+            pending = [*self._job_tasks, *self._requeue_tasks]
+            if not pending:
+                return
+            await asyncio.gather(*pending, return_exceptions=True)
+
     async def shutdown(self) -> None:
         """Stop processing and finish the work listeners started.
 
@@ -2367,7 +2388,9 @@ class JobManager:
                     if self.max_concurrent == 1:
                         await self._run_job(job_id)
                     else:
-                        asyncio.create_task(self._run_job(job_id))
+                        task = asyncio.create_task(self._run_job(job_id))
+                        self._job_tasks.add(task)
+                        task.add_done_callback(self._job_tasks.discard)
                 except Exception:
                     # _run_job() always releases the semaphore in its finally block.
                     # Only release here if task creation failed before _run_job started.
