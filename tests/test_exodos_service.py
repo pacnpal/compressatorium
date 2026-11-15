@@ -427,3 +427,16 @@ def test_inspect_applies_the_total_size_limit(tree, monkeypatch):
 
     with pytest.raises(NotRepackable, match="max total size"):
         ExodosService().inspect(_game_zip(tree))
+
+
+def test_the_warning_reads_as_sentences(tree):
+    (tree["dos"] / "Abaron" / "dosbox.conf").write_bytes(
+        TEMPLATE + b"imgmount e .\\eXoDOS\\Other\\CD.CUE -t cdrom\r\n",
+    )
+    service = ExodosService()
+    source = _game_zip(tree)
+
+    message = _convert(service, source, service.get_output_path(source))[-1]["message"]
+
+    assert message.startswith("Repacked, but it may not start. The conf still points")
+    assert message.endswith(".")

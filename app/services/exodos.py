@@ -366,18 +366,18 @@ class ExodosService:
         caveats = []
         if rewrite.leftovers:
             caveats.append(
-                "the conf still points outside the game: "
+                "The conf still points outside the game: "
                 + "; ".join(rewrite.leftovers),
             )
         if rewrite.folder_mounts:
             caveats.append(
-                "these folder mounts read the host disk, not the file: "
+                "These folder mounts read the host disk, not the file: "
                 + "; ".join(rewrite.folder_mounts),
             )
         if caveats:
             yield {
                 "progress": 100,
-                "message": f"Repacked, but it may not start. {'. '.join(caveats)}",
+                "message": f"Repacked, but it may not start. {'. '.join(caveats)}.",
                 "warning": True,
             }
         else:
