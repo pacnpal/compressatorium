@@ -52,9 +52,9 @@ from services.lock_manager import LockWaitTimeout, lock_manager
 from utils.path_utils import (
     FileIdentity,
     file_identity,
-    is_within_configured_volumes,
     lock_boundary_root,
     same_identity,
+    volume_containment,
 )
 
 from .base import (
@@ -510,8 +510,14 @@ class M3uReferrer(Referrer):
                 # The walk's upper limit may come from a cached root spelling
                 # (right for lock probing). Which playlists we read and write
                 # is decided against the Volumes as they are now: one that is
-                # no longer inside them is left alone.
-                if not is_within_configured_volumes(playlist, treat_archives=False):
+                # confirmed outside them is left alone; one we can't tell about
+                # (a root probe failed) keeps the Source.
+                inside = volume_containment(playlist, treat_archives=False)
+                if inside is None:
+                    raise ReferrerError(
+                        playlist, "can't confirm it is inside the configured Volumes",
+                    )
+                if not inside:
                     continue
                 with _playlist_lock(playlist):
                     _, edits = _rewrite(
@@ -532,8 +538,9 @@ class M3uReferrer(Referrer):
         # Checked again right before writing, against the Volumes as they are
         # now: a playlist that has left them since planning is not written.
         # (It was planned because it named the Source, so the Source is kept.)
-        if not is_within_configured_volumes(path, treat_archives=False):
-            raise ReferrerError(path, "is no longer inside the configured Volumes")
+        # Outside and "couldn't tell" both refuse.
+        if volume_containment(path, treat_archives=False) is not True:
+            raise ReferrerError(path, "isn't confirmed inside the configured Volumes")
         if not os.access(path, os.W_OK):
             raise ReferrerError(path, "is read-only")
         # Threads here take the in-process lock; other processes (a CLI run

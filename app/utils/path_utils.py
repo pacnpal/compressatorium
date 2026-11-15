@@ -450,14 +450,14 @@ def _holding_roots(real_path: Path, matched: Sequence[str]) -> list[Path]:
     """
     matched_roots = [_configured_root(volume) for volume in matched]
     holders = [
-        root for root in map(_fresh_root, matched_roots) if _contains(root, real_path)
+        root for root in map(_fresh_root_noted, matched_roots) if _contains(root, real_path)
     ]
     if holders:
         return holders
     for configured, cached in _resolved_root_spellings().items():
         if configured in matched_roots or not _contains(Path(cached), real_path):
             continue
-        fresh = _fresh_root(configured)
+        fresh = _fresh_root_noted(configured)
         if _contains(fresh, real_path):
             holders.append(fresh)
     return holders
@@ -489,6 +489,19 @@ def _fresh_root(configured: str) -> Path | None:
     if thread.is_alive() or "real" not in box:
         return None
     return Path(box["real"])
+
+
+# Counts, per thread, the fresh root probes that failed or timed out, so
+# `volume_containment` can tell "outside every Volume" from "couldn't tell".
+_probe_failures = threading.local()
+
+
+def _fresh_root_noted(configured: str) -> Path | None:
+    """``_fresh_root``, counting a failed probe for ``volume_containment``."""
+    root = _fresh_root(configured)
+    if root is None:
+        _probe_failures.count = getattr(_probe_failures, "count", 0) + 1
+    return root
 
 
 def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
@@ -596,14 +609,32 @@ def lock_boundary_root(path: str) -> Path | None:
     return min(tops, key=lambda root: len(root.parts), default=None)
 
 
+def volume_containment(path: str, *, treat_archives: bool = True) -> bool | None:
+    """Whether *path* lies inside a configured Volume: True, False, or None.
+
+    The three-way form of ``is_within_configured_volumes``, through the same
+    gate (``_confined_real_path``). True: inside. False: confirmed outside
+    (refused lexically, or every root it could fall under was freshly
+    resolved and doesn't hold it). None: couldn't tell, because a fresh root
+    probe the answer depended on failed or went over its bound. A caller that
+    must not mistake a stalled mount for "outside" (the ``.m3u`` Referrer
+    deciding which playlists to leave alone) uses this.
+    """
+    base_path = strip_archive_path(path) if treat_archives else path
+    before = getattr(_probe_failures, "count", 0)
+    if _confined_real_path(base_path) is not None:
+        return True
+    return None if getattr(_probe_failures, "count", 0) != before else False
+
+
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
     """Check whether the given path lies inside one of the configured CHD volumes.
 
     Through the one gate, ``_confined_real_path``: no ``..``, confined
     lexically before the filesystem sees it, then resolved and checked again.
+    "Couldn't tell" (``volume_containment`` returns None) counts as outside.
     """
-    base_path = strip_archive_path(path) if treat_archives else path
-    return _confined_real_path(base_path) is not None
+    return volume_containment(path, treat_archives=treat_archives) is True
 
 
 class FileIdentity(NamedTuple):

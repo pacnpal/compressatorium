@@ -141,6 +141,56 @@ async def test_an_unavailable_volume_boundary_keeps_the_source(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_an_unknown_playlist_containment_keeps_the_source(tmp_path, monkeypatch):
+    """The fresh root probe answers for the walk's boundary, then fails during
+    the playlist's containment check. "Couldn't tell" is not "outside": the
+    playlist isn't skipped, the Source is kept."""
+    from utils import path_utils
+
+    _disc(tmp_path, "Game.cue")
+    _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_bytes(b"Game.cue\n")
+    real_fresh_root, real_search_dirs = path_utils._fresh_root, m3u_module._search_dirs
+    probe_down = []
+
+    def search_dirs_then_probe_fails(path):
+        # Each walk sees a healthy probe; whatever runs after it (the
+        # playlist's containment check) sees the probe fail.
+        probe_down.clear()
+        dirs = real_search_dirs(path)
+        probe_down.append(True)
+        return dirs
+
+    def fresh_root(configured):
+        return None if probe_down else real_fresh_root(configured)
+
+    monkeypatch.setattr(m3u_module, "_search_dirs", search_dirs_then_probe_fails)
+    monkeypatch.setattr(path_utils, "_fresh_root", fresh_root)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert probe_down
+    assert not outcome.ok
+    assert playlist.read_bytes() == b"Game.cue\n"
+
+
+@pytest.mark.parametrize(("probe", "expected"), [("ok", True), ("down", None)])
+def test_volume_containment_tells_unknown_from_outside(tmp_path, monkeypatch, probe, expected):
+    from utils import path_utils
+
+    inside = _disc(tmp_path, "Game.m3u")
+    if probe == "down":
+        monkeypatch.setattr(path_utils, "_fresh_root", lambda _configured: None)
+
+    assert path_utils.volume_containment(str(inside), treat_archives=False) is expected
+    assert path_utils.volume_containment("/definitely/not/a/volume/x.m3u") is False
+    assert path_utils.is_within_configured_volumes(str(inside), treat_archives=False) is (
+        expected is True
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_playlist_outside_the_volumes_now_is_left_alone(tmp_path, monkeypatch):
     """Codex's repro: Volumes /all -> data and /inner -> data/roms, the root
     cache populated, then /all repointed elsewhere. data/All.m3u is no longer

@@ -3028,7 +3028,12 @@ Precedence is fixed and never guesses:
    `lock_boundary_root`, the outermost root over the path with every
    overlapping root considered, so a folder locked above an inner Volume (with
    `/mnt` and `/games -> /mnt/MyGame/PS3_GAME`, a lock on `/mnt/MyGame`) is
-   still found.
+   still found. Containment has a three-way form,
+   `utils.path_utils.volume_containment(path)`: True inside, False confirmed
+   outside, None when a fresh root probe the answer depended on failed or went
+   over its bound. `is_within_configured_volumes` is that answer with None
+   counted as outside; a caller that must not mistake a stalled mount for
+   "outside" (the `.m3u` Referrer, §3.3.15) uses the three-way form.
 
 Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
 (a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
@@ -3389,6 +3394,10 @@ never half of one.
   no recursive walk, so the cost is one `scandir` per level. This covers a
   playlist beside the discs and the Batocera / ES-DE layout (`psx/Game.m3u`
   naming `.discs/Game (Disc 1).cue`). `detect` looks at the same folders.
+  If the boundary can't be determined the Referrer fails (Source kept). Each
+  playlist found is checked with `volume_containment`: confirmed outside is
+  left alone, "couldn't tell" fails (Source kept); `apply` checks again right
+  before writing and refuses unless confirmed inside.
 - *What it rewrites.* Only entries whose path (as the reader below reads it)
   resolves exactly to a replaced file, matched by `(st_dev, st_ino)` so any
   spelling that reaches the file counts (relative, absolute, `./`, other case
