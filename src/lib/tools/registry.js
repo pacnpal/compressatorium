@@ -207,11 +207,13 @@ export const TOOLS = [
       { mode: 'createraw', kind: 'create',  label: 'Create Raw', group: 'create',
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true,
+        allowsArchiveInput: true },
       { mode: 'createhd',  kind: 'create',  label: 'Create HD',  group: 'create',
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true,
+        allowsArchiveInput: true },
       { mode: 'createcd',  kind: 'create',  label: 'Create CD',  group: 'create',
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: false,
@@ -225,7 +227,8 @@ export const TOOLS = [
       { mode: 'createld',  kind: 'create',  label: 'Create LD',  group: 'create',
         outputExt: '.chd', inputExtensions: CHDMAN_SOURCE_EXTS,
         supportsCompression: true,  supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true, allowsArchiveInput: true },
+        // No delete-source: an AVI has no digest comparable with the CHD (#301).
+        supportsDeleteOnVerify: false, allowsArchiveInput: true },
       // Extract modes accept a .chd straight out of an archive (decompress it
       // back to a disc image); the backend extracts the member first. Keep
       // copy/recompress below at false — re-CHD'ing a .chd from a zip is a
@@ -253,7 +256,7 @@ export const TOOLS = [
       { mode: 'copy', kind: 'copy', label: 'Copy / Recompress', group: 'copy',
         outputExt: '.chd', inputExtensions: ['.chd'],
         supportsCompression: true, supportsCompressionLevel: false,
-        supportsDeleteOnVerify: true, allowsArchiveInput: false },
+        supportsDeleteOnVerify: true, supportsRoundTrip: true, allowsArchiveInput: false },
     ],
     getInfo: (path) => api.getCHDInfo(path),
     verify: (path, opts) => api.verifyCHD(path, opts),

@@ -21,7 +21,7 @@ DOLPHIN_MODES = ("dolphin_rvz", "dolphin_wia", "dolphin_gcz", "dolphin_iso")
 ROUND_TRIP_301 = {
     "cso_compress", "cso2_compress", "zso_compress", "dax_compress",
     "z3ds_compress", "jwud_compress", "nsz_compress", "romz_7z", "romz_zip",
-    "cso_to_chd",
+    "cso_to_chd", "createhd", "createraw", "copy",
 }
 
 

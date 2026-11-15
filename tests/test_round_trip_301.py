@@ -966,14 +966,129 @@ def test_the_route_refuses_delete_source_for_them(mode):
     assert err.value.status_code == 400
 
 
-def test_every_mode_with_delete_source_round_trips_except_chdmans_raw_modes():
-    """After #301 the only delete-source modes on the container check alone
-    are chdman's createraw/createhd/createld/copy (#300 left them out)."""
+def test_every_mode_with_delete_source_round_trips():
+    """After #301 no mode deletes its Source on the container check alone."""
     left = {
         s.mode for s in registry.mode_specs()
         if s.supports_delete_on_verify and not s.supports_round_trip
     }
-    assert left == {"createraw", "createhd", "createld", "copy"}
+    assert left == set()
+
+
+# ---------------------------------------------------------------------------
+# chdman Create HD, Create raw and Copy: the CHD's data SHA1; Create LD has
+# no comparable digest, so it offers no delete-source
+# ---------------------------------------------------------------------------
+
+
+def _info(data_sha1: str, tag: str | None) -> bytes:
+    lines = [
+        "chdman - MAME Compressed Hunks of Data (CHD) manager 0.285",
+        "File Version: 5", "Logical size: 12,288 bytes",
+        f"SHA1:         {'11' * 20}", f"Data SHA1:    {data_sha1}",
+    ]
+    if tag is not None:
+        lines.append(f"Metadata:     Tag='{tag}'  Index=0  Length=1 bytes")
+    return ("\n".join(lines) + "\n").encode()
+
+
+@pytest.fixture(name="chd_infos")
+def _chd_infos(monkeypatch):
+    """``chdman info`` per CHD path: ``{path: (data_sha1, tag)}``."""
+    infos: dict[str, tuple[str, str | None]] = {}
+
+    async def fake_capture(cmd, **kwargs):
+        if "info" in cmd:
+            path = cmd[cmd.index("-i") + 1]
+            sha1, tag = infos[path]
+            return 0, _info(sha1, tag), b""
+        return 0, b"", b""
+
+    monkeypatch.setattr(
+        registry.get("chdman")._service._runner, "run_capture", fake_capture,
+    )
+    return infos
+
+
+@pytest.mark.parametrize("mode", ["createhd", "createraw", "copy"])
+def test_chdman_hd_raw_and_copy_declare_round_trip(mode):
+    assert registry.mode_supports_round_trip(mode)
+
+
+def test_createld_offers_no_delete_source():
+    from fastapi import HTTPException
+
+    from app.routes import convert as convert_routes
+
+    spec = registry.spec("createld")
+    assert not spec.supports_delete_on_verify and not spec.supports_round_trip
+    with pytest.raises(HTTPException):
+        convert_routes._validate_delete_on_verify(spec, True)
+
+
+@pytest.mark.asyncio
+async def test_a_chd_with_no_metadata_is_digested_by_its_data_sha1(tmp_path, chd_infos):
+    """What createraw writes: no CD, DVD or hard-disk tag at all."""
+    chd = tmp_path / "Game.chd"
+    chd.write_bytes(b"x")
+    chd_infos[str(chd)] = ("ab" * 20, None)
+
+    assert await registry.get("chdman").content_digest(str(chd)) == ContentDigest(
+        kind=IMAGE, value="ab" * 20,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "tag"), [("createhd", "GDDD"), ("createraw", None)])
+async def test_chdman_hd_and_raw_jobs_with_the_same_image_delete_it(
+    e2e, chd_infos, mode, tag,
+):
+    image = e2e["tmp_path"] / "Disk.bin"
+    image.write_bytes(b"sector" * 2048)
+
+    def write(_src, out):
+        out.write_bytes(b"MComprHD")
+        chd_infos[str(out)] = (_sha1(image.read_bytes()), tag)
+
+    e2e["writer"] = write
+    _assert_round_tripped(await _run(e2e, image, mode), image)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "tag"), [("createhd", "GDDD"), ("createraw", None)])
+async def test_chdman_hd_and_raw_jobs_with_another_image_keep_it(
+    e2e, chd_infos, mode, tag,
+):
+    image = e2e["tmp_path"] / "Disk.bin"
+    image.write_bytes(b"sector" * 2048)
+
+    def write(_src, out):
+        out.write_bytes(b"MComprHD")
+        chd_infos[str(out)] = ("00" * 20, tag)
+
+    e2e["writer"] = write
+    _assert_kept(await _run(e2e, image, mode), image)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("out_sha1", "deleted"), [("ab" * 20, True), ("cd" * 20, False)])
+async def test_chdman_copy_compares_the_data_sha1_of_both_chds(
+    e2e, chd_infos, out_sha1, deleted,
+):
+    source = e2e["tmp_path"] / "Game.chd"
+    source.write_bytes(b"MComprHD source")
+    chd_infos[str(source)] = ("ab" * 20, "DVD ")
+
+    def write(_src, out):
+        out.write_bytes(b"MComprHD copy")
+        chd_infos[str(out)] = (out_sha1, "DVD ")
+
+    e2e["writer"] = write
+    job = await _run(e2e, source, "copy")
+    if deleted:
+        _assert_round_tripped(job, source)
+    else:
+        _assert_kept(job, source)
 
 
 _MAXCSO = _binary("MAXCSO_PATH", "/usr/local/bin/maxcso", "maxcso")

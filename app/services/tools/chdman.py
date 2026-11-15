@@ -94,8 +94,14 @@ _CHD = frozenset({".chd"})
 # is its own one file; a DVD/HD CHD's data SHA1 is that hash of its image; a CD
 # CHD is extracted and its track files hashed the same way as a Source cue.
 # The kind (IMAGE_DATA_SHA1_KIND) lives in base.py, shared with other tools.
-# The modes whose Source and output both have that digest.
-_ROUND_TRIP_MODES = frozenset({"createcd", "createdvd"})
+# The modes whose Source and output both have that digest: CD and DVD (#300),
+# hard disk, raw and CHD-to-CHD copy (#301). A raw or HD CHD's data SHA1 is the
+# SHA1 of the input bytes; a copy keeps the Source CHD's data.
+_ROUND_TRIP_MODES = frozenset({"createcd", "createdvd", "createhd", "createraw", "copy"})
+# Create LD has no comparable digest: its Source is an AVI, the CHD's data SHA1
+# covers chdman's A/V hunk encoding, and extractld does not rebuild the AVI byte
+# for byte. Deleting the AVI on the container check alone is not offered (#301).
+_NO_DELETE_SOURCE_MODES = frozenset({"createld"})
 _SHEET_EXTS = frozenset({".cue", ".gdi"})
 _RAW_IMAGE_EXTS = frozenset({".iso", ".bin"})
 # CHD metadata tags (MAME src/lib/util/chd.h), read strictly from the
@@ -120,7 +126,7 @@ def _build_modes() -> list[ModeSpec]:
             output_ext=".chd",
             input_extensions=frozenset(CHDMAN_CONVERTIBLE_EXTENSIONS),
             supports_compression=True,
-            supports_delete_on_verify=True,
+            supports_delete_on_verify=mode not in _NO_DELETE_SOURCE_MODES,
             supports_round_trip=mode in _ROUND_TRIP_MODES,
             allows_archive_input=True,
             platform_slugs=slugs,
@@ -158,6 +164,8 @@ def _build_modes() -> list[ModeSpec]:
             input_extensions=_CHD,
             supports_compression=True,
             supports_delete_on_verify=True,
+            # Source and output are both CHDs, digested the same way.
+            supports_round_trip=True,
         )
     )
     return modes
@@ -387,7 +395,9 @@ class ChdmanTool(BaseTool):
         except Exception as e:  # chdman failed, timed out, or left a child behind
             raise ContentDigestUnavailable(f"chdman info failed: {e}") from e
         tags = set(_TAG_RE.findall(info.get("raw_data", "")))
-        if tags & _IMAGE_TAGS:
+        # DVD/HD, or no metadata at all (a createraw CHD): the data SHA1 is the
+        # SHA1 of the image's bytes, proven by the container check before this.
+        if tags & _IMAGE_TAGS or not tags:
             data_sha1 = (info.get("data_sha1") or "").strip()
             if not _SHA1_RE.fullmatch(data_sha1):
                 raise ContentDigestUnavailable("chdman info gave no data SHA1")

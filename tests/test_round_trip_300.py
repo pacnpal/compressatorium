@@ -553,8 +553,9 @@ def test_createcd_and_createdvd_declare_round_trip():
     assert registry.mode_supports_round_trip("createdvd")
 
 
-@pytest.mark.parametrize("mode", ["createhd", "createraw", "createld", "copy",
-                                  "extractcd", "extractdvd"])
+# createhd, createraw and copy Round-trip since #301; createld has no
+# delete-source at all.
+@pytest.mark.parametrize("mode", ["createld", "extractcd", "extractdvd"])
 def test_other_chdman_modes_keep_the_container_check(mode):
     assert not registry.mode_supports_round_trip(mode)
 
