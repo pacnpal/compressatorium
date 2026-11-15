@@ -845,6 +845,50 @@ async def test_a_source_named_like_a_label_or_quotes_keeps_it(tmp_path, name):
 
 
 @pytest.mark.asyncio
+async def test_a_quoted_source_name_with_a_label_keeps_it(tmp_path):
+    """RetroArch splits the label but keeps quotes: ``"Game.cue"|Disc 1``
+    reaches a Source literally named ``"Game.cue"``."""
+    try:
+        _disc(tmp_path, '"Game.cue"')
+    except OSError:
+        pytest.skip("the filesystem refuses this name")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text('"Game.cue"|Disc 1\n')
+
+    outcome = await _replace(tmp_path, '"Game.cue"', "Game.chd")
+
+    assert not outcome.ok
+    assert playlist.read_text() == '"Game.cue"|Disc 1\n'
+
+
+@pytest.mark.asyncio
+async def test_a_utf16_file_with_an_appended_8_bit_line_keeps_the_source(tmp_path):
+    """A Notepad "Unicode" playlist with an 8-bit line appended: line readers
+    read that line cleanly, so its mention keeps the Source despite the BOM."""
+    _disc(tmp_path, "Game (Disc 1).cue")
+    playlist = tmp_path / "Game.m3u"
+    data = "Other.cue\n".encode("utf-16") + b"\nGame (Disc 1).cue\n"
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game (Disc 1).cue", "Game (Disc 1).chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_a_zero_padded_playlist_is_not_called_utf16(tmp_path):
+    _disc(tmp_path, "Game (Disc 1).cue")
+    (tmp_path / "Game.m3u").write_bytes(b"Game (Disc 1).cue\n" + b"\0" * 512)
+
+    outcome = await _replace(tmp_path, "Game (Disc 1).cue", "Game (Disc 1).chd")
+
+    assert not outcome.ok
+    assert "UTF-16" not in outcome.reason
+    assert "NUL bytes" in outcome.reason
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("space", ["\x0b", "\x0c"], ids=["VT", "FF"])
 async def test_vertical_tab_and_form_feed_are_trimmed_like_retroarch(tmp_path, space):
     _disc(tmp_path, "Game.cue")
