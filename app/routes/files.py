@@ -23,6 +23,7 @@ from services.tools import registry
 from services.verification_store import verification_store
 from utils.junk import is_junk_entry
 from utils.path_utils import (
+    containing_volume_root,
     ensure_path_within_volumes,
     get_volume_name_for_path,
     is_configured_volume_root,
@@ -267,6 +268,21 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
     if is_locked:
         raise HTTPException(
             status_code=409, detail="Path is locked by an active conversion",
+        )
+
+    # A folder another process is packing (a CLI folder_to_iso job): its
+    # subtree lock lives in that process, so probe the lock file of the path
+    # and of each folder above it, up to the Volume root (#306).
+    volume_root = containing_volume_root(path)
+    locked = await run_in_threadpool(
+        lock_manager.locked_folder_above, path,
+        str(volume_root) if volume_root is not None else None,
+    )
+    if locked is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Path is inside {os.path.basename(locked)}, which another "
+                   "process is converting",
         )
 
     candidates = job_manager.get_active_job_candidates()

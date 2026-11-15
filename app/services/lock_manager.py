@@ -159,6 +159,30 @@ class LockManager:
                 return False
             return self._within_locked_dir_locked(self._resolve(path))
 
+    def locked_folder_above(self, path: str, stop_at: str | None = None) -> str | None:
+        """The nearest folder at or above ``path`` another process has dir-locked.
+
+        A directory lock (makeps3iso packing a folder) protects its subtree only
+        inside the process that holds it (``_dir_locks``). Another process, a
+        CLI run beside the server, holds the same lock *file*, so this walks
+        ``path`` and each parent up to ``stop_at`` (the Volume root) and probes
+        each one's lock file without blocking: one held by someone else means
+        the folder is being read (#306). A stale lock file found on the way is
+        removed, as ``check_file_status`` does. Returns the folder, or None.
+        """
+        current = self._resolve(path)
+        stop = self._resolve(stop_at) if stop_at else None
+        while True:
+            lock_file = self._lock_file_path(current)
+            if os.path.exists(lock_file):
+                held = True if self.is_read_only else self._remove_if_stale(lock_file) is False
+                if held:
+                    return current
+            parent = os.path.dirname(current)
+            if current == stop or parent == current:
+                return None
+            current = parent
+
     def dir_lock_would_conflict(self, dir_path: str) -> bool:
         """Whether :meth:`acquire_dir_lock` for ``dir_path`` would currently
         conflict with an existing lock (without acquiring anything)."""

@@ -2652,6 +2652,16 @@ in which no lock is taken or probed and no lock file removed; a lock file that
 is present counts as held. A dry run queues nothing, so tickets and slots are
 never touched.
 
+**Folder locks across processes.** A directory lock (folder_to_iso packing a
+PS3 folder) protects its subtree only in the process that took it
+(`_dir_locks`). The web mutation guard (`routes/files.py::_assert_path_not_in_use`,
+behind rename and delete) therefore also asks
+`LockManager.locked_folder_above(path, volume_root)`: it probes, without
+blocking, the lock file of the path and of every folder above it up to the
+Volume root, and refuses with 409 when another process holds one. So a CLI job
+packing a folder blocks a web rename or delete inside it. The exact-path check
+(`check_file_status`) runs first, as before.
+
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
 drop run unchanged, and the re-executed entrypoint hands straight back to the

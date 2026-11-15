@@ -9,6 +9,8 @@ from __future__ import annotations
 import fcntl
 import os
 
+import pytest
+
 from services import lock_manager as lock_module
 from services.lock_manager import LockManager
 
@@ -136,3 +138,86 @@ def test_dir_lock_release_never_lets_two_processes_hold_one_folder(tmp_path, mon
     first.release_dir_lock(str(folder))
 
     assert results.count(True) <= 1, results
+
+
+
+# --------------------------------------------------------------------------- #
+# The web mutation guard sees another process's folder lock (codex 4576670752)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(name="guarded_volume")
+def _guarded_volume(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from routes import files as files_routes
+    from services.lock_manager import lock_manager
+    from starlette.datastructures import Headers
+
+    vol = tmp_path / "vol"
+    folder = vol / "ps3" / "GAME"
+    (folder / "PS3_GAME").mkdir(parents=True)
+    inner = folder / "PS3_GAME" / "PARAM.SFO"
+    inner.write_bytes(b"sfo")
+    lock_dir = tmp_path / "locks"
+    monkeypatch.setattr(files_routes.settings, "chd_volumes", str(vol))
+    monkeypatch.setattr(files_routes.settings, "data_mount_root", str(vol))
+    monkeypatch.setattr(lock_manager, "_lock_dir", str(lock_dir))
+    monkeypatch.setattr(lock_manager, "_ready", False)
+    cli = _manager(lock_dir)  # the CLI process packing the folder
+
+    def request(action):
+        return SimpleNamespace(headers=Headers({"x-chd-action-confirm": action}))
+
+    return SimpleNamespace(
+        routes=files_routes, folder=folder, inner=inner, cli=cli, request=request,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_server_refuses_to_delete_inside_a_folder_another_process_packs(
+    guarded_volume,
+):
+    from fastapi import HTTPException
+
+    g = guarded_volume
+    assert g.cli.acquire_dir_lock(str(g.folder))
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.delete_file(
+                g.request("delete-file"), path=str(g.inner), recursive=False,
+            )
+        assert exc.value.status_code == 409
+        assert g.inner.exists()
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.rename_file(
+                g.request("rename-file"), path=str(g.inner), new_name="X.SFO",
+            )
+        assert exc.value.status_code == 409
+        assert g.inner.exists()
+    finally:
+        g.cli.release_dir_lock(str(g.folder))
+
+    # Released: the same delete goes through.
+    result = await g.routes.delete_file(
+        g.request("delete-file"), path=str(g.inner), recursive=False,
+    )
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_exact_path_check_still_refuses_a_locked_output(guarded_volume):
+    from fastapi import HTTPException
+
+    g = guarded_volume
+    output = g.folder.parent / "GAME.iso"
+    output.write_bytes(b"partial")
+    assert g.cli.acquire_lock(str(output), allow_existing=True)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.delete_file(
+                g.request("delete-file"), path=str(output), recursive=False,
+            )
+        assert exc.value.status_code == 409
+    finally:
+        g.cli.release_lock(str(output))
