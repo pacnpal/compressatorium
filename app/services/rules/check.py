@@ -287,6 +287,13 @@ notifications.register_event(
 )
 
 _tasks: set[asyncio.Task] = set()
+# Each running check task's job id, so :func:`drain` can cancel them on a stop.
+_task_jobs: dict[asyncio.Task, str] = {}
+# How each check run ended, by job id (:func:`run_outcome`): its counts, and
+# whether it was cancelled or crashed. Read by the CLI for its exit status.
+_outcomes: dict[str, dict[str, Any]] = {}
+# How often :func:`drain` looks for a stop.
+_STOP_POLL = 0.2
 
 
 def outcome(result: dict) -> str:
@@ -341,12 +348,18 @@ async def _verify(
     )
 
 
-def start(library: Library, picked: list[Check], *, generation: int) -> Any:
+def start(
+    library: Library, picked: list[Check], *, generation: int,
+    on_finished: Callable[[], Awaitable[None]] | None = None,
+) -> Any:
     """Check *picked* in the background, as one external job. Returns the job.
 
     *generation* is the Library's (``sweep.library_generation``) when the
     sweep picked them: once it moves (the Library was removed) nothing more
-    is written for it.
+    is written for it. *on_finished* is awaited once the run has checked
+    everything it picked (not when it was cancelled or crashed): the sweep
+    records the check Rules' runs there, so a check that never finished does
+    not use up its night.
     """
     count = len(picked)
     job = job_manager.create_external_job(
@@ -357,17 +370,45 @@ def start(library: Library, picked: list[Check], *, generation: int) -> Any:
     for check in picked:
         _in_flight.add((library.id, check.key))
     task = asyncio.get_running_loop().create_task(
-        _run(library, picked, job.id, generation),
+        _run(library, picked, job.id, generation, on_finished),
     )
     _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
+    _task_jobs[task] = job.id
+    task.add_done_callback(_forget_task)
     return job
 
 
-async def drain() -> None:
-    """Wait for every running check (tests and shutdown)."""
+def _forget_task(task: asyncio.Task) -> None:
+    _tasks.discard(task)
+    _task_jobs.pop(task, None)
+
+
+def run_outcome(job_id: str) -> dict[str, Any] | None:
+    """How the check run *job_id* ended, once it has: ``{"counts": {...},
+    "cancelled": bool, "crashed": bool}``, or None while it runs."""
+    return _outcomes.get(job_id)
+
+
+async def drain(should_stop: Callable[[], bool] | None = None) -> None:
+    """Wait for every running check (the CLI's run-rules, tests, shutdown).
+
+    With *should_stop*, a stop cancels the running checks' jobs, which end
+    them promptly (their cancel event reaches the slot wait and the verifier)
+    with nothing recorded for the Image in hand, and the wait goes on only
+    until they have ended. Each Image's own check stays bounded by its tool's
+    verify bound, so the wait is too.
+    """
+    cancelled = False
     while _tasks:
-        await asyncio.gather(*list(_tasks), return_exceptions=True)
+        pending = list(_tasks)
+        if should_stop is None:
+            await asyncio.gather(*pending, return_exceptions=True)
+            continue
+        await asyncio.wait(pending, timeout=_STOP_POLL)
+        if not cancelled and should_stop():
+            cancelled = True
+            for job_id in list(_task_jobs.values()):
+                await job_manager.cancel_job(job_id)
 
 
 def _apply(library_id: str, check: Check, verdict: str, message: str, current) -> bool:
@@ -389,7 +430,10 @@ def _apply(library_id: str, check: Check, verdict: str, message: str, current) -
     ) is not None
 
 
-async def _run(library: Library, picked: list[Check], job_id: str, generation: int) -> None:
+async def _run(
+    library: Library, picked: list[Check], job_id: str, generation: int,
+    on_finished: Callable[[], Awaitable[None]] | None = None,
+) -> None:
     from services.rules.sweep import library_generation
 
     def current() -> bool:
@@ -451,6 +495,7 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
                 break
     except Exception:
         logger.warning("romm_auto: the check run for %s failed", library.id, exc_info=True)
+        _outcomes[job_id] = {"counts": dict(counts), "cancelled": False, "crashed": True}
         await job_manager.finish_external_job(
             job_id, success=False, error_message="The check run stopped on an error",
         )
@@ -465,9 +510,21 @@ async def _run(library: Library, picked: list[Check], job_id: str, generation: i
         + (f", {counts[INCONCLUSIVE]} could not be checked" if counts[INCONCLUSIVE] else "")
         + (f", {counts[SKIPPED]} gone, changed or in use" if counts[SKIPPED] else "")
     )
+    _outcomes[job_id] = {"counts": dict(counts), "cancelled": cancelled, "crashed": False}
     if cancelled:
         await job_manager.finish_external_job_cancelled(job_id, message=f"Stopped: {summary}")
         return
+    if on_finished is not None and current():
+        # The check Rules' runs, recorded once their checks are done. A
+        # failure to record must not leave the job unfinished: the verdicts
+        # are written, and the Rule is simply due again.
+        try:
+            await on_finished()
+        except Exception:
+            logger.warning(
+                "romm_auto: recording the check run for %s failed", library.id,
+                exc_info=True,
+            )
     job = job_manager.get_job(job_id)
     if job is not None:
         job.message = summary

@@ -1550,6 +1550,7 @@ async def run_rules(args, printer: Printer, state: RunState) -> int:
 
 
 async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> int:
+    from services.rules import check as rules_check
     from services.rules import sweep as rules_sweep
 
     owners: dict[str, str] = {}
@@ -1567,6 +1568,7 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
         reported.add(job.id)
         item = Item(path=job.file_path, mode=getattr(job.mode, "value", job.mode))
         _finish(item, job)
+        _finish_check_run(item, job)
         failed = failed or item.status in ("failed", "cancelled")
         # A job that ends while its own sweep is still running has no owner
         # yet; the Library being swept queued it.
@@ -1592,7 +1594,31 @@ async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> in
                 await jobs.cancel_all_jobs()
                 break
         await jobs.drain()
+        # A check Rule's run is not a queued job: it runs as its own task
+        # (#305), so it is waited for here, while the job runner and the
+        # listeners above still hear it end. A stop cancels it promptly.
+        await rules_check.drain(should_stop=lambda: state.stopping)
     return EXIT_FAILED if failed or state.stopping else EXIT_OK
+
+
+def _finish_check_run(item: Item, job) -> None:
+    """A check Rule's run (#305) fails the pass like a failed Image would.
+
+    It completes once it has checked what it picked; the CLI's rule (exit 1
+    when any Image failed, as ``verify`` does) then reads its outcome: an
+    Image not Intact, or one whose check reached no verdict, is a failure.
+    A run that was cancelled or crashed is already a failed or cancelled job.
+    """
+    from models import ConversionMode
+    from services.rules import check as rules_check
+
+    outcome = rules_check.run_outcome(job.id) if job.mode == ConversionMode.CHECK else None
+    if not outcome or item.status != "completed":
+        return
+    counts = outcome["counts"]
+    if counts.get(rules_check.NOT_INTACT) or counts.get(rules_check.INCONCLUSIVE):
+        item.status = "failed"
+        item.reason = job.message or "A checked Image is not Intact"
 
 
 # --------------------------------------------------------------------------- #

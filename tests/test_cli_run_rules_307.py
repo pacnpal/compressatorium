@@ -28,6 +28,7 @@ class _Shelf:
 
     def __init__(self, library_id: str, root: Path) -> None:
         self.id = library_id
+        self.name = library_id  # the Library protocol's display name
         self.root = root
         # What happened, in order: ("before_pass", dry_run), ("images", id).
         self.calls: list[tuple] = []
@@ -1499,3 +1500,129 @@ def test_a_full_queue_is_a_failed_pass_that_says_what_was_left(
     assert {"library": "shelf", "platform_id": None, "mode": None, "status": "stopped",
             "queued": 0, "considered": 0, "candidates": [], "reason": "queue_full"} in lines
     assert dolphin["runs"] == []
+
+
+# --------------------------------------------------------------------------- #
+# A check Rule's run (#305 x #307, codex 4577971073)
+# --------------------------------------------------------------------------- #
+
+
+def _check_rule_on(env, monkeypatch, verify):
+    """A check Rule on the shelf's GameCube Images, its verify replaced by *verify*.
+
+    *verify* is an async function ``(path, cancel_event) -> dict`` standing in
+    for dolphin-tool's verify run; dolphin counts as ready to check.
+    """
+    import cli
+    from services.rules import sweep as rules_sweep
+    from services.rules.rules import CHECK, normalize_rule
+
+    async def ready(_tool, **_kwargs):
+        return True
+
+    monkeypatch.setattr(registry, "tool_is_ready", ready)
+    service = registry.get("dolphin")._service
+
+    async def run_verify(cmd, *, path, cancel_event=None, **kwargs):
+        result = await verify(path, cancel_event)
+        yield {"type": "complete", **result}
+
+    monkeypatch.setattr(service._runner, "run_verify", run_verify)
+    cli._open_db(False)
+    rule = normalize_rule({"enabled": True, "check_budget_gb": 1}, kind=CHECK)
+    asyncio.run(rules_sweep.set_check_rules(env["shelf"], {"gc": rule}))
+
+
+def _check_state(env):
+    from services.rules import sweep as rules_sweep
+    from services.rules.rules import CHECK
+
+    return asyncio.run(rules_sweep.get_state(env["shelf"], CHECK)).get("gc") or {}
+
+
+def test_a_check_only_pass_waits_for_the_check(env, monkeypatch, capsys):
+    """run-rules waits for the verifier, records its result, exits 0 on a pass,
+    and records the check Rule's run only once the check has finished."""
+    from services import image_checks
+    from services.rules import sweep as rules_sweep
+    from services.rules.rules import CHECK
+
+    iso = _iso(env)
+    during: list[dict] = []
+
+    async def verify(path, cancel_event):
+        await asyncio.sleep(0.3)  # the pass must not leave before this ends
+        state = await rules_sweep.get_state(env["shelf"], CHECK)
+        during.append(state.get("gc") or {})
+        return {"valid": True, "message": "Disc image is Intact"}
+
+    _check_rule_on(env, monkeypatch, verify)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, json.dumps(lines)
+    assert during == [{}]  # not recorded while the check ran
+    assert image_checks.last_checked("shelf").keys() == {iso.name}
+    state = _check_state(env)
+    assert state.get("last_run_at") or state.get("last_manual_run_at")
+
+
+def test_a_check_that_finds_damage_exits_1(env, monkeypatch, capsys):
+    """The CLI's rule: exit 1 when any Image failed. A not-Intact Image is one."""
+    from services import findings
+
+    _iso(env)
+
+    async def verify(path, cancel_event):
+        return {"valid": False, "message": "Disc is damaged"}
+
+    _check_rule_on(env, monkeypatch, verify)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1, lines
+    assert [f["kind"] for f in findings.list_findings()] == ["not_intact"]
+
+
+def test_a_check_that_cannot_run_exits_1(env, monkeypatch, capsys):
+    """No verdict (the verifier timed out, say) is a failure, as in `verify`."""
+    _iso(env)
+
+    async def verify(path, cancel_event):
+        return {"valid": False, "inconclusive": True, "message": "timed out"}
+
+    _check_rule_on(env, monkeypatch, verify)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1, lines
+
+
+def test_a_stop_mid_check_ends_promptly_with_no_pass(env, monkeypatch, capsys):
+    import os
+    import signal
+    import time
+
+    from services import image_checks
+    from services.verification_store import verification_store
+
+    iso = _iso(env)
+
+    async def verify(path, cancel_event):
+        os.kill(os.getpid(), signal.SIGTERM)
+        # A long check that, like the real runner, stops on its cancel event.
+        await asyncio.wait_for((cancel_event or asyncio.Event()).wait(), 30)
+        return {"valid": False, "cancelled": True, "message": "Verification cancelled"}
+
+    _check_rule_on(env, monkeypatch, verify)
+    started = time.monotonic()
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert time.monotonic() - started < 10
+    assert code == 1, lines
+    assert image_checks.last_checked("shelf") == {}
+    assert not asyncio.run(verification_store.is_verified(str(iso)))
+    state = _check_state(env)
+    assert not state.get("last_run_at")
+    assert not state.get("last_manual_run_at")

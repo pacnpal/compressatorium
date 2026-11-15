@@ -1878,7 +1878,10 @@ ids are listed by `/api/libraries`). `--dry-run` prints what each
 Rule would queue on this pass and writes nothing. Unlike the editor's Preview it
 keeps each Rule's clock, so a Rule that is not due (outside its window, or run
 within its interval) prints no line. It prints one line per Platform and one per
-job as it ends.
+job as it ends. A due [check Rule](#check-rules) runs here too, and the pass
+waits for its checks: an Image that is not Intact, or whose check could not
+run, makes it exit `1`, and the check Rule's night counts as done only once its
+checks have finished.
 
 Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
 background: it finishes an identity cleanup a crash left owed (otherwise RomM

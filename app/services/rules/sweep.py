@@ -1669,11 +1669,26 @@ async def _sweep_locked(
         # their runs are not recorded, so the next sweep picks them again.
         result["stopped_reason"] = "stopped"
     elif not dry_run:
-        for platform_id, summary, manual, at in check_runs:
-            await _record_run(library, platform_id, summary, CHECK, manual=manual, at=at)
+        async def record_check_runs() -> None:
+            for platform_id, summary, manual, at in check_runs:
+                await _record_run(library, platform_id, summary, CHECK, manual=manual, at=at)
+
+        async def record_check_runs_later() -> None:
+            # From the check run, after this sweep let go of the lock: taken
+            # again so the write cannot interleave with another sweep's.
+            async with _sweep_lock:
+                await record_check_runs()
+
         if picked:
             # One job and, if anything fails, one notification for the sweep.
-            checks.start(library, picked, generation=_generations.get(library.id, 0))
+            # The check Rules' runs are recorded once it has checked them all,
+            # so a check cut short (a stop, a restart) leaves its Rule due.
+            checks.start(
+                library, picked, generation=_generations.get(library.id, 0),
+                on_finished=record_check_runs_later,
+            )
+        else:
+            await record_check_runs()
     result.update(await library.sweep_extras())
     return result
 
