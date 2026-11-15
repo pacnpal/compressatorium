@@ -448,7 +448,11 @@ def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
     volumes = list(settings.volumes)
     for volume in volumes:
         root = _configured_root(volume)
-        if candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep):
+        # Two arms, kept apart: the root itself is resolved as the trusted
+        # spelling, and a path below it only after the prefix check.
+        if candidate == root:
+            return _real_inside_volumes(root, roots=[volume], strict=strict)
+        if candidate.startswith(root.rstrip(os.sep) + os.sep):
             return _real_inside_volumes(candidate, roots=[volume], strict=strict)
     resolved_roots = _resolved_root_spellings()
     for volume in volumes:
@@ -456,7 +460,9 @@ def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
         root = resolved_roots.get(configured)
         if root is None or root == configured:
             continue
-        if candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep):
+        if candidate == root:
+            return _real_inside_volumes(root, roots=[volume], strict=strict)
+        if candidate.startswith(root.rstrip(os.sep) + os.sep):
             return _real_inside_volumes(candidate, roots=[volume], strict=strict)
     return None
 
