@@ -135,9 +135,13 @@ class LibrariesStore {
   // started at; a Library row it brings back is adopted only if no save began
   // since, so a read older than a save never puts the old settings back.
   #settingsGenerations = new Map();
-  // Library id -> the ticket of the latest settings save started for it. Only
-  // that save's answer is adopted: two quick toggles can answer out of order.
+  // Library id -> the ticket of the latest settings save asked for. Only that
+  // save's answer is adopted.
   #latestSave = new Map();
+  // Library id -> the tail of its settings-save queue. A Library's saves run
+  // one at a time in click order, so the backend applies them in that order:
+  // two in flight could land the older one last.
+  #saveQueues = new Map();
   // Bumped by every registration. A Library registered after a list load set
   // off is missing from that load's (older) catalogue and is kept, not dropped.
   #catalogueEpoch = 0;
@@ -219,14 +223,25 @@ class LibrariesStore {
    * generation as the save starts and again when it lands, so any read that
    * set off before the save answered is too old to adopt.
    *
-   * Only the latest save started for the Library is adopted: two quick
-   * toggles can answer out of order, and the older answer must not win. If
-   * the latest save fails, the row is read back from the server, since an
+   * A Library's saves are queued and sent one at a time, in click order, so
+   * the backend applies them in that order. Only the latest save asked for
+   * is adopted. If the latest save fails, the row is read back from the
+   * server once the queue has drained (it is the last in it), since an
    * earlier save may have landed without being adopted.
    */
-  async saveSettings(id, patch) {
+  saveSettings(id, patch) {
     const ticket = (this.#latestSave.get(id) ?? 0) + 1;
     this.#latestSave.set(id, ticket);
+    // Reads that set off from here on are older than this save.
+    this.#bumpSettings(id);
+    const previous = this.#saveQueues.get(id) ?? Promise.resolve();
+    const turn = previous.then(() => this.#saveNow(id, patch, ticket));
+    // The queue only orders; each caller still sees its own save's failure.
+    this.#saveQueues.set(id, turn.catch(() => {}));
+    return turn;
+  }
+
+  async #saveNow(id, patch, ticket) {
     this.#bumpSettings(id);
     let saved;
     try {

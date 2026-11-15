@@ -79,53 +79,6 @@ MATRIX = [
 ]
 
 
-@pytest.fixture(name="e2e_env")
-def _e2e_env(tmp_path: Path, monkeypatch):
-    """Confine the route to ``tmp_path`` and stub the converter binary.
-
-    Returns the recorded ``(input_path, output_path)`` the stub was invoked
-    with so tests can assert the real extracted file reached the tool.
-    """
-    # Confine path validation + extraction temp dir to the test directory.
-    monkeypatch.setattr(convert_routes.settings, "chd_volumes", str(tmp_path))
-    monkeypatch.setattr(convert_routes.settings, "data_mount_root", str(tmp_path))
-    monkeypatch.setattr(convert_routes.settings, "temp_dir", str(tmp_path / "temp"))
-    monkeypatch.setattr(convert_routes.settings, "max_queue_depth", 0)
-
-    calls: list[dict] = []
-
-    async def fake_convert(input_path, output_path, mode, *, compression=None,
-                           split=False, cancel_event=None):
-        # The member must have been extracted to a real temp file before the
-        # tool is invoked, this is the core of the archive-conversion path.
-        assert os.path.isfile(input_path), f"member not extracted: {input_path}"
-        # Capture the extracted bytes now: the temp dir is removed during the
-        # job's cleanup, so it can't be re-read after _process_job returns.
-        calls.append({
-            "input": input_path,
-            "output": output_path,
-            "content": Path(input_path).read_bytes(),
-        })
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        # Stand in for the binary: produce the output file.
-        Path(output_path).write_bytes(Path(input_path).read_bytes())
-        yield {"progress": 50, "message": "working"}
-        yield {"progress": 100, "message": "done"}
-
-    async def noop_post_convert(input_path, output_path, mode, **_kwargs):
-        # createcd/createdvd would otherwise read a disc serial off the (junk)
-        # source via ChdmanTool.post_convert; stub the hook so the test stays
-        # deterministic and offline.
-        return None
-
-    # registry is the shared singleton job_manager dispatches through.
-    for tool in convert_routes.registry.all():
-        monkeypatch.setattr(tool, "convert", fake_convert)
-        monkeypatch.setattr(tool, "post_convert", noop_post_convert)
-
-    return {"tmp_path": tmp_path, "calls": calls}
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("ext", "mode", "out_ext"), MATRIX,

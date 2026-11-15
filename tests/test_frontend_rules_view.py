@@ -200,11 +200,12 @@ process.stdout.write(JSON.stringify({{
     assert data["selected"] == "folder:9", data
 
 
-def test_only_the_latest_settings_save_is_adopted(tmp_path):
-    """CodeRabbit 4578050386: two quick toggles; the older answer lands last.
+def test_settings_saves_reach_the_backend_in_click_order(tmp_path):
+    """CodeRabbit 4578050386 and 4578075312: one save per Library at a time.
 
-    On, then off: the off save answers first, the on save after it. The
-    switch shows off, as the backend has it.
+    On, then off. The off save is not sent until the on save has answered,
+    so the backend applies them in click order, and the switch shows off,
+    as the backend holds it.
     """
     data = _run(tmp_path, f"""
 const loadOnce = libraries.load();
@@ -216,24 +217,33 @@ const first = source.setScheduleEnabled(true);
 await tick();
 const second = source.setScheduleEnabled(false);
 await tick();
-__calls[2].resolve({{ ...{_FOLDER}, schedule_enabled: false }});
-await second;
+const sentBeforeFirstAnswered = __log.filter((c) => c[0] === 'updateLibrary').length;
 __calls[1].resolve({{ ...{_FOLDER}, schedule_enabled: true }});
 await first;
+await tick();
+const secondSent = __log[2];
+__calls[2].resolve({{ ...{_FOLDER}, schedule_enabled: false }});
+await second;
 process.stdout.write(JSON.stringify({{
+  sentBeforeFirstAnswered, secondSent,
   scheduled: source.scheduleEnabled,
   row: libraries.list.find((lib) => lib.id === 'folder:3').schedule_enabled,
 }}));
 """)
+    assert data["sentBeforeFirstAnswered"] == 1, data
+    assert data["secondSent"] == [
+        "updateLibrary", "folder:3", {"schedule_enabled": False},
+    ], data
     assert data["scheduled"] is False, data
     assert data["row"] is False, data
 
 
 def test_a_failed_latest_save_reloads_the_row(tmp_path):
-    """The latest save fails after an earlier one landed: the row is reloaded.
+    """The second save fails while the first is in flight: the row is reloaded.
 
-    On, then off: on lands (not adopted, it is no longer the latest), off
-    fails. The store reads the Library back and shows what the server has.
+    On, then off. Off waits for on, which lands (not adopted, it is no longer
+    the latest); then off is sent and fails. With the queue drained, the
+    store reads the Library back and shows what the backend holds: on.
     """
     data = _run(tmp_path, f"""
 const loadOnce = libraries.load();
@@ -245,20 +255,25 @@ const first = source.setScheduleEnabled(true);
 await tick();
 const second = source.setScheduleEnabled(false).catch((e) => e.message);
 await tick();
+const sentBeforeFirstAnswered = __log.filter((c) => c[0] === 'updateLibrary').length;
 __calls[1].resolve({{ ...{_FOLDER}, schedule_enabled: true }});
 await first;
+await tick();
 __calls[2].reject(new Error('save failed'));
 await tick();
 const reloadCall = __log[3];
 __calls[3].resolve([{{ ...{_FOLDER}, schedule_enabled: true }}]);
 const error = await second;
 process.stdout.write(JSON.stringify({{
-  error, reloadCall, scheduled: source.scheduleEnabled,
+  sentBeforeFirstAnswered, error, reloadCall, scheduled: source.scheduleEnabled,
+  row: libraries.list.find((lib) => lib.id === 'folder:3').schedule_enabled,
 }}));
 """)
+    assert data["sentBeforeFirstAnswered"] == 1, data
     assert data["error"] == "save failed", data
     assert data["reloadCall"] == ["listLibraries"], data
     assert data["scheduled"] is True, data
+    assert data["row"] is True, data
 
 
 def test_a_listing_answered_after_removal_does_not_bring_the_library_back(tmp_path):
