@@ -2382,7 +2382,16 @@ Precedence is fixed and never guesses:
    Wii at 0x18). xiso answers through `extract_xiso.detect_console` (the XDVDFS
    layout, or a trimmed image's boot executable). A probe that raises is
    treated as no answer. A new console is taught to detection by its tool's
-   override, not by an edit here.
+   override, not by an edit here. Probes run on any file Auto is pointed at,
+   including through an unauthenticated `/api/jobs/auto-plan`, so a probe
+   must never let a size read from the image drive a read. The ISO 9660
+   helpers in `disc_id` (`_bounded_read`) refuse any directory or file extent
+   above `_MAX_ISO_READ` (1 MiB) or past the end of the image (a raw `.bin`
+   reports its user-data size as `logical_size`), and a refused read is no
+   header. The other probes read fixed-size windows, cap the sheet at 1 MiB
+   (`utils.sheet_text`), or are bounded already (the XDVDFS walk:
+   `_MAX_DIR_TABLE` and the image size). `tests/test_header_probe_bounds.py`
+   probes images whose sizes claim 0xffffffff.
 2. **Folder name.** The nearest parent folder whose name is a key or alias in
    `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
    name for it (the tools' own spellings and the folder names ES-DE and
