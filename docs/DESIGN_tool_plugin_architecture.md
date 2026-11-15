@@ -2445,7 +2445,11 @@ is unreadable. `chd_tokens` is chdman's `tokenize`: C-locale whitespace,
 track is a line's fifth token. `resolve_track` checks the name verbatim (no
 trimming, `\` a filename character on POSIX), and every spelling of every
 track is checked, including the raw-byte one (`os.fsdecode`) chdman opens for
-a sheet that is not UTF-8: one refused spelling refuses the sheet.
+a sheet that is not UTF-8: one refused spelling refuses the sheet. The delete
+plan takes its targets from that native spelling (`sheet_native_text`), never
+from a decoded reading, and a sheet whose decoded and native spellings name
+two different existing files is ambiguous (`sheet_ambiguity`): unreadable for
+every reader, so the job gate and the delete plan refuse it.
 
 Special files are never opened. Opening a FIFO with no writer blocks forever,
 which would strand the threadpool worker an Auto request runs detection on.
