@@ -1308,13 +1308,21 @@ async def auto_plan(request: AutoPlanRequest):
 
 @router.post("/jobs/auto", response_model=AutoBatchResponse)
 async def create_auto_jobs(request: AutoJobCreateRequest):
-    """Queue each Image for its Platform's default target (the Auto choice).
+    """Queue the Auto plan the user confirmed.
+
+    ``request.items`` are the confirmed plan's actionable rows, each
+    ``{file_path, mode}``; an Image the preview skipped (Conflicted, Unsorted,
+    an output another Image writes) is never sent. The paths are planned
+    again, and if any item's target differs from the confirmed one (another
+    tool, or now skipped) the request is refused with 409 and
+    ``detail = {"message", "plan"}``, the new plan, before anything is
+    queued: the client shows it and asks again. Queueing what the user never
+    saw would also skip its RomM metadata snapshot.
 
     Images are grouped by target mode and each group goes through the ordinary
     batch planning, so validation, duplicate handling and backpressure are the
-    same as a hand-picked batch. Conflicted and Unsorted Images, and an Image
-    whose output another one in the plan already writes, are left alone and
-    reported in the plan.
+    same as a hand-picked batch. An Image preparation skips is reported in the
+    returned plan.
 
     Every group is prepared before any is queued, so a planning error queues
     nothing. Each group is still its own atomic queue call, so if a later group
@@ -1326,7 +1334,28 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
     ``detail = {"message", "jobs"}``, with
     ``jobs`` in the same shape a success returns.
     """
-    plan = await _plan_auto(request)
+    confirmed: dict[str, str] = {}
+    for item in request.items:
+        if item.file_path in confirmed:
+            raise HTTPException(
+                status_code=400, detail=f"Listed twice in the Auto plan: {item.file_path}",
+            )
+        confirmed[item.file_path] = item.mode
+    if not confirmed:
+        return AutoBatchResponse(plan=[], jobs=[])
+    plan = await _plan_auto(AutoPlanRequest(
+        file_paths=list(confirmed), output_dir=request.output_dir,
+    ))
+    if any(target.mode != confirmed.get(target.file_path) for target in plan) or (
+        {target.file_path for target in plan} != set(confirmed)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "The plan changed since you confirmed it. Review it and confirm again.",
+                "plan": [_plan_item(target).model_dump(mode="json") for target in plan],
+            },
+        )
     groups: dict[tuple[str, str | None], list[str]] = {}
     for target in plan:
         if target.mode:

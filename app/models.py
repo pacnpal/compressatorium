@@ -227,7 +227,23 @@ class AutoPlanRequest(BaseModel):
     output_dir: str | None = None
 
 
-class AutoJobCreateRequest(AutoPlanRequest):
+class AutoJobItem(BaseModel):
+    """One Image of a confirmed Auto plan and the target the user saw for it."""
+
+    file_path: str
+    mode: str
+
+
+class AutoJobCreateRequest(BaseModel):
+    """Queue the Auto plan the user confirmed.
+
+    ``items`` are the plan's actionable rows only (an Image the preview
+    skipped is never sent). The route replans them and refuses with 409 when
+    any target changed, so what is queued is what was confirmed.
+    """
+
+    items: list[AutoJobItem]
+    output_dir: str | None = None
     duplicate_action: DuplicateAction = DuplicateAction.SKIP
 
 

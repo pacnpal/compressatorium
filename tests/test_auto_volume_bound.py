@@ -13,7 +13,12 @@ import threading
 
 import pytest
 
-from app.models import AutoJobCreateRequest, AutoPlanRequest, BatchJobCreateRequest
+from app.models import (
+    AutoJobCreateRequest,
+    AutoJobItem,
+    AutoPlanRequest,
+    BatchJobCreateRequest,
+)
 from app.routes import convert as convert_routes
 
 from .test_auto_convert import _route_env  # noqa: F401
@@ -26,7 +31,9 @@ def _auto_plan(paths):
 
 
 def _auto_jobs(paths):
-    return convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=paths))
+    return convert_routes.create_auto_jobs(AutoJobCreateRequest(
+        items=[AutoJobItem(file_path=p, mode="createcd") for p in paths],
+    ))
 
 
 def _batch(paths):
