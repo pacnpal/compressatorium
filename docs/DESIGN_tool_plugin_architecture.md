@@ -4219,7 +4219,13 @@ waiting while it still runs (the timeout, None for no bound, or a cancel),
 `hand_off()` takes the locks it runs under from the caller and the worker
 releases them only after the mutation has returned or raised, so nothing that
 waits on them (a new job's input lock) is granted while it can still take
-effect. The timeout raises `MutationInFlight`. `_delete_source_set` runs every
+effect. The timeout raises `MutationInFlight`. Only a worker that started can
+own the locks: when none could be launched (`ProbeCapacityExceeded`) or the
+caller gave up before it began, nothing is handed off, the mutation never
+runs, the caller keeps and releases its locks, and `MutationNotStarted` (a
+counted `kept` attempt for a retry, never `unknown`) says so (codex
+4579801887). `run_detached_undoable` needs no such case: a call that never
+started took nothing, so there is nothing to undo. `_delete_source_set` runs every
 unlink through it for the job and the retry alike (`_hand_off_locks`: the
 delete holds, plus a retry's output lock).
 

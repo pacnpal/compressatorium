@@ -785,6 +785,12 @@ async def run_detached_undoable(
         raise
 
 
+class MutationNotStarted(RuntimeError):
+    """An irreversible mutation never started (no detached thread could be
+    launched: :class:`ProbeCapacityExceeded`, or the caller gave up first).
+    Nothing changed, and the caller still holds its locks."""
+
+
 class MutationInFlight(RuntimeError):
     """An irreversible mutation was still running when its caller stopped
     waiting (:func:`run_detached_mutation`). Whether it took effect is
@@ -816,11 +822,22 @@ async def run_detached_mutation(
     just as the wait ran out, its answer lost: the outcome is unknown either
     way, but then the locks stay the caller's). A cancel propagates as usual,
     after the hand-off. An exception from *func* within the wait propagates.
+
+    Only a worker that has started can own the locks (codex 4579801887): when
+    none could be launched (:class:`ProbeCapacityExceeded`), or the caller
+    gave up before it began, nothing is handed off, *func* never runs, the
+    caller keeps its locks, and :class:`MutationNotStarted` says so.
     """
     guard = threading.Lock()
-    state: dict = {"settled": False, "release": None}
+    state: dict = {"started": False, "settled": False, "gave_up": False, "release": None}
 
     def call() -> object:
+        with guard:
+            if state["gave_up"]:
+                # The caller stopped waiting before this began: it still holds
+                # the locks, so the mutation must not run without them.
+                raise MutationNotStarted("the caller stopped waiting before it began")
+            state["started"] = True
         try:
             return func(*args, **kwargs)
         finally:
@@ -834,8 +851,17 @@ async def run_detached_mutation(
         return await asyncio.wait_for(run_detached(call), timeout)
     except BaseException as exc:
         with guard:
-            if not state["settled"]:
+            started = state["started"]
+            if not started:
+                state["gave_up"] = True
+            elif not state["settled"]:
                 state["release"] = hand_off()
+        if not started:
+            if isinstance(exc, (asyncio.CancelledError, MutationNotStarted)):
+                raise
+            raise MutationNotStarted(
+                f"{getattr(func, '__name__', 'the change')} could not start: {exc}",
+            ) from exc
         if isinstance(exc, asyncio.TimeoutError):
             raise MutationInFlight(
                 f"{getattr(func, '__name__', 'the change')} was still running "

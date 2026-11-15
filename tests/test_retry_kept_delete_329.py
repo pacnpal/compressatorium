@@ -820,3 +820,87 @@ def _source_locked(path) -> bool:
     from services.lock_manager import lock_manager
 
     return lock_manager.check_file_status(str(path))[1]
+
+
+# --------------------------------------------------------------------------- #
+# A mutation that never started keeps its locks with the caller (Codex 4579801887)
+# --------------------------------------------------------------------------- #
+
+
+def _exhausted_probe_slots():
+    """Every detached-probe slot taken, as when that many probes are stuck."""
+    import contextlib
+
+    from services import subprocess_runner
+
+    @contextlib.contextmanager
+    def held():
+        taken = 0
+        while subprocess_runner._probe_slots.acquire(blocking=False):
+            taken += 1
+        try:
+            yield
+        finally:
+            for _ in range(taken):
+                subprocess_runner._probe_slots.release()
+
+    return held()
+
+
+def test_a_mutation_that_cannot_start_hands_nothing_off():
+    from services.subprocess_runner import MutationNotStarted, run_detached_mutation
+
+    ran, handed = [], []
+
+    async def attempt():
+        with _exhausted_probe_slots():
+            await run_detached_mutation(
+                ran.append, "unlink", timeout=5,
+                hand_off=lambda: handed.append(True) or (lambda: None),
+            )
+
+    with pytest.raises(MutationNotStarted):
+        asyncio.run(attempt())
+    assert ran == [] and handed == []
+
+
+def test_an_undoable_call_that_cannot_start_undoes_nothing():
+    from services.subprocess_runner import run_detached_undoable
+
+    ran, undone = [], []
+
+    async def attempt():
+        with _exhausted_probe_slots():
+            await run_detached_undoable(
+                ran.append, "lock", timeout=5, undo=undone.append,
+            )
+
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(attempt())
+    assert ran == [] and undone == []
+
+
+def test_an_unlink_that_cannot_start_is_a_counted_kept_attempt(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """The retry keeps its locks and lets go of them itself; nothing is
+    deleted, and it is an attempt like any other, never "unknown"."""
+    from services import job_manager as job_manager_module
+    from services.lock_manager import lock_manager
+
+    real = job_manager_module.run_detached_mutation
+
+    async def starved(*args, **kwargs):
+        with _exhausted_probe_slots():
+            return await real(*args, **kwargs)
+
+    monkeypatch.setattr(job_manager_module, "run_detached_mutation", starved)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+    assert pending["attempts"] == 1
+    assert not lock_manager.check_file_status(str(kept["iso"]))[1]
+    assert not lock_manager.is_locked(str(kept["output"]))
