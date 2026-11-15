@@ -198,12 +198,13 @@ class ToolPlugin(Protocol):
         event loop.
         """
 
-    def header_reads(self, path: str) -> list[str]:
+    def header_reads(self, path: str) -> list[str] | None:
         """Other files ``header_platform(path)`` reads, besides ``path``.
 
         A track sheet's answer comes from the tracks it names, so detection
         keys its cache on their size and mtime too, and does not cache an
-        answer while one is missing. Default empty.
+        answer while one is missing. None means "cannot tell" (an unreadable
+        sheet), which is never cached either. Default empty.
         """
 
     def verifies_path(self, path: str) -> bool:
@@ -546,7 +547,7 @@ class BaseTool:
         # from the image bytes (chdman, dolphin, xiso) override it.
         return None
 
-    def header_reads(self, path: str) -> list[str]:
+    def header_reads(self, path: str) -> list[str] | None:
         # Default: the probe reads only the file itself.
         return []
 

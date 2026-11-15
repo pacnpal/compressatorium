@@ -55,7 +55,7 @@ from services.subprocess_runner import (
     ioprio_prefix,
     nice_prefix,
 )
-from utils.sheet_text import cue_tracks, gdi_tracks, pick_existing, sheet_readings
+from utils.sheet_text import cue_tracks, gdi_tracks, sheet_readings, sheet_tracks
 
 logger = get_logger("disc_id")
 
@@ -561,9 +561,7 @@ def _cue_track_paths(path: str) -> list[Path]:
     cp1252 when not UTF-8, Latin-1 last); the first spelling that exists on
     disk wins, and a track none of whose spellings exists keeps the first.
     """
-    folder = Path(path).parent
-    readings = [cue_tracks(text) for text in sheet_readings(path)]
-    return pick_existing(readings, lambda name: folder / name)
+    return sheet_tracks(path, cue_tracks) or []
 
 
 def _cue_data_file(path: str) -> str | None:
@@ -1174,14 +1172,11 @@ def _extract_gdi(path: str) -> Optional[dict]:
         gdi_dir = Path(path).parent
         # The shared sheet parsing (utils.sheet_text): quoted names keep their
         # spaces, and the first spelling of a name that exists on disk wins.
-        readings = [gdi_tracks(text) for text in sheet_readings(path)]
-        if not readings:
-            return None
-        files = pick_existing(
-            [[track.name for track in reading] for reading in readings],
-            lambda name: gdi_dir / name,
-        )
-        for track, bin_path in zip(readings[0], files):
+        files = sheet_tracks(path, lambda text: [t.name for t in gdi_tracks(text)])
+        if not files:
+            return None   # unreadable, or a track refused: say nothing
+        entries = gdi_tracks(sheet_readings(path)[0])
+        for track, bin_path in zip(entries, files):
             track_num = track.number
             sector_size = track.sector_size or 2352
             if not bin_path.exists():

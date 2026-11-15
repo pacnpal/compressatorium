@@ -55,6 +55,7 @@ failed Image waits until its file changes (``FAILED_HOLD``).
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import threading
@@ -137,6 +138,17 @@ class Scan:
         return out
 
 
+def _folder_generation(names: set[str]) -> str:
+    """One folder's listing as a short marker: a digest of its sorted file names.
+
+    Built once per folder per walk and shared by every file in it, so a cached
+    membership compares this marker in constant time instead of the whole
+    listing per file. A file name never holds NUL, so the join is unambiguous.
+    """
+    listing = "\0".join(sorted(names)).encode("utf-8", "surrogateescape")
+    return hashlib.sha256(listing).hexdigest()
+
+
 def _image_extensions() -> tuple[str, ...]:
     """Every extension a registered tool reads or writes."""
     return tuple(sorted(
@@ -211,7 +223,7 @@ class FolderLibrary:
         # path -> (size, mtime_ns, value), for the files the last walk saw.
         # path -> (platform_detect.detection_key, Detection).
         self._detections: dict[str, tuple[tuple, Detection]] = {}
-        # path -> ((size, mtime_ns, the folder's file names), members).
+        # path -> ((size, mtime_ns, the folder's listing marker), members).
         self._members: dict[str, tuple[tuple, list[str]]] = {}
 
     def __repr__(self) -> str:
@@ -303,18 +315,22 @@ class FolderLibrary:
         known = {os.path.normpath(p): st for p, st in files}
         members_cache: dict[str, tuple[tuple, list[str]]] = {}
         detections: dict[str, tuple[tuple, Detection]] = {}
-        # Each folder's file names, shared by its files. A split set's members
-        # depend on which sibling parts exist (game_part2.wud added later), not
-        # on part 1's own stat, so the names are part of the cache key.
-        names_by_folder: dict[str, frozenset[str]] = {}
+        # A split set's members depend on which sibling parts exist
+        # (game_part2.wud added later), not on part 1's own stat, so the
+        # folder's listing is part of the cache key: as one marker per folder,
+        # built once per walk, so the compare per file is constant-time.
+        names_by_folder: dict[str, set[str]] = {}
         for path, _st in files:
             folder, name = os.path.split(path)
             names_by_folder.setdefault(folder, set()).add(name)
-        names_by_folder = {k: frozenset(v) for k, v in names_by_folder.items()}
+        generation = {
+            folder: _folder_generation(names)
+            for folder, names in names_by_folder.items()
+        }
 
         def members(path: str) -> list[str]:
             st = stats[path]
-            key = (st.st_size, st.st_mtime_ns, names_by_folder[os.path.dirname(path)])
+            key = (st.st_size, st.st_mtime_ns, generation[os.path.dirname(path)])
             hit = self._members.get(path)
             if hit is not None and hit[0] == key:
                 value = hit[1]

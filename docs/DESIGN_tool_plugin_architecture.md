@@ -2350,11 +2350,18 @@ filesystem nothing is hidden.
 **Unsafe sheets.** The converter opens every file a sheet names itself, so a
 sheet is checked from its own text before any job runs:
 `delete_plan.sheet_reference_problems` (the delete plan's cue/gdi parsers and
-`utils.sheet_text` decoding) reports a reference that is absolute, leaves the
-sheet's folder, or resolves outside the configured Volumes (a symlinked
+`utils.sheet_text` decoding) runs each reference through the one confined
+resolver, `utils.sheet_text.resolve_track`, and reports one that is absolute,
+leaves the sheet's folder, or resolves outside the trusted roots (a symlinked
 track). `path_utils.source_companions_are_safe`, the gate `plan_job` and the
 worker both call for every job (manual, batch, Auto, Rules), rejects such a
 sheet whatever the tool's companion list says; an empty list never means safe.
+Its companions go through the same resolver. The trusted roots are the
+resolver's `within`: the configured Volumes by default, and for an archive
+member the worker passes `[the folder it extracted the sheet and its tracks
+into]` (its own `mkdtemp`, not a Volume), so every track and companion must
+resolve inside that folder. An empty root list is refused, never read as
+anything goes.
 The sweep asks the same gate per candidate and reports the Image as unsafe
 (`skipped_unsafe`, and each Platform's `unsafe` names) instead of queueing it.
 
@@ -2366,9 +2373,11 @@ regular, readable file whose extension a tool reads or writes
 `platform_detect.detect_uncached`. Detections and Image members are cached on
 the Library per path and pruned to what the last walk saw. A detection is
 checked against `detection_key`; members against the file's size and mtime
-plus its folder's file names (a split set gains its part 2 without part 1
-changing), so the cache is as large as the Library and a repeat walk reads
-no headers (tested at 10,000 files). The walk is kept for `SCAN_TTL_SECONDS`
+plus a marker of its folder's listing (a split set gains its part 2 without
+part 1 changing). The marker is a digest of the folder's sorted file names,
+built once per folder per walk and shared by its files, so the check per file
+is constant-time however large the folder. The cache is as large as the
+Library and a repeat walk reads no headers (tested at 10,000 files). The walk is kept for `SCAN_TTL_SECONDS`
 (30 s): a sweep over several Platforms, and the listing before it, share one
 walk; the platforms endpoint asks for a fresh one. An Image with a Platform
 belongs to it; a Conflicted or Unsorted one belongs to none, so no Rule sees it.
@@ -2547,7 +2556,8 @@ Precedence is fixed and never guesses:
    header. The other probes read fixed-size windows, cap the sheet at 1 MiB
    (`utils.sheet_text`). The XDVDFS walk takes its limits as parameters:
    conversion and info keep `_MAX_DIR_TABLE` (64 MiB per table), while the
-   probe (`detect_console`) passes 1 MiB per table and 4 MiB per walk.
+   probe (`detect_console`) passes 1 MiB per table, 4 MiB per walk and
+   `root_only=True`, since the boot executable sits in the root.
    `tests/test_header_probe_bounds.py` probes images whose sizes are hostile.
 
    A folder is probed by the tools that take it as their input unit
@@ -2580,7 +2590,23 @@ disc-ID probe (`disc_id._cue_track_paths`), the header-dependency list
 (`delete_plan.sheet_track_paths`) and the delete plan all use it, so
 `Jeu (Édition).bin` resolves, and is cached, from either encoding. There is one
 CUE FILE-line parser (`sheet_text.cue_tracks`: quoted, unquoted, names with
-spaces) and one GDI line parser (`sheet_text.gdi_tracks`).
+spaces) and one GDI line parser (`sheet_text.gdi_tracks`, numeric fields only
+when ASCII decimal).
+
+There is also one track resolver, `sheet_text.resolve_track`, and
+`sheet_tracks` built on it, used by the Platform probe, the detection cache's
+track list (`header_reads`), the delete plan and the job gate. It refuses an
+empty name, an absolute name, any `..` segment, and a name whose real path
+lies outside the trusted roots: the configured Volumes by default, or the
+roots a caller passes as `within` (the job worker's extraction dir for an
+archived set; an empty `within` is refused). When any track of a sheet is
+refused, or the sheet is unreadable (missing, or over `MAX_SHEET_BYTES`, read
+as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
+the probe says nothing, so a planted sheet cannot make the probe read a file
+outside the Volumes. `header_reads` returns None for an unreadable sheet and
+a failing `header_reads` is treated the same way, so neither is cached. A
+folder Image (a PS3 disc folder) is never cached: its answer depends on files
+below it.
 
 Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
 and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
@@ -2688,7 +2714,15 @@ a destination, 503 when a volume stops answering), and earlier jobs may have
 started by then. On any failure the route withdraws the jobs this request
 queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
-returns it. The error detail is then structured, `{"message": "... Already
+returns it, for an HTTP error from the queue and for an unexpected exception
+alike (the latter logged with its traceback and returned as a 500; a
+cancellation still propagates). An Image that preparation skipped (its output
+appeared after planning) is marked skipped in the returned plan with
+preparation's reason. In the browser, `conversion.runAuto` runs the flow once
+at a time (an in-flight guard), on the selection and RomM context captured
+before its first await, and updates the re-pin badge whether queueing
+succeeded or not; `jobs.adopt` applies the same freshness rule as `refresh()`
+(`snapshotIsNewer`). The error detail is then structured, `{"message": "... Already
 finished and kept: ...", "jobs": [...]}`, with `jobs` in the shape a success
 returns. `client.fetchJson` keeps a structured detail on `err.detail`, the store
 adopts those jobs and reconciles its re-pin snapshots against them before it
