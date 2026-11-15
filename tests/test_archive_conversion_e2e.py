@@ -112,7 +112,7 @@ def _e2e_env(tmp_path: Path, monkeypatch):
         yield {"progress": 50, "message": "working"}
         yield {"progress": 100, "message": "done"}
 
-    async def noop_post_convert(input_path, output_path, mode):
+    async def noop_post_convert(input_path, output_path, mode, **_kwargs):
         # createcd/createdvd would otherwise read a disc serial off the (junk)
         # source via ChdmanTool.post_convert; stub the hook so the test stays
         # deterministic and offline.
@@ -256,3 +256,44 @@ async def test_romz_member_listed_but_not_recompressed(e2e_env, mode):
     ]
     assert exc.value.status_code == status == 400
     assert exc.value.detail == detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("archived", [True, False], ids=["archive-member", "volume-file"])
+async def test_the_worker_passes_its_extraction_root_to_post_convert(
+    e2e_env, monkeypatch, archived,
+):
+    """``within`` is the extraction dir for an archive member, None otherwise."""
+    tmp_path: Path = e2e_env["tmp_path"]
+    seen: list = []
+
+    async def recording_post_convert(input_path, output_path, mode, *, within=None):
+        seen.append((input_path, within))
+
+    for tool in convert_routes.registry.all():
+        monkeypatch.setattr(tool, "post_convert", recording_post_convert)
+
+    if archived:
+        archive = tmp_path / "library.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("games/rom.iso", b"PAYLOAD")
+        source = f"{archive}::games/rom.iso"
+    else:
+        (tmp_path / "rom.iso").write_bytes(b"PAYLOAD")
+        source = str(tmp_path / "rom.iso")
+
+    job = await convert_routes.create_job(JobCreateRequest(
+        file_path=source, mode=ConversionMode.CREATEDVD,
+        duplicate_action=DuplicateAction.SKIP, delete_on_verify=False,
+    ))
+    await convert_routes.job_manager._process_job(job.id)
+
+    [(input_path, within)] = seen
+    if archived:
+        # The extraction root the worker created, not the member's own folder.
+        [root] = within
+        assert Path(input_path).is_relative_to(root)
+        assert Path(input_path).parent != Path(root)    # member sits in games/
+        assert not os.path.exists(root)                 # cleaned up after the job
+    else:
+        assert within is None

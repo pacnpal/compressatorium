@@ -97,17 +97,27 @@ class FakeChdman:
 
 
 @pytest.fixture(name="fake")
-def _fake(monkeypatch, tmp_path):
+def _fake(monkeypatch, tmp_path, tmp_path_factory):
+    """``tmp_path`` is the Volume the Sources live in; the scratch volume
+    (``CHD_TEMP_DIR``) is a separate folder outside it, as in production, so a
+    sheet chdman extracts there is outside every Volume."""
     from config import settings
 
     fake = FakeChdman()
     monkeypatch.setattr(_chdman()._service._runner, "run_capture", fake.run_capture)
-    monkeypatch.setattr(settings, "temp_dir", str(tmp_path / "scratch"))
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))
+    monkeypatch.setattr(settings, "data_mount_root", str(tmp_path))
+    monkeypatch.setattr(
+        settings, "temp_dir", str(tmp_path_factory.mktemp("scratch-volume") / "scratch"),
+    )
     return fake
 
 
-def _scratch_left(tmp_path) -> list[str]:
-    scratch = tmp_path / "scratch"
+def _scratch_left(_tmp_path=None) -> list[str]:
+    """What the Round-trip left in the scratch folder (``CHD_TEMP_DIR``)."""
+    from config import settings
+
+    scratch = Path(settings.temp_dir)
     return os.listdir(scratch) if scratch.exists() else []
 
 
@@ -372,6 +382,30 @@ async def test_an_iso_and_its_one_track_cd_read_back_have_one_digest(tmp_path, f
     cue.write_text('FILE "image.bin" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n')
 
     assert (await _digest_of(iso)).same_content(await _digest_of(cue))
+
+
+@pytest.mark.asyncio
+async def test_an_archive_member_source_is_read_in_the_jobs_extraction_folder(
+    tmp_path, tmp_path_factory, fake,
+):
+    """A cue/bin set pulled out of an archive sits in the job's extraction
+    folder, outside the Volumes; the job names that folder as ``within``."""
+    extraction = tmp_path_factory.mktemp("job-extraction")
+    cue = _split_cue(extraction / "set")
+
+    member = await _chdman().content_digest(str(cue), within=[str(extraction)])
+
+    assert member.same_content(await _digest_of(_single_bin_cue(tmp_path / "single")))
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_outside_the_volumes_is_refused_without_a_within(
+    tmp_path_factory, fake,
+):
+    cue = _split_cue(tmp_path_factory.mktemp("elsewhere") / "set")
+
+    with pytest.raises(ContentDigestUnavailable):
+        await _chdman().content_digest(str(cue))
 
 
 @pytest.mark.asyncio

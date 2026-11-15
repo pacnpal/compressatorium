@@ -43,7 +43,7 @@ def patch_embed(monkeypatch):
     state: dict = {"source": None, "existing": None}
     embedded: list[tuple] = []
 
-    def _extract(path):  # sync: called via run_in_threadpool
+    def _extract(path, **_kwargs):  # sync: called via run_in_threadpool
         return state["source"]
 
     async def _read_existing(path, chdman_path):

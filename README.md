@@ -484,6 +484,21 @@ checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and CSO;
 verification status persists between sessions, and a long verify can be given a
 timeout so a stalled one doesn't block the queue.
 
+**Multi-disc playlists follow the conversion.** Before a source is deleted, any
+`.m3u` that names it is rewritten to the new file, so disc swapping keeps
+working. The app looks in the disc's own folder and every folder above it up to
+the volume root, so a `psx/Game.m3u` pointing into a hidden `.discs/` folder is
+covered. Only the entries for replaced files change (a RetroArch `path|label`
+entry keeps its label); other lines, line endings and encoding are left as
+they were, and the first rewrite keeps a copy of the original as
+`<name>.m3u.bak`. The delete confirmation lists each playlist edit. If a
+playlist can't be written (read-only, say), or it has a line that names the
+source in a form the app can't follow (an absolute path as the emulator sees
+it, say), the source is kept, the output stays beside it,
+and the job ends as `converted, source kept: couldn't update <playlist>
+(<reason>)`. The Ledger row records each playlist updated, or the one that
+kept the source and why.
+
 ### File info
 
 Click a file to open the inspector — it shows the format/version, compression,
@@ -756,8 +771,9 @@ selected tool understands.
   with input size, and the queue has a recovery action. Check temp-dir space/speed.
 * **A file didn't show up** — make sure the right tool is selected (the list filters
   to it); try Search All or clear the extension filter.
-* **An ISO went to the wrong tool** — ISOs can belong to CHDMAN or Dolphin; set the
-  ISO Handling toggle to match the disc.
+* **Not sure which tool an ISO needs** — tick **Auto** in the convert panel. It
+  reads each Image's header (or its folder name) and sends it to its Platform's
+  default format. Images it can't place are skipped and listed.
 * **The Switch tool is missing or jobs ask for prod.keys** — it needs your own
   keys; see [Nintendo Switch Support](#nintendo-switch-support). Without keys the
   tool is hidden.
@@ -822,6 +838,18 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 | Light | Dark |
 |-------|------|
 | ![Batch selection, light](docs/screenshots/workspace-batch-light.png) | ![Batch selection, dark](docs/screenshots/workspace-batch-dark.png) |
+
+**Delete-on-verify confirmation.** Before anything is queued, the app lists every file it will delete after the output verifies, and each `.m3u` playlist entry it will point at the new file first.
+
+| Light | Dark |
+|-------|------|
+| ![Delete confirmation, light](docs/screenshots/delete-plan-light.png) | ![Delete confirmation, dark](docs/screenshots/delete-plan-dark.png) |
+
+**Auto.** Tick **Auto** and select a mix of files: each Image goes to its Platform's default format with your saved compression. The Platform comes from the Image's header (GameCube/Wii magic, PS1/PS2 `SYSTEM.CNF`, PSP `PARAM.SFO`, Dreamcast `IP.BIN`, Saturn, Sega CD, Xbox), or from its folder name (`ps2`, `psx`, `gc`, `dreamcast`, … as RomM, ES-DE and Batocera name them) when there is no readable header. A header that disagrees with its folder, or an Image nothing identifies, is skipped and listed in the plan you confirm before anything is queued.
+
+| Light | Dark |
+|-------|------|
+| ![Auto plan, light](docs/screenshots/workspace-auto-plan-light.png) | ![Auto plan, dark](docs/screenshots/workspace-auto-plan-dark.png) |
 
 **Dolphin (GameCube / Wii).** Compress discs to RVZ, WIA, or GCZ, with a codec and compression-level picker.
 
@@ -917,7 +945,7 @@ On small screens the file list switches to a card layout. Controls use 44 to 48p
 
 **File Browser**
 - Navigate through mounted volumes and subdirectories
-- View file sizes, types, ISO handling, and CHD status indicators
+- View file sizes, types, and CHD status indicators
 - Recursive search to find all convertible files across the entire volume
 
 **Archive Support**
@@ -931,8 +959,8 @@ On small screens the file list switches to a card layout. Controls use 44 to 48p
 - **Some shown members are view-only.** A handheld ROM this app packed (`Game.gba` inside `Game.gba.7z`) is listed for visibility/verification but not offered for re-conversion (recompressing an archived ROM would be recursive); unpack it by selecting the archive and running `romz_extract`. A `.chd` inside an archive can be decompressed in place but not recompressed (copy/recompress acts on a finished output). Such members are badged non-convertible.
 - The inputs that can't come from an archive are CHDMAN's copy/recompress mode (recompressing an already-finished `.chd` would be a pointless round trip, though the extract modes *can* decompress a `.chd` straight out of an archive), Handheld ROM compression, whose `.7z`/`.zip` are the packed product, and PS3 ISO, whose input is a folder rather than a file (a zipped `PS3_GAME` tree can't be selected from inside an archive).
 
-**ISO Handling & Dolphin Tools (GameCube/Wii)**
-- Toggle ISO handling between CHDMAN and Dolphin (controls ISO info/verify and conversions)
+**Dolphin Tools (GameCube/Wii)**
+- A plain `.iso` goes to whichever tool tab you pick, or tick **Auto** to have each one sent to the right tool from its header
 - Convert `.iso`, `.gcz`, `.wia`, `.rvz`, `.wbfs` with dolphin-tool (RVZ/WIA/GCZ/ISO output)
 - Disc info and verification for Dolphin formats (including batch verification)
 - Dolphin sources may be converted directly from inside ZIP/7z/RAR archives (extracted to a temp dir for the conversion, then cleaned up)
@@ -954,7 +982,7 @@ On small screens the file list switches to a card layout. Controls use 44 to 48p
 
 **Verification**
 - Verify CHD files using chdman's built-in verification
-- Verify GameCube/Wii game images using dolphin-tool (ISO uses Dolphin when ISO handling is set to Dolphin)
+- Verify GameCube/Wii game images using dolphin-tool
 - Verification status persisted across sessions (stored in `/config/verified_chds.json`)
 - Integrated verification workflow when deleting source files
 - Visual indicators showing verified vs unverified items
@@ -1004,7 +1032,7 @@ Dolphin support is available in the Web UI and REST API (CLI mode remains CHDMAN
 - Requires the Docker image with Dolphin installed (default image includes `dolphin-emu` + wrapper).
 - Dolphin conversions use `dolphin-tool` (configurable via `DOLPHIN_TOOL_PATH`).
 - Compression is a single codec plus an optional level (`zstd:5`, `bzip2:5`, `lzma:5`, `lzma2:5`); `zstd:19` is the default. `dolphin_gcz` uses fixed compression (ignores the codec), and `dolphin_iso` outputs an uncompressed ISO.
-- ISO info/verify and conversions follow the **ISO Handling** toggle in the UI (no default — you must choose, since an ISO can belong to CHDMAN or Dolphin).
+- A `.iso` converts with the tool tab you pick. **Auto** in the convert panel picks per Image from its header instead.
 
 ---
 
@@ -1729,7 +1757,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | POST | `/api/jobs` | Create a single conversion job |
 | POST | `/api/jobs/batch` | Create multiple conversion jobs |
 | POST | `/api/jobs/check-duplicates` | Check for existing output files |
-| POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list |
+| POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list, with each planned `.m3u` edit (`referrer_changes`) |
 | GET | `/api/jobs` | List all jobs |
 | GET | `/api/jobs/{id}` | Get a specific job |
 | DELETE | `/api/jobs/{id}` | Cancel a job |
@@ -2014,7 +2042,7 @@ For production deployment guidance, see [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 **Input formats:**
 - `.gdi` - GD-ROM (Dreamcast)
-- `.iso` - ISO 9660 game images (CHD or Dolphin based on ISO handling)
+- `.iso` - game disc images (the tool tab you pick, or **Auto** from the Image's header)
 - `.cue` / `.bin` - CD images with cue sheets
 - `.gcz`, `.wia`, `.rvz`, `.wbfs` - GameCube/Wii game images (Dolphin)
 - `.cci`, `.cia`, `.3ds`, `.cxi`, `.3dsx` - Nintendo 3DS ROM images (3DS compression)

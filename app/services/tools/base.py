@@ -107,6 +107,9 @@ class ToolPlugin(Protocol):
     # tool. None means "this tool names no default" -- see
     # BaseTool.default_compression for what that costs.
     default_compression: str | None
+    # What to tell the user when ``is_ready()`` is False: why this tool cannot
+    # run here. Auto shows it beside an Image it skipped for that reason.
+    not_ready_reason: str
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
@@ -193,6 +196,26 @@ class ToolPlugin(Protocol):
         ``utils.delete_plan``, with its own unsafe-reference handling, rather
         than derived from naming. Folding those into this seam is the obvious
         next consolidation.
+        """
+
+    def header_platform(self, path: str) -> str | None:
+        """The Platform this tool reads from ``path``'s own header, or None.
+
+        How a tool recognises its Images. ``services.platform_detect`` asks
+        every tool whose ``input_extensions`` match the file and maps the
+        answer onto a Platform slug, so a new console is taught to detection
+        by its tool, not by a central list. None means "not mine, or I cannot
+        tell", never a guess. Reads a few bytes from disk; call it off the
+        event loop.
+        """
+
+    def header_reads(self, path: str) -> list[str] | None:
+        """Other files ``header_platform(path)`` reads, besides ``path``.
+
+        A track sheet's answer comes from the tracks it names, so detection
+        keys its cache on their size and mtime too, and does not cache an
+        answer while one is missing. None means "cannot tell" (an unreadable
+        sheet), which is never cached either. Default empty.
         """
 
     def verifies_path(self, path: str) -> bool:
@@ -304,7 +327,11 @@ class ToolPlugin(Protocol):
         """
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
     ) -> ContentDigest | None:
         """Hash of the image content ``path`` decodes to, for the Round-trip check.
 
@@ -320,6 +347,12 @@ class ToolPlugin(Protocol):
         attempt failed; the Source is then kept. A cancelled ``cancel_event``
         may surface as either; the caller checks the event itself. The caller
         bounds the call with ``verify_timeout(path)``.
+
+        ``within`` is the trusted root(s) a sheet's track references may
+        resolve under, as in ``post_convert``: the job's archive-extraction
+        folder for an archive-member Source, ``None`` (the configured Volumes)
+        otherwise. A tool that extracts into its own scratch folder passes that
+        folder to its own sheet reads. A tool that reads no sheet ignores it.
         """
 
     async def source_problem(
@@ -363,8 +396,14 @@ class ToolPlugin(Protocol):
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
+        *, within: Sequence[str] | None = None,
     ) -> None:
-        """Optional post-processing hook after a successful conversion."""
+        """Optional post-processing hook after a successful conversion.
+
+        ``within`` is the trusted root(s) an archive-extracted source lives
+        under (the job worker's extraction dir). None means the source is in a
+        configured Volume.
+        """
 
     def overwrite_targets(self, output_path: str, mode: str) -> list[str]:
         """Every path to clear before an **authorized** overwrite, primary first.
@@ -464,6 +503,9 @@ class BaseTool:
     # Mirrors `defaultCompression` in `src/lib/tools/registry.js`, which seeds
     # the same choice in the manual picker.
     default_compression: str | None = None
+    # Why ``is_ready()`` answered False, in the user's words. Tools gated on a
+    # user-supplied file or an optional runtime say which one.
+    not_ready_reason: str = "its program is not available on this server"
 
     def __init__(self, binary_path: str) -> None:
         self.binary_path = binary_path
@@ -539,6 +581,15 @@ class BaseTool:
             path, self.policy_owner, cancel_event=cancel_event,
         )
 
+    def header_platform(self, path: str) -> str | None:
+        # Default: no header probe. Tools that can tell their consoles apart
+        # from the image bytes (chdman, dolphin, xiso) override it.
+        return None
+
+    def header_reads(self, path: str) -> list[str] | None:
+        # Default: the probe reads only the file itself.
+        return []
+
     def verifies_path(self, path: str) -> bool:
         # Default: a declared-extension match (suffix-based, so a compound
         # extension resolves — see utils.path_utils.match_extension). Tools that
@@ -565,7 +616,11 @@ class BaseTool:
         return None
 
     async def content_digest(
-        self, path: str, *, cancel_event: asyncio.Event | None = None,
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
     ) -> ContentDigest | None:
         # Default: no content digest. Such a tool's modes leave
         # ModeSpec.supports_round_trip False, so their jobs keep the container
@@ -585,6 +640,7 @@ class BaseTool:
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
+        *, within: Sequence[str] | None = None,
     ) -> None:
         return None
 
