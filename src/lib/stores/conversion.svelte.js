@@ -49,24 +49,24 @@ function defaultLevelFor(toolId) {
 const PREF_SAVE_DEBOUNCE_MS = 500;
 const isBrowser = typeof window !== 'undefined';
 
-// Settles with `promise`, or with `{ aborted: true }` as soon as `signal`
-// aborts, whichever comes first. A late settle of `promise` is swallowed: the
-// caller has already moved on, and a rejection must not go unhandled.
+// What `untilAborted` settles with when the signal wins.
+const ABORTED = Object.freeze({ aborted: true });
+
+// Resolves with ABORTED once `signal` aborts (at once if it already has).
+function abortedPromise(signal) {
+  if (signal.aborted) return Promise.resolve(ABORTED);
+  return new Promise((resolve) => {
+    signal.addEventListener('abort', () => resolve(ABORTED), { once: true });
+  });
+}
+
+// Settles with `promise`, or with ABORTED as soon as `signal` aborts,
+// whichever comes first. A late rejection of `promise` is swallowed: the
+// caller has already moved on, and it must not go unhandled.
 function untilAborted(promise, signal) {
   if (!signal) return promise;
-  const aborted = { aborted: true };
-  if (signal.aborted) {
-    promise.catch(() => {});
-    return Promise.resolve(aborted);
-  }
-  return new Promise((resolve, reject) => {
-    const onAbort = () => resolve(aborted);
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
-      (err) => { signal.removeEventListener('abort', onAbort); reject(err); },
-    );
-  });
+  promise.catch(() => {});
+  return Promise.race([promise, abortedPromise(signal)]);
 }
 
 const INITIAL_TOOL = loadPrimaryTool();
