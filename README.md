@@ -1593,6 +1593,7 @@ must sit inside the configured Volumes.
 compressatorium convert /data/ps2 --to chd --delete-source
 compressatorium convert /data --auto --dry-run --json
 compressatorium verify /data/gamecube --since 30d
+compressatorium run-rules --dry-run
 ```
 
 **`convert PATH... (--to FORMAT | --auto)`**
@@ -1624,10 +1625,21 @@ result. `--since 30d` (also `12h`, `2w`) skips Images checked within that window
 A check that fails drops the stored result; one that times out or cannot run
 leaves it and reports the error.
 
-Both commands take `--dry-run` (print the plan, convert or check nothing) and
-`--json` (one JSON line per Image on stdout). Warnings and errors always go to
-stderr; `-v` adds INFO messages there. Exit status: `0` when everything finished
-or there was nothing to do, `1` when any Image failed, `2` on bad arguments.
+**`run-rules [--library ID]`** does one pass over the Rules stored in the web UI
+(RomM automation today), waits for the jobs it queued, and exits. It is the
+same sweep the server's scheduler runs each minute, so each Rule's own on/off
+switch, days, time window, interval and per-run cap still apply; the
+auto-convert master switch does not, because running the command is the
+switch. `--library romm` limits it to one Library. `--dry-run` prints what each
+Rule would queue (the editor's Preview) and writes nothing. It prints one line
+per Platform and one per job as it ends.
+
+Every command takes `--dry-run` (print the plan, convert or check nothing) and
+`--json` (one JSON line per Image, or per Platform for `run-rules`, on stdout).
+Warnings and errors always go to stderr; `-v` adds INFO messages there. Exit
+status: `0` when everything finished or there was nothing to do, `1` when any
+Image or job failed, `2` on bad arguments, `3` when `run-rules` found another
+scheduler using the data directory.
 
 Each Image is planned on its own, so one bad file is reported and the others
 still convert. When `MAX_QUEUE_DEPTH` is set, jobs are fed in batches below it.
@@ -1641,6 +1653,44 @@ Started as root (`docker exec` without `-u`, or `--entrypoint`), the command
 first remaps and drops to the `converter` user through the image's entrypoint,
 honouring `PUID`/`PGID` the same way the server does, so the files it writes
 belong to the user the server runs as.
+
+**One Rule scheduler per data directory.** `convert` and `verify` run beside a
+server; `run-rules` does not. The server holds a lock on
+`/config/locks/scheduler.lock` for as long as it runs, and its own scheduler
+runs the Rules. While that lock is held, `run-rules` prints who holds it and
+exits `3` without queuing anything. A second server started on the same
+`/config` refuses to start, and so does a server started while a `run-rules`
+pass is still running. Use `run-rules` where the server is not running all the
+time: start a one-off container with the same `/config` and the same Volume
+mounts as the server (RomM's library root must resolve to the same path).
+
+### Rules from cron
+
+A crontab line on the Docker host, nightly at 02:00:
+
+```bash
+0 2 * * * docker run --rm -e PUID=1000 -e PGID=1000 -v /srv/compressatorium/config:/config -v /srv/games:/data/games --entrypoint compressatorium pacnpal/compressatorium run-rules >> /var/log/compressatorium-rules.log 2>&1
+```
+
+### Rules from Unraid User Scripts
+
+Add a script in **Settings → User Scripts**, paste this, and set its schedule
+(for example **Custom** `0 3 * * *`). Use the appdata and share paths your
+Compressatorium container uses.
+
+```bash
+#!/bin/bash
+docker run --rm -e PUID=99 -e PGID=100 \
+  -v /mnt/user/appdata/compressatorium:/config \
+  -v /mnt/user/games:/data/games \
+  --entrypoint compressatorium pacnpal/compressatorium run-rules
+status=$?
+if [ "$status" -eq 3 ]; then
+  echo "Compressatorium is running; its own scheduler runs the Rules."
+  exit 0
+fi
+exit "$status"
+```
 
 ### `CHD_MODE=cli`
 
@@ -1881,7 +1931,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files and conversion slots. Under the data dir so the server and a CLI container share it; falls back to `$TMPDIR/chd-locks` when the data dir is not writable |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files, conversion slots and the Rule scheduler lock. Under the data dir so the server and a CLI container share it; falls back to `$TMPDIR/chd-locks` when the data dir is not writable |
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database for DATs, match cache, CHD metadata, verification state, and DAT-sync state |
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `chd_metadata.json.migrated.bak` |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `verified_chds.json.migrated.bak` |
@@ -1978,7 +2028,7 @@ The application also uses a non-persistent directory for runtime lock files:
 
 | File / Directory | Location | Description |
 |------------------|----------|-------------|
-| `locks/` | `/config/locks` | Job lock files and conversion slots, shared by every process that mounts `/config`; stale ones are cleaned up on start |
+| `locks/` | `/config/locks` | Job lock files, conversion slots and `scheduler.lock` (one Rule scheduler per data directory), shared by every process that mounts `/config`; stale ones are cleaned up on start |
 
 ---
 

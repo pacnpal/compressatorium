@@ -131,7 +131,7 @@ class Settings(BaseSettings):
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
         description=(
-            "Directory for job lock files and conversion slots "
+            "Directory for job lock files, conversion slots and the Rule scheduler lock "
             "(default: <data dir>/locks, shared by every container mounting /config; "
             "$TMPDIR/chd-locks when the data dir is not writable)"
         ),

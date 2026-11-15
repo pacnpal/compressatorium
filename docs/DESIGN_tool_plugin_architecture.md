@@ -2282,7 +2282,9 @@ place for anything that reports a finished sweep.
 RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
 `run_forever()`, ...) and passes `romm_library` to each, so the HTTP API did
 not change. `run_forever(libraries)` takes a callable returning the Libraries to
-sweep on each tick.
+sweep on each tick. `romm_auto.run_forever()` passes
+`services.libraries.all_libraries`, the one list of Libraries; `run-rules`
+(§3.3.14) sweeps the same list, so a new Library is added there once.
 
 ### 3.3.12 The Round-trip check (`ToolPlugin.content_digest`, `services/round_trip.py`)
 
@@ -2503,9 +2505,9 @@ The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;
 its values were tool ids, so a value left from it still loads as a tab.
 
-### 3.3.14 The headless CLI (`app/cli.py`, #306)
+### 3.3.14 The headless CLI (`app/cli.py`, #306, #307)
 
-`compressatorium convert|verify` runs the pipeline with no web server. It is a
+`compressatorium convert|verify|run-rules` runs the pipeline with no web server. It is a
 caller of the same seams the routes use, not a second conversion path:
 
 | Step | Shared seam |
@@ -2627,7 +2629,47 @@ Inline runs are covered by the queue's `task_done`, parallel runs by
 the listener tasks still running (Ledger writes) and makes the queue, its
 semaphore and the create lock new, because asyncio binds them to the loop that
 first waits on them. `add_terminal_listener` ignores a callback already
-registered; `remove_terminal_listener` drops one.
+registered; `remove_terminal_listener` drops one. `cli._job_runner` wraps this
+lifecycle (Ledger listener, `process_queue()`, cancel, `shutdown()`) for both
+`convert` and `run-rules`.
+
+**`run-rules` (#307).** One pass over the stored Rules, like one tick of the
+server's scheduler, then exit. For each Library in
+`services.libraries.all_libraries()` (or the one `--library` names) it calls
+`rules.sweep.sweep(library)`: the scheduler's own sweep, so each Rule's
+switch, days, window, interval and caps apply, and the Ledger rows,
+`after_queue` hooks and Rule state are written the same way. The Library's
+master switch (`schedule_enabled`, RomM's auto-convert toggle) is not read:
+running the command is the switch. `libraries.load_settings()` primes what the
+server loads at startup (RomM's settings cache) before the first sweep.
+`rules.sweep.note_job_finished` is a terminal listener, as in `main.py`, and
+the jobs are waited for with `JobManager.drain()`. Each job's line is printed
+as it ends, under the Library whose sweep queued it. Exit 1 when one of its
+jobs failed or was cancelled.
+
+`--dry-run` is `sweep(library, dry_run=True)` (Preview) inside
+`preferences_store.read_only()`: the Rule store's first read can write (the
+legacy-key copy, the one-time Round-trip upgrade), and in that block a write
+lands in an in-memory overlay that later reads return, so the database is left
+as it was. With no database a dry run reports `no_rules`.
+
+**One scheduler per data directory (`services/scheduler_lock.py`).** The server
+and `run-rules` each hold an exclusive `flock` on `scheduler.lock` in the lock
+directory above (`<data dir>/locks` by default, so every container mounting the
+same `/config` sees it). The server takes it in `main.lifespan` before the
+database is opened and holds it until shutdown; a second server on the same
+data directory raises `RuntimeError` and does not start. `run-rules` takes it
+before opening the database and holds it through `drain()`; when it is held it
+prints why and exits 3 (`cli.EXIT_LOCKED`) having touched nothing. `acquire`
+retries for a second, then raises `SchedulerLockHeld`, whose message names the
+holder from the JSON the holder writes into the file (`by`, `pid`, `host`,
+`since`). The file is never unlinked, so the lock is always on the file every
+process opens, and the kernel drops it when the holder dies. A dry run only
+calls `check()`: it opens an existing file read-only and probes with a shared
+non-blocking `flock`, creating nothing. The stale-lock sweeps leave the file
+alone (`LockManager` only touches `filelock-*`, `ConcurrencyManager` only
+holders and tickets). `convert` and `verify` do not take it: they run beside a
+server.
 
 ### 3.4 `registry.py`
 

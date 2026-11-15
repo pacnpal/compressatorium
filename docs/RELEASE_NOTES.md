@@ -18,6 +18,15 @@
   `CHDMAN_MODE=createdvd` it no longer hands top-level `.cue`/`.gdi` files to
   chdman (that never produced a usable CHD), and one failed file no longer
   stops the rest of the run.
+- **`compressatorium run-rules`** (#307). One pass over your stored Rules, for
+  cron or Unraid User Scripts: it queues what each Rule says is due, waits for
+  those jobs and exits (0, or 1 when a job failed). `--library romm` limits it
+  to one Library; `--dry-run` shows what each Rule would queue. Only one Rule
+  scheduler runs per data directory: the server now holds a lock on
+  `/config/locks/scheduler.lock` while it runs, `run-rules` exits 3 without
+  queuing anything while it is held, and a second server on the same `/config`
+  refuses to start (so does a server started while a `run-rules` pass is still
+  running).
 - **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
   panel, select a mix of files, and each Image goes to its Platform's default
   format with your saved compression. The Platform comes from the Image's own
