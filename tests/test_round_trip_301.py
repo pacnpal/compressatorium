@@ -913,6 +913,32 @@ async def test_an_archive_with_another_member_set_differs(tmp_path, pack, member
     assert source != output
 
 
+def _zip_without_utf8_flag(path: Path, name: str, data: bytes) -> None:
+    """A zip whose member name is UTF-8 bytes with no UTF-8 flag, the way
+    p7zip writes it. zipfile then reads the name as cp437."""
+    raw = name.encode("utf-8")
+    placeholder = "x" * len(raw)
+    _zip(path, {placeholder: data})
+    path.write_bytes(path.read_bytes().replace(placeholder.encode(), raw))
+
+
+@pytest.mark.asyncio
+async def test_a_non_ascii_rom_name_matches_its_archived_member(tmp_path):
+    import unicodedata
+
+    name = "Pokémon Ruby (Español).gba"
+    rom = tmp_path / unicodedata.normalize("NFD", name)  # as macOS may store it
+    rom.write_bytes(b"cartridge" * 777)
+    flagless = tmp_path / "a.zip"
+    _zip_without_utf8_flag(flagless, unicodedata.normalize("NFC", name), rom.read_bytes())
+    flagged = tmp_path / "b.zip"
+    _zip(flagged, {unicodedata.normalize("NFC", name): rom.read_bytes()})
+
+    source = await _romz().content_digest(str(rom))
+    assert await _romz().content_digest(str(flagless)) == source
+    assert await _romz().content_digest(str(flagged)) == source
+
+
 def test_romz_compress_modes_declare_round_trip():
     assert registry.mode_supports_round_trip("romz_7z")
     assert registry.mode_supports_round_trip("romz_zip")

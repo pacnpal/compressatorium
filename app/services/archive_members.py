@@ -110,7 +110,7 @@ def read_member_crcs(archive_path: str) -> list[tuple[str, int | None, int | Non
     if ext == ".zip":
         with zipfile.ZipFile(archive_path, "r") as zf:
             return [
-                (i.filename, int(i.file_size), int(i.CRC), i.is_dir())
+                (_zip_name(i), int(i.file_size), int(i.CRC), i.is_dir())
                 for i in zf.infolist()
             ]
     if ext == ".7z":
@@ -127,6 +127,21 @@ def read_member_crcs(archive_path: str) -> list[tuple[str, int | None, int | Non
                 for e in zf.list()
             ]
     raise ValueError(f"Unsupported archive extension: {ext}")
+
+
+def _zip_name(info: zipfile.ZipInfo) -> str:
+    """A zip member's name as its writer meant it.
+
+    Without the UTF-8 flag (bit 11) ``zipfile`` reads the name as cp437. p7zip
+    writes UTF-8 names without that flag, so a cp437 name that is valid UTF-8
+    once re-encoded is read as UTF-8; anything else stays as cp437 read it.
+    """
+    if info.flag_bits & 0x800:
+        return info.filename
+    try:
+        return info.filename.encode("cp437").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return info.filename
 
 
 def _read_uncached(archive_path: str) -> list[ArchiveMember]:

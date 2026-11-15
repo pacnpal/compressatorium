@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import unicodedata
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -38,8 +39,11 @@ ROM_MEMBERS_KIND = "rom_members_crc32"
 def _member_set_digest(members: list[tuple[str, int | None, int | None]]) -> str:
     """SHA1 of the sorted ``name, size, crc`` lines: equal only for the same
     members with the same sizes and CRCs, whatever order they are stored in."""
+    # NFC: the same name may be stored decomposed (macOS) on one side and
+    # composed on the other.
     lines = sorted(
-        f"{name}\t{'' if size is None else size}\t{'' if crc is None else f'{crc:08x}'}"
+        f"{unicodedata.normalize('NFC', name)}\t{'' if size is None else size}"
+        f"\t{'' if crc is None else f'{crc:08x}'}"
         for name, size, crc in members
     )
     return hashlib.sha1(  # nosec # nosemgrep: insecure-hash-algorithm-sha1
