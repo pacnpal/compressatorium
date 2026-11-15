@@ -1744,7 +1744,9 @@ A pass exits `1` when any job failed or was cancelled, and also when any sweep
 reported an error: RomM not answering (`unreadable`), a tool that is not
 installed, an output folder outside the Volumes, a source that could not be
 read, a destination another job took first (`destination_claimed`), RomM not
-configured while it has Rules, or a Library whose sweep raised. The other
+configured while it has Rules, a queue too full to take the pass's Images
+(`MAX_QUEUE_DEPTH`; the line says how many were left), or a Library whose
+sweep raised. The other
 Libraries still run. A stop (SIGTERM, `docker stop`, Ctrl-C) queues nothing
 more, cancels the jobs it queued and exits `1`. A job that converts and checks
 its output but keeps the Source because another job was still reading it

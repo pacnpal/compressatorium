@@ -1445,3 +1445,57 @@ def test_run_rules_restores_the_saved_hasheous_toggle_before_sweeping(
 
     assert (code, dry_code) == (0, 0)
     assert seen == [(False, True), (True, True)]
+
+
+def test_a_stop_while_a_library_lists_its_images_ends_the_pass_promptly(
+    env, dolphin, capsys,
+):
+    """codex 4577873883: a listing on a slow mount can take up to the listing
+    bound (600 s). A stop must not wait for it: the listing worker is left to
+    finish on its own and the pass ends at once."""
+    import os
+    import signal
+    import time
+
+    _iso(env)
+    _store_rules(env, {"shelf": RVZ_RULE})
+
+    def stop_then_hang():
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(8)  # a listing that is still running when the stop arrives
+
+    env["shelf"].on_images = stop_then_hang
+    started = time.monotonic()
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    assert time.monotonic() - started < 4, "the pass did not wait for the listing"
+    assert dolphin["runs"] == []
+    assert {"library": "shelf", "platform_id": None, "mode": None, "status": "stopped",
+            "queued": 0, "considered": 0, "candidates": [], "reason": "stopped"} in lines
+
+
+def test_a_full_queue_is_a_failed_pass_that_says_what_was_left(
+    env, dolphin, capsys, monkeypatch,
+):
+    """codex 4577873888: when the queue refuses a batch the sweep stops with
+    queue_full and queues nothing more. That is not a clean pass: exit 1, and
+    the Platform's line says how many Images were left unqueued."""
+    from config import settings
+
+    _iso(env, name="Game0.iso")
+    _iso(env, name="Game1.iso")
+    _store_rules(env, {"shelf": RVZ_RULE})
+    monkeypatch.setattr(settings, "max_queue_depth", 1)
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1, lines
+    platform = [line for line in lines if line.get("platform_id") == "gc"]
+    assert [(p["status"], p["queued"]) for p in platform] == [("error", 0)]
+    assert "queue full" in platform[0]["reason"]
+    assert "2 Images not queued" in platform[0]["reason"]
+    assert {"library": "shelf", "platform_id": None, "mode": None, "status": "stopped",
+            "queued": 0, "considered": 0, "candidates": [], "reason": "queue_full"} in lines
+    assert dolphin["runs"] == []

@@ -3640,17 +3640,21 @@ hook or sweep is caught (`cli._sweep_one`), reported as an `error` line for
 that Library, and the next Library runs. Exit 1 when that happened, when a
 sweep result has any `errors` entry (`unreadable`, `tool_not_ready`,
 `identity_cleanup_pending`, `queue_failed`, `destination_claimed`, ...), when it
-stopped for `library_unresponsive` or `not_configured` (a Library that has
-Rules but cannot be swept), or when a job failed or was cancelled. The same
+stopped for `library_unresponsive`, `not_configured` (a Library that has
+Rules but cannot be swept) or `queue_full` (the queue refused a batch: the
+sweep puts the batch size in that Platform's summary as `unqueued`, and the
+line says how many Images were left), or when a job failed or was cancelled. The same
 applies to `--dry-run`. A job the shared delete step completes with
 `job.warning` (`SOURCE_KEPT_FOR_READERS`: the Source was still being read once
 `DELETE_READER_WAIT_SECONDS` ran out) is a success: its line carries the
 warning as `reason`. A delete refused for safety raises in that step, so the
 job ends FAILED and counts.
 
-Stopping. `sweep()` takes `should_stop`, asked before each Platform, before
-each Image is inspected, before each delete snapshot is read, and again right
-before a batch is queued; once true
+Stopping. `sweep()` takes `should_stop`, asked before each Platform, every
+0.2 s while a Library lists a Platform's Images (`_wait_unless_stopped`: the
+listing runs on a detached worker bounded by `_LISTING_SECONDS`, and a stop
+abandons it to finish on its own), before each Image is inspected, before each
+delete snapshot is read, and again right before a batch is queued; once true
 the sweep queues nothing more, does not stamp that Platform's clock, and ends
 with `stopped_reason == "stopped"`. The server passes nothing. On SIGTERM,
 SIGINT or SIGHUP `run-rules` sets `state.stopping` (which `should_stop`

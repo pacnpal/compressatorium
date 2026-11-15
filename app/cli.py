@@ -1390,7 +1390,7 @@ def _rules_text(line: dict) -> str:
 
 # A sweep that stopped for one of these did not do what its Rules say: exit 1.
 # `not_configured` is only reported for a Library that has Rules.
-_FAILED_STOPS = ("library_unresponsive", "not_configured")
+_FAILED_STOPS = ("library_unresponsive", "not_configured", "queue_full")
 
 
 def _print_sweep(printer: Printer, library, result: dict) -> bool:
@@ -1407,7 +1407,13 @@ def _print_sweep(printer: Printer, library, result: dict) -> bool:
     lines = []
     for summary in result["platforms"]:
         platform_id = summary["platform_id"]
-        reason = ", ".join(errors.pop(platform_id, [])) or None
+        reasons = errors.pop(platform_id, [])
+        if summary.get("unqueued"):
+            # The queue refused this Platform's batch (queue_full).
+            unqueued = summary["unqueued"]
+            plural = "s" if unqueued != 1 else ""
+            reasons.append(f"queue full: {unqueued} Image{plural} not queued")
+        reason = ", ".join(reasons) or None
         if result.get("dry_run"):
             status = "planned"
         elif reason and not summary["queued"]:

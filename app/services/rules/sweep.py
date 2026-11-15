@@ -99,6 +99,38 @@ _VOLUME_PROBE_SECONDS = 20
 # for the whole call and a mount that stops answering would otherwise hold it
 # until a restart.
 _LISTING_SECONDS = 600
+# How often a long wait in the sweep (a Library listing) looks for a stop.
+_STOP_POLL = 0.2
+
+
+class _SweepStopped(Exception):
+    """The caller's ``should_stop`` turned true during a wait."""
+
+
+async def _wait_unless_stopped(awaitable, timeout: float, stopping: Callable[[], bool]):
+    """Await *awaitable* for up to *timeout* seconds, giving up on a stop.
+
+    Raises ``asyncio.TimeoutError`` past the bound and :class:`_SweepStopped`
+    once *stopping()* is true. Either way the awaited task is cancelled; for a
+    ``run_detached`` call that abandons the worker thread, which stays bounded
+    and finishes on its own.
+    """
+    task = asyncio.ensure_future(awaitable)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            done, _ = await asyncio.wait({task}, timeout=min(_STOP_POLL, remaining))
+            if done:
+                return task.result()
+            if stopping():
+                raise _SweepStopped
+    finally:
+        if not task.done():
+            task.cancel()
 
 # One sweep at a time, process-wide. The active-source snapshot is taken before
 # anything is queued, so the minute scheduler and a manual "Run now" could each
@@ -1181,10 +1213,15 @@ async def _sweep_locked(
             # conversions need. Not `run_in_threadpool` either: anyio waits for
             # the thread when its caller is cancelled. Called through the
             # module so it is not the candidate probes' `run_detached`.
-            images = await asyncio.wait_for(
+            # And stop-aware: a listing can take the whole bound, and a stop
+            # (run-rules on SIGTERM) must not wait for it.
+            images = await _wait_unless_stopped(
                 subprocess_runner.run_detached(library.images, platform_id),
-                _LISTING_SECONDS,
+                _LISTING_SECONDS, stopping,
             )
+        except _SweepStopped:
+            result["stopped_reason"] = "stopped"
+            break
         except LibraryUnreadable as exc:
             if _unreadable.get((library.id, platform_id)) != exc.code:
                 logger.warning(
@@ -1543,6 +1580,9 @@ async def _sweep_locked(
                 # these ROMs unconverted.
                 logger.info("romm_auto: queue full, stopping sweep")
                 result["stopped_reason"] = "queue_full"
+                # What this Platform's refused batch held, so a caller can say
+                # how much work was left (run-rules).
+                summary["unqueued"] = len(batch)
                 result["platforms"].append(summary)
                 break
             except OutputClaimedError as exc:
