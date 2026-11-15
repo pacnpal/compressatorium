@@ -10,6 +10,9 @@
   run-rules`) tries the delete again, under the same locks and checks, after
   making sure the output is still the checked one and the Source is unchanged.
   A Source still in use after 10 sweeps stays, with a **Source kept** Finding.
+  A job you started by hand whose delete stops part way shows the Source as a
+  **Source kept** Finding under **Started by hand**; it clears itself once the
+  files left are gone.
 - **UTF-16 `.m3u` playlists follow a converted disc** (#334). A playlist saved
   as UTF-16 with a BOM (Windows Notepad's "Unicode") that names the Source is
   now rewritten like a UTF-8 one, keeping its encoding, BOM and line endings.

@@ -4261,8 +4261,16 @@ is a counted `kept` attempt (codex 4579683118):
   job that stops part way hands the rest to its sweep
   (`job._unfinished_delete`, recorded as a `deleting` entry, or a Finding if
   its decision no longer stands); a hand-started job, which has no pending
-  store, files the `source_kept` Finding at once (under the Findings Library
-  id `jobs`) and fails saying how much of the Source is gone.
+  store or Library, files the `source_kept` Finding at once and fails saying
+  how much of the Source is gone. That Finding's owner is the explicit
+  `findings.NO_LIBRARY` (the empty id, which no Library can have): the
+  Findings view lists it as "Started by hand", Dismiss does not ask a Library
+  that is not there whether it is current, and no Library's removal or RomM
+  identity cleanup touches it. Its cause lists the files left
+  (`findings.REMAINING`); with no sweep to settle it, the Findings view runs
+  `clear_gone` for it as it loads (bounded by `_SETTLE_SECONDS`, detached), and
+  clears it once the Source, or every file left, is gone (the same "gone needs
+  a folder that lists entries" evidence as `NOT_INTACT`).
 - Each unlink is a mutation, not a probe, so it is never abandoned with its
   locks (below). One that outlives `KEPT_DELETE_PROBE_SECONDS` makes the
   retry's outcome `unknown`: the Source may or may not be gone. That is not

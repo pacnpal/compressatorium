@@ -46,6 +46,19 @@ NOT_INTACT = "not_intact"
 # NOT_INTACT, and cleared once the Source is gone.
 SOURCE_KEPT = "source_kept"
 
+# The owner of a Finding that belongs to no Library: a hand-started job's
+# part-deleted Source. No Library can have the empty id, so this owner never
+# meets one. No Library's removal or RomM cleanup drops its rows, nothing asks
+# whether its Library is current (there is none to be removed), and no sweep
+# settles them: the Findings view does, as it loads (`clear_gone`). Dismissed
+# like any other.
+NO_LIBRARY = ""
+NO_LIBRARY_NAME = "Started by hand"
+# A Finding's ``cause`` key listing the files a delete left behind. When it is
+# there, the Finding is settled once every one of them is gone, as well as
+# once its own path (the Source) is.
+REMAINING = "remaining"
+
 # Serialises a producer's write against forgetting its Library, so a walk that
 # outlives its Library cannot write after that Library's rows are dropped.
 _write_lock = threading.Lock()
@@ -232,6 +245,8 @@ def clear_gone(
     missing while its folder lists other entries. A share that is not mounted
     is a missing folder or an empty mount point, and clears nothing; neither
     does an Image deleted from a folder it was alone in (dismiss that one).
+    A Finding whose cause lists the files a delete left (:data:`REMAINING`)
+    is also cleared once every one of those is gone, by the same evidence.
     Dismissals are kept, as :func:`resolve` keeps them. Returns how many were
     cleared.
     """
@@ -239,10 +254,13 @@ def clear_gone(
         rows = session.query(_db.FindingRecord).filter_by(
             library_id=library_id, kind=kind,
         ).all()
-        candidates = [(row.image_key, row.path) for row in rows]
+        candidates = [
+            (row.image_key, row.path, list((row.cause or {}).get(REMAINING) or ()))
+            for row in rows
+        ]
     gone = [
-        key for key, path in candidates
-        if not os.path.lexists(path) and _lists_entries(os.path.dirname(path))
+        key for key, path, remaining in candidates
+        if _is_gone(path) or (remaining and all(_is_gone(p) for p in remaining))
     ]
     if not gone:
         return 0
@@ -256,6 +274,11 @@ def clear_gone(
         ).delete(synchronize_session=False)
         session.commit()
     return cleared
+
+
+def _is_gone(path: str) -> bool:
+    """*path* is missing while its folder lists other entries."""
+    return not os.path.lexists(path) and _lists_entries(os.path.dirname(path))
 
 
 def _lists_entries(folder: str) -> bool:
@@ -343,7 +366,8 @@ def dismiss(
     Idempotent (a double click is one dismissal), and under the write lock
     that `reconcile` and `forget_library` take. *current* is asked there with
     the Finding's Library id: False (the Library is being removed) writes
-    nothing, so no dismissal is left behind for a removed Library.
+    nothing, so no dismissal is left behind for a removed Library. A
+    :data:`NO_LIBRARY` Finding has no Library to be removed, so it is not asked.
 
     *fingerprint* is the cause the user was shown: when the row's cause is
     another one now, :class:`FindingChanged` is raised and nothing is written.
@@ -352,7 +376,10 @@ def dismiss(
         row = session.get(_db.FindingRecord, finding_id)
         if row is None:
             return False
-        if current is not None and not current(row.library_id):
+        if (
+            current is not None and row.library_id != NO_LIBRARY
+            and not current(row.library_id)
+        ):
             return False
         _check_shown(row, fingerprint)
         exists = _dismissals(session, row.library_id, row.image_key, row.kind).filter_by(

@@ -88,9 +88,6 @@ KEPT_UNKNOWN = "unknown"
 # Some planned files are removed, not all (an unlink failed after another
 # succeeded): the delete has started, and is finished on the next sweep.
 KEPT_STARTED = "started"
-# The Findings "Library" for a hand-started job's part-deleted Source: it has
-# no Library or pending store of its own.
-HAND_STARTED_FINDINGS = "jobs"
 # How long a retry waits for the Source's volume to answer its stat checks.
 KEPT_DELETE_PROBE_SECONDS = 30.0
 KEPT_DELETE_UNANSWERED = "the Source's volume did not answer"
@@ -3625,8 +3622,10 @@ class JobManager:
     ) -> None:
         """A job's delete step stopped part way (#329). A Rule's job hands the
         rest to its sweep (``job._unfinished_delete``, finished like a kept
-        Source); a hand-started job has no pending store, so a ``source_kept``
-        Finding names the part-deleted Source at once."""
+        Source); a hand-started job has no pending store or Library, so a
+        ``source_kept`` Finding in the ``findings.NO_LIBRARY`` bucket names the
+        part-deleted Source at once. Its cause lists the files left, so the
+        Findings view clears it once they, or the Source, are gone."""
         job._unfinished_delete = list(rest)
         if job._sweep_owner is not None:
             return
@@ -3634,13 +3633,16 @@ class JobManager:
 
         try:
             await run_detached_bounded(
-                findings.observe, HAND_STARTED_FINDINGS, findings.Observed(
-                    kind=findings.SOURCE_KEPT, image_key=job.file_path, path=rest[0],
+                findings.observe, findings.NO_LIBRARY, findings.Observed(
+                    kind=findings.SOURCE_KEPT, image_key=job.file_path, path=job.file_path,
                     reason=(
                         f"Source part deleted and kept: {len(rest)} of its files "
                         f"remain ({exc})"
                     ),
-                    cause={"source": job.file_path, "output": job.output_path},
+                    cause={
+                        "source": job.file_path, "output": job.output_path,
+                        findings.REMAINING: list(rest),
+                    },
                 ),
                 timeout=KEPT_DELETE_PROBE_SECONDS,
             )

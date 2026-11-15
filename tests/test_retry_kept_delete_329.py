@@ -1536,19 +1536,15 @@ def test_a_started_delete_whose_output_then_changed_is_reported(
     assert len(reported) == 1 and "part" in reported[0]["reason"]
 
 
-def test_a_job_whose_delete_fails_part_way_is_reported(
-    env, dolphin, two_file_source, monkeypatch,
-):
-    """A hand-started job (no Rule to keep a pending delete) that removed a
-    file and then failed files a Finding naming the part-deleted Source."""
+def _hand_started_part_delete(env, monkeypatch):
+    """Run a hand-started job whose delete removes one file, then fails.
+    Returns the job, the Source's kept file and its removed part."""
     import cli
-    from models import ConversionMode, DuplicateAction, JobCreateRequest, JobStatus
+    from models import ConversionMode, DuplicateAction, JobCreateRequest
     from routes import convert as convert_routes
-    from services import findings
 
     cli._open_db(False)
-    iso = _iso(env)
-    part = _part2(env)
+    iso, part = _iso(env), _part2(env)
     _refuse_unlink(monkeypatch, iso)
 
     async def run():
@@ -1560,10 +1556,118 @@ def test_a_job_whose_delete_fails_part_way_is_reported(
         await convert_routes.job_manager._process_job(job.id)
         return job
 
-    job = asyncio.run(run())
+    return asyncio.run(run()), iso, part
+
+
+def test_a_job_whose_delete_fails_part_way_is_reported(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    """A hand-started job (no Rule to keep a pending delete) that removed a
+    file and then failed files a Finding naming the part-deleted Source."""
+    from models import JobStatus
+    from services import findings
+
+    job, iso, part = _hand_started_part_delete(env, monkeypatch)
 
     assert job.status == JobStatus.FAILED
     assert not part.exists() and iso.exists()
     assert "part deleted" in (job.error_message or "")
     reported = [f for f in findings.list_findings() if f["kind"] == findings.SOURCE_KEPT]
     assert [f["path"] for f in reported] == [str(iso)]
+
+
+def test_the_findings_view_handles_a_finding_with_no_library(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    """A hand-started job's Finding belongs to no Library. The Findings view
+    lists it as started by hand, can dismiss it and show it again, and
+    removing a Library or a RomM identity leaves it where it is."""
+    from routes import findings as routes
+    from services import findings
+
+    _, iso, _ = _hand_started_part_delete(env, monkeypatch)
+
+    async def view():
+        listed = await routes.list_findings()
+        row = next(r for r in listed["findings"] if r["kind"] == findings.SOURCE_KEPT)
+        assert row["library_name"] == "Started by hand"
+        assert row["folder"] == str(iso.parent)
+        ref = routes.FindingRef(fingerprint=row["fingerprint"])
+        await routes.dismiss_finding(row["id"], ref)
+        assert (await routes.list_findings())["dismissed"] == 1
+        await routes.undismiss_finding(row["id"], ref)
+        assert (await routes.list_findings())["dismissed"] == 0
+        return row
+
+    row = asyncio.run(view())
+    findings.forget_library("folder:1")
+    findings.forget_kind("romm", findings.SOURCE_KEPT)
+
+    assert [f["id"] for f in findings.list_findings()] == [row["id"]]
+
+
+def _view_kept(routes, findings) -> list[dict]:
+    listed = asyncio.run(routes.list_findings())["findings"]
+    return [r for r in listed if r["kind"] == findings.SOURCE_KEPT]
+
+
+def test_a_hand_started_finding_clears_once_its_remaining_files_are_gone(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    """The Findings view settles a hand-started Finding as it loads: kept
+    while any file the delete left is there, gone once none is."""
+    from routes import findings as routes
+    from services import findings
+
+    _, iso, _ = _hand_started_part_delete(env, monkeypatch)
+    (iso.parent / "Other.iso").write_bytes(b"x")  # the folder is still listed
+
+    assert len(_view_kept(routes, findings)) == 1
+    iso.unlink()
+    assert _view_kept(routes, findings) == []
+    assert findings.list_findings() == []
+
+
+def test_a_hand_started_finding_clears_once_its_source_is_gone(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    """A Finding whose Source no longer exists is settled, even if a file the
+    delete planned is somehow still there."""
+    from routes import findings as routes
+    from services import findings
+
+    _, iso, part = _hand_started_part_delete(env, monkeypatch)
+    part.write_bytes(b"put back")
+    iso.unlink()
+
+    assert _view_kept(routes, findings) == []
+
+
+def test_settling_hand_started_findings_is_bounded(
+    env, dolphin, two_file_source, monkeypatch,
+):
+    """A volume that does not answer cannot hold the Findings view: the
+    settle gives up at its bound and the Finding is listed as it was."""
+    import threading
+    import time
+
+    from routes import findings as routes
+    from services import findings
+
+    _, iso, _ = _hand_started_part_delete(env, monkeypatch)
+    release = threading.Event()
+    real = os.path.lexists
+
+    def hung(path):
+        if str(path) == str(iso):
+            release.wait(10)
+        return real(path)
+
+    monkeypatch.setattr(routes, "_SETTLE_SECONDS", 0.2)
+    monkeypatch.setattr(findings.os.path, "lexists", hung)
+    started = time.monotonic()
+    try:
+        assert len(_view_kept(routes, findings)) == 1
+        assert time.monotonic() - started < 5
+    finally:
+        release.set()
