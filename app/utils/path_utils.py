@@ -288,7 +288,7 @@ def _resolve_root_into(configured: str, box: dict) -> None:
 
 
 _probe_lock = threading.Lock()
-_probes_in_flight: dict[str, tuple[threading.Thread, dict]] = {}
+_probes_in_flight: dict[str, tuple[threading.Thread, dict, float]] = {}
 
 
 def _root_probe(configured: str) -> tuple[threading.Thread, dict, float]:
