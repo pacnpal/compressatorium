@@ -430,11 +430,18 @@ class FolderLibrary:
                 exc_info=True,
             )
 
-    def scan(self, *, refresh: bool = False) -> Scan:
+    def _is_stale(self, scan: Scan) -> bool:
+        """A mapping changed during this walk (before or after its Findings write)."""
+        return scan.stale or scan.generation != self._generation
+
+    def scan(self, *, refresh: bool = False, rewalk_if_stale: bool = True) -> Scan:
         """The latest walk, taking a new one when asked or when it is stale. Blocking.
 
         Raises :class:`LibraryUnreadable` at once when another walk of this
-        Library is still running, rather than waiting behind it.
+        Library is still running, rather than waiting behind it. A walk that a
+        mapping change overtook is still returned (the listing and Findings
+        path); it starts a follow-up walk unless *rewalk_if_stale* is False,
+        for a caller that walks again itself (:meth:`images`).
         """
         if not self._lock.acquire(blocking=False):
             raise ListingInProgress(
@@ -453,10 +460,11 @@ class FolderLibrary:
             scan = self._scan
         finally:
             self._lock.release()
-        if walked is not None and walked.stale:
-            # A mapping changed under this walk: its Findings were dropped and
-            # the next walk sees the new mapping. Started after the lock is
-            # released, so it is not refused as "still running".
+        if walked is not None and rewalk_if_stale and self._is_stale(walked):
+            # A mapping changed under this walk, before its Findings were
+            # written (they were dropped) or after (they are out of date).
+            # Started after the lock is released, so the follow-up walk is not
+            # refused as "still running".
             self._schedule_rewalk()
         return scan
 
@@ -525,9 +533,29 @@ class FolderLibrary:
             for p in self.summary()["platforms"]
         ]
 
+    def _scan_for_rules(self) -> Scan:
+        """A walk no mapping change overtook, for Rules. Blocking.
+
+        A stale walk is walked once more. If that one is stale too, the
+        listing fails with the transient ``listing_in_progress`` (the sweep
+        skips this Library for the tick and retries on the next), and a
+        follow-up walk is started for the Findings. Rules never see Platform
+        assignments a mapping already changed (PR #322).
+        """
+        scan = self.scan(rewalk_if_stale=False)
+        if not self._is_stale(scan):
+            return scan
+        scan = self.scan(refresh=True, rewalk_if_stale=False)
+        if not self._is_stale(scan):
+            return scan
+        self._schedule_rewalk()
+        raise ListingInProgress(
+            f"Platform mappings changed while {self.root} was listed; listing it again",
+        )
+
     def images(self, platform_id: str) -> list[Image]:
         try:
-            scan = self.scan()
+            scan = self._scan_for_rules()
         except OSError as exc:
             raise LibraryUnreadable(str(exc)) from exc
         entries = scan.by_platform().get(platform_id, [])

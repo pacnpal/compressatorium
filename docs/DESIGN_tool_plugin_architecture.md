@@ -2781,9 +2781,14 @@ removed: `FolderLibrary` captures the Rule engine's token for its id
 Findings, so a walk of the removed object writes nothing whether it was
 running then or starts later. Or the Library's own generation moved since the
 walk started: a mapping was set while it ran, so its detections are out of
-date. The walk then marks its
-Scan `stale` and, once its lock is released, `_schedule_rewalk` walks again on
-a daemon thread. A database error while reconciling is logged and costs only
+date. The walk then marks its Scan `stale`. Whenever the generation moved
+during a walk (before its Findings were written or after), `scan()` starts
+`_schedule_rewalk` on a daemon thread once its lock is released, and still
+returns the walk to a listing or the Findings path. Rules never get it:
+`images()` (via `_scan_for_rules`) walks once more, and when that walk is
+stale too it raises the transient `listing_in_progress`, so the sweep skips
+the Library this tick and retries on the next instead of converting Images
+under Platforms the new mapping changed. A database error while reconciling is logged and costs only
 the Findings; the walk still serves the Rules. Nothing that reads the store
 moves, renames or deletes a file.
 
