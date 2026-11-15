@@ -227,6 +227,13 @@ async def _resolve_paths_bounded(paths: Iterable[str]) -> Dict[str, str]:
 
 # The statuses a job never leaves. Anything else is still in flight.
 _TERMINAL_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
+# How often `wait_until_terminal` re-reads job states.
+_SETTLE_POLL_SECONDS = 0.05
+# The longest a caller inside an HTTP request (the Auto rollback) waits in
+# `wait_until_terminal`, whatever the job progress timeout says (0 there means
+# no bound). A job still running at this cap is reported as kept, so a short
+# cap loses nothing and a stuck job cannot hang the request.
+ROLLBACK_WAIT_CAP_SECONDS = 30.0
 
 
 class DestinationUnresolvableError(RuntimeError):
@@ -917,6 +924,31 @@ class JobManager:
     def get_job(self, job_id: str) -> Optional[ConversionJob]:
         """Get a job by ID."""
         return self.jobs.get(job_id)
+
+    async def wait_until_terminal(
+        self, job_ids: Iterable[str], timeout: float | None,
+    ) -> None:
+        """Wait until every job in *job_ids* is terminal, at most *timeout* s.
+
+        ``cancel_job()`` returning True for a processing job means only that
+        its cancel event is set; a worker past its last check still finishes
+        the job. A caller that must know how a cancelled job really ended
+        waits here, then reads ``get_job()``. A job the queue no longer knows
+        counts as settled. None means no bound. Returns at the bound with any
+        job still running; the caller decides what that means.
+        """
+        ids = list(job_ids)
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            running = [
+                job_id for job_id in ids
+                if (job := self.jobs.get(job_id)) is not None
+                and job.status not in _TERMINAL_STATUSES
+            ]
+            if not running or (deadline is not None and loop.time() >= deadline):
+                return
+            await asyncio.sleep(_SETTLE_POLL_SECONDS)
 
     def add_terminal_listener(self, callback: Callable[[ConversionJob], object]) -> None:
         """Call *callback* once each job reaches a terminal status.

@@ -323,7 +323,6 @@ def update(
 
 async def remove(library_id: str) -> bool:
     """Forget a folder Library, its Rules and its run state. Touches no files."""
-    from fastapi.concurrency import run_in_threadpool
     from services.rules import sweep as rules_sweep
 
     record_id = _record_id(library_id)
