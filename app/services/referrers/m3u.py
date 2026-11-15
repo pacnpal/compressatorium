@@ -40,6 +40,7 @@ both land, in one process or two (a CLI run beside the server).
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import threading
@@ -523,6 +524,7 @@ class M3uReferrer(Referrer):
 
     @staticmethod
     def _apply_locked(path: str, directory: str, targets: _Renames) -> None:
+        """Read, rewrite and replace, under both playlist locks."""
         original = _read(path)
         # strict: the output must exist now, however late this runs.
         updated, edits = _rewrite(path, original, directory, targets, strict=True)
@@ -530,10 +532,12 @@ class M3uReferrer(Referrer):
             return
         try:
             backup = path + BACKUP_SUFFIX
+            # The guard runs right before each file is published, after
+            # its temp copy is synced: a write that stalled while the job
+            # gave up (or the output changed) never lands.
+            publish_ok = functools.partial(check_write, path)
             if not os.path.lexists(backup):
-                check_write(path)
-                atomic_write_bytes(backup, original, like=path)
-            check_write(path)
-            atomic_write_bytes(path, updated)
+                atomic_write_bytes(backup, original, like=path, guard=publish_ok)
+            atomic_write_bytes(path, updated, guard=publish_ok)
         except OSError as exc:
             raise ReferrerError(path, exc.strerror or str(exc)) from exc
