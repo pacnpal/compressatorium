@@ -582,6 +582,107 @@ def test_every_history_invalidation_drops_pending_deletes(env, dolphin, capsys):
     assert not (state.get("7") or {}).get("kept_sources"), "RomM's identity cleanup"
 
 
+def _seed_deleting(env, library, pid="gc"):
+    """A pending delete whose unlinks began: one file removed, one left."""
+    from services.rules import sweep as rules_sweep
+
+    left = env["shelf"].root / "gc" / "Game.iso"
+    left.write_bytes(b"the disc")
+    source, output = str(left), str(env["vol"] / "out" / "Game.rvz")
+
+    async def seed():
+        state = await rules_sweep.get_state(library)
+        entry = dict(state.get(pid) or {})
+        entry[rules_sweep.KEPT_SOURCES] = {"Game.iso": {
+            "source": source, "output": output, "attempts": 0,
+            "decision": {}, "decision_generation": 0,
+            "state": rules_sweep.KEPT_DELETING, "planned": [source],
+        }}
+        state[pid] = entry
+        await rules_sweep.store.write(rules_sweep.store.STATE_KEY, library, state)
+
+    asyncio.run(seed())
+    return source
+
+
+def _started_delete_findings(library_id: str) -> list[dict]:
+    from services import findings
+
+    return [
+        f for f in findings.list_findings()
+        if f["kind"] == findings.SOURCE_KEPT and f["library_id"] == library_id
+    ]
+
+
+def test_a_rule_edit_reports_a_started_delete_it_drops(env, dolphin, capsys):
+    """Codex 4580328581: saving the Rule with its delete off while a Source is
+    half deleted drops the entry, and says which files are left."""
+    from services import findings
+
+    _store_rules(env, {"shelf": _rule(env)})
+    left = _seed_deleting(env, env["shelf"])
+
+    _store_rules(env, {"shelf": _rule(env, delete_on_verify=False)})
+
+    assert not _rule_state(env)["gc"].get("kept_sources")
+    reported = _started_delete_findings("shelf")
+    assert len(reported) == 1
+    assert reported[0]["cause"][findings.REMAINING] == [left]
+    assert "part deleted" in reported[0]["reason"]
+
+
+def test_forget_history_reports_a_started_delete_it_drops(env, dolphin, capsys):
+    from services import findings
+    from services.rules import sweep as rules_sweep
+
+    _store_rules(env, {"shelf": _rule(env)})
+    left = _seed_deleting(env, env["shelf"])
+
+    asyncio.run(rules_sweep.forget_converted(env["shelf"]))
+
+    assert not _rule_state(env)["gc"].get("kept_sources")
+    reported = _started_delete_findings("shelf")
+    assert [f["cause"][findings.REMAINING] for f in reported] == [[left]]
+
+
+def test_removing_a_library_reports_its_started_deletes_under_no_library(
+    env, dolphin, capsys,
+):
+    """The removed Library's Findings go with it, so a started delete it held
+    is reported under no Library, and outlives the removal."""
+    from services import findings
+    from services.rules import sweep as rules_sweep
+
+    _store_rules(env, {"shelf": _rule(env)})
+    left = _seed_deleting(env, env["shelf"])
+
+    # What `libraries.remove` does: the Rule state, then the Library's Findings.
+    asyncio.run(rules_sweep.forget_library(env["shelf"]))
+    findings.forget_library("shelf")
+
+    assert not _rule_state(env).get("gc")
+    reported = _started_delete_findings(findings.NO_LIBRARY)
+    assert [f["cause"][findings.REMAINING] for f in reported] == [[left]]
+
+
+def test_romm_identity_cleanup_reports_a_started_delete_under_no_library(
+    env, dolphin, capsys,
+):
+    """RomM's identity cleanup drops its own Source-kept Findings (their ROM
+    ids name other games now), so a started delete goes under no Library."""
+    from routes import romm as romm_routes
+    from services import findings
+    from services.romm.library import romm_library
+
+    _store_rules(env, {"shelf": _rule(env)})
+    left = _seed_deleting(env, romm_library, pid="7")
+
+    asyncio.run(romm_routes._run_identity_cleanup())
+
+    reported = _started_delete_findings(findings.NO_LIBRARY)
+    assert [f["cause"][findings.REMAINING] for f in reported] == [[left]]
+
+
 # --------------------------------------------------------------------------- #
 # Every stage under the sweep lock is bounded (Codex 4579683118)
 # --------------------------------------------------------------------------- #

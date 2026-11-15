@@ -3625,7 +3625,7 @@ class JobManager:
         Source); a hand-started job has no pending store or Library, so a
         ``source_kept`` Finding in the ``findings.NO_LIBRARY`` bucket names the
         part-deleted Source at once. Its cause lists the files left, so the
-        Findings view clears it once they, or the Source, are gone."""
+        Findings view clears it once they are gone."""
         job._unfinished_delete = list(rest)
         if job._sweep_owner is not None:
             return
@@ -3633,16 +3633,9 @@ class JobManager:
 
         try:
             await run_detached_bounded(
-                findings.observe, findings.NO_LIBRARY, findings.Observed(
-                    kind=findings.SOURCE_KEPT, image_key=job.file_path, path=job.file_path,
-                    reason=(
-                        f"Source part deleted and kept: {len(rest)} of its files "
-                        f"remain ({exc})"
-                    ),
-                    cause={
-                        "source": job.file_path, "output": job.output_path,
-                        findings.REMAINING: list(rest),
-                    },
+                findings.observe, findings.NO_LIBRARY, findings.started_delete(
+                    job.file_path, source=job.file_path, output=job.output_path,
+                    why=f"its delete failed ({exc})", left=list(rest),
                 ),
                 timeout=KEPT_DELETE_PROBE_SECONDS,
             )

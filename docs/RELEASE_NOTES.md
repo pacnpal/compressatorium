@@ -12,7 +12,9 @@
   A Source still in use after 10 sweeps stays, with a **Source kept** Finding.
   A job you started by hand whose delete stops part way shows the Source as a
   **Source kept** Finding under **Started by hand**; it clears itself once the
-  files left are gone.
+  files left are gone. A half-finished delete is never forgotten silently:
+  turning the Rule's delete off, Forget history, a RomM instance change or
+  removing the Library reports it the same way.
 - **UTF-16 `.m3u` playlists follow a converted disc** (#334). A playlist saved
   as UTF-16 with a BOM (Windows Notepad's "Unicode") that names the Source is
   now rewritten like a UTF-8 one, keeping its encoding, BOM and line endings.

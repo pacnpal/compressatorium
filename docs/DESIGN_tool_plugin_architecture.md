@@ -4206,7 +4206,16 @@ It may only proceed while the decision that kept the Source still stands:
   Rule's retarget (`set_rules`), and RomM's identity cleanup
   (`routes/romm.py::_run_identity_cleanup`). `forget_checks_locked`, which
   that cleanup also calls, drops the `source_kept` Findings, keyed by Image
-  like the "not Intact" ones.
+  like the "not Intact" ones. A Library's removal (`forget_library`) runs the
+  same `_invalidate_decisions` before it wipes the state.
+- `_invalidate_decisions` drops a pending delete that has not started
+  silently (the Source is whole), but reports one in `state: deleting` first
+  (codex 4580328581), through `_report_started_delete`, the same helper and
+  Finding (`findings.started_delete`, naming the files left in
+  `findings.REMAINING`) as a `finish_kept_delete` whose output no longer
+  stands. Where the Library will not hold that Finding (its removal, or
+  RomM's identity cleanup, which drops RomM's own) it goes under
+  `findings.NO_LIBRARY`, keyed by the Source's path (`owner=`).
 - One entry's exception is that entry's `kept` attempt, logged with its
   traceback; the sweep goes on to the other entries and Platforms.
 
@@ -4269,8 +4278,11 @@ is a counted `kept` attempt (codex 4579683118):
   identity cleanup touches it. Its cause lists the files left
   (`findings.REMAINING`); with no sweep to settle it, the Findings view runs
   `clear_gone` for it as it loads (bounded by `_SETTLE_SECONDS`, detached), and
-  clears it once the Source, or every file left, is gone (the same "gone needs
-  a folder that lists entries" evidence as `NOT_INTACT`).
+  clears it once every file left is gone (the same "gone needs a folder that
+  lists entries" evidence as `NOT_INTACT`; with `REMAINING` the Finding's own
+  path is not enough, since the Source's first file may be the one removed).
+  A Library's started-delete Findings carry `REMAINING` too and settle the
+  same way in its sweep.
 - Each unlink is a mutation, not a probe, so it is never abandoned with its
   locks (below). One that outlives `KEPT_DELETE_PROBE_SECONDS` makes the
   retry's outcome `unknown`: the Source may or may not be gone. That is not

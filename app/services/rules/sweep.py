@@ -394,7 +394,7 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
         ]
         if redecided:
             state = await get_state(library)
-            _invalidate_decisions(state, redecided)
+            await _invalidate_decisions(library, state, redecided)
             await store.write(store.STATE_KEY, library, state)
         await store.write(store.RULES_KEY, library, rules)
         return rules
@@ -415,14 +415,18 @@ async def forget_converted(
 
 async def forget_converted_locked(
     library: Library, platform_ids: list[str] | None = None,
+    *, owner: str | None = None,
 ) -> int:
     """:func:`forget_converted` for a caller already inside :func:`paused`.
 
     The one point that invalidates what a Rule decided for its Images: the
     converted history, the failed holds, and the Sources kept for a reader
     that are waiting to be deleted (#329). Every invalidation goes through
-    here: Forget history, a Rule's retarget (``set_rules``), RomM's identity
-    cleanup.
+    here (or :func:`_invalidate_decisions`, which this calls): Forget history,
+    a Rule's retarget or delete change (``set_rules``), RomM's identity
+    cleanup, a Library's removal (``forget_library``). *owner* is where a
+    started delete's Finding goes when the Library will not hold it
+    (``findings.NO_LIBRARY``: RomM's identity cleanup drops its own).
     """
     state = await get_state(library)
     targets = (
@@ -445,7 +449,7 @@ async def forget_converted_locked(
             cleared += 1
     # Every decision made for these Platforms is invalid now, pending deletes
     # and jobs still running alike (the generation moves on).
-    if _invalidate_decisions(state, targets) or cleared:
+    if await _invalidate_decisions(library, state, targets, owner=owner) or cleared:
         await store.write(store.STATE_KEY, library, state)
     return cleared
 
@@ -469,6 +473,10 @@ async def forget_library(library: Library) -> None:
     written back either.
     """
     async with _sweep_lock:
+        # A started delete is reported before its entry goes, under no
+        # Library: this one's Findings are dropped with it.
+        state = await get_state(library)
+        await _invalidate_decisions(library, state, list(state), owner=findings.NO_LIBRARY)
         _generations[library.id] = _generations.get(library.id, 0) + 1
         for job_id, owner in list(_job_owners.items()):
             if owner[0].id == library.id:
@@ -911,11 +919,10 @@ async def _remember_kept_source(
 
 async def _report_unfinished(library: Library, image_key: str, job, unfinished: list[str]):
     """A part-deleted Source no pending delete can finish: say so."""
-    await _report_kept_source(
+    await _report_started_delete(
         library, image_key,
         {"source": getattr(job, "file_path", None), "output": getattr(job, "output_path", None)},
-        f"Source part deleted and kept: {len(unfinished)} of its files remain",
-        unfinished[0],
+        "its delete can no longer be finished", unfinished,
     )
 
 
@@ -951,11 +958,27 @@ def _decision_generation(entry: dict | None) -> int:
         return 0
 
 
-def _invalidate_decisions(state: dict, platform_ids) -> bool:
+async def _invalidate_decisions(
+    library: Library, state: dict, platform_ids, *, owner: str | None = None,
+) -> bool:
     """Move each Platform's decision generation on and drop its pending
-    deletes, in *state* (written by the caller). True when anything changed."""
+    deletes, in *state* (written by the caller). True when anything changed.
+
+    A pending delete that has not started is dropped as it is: the Source is
+    whole. One whose unlinks began (``deleting``) is reported first, with the
+    files it left (codex 4580328581), under *owner* when the Library itself
+    will not hold the Finding (its removal, RomM's identity cleanup).
+    """
     for pid in platform_ids:
         entry = dict(state.get(str(pid)) or {})
+        for image_key, pending in dict(entry.get(KEPT_SOURCES) or {}).items():
+            if isinstance(pending, dict) and pending.get("state") == KEPT_DELETING:
+                await _report_started_delete(
+                    library, image_key, pending,
+                    "the Rule or Library its delete was decided under changed",
+                    [str(path) for path in pending.get("planned") or []],
+                    owner=owner,
+                )
         entry[DECISION_GENERATION] = _decision_generation(entry) + 1
         entry.pop(KEPT_SOURCES, None)
         state[str(pid)] = entry
@@ -1036,20 +1059,46 @@ KEPT_DELETING = "deleting"  # a pending delete's state once its unlinks began
 async def _report_kept_source(
     library: Library, image_key: str, pending: dict, reason: str, path: str,
 ) -> None:
-    """File the ``source_kept`` Finding for a pending delete given up on,
-    bound to the Library's generation (codex 4580078026)."""
+    """File the ``source_kept`` Finding for a pending delete that never
+    started, given up on (its Source is whole)."""
+    await _file_kept_finding(library, findings.Observed(
+        kind=findings.SOURCE_KEPT, image_key=str(image_key), path=path, reason=reason,
+        cause={"source": pending.get("source"), "output": pending.get("output")},
+    ))
+
+
+async def _report_started_delete(
+    library: Library, image_key: str, pending: dict, why: str, left: list[str],
+    *, owner: str | None = None,
+) -> None:
+    """The one Finding for a started delete that will not be finished: the
+    output no longer stands, a Rule or Library change invalidated it, or it
+    ran out of tries (``findings.started_delete``, which names the files
+    left). *owner* ``findings.NO_LIBRARY`` files it under no Library, keyed by
+    the Source's path: a Library's Image key means nothing without it."""
+    source = pending.get("source")
+    if owner == findings.NO_LIBRARY:
+        image_key = str(source or image_key)
+    await _file_kept_finding(library, findings.started_delete(
+        image_key, source=source, output=pending.get("output"), why=why, left=left,
+    ), owner=owner)
+
+
+async def _file_kept_finding(
+    library: Library, item: findings.Observed, *, owner: str | None = None,
+) -> None:
+    """Write *item* under *library*, bound to its generation (codex
+    4580078026), or under *owner* ``findings.NO_LIBRARY``, bound to none."""
+    if owner == findings.NO_LIBRARY:
+        await _probe(findings.observe, owner, item, default=None)
+        return
     generation = _generations.get(library.id, 0)
     await _probe(
         functools.partial(
             findings.observe,
             current=lambda: _generations.get(library.id, 0) == generation,
         ),
-        library.id, findings.Observed(
-            kind=findings.SOURCE_KEPT, image_key=str(image_key), path=path,
-            reason=reason,
-            cause={"source": pending.get("source"), "output": pending.get("output")},
-        ),
-        default=None,
+        library.id, item, default=None,
     )
 
 
@@ -1084,21 +1133,15 @@ async def _finish_deleting(
     left = list(outcome.planned) or planned
     if outcome.status == KEPT_STALE:
         # The output no longer stands: the files left stay, and say so.
-        await _report_kept_source(
-            library, image_key, pending,
-            f"Source part deleted and kept: {outcome.reason}; "
-            f"{len(left)} of its files remain",
-            left[0] if left else str(pending.get("source") or ""),
-        )
+        await _report_started_delete(library, image_key, pending, outcome.reason, left)
         return False
     attempts = int(pending.get("attempts") or 0) + 1
     if attempts < KEPT_DELETE_MAX_ATTEMPTS:
         return {**pending, "attempts": attempts, "last_reason": outcome.reason}
-    await _report_kept_source(
+    await _report_started_delete(
         library, image_key, pending,
-        f"Source part deleted and kept: still in use after {attempts} tries to "
-        f"finish deleting it ({outcome.reason})",
-        left[0] if left else str(pending.get("source") or ""),
+        f"still in use after {attempts} tries to finish deleting it ({outcome.reason})",
+        left,
     )
     return False
 

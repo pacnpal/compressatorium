@@ -54,9 +54,8 @@ SOURCE_KEPT = "source_kept"
 # like any other.
 NO_LIBRARY = ""
 NO_LIBRARY_NAME = "Started by hand"
-# A Finding's ``cause`` key listing the files a delete left behind. When it is
-# there, the Finding is settled once every one of them is gone, as well as
-# once its own path (the Source) is.
+# A Finding's ``cause`` key listing the files a started delete left behind.
+# When it is there, the Finding is settled once every one of them is gone.
 REMAINING = "remaining"
 
 # Serialises a producer's write against forgetting its Library, so a walk that
@@ -83,6 +82,23 @@ class Observed:
     def fingerprint(self) -> str:
         raw = json.dumps({"kind": self.kind, **self.cause}, sort_keys=True, default=str)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def started_delete(
+    image_key: str, *, source: str | None, output: str | None, why: str,
+    left: list[str],
+) -> Observed:
+    """The ``source_kept`` Finding for a started delete that will not be
+    finished (#329): the Source is part deleted and *left* names the files
+    still there, so it settles once they are gone (:func:`clear_gone`). One
+    shape for every producer: a sweep giving up, a decision invalidated, a
+    hand-started job."""
+    left = [str(path) for path in left] or [str(source or "")]
+    return Observed(
+        kind=SOURCE_KEPT, image_key=str(image_key), path=left[0],
+        reason=f"Source part deleted and kept: {why}; {len(left)} of its files remain",
+        cause={"source": source, "output": output, REMAINING: left},
+    )
 
 
 class FindingChanged(Exception):
@@ -246,7 +262,8 @@ def clear_gone(
     is a missing folder or an empty mount point, and clears nothing; neither
     does an Image deleted from a folder it was alone in (dismiss that one).
     A Finding whose cause lists the files a delete left (:data:`REMAINING`)
-    is also cleared once every one of those is gone, by the same evidence.
+    is cleared once every one of those is gone, by the same evidence (its
+    Source's first file may be the one already removed).
     Dismissals are kept, as :func:`resolve` keeps them. Returns how many were
     cleared.
     """
@@ -260,7 +277,7 @@ def clear_gone(
         ]
     gone = [
         key for key, path, remaining in candidates
-        if _is_gone(path) or (remaining and all(_is_gone(p) for p in remaining))
+        if all(_is_gone(p) for p in remaining or [path])
     ]
     if not gone:
         return 0
