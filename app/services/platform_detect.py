@@ -208,6 +208,11 @@ class Detection:
     mapped: str | None = None
     # Every header's answer, when two or more disagree.
     headers: tuple[str, ...] = ()
+    # The folder evidence that decided (a mapping or a Platform name): the
+    # folder's path and the Platform it named. ``folder`` above is only the
+    # nearest Platform name, which a nearer mapping may have overruled.
+    place: str | None = None
+    place_platform: str | None = None
 
     @property
     def decided(self) -> bool:
@@ -344,32 +349,35 @@ def _decide(path: str, tools: list) -> Detection:
     names = _folder_names(tools)
     folder, _folder_name = _folder(disk_path, names)
     found = _place(disk_path, names, _mapped_folders())
-    place = how = where = mapped = None
+    place = how = where = mapped = place_path = None
     if found:
-        how, place, _path, label = found
+        how, place, place_path, label = found
         if how == MAPPING:
             mapped = place
             where = f"you set the {label} folder to {place}"
         else:
             where = f"in the {label} folder"
 
+    decided_by = {"place": place_path, "place_platform": place}
     if len(headers) > 1:
         return Detection(
             None, CONFLICT, None, folder,
             f"headers disagree ({', '.join(sorted(sources))})", mapped,
-            tuple(sorted(headers)),
+            tuple(sorted(headers)), **decided_by,
         )
     header = next(iter(headers), None)
     if header and place and header != place:
         return Detection(
             None, CONFLICT, header, folder,
-            f"{where}, but the header says {header}", mapped,
+            f"{where}, but the header says {header}", mapped, **decided_by,
         )
     if header:
-        return Detection(header, HEADER, header, folder, f"header says {header}", mapped)
+        return Detection(
+            header, HEADER, header, folder, f"header says {header}", mapped, **decided_by,
+        )
     if place:
         return Detection(
-            place, how, None, folder, f"no readable header; {where}", mapped,
+            place, how, None, folder, f"no readable header; {where}", mapped, **decided_by,
         )
     return Detection(
         None, UNSORTED, None, None,

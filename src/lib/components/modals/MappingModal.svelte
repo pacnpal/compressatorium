@@ -4,8 +4,10 @@
    *
    * Opened from a Finding or from a folder's row menu in the file browser.
    * The folder must be inside a folder Library; the backend says so when it
-   * is not. The mapping ranks below the Image's header and above the
-   * folder's name, and the Library is listed again so its Findings follow.
+   * is not. Walking up from an Image, the nearest folder with a mapping or
+   * a Platform name decides (on the same folder the mapping wins), and the
+   * Image's header beats both. The Library is listed again so its Findings
+   * follow.
    * No file is moved or renamed.
    */
   import { untrack } from 'svelte';

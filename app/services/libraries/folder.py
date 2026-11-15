@@ -363,9 +363,12 @@ class FolderLibrary:
             found = entry.detection
             if found.platform:
                 continue
+            # The evidence that decided, and only that: a Platform folder name
+            # a nearer mapping overruled is no part of the cause.
             cause = {
                 "how": found.how, "header": found.header,
-                "folder": found.folder, "mapped": found.mapped,
+                "folder": self._key(found.place) if found.place else None,
+                "folder_platform": found.place_platform, "mapped": found.mapped,
             }
             if found.headers:
                 # Which headers disagree: a different pair is a new cause.

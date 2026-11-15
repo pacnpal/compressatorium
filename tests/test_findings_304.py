@@ -2,8 +2,9 @@
 
 A mapping is the user saying "this folder is PSP". It is stored per Library,
 keyed by the folder's path relative to the Library root, and is a source of
-evidence inside Platform detection: header, then mapping, then folder name. A
-mapping that disagrees with a header is a conflict, as a folder name is.
+evidence inside Platform detection: the header first, then the nearest folder
+above the Image with a mapping or a Platform name (on the same folder the
+mapping wins). A header that disagrees with that folder is a conflict.
 
 Findings are what the folder Library's walk noticed and a person has to decide
 on: a Platform conflict, or an Unsorted Image. One open Finding per kind and
@@ -34,7 +35,7 @@ def _map(path: Path, platform: str | None):
 
 
 # ----------------------------------------------------------------------
-# precedence: header > mapping > folder name
+# precedence: the header, then the nearest folder with a mapping or a name
 # ----------------------------------------------------------------------
 
 
@@ -1015,4 +1016,23 @@ def test_forgetting_a_library_drops_its_dismissals(db: Path) -> None:
     findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
 
     assert [r["dismissed"] for r in _open()] == [False]
+
+
+@pytest.mark.asyncio
+async def test_a_conflict_names_the_folder_that_decided(tree: Path) -> None:
+    """The cause carries the deciding folder, not the nearest Platform name."""
+    from services import libraries
+
+    _gamecube(tree / "ps2" / "mine" / "Melee.iso")
+    await _register(tree)
+    _map(tree / "ps2" / "mine", "psp")
+    libraries.folder_libraries()[0].summary(refresh=True)
+
+    rows = _all()
+    mapped = rows["ps2/mine/Melee.iso"]["cause"]
+    assert (mapped["folder"], mapped["folder_platform"], mapped["mapped"]) == (
+        "ps2/mine", "psp", "psp",
+    )
+    named = rows["ps2/Misfiled.iso"]["cause"]
+    assert (named["folder"], named["folder_platform"], named["mapped"]) == ("ps2", "ps2", None)
 

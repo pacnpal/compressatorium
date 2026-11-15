@@ -326,8 +326,10 @@ class PlatformMappingRecord(Base):
 
     Keyed by Library and the folder's path relative to the Library root
     (``/`` separators, ``""`` for the root itself), so it follows the Library
-    rather than a mount path. Platform detection reads it as evidence that
-    ranks below the header and above the folder name.
+    rather than a mount path. Platform detection reads it as folder evidence:
+    walking up from an Image, the nearest folder with a mapping or a Platform
+    name decides (the mapping wins on the same folder), and the header beats
+    both.
     """
 
     __tablename__ = "platform_mappings"

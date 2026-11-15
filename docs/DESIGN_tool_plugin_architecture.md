@@ -2519,8 +2519,10 @@ worked out without a library manager. The convert panel's Auto choice uses it
 today; folder Libraries (#303), the Inbox and the CLI (#306) are meant to call
 the same function. `Detection` is a frozen dataclass: `platform` (a slug, or
 None), `how` (`"header"`, `"mapping"`, `"folder"`, `"conflict"`,
-`"unsorted"`), what each source said (`header`, `folder`, `mapped`) and a
-one-line `reason` for the UI.
+`"unsorted"`), what each source said (`header`, `folder` for the nearest
+Platform name, `mapped`, `headers` when two disagree), the folder evidence that
+decided (`place`, its path, and `place_platform`) and a one-line `reason` for
+the UI.
 
 Precedence is fixed and never guesses:
 
@@ -2729,7 +2731,9 @@ observed, kinds=...)` everything it currently sees, each an `Observed(kind,
 image_key, path, reason, cause)`. Rows not observed again (of those kinds, for
 that Library) are deleted; new ones get `first_seen`; every observed row gets
 `last_seen`. `fingerprint` is a digest of `kind` and the structured `cause`
-(for a Platform Finding: `how`, `header`, `folder`, `mapped`), not of the
+(for a Platform Finding: `how`, `header`, `folder` and `folder_platform` for
+the folder that decided, by its Library-relative path, `mapped`, and `headers`
+when two disagree), not of the
 `reason` text, so a reworded message does not resurface a dismissed row.
 `dismiss(id)` writes a row to `finding_dismissals`, keyed by `(library_id,
 image_key, kind, fingerprint)` and kept apart from the Finding row. A Finding
