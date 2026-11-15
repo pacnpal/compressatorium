@@ -3265,13 +3265,16 @@ most twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
 UI.
 
 **What a `--to` walk lists.** A folder walk lists what the web search lists
-(`scan_tree`, tool-wide inputs). With `--to`, `cli._discover` also lists every
-file whose name ends with an extension the target's modes accept
-(`platform_detect.target_reads_extensions`: a mode id's
-`mode_reads_extensions`, or for a format the union over the Auto-eligible
-modes), so a mode that reads what its tool leaves out of its inputs (chdman's
-extract modes and `.chd`) finds its files. `format_candidates` then decides
-per file. `--auto` keeps the tool-wide walk.
+(`scan_tree`, tool-wide inputs). With `--to`, the same single walk also lists
+every file whose name ends with an extension the target's modes accept and no
+tool-wide input matches (`scan_tree(also_reads=...)`, fed by
+`platform_detect.target_reads_extensions`: a mode id's `mode_reads_extensions`,
+or for a format the union over the Auto-eligible modes), so a mode that reads
+what its tool leaves out of its inputs (chdman's extract modes and `.chd`)
+finds its files. `format_candidates` then decides per file. `--auto` keeps the
+tool-wide walk. A folder that can't be read is skipped as the web search skips
+it, and with `scan_tree(unreadable=[...])` the CLI reports it as a skipped line
+("This folder can't be read: ..."), exit code unaffected.
 
 **Stopping during planning.** The CLI's planning runs blocking filesystem work
 on `run_in_threadpool`, which can't be cancelled: SIGINT, SIGTERM or SIGHUP
@@ -3325,7 +3328,10 @@ name, every name must pass the shared extraction validator
 (`ArchiveService._validate_member`: absolute, `..`, a drive letter, a
 backslash, a NUL), no member may be a symlink, and no name may be listed
 twice (two entries are two files; only one can be the Image); otherwise the
-archive is kept and the summary names those members. Names are compared as
+archive is kept and the summary names those members and says why
+(`archive_kept_summary`: "has an unsafe member name X", "has a duplicate
+member X", "has an ambiguous sheet spelling X", "also holds X", "can't be
+read"). Names are compared as
 they are, never collapsed. A sheet's tracks are matched per track across its
 spellings: two spellings of one track matching two different members make
 the sheet ambiguous (chdman opens one of them), and the archive is kept, the
@@ -3334,7 +3340,9 @@ rule #294 applies on disk. Only then is the sheet extracted
 on-disk split-part lookup, are the validated names laid out as empty files in
 a fresh temp root under the app's temp dir (`ArchiveService._create_temp_dir`,
 `CHD_TEMP_DIR`, as extraction uses; a read-only system temp must not refuse
-every archive delete), each through `_prepare_destination`, which checks by real
+every archive delete; only when the app temp dir can't be created does it fall
+back to the system temp, as extraction does, and every name has been validated
+by then), each through `_prepare_destination`, which checks by real
 path that it stays inside that root. A directory entry counts only when
 nothing owned lives under it. Everything else, of any type and junk included, is an extra; there is no
 list of harmless sidecars. An archive or sheet that can't be read counts as an

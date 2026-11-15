@@ -1855,13 +1855,17 @@ def test_an_xiso_outside_an_xbox_folder_goes_to_xiso(volume):
 
 
 def test_an_archive_with_an_unsafe_member_is_kept_and_nothing_is_written(
-    volume, dolphin, capsys, tmp_path,
+    volume, dolphin, capsys, tmp_path, monkeypatch,
 ):
     """codex 4577029535: a member named ``../outside-...`` keeps the archive,
     exit 1, and no file is created from its name anywhere."""
     import tempfile
     import uuid
 
+    from config import settings
+
+    app_temp = tmp_path / "app-temp"
+    monkeypatch.setattr(settings, "temp_dir", str(app_temp))
     escape = f"../outside-{uuid.uuid4().hex}"
     pack = volume / "gc" / "pack.zip"
     pack.parent.mkdir()
@@ -1878,7 +1882,10 @@ def test_an_archive_with_an_unsafe_member_is_kept_and_nothing_is_written(
     assert pack.exists()
     line = next(x for x in lines if x["path"].endswith("::Game.iso"))
     assert escape in line["reason"]
-    for root in (tempfile.gettempdir(), str(volume), str(volume / "gc"), str(tmp_path)):
+    assert "unsafe member name" in line["reason"]
+    for root in (
+        tempfile.gettempdir(), str(volume), str(volume / "gc"), str(tmp_path), str(app_temp),
+    ):
         assert not os.path.exists(os.path.join(root, escape[3:])), root
 
 
@@ -1977,3 +1984,73 @@ def test_a_verify_lets_go_of_its_lock_when_the_check_raises(
     other = _other_process()
     assert other.acquire_lock(str(rvz), allow_existing=True)
     other.release_lock(str(rvz))
+
+
+def test_a_to_walk_skips_and_reports_an_unreadable_folder(volume, capsys):
+    """review r11 I1: one folder the user can't read must not crash a --to
+    run; the readable CHDs are discovered and the folder is reported."""
+    ok = volume / "ok"
+    ok.mkdir()
+    (ok / "A.chd").write_bytes(b"MComprHD" + b"\0" * 120)
+    locked = volume / "locked"
+    locked.mkdir()
+    (locked / "B.chd").write_bytes(b"MComprHD" + b"\0" * 120)
+    os.chmod(locked, 0)
+    try:
+        code, lines = _cli(
+            capsys, "convert", str(volume), "--to", "extractdvd", "--dry-run", "--json",
+        )
+    finally:
+        os.chmod(locked, 0o700)
+
+    assert code == 0, lines
+    by_name = {Path(x["path"]).name: x for x in lines}
+    assert by_name["A.chd"]["status"] == "planned"
+    assert by_name["locked"]["status"] == "skipped"
+    assert "read" in by_name["locked"]["reason"].lower()
+    assert "B.chd" not in by_name
+
+
+def test_verify_reports_an_unreadable_folder_too(volume, dolphin, capsys):
+    _rvz(volume, "gc/Game.rvz")
+    locked = volume / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0)
+    try:
+        code, lines = _cli(capsys, "verify", str(volume), "--json")
+    finally:
+        os.chmod(locked, 0o700)
+
+    assert code == 0, lines
+    by_name = {Path(x["path"]).name: x for x in lines}
+    assert by_name["Game.rvz"]["status"] == "intact"
+    assert by_name["locked"]["status"] == "skipped"
+
+
+def test_a_check_lock_that_raises_part_way_leaves_nothing_held(volume, monkeypatch):
+    """If taking the second file's lock raises (an OSError on the lock dir),
+    the first file's lock is released before the error goes on."""
+    import cli
+    from services.lock_manager import lock_manager
+
+    first = volume / "gc" / "game_part1.wud"
+    first.parent.mkdir()
+    first.write_bytes(b"1")
+    second = volume / "gc" / "game_part2.wud"
+    second.write_bytes(b"2")
+    monkeypatch.setattr(registry, "source_companions", lambda path: [str(second)])
+    original = lock_manager.acquire_input_lock
+
+    def failing_on_the_second(path):
+        if path == str(second):
+            raise OSError("lock dir unavailable")
+        return original(path)
+
+    monkeypatch.setattr(lock_manager, "acquire_input_lock", failing_on_the_second)
+
+    with pytest.raises(OSError):
+        cli._hold_for_check(str(first))
+
+    other = _other_process()
+    assert other.acquire_lock(str(first), allow_existing=True)
+    other.release_lock(str(first))

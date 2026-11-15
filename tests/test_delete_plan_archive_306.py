@@ -148,10 +148,16 @@ def _symlink_entry(zf, name, target):
 
 
 @pytest.mark.parametrize("kind", ["dotdot", "absolute", "symlink"])
-def test_an_unsafe_member_name_keeps_the_archive_and_writes_nothing(tmp_path, kind):
+def test_an_unsafe_member_name_keeps_the_archive_and_writes_nothing(
+    tmp_path, monkeypatch, kind,
+):
     import os
     import tempfile
 
+    from config import settings
+
+    app_temp = tmp_path / "app-temp"
+    monkeypatch.setattr(settings, "temp_dir", str(app_temp))
     escape = _escape_name()
     pack = tmp_path / "pack.zip"
     with zipfile.ZipFile(pack, "w") as zf:
@@ -173,6 +179,8 @@ def test_an_unsafe_member_name_keeps_the_archive_and_writes_nothing(tmp_path, ki
     # Nothing was created from a member name, inside or outside the temp dir.
     landed = os.path.join(tempfile.gettempdir(), escape[3:])
     assert not os.path.exists(landed)
+    # Where an escape from the app temp dir's extraction folder would land.
+    assert not (app_temp / escape[3:]).exists()
     assert not os.path.exists(os.path.join(str(tmp_path), escape[3:]))
     assert set(os.listdir(tempfile.gettempdir())) - before == set()
 
@@ -279,3 +287,58 @@ def test_a_sheet_whose_spellings_match_two_members_keeps_the_archive(tmp_path):
     errors = _errors(f"{pack}::Game.cue")
 
     assert errors, "an ambiguous sheet must keep the archive"
+
+
+def test_a_symlink_named_as_an_owned_track_keeps_the_archive(tmp_path):
+    """review r11 M2: the symlink rule matters when the link has a name the
+    Image would own; without it, this cue set would be deleted."""
+    pack = tmp_path / "cd.zip"
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.cue", _CUE)
+        zf.writestr("Game (Track 1).bin", b"1" * 64)
+        _symlink_entry(zf, "Game (Track 2).bin", "/etc/passwd")
+
+    errors = _errors(f"{pack}::Game.cue")
+
+    assert any("Game (Track 2).bin" in error for error in errors), errors
+
+
+@pytest.mark.parametrize(("members", "why"), [
+    ({"Game.iso": b"x", "../outside-reason": b"y"}, "unsafe member name ../outside-reason"),
+    ({"Game.iso": b"x", "readme.txt": b"y"}, "also holds readme.txt"),
+])
+def test_the_summary_says_why_the_archive_was_kept(tmp_path, members, why):
+    """review r11 M4."""
+    pack = _zip(tmp_path / "pack.zip", members)
+
+    errors = _errors(f"{pack}::Game.iso")
+
+    assert any(why in error for error in errors), errors
+
+
+def test_the_summary_names_a_duplicate_member(tmp_path):
+    import warnings
+
+    pack = tmp_path / "pack.zip"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with zipfile.ZipFile(pack, "w") as zf:
+            zf.writestr("Game.iso", b"one")
+            zf.writestr("Game.iso", b"two")
+
+    errors = _errors(f"{pack}::Game.iso")
+
+    assert any("duplicate member Game.iso" in error for error in errors), errors
+
+
+def test_the_summary_names_an_ambiguous_sheet_spelling(tmp_path):
+    utf8_name = "Café.bin"
+    latin1_name = utf8_name.encode("utf-8").decode("latin-1")
+    cue = f'FILE "{utf8_name}" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n'
+    pack = _zip(tmp_path / "cd.zip", {
+        "Game.cue": cue.encode("utf-8"), utf8_name: b"1", latin1_name: b"2",
+    })
+
+    errors = _errors(f"{pack}::Game.cue")
+
+    assert any("ambiguous sheet spelling" in error for error in errors), errors
