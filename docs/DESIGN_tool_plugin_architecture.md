@@ -2915,16 +2915,27 @@ restart mid-sweep drops that one message.
 
 ### 3.3.16 Check Rules (`services/rules/check.py`, `services/image_checks.py`)
 
-A Rule with no target format is a check Rule (`rules.is_check_rule`).
-`normalize_rule` keeps it instead of dropping it, with `check_budget_gb`
-(1 to 1048576, default 50), the usual window, weekdays, timezone, priority and
-`enabled`, and `interval_minutes` fixed at `CHECK_INTERVAL_MINUTES` (a day): the
-budget is nightly. Its output folder is never read. It is stored like any Rule,
-under `"<library id>:<platform id>"`, so a Platform has either a conversion Rule
-or a check Rule.
+A Rule has a kind, `rules.CONVERT` or `rules.CHECK`, and its identity is
+(Library, Platform, kind): a Platform can have a conversion Rule and a check
+Rule. A check Rule has no target format (`rules.is_check_rule`).
+`normalize_rule(raw, kind=...)` drops a `CONVERT` Rule with no mode and gives a
+`CHECK` Rule none, with `check_budget_gb` (1 to 1048576, default 50), the usual
+window, weekdays, timezone, priority and `enabled`, and `interval_minutes`
+fixed at `CHECK_INTERVAL_MINUTES` (a day): the budget is nightly. Its output
+folder is never read. Each kind has its own preference rows
+(`store.rules_key(kind)`, `store.state_key(kind)`: `rules` / `rules.state` and
+`rules.check` / `rules.check.state`), each keyed `"<library id>:<platform id>"`,
+so the two kinds never overwrite each other and run on their own clocks. No
+table change: Rules live in preferences, and migration 0013 holds only the
+check times. `sweep.get_rules` / `get_state` take the kind;
+`sweep.set_check_rules` replaces the check Rules. The editor payload carries
+`check_rules` and `check_state` beside `rules` and `state`, and a save replaces
+`check_rules` only when the submission has it.
 
-**Sweep.** `_sweep_locked` hands a check Rule to `_sweep_check` after the
-`enabled` and schedule gates. The per-sweep cap counts conversions only, so a
+**Sweep.** `_sweep_locked` walks every (kind, Platform) in priority, Platform,
+kind order, gating each on its own `enabled` and its own kind's state, and
+hands a check Rule to `_sweep_check`. Run now ignores both clocks, so it runs
+both kinds and a check spends another budget. The per-sweep cap counts conversions only, so a
 check Rule ordered after a capped conversion Rule still runs. `_sweep_check`
 lists the Platform through the same bounded `_list_images` as a conversion,
 reads `image_checks.last_checked(library.id)`, and walks
@@ -2936,8 +2947,9 @@ size, the checking tool and the Image's file fingerprint. An Image already
 being checked (`check.in_flight`) or converted (the active-path set) is
 skipped. A tool that is not ready skips its Images and reports
 `tool_not_ready`; it never yields a verdict. Images are taken stalest first
-until the next would pass `check_budget_gb`; the first is always taken, so one
-Image larger than the budget is checked alone rather than never. Skipped
+until the next would pass `check_budget_gb`, never skipping ahead to a smaller
+one; the first is always taken, so one Image larger than the budget is checked
+alone rather than never. Skipped
 Images cost nothing. The Platform summary carries `check: true`, `checks`,
 `check_bytes`, `budget_bytes`, `skipped_uncheckable` and `candidates`; the
 result gains `checks` only when a check Rule ran, so a conversion sweep keeps

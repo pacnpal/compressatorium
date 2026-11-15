@@ -30,12 +30,12 @@ GB = 1024 ** 3
 
 
 def test_a_rule_with_no_target_format_is_a_check_rule() -> None:
-    from services.rules.rules import is_check_rule, normalize_rule
+    from services.rules.rules import CHECK, is_check_rule, normalize_rule
 
     rule = normalize_rule({
         "enabled": True, "check_budget_gb": 50,
         "window_start": "01:00", "window_end": "05:00", "days": [0, 2],
-    })
+    }, kind=CHECK)
 
     assert rule is not None
     assert is_check_rule(rule)
@@ -49,11 +49,11 @@ def test_a_rule_with_no_target_format_is_a_check_rule() -> None:
 
 
 def test_a_check_rule_budget_is_bounded() -> None:
-    from services.rules.rules import normalize_rule
+    from services.rules.rules import CHECK, normalize_rule
 
-    assert normalize_rule({"check_budget_gb": 0})["check_budget_gb"] == 1
-    assert normalize_rule({"check_budget_gb": "lots"})["check_budget_gb"] == 50
-    assert normalize_rule({})["check_budget_gb"] == 50
+    assert normalize_rule({"check_budget_gb": 0}, kind=CHECK)["check_budget_gb"] == 1
+    assert normalize_rule({"check_budget_gb": "lots"}, kind=CHECK)["check_budget_gb"] == 50
+    assert normalize_rule({}, kind=CHECK)["check_budget_gb"] == 50
 
 
 def test_a_conversion_rule_is_not_a_check_rule() -> None:
@@ -61,6 +61,14 @@ def test_a_conversion_rule_is_not_a_check_rule() -> None:
 
     rule = normalize_rule({"mode": "createcd", "enabled": True})
     assert not is_check_rule(rule)
+
+
+def test_each_kind_keeps_to_its_own_shape() -> None:
+    """A conversion Rule needs a target; a check Rule never has one."""
+    from services.rules.rules import CHECK, CONVERT, normalize_rule
+
+    assert normalize_rule({"enabled": True}, kind=CONVERT) is None
+    assert normalize_rule({"mode": "createcd", "enabled": True}, kind=CHECK)["mode"] == ""
 
 
 # ----------------------------------------------------------------------
@@ -118,11 +126,15 @@ def _ready(monkeypatch):
     monkeypatch.setattr(registry, "tool_is_ready", always)
 
 
-async def _folder_library(tree: Path, rule: dict) -> str:
+async def _folder_library(tree: Path, check: dict, convert: dict | None = None) -> str:
+    """A folder Library on *tree* with a PS2 check Rule (and a conversion Rule)."""
     from routes import libraries as routes
 
     created = await routes.register_library(routes.RegisterLibraryRequest(path=str(tree)))
-    await routes.put_library_rules(created["id"], {"rules": {"ps2": rule}})
+    await routes.put_library_rules(created["id"], {
+        "rules": {"ps2": convert} if convert else {},
+        "check_rules": {"ps2": check},
+    })
     return created["id"]
 
 
@@ -467,7 +479,9 @@ async def test_check_rules_work_on_a_romm_library(db: Path, ready, verifier, sen
     ]
     verdicts, calls = verifier
     verdicts["Bolt.chd"] = {"valid": False, "message": "bad hunk"}
-    await romm_routes.put_romm_rules({"7": {"enabled": True, "check_budget_gb": 6}})
+    await romm_routes.put_romm_rules({
+        "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 6}},
+    })
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms):
         result = await romm_routes.run_auto_convert(romm_routes.SweepRequest(platform_ids=[7]))
@@ -527,10 +541,124 @@ async def test_an_archive_too_damaged_to_read_is_checked_and_not_intact(
 
     created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
     await routes.put_library_rules(
-        created["id"], {"rules": {"gba": {"enabled": True, "check_budget_gb": 1}}},
+        created["id"], {"check_rules": {"gba": {"enabled": True, "check_budget_gb": 1}}},
     )
 
     await _run(created["id"])
 
     (finding,) = _not_intact()
     assert finding["image_key"] == "gba/Broken.zip"
+
+
+# ----------------------------------------------------------------------
+# a conversion Rule and a check Rule on one Platform
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture(name="queue")
+def _queue(monkeypatch):
+    """The conversion queue stubbed: records what a run queued."""
+    from types import SimpleNamespace
+
+    from services.job_manager import job_manager
+
+    queued: list[str] = []
+
+    async def fake_batch(paths, mode, **_kwargs):
+        jobs = []
+        for path in paths:
+            queued.append(Path(path).name)
+            jobs.append(SimpleNamespace(file_path=path, id=f"job-{len(queued)}"))
+        return jobs
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", fake_batch)
+    monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
+    return queued
+
+
+_CONVERT = {"mode": "createdvd", "enabled": True}
+_CHECK = {"enabled": True, "check_budget_gb": 3}
+
+
+@pytest.mark.asyncio
+async def test_a_platform_has_a_conversion_rule_and_a_check_rule(
+    tree: Path, ready, verifier, sent, queue,
+) -> None:
+    """Convert PS2 discs to CHD and check the PS2 CHDs nightly, together."""
+    from routes import libraries as routes
+
+    from .test_platform_detect import _ps2
+
+    _ps2(tree / "ps2" / "Able.iso")
+    lib = await _folder_library(tree, _CHECK, _CONVERT)
+
+    stored = await routes.get_library_rules(lib)
+    assert stored["rules"]["ps2"]["mode"] == "createdvd"
+    assert stored["check_rules"]["ps2"]["check_budget_gb"] == 3
+
+    _verdicts, calls = verifier
+    result = await _run(lib)
+
+    # The conversion Rule queued the ISO; the check Rule checked a CHD.
+    assert queue == ["Able.iso"]
+    assert calls == ["Aria.chd"]
+    assert result["queued"] == 1
+    assert result["checks"] == 1
+    kinds = sorted((p["platform_id"], bool(p.get("check"))) for p in result["platforms"])
+    assert kinds == [("ps2", False), ("ps2", True)]
+
+
+@pytest.mark.asyncio
+async def test_each_rule_runs_on_its_own_schedule(
+    tree: Path, ready, verifier, sent, queue,
+) -> None:
+    """A scheduled sweep runs only the kind that is due, and stamps only its clock."""
+    from routes import libraries as routes
+    from services import libraries
+    from services.rules import check as checks
+    from services.rules import store
+    from services.rules import sweep as rules_sweep
+
+    from .test_platform_detect import _ps2
+
+    _ps2(tree / "ps2" / "Able.iso")
+    lib = await _folder_library(tree, _CHECK, _CONVERT)
+    library = libraries.get(lib)
+    # The conversion Rule ran a moment ago, so it is not due; the check never ran.
+    stamp = _ago(0)
+    await store.write(store.STATE_KEY, library, {"ps2": {"last_run_at": stamp}})
+
+    _verdicts, calls = verifier
+    result = await rules_sweep.sweep(library)
+    await checks.drain()
+
+    assert queue == []
+    assert calls == ["Aria.chd"]
+    assert [bool(p.get("check")) for p in result["platforms"]] == [True]
+    state = await routes.get_library_rules(lib)
+    # The conversion Rule's clock did not move.
+    assert state["state"]["ps2"] == {"last_run_at": stamp}
+    assert state["check_state"]["ps2"]["last_checks"] == 1
+
+    # Now the check Rule is the one that is not due: the conversion Rule runs.
+    await store.write(store.STATE_KEY, library, {})
+    result = await rules_sweep.sweep(library)
+    await checks.drain()
+
+    assert queue == ["Able.iso"]
+    assert calls == ["Aria.chd"]
+    assert [bool(p.get("check")) for p in result["platforms"]] == [False]
+
+
+@pytest.mark.asyncio
+async def test_saving_one_kind_keeps_the_other(tree: Path, ready) -> None:
+    from routes import libraries as routes
+
+    lib = await _folder_library(tree, _CHECK, _CONVERT)
+
+    # An editor that sends only its conversion Rules leaves the check Rules be.
+    await routes.put_library_rules(lib, {"rules": {"ps2": {**_CONVERT, "enabled": False}}})
+
+    stored = await routes.get_library_rules(lib)
+    assert stored["rules"]["ps2"]["enabled"] is False
+    assert stored["check_rules"]["ps2"]["check_budget_gb"] == 3

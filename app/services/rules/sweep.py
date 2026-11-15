@@ -66,10 +66,12 @@ from services.rules.library import (
     refuse_unsupported_policies,
 )
 from services.rules.rules import (
+    CHECK,
+    CONVERT,
+    RULE_KINDS,
     _output_identity,
     _validation_paused,
     effective_check_level,
-    is_check_rule,
     normalize_rules,
     takes_container_only,
 )
@@ -134,8 +136,8 @@ _unreadable: dict[tuple[str, str], str] = {}
 _late_verdicts: dict[str, bool] = {}
 
 
-async def get_rules(library: Library) -> dict[str, dict]:
-    """*library*'s stored rules, normalized without touching the filesystem.
+async def get_rules(library: Library, kind: str = CONVERT) -> dict[str, dict]:
+    """*library*'s stored Rules of *kind*, normalized without touching the filesystem.
 
     `check_volumes=False`: the output directory was validated when it was
     saved, and re-validating on every read would put a resolve plus a stat of
@@ -144,14 +146,15 @@ async def get_rules(library: Library) -> dict[str, dict]:
     destination off the loop before it queues anything, which is what covers a
     blob edited straight in the database.
     """
-    stored = await store.read(store.RULES_KEY, library)
-    return _normalize(library, stored, check_volumes=False)
+    stored = await store.read(store.rules_key(kind), library)
+    return _normalize(library, stored, kind=kind, check_volumes=False)
 
 
-def _normalize(library: Library, raw: Any, **kwargs) -> dict[str, dict]:
+def _normalize(library: Library, raw: Any, *, kind: str = CONVERT, **kwargs) -> dict[str, dict]:
     """`normalize_rules` with *library*'s Platform ids and defaults."""
     return normalize_rules(
         raw,
+        kind=kind,
         platform_id=library.canonical_platform_id,
         defaults=library.rule_defaults(),
         duplicate_actions=duplicate_actions(library),
@@ -236,7 +239,9 @@ async def _within_volumes_bounded(path: str) -> bool:
         return False
 
 
-async def normalize_rules_bounded(library: Library, raw: Any) -> dict[str, dict]:
+async def normalize_rules_bounded(
+    library: Library, raw: Any, kind: str = CONVERT,
+) -> dict[str, dict]:
     """`normalize_rules` with its volume checks off the event loop, bounded.
 
     Validating an output directory resolves the candidate and stats every
@@ -251,7 +256,7 @@ async def normalize_rules_bounded(library: Library, raw: Any) -> dict[str, dict]
     """
     try:
         return await asyncio.wait_for(
-            run_detached(functools.partial(_normalize, library, raw)),
+            run_detached(functools.partial(_normalize, library, raw, kind=kind)),
             _VOLUME_PROBE_SECONDS,
         )
     except (asyncio.TimeoutError, OSError):
@@ -260,11 +265,23 @@ async def normalize_rules_bounded(library: Library, raw: Any) -> dict[str, dict]
             "in %ss; pausing the rules that name one (a volume is not answering)",
             _VOLUME_PROBE_SECONDS,
         )
-        return _normalize(library, raw, volumes_unreachable=True)
+        return _normalize(library, raw, kind=kind, volumes_unreachable=True)
+
+
+async def set_check_rules(library: Library, raw: Any) -> dict[str, dict]:
+    """Replace *library*'s check Rules (#305). Its conversion Rules are untouched.
+
+    Under the sweep lock, as :func:`set_rules`. A check Rule writes nothing,
+    so it has no output folder to validate and no converted history to forget.
+    """
+    async with _sweep_lock:
+        rules = _normalize(library, raw, kind=CHECK, check_volumes=False)
+        await store.write(store.CHECK_RULES_KEY, library, rules)
+        return rules
 
 
 async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict[str, dict]:
-    """Replace *library*'s rule set, forgetting provenance the new rules invalidate.
+    """Replace *library*'s conversion rule set, forgetting provenance the new rules invalidate.
 
     *strict* is for a submission: a Rule asking for a duplicate policy the
     Library cannot honour raises :class:`UnsupportedPolicy` and nothing is
@@ -372,16 +389,20 @@ async def forget_library(library: Library) -> None:
                 _job_owners.pop(job_id, None)
         for key in [k for k in _unreadable if k[0] == library.id]:
             _unreadable.pop(key, None)
-        await store.write(store.RULES_KEY, library, {})
-        await store.write(store.STATE_KEY, library, {})
+        for kind in RULE_KINDS:
+            await store.write(store.rules_key(kind), library, {})
+            await store.write(store.state_key(kind), library, {})
 
 
-async def get_state(library: Library) -> dict[str, dict]:
-    """*library*'s run state: schedule stamps and converted history, by Platform."""
-    return await store.read(store.STATE_KEY, library)
+async def get_state(library: Library, kind: str = CONVERT) -> dict[str, dict]:
+    """*library*'s run state for its Rules of *kind*: schedule stamps and, for
+    conversions, converted history, by Platform."""
+    return await store.read(store.state_key(kind), library)
 
 
-async def _record_run(library: Library, platform_id: str, summary: dict) -> None:
+async def _record_run(
+    library: Library, platform_id: str, summary: dict, kind: str = CONVERT,
+) -> None:
     """Stamp the schedule clock, merging into whatever else the entry holds.
 
     The per-platform entry is shared with ``converted_ids``: replacing it
@@ -389,7 +410,7 @@ async def _record_run(library: Library, platform_id: str, summary: dict) -> None
     already converted -- and that set is the only thing stopping an
     ``overwrite`` rule from reconverting the library forever.
     """
-    state = await get_state(library)
+    state = await get_state(library, kind)
     entry = dict(state.get(str(platform_id)) or {})
     entry.update({
         "last_run_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -399,7 +420,7 @@ async def _record_run(library: Library, platform_id: str, summary: dict) -> None
     if summary.get("check"):
         entry["last_checks"] = summary.get("checks", 0)
     state[str(platform_id)] = entry
-    await store.write(store.STATE_KEY, library, state)
+    await store.write(store.state_key(kind), library, state)
 
 
 # ----------------------------------------------------------------------
@@ -1018,8 +1039,10 @@ async def _sweep_locked(
     overall_limit: int | None,
 ) -> dict:
     """The sweep body. Always called with ``_sweep_lock`` held."""
-    rules = await get_rules(library)
-    state = await get_state(library)
+    # Every Rule of every kind, with its own run state: a Platform's conversion
+    # Rule and check Rule run on their own clocks.
+    rules = {kind: await get_rules(library, kind) for kind in RULE_KINDS}
+    states = {kind: await get_state(library, kind) for kind in RULE_KINDS}
     now = datetime.now(timezone.utc)
 
     result: dict = {
@@ -1039,7 +1062,7 @@ async def _sweep_locked(
     holds_failures = FAILED_HOLD in library.capabilities
     if holds_failures:
         result["skipped_failed"] = 0
-    if not rules:
+    if not any(rules.values()):
         result["stopped_reason"] = "no_rules"
         return result
     if not library.configured():
@@ -1064,10 +1087,15 @@ async def _sweep_locked(
     # way, so the operator could not even see it coming.
     wanted = {str(p) for p in platform_ids} if platform_ids is not None else None
 
-    # Priority first (lower runs earlier), then id, so the order is total and
-    # a capped sweep resumes where the last one stopped.
+    # Priority first (lower runs earlier), then id, then kind (conversion
+    # first), so the order is total and a capped sweep resumes where the last
+    # one stopped.
     ordered = sorted(
-        rules, key=lambda pid: (rules[pid]["priority"], library.platform_value(pid)),
+        ((kind, pid) for kind in RULE_KINDS for pid in rules[kind]),
+        key=lambda item: (
+            rules[item[0]][item[1]]["priority"], library.platform_value(item[1]),
+            RULE_KINDS.index(item[0]),
+        ),
     )
     # Bounded: this resolves every queued job's source, and one of them on a
     # dead mount would hang the sweep with `_sweep_lock` held. An unreadable
@@ -1088,11 +1116,11 @@ async def _sweep_locked(
     # What the check Rules picked, run as one job once the pass is over.
     picked: list = []
 
-    for platform_id in ordered:
-        rule = rules[platform_id]
+    for kind, platform_id in ordered:
+        rule = rules[kind][platform_id]
         # The cap counts conversions. A check Rule queues none, so one ordered
         # after a capped conversion Rule still runs.
-        if result["queued"] >= cap and not is_check_rule(rule):
+        if result["queued"] >= cap and kind == CONVERT:
             result["stopped_reason"] = "limit"
             continue
         if wanted is not None and platform_id not in wanted:
@@ -1121,10 +1149,12 @@ async def _sweep_locked(
                 )
             continue
         # ignore_schedule bypasses only the clock (interval, window, weekday).
-        if not ignore_schedule and not _is_due(rule, state.get(platform_id, {}), now):
+        if not ignore_schedule and not _is_due(
+            rule, states[kind].get(platform_id, {}), now,
+        ):
             continue
 
-        if is_check_rule(rule):
+        if kind == CHECK:
             if await _sweep_check(
                 library, platform_id, rule, result, active_paths,
                 picked=picked, dry_run=dry_run,
@@ -1662,7 +1692,7 @@ async def _sweep_check(
     if not dry_run:
         picked.extend(chosen)
         if not unresponsive:
-            await _record_run(library, platform_id, summary)
+            await _record_run(library, platform_id, summary, CHECK)
     return False
 
 

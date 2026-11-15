@@ -1,30 +1,18 @@
-// Check Rules (#305): a Rule with no target format checks Images instead of
-// converting them. Stored as a Rule whose `mode` is empty; "off" is no Rule at
-// all. The editor's target select needs a value for "check" that no real mode
-// can take, so it uses CHECK_RULE and maps it here.
-
-export const CHECK_RULE = ':check';
-
-/** Whether a Rule is a check Rule: stored (configured) with no target. */
-export function isCheckRule(rule, configured) {
-  return Boolean(configured) && !rule?.mode;
-}
-
-/** The target select's value: off (''), a check Rule, or the mode. */
-export function selectValue(rule, configured) {
-  if (isCheckRule(rule, configured)) return CHECK_RULE;
-  return rule?.mode ?? '';
-}
+// Check Rules (#305): a Platform's second kind of Rule. It has no target
+// format: once a day it checks the stalest Images until its budget is used.
+// Stored apart from the conversion Rule (`checkRules` in the rules source), so
+// a Platform can have one of each.
 
 /**
- * *rule* turned into a check Rule. The schedule (window, weekdays, enabled)
- * carries over; what described a conversion does not, and a check never
- * deletes anything.
+ * A new check Rule from the backend's Rule defaults. The schedule defaults
+ * carry over; what describes a conversion does not, and a check never deletes
+ * anything. On, since the operator just asked for it.
  */
-export function checkRuleFrom(rule) {
+export function newCheckRule(defaults) {
   return {
-    ...rule,
+    ...(defaults ?? {}),
     mode: '',
+    enabled: true,
     compression: null,
     compression_level: null,
     split: false,

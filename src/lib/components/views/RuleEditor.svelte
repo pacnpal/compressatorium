@@ -13,8 +13,9 @@
    * `source` is the Library's rules source (see `libraries.svelte.js`): the
    * RomM store for RomM, a `FolderRulesSource` for a folder Library.
    *
-   * A Platform's Rule can also be a check Rule (#305): no target format, a
-   * nightly byte budget, a window and weekdays. See `$lib/rules/checkRule.js`.
+   * A Platform can also have a check Rule beside its conversion Rule (#305):
+   * no target format, a nightly byte budget, a window and weekdays. See
+   * `$lib/rules/checkRule.js`.
    */
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
@@ -22,9 +23,7 @@
   import { DAY_LABELS, ORDER_LABELS } from '$lib/stores/romm.svelte.js';
   import { ruleNotices } from '$lib/stores/ruleNotices.svelte.js';
   import { CHECK_LEVEL, CHECK_LEVEL_LABELS } from '$lib/util/checkLevels.js';
-  import {
-    CHECK_RULE, checkRuleFrom, checkSummary, isCheckRule, selectValue,
-  } from '$lib/rules/checkRule.js';
+  import { checkSummary, newCheckRule } from '$lib/rules/checkRule.js';
   import { registry, DEFAULT_COMPRESSION_LEVEL_RANGE } from '$lib/tools/registry.js';
   import Button from '$lib/components/ui/Button.svelte';
   import Checkbox from '$lib/components/ui/Checkbox.svelte';
@@ -83,10 +82,7 @@
     // apart. Both come from the backend registry rather than a second copy of
     // the platform table here.
     const allowedModes = platform?.mode_ids;
-    const out = [
-      { value: '', label: 'Off — do not convert this platform' },
-      { value: CHECK_RULE, label: 'Check only: check the Images are Intact, convert nothing' },
-    ];
+    const out = [{ value: '', label: 'Off — do not convert this platform' }];
     for (const tool of registry.all()) {
       // No opinion from the backend (unknown slug, older server) keeps every
       // tool, matching narrow_to_platform's conservative contract.
@@ -133,18 +129,24 @@
         : {}),
       ...patch,
     };
-    // `setRule` raises the store's dirty flag itself. A Rule with no mode is a
-    // check Rule, so it stays; "Off" goes through `setTarget`.
-    source.setRule(platformId, rule);
+    // `setRule` / `removeRule` raise the store's dirty flag themselves.
+    if (!rule.mode) source.removeRule(platformId);
+    else source.setRule(platformId, rule);
   }
 
-  /** The target select: off removes the Rule, check makes it a check Rule. */
-  function setTarget(platformId, value) {
-    if (value === '') source.removeRule(platformId);
-    else if (value === CHECK_RULE) {
-      const current = source.ruleFor(platformId);
-      update(platformId, checkRuleFrom(current));
-    } else update(platformId, { mode: value });
+  /**
+   * The Platform's check Rule (#305), kept apart from its conversion Rule.
+   * A new one starts from the backend's defaults in the browser's zone.
+   */
+  function updateCheck(platformId, patch) {
+    const current = source.checkRuleFor(platformId)
+      ?? { ...newCheckRule(source.ruleDefaults), timezone: browserZone };
+    source.setCheckRule(platformId, { ...current, ...patch });
+  }
+
+  function setChecking(platformId, on) {
+    if (on) updateCheck(platformId, { enabled: true });
+    else source.removeCheckRule(platformId);
   }
 
   /**
@@ -160,12 +162,12 @@
     update(platformId, { [field]: value, ...(value ? { [other]: false } : {}) });
   }
 
-  function toggleDay(platformId, day) {
-    const rule = source.ruleFor(platformId);
-    const days = new SvelteSet(rule.days ?? []);
-    if (days.has(day)) days.delete(day);
-    else days.add(day);
-    update(platformId, { days: [...days].sort((a, b) => a - b) });
+  /** *days* with *day* switched on or off, in weekday order. */
+  function toggledDays(days, day) {
+    const next = new SvelteSet(days ?? []);
+    if (next.has(day)) next.delete(day);
+    else next.add(day);
+    return [...next].sort((a, b) => a - b);
   }
 
   function specFor(mode) {
@@ -404,10 +406,15 @@
     if (!state?.last_run_at) return 'never run';
     const when = new Date(state.last_run_at);
     if (Number.isNaN(when.getTime())) return 'never run';
-    if (state.last_checks !== undefined) {
-      return `last run ${when.toLocaleString()} · checked ${state.last_checks}`;
-    }
     return `last run ${when.toLocaleString()} · queued ${state.last_queued ?? 0}`;
+  }
+
+  function lastCheckLabel(platformId) {
+    const state = source.lastCheckFor(platformId);
+    if (!state?.last_run_at) return 'never run';
+    const when = new Date(state.last_run_at);
+    if (Number.isNaN(when.getTime())) return 'never run';
+    return `last run ${when.toLocaleString()} · checked ${state.last_checks ?? 0}`;
   }
 </script>
 
@@ -489,12 +496,12 @@
       </span>
       {#if r.errors?.length}
         <ul class="sweep-errors">
-          {#each r.errors as e (e.platform_id)}
+          {#each r.errors as e, i (i)}
             <li>{source.platformName(e.platform_id)}: {sweepErrorLabel(e.error)}</li>
           {/each}
         </ul>
       {/if}
-      {#each r.platforms ?? [] as p (p.platform_id)}
+      {#each r.platforms ?? [] as p (`${p.platform_id}:${p.check ? 'check' : 'convert'}`)}
         {#if p.candidates?.length}
           <details class="candidates">
             <summary>
@@ -531,10 +538,10 @@
       {#each platforms as platform (platform.id)}
         {@const rule = source.ruleFor(platform.id)}
         {@const configured = !!source.rules[String(platform.id)]}
-        {@const checking = isCheckRule(rule, configured)}
+        {@const check = source.checkRuleFor(platform.id)}
         {@const spec = specFor(rule.mode)}
         {@const open = expanded.has(platform.id)}
-        <article class="rule" class:configured>
+        <article class="rule" class:configured={configured || !!check}>
           <header>
             <!-- data-platform-id: a stable handle (the label is a display name). -->
             <button
@@ -548,15 +555,19 @@
               {/if}
             </button>
             <div class="row-summary">
-              {#if checking && rule.enabled}
-                <Badge tone="success">Check</Badge>
-                <span class="muted">{checkSummary(rule)}</span>
-              {:else if configured && rule.enabled}
+              {#if configured && rule.enabled}
                 <Badge tone="success">{spec?.label ?? rule.mode}</Badge>
                 <span class="muted">every {rule.interval_minutes} min</span>
               {:else if configured}
                 <Badge tone="neutral">paused</Badge>
-              {:else}
+              {/if}
+              {#if check?.enabled}
+                <Badge tone="success">Check</Badge>
+                <span class="muted">{checkSummary(check)}</span>
+              {:else if check}
+                <Badge tone="neutral">check paused</Badge>
+              {/if}
+              {#if !configured && !check}
                 <span class="muted">not configured</span>
               {/if}
             </div>
@@ -568,10 +579,10 @@
                 <label class="field wide">
                   <span>Convert to</span>
                   <Select
-                    value={selectValue(rule, configured)}
+                    value={rule.mode ?? ''}
                     options={modeOptionsFor(platform)}
                     ariaLabel="Target format"
-                    onchange={(v) => setTarget(platform.id, v)}
+                    onchange={(v) => update(platform.id, { mode: v })}
                   />
                 </label>
               </div>
@@ -687,7 +698,7 @@
                     />
                   </label>
 
-                  {@render schedule(platform.id, rule)}
+                  {@render schedule(rule, (patch) => update(platform.id, patch))}
 
                   <label class="field">
                     <span>Convert in this order</span>
@@ -905,54 +916,68 @@
                     </p>
                   {/if}
                 {/if}
-              {:else if checking}
-                <!-- A check Rule (#305): a budget, a window and weekdays. -->
-                <div class="grid">
-                  <label class="field">
-                    <span>Check up to (GB a night)</span>
-                    <input
-                      type="number" min="1"
-                      value={rule.check_budget_gb}
-                      onchange={(e) => update(platform.id, {
-                        check_budget_gb: Number(e.currentTarget.value),
-                      })}
-                    />
-                    <span class="hint">
-                      Counts each Image's full size, every track.
-                    </span>
-                  </label>
-
-                  {@render schedule(platform.id, rule)}
-                </div>
-
-                <p class="hint">
-                  Once a night, the Images never checked go first, then the ones
-                  checked longest ago, until this many GB have been read. Each goes
-                  through its tool's own Verify. One that fails shows up in
-                  <strong>Findings</strong> as not Intact, and a later pass clears
-                  it. An Image no tool here can check is skipped. Nothing is
-                  converted, moved or deleted.
-                </p>
-
-                <div class="toggles">
-                  <Checkbox
-                    checked={rule.enabled}
-                    label="Enabled"
-                    onchange={(v) => update(platform.id, { enabled: v })}
-                  />
-                </div>
-
-                {#if rule.invalid_window}
-                  <p class="warn" role="alert">
-                    Only one end of the time window is set, so this rule is
-                    paused. A window needs both a start and an end.
-                  </p>
-                {/if}
-
-                <p class="last-run muted">{lastRunLabel(platform.id)}</p>
               {:else}
                 <p class="muted">Pick a target format to configure this platform.</p>
               {/if}
+
+              <!-- The Platform's check Rule (#305), beside its conversion Rule. -->
+              <section class="check-rule" aria-label="Check Rule">
+                <Checkbox
+                  checked={!!check}
+                  label="Check these Images are Intact"
+                  description="Each night, read the stalest Images through their tool's Verify. Nothing is converted, moved or deleted."
+                  onchange={(v) => setChecking(platform.id, v)}
+                />
+                {#if check}
+                  <div class="grid">
+                    <label class="field">
+                      <span>Check up to (GB a night)</span>
+                      <input
+                        type="number" min="1"
+                        value={check.check_budget_gb}
+                        onchange={(e) => updateCheck(platform.id, {
+                          check_budget_gb: Number(e.currentTarget.value),
+                        })}
+                      />
+                      <span class="hint">
+                        Counts each Image's full size, every track.
+                      </span>
+                    </label>
+
+                    {@render schedule(check, (patch) => updateCheck(platform.id, patch))}
+                  </div>
+
+                  <p class="hint">
+                    It runs once a day, inside the window. The Images never checked
+                    go first, then the ones checked longest ago, taken in that order
+                    until the next one does not fit the budget.
+                    An Image larger than the whole budget is checked on its own
+                    rather than never. Each
+                    goes through its tool's own Verify. One that fails shows up in
+                    <strong>Findings</strong> as not Intact, and a later pass clears
+                    it. An Image no tool here can check is skipped and costs
+                    nothing. <strong>Run now</strong> checks another budget's worth
+                    straight away, on top of the nightly run.
+                  </p>
+
+                  <div class="toggles">
+                    <Checkbox
+                      checked={check.enabled}
+                      label="Enabled"
+                      onchange={(v) => updateCheck(platform.id, { enabled: v })}
+                    />
+                  </div>
+
+                  {#if check.invalid_window}
+                    <p class="warn" role="alert">
+                      Only one end of the time window is set, so this check is
+                      paused. A window needs both a start and an end.
+                    </p>
+                  {/if}
+
+                  <p class="last-run muted">{lastCheckLabel(platform.id)}</p>
+                {/if}
+              </section>
             </div>
           {/if}
         </article>
@@ -967,22 +992,18 @@
 </div>
 
 <!-- The window and weekdays, shared by the conversion and check forms. -->
-{#snippet schedule(platformId, rule)}
+{#snippet schedule(rule, change)}
   <label class="field">
     <span>Only between</span>
     <div class="pair">
       <input
         type="time" value={rule.window_start ?? ''}
-        onchange={(e) => update(platformId, {
-          window_start: e.currentTarget.value || null,
-        })}
+        onchange={(e) => change({ window_start: e.currentTarget.value || null })}
       />
       <span class="muted">and</span>
       <input
         type="time" value={rule.window_end ?? ''}
-        onchange={(e) => update(platformId, {
-          window_end: e.currentTarget.value || null,
-        })}
+        onchange={(e) => change({ window_end: e.currentTarget.value || null })}
       />
     </div>
     <span class="hint">
@@ -1000,7 +1021,7 @@
           class="day"
           class:on={(rule.days ?? []).includes(day)}
           aria-pressed={(rule.days ?? []).includes(day)}
-          onclick={() => toggleDay(platformId, day)}
+          onclick={() => change({ days: toggledDays(rule.days, day) })}
         >{label}</button>
       {/each}
     </div>
@@ -1029,6 +1050,15 @@
     padding-left: 1.1rem;
     color: var(--warn, #b45309);
     font-size: 0.85rem;
+  }
+
+  .check-rule {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
   }
 
   .forget {

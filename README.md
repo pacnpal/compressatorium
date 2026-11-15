@@ -693,15 +693,20 @@ The RomM view's **Automation** tab is the same Rules view, opened on RomM.
 
 ### Check Rules
 
-A Rule with no target format checks Images instead of converting them. Pick
-**Check only** as a Platform's target in the Rules view, on a folder Library or
-on RomM, and set how much to read a night ("check 50 GB a night"), a time
-window and weekdays:
+A check Rule checks Images instead of converting them: it has no target format.
+A Platform can have one beside its conversion Rule, so "convert PS2 to CHD" and
+"check PS2 nightly" work together. Expand a Platform in the Rules view, on a
+folder Library or on RomM, tick **Check these Images are Intact**, and set how
+much to read a night ("check 50 GB a night"), a time window and weekdays:
 
-- Once a night, inside the window, the Images never checked go first, then the
-  ones checked longest ago, until the budget is used. The budget counts an
-  Image's full size, every track. One Image larger than the whole budget is
-  still checked, on its own.
+- A check Rule runs once a day, inside its window, on its own clock: the
+  conversion Rule on the same Platform keeps its own. **Run now** runs both,
+  so the check spends another budget's worth on top of the nightly run.
+- The Images never checked go first, then the ones checked longest ago. They
+  are taken in that order until the next one does not fit the budget; a smaller
+  one further down never jumps ahead. The budget counts an Image's full size,
+  every track. An Image larger than the whole budget is checked on its own
+  rather than never.
 - Each Image goes through its tool's own **Verify**, the same check as the
   Verify action. A run is one job in the Jobs panel, and Cancel stops it.
 - An Image that fails becomes a **Not Intact** Finding, and the run sends one
@@ -1004,7 +1009,7 @@ A folder registered as a Library, with the Platforms found in it, its Unsorted a
 
 #### Check Rule
 
-A PS2 Platform given a check Rule: 50 GB a night between 01:00 and 05:00. See [Check Rules](#check-rules).
+A PS2 Platform with a conversion Rule and a check Rule: 50 GB a night between 01:00 and 05:00. See [Check Rules](#check-rules).
 
 | Light | Dark |
 |-------|------|

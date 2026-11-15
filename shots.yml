@@ -439,13 +439,14 @@
   javascript: *js_rules_folder
 
 # --- Check Rule in the rule editor (#305) ----------------------------------
-# The same folder Library, its PS2 Platform given a check Rule (no target
-# format: a nightly budget, a window and weekdays), and the row expanded so the
-# check-Rule form shows.
+# The same folder Library, its PS2 Platform given a conversion Rule and a check
+# Rule (no target format: a nightly budget, a window and weekdays), and the row
+# expanded so both forms show. Tall, so the check Rule below the conversion
+# Rule fits.
 - url: http://127.0.0.1:8099/?s=rule-editor-check-light#/workspace/chdman
   output: docs/screenshots/rule-editor-check-light.png
   width: 1280
-  height: 900
+  height: 2000
   wait: 1800
   javascript: &js_rule_editor_check |
     (async () => {
@@ -467,10 +468,13 @@
       await fetch(`/api/libraries/${id}/rules`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: { ps2: {
-          enabled: true, check_budget_gb: 50,
-          window_start: '01:00', window_end: '05:00', days: [0, 1, 2, 3, 4, 5, 6],
-        } } }),
+        body: JSON.stringify({
+          rules: { ps2: { mode: 'createdvd', enabled: true } },
+          check_rules: { ps2: {
+            enabled: true, check_budget_gb: 50,
+            window_start: '01:00', window_end: '05:00', days: [0, 1, 2, 3, 4, 5, 6],
+          } },
+        }),
       });
       location.hash = `#/rules/${id}`;
       await new Promise(r => setTimeout(r, 1200));
@@ -485,7 +489,7 @@
 - url: http://127.0.0.1:8099/?s=rule-editor-check-dark#/workspace/chdman
   output: docs/screenshots/rule-editor-check-dark.png
   width: 1280
-  height: 900
+  height: 2000
   wait: 1800
   javascript: *js_rule_editor_check
 

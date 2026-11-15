@@ -6,9 +6,11 @@ result, when to run, how much to queue at once, and which Images to consider.
 Platforms are independent, because a Library is not homogeneous and one global
 setting cannot describe it.
 
-A Rule with no target format is a check Rule (#305): once a night, inside its
+A Rule is one of two kinds (#305). A conversion Rule (``CONVERT``) has a
+target format. A check Rule (``CHECK``) has none: once a night, inside its
 window and on its weekdays, it checks the stalest Images of its Platform until
-``check_budget_gb`` is used (see :mod:`services.rules.check`).
+``check_budget_gb`` is used (see :mod:`services.rules.check`). A Rule's identity
+is (Library, Platform, kind), so one Platform can have one of each.
 
 Pure apart from one thing: an output directory is checked against the
 configured Volumes when a Rule is saved. Nothing here knows which Library a
@@ -60,6 +62,12 @@ _BOUNDS = {
 # nightly one, so its interval is fixed rather than editable.
 CHECK_INTERVAL_MINUTES = 24 * 60
 DEFAULT_CHECK_BUDGET_GB = 50
+
+# The two kinds of Rule. Each kind is stored on its own (``store``), so a
+# Platform can have a conversion Rule and a check Rule at once.
+CONVERT = "convert"
+CHECK = "check"
+RULE_KINDS = (CONVERT, CHECK)
 
 # Cap on a user-supplied filter pattern. A pathological regex is the operator's
 # own doing, but length is a cheap first guard against the obvious ones.
@@ -461,15 +469,21 @@ def is_check_rule(rule: Mapping[str, Any]) -> bool:
     return not rule.get("mode")
 
 
+def rule_kind(rule: Mapping[str, Any]) -> str:
+    """``CHECK`` for a check Rule, else ``CONVERT``."""
+    return CHECK if is_check_rule(rule) else CONVERT
+
+
 def normalize_rule(
-    raw: Any, *, check_volumes: bool = True,
+    raw: Any, *, kind: str = CONVERT, check_volumes: bool = True,
     volumes_unreachable: bool = False, defaults: Mapping[str, Any] | None = None,
     duplicate_actions: Iterable[str] = DUPLICATE_ACTIONS,
 ) -> dict[str, Any] | None:
     """Coerce one submitted/stored rule into the full schema.
 
-    Returns None when the rule cannot be honoured at all (a mode no registered
-    tool provides). A rule with no mode is a check Rule (`is_check_rule`). Tolerant elsewhere: a rule naming a stale option
+    *kind* is the Rule's kind. A ``CONVERT`` Rule with no mode, or a mode no
+    registered tool provides, cannot be honoured: None. A ``CHECK`` Rule has no
+    mode, whatever *raw* says. Tolerant elsewhere: a rule naming a stale option
     falls back to that field's default rather than failing the whole sweep,
     because these blobs outlive the tools that were installed when they were
     written. *defaults* is the Library's ``rule_defaults()``.
@@ -479,7 +493,9 @@ def normalize_rule(
     if not isinstance(raw, dict):
         return None
     out = default_rule(defaults=defaults)
-    mode = raw.get("mode")
+    mode = raw.get("mode") if kind == CONVERT else None
+    if kind == CONVERT and not (isinstance(mode, str) and mode):
+        return None
     if isinstance(mode, str) and mode:
         try:
             registry.spec(mode)
@@ -699,8 +715,9 @@ def normalize_rules(
     platform_id: Callable[[Any], str | None],
     defaults: Mapping[str, Any] | None = None,
     duplicate_actions: Iterable[str] = DUPLICATE_ACTIONS,
+    kind: str = CONVERT,
 ) -> dict[str, dict]:
-    """Normalize a whole rule set, keyed by Platform id.
+    """Normalize a whole rule set of one *kind*, keyed by Platform id.
 
     *platform_id* is the Library's ``canonical_platform_id``: a key it does
     not accept is dropped, and the rest are stored in its canonical form.
@@ -722,6 +739,7 @@ def normalize_rules(
             continue
         rule = normalize_rule(
             value,
+            kind=kind,
             check_volumes=check_volumes,
             volumes_unreachable=volumes_unreachable,
             defaults=defaults,

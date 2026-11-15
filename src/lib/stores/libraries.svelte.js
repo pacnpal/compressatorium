@@ -41,7 +41,7 @@ export class FolderRulesSource extends RulesSource {
     // run, after construction; nothing is captured from the constructor.
     super({
       getRules: () => api.getLibraryRules(this.id),
-      saveRules: (rules) => api.saveLibraryRules(this.id, rules),
+      saveRules: (rules, checkRules) => api.saveLibraryRules(this.id, rules, checkRules),
       forgetConverted: (platformIds) => api.forgetLibraryConverted(this.id, platformIds),
       preview: (body) => api.previewLibrary(this.id, body),
       run: (body) => api.runLibrary(this.id, body),
