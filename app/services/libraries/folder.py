@@ -40,6 +40,13 @@ that caps the stuck threads at one per Library, and every later sweep releases
 the sweep lock immediately. Settings (name, schedule switch, cap) change in
 place and never wait for a walk.
 
+**Findings.** Every walk (never a listing served from the last one) hands
+the Findings store what it saw (:func:`services.findings.reconcile`): a
+Platform conflict per conflicted Image, an Unsorted Finding per Image whose
+Platform nobody could work out, and one per Image file the walk could not
+read. A walk that fails (the root is gone) records nothing, so a mount blip
+clears no Finding. Findings never move or delete an Image.
+
 Folder Rules support the skip policy only (no ``CONVERTED_HISTORY``), and a
 failed Image waits until its file changes (``FAILED_HOLD``).
 """
@@ -56,7 +63,7 @@ from types import MappingProxyType
 from typing import Any
 
 from logging_setup import get_logger
-from services import image_sets, platform_detect
+from services import findings, image_sets, platform_detect
 from services.platform_detect import CONFLICT, Detection
 from services.rules.library import (
     FAILED_HOLD,
@@ -108,6 +115,8 @@ class Scan:
     entries: list[Entry] = field(default_factory=list)
     # Image files and folders that could not be read. Never queued.
     unreadable: int = 0
+    # The Image files among them, by path.
+    unreadable_files: list[str] = field(default_factory=list)
     taken_at: float = 0.0
     # The Library's generation when the walk started (`FolderLibrary.invalidate`).
     generation: int = 0
@@ -208,8 +217,12 @@ class FolderLibrary:
 
     # ---- the walk ----
 
-    def _files(self) -> tuple[list[tuple[str, os.stat_result]], int]:
-        """Every regular, readable file with an Image extension, and how many were not readable."""
+    def _files(self) -> tuple[list[tuple[str, os.stat_result]], int, list[str]]:
+        """Every regular, readable file with an Image extension, and the unreadable ones.
+
+        ``(files, how many files and folders could not be read, the unreadable
+        Image files)``.
+        """
         root = self.root
         # Checked on every walk, never remembered: a mount that blips fails
         # this listing only.
@@ -220,6 +233,7 @@ class FolderLibrary:
         extensions = _image_extensions()
         files: list[tuple[str, os.stat_result]] = []
         unreadable = 0
+        unreadable_files: list[str] = []
         root_errors: list[OSError] = []
 
         def on_error(exc: OSError) -> None:
@@ -239,20 +253,22 @@ class FolderLibrary:
                     st = os.lstat(path)
                 except OSError:
                     unreadable += 1
+                    unreadable_files.append(path)
                     continue
                 if not stat.S_ISREG(st.st_mode):
                     continue
                 if not os.access(path, os.R_OK):
                     unreadable += 1
+                    unreadable_files.append(path)
                     continue
                 files.append((path, st))
         if root_errors:
             raise LibraryUnreadable(str(root_errors[0]))
-        return files, unreadable
+        return files, unreadable, unreadable_files
 
     def _walk(self) -> Scan:
         """Walk the root once, group the files into Images and detect each Platform."""
-        files, unreadable = self._files()
+        files, unreadable, unreadable_files = self._files()
         stats = dict(files)
         members_cache: dict[str, tuple[int, int, list[str]]] = {}
         detections: dict[str, tuple[tuple, Detection]] = {}
@@ -267,8 +283,10 @@ class FolderLibrary:
             members_cache[path] = (st.st_size, st.st_mtime_ns, value)
             return value
 
-        scan = Scan(unreadable=unreadable, taken_at=time.monotonic())
-        root = self.root
+        scan = Scan(
+            unreadable=unreadable, unreadable_files=unreadable_files,
+            taken_at=time.monotonic(),
+        )
         for path in image_sets.group_images([p for p, _ in files], members=members):
             st = stats[path]
             # Detection's own key: the file and the tracks its header probe
@@ -283,13 +301,52 @@ class FolderLibrary:
             if key is not None:
                 detections[path] = (key, detection)
             scan.entries.append(Entry(
-                key=Path(os.path.relpath(path, root)).as_posix(),
+                key=self._key(path),
                 path=path, size=st.st_size, mtime=st.st_mtime, detection=detection,
             ))
         # Only what this walk saw, so the caches are as large as the Library.
         self._members = members_cache
         self._detections = detections
+        self._record_findings(scan)
         return scan
+
+    def _key(self, path: str) -> str:
+        return Path(os.path.relpath(path, self.root)).as_posix()
+
+    def _findings(self, scan: Scan) -> list[findings.Observed]:
+        """What this walk noticed that needs a person: conflicts and Unsorted Images."""
+        out = []
+        for entry in scan.entries:
+            found = entry.detection
+            if found.platform:
+                continue
+            cause = {
+                "how": found.how, "header": found.header,
+                "folder": found.folder, "mapped": found.mapped,
+            }
+            kind = findings.PLATFORM_CONFLICT if found.how == CONFLICT else findings.UNSORTED
+            out.append(findings.Observed(
+                kind=kind, image_key=entry.key, path=entry.path,
+                reason=found.reason, cause=cause,
+            ))
+        for path in scan.unreadable_files:
+            out.append(findings.Observed(
+                kind=findings.UNSORTED, image_key=self._key(path), path=path,
+                reason="the file could not be read", cause={"how": "unreadable"},
+            ))
+        return out
+
+    def _record_findings(self, scan: Scan) -> None:
+        """Hand the Findings store what this walk saw. A failure costs the Findings only."""
+        try:
+            findings.reconcile(self.id, self._findings(scan))
+        except Exception:
+            # The walk is still good for Rules; the Findings view is behind
+            # until the next walk. Logged, not swallowed.
+            logger.warning(
+                "folder_library: could not record the Findings of %s", self.root,
+                exc_info=True,
+            )
 
     def scan(self, *, refresh: bool = False) -> Scan:
         """The latest walk, taking a new one when asked or when it is stale. Blocking.

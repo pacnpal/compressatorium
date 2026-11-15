@@ -18,7 +18,12 @@ from pathlib import Path
 import pytest
 from services import platform_detect
 
-from .test_folder_library_303 import _db_fixture, _register, _tree  # noqa: F401
+from .test_folder_library_303 import (  # noqa: F401
+    _IS_ROOT,
+    _db_fixture,
+    _register,
+    _tree,
+)
 from .test_platform_detect import _blank, _gamecube, _ps2
 
 
@@ -275,3 +280,149 @@ def test_forgetting_a_library_drops_its_findings(db: Path) -> None:
     findings.forget_library("folder:1")
 
     assert [r["library_id"] for r in _open()] == ["folder:2"]
+
+
+# ----------------------------------------------------------------------
+# the folder Library's walk produces them
+# ----------------------------------------------------------------------
+
+
+def _kinds() -> dict[str, str]:
+    return {r["image_key"]: r["kind"] for r in _open()}
+
+
+@pytest.mark.asyncio
+async def test_a_walk_records_a_conflict_and_the_unsorted_images(tree: Path) -> None:
+    from services import libraries
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+
+    expected = {
+        "ps2/Misfiled.iso": "platform_conflict",
+        "Mystery.iso": "unsorted",
+    }
+    if not _IS_ROOT:
+        # A file the walk cannot read is an Image whose Platform nobody knows.
+        expected["gc/Locked.iso"] = "unsorted"
+    assert _kinds() == expected
+    rows = {r["image_key"]: r for r in _open()}
+    assert rows["ps2/Misfiled.iso"]["reason"] == "in the ps2 folder, but the header says ngc"
+    assert rows["ps2/Misfiled.iso"]["library_id"] == library.id
+    assert rows["ps2/Misfiled.iso"]["path"] == str(tree / "ps2" / "Misfiled.iso")
+    if not _IS_ROOT:
+        assert "could not be read" in rows["gc/Locked.iso"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_listing_served_from_the_last_walk_writes_nothing(tree: Path, monkeypatch) -> None:
+    from services import findings, libraries
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+    calls = []
+    monkeypatch.setattr(findings, "reconcile", lambda *a, **k: calls.append(a))
+
+    library.summary()
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_conflict_clears_once_the_image_is_where_it_belongs(tree: Path) -> None:
+    from services import libraries
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+    assert "ps2/Misfiled.iso" in _kinds()
+
+    # The person moved it; the app never does.
+    (tree / "ps2" / "Misfiled.iso").rename(tree / "gc" / "Misfiled.iso")
+    library.summary(refresh=True)
+
+    assert "ps2/Misfiled.iso" not in _kinds()
+    assert "gc/Misfiled.iso" not in _kinds()
+
+
+@pytest.mark.asyncio
+async def test_setting_a_mapping_clears_an_unsorted_finding(tree: Path) -> None:
+    from services import libraries
+
+    _blank(tree / "misc" / "Loose.iso")
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+    assert _kinds()["misc/Loose.iso"] == "unsorted"
+
+    _map(tree / "misc", "psp")
+    library.summary()
+
+    assert "misc/Loose.iso" not in _kinds()
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_that_disagrees_with_a_header_is_a_finding(tree: Path) -> None:
+    from services import libraries
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    _map(tree / "gc", "wii")
+    library.summary(refresh=True)
+
+    rows = {r["image_key"]: r for r in _open()}
+    assert rows["gc/Melee.iso"]["kind"] == "platform_conflict"
+    assert rows["gc/Melee.iso"]["cause"]["mapped"] == "wii"
+    assert "you set the gc folder to wii" in rows["gc/Melee.iso"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_root_that_is_gone_clears_nothing(tree: Path) -> None:
+    from services import libraries
+    from services.libraries.folder import RootUnavailable
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+    before = _kinds()
+    tree.rename(tree.parent / "elsewhere")
+
+    with pytest.raises(RootUnavailable):
+        library.summary(refresh=True)
+
+    assert _kinds() == before
+
+
+@pytest.mark.asyncio
+async def test_a_finding_never_moves_or_deletes_an_image(tree: Path) -> None:
+    from services import libraries
+
+    await _register(tree)
+    before = sorted(p.relative_to(tree).as_posix() for p in tree.rglob("*"))
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+    from services import findings
+
+    for row in _open():
+        findings.dismiss(row["id"])
+    library.summary(refresh=True)
+
+    assert sorted(p.relative_to(tree).as_posix() for p in tree.rglob("*")) == before
+
+
+@pytest.mark.asyncio
+async def test_removing_a_library_drops_its_findings_and_mappings(tree: Path) -> None:
+    from services import libraries, platform_mappings
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    _map(tree / "gc", "ngc")
+    library.summary(refresh=True)
+    assert _open()
+
+    await libraries.remove(library.id)
+
+    assert _open() == []
+    assert platform_mappings.mappings() == []

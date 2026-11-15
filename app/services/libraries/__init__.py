@@ -258,9 +258,10 @@ async def remove(library_id: str) -> bool:
     await rules_sweep.forget_library(library)
 
     def _delete() -> None:
-        from services import platform_mappings
+        from services import findings, platform_mappings
 
         platform_mappings.forget_library(library_id)
+        findings.forget_library(library_id)
         with _session() as session:
             row = session.get(_db.FolderLibraryRecord, record_id)
             if row is not None:
