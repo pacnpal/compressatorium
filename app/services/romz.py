@@ -45,6 +45,12 @@ from services.subprocess_runner import (
 )
 from utils.junk import is_junk_path
 
+try:
+    from py7zr.exceptions import PasswordRequired as _PasswordRequired
+except ImportError:  # pragma: no cover - py7zr ships in requirements
+    class _PasswordRequired(Exception):
+        """Stands in when py7zr is missing; never raised."""
+
 # SubprocessRunner "owner" for the shared priority/timeout policy. An optional
 # COMPRESSATORIUM_ROMZ_* override takes precedence over the tool-neutral
 # COMPRESSATORIUM_TOOL_* default (see services/subprocess_runner.py).
@@ -281,7 +287,7 @@ class RomzService:
         return True
 
     @classmethod
-    def _single_rom_shape(cls, archive_path: str) -> None:
+    def _single_rom_shape(cls, archive_path: str) -> bool:
         """Raise ``NotSingleRomArchive`` unless the archive looks single-ROM.
 
         Reads the member listing only (no limits, no traversal or symlink
@@ -289,11 +295,9 @@ class RomzService:
         """
         try:
             members = read_archive_members(archive_path)
-        except Exception as exc:
-            if type(exc).__name__ == "PasswordRequired":
-                # An encrypted header: romz never writes one.
-                raise NotSingleRomArchive("Archive is encrypted") from exc
-            raise
+        except _PasswordRequired as exc:
+            # An encrypted header: romz never writes one.
+            raise NotSingleRomArchive("Archive is encrypted") from exc
         files = [(m.name, int(m.size or 0)) for m in members if not m.is_dir]
         if cls._resolve_single_rom(files) is None:
             raise NotSingleRomArchive("Archive is not a single-ROM archive")

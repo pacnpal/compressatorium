@@ -899,7 +899,7 @@ def test_verify_probes_readiness_once_per_run(volume, dolphin, capsys, monkeypat
         _rvz(volume, f"gc/{name}.rvz")
     _not_ready(monkeypatch, registry.get("dolphin"), calls)
 
-    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    _code, lines = _cli(capsys, "verify", str(volume), "--json")
 
     assert [line["status"] for line in lines] == ["skipped"] * 3
     assert calls.count("dolphin") == 1
@@ -1178,8 +1178,9 @@ def test_a_cli_run_imports_the_legacy_verification_store_first(
     import asyncio
     import json as json_module
 
-    from config import settings
     from services.verification_store import verification_store
+
+    from config import settings
 
     legacy_path = str((volume / "old" / "Game.chd").resolve())
     legacy = Path(settings.data_dir) / "verified_chds.json"
