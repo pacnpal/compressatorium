@@ -72,6 +72,7 @@ from services.rules.library import (
     FAILED_HOLD,
     RECOGNIZED_FILTER,
     Image,
+    LibraryDefaults,
     LibraryUnreadable,
     Platform,
     QueuedImage,
@@ -184,7 +185,7 @@ def _recognized(paths: list[str]) -> dict[str, bool | None]:
     return out
 
 
-class FolderLibrary:
+class FolderLibrary(LibraryDefaults):
     """A folder registered as a Library."""
 
     kind = "folder"

@@ -1,4 +1,4 @@
-"""``compressatorium``: convert and verify Images from a shell or cron (#306).
+"""``compressatorium``: convert, verify and run Rules from a shell or cron (#306, #307).
 
 Run as ``python -m cli`` with ``app/`` on ``PYTHONPATH``; the Docker image
 installs a ``compressatorium`` wrapper that does exactly that (and, started as
@@ -17,10 +17,14 @@ drives the same pieces the web UI does, in-process:
   Ledger row);
 * locking: the job manager's output locks are ``flock`` files in the shared lock
   directory (``<data dir>/locks``), so a running server and this process never
-  write one output twice.
+  write one output twice;
+* Rules (``run-rules``): ``rules.sweep.sweep``, the server scheduler's own
+  sweep, once per Library from ``services.libraries``; the scheduler lock
+  (``services.scheduler_lock``) keeps it from running beside a server.
 
 Exit status: 0 when everything finished or there was nothing to do, 1 when any
-Image failed (or was cancelled), 2 on bad arguments.
+Image failed (or was cancelled), 2 on bad arguments, 3 when ``run-rules`` finds
+another scheduler (a server) using the data directory.
 """
 from __future__ import annotations
 
@@ -43,6 +47,7 @@ from logging_setup import get_logger
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
+EXIT_LOCKED = 3
 
 # `--compression default`: the tool's own default, not the saved web UI choice.
 TOOL_DEFAULT = "default"
@@ -109,7 +114,7 @@ class Item:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="compressatorium",
-        description="Convert and verify game Images without the web UI.",
+        description="Convert and verify game Images, and run Rules, without the web UI.",
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
@@ -167,6 +172,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip Images checked within AGE (30d, 12h, 2w)",
     )
     _common(verify)
+
+    run_rules_cmd = sub.add_parser(
+        "run-rules",
+        help="one pass over the stored Rules, waiting for the jobs it queues",
+    )
+    run_rules_cmd.add_argument(
+        "--library", metavar="ID", help="only this Library's Rules (romm, ...)",
+    )
+    _common(run_rules_cmd)
     return parser
 
 
@@ -378,11 +392,12 @@ class Printer:
     def __init__(self, as_json: bool) -> None:
         self.as_json = as_json
 
-    def line(self, data: dict) -> None:
+    def line(self, data: dict, *, prefix: str = "") -> None:
+        """One Image. ``prefix`` goes before the path in text mode."""
         if self.as_json:
             print(json.dumps(data), flush=True)
             return
-        text = f"{data['status']:<10} {data['path']}"
+        text = f"{data['status']:<10} {prefix}{data['path']}"
         if data.get("output"):
             text += f" -> {data['output']}"
         if data.get("check"):
@@ -390,6 +405,10 @@ class Printer:
         if data.get("reason"):
             text += f": {data['reason']}"
         print(text, flush=True)
+
+    def summary(self, data: dict, text: str) -> None:
+        """A line that is not about one Image: ``data`` as JSON, else ``text``."""
+        print(json.dumps(data) if self.as_json else text, flush=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -726,6 +745,36 @@ def _chunks(prepared: list[tuple], size: int) -> list[tuple]:
     return out
 
 
+@contextlib.asynccontextmanager
+async def _job_runner(state: RunState, *listeners):
+    """Run the job manager for one command, with the server's Ledger listener.
+
+    Every job that ends lands in the Ledger (``ledger.record``), as on the
+    server; ``listeners`` are told too while the block runs. The caller drains
+    its jobs inside the block. On the way out the dispatcher stops and the
+    listeners' own work (a Ledger write) is finished.
+    """
+    from services import ledger
+    from services.job_manager import job_manager
+
+    job_manager.add_terminal_listener(ledger.record)
+    for listener in listeners:
+        job_manager.add_terminal_listener(listener)
+    runner = asyncio.create_task(job_manager.process_queue())
+    state.jobs_started = True
+    try:
+        yield job_manager
+    finally:
+        for listener in listeners:
+            job_manager.remove_terminal_listener(listener)
+        # Cancelled before shutdown: a runner that has not started yet would
+        # otherwise start the dispatcher after shutdown and wait forever.
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+        await job_manager.shutdown()
+
+
 async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) -> None:
     """Queue the prepared batches, below the queue cap, and report each job.
 
@@ -735,8 +784,6 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
     """
     from fastapi import HTTPException
     from routes.convert import queue_prepared
-    from services import ledger
-    from services.job_manager import job_manager
 
     from config import settings
 
@@ -747,10 +794,6 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
         ended[job.id] = job
         changed.set()
 
-    job_manager.add_terminal_listener(ledger.record)
-    job_manager.add_terminal_listener(on_terminal)
-    runner = asyncio.create_task(job_manager.process_queue())
-    state.jobs_started = True
     watching: dict[str, Item] = {}
     pending: set[str] = set()
 
@@ -768,7 +811,7 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
         report()
 
     window = _in_flight_window(settings)
-    try:
+    async with _job_runner(state, on_terminal) as job_manager:
         for batch, planned in _chunks(prepared, window):
             # Each queued job holds a ticket in the queue a running server
             # shares, so only a small window is queued at a time (below
@@ -809,14 +852,6 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
         while pending:
             await wait_for_an_end()
         await job_manager.drain()
-    finally:
-        job_manager.remove_terminal_listener(on_terminal)
-        # Cancelled before shutdown: a runner that has not started yet would
-        # otherwise start the dispatcher after shutdown and wait forever.
-        runner.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await runner
-        await job_manager.shutdown()
 
 
 def _finish(item: Item, job) -> None:
@@ -1184,7 +1219,9 @@ async def _check_held(
             result = await asyncio.wait_for(tool.verify(read), timeout=bound or None)
         except asyncio.TimeoutError:
             result = {"error": f"Verification timed out after {bound}s"}
-        except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
+        except Exception as exc:
+            # One bad file must not stop the rest: it is reported failed.
+            logger.debug("Verification of %s could not run", read, exc_info=True)
             result = {"error": f"Verification could not run: {exc}"}
     if stops_verify_batch(result, abandoned):
         line["_stop"] = True
@@ -1305,6 +1342,253 @@ async def verify(args, printer: Printer, state: RunState) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# run-rules
+# --------------------------------------------------------------------------- #
+
+
+def _choose_libraries(wanted: str | None, *, has_db: bool) -> list:
+    """The Libraries to sweep: ``services.libraries.all_libraries()``, the list
+    the server's scheduler sweeps (RomM and every folder Library, #303). Asked
+    once the database is open, where the folder Libraries are stored. With no
+    database (a dry run on a fresh data dir) only the Libraries that need none
+    exist (``without_a_database``), and ``--library`` is checked against them."""
+    from services import libraries
+
+    every = libraries.all_libraries() if has_db else libraries.without_a_database()
+    if wanted is None:
+        return every
+    chosen = [library for library in every if library.id == wanted]
+    if not chosen:
+        names = ", ".join(library.id for library in every) or "none"
+        raise UsageError(f"--library {wanted}: no such Library. Libraries: {names}")
+    return chosen
+
+
+def _rules_line(library_id, platform_id=None, *, status, mode=None, queued=0,
+                considered=0, candidates=(), reason=None) -> dict:
+    return {
+        "library": library_id, "platform_id": platform_id, "mode": mode,
+        "status": status, "queued": queued, "considered": considered,
+        "candidates": list(candidates), "reason": reason,
+    }
+
+
+def _rules_text(line: dict) -> str:
+    where = line["library"] or "every Library"
+    if line["platform_id"] is not None:
+        where += f"/{line['platform_id']} {line['mode'] or ''}".rstrip()
+    text = f"{line['status']:<10} {where}"
+    if line["mode"]:
+        verb = "to queue" if line["status"] == "planned" else "queued"
+        text += f": {line['queued']} {verb} of {line['considered']} considered"
+        if line["candidates"]:
+            text += f" ({', '.join(line['candidates'])})"
+    if line["reason"]:
+        text += f": {line['reason']}" if not line["mode"] else f"; {line['reason']}"
+    return text
+
+
+# A sweep that stopped for one of these did not do what its Rules say: exit 1.
+# `not_configured` is only reported for a Library that has Rules.
+_FAILED_STOPS = ("library_unresponsive", "not_configured", "queue_full")
+
+
+def _print_sweep(printer: Printer, library, result: dict) -> bool:
+    """One line per Platform the sweep looked at, and one for the Library
+    when the sweep stopped early or never started (``no_rules``).
+
+    True when the sweep reported an error: any ``errors`` entry, including a
+    lost race for a destination (``destination_claimed``), or a stop in
+    ``_FAILED_STOPS``.
+    """
+    errors: dict = {}
+    for entry in result["errors"]:
+        errors.setdefault(entry["platform_id"], []).append(entry["error"])
+    lines = []
+    for summary in result["platforms"]:
+        platform_id = summary["platform_id"]
+        reasons = errors.pop(platform_id, [])
+        if summary.get("unqueued"):
+            # The queue refused this Platform's batch (queue_full).
+            unqueued = summary["unqueued"]
+            plural = "s" if unqueued != 1 else ""
+            reasons.append(f"queue full: {unqueued} Image{plural} not queued")
+        reason = ", ".join(reasons) or None
+        if result.get("dry_run"):
+            status = "planned"
+        elif reason and not summary["queued"]:
+            status = "error"
+        else:
+            status = "queued"
+        lines.append(_rules_line(
+            library.id, platform_id, status=status, mode=summary["mode"],
+            queued=summary["queued"], considered=summary["considered"],
+            candidates=summary.get("candidates") or (), reason=reason,
+        ))
+    # A Platform skipped before it was read (tool not ready, Library
+    # unreadable), or the whole Library refused (platform None), has an error
+    # and no summary.
+    for platform_id, reasons in errors.items():
+        lines.append(_rules_line(
+            library.id, platform_id, status="error", reason=", ".join(reasons),
+        ))
+    stopped = result.get("stopped_reason")
+    if stopped:
+        status = "skipped" if stopped in ("no_rules", "not_configured") else "stopped"
+        lines.append(_rules_line(library.id, status=status, reason=stopped))
+    for line in lines:
+        printer.summary(line, _rules_text(line))
+    return bool(result["errors"]) or stopped in _FAILED_STOPS
+
+
+# How often a running hook looks for a stop.
+_STOP_POLL = 0.2
+
+
+async def _until_stopped(work, state: RunState) -> bool:
+    """Run ``work`` until it ends or the run is stopping. False when stopped.
+
+    A Library's ``before_pass`` can run long (RomM's settle pass gives each
+    large output its full hashing time), and nothing in it reads the stop
+    flag, so it is cancelled from here. Its exceptions propagate.
+    """
+    task = asyncio.ensure_future(work)
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=_STOP_POLL)
+            if state.stopping and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                return False
+        task.result()
+        return True
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+async def _sweep_one(printer: Printer, library, state: RunState, *, dry_run: bool) -> bool:
+    """The Library's ``before_pass`` hook, then its sweep. True on any error.
+
+    An exception is reported for this Library and does not reach the caller,
+    as in the server's scheduler loop, so the other Libraries still run.
+    """
+    from services.rules import sweep as rules_sweep
+
+    try:
+        if not await _until_stopped(library.before_pass(dry_run=dry_run), state):
+            line = _rules_line(library.id, status="stopped", reason="stopped")
+            printer.summary(line, _rules_text(line))
+            return False  # the stop itself makes the run exit 1
+        result = await rules_sweep.sweep(
+            library, dry_run=dry_run, should_stop=lambda: state.stopping,
+        )
+    except Exception as exc:  # one Library must not stop the rest
+        logger.warning("run-rules: Library %s failed: %s", library.id, exc, exc_info=True)
+        line = _rules_line(library.id, status="error", reason=f"sweep_failed: {exc}")
+        printer.summary(line, _rules_text(line))
+        return True
+    return _print_sweep(printer, library, result)
+
+
+async def run_rules(args, printer: Printer, state: RunState) -> int:
+    """One pass over the stored Rules of each Library, like one server tick.
+
+    Each Library runs its ``before_pass`` hook (what the server does for it at
+    startup or in the background), then goes through ``rules.sweep.sweep``,
+    the sweep the server's scheduler runs, so each Rule's own switch, days,
+    window and interval apply. The Library's in-app master switch does not:
+    running this command is the switch. The jobs it queues run here, and it
+    returns once they have ended, cleanup included. While it runs it holds the
+    scheduler lock, so it never runs beside a server on the same data
+    directory. Exit 1 when a sweep reported an error or a job failed.
+    """
+    from services import scheduler_lock
+    from services.preferences_store import preferences_store
+
+    with contextlib.ExitStack() as held:
+        if args.dry_run:
+            # Look, but take nothing: a dry run must not hold up a server.
+            scheduler_lock.check()
+        else:
+            # Before the database is opened: a refused run touches nothing.
+            held.callback(scheduler_lock.acquire("run-rules").release)
+        has_db = _open_db(args.dry_run)
+        # Listed once the database is open (the folder Libraries live there);
+        # with none, only the Libraries that need none, so a mistyped
+        # --library is still refused.
+        chosen = _choose_libraries(args.library, has_db=has_db)
+        if has_db:
+            # As the server does at startup: the Hasheous toggle saved in the
+            # web UI, which folder-Library recognition reads. Read only.
+            from routes.dat import load_hasheous_override
+
+            await load_hasheous_override()
+        if not has_db:
+            # A dry run with no database: nothing is stored, so no Rules.
+            for library in chosen:
+                line = _rules_line(library.id, status="skipped", reason="no_rules")
+                printer.summary(line, _rules_text(line))
+            return EXIT_OK
+        if not args.dry_run:
+            return await _run_rules_pass(chosen, printer, state)
+        failed = False
+        # The Rule store writes as it reads (its one-time copies); a dry run
+        # keeps those writes in memory.
+        with preferences_store.read_only():
+            for library in chosen:
+                failed = await _sweep_one(printer, library, state, dry_run=True) or failed
+        return EXIT_FAILED if failed or state.stopping else EXIT_OK
+
+
+async def _run_rules_pass(chosen: list, printer: Printer, state: RunState) -> int:
+    from services.rules import sweep as rules_sweep
+
+    owners: dict[str, str] = {}
+    sweeping: list[str] = []
+    reported: set[str] = set()
+    failed = False
+
+    def on_terminal(job) -> None:
+        nonlocal failed
+        # One line per job: the job manager may announce an end twice (a
+        # queued job cancelled before it starts is told by cancel_job and
+        # again by _process_job).
+        if job.id in reported:
+            return
+        reported.add(job.id)
+        item = Item(path=job.file_path, mode=getattr(job.mode, "value", job.mode))
+        _finish(item, job)
+        failed = failed or item.status in ("failed", "cancelled")
+        # A job that ends while its own sweep is still running has no owner
+        # yet; the Library being swept queued it.
+        library_id = owners.get(job.id) or (sweeping[-1] if sweeping else None)
+        printer.line({"library": library_id, **item.convert_line()},
+                     prefix=f"{library_id}: " if library_id else "")
+
+    # Registered like the server's: the Rule history hears each job's outcome.
+    async with _job_runner(state, on_terminal, rules_sweep.note_job_finished) as jobs:
+        for library in chosen:
+            if state.stopping:
+                break
+            before = set(jobs.jobs)
+            sweeping.append(library.id)
+            if await _sweep_one(printer, library, state, dry_run=False):
+                failed = True
+            for job_id in set(jobs.jobs) - before:
+                owners.setdefault(job_id, library.id)
+            if state.stopping:
+                # The signal cancelled what was queued when it arrived; the
+                # sweep may have let one more batch in since. Cancel that too
+                # rather than wait for it.
+                await jobs.cancel_all_jobs()
+                break
+        await jobs.drain()
+    return EXIT_FAILED if failed or state.stopping else EXIT_OK
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 
@@ -1375,6 +1659,8 @@ async def _run(args) -> int:
     with _signals(state), readonly:
         if args.command == "convert":
             return await convert(args, printer, state)
+        if args.command == "run-rules":
+            return await run_rules(args, printer, state)
         return await verify(args, printer, state)
 
 
@@ -1385,6 +1671,7 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:  # argparse: --help is 0, a bad argument 2
         return exc.code if isinstance(exc.code, int) else EXIT_USAGE
     with _logging(args.verbose):
+        from services.scheduler_lock import SchedulerLockHeld
         from utils.process_limits import raise_open_file_limit
 
         raise_open_file_limit()
@@ -1393,6 +1680,9 @@ def main(argv: list[str] | None = None) -> int:
         except UsageError as exc:
             print(f"compressatorium: error: {exc}", file=sys.stderr)
             return EXIT_USAGE
+        except SchedulerLockHeld as exc:
+            print(f"compressatorium: not running the Rules: {exc}", file=sys.stderr)
+            return EXIT_LOCKED
         except (asyncio.CancelledError, KeyboardInterrupt):
             print("compressatorium: stopped", file=sys.stderr)
             return EXIT_FAILED

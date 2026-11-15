@@ -34,6 +34,43 @@
   Finding. API: `/api/findings`, `/api/platform-mappings`, `/api/platforms`.
   New tables `platform_mappings`, `findings` and `finding_dismissals`
   (migration 0013, on top of #303's 0012).
+- **`compressatorium convert` and `compressatorium verify`** (#306). A command
+  line for shells and cron that covers every tool, recurses into subfolders and
+  archives, and uses the web UI's planner, delete checks and Ledger.
+  `convert PATH --to chd` (any format, `7z`/`zip` included, or a mode id) or
+  `--auto`, with `--delete-source` (Round-trip where the mode has it,
+  `--container-only` to opt out), `--dry-run` and `--json`. `verify PATH --since
+  30d` checks Images not checked in that window. Exit 0 when done or nothing to
+  do, 1 on a failure, 2 on bad arguments. Safe beside a running server: both
+  take the same output locks, and an `.m3u` both update is rewritten by one at a
+  time, so neither edit is lost. Started as root, it drops to the `converter` user
+  (`PUID`/`PGID`) the way the server does. `CHD_MODE=cli` keeps today's scope
+  and defaults; it now runs through this command. Two differences: with
+  `CHDMAN_MODE=createdvd` it no longer hands top-level `.cue`/`.gdi` files to
+  chdman (that never produced a usable CHD), and one failed file no longer
+  stops the rest of the run.
+- **`compressatorium run-rules`** (#307). One pass over your stored Rules, for
+  cron or Unraid User Scripts: it queues what each Rule says is due, waits for
+  those jobs and exits: 0, or 1 when a job failed or a sweep reported an error
+  (RomM not answering, a tool not installed, ...). It sweeps every Library the
+  server does, RomM and each folder Library; `--library romm` or
+  `--library folder:1` limits it to one; `--dry-run` shows what each Rule would queue. Before sweeping
+  RomM it finishes an owed identity cleanup and settles pending re-pins once.
+  Only one Rule scheduler runs per data directory: the server now holds a lock
+  on `/config/locks/scheduler.lock` while it runs, and `run-rules` exits 3
+  without queuing anything while it is held. A server started during a
+  `run-rules` pass, or beside another server on the same `/config`, waits for
+  the lock (logging who holds it) and then starts.
+- **`.m3u` playlists follow a converted disc** (#295). With delete-on-verify,
+  an `.m3u` that names the Source, in its folder or any folder above it up to
+  the volume root, is rewritten to the output before the Source is deleted.
+  Only replaced entries change, the write is atomic, and the original is kept
+  once as `<name>.m3u.bak`. The delete confirmation lists each playlist edit.
+  If a playlist can't be updated, or names the Source in a form the app can't
+  follow, the Source is kept and the job ends as "converted, source kept:
+  couldn't update <file> (<reason>)", shown on the finished job. Ledger rows
+  list the playlists updated, or the one that kept the Source and why. The
+  `compressatorium convert --delete-source` line prints the same reason.
 - **Folder Libraries and the Rules view** (#303). Pick **Register as a
   Library** on any folder inside a Volume, and the new **Rules** view shows the
   Platforms found in it with Image counts, plus how many Images are Unsorted or
@@ -59,21 +96,6 @@
   - Every Rule sweep now gives a Library 10 minutes to list a Platform, RomM
     included (RomM's catalog fetch had no limit). Past that the sweep stops
     with "the library stopped responding" and the next one starts over.
-
-- **`compressatorium convert` and `compressatorium verify`** (#306). A command
-  line for shells and cron that covers every tool, recurses into subfolders and
-  archives, and uses the web UI's planner, delete checks and Ledger.
-  `convert PATH --to chd` (any format, `7z`/`zip` included, or a mode id) or
-  `--auto`, with `--delete-source` (Round-trip where the mode has it,
-  `--container-only` to opt out), `--dry-run` and `--json`. `verify PATH --since
-  30d` checks Images not checked in that window. Exit 0 when done or nothing to
-  do, 1 on a failure, 2 on bad arguments. Safe beside a running server: both
-  take the same output locks. Started as root, it drops to the `converter` user
-  (`PUID`/`PGID`) the way the server does. `CHD_MODE=cli` keeps today's scope
-  and defaults; it now runs through this command. Two differences: with
-  `CHDMAN_MODE=createdvd` it no longer hands top-level `.cue`/`.gdi` files to
-  chdman (that never produced a usable CHD), and one failed file no longer
-  stops the rest of the run.
 - **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
   panel, select a mix of files, and each Image goes to its Platform's default
   format with your saved compression. The Platform comes from the Image's own

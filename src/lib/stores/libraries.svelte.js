@@ -59,7 +59,7 @@ export class FolderRulesSource extends RulesSource {
   }
 
   async setScheduleEnabled(enabled) {
-    libraries.adopt(await api.updateLibrary(this.id, { schedule_enabled: enabled }));
+    await libraries.saveSettings(this.id, { schedule_enabled: enabled });
   }
 
   /**
@@ -82,12 +82,16 @@ export class FolderRulesSource extends RulesSource {
   async loadPlatforms() {
     this.platformsLoading = true;
     this.platformsError = null;
+    // The settings generation this read started at; see `LibrariesStore.adopt`.
+    const readAt = libraries.settingsGeneration(this.id);
     try {
       const data = await api.getLibraryPlatforms(this.id);
       this.platformsBusy = false;
       // The response carries the Library's current row; a setting changed
       // elsewhere (another tab) shows here, in the picker and in this source.
-      if (data?.library) libraries.adopt(data.library);
+      // Unless a settings save landed while this read was out: then the row
+      // is older than the save and is not adopted. The Platforms still are.
+      if (data?.library) libraries.adopt(data.library, readAt);
       this.platforms = Array.isArray(data?.platforms) ? data.platforms : [];
       this.counts = {
         unsorted: data?.unsorted ?? 0,
@@ -126,6 +130,11 @@ class LibrariesStore {
   // after it; it must not put the Library back. Safe to keep for good: a
   // folder Library's id is never reused (the table is AUTOINCREMENT).
   #removed = new Set();
+  // Library id -> its settings generation, bumped when a settings save starts
+  // and again when it lands (`saveSettings`). A read records the generation it
+  // started at; a Library row it brings back is adopted only if no save began
+  // since, so a read older than a save never puts the old settings back.
+  #settingsGenerations = new Map();
 
   get selected() {
     return this.list.find((lib) => lib.id === this.selectedId) ?? null;
@@ -151,9 +160,19 @@ class LibrariesStore {
   async load() {
     this.loading = true;
     this.error = null;
+    const readAt = new Map(this.#settingsGenerations);
     try {
       const data = await api.listLibraries();
-      this.list = (Array.isArray(data) ? data : []).filter((lib) => !this.#removed.has(lib.id));
+      const current = new Map(this.list.map((lib) => [lib.id, lib]));
+      // A row whose settings were saved while this read was out keeps the
+      // saved row; see `adopt`.
+      this.list = (Array.isArray(data) ? data : [])
+        .filter((lib) => !this.#removed.has(lib.id))
+        .map((lib) => (
+          this.#isStale(lib.id, readAt.get(lib.id) ?? 0) && current.has(lib.id)
+            ? current.get(lib.id)
+            : lib
+        ));
       this.#refreshSources(this.list);
       if (!this.list.some((lib) => lib.id === this.selectedId)) {
         this.selectedId = ROMM_LIBRARY_ID;
@@ -166,9 +185,47 @@ class LibrariesStore {
     return this.list;
   }
 
-  /** Replace one Library's row with what the backend just returned. */
-  adopt(library) {
+  /** The settings generation of Library *id*; a read records it when it starts. */
+  settingsGeneration(id) {
+    return this.#settingsGenerations.get(id) ?? 0;
+  }
+
+  #isStale(id, readAt) {
+    return readAt !== this.settingsGeneration(id);
+  }
+
+  #bumpSettings(id) {
+    this.#settingsGenerations.set(id, this.settingsGeneration(id) + 1);
+  }
+
+  /**
+   * Save Library *id*'s settings (*patch*: name, schedule switch, ...). The one
+   * way a settings change is written from the app. Bumps the settings
+   * generation as the save starts and again when it lands, so any read that
+   * set off before the save answered is too old to adopt.
+   */
+  async saveSettings(id, patch) {
+    this.#bumpSettings(id);
+    try {
+      const saved = await api.updateLibrary(id, patch);
+      this.adopt(saved);
+      return saved;
+    } finally {
+      this.#bumpSettings(id);
+    }
+  }
+
+  /**
+   * Replace one Library's row with what the backend just returned.
+   *
+   * *readAt* is the settings generation a read started at (`settingsGeneration`).
+   * Given, the row is adopted only if no settings save began since: an older
+   * read would put the previous settings back over the saved ones. A save's
+   * own answer passes none, and is always adopted.
+   */
+  adopt(library, readAt = null) {
     if (!library?.id || this.#removed.has(library.id)) return;
+    if (readAt !== null && this.#isStale(library.id, readAt)) return;
     const at = this.list.findIndex((lib) => lib.id === library.id);
     this.list = at === -1
       ? [...this.list, library]

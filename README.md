@@ -523,6 +523,21 @@ checks a whole selection at once across CHD, Dolphin, 3DS, Switch, and CSO;
 verification status persists between sessions, and a long verify can be given a
 timeout so a stalled one doesn't block the queue.
 
+**Multi-disc playlists follow the conversion.** Before a source is deleted, any
+`.m3u` that names it is rewritten to the new file, so disc swapping keeps
+working. The app looks in the disc's own folder and every folder above it up to
+the volume root, so a `psx/Game.m3u` pointing into a hidden `.discs/` folder is
+covered. Only the entries for replaced files change (a RetroArch `path|label`
+entry keeps its label); other lines, line endings and encoding are left as
+they were, and the first rewrite keeps a copy of the original as
+`<name>.m3u.bak`. The delete confirmation lists each playlist edit. If a
+playlist can't be written (read-only, say), or it has a line that names the
+source in a form the app can't follow (an absolute path as the emulator sees
+it, say), the source is kept, the output stays beside it,
+and the job ends as `converted, source kept: couldn't update <playlist>
+(<reason>)`. The Ledger row records each playlist updated, or the one that
+kept the source and why.
+
 ### File info
 
 Click a file to open the inspector — it shows the format/version, compression,
@@ -995,6 +1010,12 @@ A three-pane layout: navigation and tool picker on the left, the volume and file
 | Light | Dark |
 |-------|------|
 | ![Batch selection, light](docs/screenshots/workspace-batch-light.png) | ![Batch selection, dark](docs/screenshots/workspace-batch-dark.png) |
+
+**Delete-on-verify confirmation.** Before anything is queued, the app lists every file it will delete after the output verifies, and each `.m3u` playlist entry it will point at the new file first.
+
+| Light | Dark |
+|-------|------|
+| ![Delete confirmation, light](docs/screenshots/delete-plan-light.png) | ![Delete confirmation, dark](docs/screenshots/delete-plan-dark.png) |
 
 **Auto.** Tick **Auto** and select a mix of files: each Image goes to its Platform's default format with your saved compression. The Platform comes from the Image's header (GameCube/Wii magic, PS1/PS2 `SYSTEM.CNF`, PSP `PARAM.SFO`, Dreamcast `IP.BIN`, Saturn, Sega CD, Xbox), or from its folder name (`ps2`, `psx`, `gc`, `dreamcast`, … as RomM, ES-DE and Batocera name them) when there is no readable header. A header that disagrees with its folder, or an Image nothing identifies, is skipped and listed in the plan you confirm before anything is queued.
 
@@ -1805,6 +1826,7 @@ must sit inside the configured Volumes.
 compressatorium convert /data/ps2 --to chd --delete-source
 compressatorium convert /data --auto --dry-run --json
 compressatorium verify /data/gamecube --since 30d
+compressatorium run-rules --dry-run
 ```
 
 **`convert PATH... (--to FORMAT | --auto)`**
@@ -1836,10 +1858,48 @@ result. `--since 30d` (also `12h`, `2w`) skips Images checked within that window
 A check that fails drops the stored result; one that times out or cannot run
 leaves it and reports the error.
 
-Both commands take `--dry-run` (print the plan, convert or check nothing) and
-`--json` (one JSON line per Image on stdout). Warnings and errors always go to
-stderr; `-v` adds INFO messages there. Exit status: `0` when everything finished
-or there was nothing to do, `1` when any Image failed, `2` on bad arguments.
+**`run-rules [--library ID]`** does one pass over the Rules stored in the web UI
+for every Library (RomM and each registered folder Library), waits for the jobs
+it queued, and exits. It is the
+same sweep the server's scheduler runs each minute, so each Rule's own on/off
+switch, days, time window, interval and per-run cap still apply; the
+auto-convert master switch does not, because running the command is the
+switch. `--library romm` or `--library folder:1` limits it to one Library (the
+ids are listed by `/api/libraries`). `--dry-run` prints what each
+Rule would queue on this pass and writes nothing. Unlike the editor's Preview it
+keeps each Rule's clock, so a Rule that is not due (outside its window, or run
+within its interval) prints no line. It prints one line per Platform and one per
+job as it ends.
+
+Before it sweeps RomM, `run-rules` does the RomM upkeep the server does in the
+background: it finishes an identity cleanup a crash left owed (otherwise RomM
+Rules are refused with `identity_cleanup_pending`) and runs one pass of the
+re-pin settler, so ROMs converted by an earlier pass get their metadata back.
+Re-pins recorded by this pass are settled by the next pass, or by the server.
+It does not run the DAT sync, the Hasheous checks or anything else the web UI
+starts.
+
+A pass exits `1` when any job failed or was cancelled, and also when any sweep
+reported an error: RomM not answering (`unreadable`), a tool that is not
+installed, an output folder outside the Volumes, a source that could not be
+read, a destination another job took first (`destination_claimed`), RomM not
+configured while it has Rules, a queue too full to take the pass's Images
+(`MAX_QUEUE_DEPTH`; the line says how many were left), or a Library whose
+sweep raised. The other
+Libraries still run. A stop (SIGTERM, `docker stop`, Ctrl-C) queues nothing
+more, cancels the jobs it queued and exits `1`. A job that converts and checks
+its output but keeps the Source because another job was still reading it
+completes: its line shows "Source kept: it was being read by another job" and
+it does not change the exit status. A Source kept by a safety check (an archive
+that holds other files, a delete plan that changed) is a failed job.
+
+Every command takes `--dry-run` (print the plan, convert or check nothing) and
+`--json` (one JSON line per Image; for `run-rules`, one per Platform and one per
+job, on stdout).
+Warnings and errors always go to stderr; `-v` adds INFO messages there. Exit
+status: `0` when everything finished or there was nothing to do, `1` when any
+Image or job failed (for `run-rules`, also a sweep error), `2` on bad arguments,
+`3` when `run-rules` found another scheduler using the data directory.
 
 Each Image is planned on its own, so one bad file is reported and the others
 still convert. When `MAX_QUEUE_DEPTH` is set, jobs are fed in batches below it.
@@ -1853,6 +1913,46 @@ Started as root (`docker exec` without `-u`, or `--entrypoint`), the command
 first remaps and drops to the `converter` user through the image's entrypoint,
 honouring `PUID`/`PGID` the same way the server does, so the files it writes
 belong to the user the server runs as.
+
+**One Rule scheduler per data directory.** `convert` and `verify` run beside a
+server; `run-rules` does not. The server holds a lock on
+`/config/locks/scheduler.lock` for as long as it runs, and its own scheduler
+runs the Rules. While that lock is held, `run-rules` prints who holds it and
+exits `3` without queuing anything. A server started while a `run-rules` pass
+(or another server) holds the lock waits for it before it opens anything,
+logging who it waits for every 30 seconds, then starts; `docker stop` still
+stops it while it waits. The web UI does not answer while it waits, but the
+container's health check counts the wait as healthy. Use `run-rules` where the server is not running all the
+time: start a one-off container with the same `/config` and the same Volume
+mounts as the server (RomM's library root must resolve to the same path).
+
+### Rules from cron
+
+A crontab line on the Docker host, nightly at 02:00:
+
+```bash
+0 2 * * * docker run --rm -e PUID=1000 -e PGID=1000 -v /srv/compressatorium/config:/config -v /srv/games:/data/games --entrypoint compressatorium pacnpal/compressatorium run-rules >> /var/log/compressatorium-rules.log 2>&1
+```
+
+### Rules from Unraid User Scripts
+
+Add a script in **Settings → User Scripts**, paste this, and set its schedule
+(for example **Custom** `0 3 * * *`). Use the appdata and share paths your
+Compressatorium container uses.
+
+```bash
+#!/bin/bash
+docker run --rm -e PUID=99 -e PGID=100 \
+  -v /mnt/user/appdata/compressatorium:/config \
+  -v /mnt/user/games:/data/games \
+  --entrypoint compressatorium pacnpal/compressatorium run-rules
+status=$?
+if [ "$status" -eq 3 ]; then
+  echo "Compressatorium is running; its own scheduler runs the Rules."
+  exit 0
+fi
+exit "$status"
+```
 
 ### `CHD_MODE=cli`
 
@@ -1995,7 +2095,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | POST | `/api/jobs` | Create a single conversion job |
 | POST | `/api/jobs/batch` | Create multiple conversion jobs |
 | POST | `/api/jobs/check-duplicates` | Check for existing output files |
-| POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list |
+| POST | `/api/jobs/delete-plan` | Build delete-on-verify confirmation list, with each planned `.m3u` edit (`referrer_changes`) |
 | GET | `/api/jobs` | List all jobs |
 | GET | `/api/jobs/{id}` | Get a specific job |
 | DELETE | `/api/jobs/{id}` | Cancel a job |
@@ -2093,7 +2193,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files and conversion slots. Under the data dir so the server and a CLI container share it. Created at start; the process stops with an error if it can't be |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files, conversion slots and the Rule scheduler lock. Under the data dir so the server and a CLI container share it. Created at start; the process stops with an error if it can't be |
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database for DATs, match cache, CHD metadata, verification state, and DAT-sync state |
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `chd_metadata.json.migrated.bak` |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `verified_chds.json.migrated.bak` |
@@ -2190,7 +2290,7 @@ The application also uses a non-persistent directory for runtime lock files:
 
 | File / Directory | Location | Description |
 |------------------|----------|-------------|
-| `locks/` | `/config/locks` | Job lock files and conversion slots, shared by every process that mounts `/config`; stale ones are cleaned up on start |
+| `locks/` | `/config/locks` | Job lock files, conversion slots and `scheduler.lock` (one Rule scheduler per data directory), shared by every process that mounts `/config`; stale ones are cleaned up on start |
 
 ---
 

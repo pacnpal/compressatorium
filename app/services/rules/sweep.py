@@ -103,6 +103,38 @@ _VOLUME_PROBE_SECONDS = 20
 # for the whole call and a mount that stops answering would otherwise hold it
 # until a restart.
 _LISTING_SECONDS = 600
+# How often a long wait in the sweep (a Library listing) looks for a stop.
+_STOP_POLL = 0.2
+
+
+class _SweepStopped(Exception):
+    """The caller's ``should_stop`` turned true during a wait."""
+
+
+async def _wait_unless_stopped(awaitable, timeout: float, stopping: Callable[[], bool]):
+    """Await *awaitable* for up to *timeout* seconds, giving up on a stop.
+
+    Raises ``asyncio.TimeoutError`` past the bound and :class:`_SweepStopped`
+    once *stopping()* is true. Either way the awaited task is cancelled; for a
+    ``run_detached`` call that abandons the worker thread, which stays bounded
+    and finishes on its own.
+    """
+    task = asyncio.ensure_future(awaitable)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            done, _ = await asyncio.wait({task}, timeout=min(_STOP_POLL, remaining))
+            if done:
+                return task.result()
+            if stopping():
+                raise _SweepStopped
+    finally:
+        if not task.done():
+            task.cancel()
 
 # One sweep at a time, process-wide. The active-source snapshot is taken before
 # anything is queued, so the minute scheduler and a manual "Run now" could each
@@ -1023,11 +1055,18 @@ async def sweep(
     ignore_schedule: bool = False,
     dry_run: bool = False,
     overall_limit: int | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict:
     """Run one pass over *library*'s ruled Platforms.
 
     Returns a summary rather than raising on a partial failure: one unreachable
     platform must not abort the sweep for the others.
+
+    *should_stop* is asked before each Platform, before each Image is
+    inspected, before each delete snapshot is read, and again just before a
+    batch is queued; once it is true the
+    sweep queues nothing more and ends with ``stopped_reason == "stopped"``
+    (``run-rules`` on SIGTERM, #307).
 
     Serialised process-wide, so a scheduled tick and a manual run cannot both
     plan against the same "nothing is in flight" snapshot. A preview is a real
@@ -1053,6 +1092,7 @@ async def sweep(
                 ignore_schedule=ignore_schedule,
                 dry_run=dry_run,
                 overall_limit=overall_limit,
+                should_stop=should_stop,
             )
         except asyncio.CancelledError:
             notified = {"errors": []}
@@ -1071,8 +1111,12 @@ async def _sweep_locked(
     ignore_schedule: bool,
     dry_run: bool,
     overall_limit: int | None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict:
     """The sweep body. Always called with ``_sweep_lock`` held."""
+    def stopping() -> bool:
+        return should_stop is not None and should_stop()
+
     # Every Rule of every kind, with its own run state: a Platform's conversion
     # Rule and check Rule run on their own clocks.
     rules = {kind: await get_rules(library, kind) for kind in RULE_KINDS}
@@ -1153,6 +1197,9 @@ async def _sweep_locked(
         await _clear_vanished(library)
 
     for kind, platform_id in ordered:
+        if stopping():
+            result["stopped_reason"] = "stopped"
+            break
         rule = rules[kind][platform_id]
         # The cap counts conversions. A check Rule queues none, so one ordered
         # after a capped conversion Rule still runs.
@@ -1233,9 +1280,9 @@ async def _sweep_locked(
             )
             continue
 
-        images = await _list_images(library, platform_id, result)
+        images = await _list_images(library, platform_id, result, stopping)
         if images is None:
-            if result["stopped_reason"] == "library_unresponsive":
+            if _sweep_ends(result):
                 break
             continue
 
@@ -1297,6 +1344,10 @@ async def _sweep_locked(
 
         for image in sorted(images, key=_image_sort_key(rule)):
             if len(batch) >= per_platform_cap:
+                break
+            # Per Image too: a Platform whose outputs all exist fills no batch,
+            # and every candidate costs its own disk probes.
+            if stopping():
                 break
             considered += 1
             # One hop to a worker thread for every disk-touching check on this
@@ -1402,6 +1453,12 @@ async def _sweep_locked(
             # with no digest deletes on Intact). Absent when nothing is deleted.
             summary["check_level"] = effective_check_level(rule)
 
+        if stopping():
+            # Asked again here: listing and inspecting a Platform can take
+            # minutes, and a stop that arrived meanwhile must queue nothing,
+            # nor stamp this Platform's clock for a pass cut short.
+            result["stopped_reason"] = "stopped"
+            break
         if batch and not dry_run:
             try:
                 # delete-on-verify needs its snapshot up front, or
@@ -1413,6 +1470,10 @@ async def _sweep_locked(
                 if rule["delete_on_verify"]:
                     snapshots = {}
                     for path in batch:
+                        # One probe per Source, each up to its bound: a stop
+                        # must not wait for the rest of them.
+                        if stopping():
+                            break
                         # Bounded, and a missing snapshot is not silently
                         # accepted: `_process_job` refuses to delete without
                         # one, so an unreadable source must drop out of the
@@ -1448,6 +1509,11 @@ async def _sweep_locked(
                         result["platforms"].append(summary)
                         continue
 
+                if stopping():
+                    # Arrived while the snapshots were read: queue none of
+                    # this batch, and leave the Platform's clock alone.
+                    result["stopped_reason"] = "stopped"
+                    break
                 owner = notifications.sweep_owner()
                 jobs = await job_manager.create_batch_jobs(
                     batch,
@@ -1551,6 +1617,9 @@ async def _sweep_locked(
                 # these ROMs unconverted.
                 logger.info("romm_auto: queue full, stopping sweep")
                 result["stopped_reason"] = "queue_full"
+                # What this Platform's refused batch held, so a caller can say
+                # how much work was left (run-rules).
+                summary["unqueued"] = len(batch)
                 result["platforms"].append(summary)
                 break
             except OutputClaimedError as exc:
@@ -1634,11 +1703,16 @@ def forget_checks_locked(library: Library) -> None:
     image_checks.forget_library(library.id)
 
 
-async def _list_images(library: Library, platform_id: str, result: dict) -> list[Image] | None:
+async def _list_images(
+    library: Library, platform_id: str, result: dict,
+    stopping: Callable[[], bool] = lambda: False,
+) -> list[Image] | None:
     """One Platform's Images, or None with the reason added to *result*.
 
-    A Library that stops answering also sets ``stopped_reason`` to
-    ``library_unresponsive``: the caller stops the sweep there.
+    A Library that stops answering sets ``stopped_reason`` to
+    ``library_unresponsive``, and a stop that arrives while it lists sets it
+    to ``stopped``: either way the caller stops the sweep there
+    (:func:`_sweep_ends`).
     """
     platform_ref = library.platform_value(platform_id)
     try:
@@ -1650,10 +1724,15 @@ async def _list_images(library: Library, platform_id: str, result: dict) -> list
         # conversions need. Not `run_in_threadpool` either: anyio waits for
         # the thread when its caller is cancelled. Called through the
         # module so it is not the candidate probes' `run_detached`.
-        images = await asyncio.wait_for(
+        # And stop-aware: a listing can take the whole bound, and a stop
+        # (run-rules on SIGTERM) must not wait for it.
+        images = await _wait_unless_stopped(
             subprocess_runner.run_detached(library.images, platform_id),
-            _LISTING_SECONDS,
+            _LISTING_SECONDS, stopping,
         )
+    except _SweepStopped:
+        result["stopped_reason"] = "stopped"
+        return None
     except LibraryUnreadable as exc:
         if _unreadable.get((library.id, platform_id)) != exc.code:
             logger.warning(
@@ -1682,6 +1761,12 @@ async def _list_images(library: Library, platform_id: str, result: dict) -> list
             "romm_auto: platform %s of %s is readable again", platform_id, library.id,
         )
     return images
+
+
+def _sweep_ends(result: dict) -> bool:
+    """Whether a failed listing ends the whole sweep: the Library stopped
+    answering, or the caller asked to stop."""
+    return result["stopped_reason"] in ("library_unresponsive", "stopped")
 
 
 async def _sweep_check(

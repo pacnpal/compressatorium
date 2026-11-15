@@ -40,6 +40,23 @@ def _release_leaked_tickets():
         concurrency_manager.release(key)
 
 
+@pytest.fixture(autouse=True)
+def _restore_tool_instances():
+    """The registry's tools are process-wide singletons. ``monkeypatch.setattr``
+    on one of them (``tool.verify = fake``) undoes by *setting* the class's
+    bound method on the instance, not by deleting the attribute, and that pin
+    shadows any later test's patch of the class. Put every tool's instance
+    attributes back as they were before the test."""
+    from services.tools import registry
+
+    before = {tool: dict(vars(tool)) for tool in registry.all()}
+    yield
+    for tool, attrs in before.items():
+        if vars(tool) != attrs:
+            vars(tool).clear()
+            vars(tool).update(attrs)
+
+
 @pytest.fixture
 def db_path(tmp_path: Path) -> str:
     """Fresh SQLite file per test (on-disk, not :memory:, because migration

@@ -1402,6 +1402,29 @@ async def _settle_pass(*, bounded: bool = True) -> dict:
     }
 
 
+async def settle_once() -> dict | None:
+    """One tick of the background settler; None when it had nothing to do.
+
+    Called by `settle_forever` each tick and once by ``run-rules`` before it
+    sweeps RomM (#307), which has no background loop of its own.
+    """
+    if not romm_settings.effective().get("repin_enabled", True):
+        return None
+    # Rows recorded against an instance nobody is pointed at any more are
+    # still in the table until the cleanup lands. Settling one stamps the
+    # previous library's ids onto whatever the current one matches -- so
+    # pause, and retry the cleanup while paused.
+    if await identity_cleanup_is_owed():
+        return None
+    if _settle_lock.locked():
+        return None
+    pending = await run_in_threadpool(romm_repin.count_pending)
+    if not pending:
+        return None
+    async with _settle_lock:
+        return await _settle_pass(bounded=False)
+
+
 async def settle_forever() -> None:
     """Background re-pin settler. Ticks every few minutes.
 
@@ -1419,22 +1442,8 @@ async def settle_forever() -> None:
     while True:
         try:
             await asyncio.sleep(_SETTLE_TICK_SECONDS)
-            if not romm_settings.effective().get("repin_enabled", True):
-                continue
-            # Rows recorded against an instance nobody is pointed at any more
-            # are still in the table until the cleanup lands. Settling one
-            # stamps the previous library's ids onto whatever the current one
-            # matches -- so pause, and retry the cleanup while paused.
-            if await identity_cleanup_is_owed():
-                continue
-            if _settle_lock.locked():
-                continue
-            pending = await run_in_threadpool(romm_repin.count_pending)
-            if not pending:
-                continue
-            async with _settle_lock:
-                result = await _settle_pass(bounded=False)
-            if result["repinned"]:
+            result = await settle_once()
+            if result and result["repinned"]:
                 logger.info(
                     "romm: re-matched %s ROM(s) in the background", result["repinned"],
                 )

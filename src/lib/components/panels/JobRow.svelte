@@ -116,6 +116,8 @@
       <div class="error-message">{line.text}</div>
     {:else if line.kind === 'warning'}
       <div class="warning-message">{line.text}</div>
+    {:else if line.kind === 'kept'}
+      <div class="kept-message" role="status">{line.text}</div>
     {:else if line.kind === 'output'}
       <div class="message muted" title={job.output_path}>{line.text}</div>
     {:else}
@@ -197,6 +199,14 @@
     color: var(--error);
     font-size: var(--text-xs);
     background: var(--error-muted);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .kept-message {
+    color: var(--warning);
+    font-size: var(--text-xs);
+    background: var(--warning-muted);
     border-radius: var(--radius-sm);
     padding: var(--space-1) var(--space-2);
   }

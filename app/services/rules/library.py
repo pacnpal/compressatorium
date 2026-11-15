@@ -231,6 +231,17 @@ class Library(Protocol):
 
     # ---- hooks for steps only this Library performs ----
 
+    async def before_pass(self, *, dry_run: bool) -> None:
+        """Called by ``run-rules`` (#307) before it sweeps this Library.
+
+        The work the server does at startup or in its background loops that a
+        sweep relies on: load saved settings, and, on a real pass, the
+        maintenance only this Library has. A dry run must write nothing. A
+        Library with nothing to do inherits the no-op from
+        :class:`LibraryDefaults`. Errors propagate: ``run-rules`` reports them
+        for this Library and goes on.
+        """
+
     def sweep_blocked(self) -> str | None:
         """An error code when the Library must not be swept now, else None."""
 
@@ -245,3 +256,16 @@ class Library(Protocol):
 
     async def sweep_extras(self) -> Mapping[str, Any]:
         """Extra keys added to a sweep's result when it ends."""
+
+
+class LibraryDefaults:
+    """Defaults for the optional parts of the :class:`Library` contract.
+
+    A Library class inherits this so that a hook it has no use for is a no-op,
+    rather than a missing attribute that fails a caller such as ``run-rules``.
+    Only hooks with a safe "nothing to do" answer belong here; everything
+    else in the Protocol a Library must implement itself.
+    """
+
+    async def before_pass(self, *, dry_run: bool) -> None:
+        """No upkeep before ``run-rules`` sweeps this Library."""

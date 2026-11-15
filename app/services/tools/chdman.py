@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from functools import partial
-from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
@@ -21,8 +20,8 @@ from services.chdman import CHDMAN_CONVERTIBLE_EXTENSIONS, chdman_service
 from services.disc_id import (
     DiscIdStorageAbandoned,
     clear_embedded_disc_id,
-    embed_in_chd,
     disc_platform,
+    embed_in_chd,
     extract_from_source,
     read_embedded_game_id,
 )
