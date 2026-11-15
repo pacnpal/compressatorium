@@ -111,6 +111,13 @@ def _env(tmp_path, monkeypatch, reset_db_engine):
     # A CLI process starts with an empty queue.
     monkeypatch.setattr(job_manager, "jobs", OrderedDict())
     monkeypatch.setattr(job_manager, "_queue", asyncio.PriorityQueue())
+    # And with its own event loop: a module lock a job's outcome waits on
+    # binds to the loop of the run, so each run here gets fresh ones.
+    from services.rules import store as rules_store
+    from services.rules import sweep as rules_sweep
+
+    monkeypatch.setattr(rules_sweep, "_sweep_lock", asyncio.Lock())
+    monkeypatch.setattr(rules_store, "_lock", asyncio.Lock())
     romm_settings.reset_for_tests()
 
     shelves = {
