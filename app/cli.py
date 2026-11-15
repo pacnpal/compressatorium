@@ -757,6 +757,10 @@ async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) ->
                 if item is not None:
                     watching[job.id] = item
                     pending.add(job.id)
+            if state.stopping:
+                # A stop that arrived while this batch was being queued: the
+                # signal handler's cancel-all ran before these jobs existed.
+                await job_manager.cancel_all_jobs()
             report()
         while pending:
             await wait_for_an_end()
@@ -811,14 +815,74 @@ async def convert(args, printer: Printer, state: RunState) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _verify_tool(path: str):
-    from services.tools import registry
+def _verify_tool(path: str, has_db: bool = False) -> tuple:
+    """``(tool, None)`` to check ``path`` with, ``(None, reason)`` to skip it.
 
-    tools = registry.tools_verifying_path(path)
+    ``(None, None)`` means no tool checks this kind of file at all.
+
+    * A file with a stored check was an Image this app checked, so it is
+      checked again with the tool that claims its name even when that tool's
+      content probe no longer recognises it (a damaged ``.gba.zip`` stops
+      looking like a single-ROM archive): damage must fail, not vanish.
+    * Where the extension is shared across Platforms (a generic ``.iso``), the
+      Image's Platform (``detect_platform``) picks among the claimants; when no
+      claimant serves it, the Image is skipped as unsupported.
+    """
+    from services.platform_detect import canonical_slug, detect_platform
+    from services.tools import registry
+    from services.verification_store import verification_store
+    from utils.path_utils import match_extension
+
+    tools = registry.tools_checking_path(path)
+    if not tools and has_db and verification_store._get_record_sync(path):
+        claimed = registry.tool_for_verify(path)
+        tools = [claimed] if claimed is not None else []
     if not tools:
-        return None
+        return None, None
+    shared = any(
+        tool not in tools
+        and match_extension(path, tool.input_extensions | tool.verify_extensions)
+        for tool in registry.all()
+    )
+    if shared:
+        platform = detect_platform(path).platform
+        if platform:
+            def serves(tool) -> bool:
+                slugs = {canonical_slug(s) for s in tool.platform_slugs}
+                return not slugs or platform in slugs
+
+            claimed_anywhere = any(
+                platform in {canonical_slug(s) for s in t.platform_slugs}
+                for t in registry.all()
+            )
+            narrowed = [t for t in tools if serves(t)] if claimed_anywhere else tools
+            if not narrowed:
+                return None, f"No check for {platform} Images in this format"
+            tools = narrowed
     best = registry.tool_for_verify(path)
-    return best if best in tools else tools[0]
+    return (best if best in tools else tools[0]), None
+
+
+def _with_stored_checks(items: list[Item], paths: list[str], records: list[dict]) -> list[Item]:
+    """Add files under ``paths`` that have a stored check but no claimant now.
+
+    Stored paths are real paths; each is spelled under the folder the user
+    named, as the walk spells them.
+    """
+    seen = {os.path.realpath(i.path) for i in items}
+    for folder in paths:
+        if "::" in folder or not os.path.isdir(folder):
+            continue
+        real = os.path.realpath(folder)
+        for record in records:
+            stored = record.get("chd_path") or ""
+            if stored in seen or not stored.startswith(real + os.sep):
+                continue
+            if not os.path.isfile(stored):
+                continue
+            seen.add(stored)
+            items.append(Item(path=folder.rstrip(os.sep) + stored[len(real):]))
+    return items
 
 
 def _checked_at(record: dict | None) -> datetime | None:
@@ -890,6 +954,10 @@ async def verify(args, printer: Printer, state: RunState) -> int:
 
     has_db = _open_db(args.dry_run)
     items = await run_in_threadpool(lambda: _discover(paths, for_verify=True))
+    if has_db:
+        from services.verification_store import verification_store
+
+        items = _with_stored_checks(items, paths, await verification_store.all_records())
     failed = False
     # Asked once per tool per run, dry runs included: a probe can walk the
     # volumes (nsz looking for prod.keys), so never once per file.
@@ -897,11 +965,11 @@ async def verify(args, printer: Printer, state: RunState) -> int:
     for item in items:
         if state.stopping:
             break
-        tool = await run_in_threadpool(_verify_tool, item.path)
+        tool, unsupported = await run_in_threadpool(_verify_tool, item.path, has_db)
         if tool is None:
-            if item.explicit:
+            if unsupported or item.explicit:
                 printer.line({"path": item.path, "status": "skipped", "tool": None,
-                              "reason": "No tool checks this file"})
+                              "reason": unsupported or "No tool checks this file"})
             continue
         if tool.id not in ready:
             ready[tool.id] = await registry.tool_is_ready(tool, purpose="verify")

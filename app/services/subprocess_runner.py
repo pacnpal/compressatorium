@@ -861,6 +861,18 @@ BATCH_STOPPED_MESSAGE = (
 )
 
 
+def killed_verify_error(returncode: int) -> dict:
+    """The verify event for a verifier ended by a signal (#306).
+
+    A negative return code is a signal (SIGKILL, the OOM killer), not the
+    verifier's judgement of the file: no verdict, so a stored pass is kept.
+    """
+    return SubprocessRunner._verify_error(
+        f"The verifier was killed by signal {-returncode} before it finished",
+        inconclusive=True,
+    )
+
+
 def stops_verify_batch(result: dict, abandoned: Sequence[str] = ()) -> bool:
     """Whether a verify must end a walk over a list of files.
 
@@ -1380,6 +1392,9 @@ class SubprocessRunner:
                     f"Verification timed out after {timeout}s", inconclusive=True,
                 )
             return
+        if returncode < 0:
+            yield killed_verify_error(returncode)
+            return
         output = (stdout or b"").decode("utf-8", errors="replace").strip()
         tail = "\n".join(output.splitlines()[-5:]) if output else "verification failed"
         yield self._verify_error(f"Integrity check failed: {tail}")
@@ -1570,6 +1585,8 @@ class SubprocessRunner:
 
             if process.returncode == 0:
                 yield {"type": "complete", "valid": True, "message": success_message}
+            elif process.returncode is not None and process.returncode < 0:
+                yield killed_verify_error(process.returncode)
             else:
                 output = "\n".join(output_lines[-20:]).strip()
                 yield self._verify_error(output or failure_message)

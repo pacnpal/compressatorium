@@ -213,6 +213,11 @@ def _detect_archive_member_outputs(
     return output_stem, convertible_by, outputs, by_tool
 
 
+def checking_tools(path: str) -> list[str]:
+    """Tool ids a verify run checks this path with (``claims_check``, #306)."""
+    return [t.id for t in registry.tools_checking_path(path)]
+
+
 def verifiable_tools(path: str) -> list[str]:
     """Tool ids whose Verify/Info apply to this concrete on-disk path.
 
@@ -500,6 +505,9 @@ def scan_tree(
     if purpose not in ("convert", "verify"):
         raise ValueError(f"unknown scan purpose {purpose!r}")
     include_verifiable = purpose == "verify"
+    # A verify run asks the wider claim: a damaged file its tool would
+    # recognise is still checked (and fails), not dropped.
+    claims = checking_tools if include_verifiable else verifiable_tools
     files = []
     archives = []
     visited_dirs = set()
@@ -564,12 +572,12 @@ def scan_tree(
                                     "in_archive": False,
                                     "convertible_by": convertible_by,
                                     "outputs": outputs,
-                                    "verifiable_by": verifiable_tools(item_path),
+                                    "verifiable_by": claims(item_path),
                                 },
                             )
                         elif (
                             include_verifiable and not is_archive
-                            and (checked_by := verifiable_tools(item_path))
+                            and (checked_by := claims(item_path))
                         ):
                             files.append(
                                 {
@@ -607,7 +615,7 @@ def scan_tree(
                                     # Per-archive gate: romz Verify/Info only
                                     # surface on single-ROM .7z/.zip, not on
                                     # every archive container.
-                                    "verifiable_by": verifiable_tools(item_path),
+                                    "verifiable_by": claims(item_path),
                                 },
                             )
                             # List archive contents. Search surfaces
