@@ -28,11 +28,13 @@ from logging_setup import get_logger
 from config import settings
 from models import DirectoryListing, FileEntry, RommDiagnostics
 from pydantic import BaseModel, Field
+from routes import rules as shared_rule_routes
 from routes.files import (
     detect_directory_outputs,
     detect_file_outputs,
     verifiable_tools,
 )
+from services import libraries
 from services.file_hasher import compute_file_sha1_sync
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
@@ -59,6 +61,8 @@ from services.romm import (
 from services.romm import (
     settings as romm_settings,
 )
+from services.romm.library import romm_library
+from services.rules import editor as rules_editor
 from services.subprocess_runner import (
     SIZE_RATIOS,
     bounded_path_check,
@@ -1397,6 +1401,29 @@ async def _settle_pass(*, bounded: bool = True) -> dict:
     }
 
 
+async def settle_once() -> dict | None:
+    """One tick of the background settler; None when it had nothing to do.
+
+    Called by `settle_forever` each tick and once by ``run-rules`` before it
+    sweeps RomM (#307), which has no background loop of its own.
+    """
+    if not romm_settings.effective().get("repin_enabled", True):
+        return None
+    # Rows recorded against an instance nobody is pointed at any more are
+    # still in the table until the cleanup lands. Settling one stamps the
+    # previous library's ids onto whatever the current one matches -- so
+    # pause, and retry the cleanup while paused.
+    if await identity_cleanup_is_owed():
+        return None
+    if _settle_lock.locked():
+        return None
+    pending = await run_in_threadpool(romm_repin.count_pending)
+    if not pending:
+        return None
+    async with _settle_lock:
+        return await _settle_pass(bounded=False)
+
+
 async def settle_forever() -> None:
     """Background re-pin settler. Ticks every few minutes.
 
@@ -1414,22 +1441,8 @@ async def settle_forever() -> None:
     while True:
         try:
             await asyncio.sleep(_SETTLE_TICK_SECONDS)
-            if not romm_settings.effective().get("repin_enabled", True):
-                continue
-            # Rows recorded against an instance nobody is pointed at any more
-            # are still in the table until the cleanup lands. Settling one
-            # stamps the previous library's ids onto whatever the current one
-            # matches -- so pause, and retry the cleanup while paused.
-            if await identity_cleanup_is_owed():
-                continue
-            if _settle_lock.locked():
-                continue
-            pending = await run_in_threadpool(romm_repin.count_pending)
-            if not pending:
-                continue
-            async with _settle_lock:
-                result = await _settle_pass(bounded=False)
-            if result["repinned"]:
+            result = await settle_once()
+            if result and result["repinned"]:
                 logger.info(
                     "romm: re-matched %s ROM(s) in the background", result["repinned"],
                 )
@@ -1533,6 +1546,22 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     layer's dependency runs the other way (``romm_auto`` reads settings), and
     a route is where cross-service consequences belong.
     """
+    submitted = patch.model_dump(exclude_unset=True)
+    # RomM's root must not overlap a folder Library, or two Rule sets act on
+    # the same Images. Checked and saved under the registration lock
+    # (`libraries.romm_root_claim`), so a folder registration cannot race it,
+    # and refused before anything is persisted. Taken first, before the settle
+    # lock and the sweep pause: the check is bounded (503 past it), and a root
+    # on a mount that stopped answering then holds neither of them.
+    try:
+        async with libraries.romm_root_claim(submitted.get("library_root")):
+            return await _save_settings(submitted)
+    except libraries.LibraryPathError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
+
+async def _save_settings(submitted: dict) -> dict:
+    """The body of :func:`put_romm_settings`, under the registration lock."""
     # The save itself is inside the pause, not just the cleanup after it. A
     # sweep resolves each ROM's local path lazily from the *current* library
     # root, so swapping that root mid-sweep makes it queue whatever unrelated
@@ -1542,7 +1571,6 @@ async def put_romm_settings(patch: RommSettingsPatch) -> dict:
     # already read the old configuration and is about to ask *some* RomM to
     # match a digest, so the identity must not change underneath it.
     async with _settle_lock, romm_auto.paused():
-        submitted = patch.model_dump(exclude_unset=True)
         before = romm_settings.effective()
         # Decided, and acted on, BEFORE the new identity is persisted. The
         # other order looked natural and was not recoverable: the save lands,
@@ -1835,25 +1863,13 @@ async def get_romm_rules() -> dict:
     ``defaults`` and ``options`` ship with the rules so the UI never carries a
     second copy of what a valid rule looks like.
     """
-    rules = await romm_auto.get_rules()
-    state = await romm_auto.get_state()
-    return {
-        "rules": rules,
-        "state": state,
-        "defaults": romm_auto.default_rule(),
-        "options": {
-            "orders": list(romm_auto.ORDERS),
-            "duplicate_actions": list(romm_auto.DUPLICATE_ACTIONS),
-            "days": list(romm_auto.ALL_DAYS),
-        },
-    }
+    return await rules_editor.editor_payload(romm_library)
 
 
 @router.put("/romm/rules")
 async def put_romm_rules(payload: dict) -> dict:
     """Replace the rule set. Rules naming an unknown mode are dropped."""
-    rules = await romm_auto.set_rules(payload.get("rules", payload))
-    return {"rules": rules}
+    return await shared_rule_routes.save_rules(romm_library, payload)
 
 
 @router.post("/romm/rules/forget-converted")
@@ -1866,15 +1882,8 @@ async def forget_romm_converted(payload: dict | None = None) -> dict:
     the only thing standing between the operator and a rerun -- so it is
     clearable, per platform or wholesale.
     """
-    payload = payload or {}
-    ids = payload.get("platform_ids")
-    # `is not None` for the same reason the sweep uses it: an explicit empty
-    # list selects no platforms, and reading it as "no filter" cleared the
-    # conversion history for *every* one of them. This is the escape hatch
-    # after a restore -- wiping it wholesale on an empty selection makes the
-    # next sweep reconvert the entire library.
     cleared = await romm_auto.forget_converted(
-        [str(p) for p in ids] if ids is not None else None,
+        shared_rule_routes.requested_platform_ids(payload),
     )
     return {"cleared": cleared, "state": await romm_auto.get_state()}
 
@@ -1902,11 +1911,9 @@ async def preview_auto_convert(payload: SweepRequest | None = None) -> dict:
     """
     _require_configured()
     payload = payload or SweepRequest()
-    return await romm_auto.sweep(
-        platform_ids=payload.platform_ids,
-        ignore_schedule=True,
+    return await rules_editor.sweep_now(
+        romm_library, platform_ids=payload.platform_ids, limit=payload.limit,
         dry_run=True,
-        overall_limit=payload.limit,
     )
 
 
@@ -1919,9 +1926,7 @@ async def run_auto_convert(payload: SweepRequest | None = None) -> dict:
     """
     _require_configured()
     payload = payload or SweepRequest()
-    return await romm_auto.sweep(
-        platform_ids=payload.platform_ids,
-        ignore_schedule=True,
+    return await rules_editor.sweep_now(
+        romm_library, platform_ids=payload.platform_ids, limit=payload.limit,
         dry_run=False,
-        overall_limit=payload.limit,
     )

@@ -3,7 +3,7 @@ import logging
 from logging_setup import get_logger
 import os
 import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 
 from auth import ensure_auth_token, require_auth_middleware
@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from routes import convert, dat, files, info, preferences, romm
 from routes import ledger as ledger_routes
+from routes import libraries as library_routes
 from routes import rules as rules_routes
 from services import ledger
 from services.job_manager import job_manager
@@ -161,8 +162,70 @@ def configure_logging() -> None:
         )
 
 
+@contextmanager
+def _watch_stop_signals():
+    """While the block runs, note SIGTERM and SIGINT, and still pass them on.
+
+    Yields a callable: true once either arrived. uvicorn installs its own
+    handlers with ``signal.signal`` before startup and only acts on them once
+    startup returns, so a startup that waits must notice them itself.
+    """
+    import signal
+
+    seen: list[int] = []
+    previous: dict = {}
+
+    def note(signum, frame):
+        seen.append(signum)
+        handler = previous.get(signum)
+        if callable(handler):
+            handler(signum, frame)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous[sig] = signal.signal(sig, note)
+        except ValueError:  # not the main thread: nothing to watch
+            pass
+    try:
+        yield lambda: bool(seen)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Wait for the Rule scheduler lock, then start the app (``_serve``).
+
+    One Rule scheduler per data directory (#307). The lock is held for the
+    server's whole life and taken before anything touches the data directory.
+    While a `run-rules` pass (or another server) holds it, startup waits and
+    says so every ``scheduler_lock._WAIT_LOG_EVERY`` seconds; a SIGTERM while
+    waiting stops startup.
+    """
+    configure_logging()
+    logger = get_logger()
+    from services import scheduler_lock
+
+    def waiting(held: scheduler_lock.SchedulerLockHeld) -> None:
+        logger.warning("Waiting for the Rule scheduler lock: %s", held)
+
+    with _watch_stop_signals() as stopped:
+        try:
+            scheduler = await scheduler_lock.acquire_waiting(
+                "server", on_wait=waiting, should_stop=stopped,
+            )
+        except scheduler_lock.StoppedWaiting as exc:
+            raise RuntimeError(str(exc)) from None
+    try:
+        async with _serve(app):
+            yield
+    finally:
+        scheduler.release()
+
+
+@asynccontextmanager
+async def _serve(app: FastAPI):
     """Start background job processor and run startup migrations."""
     import asyncio
 
@@ -266,14 +329,17 @@ async def lifespan(app: FastAPI):
     # The unattended-conversion scheduler always runs; it checks the master
     # switch each tick, so toggling auto-convert in the app takes effect
     # without a restart.  It sleeps first, so startup never queues anything.
-    romm_auto_task = asyncio.create_task(romm_auto.run_forever())
+    # Every Library (RomM and each registered folder) is asked on each tick.
+    from services import libraries as library_catalogue
+
+    romm_auto_task = asyncio.create_task(library_catalogue.run_forever())
     app.state.background_tasks.add(romm_auto_task)
     romm_auto_task.add_done_callback(app.state.background_tasks.discard)
 
     def _log_romm_auto_error(t: asyncio.Task) -> None:
         if not t.cancelled() and t.exception() is not None:
             logger.error(
-                "RomM auto-convert scheduler exited unexpectedly",
+                "Rules scheduler exited unexpectedly",
                 exc_info=t.exception(),
             )
 
@@ -334,6 +400,11 @@ async def lifespan(app: FastAPI):
         )
 
     yield
+    # The Rule scheduler stops before the lock is let go (`lifespan`), so a
+    # `run-rules` pass that takes it next never sweeps beside it.
+    romm_auto_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await romm_auto_task
 
 
 app = FastAPI(
@@ -362,6 +433,7 @@ app.include_router(dat.router, prefix="/api", tags=["dat"])
 app.include_router(preferences.router, prefix="/api", tags=["preferences"])
 app.include_router(romm.router, prefix="/api", tags=["romm"])
 app.include_router(ledger_routes.router, prefix="/api", tags=["ledger"])
+app.include_router(library_routes.router, prefix="/api", tags=["libraries"])
 app.include_router(rules_routes.router, prefix="/api", tags=["rules"])
 
 

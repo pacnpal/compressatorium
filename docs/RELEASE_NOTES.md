@@ -19,6 +19,18 @@
   `CHDMAN_MODE=createdvd` it no longer hands top-level `.cue`/`.gdi` files to
   chdman (that never produced a usable CHD), and one failed file no longer
   stops the rest of the run.
+- **`compressatorium run-rules`** (#307). One pass over your stored Rules, for
+  cron or Unraid User Scripts: it queues what each Rule says is due, waits for
+  those jobs and exits: 0, or 1 when a job failed or a sweep reported an error
+  (RomM not answering, a tool not installed, ...). It sweeps every Library the
+  server does, RomM and each folder Library; `--library romm` or
+  `--library folder:1` limits it to one; `--dry-run` shows what each Rule would queue. Before sweeping
+  RomM it finishes an owed identity cleanup and settles pending re-pins once.
+  Only one Rule scheduler runs per data directory: the server now holds a lock
+  on `/config/locks/scheduler.lock` while it runs, and `run-rules` exits 3
+  without queuing anything while it is held. A server started during a
+  `run-rules` pass, or beside another server on the same `/config`, waits for
+  the lock (logging who holds it) and then starts.
 - **`.m3u` playlists follow a converted disc** (#295). With delete-on-verify,
   an `.m3u` that names the Source, in its folder or any folder above it up to
   the volume root, is rewritten to the output before the Source is deleted.
@@ -29,6 +41,31 @@
   couldn't update <file> (<reason>)", shown on the finished job. Ledger rows
   list the playlists updated, or the one that kept the Source and why. The
   `compressatorium convert --delete-source` line prints the same reason.
+- **Folder Libraries and the Rules view** (#303). Pick **Register as a
+  Library** on any folder inside a Volume, and the new **Rules** view shows the
+  Platforms found in it with Image counts, plus how many Images are Unsorted or
+  Conflicted. A cue/bin or gdi set is one Image, never its tracks. Give a
+  Platform a Rule (the same settings RomM Rules have), then Preview, Run now,
+  or turn the scheduler on. Folder Rules skip an Image whose output exists, so
+  a second sweep queues nothing, and a failed Image waits until one of its
+  files changes (or **Retry failed**); Unsorted and Conflicted Images are
+  never queued. Removing a Library removes its Rules and touches no
+  files. The RomM view's Automation tab is now the same view, opened on RomM.
+  API: `/api/libraries` (list, register, update, remove, platforms, rules,
+  preview, run). Registered folders live in a new `folder_libraries` table
+  (migration 0012).
+  - A `.cue` or `.gdi` whose tracks point outside the configured volumes (an
+    absolute path, `..`, or a symlink) is refused for every conversion, manual
+    or automatic, and a Rule reports it instead of queueing it. A sheet
+    converted from inside an archive is checked against the folder it was
+    extracted into, so its tracks there convert and nothing outside it does.
+  - Library roots never overlap. A folder equal to, inside, or containing
+    another Library (RomM's library folder included) can't be registered, and
+    saving a RomM library folder that overlaps a registered folder is refused
+    with the Library's name.
+  - Every Rule sweep now gives a Library 10 minutes to list a Platform, RomM
+    included (RomM's catalog fetch had no limit). Past that the sweep stops
+    with "the library stopped responding" and the next one starts over.
 - **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
   panel, select a mix of files, and each Image goes to its Platform's default
   format with your saved compression. The Platform comes from the Image's own
@@ -47,6 +84,13 @@
     Source was deleted, split by Platform and by output format.
   - **Recent conversions** now reads from the Ledger, so it is no longer empty
     after a restart.
+- **Ledger view, CSV export and metrics** (#297). A new **Ledger** page lists
+  every row newest first, paged, with search by path and filters for status,
+  tool and Platform. **Export CSV** downloads the rows matching the current
+  filter. New endpoints: `GET /api/ledger` (paged JSON), `GET
+  /api/ledger/export.csv`, and `GET /api/metrics` (Prometheus text: jobs by
+  status, bytes in, bytes out, queue depth). All sit behind the same auth as
+  the rest of the API. `GET /api/ledger/savings` remains the savings summary.
 - **Round-trip check before a Dolphin job deletes its Source** (#298). With
   delete-source on, a GameCube/Wii conversion now proves the output holds the
   same disc before removing anything: the Source ISO's SHA1 is compared with

@@ -2155,13 +2155,30 @@ a short settle delay, since the row is written after the completion event. A `re
 in the `ledger` preference prunes older rows on each write; unset keeps them
 forever. Recording never raises: a failure is logged and the job is unaffected.
 
+Reads all go through `services/ledger.py` so the routes stay thin. A
+`LedgerFilter` (path substring on Source or output, status, tool, Platform)
+builds one set of SQL clauses used by `list_page` (newest first, with a total),
+by `export_csv` (the same filter, keyset-paged on `(finished_at, id)` inside one
+explicit read transaction held for the stream, so every page reads the same SQLite
+snapshot and a job finishing or a prune mid-export neither repeats, skips nor drops
+a row) and by `facets` (distinct values for the filter
+menus). The Prometheus counters are not computed from the `ledger` table: the
+`ledger_totals` table (migration `0011`, seeded from the Ledger) holds per-status
+job counts and completed-job byte sums, bumped in the same transaction as each
+new row and never decremented, so retention cannot lower a counter. `q` is escaped, so
+`%` and `_` match literally. CSV cells starting with `=`, `+`, `-`, `@`, tab or
+CR get a leading `'` so a spreadsheet doesn't run them. `metrics_text` renders the
+Prometheus exposition (jobs by status, bytes of completed jobs, plus the live
+`job_manager.get_queue_depth()` passed in by the route). It sits under `/api`,
+so the auth middleware covers it with no exemption.
+
 ### 3.3.11 The Rule engine and the Library interface (`services/rules/`)
 
 A Rule converts the Images of one Platform in one Library. The engine that runs
 Rules is shared; where the Images come from is behind a `Library`
 (`services/rules/library.py`). RomM is the first Library
-(`services/romm/library.py`, `romm_library`). A folder Library (#303) is the
-second: one root folder inside a Volume.
+(`services/romm/library.py`, `romm_library`). A folder Library (#303,
+`services/libraries/folder.py`) is the second: one root folder inside a Volume.
 
 | Module | Holds |
 | --- | --- |
@@ -2169,10 +2186,12 @@ second: one root folder inside a Volume.
 | `rules/schedule.py` | `_in_window` (weekday mask, time window, time zone), `_is_due` (interval) |
 | `rules/store.py` | the `rules` and `rules.state` preference rows, keyed `"<library id>:<platform id>"`, the legacy-key move, the one-time upgrade to Round-trip and the notice it leaves |
 | `rules/sweep.py` | `get_rules` / `set_rules` / `get_state` / `forget_converted`, the sweep, the converted history, `note_job_finished`, `run_forever` |
-| `rules/library.py` | `Library`, `Image`, `Platform`, `QueuedImage`, `LibraryUnreadable`, capability names |
+| `rules/library.py` | `Library`, `Image`, `Platform`, `QueuedImage`, `LibraryUnreadable`, capability names, `duplicate_actions(library)` |
 
-**The interface.** A Library has an `id` (`"romm"`; a folder Library will use
-`"folder:<root>"`), `capabilities`, and:
+**The interface.** A Library has an `id` (`"romm"`; a folder Library uses
+`"folder:<row id>"`, the row in `folder_libraries`, so a path with a `:` in it
+cannot reach a stored key), `capabilities`, `kind`, `name` and `root` (for the
+API and the Rules view; the engine never reads those three), and:
 
 - `platforms()` and `images(platform_id)`, both blocking (the sweep calls them
   in a worker thread). `images` raises `LibraryUnreadable`, which the sweep
@@ -2207,10 +2226,61 @@ second: one root folder inside a Volume.
   the metadata snapshot for re-pin here, so the re-pin bookkeeping stays in
   `services/romm`.
 - `sweep_extras()` adds keys when a sweep ends (RomM: `pending_repins`).
+- `before_pass(*, dry_run)` is not called by the sweep: `run-rules` (§3.3.17)
+  calls it before it sweeps the Library, for the upkeep the server does at
+  startup or in its background loops. RomM loads its settings and, on a real
+  pass, runs `routes.romm.replay_identity_cleanup()` and one
+  `routes.romm.settle_once()` (the settler loop's tick, shared with
+  `settle_forever`). A dry run must write nothing. `LibraryDefaults` gives the
+  no-op, and every Library class inherits it (`FolderLibrary`, `RommLibrary`,
+  which overrides it), so `run-rules` calls it on any Library without a check.
 
-Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`) say what a Library
-supports. The engine does not gate on them yet; a Rules editor and the folder
-Library use them to offer only what applies.
+Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
+what a Library supports. Nothing in `rules/` asks what kind of Library it has.
+
+- `CONVERTED_HISTORY`: `duplicate_actions(library)` is every policy with it
+  and `("skip",)` without. A submission (`set_rules(..., strict=True)`, which
+  both Rule APIs use through `rules.editor.save_rules`) raises
+  `UnsupportedPolicy`, which the routes answer with 422
+  (`duplicate_action_unsupported`); a stored blob falls back to `skip` in
+  `normalize_rule`. `options.duplicate_actions` carries the same set, so the
+  editor never offers a policy the Library cannot honour.
+- `FAILED_HOLD`: when a job from this Library's sweep fails,
+  `note_job_finished` stores the Image's fingerprint
+  (`image_sets.image_fingerprint`: size and mtime of the file and every member,
+  so a replaced track counts) under `rules.state[...]["failed"][image key]`;
+  the candidate probe skips the Image (`skipped_failed`, in the result and in
+  each Platform's summary) while the fingerprint is unchanged, and a later
+  success drops the hold. Removing a Library bumps its generation
+(`sweep._generations`); a job-finish callback captures it before its first
+await and writes nothing if it changed, checked under `_sweep_lock`, so a
+removal mid-callback cannot recreate the Library's state. A real run drops holds for Images the Library no
+  longer lists. **Forget history** clears holds too; the editor shows the held
+  count with **Retry failed** whatever the policy. RomM does not
+  declare it, so a failed ROM is re-queued every sweep, as it always was;
+  turning it on for RomM is adding the capability.
+
+**Recognized filters.** `only_matched` takes Images whose `recognized` is
+True, `only_unmatched` those whose `recognized` is False. Unknown (None)
+passes neither, so a Library that cannot say (nothing matched yet, or its
+match cache could not be read) never has an `only_unmatched` Rule convert
+everything. RomM always answers True or False, so its filters are unchanged.
+
+**Bounded listing.** The sweep calls `library.images` through
+`subprocess_runner.run_detached` (a daemon thread under the process-wide probe
+cap, never the shared pool that conversions' `asyncio.to_thread` calls need)
+under `asyncio.wait_for(..., _LISTING_SECONDS)` (600 s, RomM included). A
+timeout reports `library_unresponsive` for that Platform and stops the sweep,
+so a hung mount fails the sweep and releases `_sweep_lock`. `configured()` is
+called on the event loop and must not touch the disk.
+
+**Editor helpers** (`rules/editor.py`): `editor_payload(library)` (Rules,
+state, defaults, options), `save_rules` (strict), `forget_converted`,
+`sweep_now`. RomM's `/api/romm/rules` and `/api/romm/auto-convert/*` and the
+Library routes are thin wrappers over them; `routes/rules.py` holds the shared
+route pieces (422 mapping, the `platform_ids` reading where an empty list means
+none). RomM's forget route still calls `romm_auto.forget_converted`, which is
+the same engine call.
 
 **What `recognized` means.** It is the Library's own identification of the
 Image, and it is what the Rule filters `only_matched` / `only_unmatched` read.
@@ -2218,7 +2288,12 @@ RomM fills it with RomM's "identified" status (`is_identified`, else any
 metadata-provider id), which is how `only_matched` has always behaved. That is
 a metadata match, often by file name, not Recognized in the glossary sense (a
 DAT or Hasheous hash match). The field is a stand-in until DAT-based
-recognition lands; code that needs a hash match must not read it as one.
+recognition lands; code that needs a hash match must not read it as one. A
+folder Library fills it with Recognized proper: the cached `dat_matches` row
+for the file (one batched query per listing, `get_matches_batch`), True for a
+DAT or Hasheous hit, False for a miss still valid for the configured sources
+(`routes.dat.cached_result_usable`), None when nothing usable is cached.
+Listing never hashes.
 
 **Storage.** Rules live in the `rules` preference row and run state in
 `rules.state`, one entry per `"<library id>:<platform id>"`. Callers read and
@@ -2283,7 +2358,134 @@ place for anything that reports a finished sweep.
 RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
 `run_forever()`, ...) and passes `romm_library` to each, so the HTTP API did
 not change. `run_forever(libraries)` takes a callable returning the Libraries to
-sweep on each tick.
+sweep on each tick. `main.py` passes `services.libraries.all_libraries` (through
+`services.libraries.run_forever`), so RomM and every folder Library whose
+`schedule_enabled` is on are swept. `compressatorium run-rules` (§3.3.17) sweeps
+the same `services.libraries.all_libraries()` list, so the server's scheduler
+and a cron pass always see the same Libraries.
+
+**Images from files** (`services/image_sets.py`). `group_images(paths)`
+returns the Images among a set of files: a sheet owns the tracks it references
+(`utils.delete_plan.sheet_track_paths`, the delete plan's own `.cue`/`.gdi` parsers
+and containment rule), a tool's `source_companions` are owned by their primary
+(jwud's split parts), and playlists (`.m3u`) are dropped. An owned file is never
+an Image; a `.bin` no sheet references stays one. `image_members(path)` is the
+per-file question, and `group_images` takes a `members` callable so a caller
+can cache it. A track named in another case owns the listed file only when
+`os.path.samefile` agrees (a case-insensitive share); on a case-sensitive
+filesystem nothing is hidden.
+
+**Unsafe sheets.** The converter opens every file a sheet names itself, so a
+sheet is checked from its own text before any job runs:
+`delete_plan.sheet_reference_problems` (the delete plan's cue/gdi parsers and
+`utils.sheet_text` decoding) runs each reference through the one confined
+resolver, `utils.sheet_text.resolve_track`, and reports one that is absolute,
+leaves the sheet's folder, or resolves outside the trusted roots (a symlinked
+track). `path_utils.source_companions_are_safe`, the gate `plan_job` and the
+worker both call for every job (manual, batch, Auto, Rules), rejects such a
+sheet whatever the tool's companion list says; an empty list never means safe.
+Its companions go through the same resolver. The trusted roots are the
+resolver's `within`: the configured Volumes by default, and for an archive
+member the worker passes `[the folder it extracted the sheet and its tracks
+into]` (its own `mkdtemp`, not a Volume), so every track and companion must
+resolve inside that folder. An empty root list is refused, never read as
+anything goes.
+The sweep asks the same gate per candidate and reports the Image as unsafe
+(`skipped_unsafe`, and each Platform's `unsafe` names) instead of queueing it.
+
+**The folder Library** (`services/libraries/folder.py`). One walk of the root
+(`os.walk`, symlinks not followed, symlinked files skipped) collects every
+regular, readable file whose extension a tool reads or writes
+(`registry.convertible_extensions` plus `output_extensions`), groups them with
+`group_images`, and detects each Image's Platform with
+`platform_detect.detect_uncached`. Detections and Image members are cached on
+the Library per path and pruned to what the last walk saw. A detection is
+checked against `detection_key`; members against the file's size and mtime
+plus a marker of its folder's listing (a split set gains its part 2 without
+part 1 changing). The marker is a digest of the folder's sorted file names,
+built once per folder per walk and shared by its files, so the check per file
+is constant-time however large the folder. The cache is as large as the
+Library and a repeat walk reads no headers (tested at 10,000 files). The walk is kept for `SCAN_TTL_SECONDS`
+(30 s): a sweep over several Platforms, and the listing before it, share one
+walk; the platforms endpoint asks for a fresh one. An Image with a Platform
+belongs to it; a Conflicted or Unsorted one belongs to none, so no Rule sees it.
+A file the process cannot read, or a folder it cannot list, is counted as
+`unreadable` and skipped. A Platform id is the canonical slug
+(`platform_detect.known_slug` refuses one no Platform has) and its name is
+`platform_name`; an Image key is the posix path relative to the root,
+`added_at` is the mtime, and `size` is every file of the Image
+(`image_sets.image_size`: a sheet and its tracks), so size filters and orders
+judge the set. `summary()` gives the Rules view its counts.
+`configured()` is true: the engine calls it on the event loop, so it touches no
+disk, and it must not latch one bad answer. Every walk checks the root against
+the configured Volumes itself, on its worker thread, and raises
+`RootUnavailable` (`code = "root_unavailable"`) when the root is gone or
+unreachable, so a mount blip fails that one sweep with a reason and the next
+sweep checks again. One walk at a time: `scan()` takes the Library's walk lock
+without blocking and raises `ListingInProgress`
+(`code = "listing_in_progress"`) when a walk is already running, so a dead
+mount strands one thread per Library and every later sweep releases the sweep
+lock at once. `LibraryUnreadable.code` is what the engine reports for the
+Platform (default `"unreadable"`), so the summary can tell these apart; the
+platforms route answers 409 `listing_in_progress` for the second. The Library
+declares `RECOGNIZED_FILTER` and `FAILED_HOLD`, not `CONVERTED_HISTORY`, so its
+Rules are skip-only. `_recognized` returns None for every path when the match
+cache cannot be read.
+
+**The catalogue** (`services/libraries/__init__.py`). Folder Libraries are rows
+of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
+migration 0012, `AUTOINCREMENT` so a removed Library's id is never reused and
+state keyed by it cannot reach another folder), read once and cached; `register`, `update` and `remove`
+replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
+browser's check), requires a folder, and refuses the same root or one that
+contains or sits inside another Library's root, a registered folder or RomM's
+library folder (409), since two Libraries would give one Image two Rules. The
+rule is one function, `libraries.find_overlap`, run in both directions: the
+RomM settings route checks a new RomM library root against every folder
+Library (`check_romm_root`, a 409 naming the Library) before saving it. Both
+take `_register_lock`: `register` in its worker thread, held across RomM's
+root resolve and the database write, and the RomM save through
+`romm_root_claim`, which polls for the lock without parking a thread, so a
+cancelled request never leaves it held, and keeps it until the settings are
+saved. The route takes the claim before the settle lock and the sweep pause,
+and the root check inside it is bounded (`ROOT_CHECK_SECONDS`, #294's
+`VOLUME_PROBE_TIMEOUT_SECONDS`): a root on a mount that stopped answering is
+refused with 503 and every lock is released. Registration and root-check
+workers go through `libraries.run_admitted`: a disposable thread under a
+bound, and at most `MAX_PENDING_WORKERS` outstanding. A slot is held until
+the worker returns, even after its request timed out, so retries against a
+dead mount cannot pile up threads; when every slot is taken the request is
+refused with 503 at once. A unique-root `IntegrityError` is a 409 too. The catalogue's `_lock` guards the
+in-memory cache only: the event loop takes it on every `get()`, so it is never
+held across disk or database access or a Library's walk lock. `update()` writes
+the row and changes the cached Library in place (`apply_settings`), as one
+step under the Library's `settings_lock` so two concurrent edits cannot leave
+memory and the row disagreeing; it never waits for a walk. The register route
+runs `register()` on a detached daemon thread under a 60 s bound (504 past it),
+and `register()` waits at most `REGISTER_WAIT_SECONDS` for another registration
+(409 "still running"), so a dead RomM mount strands one thread, never a shared
+worker. `remove` calls `sweep.forget_library`, which under the
+sweep lock drops the Library's Rules and state rows and its entries in the
+job-owner index, then deletes the row. No file is touched.
+
+**The API** (`routes/libraries.py`): `GET/POST /api/libraries`,
+`PATCH/DELETE /api/libraries/{id}` (folder Libraries only),
+`GET /api/libraries/{id}/platforms` (folder only; also `tool_ids`, `mode_ids`
+and `automatable_modes`, as RomM's platform list carries),
+`GET/PUT /api/libraries/{id}/rules`, `POST .../rules/forget-converted`,
+`POST .../preview` and `POST .../run`. RomM's own `/api/romm/rules` and
+`/api/romm/auto-convert/*` are unchanged.
+
+**The Rules view** (`src/lib/components/views/RulesView.svelte`). A Library
+picker over `RuleEditor.svelte` (the former `RommAutomation.svelte`). The editor
+reads one `RulesSource` (`src/lib/rules/rulesSource.svelte.js`), which owns the
+Rule bookkeeping once (load, edit, save with the save-race guard, forget,
+preview, run) over endpoints passed to its constructor. `RommStore` and
+`FolderRulesSource` (`src/lib/stores/libraries.svelte.js`) both extend it and
+add only their Platforms and settings; RomM's `afterRun` updates its re-pin
+badge. The RomM view's Automation tab renders
+the same view opened on RomM. Folders get **Register as a Library** in the row
+menu (`RowActionsMenu.svelte`).
 
 ### 3.3.12 The Round-trip check (`ToolPlugin.content_digest`, `services/round_trip.py`)
 
@@ -2824,7 +3026,10 @@ and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
 `genesis`). RomM's slug is its `UniversalPlatformSlug` value, which differs
 from IGDB's for PlayStation and Genesis; `test_every_canonical_key_is_a_romm_slug`
 pins every key to RomM's list. A test also fails when a tool declares a slug
-the table does not cover, so a new Platform brings its folder names with it. A header that disagrees with the folder, or two headers that disagree,
+the table does not cover, so a new Platform brings its folder names with it.
+`platform_name(slug)` gives the display name from `_NAMES` (a test fails when a
+slug has none). `detect_uncached` is the same decision without the shared LRU,
+for a caller (the folder Library) that keeps its own per-file cache. A header that disagrees with the folder, or two headers that disagree,
 is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
 changes; `clear_cache()` exists for tests. A header probe that reads other
@@ -3201,9 +3406,9 @@ To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
 Nothing in the job pipeline, the delete-plan route or the modal changes. The
 existing RomM re-pin (3.3.9) is not a Referrer yet.
 
-### 3.3.17 The headless CLI (`app/cli.py`, #306)
+### 3.3.17 The headless CLI (`app/cli.py`, #306, #307)
 
-`compressatorium convert|verify` runs the pipeline with no web server. It is a
+`compressatorium convert|verify|run-rules` runs the pipeline with no web server. It is a
 caller of the same seams the routes use, not a second conversion path:
 
 | Step | Shared seam |
@@ -3291,6 +3496,11 @@ ticket the process holds. Slot files have no such repair: a cleaner that
 deletes `convert_slot_<i>.lock` on the `/tmp/chd-locks` fallback lets two
 processes lock different files for one slot. Keep the lock dir out of reach of
 age-based cleaners; `/config/locks`, the default, is.
+
+The directory is made again (`_ensure_dir`, owner only) whenever a holder,
+ticket or slot file is created, not only on first use, so a lock directory
+deleted while a process runs (a tmp cleaner on the `/tmp/chd-locks` default, someone
+clearing `/config/locks`) no longer leaves every later job waiting forever.
 
 A queue that cannot be listed (EMFILE, an I/O error) is never read as empty:
 `_list_tickets` raises, and `_wait_for_turn` logs it (at most every 30 s) and
@@ -3737,7 +3947,112 @@ Inline runs are covered by the queue's `task_done`, parallel runs by
 the listener tasks still running (Ledger writes) and makes the queue, its
 semaphore and the create lock new, because asyncio binds them to the loop that
 first waits on them. `add_terminal_listener` ignores a callback already
-registered; `remove_terminal_listener` drops one.
+registered; `remove_terminal_listener` drops one. `cli._job_runner` wraps this
+lifecycle (Ledger listener, `process_queue()`, cancel, `shutdown()`) for both
+`convert` and `run-rules`.
+
+**`run-rules` (#307).** One pass over the stored Rules, like one tick of the
+server's scheduler, then exit. Under the scheduler lock and with the database
+open, it lists the Libraries from `services.libraries.all_libraries()`, the
+list the server's scheduler sweeps: RomM and every folder Library (§3.3.11),
+or the one `--library` names (`romm`, `folder:<id>`). They are listed only
+now because the folder Libraries are stored in the database. For each it runs the Library's `before_pass(dry_run=...)` hook
+(§3.3.11), then `rules.sweep.sweep(library, should_stop=...)`: the scheduler's
+own sweep, so each Rule's switch, days, window, interval and caps apply, and
+the Ledger rows, `after_queue` hooks and Rule state are written the same way.
+The Library's master switch (`schedule_enabled`, RomM's auto-convert toggle) is
+not read: running the command is the switch. `rules.sweep.note_job_finished`
+is a terminal listener, as in `main.py`, and the jobs are waited for with
+`JobManager.drain()`. Each job's line is printed as it ends, under the Library
+whose sweep queued it.
+
+Compared with the server, a pass restores the Hasheous toggle saved in the web
+UI (`routes.dat.load_hasheous_override`, as startup does; folder-Library
+recognition reads it) and does the RomM upkeep `before_pass` covers
+(identity-cleanup replay, one settle pass), and nothing else the server starts:
+no DAT sync, no re-pin settler loop, so re-pins this pass records wait for the
+next pass or the server.
+
+Errors and exit status. As in `run_forever`, an exception from one Library's
+hook or sweep is caught (`cli._sweep_one`), reported as an `error` line for
+that Library, and the next Library runs. Exit 1 when that happened, when a
+sweep result has any `errors` entry (`unreadable`, `tool_not_ready`,
+`identity_cleanup_pending`, `queue_failed`, `destination_claimed`, ...), when it
+stopped for `library_unresponsive`, `not_configured` (a Library that has
+Rules but cannot be swept) or `queue_full` (the queue refused a batch: the
+sweep puts the batch size in that Platform's summary as `unqueued`, and the
+line says how many Images were left), or when a job failed or was cancelled. The same
+applies to `--dry-run`. A job the shared delete step completes with
+`job.warning` (`SOURCE_KEPT_FOR_READERS`: the Source was still being read once
+`DELETE_READER_WAIT_SECONDS` ran out) is a success: its line carries the
+warning as `reason`. A delete refused for safety raises in that step, so the
+job ends FAILED and counts.
+
+Stopping. `sweep()` takes `should_stop`, asked before each Platform, every
+0.2 s while a Library lists a Platform's Images (`_wait_unless_stopped`: the
+listing runs on a detached worker bounded by `_LISTING_SECONDS`, and a stop
+abandons it to finish on its own), before each Image is inspected, before each
+delete snapshot is read, and again right before a batch is queued; once true
+the sweep queues nothing more, does not stamp that Platform's clock, and ends
+with `stopped_reason == "stopped"`. The server passes nothing. On SIGTERM,
+SIGINT or SIGHUP `run-rules` sets `state.stopping` (which `should_stop`
+reads) and cancels the queued and running jobs; after the sweep returns it
+cancels again, for a batch let in between, and only then drains. A Library's
+`before_pass` does not read the flag (RomM's settle pass gives a large output
+its full hashing time, `bounded=False`, which can run for an hour), so
+`cli._until_stopped` runs it as a task and cancels it once `state.stopping` is
+set (checked every 0.2 s); the Library is reported `stopped` and no later
+Library runs.
+
+`--dry-run` is `sweep(library, dry_run=True)` inside
+`preferences_store.read_only()`: the Rule store's first read can write (the
+legacy-key copy, the one-time Round-trip upgrade), and in that block a write
+lands in an in-memory overlay that later reads return, so the database is left
+as it was. The overlay is on the store instance, not per task, so it is for a
+process doing one thing (the CLI), never the server. Unlike the editor's
+Preview it keeps the Rule clock (`ignore_schedule` is not set). With no
+database a dry run lists `services.libraries.without_a_database()` (RomM: the
+folder Libraries are rows of the database), so an unknown `--library` still
+exits 2, then reports `no_rules` for each.
+
+**One scheduler per data directory (`services/scheduler_lock.py`).** The server
+and `run-rules` each hold an exclusive `flock` on `scheduler.lock` in the lock
+directory above (`<data dir>/locks` by default, so every container mounting the
+same `/config` sees it). The file is never unlinked, so the lock is always on
+the file every process opens, and the kernel drops it when the holder dies. The
+holder writes a note into it (`by`, `pid`, `host`, `since`) that
+`SchedulerLockHeld` reads back to say who holds it.
+
+- `run-rules` calls `acquire`: up to a second of retries (so a dry run's
+  momentary probe never turns a real pass away), then `SchedulerLockHeld`, and
+  the CLI prints why and exits 3 (`cli.EXIT_LOCKED`) having touched nothing. It
+  takes the lock before opening the database and holds it through `drain()`.
+- The server's `main.lifespan` calls `acquire_waiting` before `_serve` opens
+  the database, and releases the lock in `finally` once `_serve` has cancelled
+  the Rule scheduler task. While another process holds it (a `run-rules` pass,
+  or a second server on the same data directory) startup waits: a
+  non-blocking `flock` every `_WAIT_POLL` seconds with `asyncio.sleep` between,
+  logging the holder on the first miss and every `_WAIT_LOG_EVERY` (30) seconds.
+  uvicorn only acts on SIGTERM once startup returns, so `_watch_stop_signals`
+  wraps its handlers for the wait: a SIGTERM or SIGINT is noted, passed on to
+  uvicorn's handler, and ends the wait with `StoppedWaiting`, which startup
+  turns into a `RuntimeError`. The lock file is closed on every way out.
+- uvicorn opens its port only once startup returns, so a waiting server answers
+  nothing, not even `/health`. While it waits, `acquire_waiting` keeps
+  `<lock dir>/scheduler.waiting.<hostname>` (the holder note inside, rewritten
+  each time it logs) and removes it in `finally`: on success, on
+  `StoppedWaiting`, on cancellation. A marker left by a waiter killed outright
+  is removed by the next `acquire_waiting` on that host. The Docker
+  `HEALTHCHECK` exits 0 while the marker for its own `$(hostname)` exists, so the
+  container is not marked unhealthy during a long `run-rules` pass. It is named
+  per host because containers sharing `/config` share the lock dir, and one
+  container's wait must not make another's broken server look healthy.
+- A dry run only calls `check()`: it opens an existing file read-only and
+  probes with a shared non-blocking `flock`, creating nothing.
+
+The stale-lock sweeps leave the file alone (`LockManager` only touches
+`filelock-*`, `ConcurrencyManager` only holders and tickets). `convert` and
+`verify` do not take it: they run beside a server.
 
 ### 3.4 `registry.py`
 

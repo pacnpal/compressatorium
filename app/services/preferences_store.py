@@ -7,6 +7,9 @@ pattern of the other stores so it drops into the same engine lifecycle.
 
 from __future__ import annotations
 
+import contextlib
+import copy
+
 from logging_setup import get_logger
 from datetime import datetime, timezone
 
@@ -45,6 +48,24 @@ class PreferencesStore:
         else:
             self._own_engine = None
             self._session_factory = None
+        # Set by `read_only()`: writes land here, never in the database.
+        self._overlay: dict[str, dict] | None = None
+
+    @contextlib.contextmanager
+    def read_only(self):
+        """Within the block, keep every write in memory and read it back.
+
+        For a dry run (``run-rules --dry-run``, #307): code that writes as it
+        reads (the Rule store's one-time copies) sees its own writes, and the
+        database is left as it was. The overlay is on this instance, not per
+        task: use it only in a process doing one thing (the CLI), never in the
+        server, where it would swallow every other request's writes.
+        """
+        previous, self._overlay = self._overlay, {}
+        try:
+            yield self
+        finally:
+            self._overlay = previous
 
     def _session(self) -> Session:
         if self._session_factory is not None:
@@ -70,6 +91,8 @@ class PreferencesStore:
 
     async def get(self, key: str) -> dict | None:
         """Return the stored JSON object for *key*, or None if unset."""
+        if self._overlay is not None and key in self._overlay:
+            return copy.deepcopy(self._overlay[key])
         return await run_in_threadpool(self._get_sync, key)
 
     def _put_sync(self, key: str, value: dict) -> dict:
@@ -92,6 +115,9 @@ class PreferencesStore:
 
     async def put(self, key: str, value: dict) -> dict:
         """Upsert *value* under *key*, stamping updated_at. Returns value."""
+        if self._overlay is not None:
+            self._overlay[key] = copy.deepcopy(value)
+            return value
         return await run_in_threadpool(self._put_sync, key, value)
 
 
