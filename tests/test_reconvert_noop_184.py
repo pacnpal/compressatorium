@@ -69,7 +69,7 @@ def _noop_env(tmp_path: Path, monkeypatch):
         Path(output_path).write_bytes(b"RECONVERTED")
         yield {"progress": 100, "message": "done"}
 
-    async def noop_post_convert(input_path, output_path, mode):
+    async def noop_post_convert(input_path, output_path, mode, *, within=None):
         return None
 
     tool = jm_mod.registry.get("chdman")

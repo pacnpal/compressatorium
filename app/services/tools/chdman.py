@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Sequence
+from functools import partial
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -26,7 +28,7 @@ from services.disc_id import (
 )
 from services.lock_manager import lock_manager
 from utils.delete_plan import sheet_track_paths
-from utils.sheet_text import sheet_is_readable
+from utils.sheet_text import sheet_is_readable, sheet_track_list
 
 from .base import BaseTool
 from .spec import ModeKind, ModeSpec
@@ -251,6 +253,7 @@ class ChdmanTool(BaseTool):
 
     async def post_convert(
         self, input_path: str, output_path: str, mode: str,
+        *, within: Sequence[str] | None = None,
     ) -> None:
         """Embed disc-ID GAME/NAME tags into a freshly created CD/DVD CHD.
 
@@ -272,6 +275,11 @@ class ChdmanTool(BaseTool):
 
         ``GAME`` = normalized serial (emulator DB lookup key);
         ``NAME`` = human-readable title when available, serial otherwise.
+
+        ``within``: the trusted root an archive-extracted source sits under
+        (the worker's extraction dir); None means the configured Volumes. A
+        track sheet whose tracks are refused there, or that is unreadable,
+        stops tagging with a warning naming the sheet.
         """
         if mode not in _DISC_ID_MODES:
             return
@@ -280,8 +288,19 @@ class ChdmanTool(BaseTool):
         if not await run_in_threadpool(os.path.exists, output_path):
             return
         try:
-            disc_info = await run_in_threadpool(extract_from_source, input_path)
+            disc_info = await run_in_threadpool(
+                partial(extract_from_source, input_path, within=within),
+            )
             if not (disc_info and disc_info.get("game_id")):
+                if Path(input_path).suffix.lower() in _SHEET_EXTS and (
+                    await run_in_threadpool(
+                        partial(sheet_track_list, input_path, within=within),
+                    )
+                ) is None:
+                    logger.warning(
+                        "Disc ID not tagged for %s: its track sheet is unreadable "
+                        "or names a track outside the trusted roots", input_path,
+                    )
                 return
             game_id = disc_info["game_id"]
             existing = await read_embedded_game_id(output_path, self.binary_path)

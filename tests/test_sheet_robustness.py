@@ -53,3 +53,21 @@ def test_a_failing_header_reads_is_not_cached(tmp_path):
 
     assert result.platform == "ps2"
     assert str(path) not in platform_detect._cache
+
+
+def test_a_size_field_too_long_for_int_is_no_size():
+    # Over Python's 4,300-digit int() limit: plain ASCII digits that int()
+    # still refuses.
+    huge = "9" * 5000
+
+    [track] = gdi_tracks(f"1\n1 0 4 {huge} track01.bin 0\n")
+
+    assert (track.name, track.sector_size) == ("track01.bin", None)
+
+
+def test_a_track_count_too_long_for_int_is_not_a_header_crash():
+    huge = "9" * 5000
+
+    tracks = gdi_tracks(f"{huge}\n1 0 4 2352 track01.bin 0\n")
+
+    assert [t.name for t in tracks] == ["track01.bin"]
