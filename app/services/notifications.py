@@ -675,8 +675,12 @@ async def drain(timeout: float | None = None) -> None:
     With *timeout*, give up after that long and say what was left."""
 
     async def settle() -> None:
+        loop = asyncio.get_running_loop()
         while True:
-            running = [t for t in _tasks if not t.done()]
+            # Only this loop's sends: a task left on an earlier loop (one
+            # asyncio.run per CLI run, or per test) can never finish here, and
+            # gathering it raises "belongs to a different loop".
+            running = [t for t in _tasks if not t.done() and t.get_loop() is loop]
             if not running:
                 return
             await asyncio.gather(*running, return_exceptions=True)
