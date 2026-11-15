@@ -387,7 +387,7 @@ def _lexically_under(candidate: str, root: str) -> bool:
 
 def _matching_volumes(candidate: str) -> list[str]:
     """Every Volume whose root spells a prefix of ``candidate``: candidates
-    for the most specific holder (``containing_volume_root``).
+    for the most specific holder (``platform_boundary_root``).
 
     Both kinds of spelling, merged: the configured ones (no filesystem call)
     and the roots' cached resolved spellings (a root configured through a
@@ -542,11 +542,15 @@ def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
     return None
 
 
-def containing_volume_root(path: str) -> Path | None:
-    """The resolved root of the configured Volume that holds ``path``, or None.
+def platform_boundary_root(path: str) -> Path | None:
+    """The deepest resolved Volume root that holds ``path``, or None.
 
-    The most specific one when Volumes nest. ``path`` may be an archive member
-    (``a.zip::disc.iso``); the archive's own location decides.
+    For **Platform inference only**: the folder walk reads folder names from
+    the Image up to this root, and a folder above an inner Volume says
+    nothing about the Images in it. Never a lock or mutation boundary: a
+    folder locked above an inner root would be missed (``lock_boundary_root``
+    is that one). ``path`` may be an archive member (``a.zip::disc.iso``); the
+    archive's own location decides.
     """
     disk_path = strip_archive_path(path)
     real_path = _confined_real_path(disk_path)
@@ -558,6 +562,38 @@ def containing_volume_root(path: str) -> Path | None:
     candidate = os.path.normpath(os.path.abspath(os.path.expanduser(disk_path)))
     holders = _holding_roots(real_path, _matching_volumes(candidate))
     return max(holders, key=lambda root: len(root.parts), default=None)
+
+
+def lock_boundary_root(path: str) -> Path | None:
+    """The outermost Volume root over ``path``: where a lock walk stops.
+
+    A folder lock (another process packing a folder) can sit anywhere above
+    the path, up to the outermost Volume that contains it, so a walk looking
+    for one must not stop at an inner Volume. With Volumes ``/mnt`` and
+    ``/games -> /mnt/MyGame/PS3_GAME``, a walk from ``PS3_GAME/PARAM.SFO``
+    (spelled either way) goes up to ``/mnt``, past ``/mnt/MyGame``.
+
+    Every overlapping root counts, not only those the request's spelling
+    matches: the freshly verified holders of the real path, and every root
+    whose configured or cached resolved spelling is a prefix of it. A
+    boundary only bounds how far up the walk probes, and probing further up
+    is safer, so a cached spelling may extend it. None when the path is
+    outside every Volume; a caller then walks to the filesystem root.
+    """
+    disk_path = strip_archive_path(path)
+    real_path = _confined_real_path(disk_path)
+    if real_path is None:
+        return None
+    candidate = os.path.normpath(os.path.abspath(os.path.expanduser(disk_path)))
+    tops = list(_holding_roots(real_path, _matching_volumes(candidate)))
+    real = str(real_path)
+    resolved_roots = _resolved_root_spellings()
+    for volume in settings.volumes:
+        configured = _configured_root(volume)
+        for spelling in (configured, resolved_roots.get(configured)):
+            if spelling and _lexically_under(real, spelling):
+                tops.append(Path(spelling))
+    return min(tops, key=lambda root: len(root.parts), default=None)
 
 
 def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:

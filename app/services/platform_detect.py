@@ -30,7 +30,7 @@ from pathlib import Path, PurePath
 
 from logging_setup import get_logger
 from models import InputKind
-from utils.path_utils import containing_volume_root, is_special_file, match_extension
+from utils.path_utils import is_special_file, match_extension, platform_boundary_root
 
 logger = get_logger("platform_detect")
 
@@ -263,7 +263,7 @@ def _candidate_folders(path: str) -> list[str]:
     uses only its own folder.
     """
     parent = PurePath(path).parent
-    root = containing_volume_root(path)
+    root = platform_boundary_root(path)
     if root is None:
         return [parent.name] if parent.name else []
     resolved = Path(os.path.realpath(path)).parent
@@ -277,7 +277,7 @@ def _candidate_folders(path: str) -> list[str]:
 def _folder_context(path: str) -> tuple[str, str | None]:
     """What ``_candidate_folders`` depends on beyond the path: the resolved
     parent folder and the containing Volume root."""
-    root = containing_volume_root(path)
+    root = platform_boundary_root(path)
     parent = str(Path(os.path.realpath(path)).parent)
     return parent, None if root is None else str(root)
 

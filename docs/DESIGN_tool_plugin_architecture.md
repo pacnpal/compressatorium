@@ -2932,9 +2932,15 @@ Precedence is fixed and never guesses:
    `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
    header and use the archive's folder. The walk runs from the Image's own
    folder up to the root of the Volume that holds it, root included, and never
-   above (`utils.path_utils.containing_volume_root`), so a Volume mounted under
-   `/mnt/md/...` does not make every Image in it a Genesis Image. A path in no
-   configured Volume uses only its own folder.
+   above (`utils.path_utils.platform_boundary_root`, the deepest root), so a
+   Volume mounted under `/mnt/md/...` does not make every Image in it a Genesis
+   Image. A path in no configured Volume uses only its own folder. That
+   boundary is for Platform inference only: a lock walk (another process
+   packing a folder, the delete/rename guards, the dispatch probe) stops at
+   `lock_boundary_root`, the outermost root over the path with every
+   overlapping root considered, so a folder locked above an inner Volume (with
+   `/mnt` and `/games -> /mnt/MyGame/PS3_GAME`, a lock on `/mnt/MyGame`) is
+   still found.
 
 Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
 (a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
