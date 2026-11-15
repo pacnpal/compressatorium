@@ -1864,6 +1864,99 @@ async def test_a_romm_root_overlapping_a_folder_library_is_refused(
 
 
 @pytest.mark.asyncio
+async def test_a_hung_romm_root_check_answers_503_and_holds_no_lock(
+    db: Path, monkeypatch,
+) -> None:
+    """CodeRabbit 4576895541: the RomM root check is bounded, and runs first.
+
+    The check runs before the settle lock and the sweep pause are taken. Past
+    its bound the save is refused with 503, nothing is saved, and every lock
+    is free again.
+    """
+    import threading
+
+    from routes import romm as romm_routes
+    from services import libraries
+    from services.romm import settings as romm_settings
+
+    (db / "romm").mkdir()
+    release = threading.Event()
+    seen: dict[str, bool] = {}
+
+    def hung_check(path):
+        seen["settle_locked"] = romm_routes._settle_lock.locked()
+        release.wait(10)
+
+    monkeypatch.setattr(libraries, "check_romm_root", hung_check)
+    monkeypatch.setattr(libraries, "ROOT_CHECK_SECONDS", 0.2)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await romm_routes.put_romm_settings(romm_routes.RommSettingsPatch(
+                url="http://romm:8080", library_root=str(db / "romm"),
+            ))
+        assert exc.value.status_code == 503
+        assert seen == {"settle_locked": False}
+        assert not romm_routes._settle_lock.locked()
+        assert not libraries._register_lock.locked()
+        assert not romm_settings.effective().get("library_root")
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_registration_workers_are_capped_until_they_finish(
+    db: Path, monkeypatch,
+) -> None:
+    """CodeRabbit 4576895542: admission control for registration workers.
+
+    Two registrations stuck on a dead mount time out but keep their slots
+    until their workers actually return; a third is refused with 503 at once,
+    without starting a worker. Once the mount answers, registering works.
+    """
+    import asyncio
+    import threading
+
+    from routes import libraries as routes
+    from services import libraries
+
+    release = threading.Event()
+    entered: list[str] = []
+    real_check = libraries.ensure_path_within_volumes
+
+    def hung_check(path, **kwargs):
+        entered.append(path)
+        release.wait(10)
+        return real_check(path, **kwargs)
+
+    monkeypatch.setattr(libraries, "ensure_path_within_volumes", hung_check)
+    monkeypatch.setattr(routes, "_REGISTER_SECONDS", 0.2)
+    monkeypatch.setattr(libraries, "_worker_slots", threading.BoundedSemaphore(2))
+    folders = []
+    for name in ("a", "b", "c", "d"):
+        (db / name).mkdir()
+        folders.append(db / name)
+    try:
+        for folder in folders[:2]:
+            with pytest.raises(HTTPException) as timed_out:
+                await _register(folder)
+            assert timed_out.value.status_code == 504
+        with pytest.raises(HTTPException) as full:
+            await _register(folders[2])
+        assert full.value.status_code == 503
+        assert len(entered) == 2  # the third never started a worker
+    finally:
+        release.set()
+    for _ in range(100):  # the two workers finish and give their slots back
+        if libraries._worker_slots.acquire(blocking=False):
+            libraries._worker_slots.release()
+            if len(libraries.folder_libraries()) == 2:
+                break
+        await asyncio.sleep(0.05)
+    created = await _register(folders[3])
+    assert created["root"] == str(folders[3].resolve())
+
+
+@pytest.mark.asyncio
 async def test_a_romm_root_beside_a_folder_library_saves(db: Path) -> None:
     from routes import romm as romm_routes
     from services.romm import settings as romm_settings
