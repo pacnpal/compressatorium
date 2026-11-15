@@ -10,6 +10,7 @@ configured spelling matches. Nothing is cached across calls: mounts change.
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 from utils import path_utils
@@ -56,6 +57,19 @@ def test_a_path_on_a_healthy_volume_never_touches_another(volumes, check):
     assert volumes["touched"] == []
 
 
+def test_a_path_on_a_later_volume_never_touches_an_earlier_stalled_one(volumes, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(
+        settings, "chd_volumes", f"{volumes['stalled']},{volumes['healthy']}",
+    )
+
+    assert path_utils.is_within_configured_volumes(
+        str(volumes["healthy"] / "games" / "game.iso"),
+    )
+    assert volumes["touched"] == []
+
+
 def test_the_healthy_root_itself_never_touches_another(volumes):
     assert path_utils.is_within_configured_volumes(str(volumes["healthy"]))
     assert volumes["touched"] == []
@@ -82,3 +96,105 @@ def test_a_volume_configured_through_a_symlink_still_matches_its_real_spelling(
     assert path_utils.is_within_configured_volumes(str(link / "games" / "game.iso"))
     # No configured spelling matches; the resolved one does.
     assert path_utils.is_within_configured_volumes(str(real / "games" / "game.iso"))
+
+
+# --- Cached resolved root spellings (CodeRabbit 4577045035) -------------------
+# The roots' resolved spellings are cached (trusted configuration, never a
+# request path), each resolved on its own thread with its own bound. An alias
+# then never waits on an unrelated stalled root, and a symlink from one
+# Volume into another is accepted without resolving that Volume on the spot.
+
+@pytest.fixture(name="stalled_first")
+def _stalled_first(tmp_path, monkeypatch):
+    import threading
+
+    from config import settings
+
+    stalled = tmp_path / "mnt" / "stalled"
+    stalled.mkdir(parents=True)
+    real = tmp_path / "data" / "healthy"
+    (real / "games").mkdir(parents=True)
+    (real / "games" / "game.iso").write_bytes(b"x")
+    alias = tmp_path / "libraries" / "healthy"
+    alias.parent.mkdir()
+    alias.symlink_to(real, target_is_directory=True)
+    monkeypatch.setattr(settings, "chd_volumes", f"{stalled},{alias}")
+    monkeypatch.setattr(path_utils, "ROOT_PROBE_SECONDS", 0.3)
+
+    wake = threading.Event()
+    real_realpath = os.path.realpath
+
+    def stalling_realpath(path, *args, **kwargs):
+        if os.fspath(path).startswith(str(stalled)):
+            wake.wait(5)                     # a mount that is not answering
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", stalling_realpath)
+    yield {"real": real, "alias": alias, "stalled": stalled, "tmp": tmp_path}
+    wake.set()
+
+
+def test_an_alias_validates_within_the_bound_despite_a_stalled_first_root(stalled_first):
+    started = time.monotonic()
+
+    ok = path_utils.is_within_configured_volumes(
+        str(stalled_first["real"] / "games" / "game.iso"),
+    )
+
+    assert ok
+    assert time.monotonic() - started < 1.5
+
+
+def test_an_outside_path_is_still_refused_with_a_stalled_root(stalled_first):
+    outside = stalled_first["tmp"] / "elsewhere"
+    outside.mkdir()
+
+    assert not path_utils.is_within_configured_volumes(str(outside))
+
+
+def test_a_root_that_times_out_keeps_its_last_good_spelling(tmp_path, monkeypatch):
+    import threading
+
+    from config import settings
+
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    monkeypatch.setattr(settings, "chd_volumes", str(alias))
+    path_utils.refresh_volume_roots()
+    assert path_utils._resolved_root_spellings()[str(alias)] == str(real)
+
+    wake = threading.Event()
+    real_realpath = os.path.realpath
+
+    def stalling_realpath(path, *args, **kwargs):
+        if os.fspath(path).startswith(str(alias)):
+            wake.wait(5)
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", stalling_realpath)
+    try:
+        path_utils.refresh_volume_roots(timeout=0.2)
+        assert path_utils._resolved_root_spellings()[str(alias)] == str(real)
+    finally:
+        wake.set()
+
+
+def test_a_symlink_from_one_volume_into_another_is_accepted(tmp_path, monkeypatch):
+    from config import settings
+
+    a, b = tmp_path / "share_a", tmp_path / "share_b"
+    a.mkdir()
+    (b / "games").mkdir(parents=True)
+    (b / "games" / "game.iso").write_bytes(b"x")
+    (a / "link").symlink_to(b / "games", target_is_directory=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.iso").write_bytes(b"x")
+    (a / "escape").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(settings, "chd_volumes", f"{a},{b}")
+
+    assert path_utils.is_within_configured_volumes(str(a / "link" / "game.iso"))
+    assert path_utils.containing_volume_root(str(a / "link" / "game.iso")) == b.resolve()
+    assert not path_utils.is_within_configured_volumes(str(a / "escape" / "secret.iso"))

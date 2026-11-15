@@ -8,6 +8,8 @@ from utils.sheet_text import (
     cue_tracks,
     gdi_tracks,
     resolve_track,
+    sheet_ambiguity,
+    sheet_native_text,
     sheet_readings,
     sheet_tracks,
 )
@@ -303,14 +305,27 @@ def build_delete_plan(source_path: str) -> Dict[str, object]:
             }
         ext = source.suffix.lower()
         parse = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}.get(ext)
-        readings = [parse(text) for text in _read_sheet(source)] if parse else [[]]
-        track_refs: List[str] = readings[0]
-        if parse and not track_refs:
-            errors.append("No track references found")
+        readings: list[list[str]] = [[]]
+        track_refs: list[str] = []
+        if parse:
+            # A decoded spelling naming another existing file than the bytes
+            # chdman opens: refuse rather than delete a file it never read.
+            ambiguity = sheet_ambiguity(source)
+            if ambiguity:
+                raise OSError(ambiguity)
+            readings = [parse(text) for text in _read_sheet(source)]
+            # Deletion targets come from the native spelling (the raw bytes as
+            # the OS spells a file name), which is what chdman opened; never
+            # from a decoded reading, which can name a different file.
+            native = sheet_native_text(source)
+            if native is None:
+                raise OSError(f"Cannot read track sheet: {source}")
+            track_refs = parse(native)
+            if not track_refs:
+                errors.append("No track references found")
 
-        # Every spelling is checked (chdman opens one of them; the raw-byte one
-        # for a sheet that is not UTF-8); the paths listed are the first's.
-        for spelling in readings[1:]:
+        # Every spelling is checked too, so none can name a file outside.
+        for spelling in readings:
             for ref in spelling:
                 try:
                     _resolve_track_path(base_dir, ref)
