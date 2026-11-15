@@ -136,6 +136,10 @@ def _cases():
         with zipfile.ZipFile(archive, "w") as zf:
             zf.writestr("Abaron/ABARON.EXE", b"exe")
         return str(archive)
+    def _sheet(tmp_path: Path, name: str, text: str) -> str:
+        path = tmp_path / name
+        path.write_text(text)
+        return str(path)
 
     def _symlink_escape(tmp_path: Path, name: str) -> str:
         """A companion-named symlink pointing at a real file outside the volume.
@@ -346,6 +350,55 @@ def _cases():
             ConversionMode.JWUD_COMPRESS,
             DuplicateAction.SKIP,
             "reject",
+        ),
+        # A track sheet names files chdman then opens itself, so a reference
+        # out of the volume would be packed into the CHD (PR #320, Codex P1).
+        # The gate parses the sheet; an empty member list is not "safe".
+        (
+            "createcd_cue_track_escapes_reject",  # SOURCE_COMPANION_UNSAFE
+            lambda t: (
+                (t.parent / "outside-secret.db").write_bytes(b"secret"),
+                _sheet(t, "game.cue", 'FILE "../outside-secret.db" BINARY\n'),
+            )[1],
+            ConversionMode.CREATECD,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            "createcd_cue_absolute_track_reject",  # SOURCE_COMPANION_UNSAFE
+            lambda t: _sheet(t, "game.cue", 'FILE "/etc/hosts" BINARY\n'),
+            ConversionMode.CREATECD,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            "createcd_cue_symlinked_track_reject",  # SOURCE_COMPANION_UNSAFE
+            lambda t: (
+                _symlink_escape(t, "game.bin"),
+                _sheet(t, "game.cue", 'FILE "game.bin" BINARY\n'),
+            )[1],
+            ConversionMode.CREATECD,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            "createcd_gdi_track_escapes_reject",  # SOURCE_COMPANION_UNSAFE
+            lambda t: _sheet(
+                t, "game.gdi", '1\n1 0 4 2352 "../../outside.bin" 0\n',
+            ),
+            ConversionMode.CREATECD,
+            DuplicateAction.SKIP,
+            "reject",
+        ),
+        (
+            "createcd_cue_track_beside_accept",  # a normal sheet still converts
+            lambda t: (
+                write(t, "game.bin"),
+                _sheet(t, "game.cue", 'FILE "game.bin" BINARY\n'),
+            )[1],
+            ConversionMode.CREATECD,
+            DuplicateAction.SKIP,
+            "accept",
         ),
         (
             "jwud_split_primary_accept",  # part 1 drives the whole set

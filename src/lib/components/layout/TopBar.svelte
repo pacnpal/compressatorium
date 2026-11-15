@@ -9,6 +9,7 @@
       case 'dashboard': return 'Dashboard';
       case 'workspace': return 'Workspace';
       case 'dat': return 'DAT Library';
+      case 'ledger': return 'Ledger';
       case 'help': return 'Help';
       default: return '';
     }

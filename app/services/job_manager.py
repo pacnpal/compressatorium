@@ -1,12 +1,15 @@
 import asyncio
+import contextlib
 import inspect
 import logging
 from logging_setup import get_logger
 import os
+import random
 import resource
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -33,7 +36,9 @@ from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
 from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
-from services.lock_manager import lock_manager
+from services.lock_manager import LockFailed, lock_manager
+from services.mutation_guard import locked_for_mutation
+from services import referrers
 from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import ReadCancelled, run_detached
 from services.tools import ModeKind, registry
@@ -47,6 +52,14 @@ from utils.path_utils import (
 )
 
 logger = get_logger("job_manager")
+
+# Delete-on-verify and readers (#306): a Source another job (in any process)
+# is reading when the delete step comes is waited for, polling without
+# blocking, up to this bound. Still held then, it is kept and the job still
+# completes: the conversion succeeded.
+DELETE_READER_WAIT_SECONDS = 60.0
+DELETE_READER_POLL_SECONDS = 0.5
+SOURCE_KEPT_FOR_READERS = "Source kept: it was being read by another job"
 
 # The glossary names (CONTEXT.md) for each stored check, used in job messages so
 # "verified" never stands in for which check an output passed.
@@ -333,6 +346,9 @@ class JobManager:
         # only keeps a weak ref to a bare create_task(), so it can be GC'd before
         # it runs (a cancel notification or history prune silently dropped).
         self._background_tasks: Set[asyncio.Task] = set()
+        # Runs started as their own task (max_concurrent > 1), so `drain` can
+        # wait for each one to finish, its cleanup included.
+        self._job_tasks: Set[asyncio.Task] = set()
         self._delete_plans: Dict[str, Dict[str, object]] = {}
         # job id -> the canonical key its output was reserved under. Recorded
         # at queue time because the reservation's pre-flight map is built
@@ -344,6 +360,23 @@ class JobManager:
         # would each be accepted. Dropped when the job leaves the queue; only
         # live jobs are ever consulted.
         self._output_keys: Dict[str, Tuple[str, ...]] = {}
+        # The files each running job holds a shared input lock on (#306).
+        self._input_locks: Dict[str, List[str]] = {}
+        # The live input-lock attempt per job, and the lock guarding it with
+        # ``_input_locks``. The acquisition runs on a worker thread that can
+        # outlive a cancelled job: it records each lock only while its attempt
+        # is still the live one, and releases it otherwise.
+        self._input_attempts: Dict[str, object] = {}
+        self._input_mutex = threading.Lock()
+        # The delete paths a job holds exclusively while it unlinks them.
+        self._delete_holds: Dict[str, List[str]] = {}
+        # Jobs whose end has been announced to terminal listeners, so each is
+        # announced exactly once (``_notify_terminal``).
+        self._terminal_announced: Set[str] = set()
+        self._terminal_mutex = threading.Lock()
+        # The companion outputs (extractcd's .bin beside its .cue) each running
+        # job holds the same cross-process exclusive lock on as its output.
+        self._companion_locks: Dict[str, List[str]] = {}
         # Jobs currently inside the verify phase, mapped to the monotonic clock
         # reading when that phase began. Verification emits no progress and can
         # legitimately run for many minutes, so the stalled-job warning reports
@@ -978,14 +1011,34 @@ class JobManager:
         The callback may be sync or async (a coroutine is scheduled on the
         loop). It runs after the status is final; exceptions are logged and
         swallowed, because a listener must never fail a conversion.
+
+        Registering the same callback twice keeps one registration, so a
+        caller that sets itself up on every run (the CLI) is told once per job.
         """
-        self._terminal_listeners.append(callback)
+        if callback not in self._terminal_listeners:
+            self._terminal_listeners.append(callback)
+
+    def remove_terminal_listener(self, callback: Callable[[ConversionJob], object]) -> None:
+        """Stop calling *callback*; a no-op when it is not registered."""
+        if callback in self._terminal_listeners:
+            self._terminal_listeners.remove(callback)
 
     def _notify_terminal(self, job: ConversionJob) -> None:
-        """Tell every listener that *job* is finished. Never raises."""
-        if not self._terminal_listeners:
-            return
+        """Tell every listener that *job* is finished, once. Never raises.
+
+        Exactly once per job, whichever path gets here first (#306): a queued
+        job cancelled while the start path runs reaches both the cancel path
+        and the start path's terminal path, and every listener (SSE,
+        notifications, the Ledger's counters, check results) must hear it
+        once. The flag is set under ``_terminal_mutex`` before notifying.
+        """
         if job.status not in _TERMINAL_STATUSES:
+            return
+        with self._terminal_mutex:
+            if job.id in self._terminal_announced:
+                return
+            self._terminal_announced.add(job.id)
+        if not self._terminal_listeners:
             return
         for callback in list(self._terminal_listeners):
             try:
@@ -1263,12 +1316,96 @@ class JobManager:
         """
         if job.input_kind == InputKind.DIRECTORY:
             return lock_manager.dir_lock_would_conflict(job.file_path)
-        paths = [job.output_path]
-        if "::" not in job.file_path:
-            paths.append(job.file_path)
-        return any(lock_manager.is_within_locked_dir(p) for p in paths if p)
+        # In this process (`_dir_locks`), or in any other: a held lock file on
+        # a folder above, up to the Volume root (#306). The output is probed
+        # under every identity its lock takes (`_output_keys`: the
+        # non-following destination and a symlink's target, codex 4577847011).
+        if job.output_path and lock_manager.output_folder_locked_above(
+            job.output_path,
+        ) is not None:
+            return True
+        source = job.file_path.split("::", 1)[0]
+        return bool(source) and (
+            lock_manager.is_within_locked_dir(source)
+            or lock_manager.folder_locked_above(source) is not None
+        )
 
-    async def _defer_blocked_job(self, job_id: str, *, output_lock_held: bool) -> None:
+    def _take_output_locks(self, job: ConversionJob) -> bool:
+        """The cross-process exclusive lock on the job's output and on every
+        companion output its mode declares, or none of them (#306).
+
+        A companion (extractcd's ``Game.bin``) is written as much as the
+        primary, so the web guard's exact-path probe must refuse a rename or
+        delete of it too, and no other job may take it to write.
+        """
+        if not lock_manager.acquire_lock(job.output_path, allow_existing=job.allow_overwrite):
+            return False
+        held: List[str] = []
+
+        def let_go() -> None:
+            for taken in held:
+                lock_manager.release_lock(taken)
+            lock_manager.release_lock(job.output_path)
+
+        if job.input_kind != InputKind.DIRECTORY:
+            # Directory modes' split parts are found on disk later and are
+            # already guarded by their own prefix match.
+            try:
+                for path in registry.for_mode(job.mode.value).companion_outputs(
+                    job.output_path, job.mode.value,
+                ):
+                    if not lock_manager.acquire_lock(path, allow_existing=job.allow_overwrite):
+                        let_go()
+                        return False
+                    held.append(path)
+            except LockFailed:
+                let_go()
+                raise
+        self._companion_locks[job.id] = held
+        return True
+
+    def _release_output_locks(self, job: ConversionJob) -> None:
+        for path in self._companion_locks.pop(job.id, []):
+            lock_manager.release_lock(path)
+        if job.output_path:
+            lock_manager.release_lock(job.output_path)
+
+    async def _fail_before_start(
+        self, job_id: str, job: ConversionJob, message: str, *, dir_lock_held: bool,
+    ) -> None:
+        """End a job FAILED before its run starts, letting go of everything it
+        holds: the input locks taken so far, its folder and output locks, and
+        its concurrency slot (#306). A job that stays queued holding the slot
+        would stall every later conversion at concurrency 1."""
+        self._release_inputs(job_id)
+        if dir_lock_held:
+            lock_manager.release_dir_lock(job.file_path)
+        self._release_output_locks(job)
+        if job.status in _TERMINAL_STATUSES:
+            # Already ended another way (a cancel that landed while this path
+            # ran): keep that ending, let go of the rest.
+            self._cancel_events.pop(job_id, None)
+            concurrency_manager.release(job_id)
+            return
+        job.status = JobStatus.FAILED
+        job.error_message = message
+        job.completed_at = datetime.now(timezone.utc)
+        self._notify_terminal(job)
+        await self._notify_subscribers(
+            job_id, {"type": "error", "job_id": job_id, "error": message},
+        )
+        self._cancel_events.pop(job_id, None)
+        concurrency_manager.release(job_id)
+        await self._cleanup_temp_dir(job)
+        await self._prune_jobs(exclude_id=job_id)
+
+    async def _defer_blocked_job(
+        self,
+        job_id: str,
+        *,
+        output_lock_held: bool,
+        message: str = "Waiting for an in-progress folder conversion to finish...",
+    ) -> None:
         """Release a job blocked by a directory subtree lock and re-queue it.
 
         The job waits its turn in the queue and is re-dispatched once the folder
@@ -1278,12 +1415,12 @@ class JobManager:
         """
         job = self.jobs.get(job_id)
         if output_lock_held and job is not None and job.output_path:
-            lock_manager.release_lock(job.output_path)
+            self._release_output_locks(job)
         if job_id in self._cancel_events:
             del self._cancel_events[job_id]
         concurrency_manager.release(job_id)
         if job is not None:
-            job.message = "Waiting for an in-progress folder conversion to finish..."
+            job.message = message
             await self._notify_subscribers(
                 job_id,
                 {
@@ -1302,7 +1439,9 @@ class JobManager:
 
         async def _requeue() -> None:
             try:
-                await asyncio.sleep(delay)
+                # Jitter: two processes that each took a lock and then backed
+                # off from the other's must not retry in lockstep (#306).
+                await asyncio.sleep(delay + random.uniform(0, delay / 2))
             except asyncio.CancelledError:
                 return
             job = self.jobs.get(job_id)
@@ -1374,6 +1513,99 @@ class JobManager:
             if os.path.exists(path):
                 tracks.append(path)
         return tracks
+
+    def _input_paths(self, job: ConversionJob) -> List[str]:
+        """The files a file-input job reads: its Source (the archive, for a
+        member) and the Source's companions (cue/gdi tracks, split parts)."""
+        if "::" in job.file_path:
+            return [job.file_path.split("::", 1)[0]]
+        return [job.file_path, *self._track_candidate_paths(job.file_path)]
+
+    def _begin_input_attempt(self, job_id: str) -> object:
+        """Start a live input-lock attempt for the job (see ``_hold_inputs``)."""
+        attempt = object()
+        with self._input_mutex:
+            self._input_attempts[job_id] = attempt
+        return attempt
+
+    def _hold_inputs(self, job_id: str, job: ConversionJob, attempt: object) -> bool:
+        """Take a shared lock on every file the job reads, or none of them.
+
+        Runs on a worker thread, which a cancelled job does not wait for. Each
+        lock is recorded only while ``attempt`` is still the job's live one;
+        once ``_release_inputs`` has ended it (a cancel, the job's cleanup),
+        whatever this thread takes is released at once instead (#306).
+        """
+        for path in dict.fromkeys(self._input_paths(job)):
+            acquired = lock_manager.acquire_input_lock(path)
+            with self._input_mutex:
+                live = self._input_attempts.get(job_id) is attempt
+                if acquired and live:
+                    self._input_locks.setdefault(job_id, []).append(path)
+                    continue
+            if acquired:
+                lock_manager.release_input_lock(path)  # the job moved on
+            self._release_inputs(job_id)
+            return False
+        return True
+
+    def _release_inputs(self, job_id: str) -> None:
+        with self._input_mutex:
+            self._input_attempts.pop(job_id, None)
+            paths = self._input_locks.pop(job_id, [])
+        for path in paths:
+            lock_manager.release_input_lock(path)
+
+    def _try_hold_for_delete(self, job_id: str, paths: Iterable[str]) -> bool:
+        """Lock every delete path exclusively, or hold none and say so."""
+        held = self._delete_holds.setdefault(job_id, [])
+        for path in paths:
+            if not lock_manager.acquire_lock(path, allow_existing=True):
+                self._release_delete_holds(job_id)
+                return False
+            held.append(path)
+        return True
+
+    async def _hold_delete_paths_waiting(
+        self, job_id: str, cancel_event: asyncio.Event | None = None,
+    ) -> bool:
+        """Trade this job's shared read locks for exclusive locks on every path
+        of its delete plan, held until the unlinks finish (#306).
+
+        A path another job reads (a shared lock in any process), or one under a
+        folder another process packs, can't be held; this polls, without
+        blocking, up to ``DELETE_READER_WAIT_SECONDS`` for it to be let go.
+        False when it is still held then, or when the job is cancelled
+        meanwhile: the caller keeps the Source (and, for a cancel, ends the job
+        CANCELLED). Cancellation is checked before every attempt and again
+        right after one succeeds, so a cancel that lands while it sleeps never
+        becomes a delete when the reader lets go before the next poll
+        (codex 4577178425).
+        """
+
+        def cancelled() -> bool:
+            return bool(cancel_event and cancel_event.is_set()) or job_id in self._cancelled
+
+        snapshot = self._delete_plans.get(job_id) or {}
+        paths = list(snapshot.get("paths") or [])
+        self._release_inputs(job_id)
+        deadline = time.monotonic() + DELETE_READER_WAIT_SECONDS
+        while True:
+            if cancelled():
+                self._release_delete_holds(job_id)
+                return False
+            if await run_in_threadpool(self._try_hold_for_delete, job_id, paths):
+                if cancelled():
+                    self._release_delete_holds(job_id)
+                    return False
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(DELETE_READER_POLL_SECONDS)
+
+    def _release_delete_holds(self, job_id: str) -> None:
+        for path in self._delete_holds.pop(job_id, []):
+            lock_manager.release_lock(path)
 
     def _candidate_paths(self, job: ConversionJob) -> List[str]:
         paths = []
@@ -1923,6 +2155,8 @@ class JobManager:
             if job_id not in self._cancel_events:
                 await self._cleanup_temp_dir(job)
             del self.jobs[job_id]
+            with self._terminal_mutex:
+                self._terminal_announced.discard(job_id)
             return True
         return False
 
@@ -1956,7 +2190,7 @@ class JobManager:
                 if await run_in_threadpool(os.path.isdir, temp_dir):
                     await run_in_threadpool(shutil.rmtree, temp_dir, ignore_errors=True)
             except Exception as cleanup_error:
-                print(f"Failed to cleanup temp dir {temp_dir}: {cleanup_error}")
+                logger.warning("Failed to cleanup temp dir %s: %s", temp_dir, cleanup_error)
             finally:
                 job.temp_dir = None
 
@@ -2063,6 +2297,49 @@ class JobManager:
                     debug_interval,
                 )
         await self._dispatcher_task
+
+    async def drain(self) -> None:
+        """Wait until every queued job has run to its very end.
+
+        A terminal notification fires before a run is over: `_process_job`
+        still removes the job's temp dir (an archive's extracted copy) and
+        prunes history after it. A caller that leaves the loop once its jobs
+        report finished (the CLI, #306) waits here first, or that cleanup is
+        cancelled half-way. Covers inline runs (the queue's `task_done` follows
+        them), runs started as tasks, and jobs waiting to be re-queued behind
+        a folder lock. Needs the dispatcher running.
+        """
+        while True:
+            await self._queue.join()
+            pending = [*self._job_tasks, *self._requeue_tasks]
+            if not pending:
+                return
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def shutdown(self) -> None:
+        """Stop processing and finish the work listeners started.
+
+        For a caller that owns the event loop and leaves it once its jobs are
+        done (the CLI, #306): the dispatcher and maintenance loops stop, and the
+        listener tasks still running (a Ledger write) are awaited so nothing a
+        finished job reported is lost when the loop closes. The queue, its
+        semaphore and the create lock are made new, because asyncio binds them
+        to the loop that first waits on them, so the manager can be started
+        again under another loop. Call it with no job queued or running.
+        """
+        self._running = False
+        for task in (self._dispatcher_task, self._debug_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._dispatcher_task = None
+        self._debug_task = None
+        while self._background_tasks:
+            await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
+        self._queue = asyncio.PriorityQueue()
+        self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        self._create_lock = asyncio.Lock()
 
     async def _handle_background_maintenance(self, cleanup_counter: int) -> int:
         """Handle stuck state detection and periodic lock cleanup.
@@ -2378,7 +2655,9 @@ class JobManager:
                     if self.max_concurrent == 1:
                         await self._run_job(job_id)
                     else:
-                        asyncio.create_task(self._run_job(job_id))
+                        task = asyncio.create_task(self._run_job(job_id))
+                        self._job_tasks.add(task)
+                        task.add_done_callback(self._job_tasks.discard)
                 except Exception:
                     # _run_job() always releases the semaphore in its finally block.
                     # Only release here if task creation failed before _run_job started.
@@ -2510,6 +2789,16 @@ class JobManager:
             "output": output_fp,
         }
 
+    @staticmethod
+    def _verifier_identity(job: ConversionJob) -> Dict[str, object]:
+        """The mode and tool that produced the job's output."""
+        identity: Dict[str, object] = {"mode": job.mode.value}
+        try:
+            identity["tool"] = registry.for_mode(job.mode.value).id
+        except KeyError:
+            pass
+        return identity
+
     def _produced_meta_matches(self, job: ConversionJob, meta: object) -> bool:
         """Whether the on-disk output is the *exact* result of THIS request.
 
@@ -2520,6 +2809,10 @@ class JobManager:
         with a fresh mtime can't pass). Any mismatch → re-convert.
         """
         if not isinstance(meta, dict):
+            return False
+        if not meta.get("output") or not meta.get("source"):
+            # Only the verifier identity was recorded (no delete snapshot):
+            # nothing proves the output is this request's exact result.
             return False
         if (
             meta.get("mode") != job.mode.value
@@ -2584,6 +2877,70 @@ class JobManager:
             await self._process_job(job_id)
         finally:
             self._semaphore.release()
+
+    async def _check_delete_paths(
+        self, job_id: str, paths: list[str], fingerprints: dict, output_real: str,
+    ) -> None:
+        """Raise RuntimeError unless every path is still safe to delete.
+
+        Lock, Volume, other-job, symlink, type, not-the-output, and the
+        snapshot's size / mtime / inode / device. Run before the Referrer hook
+        and again after it (#295), since the hook awaits a worker thread.
+
+        A path in this job's own delete hold (``_delete_holds``, #306) skips
+        the lock probe: its exclusive lock is this job's, and while it is held
+        no other job or process can lock that path. Any other locked path is
+        refused, and so is a numbered split part whose logical owner another
+        job writes (``mutation_guard``, codex 4577940381).
+        """
+        own_holds = set(self._delete_holds.get(job_id, ()))
+        for path in paths:
+            if path not in own_holds and await run_in_threadpool(
+                locked_for_mutation, path, ignore=own_holds,
+            ):
+                raise RuntimeError("Delete path is locked by an active conversion")
+            within_volumes = await run_in_threadpool(
+                is_within_configured_volumes, path, treat_archives=False,
+            )
+            if not within_volumes:
+                raise RuntimeError(
+                    "Delete path outside configured volumes; refusing to delete"
+                )
+            if self._is_path_in_use_by_other_job(job_id, path):
+                raise RuntimeError("Delete path is still in use by another job")
+            if os.path.islink(path):
+                raise RuntimeError("Delete path is a symlink; refusing to delete")
+            try:
+                st = os.stat(path, follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    "Delete path no longer exists; refusing to delete"
+                ) from exc
+            if not os.path.isfile(path):
+                raise RuntimeError("Delete path is not a file; refusing to delete")
+            if os.path.realpath(path) == output_real:
+                raise RuntimeError("Delete path matches output path; refusing to delete")
+            fp = fingerprints.get(path)
+            if not fp:
+                raise RuntimeError("Delete fingerprint missing; refusing to delete")
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+            if (
+                int(fp.get("size", -1)) != int(st.st_size)
+                or int(fp.get("mtime_ns", -1)) != mtime_ns
+            ):
+                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+            snapshot_inode = int(fp.get("inode", 0) or 0)
+            snapshot_device = int(fp.get("device", 0) or 0)
+            current_inode = int(getattr(st, "st_ino", 0) or 0)
+            current_device = int(getattr(st, "st_dev", 0) or 0)
+            if (
+                snapshot_inode > 0 and current_inode > 0
+                and snapshot_inode != current_inode
+            ) or (
+                snapshot_device > 0 and current_device > 0
+                and snapshot_device != current_device
+            ):
+                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
 
     async def _delete_check(
         self, job, tool, source_path: str, output_path: str, cancel_event,
@@ -2775,25 +3132,31 @@ class JobManager:
             return
 
         # Try to acquire lock for the output file (prevents race conditions)
-        lock_acquired = lock_manager.acquire_lock(
-            job.output_path, allow_existing=job.allow_overwrite
-        )
+        lock_error = None
+        try:
+            lock_acquired = await run_in_threadpool(self._take_output_locks, job)
+        except LockFailed as exc:
+            # Not contention: the lock file can't be made. Fail with the
+            # reason now, never requeue (codex 4577893015).
+            lock_acquired, lock_error = False, str(exc)
         if not lock_acquired:
             # A transient block by a folder->iso subtree lock (racing the
             # precheck) waits & re-queues rather than failing.
-            if await run_in_threadpool(self._blocked_by_dir_lock, job):
+            if lock_error is None and await run_in_threadpool(self._blocked_by_dir_lock, job):
                 await self._defer_blocked_job(job_id, output_lock_held=False)
                 return
             # Could not acquire lock - either file exists or is being converted
             # Check current status to provide better error message
             file_exists, is_locked = lock_manager.check_file_status(job.output_path)
             job.status = JobStatus.FAILED
-            if is_locked:
+            if lock_error is not None:
+                job.error_message = lock_error
+            elif is_locked:
                 job.error_message = (
                     "Another job is already converting to this output file"
                 )
             elif file_exists:
-                job.error_message = "Output CHD file already exists"
+                job.error_message = "Output file already exists"
             else:
                 job.error_message = "Could not acquire lock for output file"
             job.completed_at = datetime.now(timezone.utc)
@@ -2842,7 +3205,7 @@ class JobManager:
                     job_id,
                     {"type": "error", "job_id": job_id, "error": job.error_message},
                 )
-                lock_manager.release_lock(job.output_path)
+                self._release_output_locks(job)
                 if job_id in self._cancel_events:
                     del self._cancel_events[job_id]
                 concurrency_manager.release(job_id)
@@ -2857,9 +3220,13 @@ class JobManager:
         # already operating inside the folder; fail like an output collision.
         dir_lock_acquired = False
         if job.input_kind == InputKind.DIRECTORY:
-            dir_lock_acquired = await run_in_threadpool(
-                lock_manager.acquire_dir_lock, job.file_path,
-            )
+            try:
+                dir_lock_acquired = await run_in_threadpool(
+                    lock_manager.acquire_dir_lock, job.file_path,
+                )
+            except LockFailed as exc:
+                await self._fail_before_start(job_id, job, str(exc), dir_lock_held=False)
+                return
             if not dir_lock_acquired:
                 # Another job is operating inside this folder; wait in the queue
                 # and retry rather than failing (releases the output lock taken
@@ -2867,35 +3234,67 @@ class JobManager:
                 await self._defer_blocked_job(job_id, output_lock_held=True)
                 return
 
-        job.status = JobStatus.PROCESSING
-        job.started_at = datetime.now(timezone.utc)
-        # Restart the progress clock at the moment work actually begins. It was
-        # last set when the job was created, so a job that waited in the queue
-        # longer than debug_progress_timeout -- routine on a deep queue -- would
-        # otherwise be reported stalled the instant it started running.
-        self._last_progress_at[job_id] = time.monotonic()
-        processing_now = sum(
-            1 for candidate in self.jobs.values() if candidate.status == JobStatus.PROCESSING
-        )
-        if processing_now > self.max_concurrent:
-            logger.error(
-                "Processing concurrency invariant violated: processing=%d max_concurrent=%d",
-                processing_now,
-                self.max_concurrent,
+        # Every job, whichever entry point queued it, holds a shared lock on
+        # the files it reads until it ends (#306). Other processes see it: the
+        # web guard's exact-path probe refuses to rename or delete them, and a
+        # job writing one of those paths can't take its output lock. Readers
+        # share it. A folder input already holds its subtree lock above.
+        # From the moment the input locks may be taken until the try/finally
+        # below owns them: a cancellation here (worker shutdown) releases
+        # them, or the Source would stay shared-locked until restart (#306).
+        try:
+            try:
+                inputs_held = job.input_kind == InputKind.DIRECTORY or await run_in_threadpool(
+                    self._hold_inputs, job_id, job, self._begin_input_attempt(job_id),
+                )
+            except Exception as exc:
+                # Never stay queued holding a slot: any failure ends the job.
+                logger.warning("Could not lock the Source of %s", job_id, exc_info=True)
+                await self._fail_before_start(
+                    job_id, job, f"Could not lock the Source: {exc}",
+                    dir_lock_held=dir_lock_acquired,
+                )
+                return
+            if not inputs_held:
+                await self._defer_blocked_job(
+                    job_id,
+                    output_lock_held=True,
+                    message="Waiting for another job using this Source or its folder...",
+                )
+                return
+
+            job.status = JobStatus.PROCESSING
+            job.started_at = datetime.now(timezone.utc)
+            # Restart the progress clock at the moment work actually begins. It was
+            # last set when the job was created, so a job that waited in the queue
+            # longer than debug_progress_timeout -- routine on a deep queue -- would
+            # otherwise be reported stalled the instant it started running.
+            self._last_progress_at[job_id] = time.monotonic()
+            processing_now = sum(
+                1 for candidate in self.jobs.values() if candidate.status == JobStatus.PROCESSING
             )
+            if processing_now > self.max_concurrent:
+                logger.error(
+                    "Processing concurrency invariant violated: processing=%d max_concurrent=%d",
+                    processing_now,
+                    self.max_concurrent,
+                )
 
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Job %s acquired locks and started processing", job_id)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Job %s acquired locks and started processing", job_id)
 
-        await self._notify_subscribers(
-            job_id,
-            {
-                "type": "status",
-                "job_id": job_id,
-                "status": job.status.value,
-                "progress": 0,
-            },
-        )
+            await self._notify_subscribers(
+                job_id,
+                {
+                    "type": "status",
+                    "job_id": job_id,
+                    "status": job.status.value,
+                    "progress": 0,
+                },
+            )
+        except BaseException:
+            self._release_inputs(job_id)
+            raise
 
         try:
             # Ledger bookkeeping (#292): size the Source set before anything can
@@ -3010,6 +3409,7 @@ class JobManager:
             # overwrite job leaves the user's prior file intact.
             if not await run_in_threadpool(
                 source_companions_are_safe, input_path, job.mode.value,
+                within=within,
             ):
                 job.status = JobStatus.FAILED
                 job.error_message = (
@@ -3269,9 +3669,17 @@ class JobManager:
                         # The Round-trip did not pass, so this output may not
                         # hold the Source's content. Store nothing that would
                         # present it as a checked result: no badge, no reuse
-                        # snapshot for the re-run fast path, and any record an
-                        # earlier run left for this path is dropped.
-                        await verification_store.clear(job.output_path)
+                        # snapshot for the re-run fast path. A failed check
+                        # keeps provenance: the record names this output's
+                        # mode and tool (replacing whatever an earlier run
+                        # left) and is marked failed, so the next check still
+                        # goes to the tool that made it.
+                        await verification_store.mark_verified(
+                            job.output_path,
+                            source_path=job.file_path,
+                            produced_meta=self._verifier_identity(job),
+                        )
+                        await verification_store.mark_failed(job.output_path)
                         raise RuntimeError(keep_source_reason)
                     # Snapshot what produced this verified artifact (mode +
                     # output shaping + source/output fingerprints) so a later
@@ -3279,9 +3687,17 @@ class JobManager:
                     # no-op without re-spawning the converter (#184, site 1).
                     # The source still exists here (delete runs below), so its
                     # complete set can be fingerprinted.
-                    produced_meta = await run_in_threadpool(
+                    snapshot_meta = await run_in_threadpool(
                         self._build_produced_meta, job,
                     )
+                    # The verifier identity (the mode and tool that made the
+                    # output) is recorded for every passing check, with or
+                    # without a delete snapshot: the CLI routes the next check
+                    # by it (#306). The fingerprints that back the re-run fast
+                    # path come only from the snapshot.
+                    produced_meta = {
+                        **self._verifier_identity(job), **(snapshot_meta or {}),
+                    }
                     await verification_store.mark_verified(
                         job.output_path,
                         source_path=job.file_path,
@@ -3307,6 +3723,26 @@ class JobManager:
                         job.message = (
                             f"Output is {check_label}. Delete skipped (cancelled)."
                         )
+                        await self._notify_subscribers(
+                            job_id,
+                            {
+                                "type": "progress",
+                                "job_id": job_id,
+                                "progress": job.progress,
+                                "message": job.message,
+                            },
+                        )
+                    elif not await self._hold_delete_paths_waiting(job_id, cancel_event):
+                        if cancel_event.is_set() or job_id in self._cancelled:
+                            # Cancelled while it waited: the Source stays and
+                            # the job ends CANCELLED, never reported as a
+                            # reader.
+                            raise ConversionCancelled("Conversion cancelled")
+                        # Another job is still reading the Source (or a folder
+                        # above it): the output is done and checked, so the job
+                        # completes, keeping the Source.
+                        job.warning = SOURCE_KEPT_FOR_READERS
+                        job.message = f"Output is {check_label}. {SOURCE_KEPT_FOR_READERS}."
                         await self._notify_subscribers(
                             job_id,
                             {
@@ -3379,93 +3815,78 @@ class JobManager:
                         else:
                             delete_order = expected_paths
 
-                        for path in expected_paths:
-                            _, is_locked = lock_manager.check_file_status(path)
-                            if is_locked:
-                                raise RuntimeError(
-                                    "Delete path is locked by an active conversion"
-                                )
-                            within_volumes = await run_in_threadpool(
-                                is_within_configured_volumes,
-                                path,
-                                treat_archives=False,
+                        # Every delete path is held exclusively from here until
+                        # the unlinks finish (``_hold_delete_paths_waiting``,
+                        # above): no job can start reading one between these
+                        # checks and its unlink (#306).
+                        await self._check_delete_paths(
+                            job_id, expected_paths, fingerprints, output_real,
+                        )
+
+                        # Referrers (.m3u, ...) move to the output before the
+                        # Source goes; if any can't, the Source stays (#295).
+                        referrer_outcome = await referrers.update_before_source_removal(
+                            source_for_delete,
+                            {path: job.output_path for path in delete_order},
+                            cancel_event=cancel_event,
+                        )
+                        job.referrers_updated = referrer_outcome.records
+                        # The hook awaited a worker thread: re-ask cancel and
+                        # every per-path identity check before removing.
+                        kept_reason = None
+                        if cancel_event.is_set():
+                            kept_reason = (
+                                f"Output is {check_label}. Delete skipped (cancelled)."
                             )
-                            if not within_volumes:
-                                raise RuntimeError(
-                                    "Delete path outside configured volumes; refusing to delete"
-                                )
-                            if self._is_path_in_use_by_other_job(job_id, path):
-                                raise RuntimeError(
-                                    "Delete path is still in use by another job"
-                                )
-                            if os.path.islink(path):
-                                raise RuntimeError(
-                                    "Delete path is a symlink; refusing to delete"
-                                )
+                        elif not referrer_outcome.ok:
+                            kept_reason = referrer_outcome.kept_message
+                        else:
                             try:
-                                st = os.stat(path, follow_symlinks=False)
-                            except FileNotFoundError as exc:
-                                raise RuntimeError(
-                                    "Delete path no longer exists; refusing to delete"
-                                ) from exc
-                            if not os.path.isfile(path):
-                                raise RuntimeError(
-                                    "Delete path is not a file; refusing to delete"
+                                await self._check_delete_paths(
+                                    job_id, expected_paths, fingerprints, output_real,
                                 )
-                            if os.path.realpath(path) == output_real:
-                                raise RuntimeError(
-                                    "Delete path matches output path; refusing to delete"
+                            except RuntimeError as exc:
+                                kept_reason = f"converted, source kept: {exc}"
+                            # That check awaited too; a Cancel there still wins.
+                            if kept_reason is None and cancel_event.is_set():
+                                kept_reason = (
+                                    f"Output is {check_label}. Delete skipped (cancelled)."
                                 )
-                            fp = fingerprints.get(path)
-                            if not fp:
-                                raise RuntimeError(
-                                    "Delete fingerprint missing; refusing to delete"
-                                )
-                            mtime_ns = int(
-                                getattr(
-                                    st,
-                                    "st_mtime_ns",
-                                    int(st.st_mtime * 1_000_000_000),
-                                )
+                        if kept_reason:
+                            # The Source stays and the job completes: let go
+                            # of the delete holds, and say why where every
+                            # reader of a finished job looks (the CLI's
+                            # report, the job row): job.warning.
+                            self._release_delete_holds(job_id)
+                            job.message = kept_reason
+                            job.warning = kept_reason
+                            await self._notify_subscribers(
+                                job_id,
+                                {
+                                    "type": "progress",
+                                    "job_id": job_id,
+                                    "progress": job.progress,
+                                    "message": job.message,
+                                },
                             )
-                            if (
-                                int(fp.get("size", -1)) != int(st.st_size)
-                                or int(fp.get("mtime_ns", -1)) != mtime_ns
-                            ):
-                                raise RuntimeError(
-                                    "Delete path fingerprint mismatch; refusing to delete"
-                                )
-                            snapshot_inode = int(fp.get("inode", 0) or 0)
-                            snapshot_device = int(fp.get("device", 0) or 0)
-                            current_inode = int(getattr(st, "st_ino", 0) or 0)
-                            current_device = int(getattr(st, "st_dev", 0) or 0)
-                            if (
-                                (
-                                    snapshot_inode > 0
-                                    and current_inode > 0
-                                    and snapshot_inode != current_inode
-                                )
-                                or (
-                                    snapshot_device > 0
-                                    and current_device > 0
-                                    and snapshot_device != current_device
-                                )
-                            ):
-                                raise RuntimeError(
-                                    "Delete path fingerprint mismatch; refusing to delete"
-                                )
+                        else:
+                            if cancel_event.is_set() or job_id in self._cancelled:
+                                # One last look before anything is unlinked
+                                # (#306): a cancel here ends CANCELLED.
+                                self._release_delete_holds(job_id)
+                                raise ConversionCancelled("Conversion cancelled")
+                            for path in delete_order:
+                                await run_in_threadpool(os.remove, path)
+                                job.deleted_paths.append(path)
+                            self._release_delete_holds(job_id)
 
-                        for path in delete_order:
-                            await run_in_threadpool(os.remove, path)
-                            job.deleted_paths.append(path)
+                            source_deleted = True
 
-                        source_deleted = True
-
-                        ext = os.path.splitext(job.file_path)[1].lower()
-                        if ext in registry.verify_extensions():
-                            await verification_store.clear(job.file_path)
-                        if ext == ".chd":
-                            await chd_metadata_store.clear(job.file_path)
+                            ext = os.path.splitext(job.file_path)[1].lower()
+                            if ext in registry.verify_extensions():
+                                await verification_store.clear(job.file_path)
+                            if ext == ".chd":
+                                await chd_metadata_store.clear(job.file_path)
 
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
@@ -3508,10 +3929,12 @@ class JobManager:
             self._notify_terminal(job)
             # Only release lock if we acquired it
             if lock_acquired:
-                lock_manager.release_lock(job.output_path)
+                self._release_output_locks(job)
             # Release the directory subtree lock held by a folder->iso job.
             if dir_lock_acquired:
                 lock_manager.release_dir_lock(job.file_path)
+            self._release_inputs(job_id)
+            self._release_delete_holds(job_id)
 
             concurrency_manager.release(job_id)
 

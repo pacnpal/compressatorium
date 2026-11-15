@@ -7,6 +7,46 @@ from pydantic import AliasChoices, Field, PrivateAttr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Used only when no data dir is configured at all (a dev checkout without
+# /config). One fixed path, whatever TMPDIR says, so every process on the host
+# picks the same one. Bandit B108: a fixed path is intended here;
+# lock_manager and concurrency_manager create it 0o700.
+_UNCONFIGURED_LOCK_DIR = "/tmp/chd-locks"  # nosec B108
+
+
+def _default_lock_dir(data_dir: str, *, configured: bool) -> str:
+    """Where job lock files live when ``CHD_CONCURRENCY_LOCK_DIR`` is unset.
+
+    A pure function of configuration, never of whether a folder exists yet
+    (#306): every process that shares the data dir (the server,
+    ``docker exec compressatorium ...``, a separate CLI container) must pick the
+    same lock dir, or none of their output, input, folder and scheduler locks
+    meet. With a data dir configured it is always ``<data dir>/locks``, created
+    here (parents included, owner only); one that can't be created stops the
+    process with a clear error rather than putting the locks where no other
+    process looks. Only with no data dir configured at all is it the one fixed
+    ``_UNCONFIGURED_LOCK_DIR``.
+    """
+    if not configured:
+        return _UNCONFIGURED_LOCK_DIR
+    lock_dir = os.path.join(data_dir, "locks")
+    try:
+        os.makedirs(lock_dir, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot create the job lock directory {lock_dir}: {exc}. Make "
+            "CHD_DATA_DIR writable by this user, or set CHD_CONCURRENCY_LOCK_DIR "
+            "to a directory every process shares.",
+        ) from exc
+    if not os.access(lock_dir, os.W_OK | os.X_OK):
+        raise RuntimeError(
+            f"The job lock directory {lock_dir} is not writable by this user. Make "
+            "CHD_DATA_DIR writable, or set CHD_CONCURRENCY_LOCK_DIR to a directory "
+            "every process shares.",
+        )
+    return lock_dir
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables and defaults."""
 
@@ -98,8 +138,11 @@ class Settings(BaseSettings):
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
         description=(
-            "Directory for job lock files "
-            "(default: ephemeral /tmp subdirectory, auto-cleaned on restart)"
+            "Directory for job lock files, conversion slots and the Rule scheduler "
+            "lock. Default: always <data dir>/locks when a data dir is configured "
+            "(shared by every container mounting /config); startup fails if it "
+            "can't be created. /tmp/chd-locks only when no data dir is configured "
+            "at all."
         ),
     )
     max_job_history: int = Field(default=500, alias="MAX_JOB_HISTORY")
@@ -549,16 +592,11 @@ class Settings(BaseSettings):
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.data_dir) / "temp")
         if self.concurrency_lock_dir is None:
-            # Use a subdirectory under /tmp for ephemeral lock storage
-            # This is secure in the container context because:
-            # 1. Container filesystem is isolated
-            # 2. Non-root user runs the application
-            # 3. Directory permissions are set restrictively (0o700) during creation
-            #    in concurrency_manager.py and lock_manager.py, mitigating Bandit_B108
-            #    concerns about predictable temporary paths
-            # 4. Locks don't persist across container restarts
-            # The fixed path is intentional to allow multiple processes to share locks
-            self.concurrency_lock_dir = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'chd-locks')
+            # "Configured" means named by CHD_DATA_DIR or the constructor; the
+            # image sets CHD_DATA_DIR=/config, so a container always is.
+            self.concurrency_lock_dir = _default_lock_dir(
+                self.data_dir, configured="data_dir" in self.model_fields_set,
+            )
         # CHD_DEBUG=true backwards compatibility: map to LOGLEVEL=DEBUG when LOGLEVEL
         # is not explicitly set in the environment and log_level was not explicitly
         # provided to Settings (e.g. via constructor argument in tests).

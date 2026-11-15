@@ -22,19 +22,18 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from config import settings
 from models import OutputStatus
 from fastapi.concurrency import run_in_threadpool
-from services.disk import create_scratch_dir, ensure_headroom
+from services.disk import create_scratch_dir, ensure_headroom, scratch_margin_bytes
 from services.lock_manager import lock_manager
 from services.subprocess_runner import remove_partial_tree
 from utils.path_utils import match_extension
 
-from .base import BaseTool
+from .base import BaseTool, ContentDigest
 from .spec import ChainSpec, ChainStep, ModeKind
 
 if TYPE_CHECKING:
@@ -69,6 +68,9 @@ CSO_TO_CHD = ChainSpec(
     # for the chain is deferred to the UI-placement decision.
     supports_compression=False,
     supports_delete_on_verify=True,
+    # The first step's decoded Source (the CSO decoded by maxcso's tool) is
+    # compared with the final CHD's data SHA1: both are image_data_sha1 (#301).
+    supports_round_trip=True,
     allows_archive_input=True,
 )
 
@@ -363,11 +365,10 @@ class ChainTool(BaseTool):
                 input_size * sum(s.output_ratio for s in spec.steps[: n - 1])
             )
             final_bytes = int(input_size * spec.steps[-1].output_ratio)
-        margin = int(getattr(settings, "chain_disk_margin_mb", 512)) * 1024 * 1024
         targets: list[tuple[str, int]] = [(output_path, final_bytes)]
         if intermediate_bytes > 0:
             targets.append((work_dir, intermediate_bytes))
-        ensure_headroom(targets, margin_bytes=margin)
+        ensure_headroom(targets, margin_bytes=scratch_margin_bytes())
 
     # ------------------------------------------------------ verify / info
     def _spec_for_output(self, path: str):
@@ -394,6 +395,47 @@ class ChainTool(BaseTool):
         step = spec.steps[spec.verify_step]
         return self._registry.get(step.tool_id)
 
+    def _tool_for_path(self, path: str):
+        """The registered tool that owns ``path``: a chain's Source belongs to
+        its first step's tool, anything else to the final step's (#301).
+
+        Any chain's input extensions count, not only the running chain's: safe
+        while no chain's output extension is another chain's input extension.
+        A chain that breaks that must resolve the spec from the output first.
+        """
+        for spec in self.modes:
+            if match_extension(path, spec.input_extensions) is not None:
+                return self._registry.get(spec.steps[0].tool_id)
+        return self._final_tool(path)
+
+    async def content_digest(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
+    ) -> ContentDigest | None:
+        # A chain compares the first step's decoded Source with the final
+        # output, each digested by the tool that reads it. They must agree on
+        # the digest kind (cso_to_chd: maxcso and chdman both give
+        # image_data_sha1), or the check refuses to compare and keeps the Source.
+        # ``within`` goes through unchanged: the delegate decides what to read.
+        return await self._tool_for_path(path).content_digest(
+            path, cancel_event=cancel_event, within=within,
+        )
+
+    async def source_problem(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
+    ) -> str | None:
+        # The tool that reads the Source checks it, with the same roots.
+        return await self._tool_for_path(path).source_problem(
+            path, cancel_event=cancel_event, within=within,
+        )
+
     async def verify(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> dict:
@@ -407,9 +449,11 @@ class ChainTool(BaseTool):
     async def verify_timeout(
         self, path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> int:
-        # The final step's tool runs the verify, so its policy owner (and any
-        # per-tool override) sets the bound -- not the synthetic "chain" owner.
-        return await self._final_tool(path).verify_timeout(
+        # The tool that reads the path sets the bound, by its policy owner (and
+        # any per-tool override), not the synthetic "chain" owner: the final
+        # step's for the output it verifies, the first step's for the Source
+        # the Round-trip decodes.
+        return await self._tool_for_path(path).verify_timeout(
             path, cancel_event=cancel_event,
         )
 

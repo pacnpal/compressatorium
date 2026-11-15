@@ -481,12 +481,14 @@ def _mode_output_exts(tool, mode) -> set[str]:
 # (NKIT2ISO_RECOVERY=none) and still yields a cleanly-verifying RVZ, so deleting
 # the NKit source on that evidence destroys the only file a later
 # NKIT2ISO_RECOVERY=download run could restore bit-exact.
+# createld (#301): a LaserDisc CHD verifies, but its AVI Source has no digest
+# the CHD can be compared with, so the Round-trip could never prove a delete.
 #
 # exodos_repack: the product differs from its Source by design (re-rooted, with
 # a rewritten dosbox.conf added), so its verify proves the product reads back,
 # never that it holds the Source. The Source is the operator's eXoDOS install,
 # which eXoDOS itself still needs.
-_DELETE_ON_VERIFY_DECLINED = {"nkit_to_rvz", "exodos_repack"}
+_DELETE_ON_VERIFY_DECLINED = {"nkit_to_rvz", "createld", "exodos_repack"}
 
 
 def test_delete_on_verify_requires_a_verifiable_output():
