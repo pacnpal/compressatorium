@@ -153,6 +153,11 @@ def _sheet_spellings(path: str | Path) -> tuple[list[str], str] | None:
         return None
     if len(raw) > MAX_SHEET_BYTES or not _chd_framing_ok(raw):
         return None
+    # Exactly the bytes chdman reads, BOM included: chdman does not strip a
+    # BOM, so a BOM-prefixed first-line `FILE` is `﻿FILE` to it and
+    # ignored. Spelled as the OS spells a file name, so its names are the
+    # files chdman opens.
+    native = os.fsdecode(raw)
     raw = raw.removeprefix(_UTF8_BOM)
     try:
         first = raw.decode("utf-8")
@@ -163,8 +168,6 @@ def _sheet_spellings(path: str | Path) -> tuple[list[str], str] | None:
     if not _quotes_close(latin1, cue=Path(path).suffix.lower() == ".cue"):
         return None
     readings = [first, latin1]
-    # The raw bytes as the OS spells a file name: what chdman opens.
-    native = os.fsdecode(raw)
     if native not in readings:
         readings.append(native)
     return readings, native
@@ -219,7 +222,16 @@ def _ambiguity(
     for text in readings:
         if text == native:
             continue
-        for decoded, opened in zip(parse(text), native_names):
+        decoded_names = parse(text)
+        if len(decoded_names) != len(native_names):
+            # The readings disagree on which commands name files (a BOM
+            # hides a first-line FILE from chdman): a reader acting on the
+            # decoded set would touch a file chdman never opened.
+            return (
+                "Ambiguous track sheet: its decoded text names "
+                f"{len(decoded_names)} track(s), the bytes chdman reads {len(native_names)}"
+            )
+        for decoded, opened in zip(decoded_names, native_names):
             if decoded == opened:
                 continue
             try:

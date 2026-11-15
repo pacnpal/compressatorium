@@ -206,6 +206,14 @@ def _candidate_folders(path: str) -> list[str]:
     return [*reversed(below), root.name]
 
 
+def _folder_context(path: str) -> tuple[str, str | None]:
+    """What ``_candidate_folders`` depends on beyond the path: the resolved
+    parent folder and the containing Volume root."""
+    root = containing_volume_root(path)
+    parent = str(Path(os.path.realpath(path)).parent)
+    return parent, None if root is None else str(root)
+
+
 def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
     for part in _candidate_folders(path):
         slug = names.get(part.lower())
@@ -287,8 +295,11 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         return _decide(path, tool_list)
     # The probe set is part of the answer: the same file asked of other tools
     # can answer differently. The tool objects themselves, compared by
-    # identity (and kept alive by the entry, so an id is never reused).
-    key = (st.st_size, st.st_mtime_ns, deps, tuple(tool_list))
+    # identity (and kept alive by the entry, so an id is never reused). So is
+    # the folder walk's context, which the file's own stat does not track: the
+    # resolved parent folder (a retargeted folder symlink) and the Volume root
+    # the walk stops at.
+    key = (st.st_size, st.st_mtime_ns, deps, tuple(tool_list), _folder_context(path))
     with _cache_lock:
         hit = _cache.get(path)
         if hit is not None and hit[0] == key:
