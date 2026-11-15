@@ -7,7 +7,9 @@ at the destination.
 from __future__ import annotations
 
 import os
+import struct
 import zipfile
+from pathlib import Path
 
 import pytest
 from services.archive_edit import rewrite_zip
@@ -141,3 +143,98 @@ def test_member_dates_and_compression_carry_over(tmp_path):
         info = zf.getinfo("A")
     assert info.date_time == (1995, 6, 1, 12, 0, 0)
     assert info.compress_type == zipfile.ZIP_STORED
+
+
+def test_the_temp_file_is_hidden_and_ends_in_tmp_while_it_is_written(tmp_path):
+    """RomM's scanner skips ``.tmp`` files by default; a hidden name alone is not enough."""
+    src = _make_zip(tmp_path / "in.zip", {"A": b"a" * 3000})
+    dst = str(tmp_path / "out.dosz")
+    seen = []
+
+    def watch(_done, _total):
+        seen.append(sorted(set(os.listdir(tmp_path)) - {"in.zip"}))
+
+    rewrite_zip(src, dst, on_progress=watch)
+
+    in_flight = [names for names in seen if names and names != ["out.dosz"]]
+    assert in_flight, "no progress was reported while the temp file existed"
+    for names in in_flight:
+        assert len(names) == 1
+        assert names[0].startswith(".")
+        assert names[0].endswith(".tmp")
+
+
+def test_added_members_come_first(tmp_path):
+    src = _make_zip(tmp_path / "in.zip", {"A.CONF": b"other", "B": b"b"})
+    dst = str(tmp_path / "out.zip")
+
+    rewrite_zip(src, dst, add={"dosbox.conf": b"conf"})
+
+    with zipfile.ZipFile(dst) as zf:
+        assert zf.namelist() == ["dosbox.conf", "A.CONF", "B"]
+
+
+def test_added_members_carry_the_given_timestamp(tmp_path):
+    src = _make_zip(tmp_path / "in.zip", {"A": b"a"})
+    first, second = str(tmp_path / "one.zip"), str(tmp_path / "two.zip")
+
+    for dst in (first, second):
+        rewrite_zip(src, dst, add={"x": b"x"}, added_date_time=(2001, 2, 3, 4, 5, 6))
+
+    with zipfile.ZipFile(first) as zf:
+        assert zf.getinfo("x").date_time == (2001, 2, 3, 4, 5, 6)
+    assert Path(first).read_bytes() == Path(second).read_bytes()
+
+
+def test_small_members_get_no_zip64_local_header(tmp_path):
+    src = _make_zip(tmp_path / "in.zip", {"A": b"a" * 100})
+    dst = str(tmp_path / "out.zip")
+
+    rewrite_zip(src, dst)
+
+    with zipfile.ZipFile(dst) as zf:
+        info = zf.getinfo("A")
+    raw = Path(dst).read_bytes()
+    extra_len = struct.unpack_from("<H", raw, info.header_offset + 28)[0]
+    assert extra_len == 0
+
+
+def test_a_failed_check_places_nothing(tmp_path):
+    src = _make_zip(tmp_path / "in.zip", {"A": b"a"})
+    dst = str(tmp_path / "out.zip")
+    checked = []
+
+    def check(path):
+        checked.append(path)
+        raise ValueError("bad product")
+
+    with pytest.raises(ValueError, match="bad product"):
+        rewrite_zip(src, dst, check=check)
+
+    assert checked and checked[0] != dst
+    assert _leftovers(tmp_path, {"in.zip"}) == []
+
+
+def test_the_check_reads_the_finished_temp_file(tmp_path):
+    src = _make_zip(tmp_path / "in.zip", {"A": b"a"})
+    dst = str(tmp_path / "out.zip")
+    names = []
+
+    rewrite_zip(src, dst, add={"c": b"c"}, check=lambda p: names.extend(zipfile.ZipFile(p).namelist()))
+
+    assert names == ["c", "A"]
+
+
+def test_a_destination_that_appears_mid_write_is_never_replaced(tmp_path):
+    src = _make_zip(tmp_path / "in.zip", {"A": b"a" * 3000})
+    dst = tmp_path / "out.zip"
+
+    def squat(_done, _total):
+        if not dst.exists():
+            dst.write_bytes(b"someone else's")
+
+    with pytest.raises(FileExistsError):
+        rewrite_zip(src, str(dst), on_progress=squat)
+
+    assert dst.read_bytes() == b"someone else's"
+    assert _leftovers(tmp_path, {"in.zip", "out.zip"}) == []

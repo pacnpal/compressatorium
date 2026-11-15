@@ -9,8 +9,9 @@ eXoDOS repack today, the Patch bench later). The Source is only ever read.
   instead of being carried into the product. The member *content* is identical;
   the compressed bytes may differ from the Source's.
 * **Nothing that looks finished appears early.** The archive is written under
-  a hidden temporary name in the destination directory (``.<name>.partial-*``,
-  which ends in neither the product's extension nor ``.zip``), fsynced, and only
+  a hidden temporary name in the destination directory
+  (``.<name>.partial-*.tmp``, which library scanners such as RomM's skip by
+  default), fsynced, optionally checked by the caller, and only
   then moved into place with :func:`utils.path_utils.place_without_clobbering`,
   an atomic no-replace move. A crash, a cancel or an error leaves no product,
   and an existing file at the destination is never replaced.
@@ -19,7 +20,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-import time
 import zipfile
 from collections.abc import Callable, Mapping
 
@@ -27,6 +27,9 @@ from services.subprocess_runner import ConversionCancelled
 from utils.path_utils import place_without_clobbering
 
 _CHUNK = 1024 * 1024
+# The zip epoch: the default stamp for added members, so a product does not
+# depend on when it was made.
+_FIXED_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 # Methods zipfile can write; anything else is re-deflated.
 _WRITABLE = frozenset({
     zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA,
@@ -77,10 +80,13 @@ def _copy_member(
     )
     out.external_attr = info.external_attr
     out.comment = info.comment
+    # The declared size lets zipfile decide per member whether it needs zip64,
+    # instead of forcing a zip64 local header on every member.
+    out.file_size = info.file_size
     if info.is_dir():
         dst.writestr(out, b"")
         return
-    with src.open(info) as reader, dst.open(out, "w", force_zip64=True) as writer:
+    with src.open(info) as reader, dst.open(out, "w") as writer:
         while True:
             if is_cancelled():
                 raise ConversionCancelled("Conversion cancelled")
@@ -110,15 +116,22 @@ def rewrite_zip(
     *,
     rename: Callable[[str], str | None] = _keep,
     add: Mapping[str, bytes] | None = None,
+    added_date_time: tuple[int, int, int, int, int, int] = _FIXED_DATE_TIME,
+    check: Callable[[str], object] | None = None,
     is_cancelled: Callable[[], bool] = _never,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
     """Write a copy of the zip at ``src`` to ``dst``, edited.
 
     ``rename`` maps each member's name to its name in the product, or to
-    ``None`` to drop it. ``add`` holds members to write after the copied ones;
-    an added name replaces any copied member that would have taken it. Two
-    copied members renamed onto one name raise ``ValueError``.
+    ``None`` to drop it. ``add`` holds members to write *first*, before the
+    copied ones (a reader that takes the first file of a kind finds them), all
+    stamped ``added_date_time`` so the product does not depend on the clock. An
+    added name replaces any copied member that would have taken it. Two copied
+    members renamed onto one name raise ``ValueError``.
+
+    ``check(path)``, when given, runs on the finished temporary file before it
+    is placed; anything it raises fails the call and nothing is placed.
 
     ``is_cancelled`` is polled between chunks and raises
     :class:`ConversionCancelled`. ``on_progress(done, total)`` reports
@@ -131,8 +144,10 @@ def rewrite_zip(
     if os.path.lexists(dst):
         raise FileExistsError(dst)
     directory = os.path.dirname(os.path.abspath(dst))
+    # Hidden and ending in ``.tmp``: library scanners (RomM's skips ``tmp`` by
+    # default) must not list it as a game while it is written or after a crash.
     fd, tmp = tempfile.mkstemp(
-        prefix=f".{os.path.basename(dst)}.partial-", dir=directory,
+        prefix=f".{os.path.basename(dst)}.partial-", suffix=".tmp", dir=directory,
     )
     try:
         with zipfile.ZipFile(src) as source:
@@ -149,17 +164,19 @@ def rewrite_zip(
             with os.fdopen(fd, "wb") as handle:
                 fd = -1
                 with zipfile.ZipFile(handle, "w", allowZip64=True) as product:
-                    for info, new_name in plan:
-                        _copy_member(source, product, info, new_name, tick, is_cancelled)
                     for name, data in add.items():
                         product.writestr(
-                            zipfile.ZipInfo(name, date_time=_now()), data,
+                            zipfile.ZipInfo(name, date_time=added_date_time), data,
                             compress_type=zipfile.ZIP_DEFLATED,
                         )
+                    for info, new_name in plan:
+                        _copy_member(source, product, info, new_name, tick, is_cancelled)
                 handle.flush()
                 os.fsync(handle.fileno())
         if on_progress is not None:
             on_progress(total, total)
+        if check is not None:
+            check(tmp)
         place_without_clobbering(tmp, dst)
         _fsync_dir(directory)
     except BaseException:
@@ -170,10 +187,6 @@ def rewrite_zip(
         except FileNotFoundError:
             pass
         raise
-
-
-def _now() -> tuple[int, int, int, int, int, int]:
-    return time.localtime()[:6]
 
 
 __all__ = ["rewrite_zip"]
