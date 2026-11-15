@@ -285,7 +285,10 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         # A file the header probe needs is missing or unreadable (a .bin still
         # copying in). Answer now, but remember nothing: the next call re-reads.
         return _decide(path, tool_list)
-    key = (st.st_size, st.st_mtime_ns, deps)
+    # The probe set is part of the answer: the same file asked of other tools
+    # can answer differently. The tool objects themselves, compared by
+    # identity (and kept alive by the entry, so an id is never reused).
+    key = (st.st_size, st.st_mtime_ns, deps, tuple(tool_list))
     with _cache_lock:
         hit = _cache.get(path)
         if hit is not None and hit[0] == key:
@@ -418,13 +421,21 @@ def auto_route(path: str, platform: str, tools_registry) -> tuple[str | None, st
     ``default_mode`` picks the target. The Image is then left alone when the
     target writes the format it is already in (an RVZ under ``dolphin_rvz``):
     the mode's ``output_ext`` matching the input name says so, for any tool.
+    Only a file's name (or an archive member's) says that; a folder's name
+    says nothing about what it holds, so a PS3 folder named ``Game.iso`` is
+    still built into an ISO. Blocking (a stat); call it off the event loop.
     """
     mode = default_mode(path, platform, tools_registry)
     if mode is None:
         return None, _no_target_reason(path, platform, tools_registry)
     output_ext = tools_registry.spec(mode).output_ext
+    member = "::" in path
     name = path.split("::", 1)[-1]
-    if output_ext and match_extension(name, {output_ext}) is not None:
+    if (
+        output_ext
+        and match_extension(name, {output_ext}) is not None
+        and (member or not os.path.isdir(path))
+    ):
         return None, f"Already {output_ext.lstrip('.').upper()}"
     return mode, None
 
