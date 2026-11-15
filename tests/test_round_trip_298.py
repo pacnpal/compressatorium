@@ -524,3 +524,22 @@ async def test_batch_route_carries_the_container_only_opt_out(e2e):
     assert [j.container_only for j in jobs] == [True, True]
     assert [j.check_passed for j in jobs] == ["intact", "intact"]
     assert e2e["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_round_trip_keeps_what_made_the_output(e2e):
+    """A failed check keeps provenance (#305 ruling, on #306): after a
+    Round-trip mismatch the output is not verified, but its record still
+    names the mode that made it, so the next check goes to that tool."""
+    from services.verification_store import verification_store
+
+    iso, _ = _source_iso(e2e)
+    e2e["stdout"] = f"{'0' * 40}\n".encode()
+
+    job = await _run(e2e, iso, "dolphin_rvz", delete_on_verify=True)
+
+    assert job.status.value == "failed"
+    assert await verification_store.get_record(job.output_path) is None
+    assert not await verification_store.is_verified(job.output_path)
+    meta = verification_store.produced_meta_blocking(job.output_path)
+    assert (meta or {}).get("mode") == "dolphin_rvz"

@@ -1207,8 +1207,10 @@ async def _check_held(
         return line
     line["reason"] = result.get("message")
     # A real verdict: it is not Intact any more. A stored pass would be a false
-    # badge, and `--since` would skip it next time.
-    await verification_store.clear(path)
+    # badge, and `--since` would skip it next time. Marked failed, not cleared:
+    # the record keeps what made the file, so the next check still goes to
+    # that tool (a repaired PS3 ISO back to makeps3iso).
+    await verification_store.mark_failed(path)
     return line
 
 
@@ -1242,6 +1244,14 @@ async def verify(args, printer: Printer, state: RunState) -> int:
                           "reason": item.reason})
             continue
         record = await verification_store.get_record(item.path) if has_db else None
+        if record is None and has_db:
+            # A failed check is no stored pass, but it still names the mode
+            # that made the file: route by it.
+            meta = await run_in_threadpool(
+                verification_store.produced_meta_blocking, item.path,
+            )
+            if (meta or {}).get("mode"):
+                record = {"produced_meta": meta}
         target = None
         if item.logical_mode:
             tool = registry.for_mode(item.logical_mode)

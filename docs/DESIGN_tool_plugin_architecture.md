@@ -3083,6 +3083,16 @@ a delete snapshot; the fingerprints that back the re-run fast path come only
 from the snapshot, and `_produced_meta_matches` refuses a record that has no
 `source` and `output` fingerprints.
 
+**A failed check keeps provenance.** A check that finds a file not Intact
+calls `verification_store.mark_failed` (#305's API, hosted here): the row stays
+with its `produced_meta` and Source, `check_passed` becomes `FAILED`, and every
+read that means "this passed" (`is_verified`, `get_record`, `all_records`)
+skips it, while `produced_meta_blocking` still returns what made the file. The
+CLI routes a file with no passing record by that mode, so a repaired PS3 ISO
+goes back to makeps3iso. A job whose Round-trip fails records its own mode and
+tool for the output, marked failed. `clear` stays for a file that is gone or
+replaced: a deleted Source, an authorized overwrite, a web delete or rename.
+
 **Which tool checks a file** (`cli._verify_tool`), in this order:
 
 | Step | When | Verifier |

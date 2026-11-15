@@ -2508,3 +2508,31 @@ def test_a_split_iso_being_rebuilt_is_skipped_as_busy(volume, dolphin, capsys, t
     assert code == 0, lines
     assert [(x["path"], x["status"]) for x in lines] == [(str(iso), "skipped")], lines
     assert "busy" in lines[0]["reason"].lower()
+
+
+def test_a_failed_check_keeps_the_mode_and_the_repaired_iso_routes_back(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """A CLI check that finds a PS3 ISO damaged keeps its record's producing
+    mode (marked failed, not cleared); once repaired, the next check still
+    goes to makeps3iso and passes."""
+    from services import ps3
+    from services.verification_store import verification_store
+
+    iso = volume / "games" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso, produced_meta={"mode": "folder_to_iso", "tool": "makeps3iso"})
+    dolphin["valid"] = False  # a Dolphin check would fail it either way
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: None)
+    code, lines = _cli(capsys, "verify", str(iso), "--json")
+    assert (code, lines[0]["tool"], lines[0]["status"]) == (1, "makeps3iso", "failed")
+    assert _stored(iso) is None  # not verified any more...
+    meta = verification_store.produced_meta_blocking(str(iso))
+    assert (meta or {}).get("mode") == "folder_to_iso"  # ...but still known
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    code, lines = _cli(capsys, "verify", str(iso), "--json")
+    assert (code, lines[0]["tool"], lines[0]["status"]) == (0, "makeps3iso", "intact")
+    assert _stored(iso)["produced_meta"]["mode"] == "folder_to_iso"
