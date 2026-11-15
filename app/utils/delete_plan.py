@@ -4,41 +4,18 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 from utils.path_utils import strip_archive_path
-from utils.sheet_text import cue_tracks, gdi_tracks, pick_existing, sheet_readings
+from utils.sheet_text import (
+    cue_tracks,
+    gdi_tracks,
+    resolve_track,
+    sheet_readings,
+    sheet_tracks,
+)
 
 
-_WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
-
-
-def _is_absolute_reference(ref: str) -> bool:
-    ref = ref.strip()
-    if not ref:
-        return False
-    if ref.startswith("~"):
-        return True
-    if ref.startswith("\\\\"):
-        return True
-    if _WIN_ABS_RE.match(ref):
-        return True
-    return Path(ref).is_absolute()
-
-
-def _resolve_track_path(base_dir: Path, ref: str) -> Path:
-    raw = ref.strip().strip('"')
-    if not raw:
-        raise ValueError("Empty track reference")
-    normalized_ref = raw.replace("\\", "/")
-    if _is_absolute_reference(normalized_ref):
-        raise ValueError(f"Absolute track reference is not allowed: {raw}")
-
-    base_resolved = Path(os.path.normpath(str(base_dir.absolute())))
-    candidate = Path(os.path.normpath(os.path.join(str(base_resolved), normalized_ref)))
-    try:
-        candidate.relative_to(base_resolved)
-    except ValueError as exc:
-        raise ValueError(f"Track reference escapes source directory: {raw}") from exc
-
-    return candidate
+# The one confined track resolver lives in utils.sheet_text; this name stays
+# for the callers that import it from here.
+_resolve_track_path = resolve_track
 
 
 def _read_sheet(sheet_path: Path) -> list[str]:
@@ -79,9 +56,8 @@ def sheet_track_paths(sheet_path: str) -> list[str]:
     )
     if parse is None:
         return []
-    readings = [parse(text) for text in sheet_readings(sheet)]
-    tracks = pick_existing(readings, lambda ref: _resolve_track_path(sheet.parent, ref))
-    return [str(track) for track in tracks]
+    tracks = sheet_tracks(sheet, parse)
+    return [str(track) for track in tracks] if tracks else []
 
 
 def build_delete_plan(source_path: str) -> Dict[str, object]:

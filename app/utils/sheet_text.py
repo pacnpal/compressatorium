@@ -7,6 +7,8 @@ the delete plan and header-dependency list (``utils.delete_plan``).
 """
 from __future__ import annotations
 
+import os
+import re
 import shlex
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -44,6 +46,68 @@ def sheet_readings(path: str | Path) -> list[str]:
     except UnicodeDecodeError:
         first = raw.decode("cp1252", errors="replace")
     return [first, raw.decode("latin-1")]
+
+
+_WIN_ABS_RE = re.compile(r"^[a-zA-Z]:[\\/]")
+
+
+def _is_absolute_reference(ref: str) -> bool:
+    ref = ref.strip()
+    if not ref:
+        return False
+    if ref.startswith("~") or ref.startswith("\\\\") or _WIN_ABS_RE.match(ref):
+        return True
+    return Path(ref).is_absolute()
+
+
+def resolve_track(sheet_dir: str | Path, ref: str) -> Path:
+    """The track a sheet names, resolved beside the sheet, or ``ValueError``.
+
+    The one track resolver: the Platform probe, the detection cache's track
+    list, the delete plan and the job gate all use it. Refused, so nothing
+    opens them: an empty name, an absolute name (``/x``, ``C:\\x``, ``\\\\host``,
+    ``~``), a name with any ``..`` segment, and a name whose real path (through
+    a symlink) lies outside the configured Volumes. Returns the path beside
+    the sheet, not its real path, so callers see what the sheet named.
+    """
+    from utils.path_utils import (
+        is_within_configured_volumes,  # local: no cycle at import
+    )
+
+    raw = ref.strip().strip('"')
+    if not raw:
+        raise ValueError("Empty track reference")
+    normalized = raw.replace("\\", "/")
+    if _is_absolute_reference(normalized):
+        raise ValueError(f"Absolute track reference is not allowed: {raw}")
+    if ".." in normalized.split("/"):
+        raise ValueError(f"Track reference escapes source directory: {raw}")
+    base = Path(os.path.normpath(str(Path(sheet_dir).absolute())))
+    candidate = Path(os.path.normpath(os.path.join(str(base), normalized)))
+    if not is_within_configured_volumes(os.path.realpath(candidate), treat_archives=False):
+        raise ValueError(f"Track reference resolves outside the volumes: {raw}")
+    return candidate
+
+
+def sheet_tracks(
+    path: str | Path, parse: Callable[[str], list[str]],
+) -> list[Path] | None:
+    """Every track the sheet names, resolved and confined (``resolve_track``).
+
+    None when the sheet is unreadable (missing, or over the size cap) or when
+    any track is refused: a reader must then say nothing about the sheet
+    rather than act on the tracks it was allowed to see. The first spelling of
+    each name that exists wins (``pick_existing``).
+    """
+    texts = sheet_readings(path)
+    if not texts:
+        return None
+    readings = [parse(text) for text in texts]
+    folder = Path(path).parent
+    tracks = pick_existing(readings, lambda ref: resolve_track(folder, ref))
+    if len(tracks) != len(readings[0]):
+        return None
+    return tracks
 
 
 def sheet_is_readable(path: str | Path) -> bool:
