@@ -10,7 +10,6 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
-
 from models import JwudInfo, OutputStatus
 from services.jwudtool import (
     JWUD_COMPRESS_EXTENSIONS,
@@ -23,10 +22,9 @@ from services.jwudtool import (
     split_set_parts,
     verification_enabled,
 )
-from services.subprocess_runner import run_detached
 from services.lock_manager import lock_manager
-
 from services.stream_digest import content_digest_of, file_chunks
+from services.subprocess_runner import run_detached
 
 from .base import IMAGE_DATA_SHA1_KIND, BaseTool, ContentDigest
 from .spec import ModeKind, ModeSpec

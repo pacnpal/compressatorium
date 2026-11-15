@@ -280,8 +280,9 @@
       removed only after the output passes its check, and never if it fails. By default
       the check is stronger: the output must be Round-tripped, meaning the content it
       decodes to matches the source (the same disc, ROM or image, or for a 7z/zip ROM
-      archive the same member by name, size and CRC). CHDMAN Create raw, HD, LaserDisc
-      and Copy keep the Intact check. A CD CHD is extracted to a temp folder for this, and
+      archive the same member by name, size and CRC). CHDMAN Create LD offers no
+      delete-on-verify, since an AVI cannot be compared with the CHD. A CD CHD is
+      extracted to a temp folder for this, and
       both its track data and its track table must match the source sheet. Without free
       scratch space about the size of the disc, the job keeps the source and fails. Tick
       <em>Container check only (faster, weaker)</em> in the convert panel to drop back to

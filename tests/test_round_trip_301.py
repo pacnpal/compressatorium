@@ -309,8 +309,9 @@ async def test_cancel_while_decoding_keeps_the_iso_without_a_verdict(e2e, monkey
     with no verdict and the Source in place."""
     import threading
 
-    from app.models import ConversionMode
     from utils.delete_plan import build_delete_snapshot
+
+    from app.models import ConversionMode
 
     iso = e2e["tmp_path"] / "Game.iso"
     iso.write_bytes(_image())

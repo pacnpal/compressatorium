@@ -2388,10 +2388,20 @@ passes only when the output has `Raw SHA1 verification successful!` and no
 `judge_output` hook; the strings are the same from MAME 0.146 to master). That
 rule also makes the plain Intact check of every chdman mode stricter.
 
-The tag is read strictly from the `Metadata: Tag='XXXX'` lines; a CHD with no
-CD, DVD or hard-disk tag is "not proven". `createhd`, `createraw`, `createld`
-and `copy` do not declare `supports_round_trip`: `createhd` may pad the image to
-its geometry, so its data SHA1 need not equal the Source file's.
+The tag is read strictly from the `Metadata: Tag='XXXX'` lines. A CHD with no
+metadata at all (what `createraw` writes) is read by its data SHA1 too, which
+for a raw CHD is the SHA1 of the input bytes (checked against real chdman
+0.285). A CHD with another tag (LaserDisc `AVAV`) is "not proven".
+`createhd`, `createraw` and `copy` declare `supports_round_trip` since #301:
+Create HD and Create raw compare the input's SHA1 with the CHD's data SHA1
+(`createhd` may pad the image to its geometry, which reads as a mismatch, so
+the Source is kept, never a false pass), and Copy digests both CHDs the same
+way (a CD CHD Copy extracts both, one at a time). `createld` has no
+delete-source since #301: its Source is an AVI, the CHD's data SHA1 covers
+chdman's A/V hunk encoding, and `extractld` does not rebuild the AVI byte for
+byte, so there is nothing to compare. Note that the app's `createraw` passes
+no `--unitsize`, which chdman 0.285 refuses, so a Create raw job fails before
+any check (a pre-existing bug, outside the Round-trip).
 
 **The extract fallback** (`ChdmanTool._extracted_cd_sha1`) runs inside
 `services.disk.headroom_scratch_dir(prefix, required_bytes)`, the shared form of
@@ -2424,17 +2434,25 @@ table), and a cue with `CDI/2352` tracks (MAME stores them as `MODE2_RAW` and
 extracts `MODE2/2352`, and track type tokens are compared as written).
 
 **The rest of the tools (#301).** After #301 every mode with delete-source
-Round-trips except chdman's `createraw`, `createhd`, `createld` and `copy`
-(above). PS3 folder to ISO (`folder_to_iso`) and the XISO trim
-(`xiso_rewrite`) offer no delete-source at all, and `nkit_to_rvz` still does
-not (its comment says why), so none of them needs a digest. Kinds:
+Round-trips (a test pins zero exceptions). PS3 folder to ISO (`folder_to_iso`),
+the XISO trim (`xiso_rewrite`) and chdman `createld` offer no delete-source at
+all, and `nkit_to_rvz` still does not (its comment says why), so none of them
+needs a digest. Kinds:
 maxcso, z3ds and jwud use chdman's `image_data_sha1` (now
 `tools.base.IMAGE_DATA_SHA1_KIND`): the SHA1 of the image's bytes. nsz uses
 `switch_image_sha256`, romz `rom_members_crc32` (SHA1 of the sorted
 `name, size, crc` lines, so a missing, extra or renamed member, or another
 size or CRC, gives another value). romz trusts the CRCs the archive stores
 because the container check before it (`7z t`) decompresses every member and
-checks it against that CRC.
+checks it against that CRC. A zip name written without the UTF-8 flag (p7zip
+does that) is read back as UTF-8 when it decodes, and names on both sides are
+compared in NFC.
+
+**Strength.** romz is the weakest bar in the set: CRC32 and size per member.
+CRC32 catches every burst error up to 32 bits and every odd-weight error, and
+random damage gets through about once in 4.3 billion, which is fine against
+accidental damage and is what #301 asked for. Every other tool compares a SHA1
+or SHA256 of the whole decoded image. The Ledger says Round-tripped for both.
 
 **Streaming with no temp file.** Two shared seams hash a decoded image as it
 is produced:
@@ -2475,7 +2493,15 @@ decoded instead. z3ds's payload is plain seekable zstd, so the `zstd` binary
 `verify` already uses decodes it to a pipe. A decoder bug in either Python
 decoder can only make a good container hash differently from its Source,
 which keeps the Source; it cannot produce the Source's bytes from a container
-that does not hold them.
+that does not hold them. `utils.cso_decode` refuses the headers maxcso's
+reader refuses (block 2 KiB to 256 KiB and a power of two, a sector-aligned
+image size, index shift up to 31), but is otherwise more lenient than maxcso:
+it does not check a deflate stream's end marker, the header-size field or
+trailing data. maxcso's own `--crc` container check runs first and reads the
+container with maxcso's reader, so a container that only this decoder accepts
+does not get that far. Checked against real maxcso output in the image: every
+compress mode at every effort preset, and a 2.1 GiB ISO, for which maxcso
+picks a 16 KiB block and index shift 1 and leaves a short last block.
 
 **Chains.** `ChainTool.content_digest(path)` hands a chain's Source (an input
 extension of one of its specs) to the first step's tool and anything else to
@@ -2484,7 +2510,10 @@ tools must agree on the kind, or `same_content` refuses and the Source is
 kept. `cso_to_chd` sets `supports_round_trip`: maxcso digests the `.cso` by
 decoding it and chdman digests the `.chd` by its data SHA1, both
 `image_data_sha1`, so the decoded disc image is what is compared.
-`nkit_to_rvz` has no delete-source.
+`nkit_to_rvz` has no delete-source. The Source is recognised by any chain's
+input extensions, not only the running chain's; that is safe while no chain's
+output extension is another chain's input extension, and a chain that broke
+that rule would have to resolve the spec from the output first.
 
 **Spike (#301): does `nsz -V` prove content equality?** Read from nsz 4.6.1
 and 5.0.0 (`nsz/NszDecompressor.py` / `Decompressor.py`). Result: **not on its
@@ -2505,6 +2534,27 @@ direction: nsz drops NDV0 delta fragments unless run with `--keep`, so an
 update NSP that held them is kept with "content differs"; an XCZ whose
 decompressed XCI is not byte-identical to the Source (nsz rewrites the XCI
 container around the partitions) is kept the same way.
+
+**How nsz rebuilds an XCI** (`nsz/Fs/Xci.py`, `XciStream`, 4.6.1 and 5.0.0):
+it copies only the first 0x200 bytes of the cart header from the XCZ, leaves
+0x200 to 0xF000 as zeros (a real dump has the card info and certificate area
+there), writes the root HFS0 at 0xF000 and each partition back to back after
+it, then rewrites the header. Nothing pads the image to the cart size. So an
+untrimmed dump, or any dump whose bytes between 0x200 and 0xF000 are not all
+zero, does not come back byte for byte. The Round-trip still runs (it is the
+spec's fallback) after the scratch headroom check, and on a mismatch the XCZ's
+digest carries `ContentDigest.mismatch_reason`, so the job says "nsz did not
+rebuild this XCI byte-for-byte, so the Source is kept" rather than "content
+differs". `mismatch_reason` is not part of the comparison; `round_trip` uses
+the output's (or the Source's) when the digests differ. The XCZ scratch size is
+never below twice the container, so an understated header cannot let `nsz -D`
+fill the scratch volume.
+
+**nsz -V runs once.** The container check is `nsz -V`, which prints the same
+`[NSP SHA256]` line. `SubprocessRunner.capture_verify(on_success_output=)`
+hands a passing run's output to nsz, which keeps the hash keyed by the file's
+identity (path, device, inode, size, mtime); `rebuilt_nsp_sha256` takes it once
+and runs `nsz -V` itself only when there is none or the file changed.
 
 What the check guarantees
 does not depend on the input format: only identical digests allow a delete,

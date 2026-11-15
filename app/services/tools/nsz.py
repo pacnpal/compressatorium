@@ -11,8 +11,6 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
-from services.subprocess_runner import run_detached
-
 from models import NszInfo, OutputStatus
 from services.lock_manager import lock_manager
 from services.nsz import (
@@ -21,9 +19,8 @@ from services.nsz import (
     NSZ_OUTPUT_FORMATS,
     nsz_service,
 )
-
 from services.stream_digest import content_digest_of, file_chunks
-from services.subprocess_runner import ReadCancelled
+from services.subprocess_runner import ReadCancelled, run_detached
 
 from .base import BaseTool, ContentDigest, ContentDigestUnavailable
 from .spec import ModeKind, ModeSpec

@@ -397,7 +397,12 @@ class ChainTool(BaseTool):
 
     def _tool_for_path(self, path: str):
         """The registered tool that owns ``path``: a chain's Source belongs to
-        its first step's tool, anything else to the final step's (#301)."""
+        its first step's tool, anything else to the final step's (#301).
+
+        Any chain's input extensions count, not only the running chain's: safe
+        while no chain's output extension is another chain's input extension.
+        A chain that breaks that must resolve the spec from the output first.
+        """
         for spec in self.modes:
             if match_extension(path, spec.input_extensions) is not None:
                 return self._registry.get(spec.steps[0].tool_id)

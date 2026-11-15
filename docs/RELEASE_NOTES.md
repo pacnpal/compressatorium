@@ -68,19 +68,27 @@
   hashing stream with no temp file; an NSZ is compared through the NSP SHA256
   that `nsz -V` rebuilds; a 7z/zip ROM archive's members (name, size, CRC) must
   match the ROM exactly; CSO/ZSO/DAX to CHD compares the decoded disc with the
-  CHD. On a mismatch the Source is kept. Container check only skips it, as
-  before. PS3 folder to ISO and the XISO trim still offer no delete-source.
+  CHD; chdman Create HD and Create raw compare the image with the CHD's data
+  SHA1, and Copy compares the two CHDs. On a mismatch the Source is kept.
+  Container check only skips it, as before. PS3 folder to ISO and the XISO trim
+  still offer no delete-source.
+  - **chdman Create LD no longer offers delete-source.** Its Source is an AVI,
+    and nothing a LaserDisc CHD decodes to can be compared with the AVI byte
+    for byte, so the AVI cannot be proven and is never deleted. Rules on Create
+    LD lose their delete-source setting.
   - **Behaviour change:** these delete-source jobs read the Source and the
     output once more, so they take longer, RomM Rule sweeps included.
   - An XCZ is decompressed to the scratch volume to be compared, so an XCI job
     needs about the XCI's size free there, or it keeps the Source.
   - Kept with "content differs": NSPs whose delta fragments nsz drops (update
-    NSPs, unless compressed with `--keep`), and XCIs nsz does not rebuild byte
-    for byte. Use Container check only for those.
+    NSPs, unless compressed with `--keep`). XCIs nsz does not rebuild byte for
+    byte (it rewrites the area before the partitions and does not pad to the
+    cart size) are kept with "nsz did not rebuild this XCI byte-for-byte". Use
+    Container check only for those.
   - A large ZSO decodes slowly (LZ4 is decoded in Python) and may hit the
     verify time limit, which keeps the Source.
-  - chdman's Create raw, Create HD, Create LaserDisc and Copy still use the
-    container check only.
+  - A 7z/zip ROM archive is checked by CRC32 and size per member, the weakest
+    of these checks; every other tool compares a SHA1 or SHA256.
 - **chdman verify is stricter** (#300). chdman reports a data SHA1 mismatch, and
   a CHD with no checksum, while still exiting with success. Verify now passes a
   CHD only when chdman says the raw SHA1 matched, and fails on any error line.

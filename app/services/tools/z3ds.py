@@ -10,9 +10,10 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
-
 from models import OutputStatus, Z3DSInfo
 from services.lock_manager import lock_manager
+from services.stream_digest import content_digest_of, file_chunks
+from services.subprocess_runner import ReadCancelled
 from services.z3ds_compress import (
     Z3DS_CONVERTIBLE_EXTENSIONS,
     Z3DS_DECOMPRESS_EXTENSIONS,
@@ -20,9 +21,6 @@ from services.z3ds_compress import (
     Z3DS_OUTPUT_FORMATS,
     z3ds_compress_service,
 )
-
-from services.stream_digest import content_digest_of, file_chunks
-from services.subprocess_runner import ReadCancelled
 
 from .base import (
     IMAGE_DATA_SHA1_KIND,

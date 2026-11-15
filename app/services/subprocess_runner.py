@@ -40,14 +40,12 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 
+from config import settings
 from logging_setup import get_logger
 from services.timeout_policy import (
     compute_progress_stall_timeout,
     compute_size_scaled_timeout,
 )
-
-from config import settings
-
 
 class ConversionCancelled(Exception):
     """Raised when a conversion is cancelled before completion."""

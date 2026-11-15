@@ -14,8 +14,8 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
-
 from models import OutputStatus, RomzInfo
+from services.archive_members import read_member_crcs
 from services.lock_manager import lock_manager
 from services.romz import (
     ROMZ_ARCHIVE_EXTENSIONS,
@@ -23,8 +23,6 @@ from services.romz import (
     ROMZ_OUTPUT_BY_MODE,
     romz_service,
 )
-
-from services.archive_members import read_member_crcs
 from services.stream_digest import hash_files
 from services.subprocess_runner import ReadCancelled, run_detached
 

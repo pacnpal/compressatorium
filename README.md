@@ -12,7 +12,7 @@ A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool**
 * **Multiple volume mounts** so you can keep separate game libraries separate.
 * **File detection** that works out which files each tool can convert.
 * **Existing-output detection** with skip, rename, or overwrite.
-* **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. By default the output must be Round-tripped: it decodes to the same content as the source. CHDMAN's Create raw/HD/LaserDisc and Copy need it Intact (it passes its own container check).
+* **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. By default the output must be Round-tripped: it decodes to the same content as the source. CHDMAN Create LD offers no delete-on-verify.
 * **Progress tracking** through a live job queue.
 * **File info** for CHD, Dolphin, 3DS, Switch, CSO, handheld ROM, NKit, Wii U, and Xbox files.
 
@@ -471,8 +471,8 @@ and CHDMAN compare disc SHA1s; CSO/ZSO/DAX, 3DS and WUX outputs are decoded and
 hashed with no temp file; an NSZ is compared through the NSP SHA256 that
 `nsz -V` rebuilds (an XCZ is decompressed to the scratch volume); a 7z/zip ROM
 archive must hold exactly the ROM, by name, size and CRC; CSO to CHD compares
-the decoded disc with the CHD. CHDMAN Create raw/HD/LaserDisc and Copy keep
-the Intact check. A CD CHD is extracted to a temp
+the decoded disc with the CHD. CHDMAN Create LD offers no delete-on-verify: an
+AVI cannot be compared with a LaserDisc CHD. A CD CHD is extracted to a temp
 folder for this, and both its track data and its track table (tracks, types,
 lengths, index offsets, gaps) must match the source cue or gdi; the folder is removed
 afterwards. Without about a disc's worth of free scratch space the job keeps the
