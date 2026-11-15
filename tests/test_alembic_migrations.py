@@ -181,6 +181,12 @@ def test_0012_upgrades_and_downgrades(fresh_db_path: str):
 
     command.upgrade(cfg, "head")
     assert added <= set(inspect(engine).get_table_names())
+    # Ids of cleared Findings are never handed out again (PR #322).
+    with engine.connect() as conn:
+        sql = conn.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE name = 'findings'",
+        ).scalar()
+    assert "AUTOINCREMENT" in sql
 
 
 def test_0013_upgrades_and_downgrades(fresh_db_path: str):

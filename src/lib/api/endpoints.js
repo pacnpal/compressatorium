@@ -735,15 +735,17 @@ export const api = {
       'Failed to list the Findings',
     ),
 
-  dismissFinding: (id) =>
+  // `fingerprint` is the cause the user was shown; the backend answers 409
+  // when the Finding changed since, so a stale row acts on nothing else.
+  dismissFinding: (id, fingerprint) =>
     jsonPost(
-      `${API_BASE}/findings/${encodeURIComponent(id)}/dismiss`, {}, {},
+      `${API_BASE}/findings/${encodeURIComponent(id)}/dismiss`, { fingerprint }, {},
       'Failed to dismiss the Finding',
     ),
 
-  undismissFinding: (id) =>
+  undismissFinding: (id, fingerprint) =>
     jsonPost(
-      `${API_BASE}/findings/${encodeURIComponent(id)}/undismiss`, {}, {},
+      `${API_BASE}/findings/${encodeURIComponent(id)}/undismiss`, { fingerprint }, {},
       'Failed to show the Finding again',
     ),
 

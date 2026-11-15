@@ -52,6 +52,8 @@ def upgrade() -> None:
             sa.Column('first_seen', sa.String(), nullable=False),
             sa.Column('last_seen', sa.String(), nullable=False),
             sa.PrimaryKeyConstraint('id'),
+            # A cleared Finding's id is never handed to another Finding.
+            sqlite_autoincrement=True,
         )
         op.create_index(
             'ux_findings_library_image_kind', 'findings',

@@ -67,6 +67,10 @@ class Observed:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+class FindingChanged(Exception):
+    """The Finding's cause is no longer the one the caller was shown."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -236,6 +240,8 @@ def _describe(row: _db.FindingRecord, dismissed: set) -> dict[str, Any]:
         "cause": dict(row.cause or {}),
         "first_seen": row.first_seen,
         "last_seen": row.last_seen,
+        # Sent back with a dismiss, so it acts only on the cause the user saw.
+        "fingerprint": row.fingerprint,
         "dismissed": (row.library_id, row.image_key, row.kind, row.fingerprint) in dismissed,
     }
 
@@ -258,8 +264,14 @@ def count_dismissed() -> int:
     return sum(1 for row in list_findings(include_dismissed=True) if row["dismissed"])
 
 
+def _check_shown(row: _db.FindingRecord, fingerprint: str | None) -> None:
+    if fingerprint is not None and row.fingerprint != fingerprint:
+        raise FindingChanged(f"Finding {row.id} changed since it was listed")
+
+
 def dismiss(
-    finding_id: int, *, current: Callable[[str], bool] | None = None,
+    finding_id: int, *, fingerprint: str | None = None,
+    current: Callable[[str], bool] | None = None,
 ) -> bool:
     """Hide a Finding until its cause changes. False when there is no such Finding.
 
@@ -267,6 +279,9 @@ def dismiss(
     that `reconcile` and `forget_library` take. *current* is asked there with
     the Finding's Library id: False (the Library is being removed) writes
     nothing, so no dismissal is left behind for a removed Library.
+
+    *fingerprint* is the cause the user was shown: when the row's cause is
+    another one now, :class:`FindingChanged` is raised and nothing is written.
     """
     with _write_lock, _session() as session:
         row = session.get(_db.FindingRecord, finding_id)
@@ -274,6 +289,7 @@ def dismiss(
             return False
         if current is not None and not current(row.library_id):
             return False
+        _check_shown(row, fingerprint)
         exists = _dismissals(session, row.library_id, row.image_key, row.kind).filter_by(
             fingerprint=row.fingerprint,
         ).first()
@@ -286,12 +302,16 @@ def dismiss(
     return True
 
 
-def undismiss(finding_id: int) -> bool:
-    """Show a dismissed Finding again. False when there is no such Finding."""
+def undismiss(finding_id: int, *, fingerprint: str | None = None) -> bool:
+    """Show a dismissed Finding again. False when there is no such Finding.
+
+    *fingerprint* as for :func:`dismiss`.
+    """
     with _write_lock, _session() as session:
         row = session.get(_db.FindingRecord, finding_id)
         if row is None:
             return False
+        _check_shown(row, fingerprint)
         _dismissals(session, row.library_id, row.image_key, row.kind).delete()
         session.commit()
     return True

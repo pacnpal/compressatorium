@@ -2363,9 +2363,11 @@ The sweep asks the same gate per candidate and reports the Image as unsafe
 regular, readable file whose extension a tool reads or writes
 (`registry.convertible_extensions` plus `output_extensions`), groups them with
 `group_images`, and detects each Image's Platform with
-`platform_detect.detect_uncached`. Detections and sheet members are cached on
-the Library per path, checked against size and mtime, and pruned to what the
-last walk saw, so the cache is as large as the Library and a repeat walk reads
+`platform_detect.detect_uncached`. Detections and Image members are cached on
+the Library per path and pruned to what the last walk saw. A detection is
+checked against `detection_key`; members against the file's size and mtime
+plus its folder's file names (a split set gains its part 2 without part 1
+changing), so the cache is as large as the Library and a repeat walk reads
 no headers (tested at 10,000 files). The walk is kept for `SCAN_TTL_SECONDS`
 (30 s): a sweep over several Platforms, and the listing before it, share one
 walk; the platforms endpoint asks for a fresh one. An Image with a Platform
@@ -2797,6 +2799,13 @@ follow. When a walk is already running the `PUT` still saves and answers
 refresh after it."; the running walk drops its stale Findings and walks again.
 `POST /api/findings/{id}/undismiss` shows a dismissed Finding again. Check now
 walks the Libraries side by side.
+
+Dismiss and undismiss send the row's `fingerprint` with its id
+(`{"fingerprint": ...}`), and the store refuses with 409 when the row's cause
+is another one now. With `findings` on SQLite AUTOINCREMENT, a cleared
+Finding's id is never handed to another, so a row left on a screen after a
+walk changed or cleared it can never act on a different Finding. In the UI,
+each mutation drops every listing that started before it and lists again.
 
 ### 3.3.15 Notifications (`services/notifications.py`)
 

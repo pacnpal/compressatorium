@@ -60,9 +60,9 @@ const api = {
 
 _ROWS = """[
   { id: 1, kind: 'platform_conflict', library_id: 'folder:1', library_name: 'roms',
-    image_key: 'ps2/Misfiled.iso', folder: '/v/roms/ps2', dismissed: false },
+    image_key: 'ps2/Misfiled.iso', folder: '/v/roms/ps2', fingerprint: 'f1', dismissed: false },
   { id: 2, kind: 'unsorted', library_id: 'folder:1', library_name: 'roms',
-    image_key: 'Mystery.iso', folder: '/v/roms', dismissed: false },
+    image_key: 'Mystery.iso', folder: '/v/roms', fingerprint: 'f2', dismissed: false },
 ]"""
 
 
@@ -95,25 +95,37 @@ process.stdout.write(JSON.stringify({{
 
 def test_dismissing_takes_the_finding_off_the_list(tmp_path):
     data = _run(tmp_path, f"""
-__answers.listFindings = {{ findings: {_ROWS}, dismissed: 0 }};
-__answers.dismissFinding = {{ dismissed: 1 }};
+const before = {_ROWS};
+__answers.listFindings = {{ findings: before, dismissed: 0 }};
+__answers.dismissFinding = () => {{
+  // The server has it now: the next listing says so.
+  __answers.listFindings = {{ findings: before.slice(1), dismissed: 1 }};
+  return {{ dismissed: 1 }};
+}};
 await findings.load();
 await findings.dismiss(1);
 process.stdout.write(JSON.stringify({{
   ids: findings.list.map((f) => f.id), dismissed: findings.dismissed,
   call: __log.find((c) => c[0] === 'dismissFinding'),
+  reloaded: __log.filter((c) => c[0] === 'listFindings').length,
 }}));
 """)
     assert data["ids"] == [2], data
     assert data["dismissed"] == 1, data
-    assert data["call"] == ["dismissFinding", 1], data
+    # The row's fingerprint goes with the id, so a stale row acts on nothing else.
+    assert data["call"] == ["dismissFinding", 1, "f1"], data
+    # Listed again after the mutation succeeded.
+    assert data["reloaded"] == 2, data
 
 
 def test_showing_a_dismissed_finding_again(tmp_path):
     rows = _ROWS.replace("dismissed: false }", "dismissed: true }", 1)
     data = _run(tmp_path, f"""
 __answers.listFindings = {{ findings: {rows}, dismissed: 1 }};
-__answers.undismissFinding = {{ undismissed: 1 }};
+__answers.undismissFinding = () => {{
+  __answers.listFindings = {{ findings: {_ROWS}, dismissed: 0 }};
+  return {{ undismissed: 1 }};
+}};
 findings.showDismissed = true;
 await findings.load();
 await findings.undismiss(1);
@@ -124,7 +136,29 @@ process.stdout.write(JSON.stringify({{
 """)
     assert data["rows"] == [[1, False], [2, False]], data
     assert data["dismissed"] == 0, data
-    assert data["call"] == ["undismissFinding", 1], data
+    assert data["call"] == ["undismissFinding", 1, "f1"], data
+
+
+def test_a_listing_that_started_before_a_dismiss_cannot_undo_it(tmp_path):
+    """Codex on PR #322: a late pre-dismiss snapshot must not overwrite the dismiss."""
+    data = _run(tmp_path, f"""
+const before = {_ROWS};
+const pending = [];
+__answers.listFindings = () => new Promise((resolve) => pending.push(resolve));
+__answers.dismissFinding = {{ dismissed: 1 }};
+findings.list = before;
+const stale = findings.load();           // started before the dismiss
+const dismissing = findings.dismiss(1);  // succeeds, then lists again
+await new Promise((r) => setImmediate(r));
+pending[1]({{ findings: before.slice(1), dismissed: 1 }});
+await dismissing;
+pending[0]({{ findings: before, dismissed: 0 }});  // the old snapshot, late
+await stale;
+process.stdout.write(JSON.stringify({{
+  ids: findings.list.map((f) => f.id), dismissed: findings.dismissed,
+}}));
+""")
+    assert data == {"ids": [2], "dismissed": 1}, data
 
 
 def test_showing_dismissed_findings_asks_for_them(tmp_path):
@@ -318,6 +352,27 @@ def test_the_header_row_lines_up_with_the_rows():
     drifted left of the rows in the first screenshots.
     """
     view = _VIEW.read_text(encoding="utf-8")
-    columns = re.search(r"\.row \{[^}]*grid-template-columns:([^;]+);", view, re.S).group(1)
+    columns = re.search(r"\.row \{[^}]*grid-template-columns:([^;]+);", view, re.DOTALL).group(1)
     assert "auto" not in columns, columns
     assert 'role="columnheader" class="sr-only"' not in view
+
+
+def test_the_table_fits_beside_the_sidebar_at_the_widest_stacked_break():
+    """At 1181px (just above the stacked layout) the fixed tracks must fit.
+
+    The first fixed-track version summed wider than the table, and the action
+    buttons were clipped at the right edge of the screenshot.
+    """
+    view = _VIEW.read_text(encoding="utf-8")
+    columns = re.search(r"\.row \{[^}]*grid-template-columns:([^;]+);", view, re.DOTALL).group(1)
+    tracks = re.findall(r"minmax\(([\d.]+)rem[^)]*\)|([\d.]+)rem", columns)
+    minimum_px = sum(float(a or b) for a, b in tracks) * 16
+    gaps_px = (len(tracks) - 1) * 12
+    row_padding_px = 2 * 14
+    breakpoint = int(re.search(r"@media \(max-width: (\d+)px\)", view).group(1))
+    # Viewport just above the break, minus the sidebar (240px) and the view's
+    # side padding (2 x 24px).
+    available_px = breakpoint + 1 - 240 - 48
+    assert minimum_px + gaps_px + row_padding_px <= available_px, (
+        minimum_px + gaps_px + row_padding_px, available_px,
+    )

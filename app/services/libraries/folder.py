@@ -211,7 +211,8 @@ class FolderLibrary:
         # path -> (size, mtime_ns, value), for the files the last walk saw.
         # path -> (platform_detect.detection_key, Detection).
         self._detections: dict[str, tuple[tuple, Detection]] = {}
-        self._members: dict[str, tuple[int, int, list[str]]] = {}
+        # path -> ((size, mtime_ns, the folder's file names), members).
+        self._members: dict[str, tuple[tuple, list[str]]] = {}
 
     def __repr__(self) -> str:
         return f"FolderLibrary(id={self.id!r}, root={self.root!r})"
@@ -300,17 +301,26 @@ class FolderLibrary:
         files, unreadable, unreadable_files, unwalked = self._files()
         stats = dict(files)
         known = {os.path.normpath(p): st for p, st in files}
-        members_cache: dict[str, tuple[int, int, list[str]]] = {}
+        members_cache: dict[str, tuple[tuple, list[str]]] = {}
         detections: dict[str, tuple[tuple, Detection]] = {}
+        # Each folder's file names, shared by its files. A split set's members
+        # depend on which sibling parts exist (game_part2.wud added later), not
+        # on part 1's own stat, so the names are part of the cache key.
+        names_by_folder: dict[str, frozenset[str]] = {}
+        for path, _st in files:
+            folder, name = os.path.split(path)
+            names_by_folder.setdefault(folder, set()).add(name)
+        names_by_folder = {k: frozenset(v) for k, v in names_by_folder.items()}
 
         def members(path: str) -> list[str]:
             st = stats[path]
+            key = (st.st_size, st.st_mtime_ns, names_by_folder[os.path.dirname(path)])
             hit = self._members.get(path)
-            if hit is not None and hit[:2] == (st.st_size, st.st_mtime_ns):
-                value = hit[2]
+            if hit is not None and hit[0] == key:
+                value = hit[1]
             else:
                 value = image_sets.image_members(path)
-            members_cache[path] = (st.st_size, st.st_mtime_ns, value)
+            members_cache[path] = (key, value)
             return value
 
         scan = Scan(
@@ -342,7 +352,7 @@ class FolderLibrary:
         # an Image of its own, so it gets no Finding (CONTEXT.md).
         owned = {
             os.path.normpath(member)
-            for _size, _mtime, listed in members_cache.values() for member in listed
+            for _key, listed in members_cache.values() for member in listed
         }
         scan.unreadable_files = [
             p for p in scan.unreadable_files if os.path.normpath(p) not in owned
