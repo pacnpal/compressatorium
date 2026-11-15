@@ -625,7 +625,13 @@ class RomzService:
         except ValueError as exc:
             yield {"type": "error", "valid": False, "message": str(exc)}
             return
-        except Exception as exc:  # unreadable/corrupt archive
+        except OSError as exc:  # could not be read: no verdict (#306)
+            yield {
+                "type": "error", "valid": False, "inconclusive": True,
+                "message": f"Cannot read archive: {exc}",
+            }
+            return
+        except Exception as exc:  # corrupt archive
             yield {"type": "error", "valid": False, "message": f"Cannot read archive: {exc}"}
             return
 

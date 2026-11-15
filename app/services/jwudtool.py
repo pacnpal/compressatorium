@@ -717,7 +717,9 @@ class JwudToolService:
             yield cancelled_event
         except Exception as e:
             logger.exception("Error during Wii U verification: %s", e)
-            yield {"type": "error", "valid": False, "message": f"Verification error: {e}"}
+            yield SubprocessRunner._verify_error(
+                f"Verification error: {e}", inconclusive=True,
+            )
 
 
 # Global service instance

@@ -50,9 +50,11 @@ from services.jwudtool import (
 from services.tools import registry
 from services.tools.base import ToolPlugin
 from services.subprocess_runner import (
+    BATCH_STOPPED_MESSAGE,
     StorageAbandoned,
     bounded_path_check,
     collect_abandonment,
+    stops_verify_batch,
 )
 from services.workload_limiter import WorkloadToken, workload_limiter
 from services.job_manager import ExternalJobCancelled, job_manager
@@ -1832,7 +1834,7 @@ def _sse_batch_from_verify_stream(
                     ),
                 }
 
-                if final_result.get("abandoned") or abandoned:
+                if stops_verify_batch(final_result) or abandoned:
                     # The verifier outlived SIGKILL, so it is still reading the
                     # storage this batch is walking. Every remaining file lives
                     # on that same storage, so continuing would spawn one more
@@ -1845,10 +1847,7 @@ def _sse_batch_from_verify_stream(
                                 "verified": verified_count,
                                 "failed": failed_count,
                                 "aborted": True,
-                                "message": (
-                                    "Batch stopped: a verifier could not be "
-                                    "stopped and is still holding the storage."
-                                ),
+                                "message": BATCH_STOPPED_MESSAGE,
                             },
                         ),
                     }

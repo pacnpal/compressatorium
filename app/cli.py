@@ -257,7 +257,10 @@ def _discover(
             if not for_verify and registry.tools_for_directory(path):
                 add(path, True)
                 continue
-            files, members, cut = scan_tree(path, recurse, archives)
+            files, members, cut = scan_tree(
+                path, recurse, archives,
+                purpose="verify" if for_verify else "convert",
+            )
             for entry in files:
                 if for_verify and not entry.get("verifiable_by"):
                     continue
@@ -794,9 +797,19 @@ def _checked_at(record: dict | None) -> datetime | None:
 
 async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> dict:
     from services.lock_manager import lock_manager
+    from services.subprocess_runner import stops_verify_batch
     from services.verification_store import verification_store
 
     line = {"path": path, "status": None, "tool": tool.id, "reason": None}
+    if not dry_run:
+        from services.tools import registry
+
+        if not await registry.tool_is_ready(tool):
+            # Nothing can be checked here (a missing binary, no prod.keys):
+            # no verdict, so the stored check stays.
+            line["status"] = "skipped"
+            line["reason"] = f"{tool.display_name} isn't ready: {tool.not_ready_reason}"
+            return line
     if since is not None and has_db:
         checked = _checked_at(await verification_store.get_record(path))
         if checked is not None and checked >= datetime.now(timezone.utc) - since:
@@ -821,6 +834,8 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
         await verification_store.mark_verified(path)
         return line
     line["status"] = "failed"
+    if stops_verify_batch(result):
+        line["_stop"] = True
     no_verdict = ("cancelled", "abandoned", "inconclusive")
     if "error" in result or any(result.get(flag) for flag in no_verdict):
         # No verdict: a timeout or stall, a file that could not be read, a tool
@@ -836,6 +851,8 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
 
 
 async def verify(args, printer: Printer, state: RunState) -> int:
+    from services.subprocess_runner import BATCH_STOPPED_MESSAGE
+
     since = parse_age(args.since) if args.since else None
     paths = _check_paths(args.paths)
     from fastapi.concurrency import run_in_threadpool
@@ -853,8 +870,14 @@ async def verify(args, printer: Printer, state: RunState) -> int:
                               "reason": "No tool checks this file"})
             continue
         line = await _verify_one(item.path, tool, has_db, since, args.dry_run)
+        stop = line.pop("_stop", False)
         failed = failed or line["status"] == "failed"
         printer.line(line)
+        if stop:
+            # The shared stop rule (`stops_verify_batch`), as the web UI's
+            # batch verify applies it.
+            print(f"compressatorium: {BATCH_STOPPED_MESSAGE}", file=sys.stderr)
+            return EXIT_FAILED
     return EXIT_FAILED if failed or state.stopping else EXIT_OK
 
 

@@ -848,6 +848,22 @@ async def verify_preflight(
     return None, size
 
 
+BATCH_STOPPED_MESSAGE = (
+    "Batch stopped: a verifier could not be stopped and is still holding the storage."
+)
+
+
+def stops_verify_batch(result: dict) -> bool:
+    """Whether a verify result must end a walk over a list of files.
+
+    True when the verifier outlived SIGKILL (``abandoned``): it is still
+    reading the storage the list lives on, so opening the next file would
+    strand one more unkillable verifier. The web UI's batch verify and the
+    CLI's ``verify`` both stop on it, with ``BATCH_STOPPED_MESSAGE``.
+    """
+    return bool(result.get("abandoned"))
+
+
 def abandoned_verify_error(pid: int) -> dict:
     """The one terminal event for a verifier that outlived ``SIGKILL``.
 

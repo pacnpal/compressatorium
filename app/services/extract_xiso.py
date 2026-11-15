@@ -758,7 +758,9 @@ class ExtractXisoService:
                 yield update
         except Exception as exc:
             logger.exception("Error during XISO verification: %s", exc)
-            yield {"type": "error", "valid": False, "message": f"Verification error: {exc}"}
+            yield SubprocessRunner._verify_error(
+                f"Verification error: {exc}", inconclusive=True,
+            )
 
 
 # Global service instance

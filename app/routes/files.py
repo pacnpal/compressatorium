@@ -483,6 +483,7 @@ async def archive_summary_batch(request: MetadataBatchRequest) -> dict:
 
 def scan_tree(
     root_path: str, recursive_scan: bool = True, include_archive_scan: bool = True,
+    *, purpose: str = "convert",
 ) -> tuple[list[dict], list[dict], list[str]]:
     """Every convertible thing under ``root_path``: the recursive search walk.
 
@@ -490,9 +491,15 @@ def scan_tree(
     convertible files, convertible folders (a PS3 disc folder is one job and is
     not walked into) and archive containers; ``archive_members`` holds each
     convertible member as ``archive::member``. Shared by ``GET /files/search``
-    and the CLI (#306), so both find the same Images. Blocking; call it off the
+    and the CLI (#306), so both find the same Images. ``purpose="verify"``
+    also lists every file some registered tool can check
+    (``ToolRegistry.tools_verifying_path``) though none converts it: a
+    ``.chd``, which chdman leaves out of its inputs. Blocking; call it off the
     event loop.
     """
+    if purpose not in ("convert", "verify"):
+        raise ValueError(f"unknown scan purpose {purpose!r}")
+    include_verifiable = purpose == "verify"
     files = []
     archives = []
     visited_dirs = set()
@@ -558,6 +565,22 @@ def scan_tree(
                                     "convertible_by": convertible_by,
                                     "outputs": outputs,
                                     "verifiable_by": verifiable_tools(item_path),
+                                },
+                            )
+                        elif (
+                            include_verifiable and not is_archive
+                            and (checked_by := verifiable_tools(item_path))
+                        ):
+                            files.append(
+                                {
+                                    "name": item,
+                                    "path": item_path,
+                                    "size": os.path.getsize(item_path),
+                                    "extension": ext,
+                                    "in_archive": False,
+                                    "convertible_by": [],
+                                    "outputs": [],
+                                    "verifiable_by": checked_by,
                                 },
                             )
                         elif include_archive_scan and is_archive:
