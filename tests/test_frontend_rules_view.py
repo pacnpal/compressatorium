@@ -114,6 +114,66 @@ process.stdout.write(JSON.stringify({{
     assert data["call"][0:2] == ["saveLibraryRules", "folder:3"], data
 
 
+def test_a_listing_older_than_a_settings_save_keeps_the_saved_settings(tmp_path):
+    """Codex 4577832447: a stale read cannot flip a saved schedule switch back.
+
+    A Platform listing starts, the schedule switch is saved on, then the
+    listing answers with the Library as it was before the save. The switch
+    stays on, and the listing's Platforms are still taken.
+    """
+    data = _run(tmp_path, f"""
+const loadOnce = libraries.load();
+await tick();
+__calls[0].resolve([{{ ...{_FOLDER}, schedule_enabled: false }}]);
+await loadOnce;
+const source = libraries.sourceFor('folder:3');
+const listing = source.loadPlatforms();
+await tick();
+const saving = source.setScheduleEnabled(true);
+await tick();
+__calls[2].resolve({{ ...{_FOLDER}, schedule_enabled: true }});
+await saving;
+__calls[1].resolve({{
+  platforms: [{{ id: 'ngc', name: 'GameCube', images: 2 }}],
+  library: {{ ...{_FOLDER}, schedule_enabled: false }},
+}});
+await listing;
+process.stdout.write(JSON.stringify({{
+  scheduled: source.scheduleEnabled,
+  row: libraries.list.find((lib) => lib.id === 'folder:3').schedule_enabled,
+  platforms: source.platforms.map((p) => p.id),
+}}));
+""")
+    assert data["scheduled"] is True, data
+    assert data["row"] is True, data
+    assert data["platforms"] == ["ngc"], data
+
+
+def test_a_list_load_older_than_a_settings_save_keeps_the_saved_settings(tmp_path):
+    """The same guard on a Library list refresh that started before the save."""
+    data = _run(tmp_path, f"""
+const loadOnce = libraries.load();
+await tick();
+__calls[0].resolve([{{ ...{_FOLDER}, schedule_enabled: false }}]);
+await loadOnce;
+const source = libraries.sourceFor('folder:3');
+const reload = libraries.load();
+await tick();
+const saving = source.setScheduleEnabled(true);
+await tick();
+__calls[2].resolve({{ ...{_FOLDER}, schedule_enabled: true }});
+await saving;
+__calls[1].resolve([{{ ...{_FOLDER}, schedule_enabled: false }}]);
+await reload;
+process.stdout.write(JSON.stringify({{
+  scheduled: source.scheduleEnabled,
+  row: libraries.list.find((lib) => lib.id === 'folder:3').schedule_enabled,
+}}));
+""")
+    assert data["scheduled"] is True, data
+    assert data["row"] is True, data
+
+
 def test_a_listing_answered_after_removal_does_not_bring_the_library_back(tmp_path):
     """Codex 4576901574: a late response for a removed Library is ignored.
 
