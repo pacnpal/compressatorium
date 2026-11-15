@@ -107,3 +107,53 @@ def test_a_path_outside_every_volume_never_reaches_the_filesystem(
 
     # Confined lexically first: neither user path was resolved on disk.
     assert touched == []
+
+
+def _symlink_then_dotdot(volume, tmp_path):
+    """``/volume/link`` -> ``/outside/nested``; ``/volume/link/../secret.txt``
+    folds lexically to ``/volume/secret.txt`` but the OS opens
+    ``/outside/secret.txt``."""
+    outside = tmp_path / "outside"
+    (outside / "nested").mkdir(parents=True)
+    secret = outside / "secret.txt"
+    secret.write_bytes(b"keep me")
+    (volume / "link").symlink_to(outside / "nested")
+    return f"{volume}/link/../secret.txt", secret
+
+
+def test_a_symlink_then_dotdot_escape_is_refused(volume, tmp_path):
+    path, _secret = _symlink_then_dotdot(volume, tmp_path)
+
+    assert is_within_configured_volumes(path) is False
+    assert containing_volume_root(path) is None
+
+
+@pytest.mark.parametrize(
+    "rel", ["ps2/../ps2/game.iso", "./ps2/../ps2/game.iso", "ps2/..", ".."],
+)
+def test_any_dotdot_segment_is_refused_even_when_it_stays_inside(volume, rel):
+    path = os.path.join(str(volume), rel)
+
+    assert is_within_configured_volumes(path) is False
+    assert containing_volume_root(path) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_a_symlink_then_dotdot_escape(volume, tmp_path):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from starlette.datastructures import Headers
+
+    from app.routes import files as files_routes
+
+    path, secret = _symlink_then_dotdot(volume, tmp_path)
+    request = SimpleNamespace(
+        headers=Headers({"X-CHD-Action-Confirm": files_routes.CONFIRM_DELETE_FILE}),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await files_routes.delete_file(request, path=path, recursive=False)
+
+    assert exc.value.status_code == 403
+    assert secret.exists()
