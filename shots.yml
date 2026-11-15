@@ -424,8 +424,9 @@
       });
       location.hash = `#/rules/${id}`;
       await new Promise(r => setTimeout(r, 1200));
-      const row = [...document.querySelectorAll('.row-toggle')]
-        .find(b => b.textContent.includes('ps2'));
+      // By Platform id, not label: the row shows the display name
+      // ("PlayStation 2"), and the fixture's ps2 folder makes the id ps2.
+      const row = document.querySelector('.row-toggle[data-platform-id="ps2"]');
       if (!row) throw new Error('ps2 Platform row not found');
       row.click();
       await new Promise(r => setTimeout(r, 500));

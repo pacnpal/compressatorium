@@ -2576,7 +2576,9 @@ Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
 and the first spelling of a track name that exists beside the sheet wins. The
 disc-ID probe (`disc_id._cue_track_paths`), the header-dependency list
 (`delete_plan.sheet_track_paths`) and the delete plan all use it, so
-`Jeu (Édition).bin` resolves, and is cached, from either encoding.
+`Jeu (Édition).bin` resolves, and is cached, from either encoding. There is one
+CUE FILE-line parser (`sheet_text.cue_tracks`: quoted, unquoted, names with
+spaces) and one GDI line parser (`sheet_text.gdi_tracks`).
 
 Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
 and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,

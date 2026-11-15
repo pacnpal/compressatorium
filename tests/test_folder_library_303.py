@@ -1481,3 +1481,142 @@ async def test_a_sheet_that_escapes_the_volume_is_never_queued(
         assert summary["skipped_unsafe"] == 3, summary
         platform = summary["platforms"][0]
         assert sorted(platform["unsafe"]) == ["Absolute.cue", "Escape.cue", "Linked.cue"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("escape", [
+    "{vol}/../outside",          # .. out of the Volume
+    "{vol}/roms/../../outside",  # .. deeper in
+    "../../outside",             # relative
+    "{link}",                    # a symlink inside the Volume pointing out
+])
+async def test_a_rule_output_folder_cannot_leave_the_volumes(
+    tree: Path, tmp_path: Path, escape: str,
+) -> None:
+    """CodeQL py/path-injection (PR #320): the output folder a Rule names is confined.
+
+    PUT /api/libraries/{id}/rules carries a user-chosen output folder into the
+    Volume check. A path that leaves the Volumes, by ``..`` or by a symlink,
+    is refused: the Rule is paused with the folder recorded, never written to.
+    """
+    from routes import libraries as routes
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = tree / "escape-link"
+    link.symlink_to(outside)
+    output_dir = escape.format(vol=tree.parent, link=link)
+
+    lib = await _register(tree)
+    saved = await routes.put_library_rules(lib["id"], {"rules": {
+        "ps2": {"mode": "createdvd", "enabled": True, "output_dir": output_dir},
+    }})
+
+    rule = saved["rules"]["ps2"]
+    assert rule["output_dir"] is None
+    assert rule["invalid_output_dir"] == output_dir
+    assert rule["enabled"] is False
+
+
+def test_the_volume_check_confines_a_path_before_touching_it(tree: Path, tmp_path: Path) -> None:
+    """The containment answers the Volume check must keep (pinned for the CodeQL fix in #294)."""
+    from utils.path_utils import is_within_configured_volumes
+
+    vol = tree.parent
+    assert is_within_configured_volumes(str(vol)) is True
+    assert is_within_configured_volumes(str(vol / "roms" / "new-folder")) is True
+    assert is_within_configured_volumes(str(vol / ".." / "x")) is False
+    # A sibling whose name merely starts with the Volume's name is not inside it.
+    assert is_within_configured_volumes(str(vol) + "-sibling") is False
+    loop = vol / "loop"
+    loop.symlink_to(loop)
+    assert is_within_configured_volumes(str(loop)) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file_line", [
+    'FILE\t"game.bin" BINARY',  # a tab after FILE
+    "FILE game.bin BINARY",     # an unquoted name
+])
+async def test_grouping_and_detection_read_a_sheet_the_same_way(
+    db: Path, file_line: str,
+) -> None:
+    """Codex 4576629009: one CUE parser (utils.sheet_text) for grouping and detection.
+
+    No Platform-named folder, so only the header can name the Platform: the
+    sheet's track is a Saturn disc. The .bin is hidden behind its sheet, and
+    the sheet is detected as Saturn, so the Image is not lost to Unsorted.
+    """
+    from routes import libraries as routes
+    from services import libraries
+
+    from .test_platform_detect import _sector0
+
+    folder = db / "games" / "misc"
+    folder.mkdir(parents=True)
+    _sector0(folder / "game.bin", b"SEGA SEGASATURN ", raw=True)
+    (folder / "game.cue").write_text(file_line + "\n  TRACK 01 MODE1/2352\n")
+
+    lib = await _register(db / "games")
+    summary = await routes.library_platforms(lib["id"])
+
+    assert {p["id"]: p["images"] for p in summary["platforms"]} == {"saturn": 1}, summary
+    assert summary["unsorted"] == 0
+    keys = [i.key for i in libraries.get(lib["id"]).images("saturn")]
+    assert keys == ["misc/game.cue"]
+
+
+def test_no_other_cue_file_line_parser_remains() -> None:
+    """Codex 4576629009: utils.sheet_text.cue_tracks is the only FILE-line reader."""
+    app_dir = Path(__file__).resolve().parents[1] / "app"
+    offenders = [
+        str(path.relative_to(app_dir))
+        for path in app_dir.rglob("*.py")
+        if path.name != "sheet_text.py"
+        and 'startswith("FILE")' in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
+
+
+@pytest.mark.asyncio
+async def test_a_failure_under_an_old_rule_holds_nothing_under_the_new_one(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    """Codex 4576629016: queue RVZ, retarget to WIA, fail the RVZ job.
+
+    The hold belongs to the Rule that queued the job. After the Rule is
+    retargeted, the old job's failure is dropped, and the WIA preview queues
+    the Image.
+    """
+    from models import JobStatus
+    from routes import libraries as routes
+    from services.rules import sweep as rules_sweep
+
+    jobs: dict[str, str] = {}
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch(paths, mode, **kwargs):
+        made = await real_batch(paths, mode, **kwargs)
+        jobs.update({Path(j.file_path).name: j.id for j in made})
+        return made
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch)
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "ngc": {"mode": "dolphin_rvz", "enabled": True},
+    }})
+    await routes.run_library(lib["id"])
+
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "ngc": {"mode": "dolphin_wia", "enabled": True},
+    }})
+    await rules_sweep.note_job_finished(SimpleNamespace(
+        id=jobs["Melee.iso"], status=JobStatus.FAILED,
+        file_path=str((tree / "gc" / "Melee.iso").resolve()),
+    ))
+    monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
+
+    preview = await routes.preview_library(lib["id"])
+    assert preview["skipped_failed"] == 0, preview
+    assert "Melee.iso" in preview["platforms"][0]["candidates"]

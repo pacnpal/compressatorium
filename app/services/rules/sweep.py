@@ -107,12 +107,13 @@ _LISTING_SECONDS = 600
 # across two independently planned batches.
 _sweep_lock = asyncio.Lock()
 
-# job id -> (library, platform_id, image key) for the conversions this process
-# queued. Read by `note_job_finished` so a completion updates its one record
-# instead of scanning every remembered Image of every Platform. In memory on
+# job id -> (library, platform_id, image key, the queuing Rule's output
+# identity) for the conversions this process queued. Read by
+# `note_job_finished` so a completion updates its one record instead of
+# scanning every remembered Image of every Platform. In memory on
 # purpose: the job queue it indexes is in memory too, so an entry has nothing
 # to outlive.
-_job_owners: dict[str, tuple[Library, str, str]] = {}
+_job_owners: dict[str, tuple[Library, str, str, tuple | None]] = {}
 
 # library id -> its generation, bumped when the Library is removed. A job-finish
 # callback captures it before its first await and writes state only if it is
@@ -671,11 +672,14 @@ async def note_job_finished(job) -> None:
     owner = _job_owners.pop(job_id, None)
     if owner is None:
         return
-    library, platform_id, rom_id = owner
+    library, platform_id, rom_id, identity = owner
     done = status == JobStatus.COMPLETED
     # Captured before any await; see `_generations`.
     generation = _generations.get(library.id, 0)
-    if FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED:
+    if (
+        FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED
+        and await _same_rule(library, platform_id, identity)
+    ):
         await _note_failure(
             library, platform_id, rom_id, job, failed=not done, generation=generation,
         )
@@ -766,7 +770,23 @@ async def _note_failure(
         await store.write(store.STATE_KEY, library, state)
 
 
-def _own_jobs(library: Library, platform_id: str, entries: dict) -> None:
+async def _same_rule(library: Library, platform_id: str, identity: tuple | None) -> bool:
+    """Whether *platform_id*'s Rule still produces what the job was queued for.
+
+    A job queued under one Rule can end after the Rule is retargeted (RVZ to
+    WIA). Its outcome says nothing about the new target, so it must not hold
+    or release an Image under it. None (an owner registered without one) is
+    taken as the same Rule.
+    """
+    if identity is None:
+        return True
+    rule = (await get_rules(library)).get(platform_id)
+    return _output_identity(rule) == identity
+
+
+def _own_jobs(
+    library: Library, platform_id: str, entries: dict, identity: tuple | None = None,
+) -> None:
     """Register `note_job_finished`'s owner map for these queued conversions.
 
     Called the instant `create_batch_jobs` returns, with no await in between,
@@ -783,9 +803,12 @@ def _own_jobs(library: Library, platform_id: str, entries: dict) -> None:
     """
     for rom_id, record in entries.items():
         if record.get("job_id"):
-            _job_owners[str(record["job_id"])] = (
-                library, str(platform_id), str(rom_id),
-            )
+            job_id = str(record["job_id"])
+            # A re-registration without an identity (`_mark_converted`) keeps
+            # the one recorded when the job was queued.
+            if identity is None and job_id in _job_owners:
+                identity = _job_owners[job_id][3]
+            _job_owners[job_id] = (library, str(platform_id), str(rom_id), identity)
 
 
 def _converted_entries(produced: list[tuple]) -> dict:
@@ -1398,7 +1421,7 @@ async def _sweep_locked(
                      pre_by_path[path], job_by_path.get(path))
                     for path in batch
                 ])
-                _own_jobs(library, platform_id, converted)
+                _own_jobs(library, platform_id, converted, _output_identity(rule))
 
                 # Only now, with the jobs actually queued: the steps only this
                 # Library performs (RomM snapshots metadata for formats it

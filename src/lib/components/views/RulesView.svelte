@@ -58,10 +58,17 @@
     await Promise.allSettled([romm.loadPlatforms(), romm.loadRules()]);
   }
 
+  // `#/rules/<library id>` opens on that Library (kept if it still exists),
+  // and follows the hash while the view stays mounted: going from one Library's
+  // link to another's, or Back, reselects instead of showing the previous one.
+  $effect(() => {
+    if (embedded) return;
+    const target = ui.rulesTarget;
+    if (target) untrack(() => libraries.select(target));
+  });
+
   onMount(() => {
-    // `#/rules/<library id>` opens on that Library (kept if it still exists).
     if (embedded) libraries.select(ROMM_LIBRARY_ID);
-    else if (ui.rulesTarget) libraries.select(ui.rulesTarget);
     libraries.load();
     return () => {
       alive = false;

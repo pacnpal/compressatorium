@@ -285,6 +285,29 @@ def test_folder_endpoints_read_the_librarys_own_id():
     assert "api.getLibraryRules(this.id)" in src
 
 
+def test_the_rules_screenshot_finds_its_row_by_platform_id():
+    """The shot opens the ps2 row by id; rows show display names, not slugs."""
+    editor = _EDITOR.read_text(encoding="utf-8")
+    assert "data-platform-id={platform.id}" in editor
+    shots = (_SRC.parent / "shots.yml").read_text(encoding="utf-8")
+    assert """.row-toggle[data-platform-id="ps2"]""" in shots
+    assert "b.textContent.includes('ps2')" not in shots
+
+
+def test_a_deep_link_change_reselects_while_the_view_stays_mounted():
+    """Codex 4576629013: #/rules/folder:1 -> #/rules/folder:2 (or Back) reselects."""
+    src = _RULES_VIEW.read_text(encoding="utf-8")
+    effect = re.search(
+        r"\$effect\(\(\) => \{\s*if \(embedded\) return;\s*"
+        r"const target = ui\.rulesTarget;(.*?)\n  \}\);",
+        src, re.DOTALL,
+    )
+    assert effect, "the selection does not follow ui.rulesTarget"
+    assert "libraries.select(target)" in effect.group(1)
+    # Not only once on mount.
+    assert "else if (ui.rulesTarget) libraries.select(ui.rulesTarget);" not in src
+
+
 def test_both_libraries_share_one_rules_source():
     """The Rule bookkeeping exists once (fix round 1, I1)."""
     folder = _STORE.read_text(encoding="utf-8")
