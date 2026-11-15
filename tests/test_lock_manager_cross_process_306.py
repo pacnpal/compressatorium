@@ -535,3 +535,96 @@ async def test_locks_a_cancelled_job_takes_after_the_cancel_are_released(
         job_manager.jobs.pop(job.id, None)
         job_manager._cancel_events.pop(job.id, None)
         job_manager._release_inputs(job.id)
+
+
+# --------------------------------------------------------------------------- #
+# Review r9 M6: a cue track another process reads; a dead process's lock
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_the_server_refuses_to_touch_a_cue_track_another_process_reads(
+    guarded_volume, db_path, reset_db_engine,
+):
+    """The job's input set includes the tracks its sheet names
+    (``_track_candidate_paths``); a track another process is converting from
+    can't be renamed or deleted from the web."""
+    from datetime import datetime, timezone
+
+    from fastapi import HTTPException
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services import db as _db
+    from services.job_manager import job_manager
+
+    g = guarded_volume
+    _db.init_engine(db_path)
+    disc = g.folder.parent
+    cue = disc / "Game.cue"
+    track = disc / "Game.bin"
+    cue.write_text('FILE "Game.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    track.write_bytes(b"\0" * 2352)
+    job = ConversionJob(
+        id="cuetrack", file_path=str(cue), filename=cue.name,
+        mode=ConversionMode.CREATECD, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(disc / "Game.chd"),
+    )
+    inputs = job_manager._input_paths(job)
+    assert os.path.realpath(track) in {os.path.realpath(p) for p in inputs}
+    for path in inputs:  # what the other process's job holds
+        assert g.cli.acquire_input_lock(path)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.delete_file(g.request("delete-file"), path=str(track), recursive=False)
+        assert exc.value.status_code == 409
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.rename_file(g.request("rename-file"), path=str(track), new_name="B.bin")
+        assert exc.value.status_code == 409
+        assert track.exists()
+    finally:
+        for path in inputs:
+            g.cli.release_input_lock(path)
+        reset_db_engine()
+
+
+_DEAD_HOLDER = """
+import sys, time
+from services.lock_manager import LockManager
+manager = LockManager()
+manager._lock_dir = sys.argv[1]
+assert manager.acquire_input_lock(sys.argv[2])
+print("ready", flush=True)
+time.sleep(120)
+"""
+
+
+def test_a_dead_process_lock_is_cleared_by_the_next_probe(tmp_path):
+    """A CLI killed while holding an input lock leaves its lock file behind;
+    the flock died with it, so the next probe reports the file free and
+    removes the leftover."""
+    import signal
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    lock_dir = tmp_path / "locks"
+    source = tmp_path / "Game.iso"
+    source.write_bytes(b"disc")
+    app = str(Path(__file__).resolve().parents[1] / "app")
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _DEAD_HOLDER, str(lock_dir), str(source)],
+        env={**os.environ, "PYTHONPATH": app}, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        probe = _manager(lock_dir)
+        assert probe.check_file_status(str(source))[1] is True
+        leftover = probe._lock_file_path(os.path.realpath(source))
+        proc.send_signal(signal.SIGKILL)
+        proc.wait(10)
+        assert os.path.exists(leftover)  # nobody cleaned up
+        assert probe.check_file_status(str(source))[1] is False
+        assert not os.path.exists(leftover)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdout.close()

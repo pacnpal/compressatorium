@@ -1835,3 +1835,20 @@ def test_a_reader_past_the_bound_keeps_the_source_and_the_job_completes(
     # Transient, and the conversion succeeded: a warning, not a failure (the
     # same rule as #307's run rules). Safety refusals still exit 1.
     assert code == 0
+
+
+def test_an_xiso_outside_an_xbox_folder_goes_to_xiso(volume):
+    """review r8 M2 / r9 M5: ``.xiso.iso`` is xiso's own output name. chdman's
+    shorter ``.iso`` match must not make it a shared extension, which skipped
+    it as "Platform couldn't be determined" outside an Xbox folder."""
+    import cli
+    from tests.test_xiso_service import build_image
+
+    image = volume / "games" / "Halo.xiso.iso"
+    image.parent.mkdir()
+    build_image(image, layout="XISO", optimized=True)
+
+    tool, unsupported = cli._verify_tool(str(image), None)
+
+    assert unsupported is None
+    assert tool is not None and tool.id == "xiso"
