@@ -1156,7 +1156,14 @@ async def _verify_one(
         else:
             line["status"] = "planned"
         return line
-    held = await run_in_threadpool(_hold_for_check, read, also_lock)
+    from services.lock_manager import LockFailed
+
+    try:
+        held = await run_in_threadpool(_hold_for_check, read, also_lock)
+    except LockFailed as exc:
+        # The lock file can't be made: an error on this line, not "busy".
+        line["status"], line["reason"] = "failed", str(exc)
+        return line
     if held is None:
         # A writer has it: no verdict either way, and what was stored stays.
         line["status"], line["reason"] = "skipped", "Busy: another job is writing it"

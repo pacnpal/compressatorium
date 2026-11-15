@@ -3220,6 +3220,19 @@ each delete path (below), which also asks `folder_locked_above`.
   over NFS) counts as not held, here and in `check_file_status`. That holds
   while every process runs as the same uid, which the entrypoint's and the
   wrapper's `gosu converter` drop ensure.
+- Taking a lock is different: only contention (`BlockingIOError` from the
+  non-blocking `flock`, or an existing output) answers "busy" and requeues.
+  Any other `OSError` making or locking the lock file (`ENAMETOOLONG`,
+  `EACCES`, `EROFS`, `ENOSPC`, `ENOLCK` ...) raises `LockFailed("Could not
+  lock <path>: <reason>")` from every acquire (output, input, folder,
+  Referrer), so `_process_job` fails the job with that reason before it
+  starts and the CLI line says so, instead of requeueing it forever (codex
+  4577893015).
+- Lock file names are `<kind>-<base>-<sha256>.lock`, where `<base>` is the
+  sanitised basename cut to 64 UTF-8 bytes on a character boundary
+  (`_lock_name_base`, one helper for every kind) and the hash is of the whole
+  `os.fsencode(realpath)` key, so a 184-byte cue track name still gives a name
+  far under the 255-byte limit, and the identity is unchanged.
 
 A job that cannot take its input locks (another job holds the path for
 writing) is deferred and re-queued, like a folder-lock block. The locks are
