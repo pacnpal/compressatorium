@@ -77,7 +77,7 @@ class ConcurrencyManager:
 
         Asked every time a holder, ticket or slot file is created, not only on
         first use: a directory deleted while the process runs (a tmp cleaner on
-        the ``$TMPDIR/chd-locks`` fallback, someone clearing ``/config/locks``)
+        the ``/tmp/chd-locks`` default, someone clearing ``/config/locks``)
         would otherwise make every later job wait forever (#307).
         """
         os.makedirs(self.lock_dir, mode=0o700, exist_ok=True)

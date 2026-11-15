@@ -2684,7 +2684,7 @@ age-based cleaners; `/config/locks`, the default, is.
 
 The directory is made again (`_ensure_dir`, owner only) whenever a holder,
 ticket or slot file is created, not only on first use, so a lock directory
-deleted while a process runs (a tmp cleaner on the `$TMPDIR` fallback, someone
+deleted while a process runs (a tmp cleaner on the `/tmp/chd-locks` default, someone
 clearing `/config/locks`) no longer leaves every later job waiting forever.
 
 A queue that cannot be listed (EMFILE, an I/O error) is never read as empty:

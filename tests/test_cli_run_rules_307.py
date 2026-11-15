@@ -869,3 +869,80 @@ def test_the_healthcheck_counts_a_waiting_server_as_healthy(env, waiting):
     )
 
     assert (done.returncode == 0) is waiting, done.stderr
+
+
+_FIRST_SCHEDULER = """
+import sys
+from config import settings
+from services import db, scheduler_lock
+
+lock = scheduler_lock.acquire("server")
+db.init_app_database(settings)  # creates the data dir that did not exist
+print("held", scheduler_lock.lock_path(), flush=True)
+sys.stdin.readline()
+lock.release()
+print("released", flush=True)
+"""
+
+_SECOND_SCHEDULER = """
+import asyncio
+from services import scheduler_lock
+
+def waiting(held):
+    print("waiting", held.holder.get("by"), flush=True)
+
+async def main():
+    lock = await scheduler_lock.acquire_waiting("server", on_wait=waiting)
+    print("acquired", scheduler_lock.lock_path(), flush=True)
+    lock.release()
+
+asyncio.run(main())
+"""
+
+
+def test_schedulers_before_and_after_db_init_share_one_lock(tmp_path):
+    """Fresh install (codex 4576813495): the data dir does not exist when the
+    first scheduler starts; its database init creates it. A scheduler started
+    after that must contend for the same lock file and wait, not take another."""
+    import os
+
+    data_dir = tmp_path / "fresh" / "config"
+    (tmp_path / "tmp").mkdir()
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("CHD_", "COMPRESSATORIUM_"))}
+    env.update(
+        CHD_DATA_DIR=str(data_dir), TMPDIR=str(tmp_path / "tmp"),
+        COMPRESSATORIUM_VOLUMES=str(tmp_path),
+        PYTHONPATH=str(Path(__file__).resolve().parent.parent / "app"),
+    )
+
+    def start(script, **kwargs):
+        return subprocess.Popen(
+            [sys.executable, "-c", textwrap.dedent(script)], env=env, text=True,
+            stdout=subprocess.PIPE, **kwargs,
+        )
+
+    first = start(_FIRST_SCHEDULER, stdin=subprocess.PIPE)
+    second = None
+    try:
+        word, first_lock = first.stdout.readline().split()
+        assert word == "held"
+        assert data_dir.is_dir(), "database init made the data dir"
+
+        second = start(_SECOND_SCHEDULER)
+        assert second.stdout.readline().split() == ["waiting", "server"]
+        assert second.poll() is None, "the second scheduler is still waiting"
+
+        first.stdin.write("\n")
+        first.stdin.flush()
+        assert first.stdout.readline().strip() == "released"
+        word, second_lock = second.stdout.readline().split()
+        assert word == "acquired"
+        assert second.wait(timeout=30) == 0
+    finally:
+        for proc in (first, second):
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    assert first_lock == second_lock == str(data_dir / "locks" / "scheduler.lock")
