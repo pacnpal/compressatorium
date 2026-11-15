@@ -2782,6 +2782,15 @@ is skipped ("It resolves outside the configured Volumes") and never read,
 checked, converted or recorded, in both `convert` and `verify`. Paths named on
 the command line are checked up front (`_check_paths`).
 
+**One database initialisation at a time.** The web startup and every
+non-dry-run CLI open the database through `services.db.init_app_database`
+(Alembic to head, then the legacy JSON import). It runs under an exclusive,
+cross-process `init.lock` flock in the shared lock dir (`db._init_lock`,
+blocking up to `INIT_LOCK_WAIT_SECONDS`, 300 s, then an error), so several
+processes started on a fresh database don't all run Alembic at once; one
+that waited finds the schema at head, since `apply_migrations` reads the
+current revision once it has the lock.
+
 **Stopping during planning.** The CLI's planning runs blocking filesystem work
 on `run_in_threadpool`, which can't be cancelled: SIGINT, SIGTERM or SIGHUP
 during `--auto` planning (header reads) over a Volume that has stopped
