@@ -49,6 +49,7 @@ const toast = {
   success: (m) => toasts.push(['success', m]),
   warning: (m) => toasts.push(['warning', m]),
   error: (m) => toasts.push(['error', m]),
+  info: (m) => toasts.push(['info', m]),
 };
 const STORAGE_KEYS = { PRIMARY_TOOL: 'p', AUTO_CONVERT: 'a' };
 const readString = (_k, fallback) => fallback;
@@ -270,3 +271,90 @@ def test_auto_re_records_a_redirected_output_under_its_own_mode(tmp_path):
     assert data["replanMisdirected"] == {"/v/ps2/a.iso": "/v/ps2/a_1.chd"}, data
     # The superseded row (11) is retired once the new one exists.
     assert data["cancelled"] == [11], data
+
+
+_KEPT_AFTER_FAILURE = """
+const plan = [
+  { file_path: '/v/ps2/a.iso', mode: 'createdvd' },
+  { file_path: '/v/gc/b.iso', mode: 'dolphin_rvz' },
+];
+planAnswer = (paths, mode) => {
+  const ids = { '/v/ps2/a.iso': 11, '/v/gc/b.iso': 22 };
+  const out = { createdvd: '.chd', dolphin_rvz: '.rvz' }[mode];
+  return {
+    recorded: paths.length, pending: 2,
+    recorded_paths: Object.fromEntries(paths.map((p) => [p, p.replace(/\\.iso$/, out)])),
+    recorded_ids: Object.fromEntries(paths.map((p) => [p, ids[p]])),
+  };
+};
+// The route's answer when the dolphin_rvz group is refused after the
+// createdvd job already finished: a 409 whose detail carries the kept job in
+// the shape a success returns (what client.fetchJson attaches as err.detail).
+autoAnswer = () => {
+  const err = new Error('taken by another job. Already finished and kept: a.iso.');
+  err.status = 409;
+  err.detail = {
+    message: err.message,
+    jobs: [{ id: 'j1', file_path: '/v/ps2/a.iso', output_path: '/v/ps2/a.chd' }],
+  };
+  throw err;
+};
+const store = new ConversionStore();
+let failed = false;
+try {
+  await store.submitAuto(['/v/ps2/a.iso', '/v/gc/b.iso'], {
+    plan, rommRepin: true, rommPlatformId: 7,
+  });
+} catch (_e) {
+  failed = true;
+}
+process.stdout.write(JSON.stringify({
+  failed,
+  cancelled: calls.cancel.flat(),
+  adopted: adopted.map((j) => j.id),
+  recorded: store.lastRepinRecorded,
+}));
+"""
+
+
+def test_a_job_kept_after_an_auto_failure_keeps_its_re_pin_record(tmp_path):
+    data = _run(tmp_path, _KEPT_AFTER_FAILURE)
+
+    assert data["failed"] is True, data
+    # a.iso's job finished and was kept: its snapshot (11) stays. Only b.iso's
+    # (22), which never became a job, is retired.
+    assert data["cancelled"] == [22], data
+    assert data["adopted"] == ["j1"], data
+    assert data["recorded"] == 1, data
+
+
+_EXPLICIT_TARGET = """
+const store = new ConversionStore();
+store.auto = true;
+store.setMode('createcd');            // programmatic (platform adoption): Auto stays on
+const afterSetMode = store.auto;
+store.chooseTarget('cso_compress');   // an explicit choice in any selector
+process.stdout.write(JSON.stringify({
+  afterSetMode,
+  auto: store.auto,
+  mode: store.mode,
+  toasts,
+}));
+"""
+
+
+def test_an_explicit_target_choice_turns_auto_off_and_says_so(tmp_path):
+    data = _run(tmp_path, _EXPLICIT_TARGET)
+
+    assert data["afterSetMode"] is True, data
+    assert data["auto"] is False, data
+    assert data["mode"] == "cso_compress", data
+    assert any(kind == "info" and "Auto is off" in msg for kind, msg in data["toasts"]), data
+
+
+def test_every_target_selector_goes_through_choose_target():
+    src = Path(__file__).resolve().parents[1] / "src" / "lib" / "components"
+    for rel in ("panels/ModeSelect.svelte", "views/RommView.svelte"):
+        text = (src / rel).read_text(encoding="utf-8")
+        assert "conversion.chooseTarget(" in text, rel
+        assert "conversion.setMode(" not in text, rel
