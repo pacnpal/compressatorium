@@ -1,0 +1,214 @@
+// Libraries (#303): RomM, and every folder registered as one.
+//
+// The Rules view edits one Library's Rules at a time through a RulesSource
+// (`$lib/rules/rulesSource.svelte.js`): the RomM store for RomM, and a
+// FolderRulesSource below for a folder Library. The Rule bookkeeping (load,
+// edit, save with the save-race guard, preview, run) lives once, in
+// RulesSource; this file adds only what a folder Library has of its own.
+//
+// What a Library allows comes from the backend: a folder Library's options
+// list only the `skip` duplicate policy, so the editor never offers the others.
+
+import { api } from '$lib/api/endpoints.js';
+import { RulesSource } from '$lib/rules/rulesSource.svelte.js';
+import { romm } from '$lib/stores/romm.svelte.js';
+import { ui } from '$lib/stores/ui.svelte.js';
+
+export const ROMM_LIBRARY_ID = 'romm';
+
+// The backend's 409 detail when the folder's previous walk is still running
+// (routes/libraries.py LISTING_IN_PROGRESS).
+const LISTING_IN_PROGRESS = 'listing_in_progress';
+
+/** One folder Library: its Platforms, counts and schedule switch, plus its Rules. */
+export class FolderRulesSource extends RulesSource {
+  emptyTitle = 'No Platforms found';
+  emptyHint = 'No Image in this folder has a Platform yet. Images in a folder named after '
+    + 'a Platform (ps2, gc, psx, ...) or with a readable header are picked up.';
+
+  library = $state(null);
+  platforms = $state([]);
+  counts = $state({ unsorted: 0, conflicted: 0, unreadable: 0 });
+  automatableModes = $state(null);
+  platformsLoading = $state(false);
+  platformsError = $state(null);
+  // The previous walk of this folder is still running (a slow or stuck
+  // mount). A wait, not an error: the view offers a retry.
+  platformsBusy = $state(false);
+
+  constructor(library) {
+    // The endpoints read `this.id` (the reactive `library` field) when they
+    // run, after construction; nothing is captured from the constructor.
+    super({
+      getRules: () => api.getLibraryRules(this.id),
+      saveRules: (rules) => api.saveLibraryRules(this.id, rules),
+      forgetConverted: (platformIds) => api.forgetLibraryConverted(this.id, platformIds),
+      preview: (body) => api.previewLibrary(this.id, body),
+      run: (body) => api.runLibrary(this.id, body),
+      loadError: 'Failed to load the Rules',
+    });
+    this.library = library;
+  }
+
+  get id() {
+    return this.library?.id;
+  }
+
+  get scheduleEnabled() {
+    return this.library?.schedule_enabled === true;
+  }
+
+  async setScheduleEnabled(enabled) {
+    libraries.adopt(await api.updateLibrary(this.id, { schedule_enabled: enabled }));
+  }
+
+  /**
+   * Take the Library's latest settings (name, schedule switch, ...) in place.
+   * Only the Library row changes; the Rules and any unsaved edit to them live
+   * on RulesSource and are left alone.
+   */
+  adoptLibrary(library) {
+    if (library?.id === this.id) this.library = library;
+  }
+
+  imageCount(platform) {
+    return platform?.images ?? 0;
+  }
+
+  platformName(platformId) {
+    return this.platforms.find((p) => p.id === String(platformId))?.name ?? String(platformId);
+  }
+
+  async loadPlatforms() {
+    this.platformsLoading = true;
+    this.platformsError = null;
+    try {
+      const data = await api.getLibraryPlatforms(this.id);
+      this.platformsBusy = false;
+      // The response carries the Library's current row; a setting changed
+      // elsewhere (another tab) shows here, in the picker and in this source.
+      if (data?.library) libraries.adopt(data.library);
+      this.platforms = Array.isArray(data?.platforms) ? data.platforms : [];
+      this.counts = {
+        unsorted: data?.unsorted ?? 0,
+        conflicted: data?.conflicted ?? 0,
+        unreadable: data?.unreadable ?? 0,
+      };
+      this.automatableModes = Array.isArray(data?.automatable_modes)
+        ? data.automatable_modes
+        : null;
+    } catch (e) {
+      if (e?.status === 409 && e?.message === LISTING_IN_PROGRESS) {
+        // Keep whatever was listed before; the walk will finish.
+        this.platformsBusy = true;
+        return;
+      }
+      this.platformsBusy = false;
+      this.platformsError = e?.message ?? 'Failed to list the Library';
+      this.platforms = [];
+    } finally {
+      this.platformsLoading = false;
+    }
+  }
+}
+
+class LibrariesStore {
+  list = $state([]);
+  loading = $state(false);
+  error = $state(null);
+  selectedId = $state(ROMM_LIBRARY_ID);
+  registering = $state(false);
+  // One source per folder Library, kept while the app runs so unsaved edits
+  // survive switching Libraries in the picker.
+  #sources = new Map();
+  // Libraries removed while the app runs. A response that set off before the
+  // removal (a Platform listing, a list load, a settings save) can answer
+  // after it; it must not put the Library back. Safe to keep for good: a
+  // folder Library's id is never reused (the table is AUTOINCREMENT).
+  #removed = new Set();
+
+  get selected() {
+    return this.list.find((lib) => lib.id === this.selectedId) ?? null;
+  }
+
+  get folders() {
+    return this.list.filter((lib) => lib.kind === 'folder');
+  }
+
+  /** The rules source for *id*: the RomM store, or a folder Library's own. */
+  sourceFor(id) {
+    if (id === ROMM_LIBRARY_ID) return romm;
+    const library = this.list.find((lib) => lib.id === id);
+    if (!library) return null;
+    let source = this.#sources.get(id);
+    if (!source) {
+      source = new FolderRulesSource(library);
+      this.#sources.set(id, source);
+    }
+    return source;
+  }
+
+  async load() {
+    this.loading = true;
+    this.error = null;
+    try {
+      const data = await api.listLibraries();
+      this.list = (Array.isArray(data) ? data : []).filter((lib) => !this.#removed.has(lib.id));
+      this.#refreshSources(this.list);
+      if (!this.list.some((lib) => lib.id === this.selectedId)) {
+        this.selectedId = ROMM_LIBRARY_ID;
+      }
+    } catch (e) {
+      this.error = e?.message ?? 'Failed to list Libraries';
+    } finally {
+      this.loading = false;
+    }
+    return this.list;
+  }
+
+  /** Replace one Library's row with what the backend just returned. */
+  adopt(library) {
+    if (!library?.id || this.#removed.has(library.id)) return;
+    const at = this.list.findIndex((lib) => lib.id === library.id);
+    this.list = at === -1
+      ? [...this.list, library]
+      : this.list.map((lib) => (lib.id === library.id ? library : lib));
+    this.#refreshSources([library]);
+  }
+
+  /** Hand each cached source its Library's fresh row, keeping the source (and its edits). */
+  #refreshSources(rows) {
+    for (const row of rows) this.#sources.get(row.id)?.adoptLibrary(row);
+  }
+
+  select(id) {
+    this.selectedId = id || ROMM_LIBRARY_ID;
+  }
+
+  /** Open the Rules view on *id*. The RomM view's Automation tab passes `romm`. */
+  open(id = ROMM_LIBRARY_ID) {
+    this.select(id);
+    ui.navigate('rules');
+  }
+
+  async register(path, name = null) {
+    this.registering = true;
+    try {
+      const library = await api.registerLibrary(path, name);
+      this.adopt(library);
+      return library;
+    } finally {
+      this.registering = false;
+    }
+  }
+
+  async remove(id) {
+    await api.removeLibrary(id);
+    this.#removed.add(id);
+    this.#sources.delete(id);
+    this.list = this.list.filter((lib) => lib.id !== id);
+    if (this.selectedId === id) this.selectedId = ROMM_LIBRARY_ID;
+  }
+}
+
+export const libraries = new LibrariesStore();

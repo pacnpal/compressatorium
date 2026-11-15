@@ -20,9 +20,9 @@ from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-# Capabilities a Library can declare. The engine does not gate on them yet;
-# they say what a Library supports so a Rules editor, and the folder Library
-# (#303), can offer only what applies.
+# Capabilities a Library can declare. They say what a Library supports, so a
+# Rules editor offers only what applies and the engine refuses the rest (see
+# `duplicate_actions`).
 #
 # Images carry the Library's own identification (``Image.recognized``), so a
 # Rule's only_matched / only_unmatched filters mean something.
@@ -30,10 +30,71 @@ RECOGNIZED_FILTER = "recognized_filter"
 # A Rule may use the ``overwrite`` and ``rename`` duplicate policies. Both need
 # the converted-history memory, keyed by Image key, to stay idempotent.
 CONVERTED_HISTORY = "converted_history"
+# An Image whose conversion failed is not queued again until its file changes
+# (size or mtime). Without it a sweep re-queues a failing Image every run,
+# which is what RomM's Rules have always done.
+FAILED_HOLD = "failed_hold"
+
+
+def duplicate_actions(library: Library) -> tuple[str, ...]:
+    """The duplicate policies *library*'s Rules may use.
+
+    ``skip`` is idempotent from the destination alone, so every Library has
+    it. ``overwrite`` and ``rename`` need the converted history to stop, so
+    they need :data:`CONVERTED_HISTORY`.
+    """
+    from services.rules.rules import DUPLICATE_ACTIONS
+
+    if CONVERTED_HISTORY in library.capabilities:
+        return DUPLICATE_ACTIONS
+    return ("skip",)
+
+
+class UnsupportedPolicy(ValueError):
+    """A submitted Rule asks for a duplicate policy its Library cannot honour."""
+
+    def __init__(self, platform_id: str, policy: str, allowed: tuple[str, ...]) -> None:
+        super().__init__(f"{policy!r} is not available here; allowed: {', '.join(allowed)}")
+        self.platform_id = platform_id
+        self.policy = policy
+        self.allowed = allowed
+
+    def detail(self) -> dict:
+        return {
+            "error": "duplicate_action_unsupported",
+            "platform_id": self.platform_id,
+            "duplicate_action": self.policy,
+            "allowed": list(self.allowed),
+        }
+
+
+def refuse_unsupported_policies(library: Library, raw: Any) -> None:
+    """Raise :class:`UnsupportedPolicy` for a submitted Rule *library* cannot honour.
+
+    For submissions. A stored blob is read leniently instead: ``normalize_rule``
+    falls an unsupported policy back to ``skip``.
+    """
+    if not isinstance(raw, Mapping):
+        return
+    allowed = duplicate_actions(library)
+    for platform_id, rule in raw.items():
+        if not isinstance(rule, Mapping):
+            continue
+        policy = rule.get("duplicate_action")
+        if policy is not None and policy not in allowed:
+            raise UnsupportedPolicy(str(platform_id), str(policy), allowed)
 
 
 class LibraryUnreadable(Exception):
-    """The Library could not list a Platform's Images right now."""
+    """The Library could not list a Platform's Images right now.
+
+    ``code`` is what the sweep reports for the Platform (``"unreadable"`` by
+    default). A Library raises a subclass with its own code when the reason is
+    worth telling apart (a folder Library: ``root_unavailable``,
+    ``listing_in_progress``).
+    """
+
+    code = "unreadable"
 
 
 @dataclass(frozen=True)
@@ -131,6 +192,12 @@ class Library(Protocol):
 
     # Stable id. Stored Rule and state keys are ``f"{id}:{platform_id}"``.
     id: str
+    # What kind of Library this is (``"romm"``, ``"folder"``), its display
+    # name, and its root folder here (None when it has none). For the API and
+    # the Rules view; the engine never reads them.
+    kind: str
+    name: str
+    root: str | None
     # A set of the capability names above.
     capabilities: frozenset[str]
     # Where an earlier release kept this Library's Rules or state without the

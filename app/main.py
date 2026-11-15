@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from routes import convert, dat, files, info, preferences, romm
 from routes import ledger as ledger_routes
+from routes import libraries as library_routes
 from routes import rules as rules_routes
 from services import ledger
 from services.job_manager import job_manager
@@ -328,14 +329,17 @@ async def _serve(app: FastAPI):
     # The unattended-conversion scheduler always runs; it checks the master
     # switch each tick, so toggling auto-convert in the app takes effect
     # without a restart.  It sleeps first, so startup never queues anything.
-    romm_auto_task = asyncio.create_task(romm_auto.run_forever())
+    # Every Library (RomM and each registered folder) is asked on each tick.
+    from services import libraries as library_catalogue
+
+    romm_auto_task = asyncio.create_task(library_catalogue.run_forever())
     app.state.background_tasks.add(romm_auto_task)
     romm_auto_task.add_done_callback(app.state.background_tasks.discard)
 
     def _log_romm_auto_error(t: asyncio.Task) -> None:
         if not t.cancelled() and t.exception() is not None:
             logger.error(
-                "RomM auto-convert scheduler exited unexpectedly",
+                "Rules scheduler exited unexpectedly",
                 exc_info=t.exception(),
             )
 
@@ -429,6 +433,7 @@ app.include_router(dat.router, prefix="/api", tags=["dat"])
 app.include_router(preferences.router, prefix="/api", tags=["preferences"])
 app.include_router(romm.router, prefix="/api", tags=["romm"])
 app.include_router(ledger_routes.router, prefix="/api", tags=["ledger"])
+app.include_router(library_routes.router, prefix="/api", tags=["libraries"])
 app.include_router(rules_routes.router, prefix="/api", tags=["rules"])
 
 

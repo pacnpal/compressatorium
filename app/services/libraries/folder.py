@@ -1,0 +1,435 @@
+"""A folder as a Library: the second implementation of :class:`services.rules.Library`.
+
+One root folder inside a Volume. The files under it are grouped into Images
+(:func:`services.image_sets.group_images`): a ``.cue`` or ``.gdi`` owns the
+tracks it references, a split dump's first part owns the rest, and playlists
+are never Images. Each Image's Platform comes from Platform detection
+(:func:`services.platform_detect.detect_uncached`), so an Image in a ``psx``
+folder, or with a PS1 header, belongs to the ``psx`` Platform.
+
+* A Platform's id is its slug (``psx``, ``ngc``); its name is the display name.
+* An Image's key is its path relative to the root, with ``/`` separators.
+* Conflicted and Unsorted Images belong to no Platform, so no Rule sees them
+  and no sweep queues them. Nor does a file that cannot be read.
+* ``recognized`` is the cached DAT or Hasheous match for the file, read in one
+  query per listing. Unknown (None) when nothing usable is cached or the cache
+  cannot be read; the engine's Recognized filters pass neither way on None.
+  Nothing is hashed here.
+
+**One walk.** A walk of the root is kept for :data:`SCAN_TTL_SECONDS`, so a
+sweep over several ruled Platforms, and the listing that preceded it, share
+it. Each file's sheet members are cached on the Library, keyed by path and
+checked against size and mtime, and its detection against
+``platform_detect.detection_key`` (the file and the tracks its header probe
+reads, the same key the shared cache uses); both are pruned to the files the
+last walk saw. A repeat walk of a large Library is a stat per file and reads no
+headers.
+
+**No disk on the event loop, no latch.** :meth:`FolderLibrary.configured` is
+true: it answers on the event loop, so it touches no disk, and it must not
+remember one bad walk. Every walk checks the root against the configured
+Volumes itself, on the worker thread, and a root that is gone or unreachable
+(a mount blip) fails that one listing with ``root_unavailable``; the next
+sweep walks and checks again. Each candidate is still checked against the
+Volumes before anything is queued.
+
+**One walk at a time.** A second walk of the same Library while one is still
+running fails at once (``LibraryUnreadable``, "previous listing still
+running") instead of queueing behind it. On a mount that stopped answering
+that caps the stuck threads at one per Library, and every later sweep releases
+the sweep lock immediately. Settings (name, schedule switch, cap) change in
+place and never wait for a walk.
+
+Folder Rules support the skip policy only (no ``CONVERTED_HISTORY``), and a
+failed Image waits until its file changes (``FAILED_HOLD``).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import stat
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any
+
+from logging_setup import get_logger
+from services import image_sets, platform_detect
+from services.platform_detect import CONFLICT, Detection
+from services.rules.library import (
+    FAILED_HOLD,
+    RECOGNIZED_FILTER,
+    Image,
+    LibraryUnreadable,
+    Platform,
+    QueuedImage,
+)
+from services.tools import registry
+from utils.path_utils import is_within_configured_volumes, match_extension
+
+logger = get_logger("folder_library")
+
+ID_PREFIX = "folder:"
+
+# How long one walk serves later listings. Long enough to cover a sweep over
+# every ruled Platform; short enough that the Rules view is current.
+SCAN_TTL_SECONDS = 30.0
+
+
+class ListingInProgress(LibraryUnreadable):
+    """Another walk of this Library is still running; try again shortly."""
+
+    code = "listing_in_progress"
+
+
+class RootUnavailable(LibraryUnreadable):
+    """The root is gone, or not inside a configured Volume right now (a mount blip)."""
+
+    code = "root_unavailable"
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One Image found under the root (its primary file)."""
+
+    key: str
+    path: str
+    size: int
+    mtime: float
+    detection: Detection
+
+
+@dataclass
+class Scan:
+    """What one walk of the root found."""
+
+    entries: list[Entry] = field(default_factory=list)
+    # Image files and folders that could not be read. Never queued.
+    unreadable: int = 0
+    taken_at: float = 0.0
+
+    def by_platform(self) -> dict[str, list[Entry]]:
+        out: dict[str, list[Entry]] = {}
+        for entry in self.entries:
+            if entry.detection.platform:
+                out.setdefault(entry.detection.platform, []).append(entry)
+        return out
+
+
+def _folder_generation(names: set[str]) -> str:
+    """One folder's listing as a short marker: a digest of its sorted file names.
+
+    Built once per folder per walk and shared by every file in it, so a cached
+    membership compares this marker in constant time instead of the whole
+    listing per file. A file name never holds NUL, so the join is unambiguous.
+    """
+    listing = "\0".join(sorted(names)).encode("utf-8", "surrogateescape")
+    return hashlib.sha256(listing).hexdigest()
+
+
+def _image_extensions() -> tuple[str, ...]:
+    """Every extension a registered tool reads or writes."""
+    return tuple(sorted(
+        set(registry.convertible_extensions()) | set(registry.output_extensions())
+    ))
+
+
+def _recognized(paths: list[str]) -> dict[str, bool | None]:
+    """The cached DAT or Hasheous verdict for each path, in one query.
+
+    True for a cached match from either source, False for a cached miss that
+    is still valid for the lookup sources now configured, None when there is
+    no usable row or the cache cannot be read. Never hashes.
+    """
+    if not paths:
+        return {}
+    # The usability rule lives with the match routes that write these rows;
+    # imported lazily, as dat_sync does, to keep the import graph one-way.
+    from routes.dat import cached_result_usable
+    from services.dat_store import dat_store
+
+    try:
+        cached = dat_store.get_matches_batch(paths)
+    except Exception:  # the match cache is a hint here, never a failure
+        # Unknown, not "not Recognized": the engine's filters pass neither way
+        # on None, so an only_unmatched Rule queues nothing rather than all.
+        logger.warning("folder_library: could not read the match cache", exc_info=True)
+        return dict.fromkeys(paths)
+    out: dict[str, bool | None] = {}
+    for path in paths:
+        row = cached.get(path)
+        out[path] = bool(row.get("matched")) if cached_result_usable(row) else None
+    return out
+
+
+class FolderLibrary:
+    """A folder registered as a Library."""
+
+    kind = "folder"
+    capabilities = frozenset({RECOGNIZED_FILTER, FAILED_HOLD})
+    legacy_preference_keys = MappingProxyType({})
+
+    def __init__(
+        self, *, record_id: int, root: str, name: str,
+        schedule_enabled: bool = False, max_per_sweep: int = 25,
+    ) -> None:
+        self.record_id = record_id
+        self.id = f"{ID_PREFIX}{record_id}"
+        self.root = root
+        self.name = name
+        self._schedule_enabled = schedule_enabled
+        self._max_per_sweep = max_per_sweep
+        # Held for a whole walk. Only ever acquired without blocking (`scan`).
+        self._lock = threading.Lock()
+        self._scan: Scan | None = None
+        # Serialises a settings change (database row, then this object), so
+        # two concurrent edits leave both saying the same thing. Never the walk
+        # lock: a settings edit must not wait for a walk.
+        self.settings_lock = threading.Lock()
+        # path -> (size, mtime_ns, value), for the files the last walk saw.
+        # path -> (platform_detect.detection_key, Detection).
+        self._detections: dict[str, tuple[tuple, Detection]] = {}
+        # path -> ((size, mtime_ns, the folder's listing marker), members).
+        self._members: dict[str, tuple[tuple, list[str]]] = {}
+
+    def __repr__(self) -> str:
+        return f"FolderLibrary(id={self.id!r}, root={self.root!r})"
+
+    def apply_settings(
+        self, *, name: str | None = None, schedule_enabled: bool | None = None,
+        max_per_sweep: int | None = None,
+    ) -> None:
+        """Change this Library's settings in place. Never waits for a walk."""
+        if name is not None:
+            self.name = name
+        if schedule_enabled is not None:
+            self._schedule_enabled = bool(schedule_enabled)
+        if max_per_sweep is not None:
+            self._max_per_sweep = int(max_per_sweep)
+
+    # ---- the walk ----
+
+    def _files(self) -> tuple[list[tuple[str, os.stat_result]], int]:
+        """Every regular, readable file with an Image extension, and how many were not readable."""
+        root = self.root
+        # Checked on every walk, never remembered: a mount that blips fails
+        # this listing only.
+        if not is_within_configured_volumes(root, treat_archives=False):
+            raise RootUnavailable(f"{root} is not reachable inside the configured Volumes")
+        if not os.path.isdir(root):
+            raise RootUnavailable(f"{root} is not a folder")
+        extensions = _image_extensions()
+        files: list[tuple[str, os.stat_result]] = []
+        unreadable = 0
+        root_errors: list[OSError] = []
+
+        def on_error(exc: OSError) -> None:
+            nonlocal unreadable
+            if os.path.normpath(getattr(exc, "filename", "") or "") == os.path.normpath(root):
+                root_errors.append(exc)
+            else:
+                unreadable += 1
+
+        for current, dirs, names in os.walk(root, followlinks=False, onerror=on_error):
+            dirs.sort()
+            for name in sorted(names):
+                if match_extension(name, extensions) is None:
+                    continue
+                path = os.path.join(current, name)
+                try:
+                    st = os.lstat(path)
+                except OSError:
+                    unreadable += 1
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                if not os.access(path, os.R_OK):
+                    unreadable += 1
+                    continue
+                files.append((path, st))
+        if root_errors:
+            raise LibraryUnreadable(str(root_errors[0]))
+        return files, unreadable
+
+    def _walk(self) -> Scan:
+        """Walk the root once, group the files into Images and detect each Platform."""
+        files, unreadable = self._files()
+        stats = dict(files)
+        known = {os.path.normpath(p): st for p, st in files}
+        members_cache: dict[str, tuple[tuple, list[str]]] = {}
+        detections: dict[str, tuple[tuple, Detection]] = {}
+        # A split set's members depend on which sibling parts exist
+        # (game_part2.wud added later), not on part 1's own stat, so the
+        # folder's listing is part of the cache key: as one marker per folder,
+        # built once per walk, so the compare per file is constant-time.
+        names_by_folder: dict[str, set[str]] = {}
+        for path, _st in files:
+            folder, name = os.path.split(path)
+            names_by_folder.setdefault(folder, set()).add(name)
+        generation = {
+            folder: _folder_generation(names)
+            for folder, names in names_by_folder.items()
+        }
+
+        def members(path: str) -> list[str]:
+            st = stats[path]
+            key = (st.st_size, st.st_mtime_ns, generation[os.path.dirname(path)])
+            hit = self._members.get(path)
+            if hit is not None and hit[0] == key:
+                value = hit[1]
+            else:
+                value = image_sets.image_members(path)
+            members_cache[path] = (key, value)
+            return value
+
+        scan = Scan(unreadable=unreadable)
+        root = self.root
+        for path in image_sets.group_images([p for p, _ in files], members=members):
+            st = stats[path]
+            # Detection's own key: the file and the tracks its header probe
+            # reads, so a changed track re-detects its sheet. None (a track
+            # missing) means answer now and remember nothing.
+            key = platform_detect.detection_key(path, st)
+            hit = self._detections.get(path)
+            if key is not None and hit is not None and hit[0] == key:
+                detection = hit[1]
+            else:
+                detection = platform_detect.detect_uncached(path)
+            if key is not None:
+                detections[path] = (key, detection)
+            scan.entries.append(Entry(
+                key=Path(os.path.relpath(path, root)).as_posix(),
+                path=path,
+                # The whole Image (a sheet and its tracks), so size filters
+                # and the size orders judge the set, not a 67-byte .cue.
+                size=image_sets.image_size(path, members=members, known=known),
+                mtime=st.st_mtime, detection=detection,
+            ))
+        # Only what this walk saw, so the caches are as large as the Library.
+        self._members = members_cache
+        self._detections = detections
+        # The reuse window starts once the walk is ready, not when it began:
+        # a walk whose detection outlasts SCAN_TTL_SECONDS is still shared.
+        scan.taken_at = time.monotonic()
+        return scan
+
+    def scan(self, *, refresh: bool = False) -> Scan:
+        """The latest walk, taking a new one when asked or when it is stale. Blocking.
+
+        Raises :class:`LibraryUnreadable` at once when another walk of this
+        Library is still running, rather than waiting behind it.
+        """
+        if not self._lock.acquire(blocking=False):
+            raise ListingInProgress(
+                f"previous listing of {self.root} still running",
+            )
+        try:
+            fresh = (
+                self._scan is not None
+                and time.monotonic() - self._scan.taken_at < SCAN_TTL_SECONDS
+            )
+            if refresh or not fresh:
+                self._scan = self._walk()
+            return self._scan
+        finally:
+            self._lock.release()
+
+    def summary(self, *, refresh: bool = False) -> dict[str, Any]:
+        """Detected Platforms with Image counts, and the Images left out."""
+        scan = self.scan(refresh=refresh)
+        unsorted = conflicted = 0
+        for entry in scan.entries:
+            if entry.detection.platform:
+                continue
+            if entry.detection.how == CONFLICT:
+                conflicted += 1
+            else:
+                unsorted += 1
+        return {
+            "platforms": [
+                {
+                    "id": slug, "slug": slug,
+                    "name": platform_detect.platform_name(slug), "images": len(entries),
+                }
+                for slug, entries in sorted(scan.by_platform().items())
+            ],
+            "unsorted": unsorted,
+            "conflicted": conflicted,
+            "unreadable": scan.unreadable,
+        }
+
+    # ---- the Library interface ----
+
+    def configured(self) -> bool:
+        """True. Called on the event loop, so no disk; and never latched.
+
+        Whether the root is reachable is each walk's question (off the loop):
+        a bad answer fails that sweep with ``root_unavailable``, and the next
+        sweep asks again. See the module docstring.
+        """
+        return True
+
+    def canonical_platform_id(self, raw: Any) -> str | None:
+        if not isinstance(raw, str) or ":" in raw:
+            return None
+        return platform_detect.known_slug(raw)
+
+    def platform_value(self, platform_id: str) -> str:
+        return platform_id
+
+    def platforms(self) -> list[Platform]:
+        return [
+            Platform(id=p["id"], slug=p["slug"], name=p["name"])
+            for p in self.summary()["platforms"]
+        ]
+
+    def images(self, platform_id: str) -> list[Image]:
+        try:
+            scan = self.scan()
+        except OSError as exc:
+            raise LibraryUnreadable(str(exc)) from exc
+        entries = scan.by_platform().get(platform_id, [])
+        recognized = _recognized([e.path for e in entries])
+        return [
+            Image(
+                key=e.key,
+                name=os.path.basename(e.path),
+                title=e.key,
+                size=e.size,
+                added_at=e.mtime,
+                recognized=recognized.get(e.path),
+                platform=platform_id,
+                path=e.path,
+                record=e,
+            )
+            for e in entries
+        ]
+
+    def rule_defaults(self) -> dict[str, Any]:
+        return {}
+
+    def max_per_sweep(self) -> int:
+        return int(self._max_per_sweep)
+
+    def schedule_enabled(self) -> bool:
+        return bool(self._schedule_enabled)
+
+    # ---- hooks: a folder Library has no steps of its own ----
+
+    def sweep_blocked(self) -> str | None:
+        return None
+
+    def summary_fields(self) -> dict[str, Any]:
+        return {}
+
+    async def after_queue(
+        self, rule: dict, spec: Any, queued: list[QueuedImage],
+        summary: dict, result: dict,
+    ) -> None:
+        return None
+
+    async def sweep_extras(self) -> dict[str, Any]:
+        return {}

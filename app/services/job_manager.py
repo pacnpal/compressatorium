@@ -3380,6 +3380,7 @@ class JobManager:
             # overwrite job leaves the user's prior file intact.
             if not await run_in_threadpool(
                 source_companions_are_safe, input_path, job.mode.value,
+                within=within,
             ):
                 job.status = JobStatus.FAILED
                 job.error_message = (

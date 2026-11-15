@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
-_AUTOMATION = _SRC / "lib" / "components" / "views" / "RommAutomation.svelte"
+_AUTOMATION = _SRC / "lib" / "components" / "views" / "RuleEditor.svelte"
 _NOTICES = _SRC / "lib" / "stores" / "ruleNotices.svelte.js"
 _ENDPOINTS = _SRC / "lib" / "api" / "endpoints.js"
 _LEVELS = _SRC / "lib" / "util" / "checkLevels.js"

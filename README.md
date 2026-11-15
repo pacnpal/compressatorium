@@ -459,6 +459,33 @@ curl -X PUT http://localhost:8080/api/ledger/settings \
 `GET /api/ledger/recent?limit=N` and `GET /api/ledger/savings` return the rows and
 the totals as JSON.
 
+The **Ledger** view in the sidebar lists every row, newest first, 25 to a page.
+Search matches the Source or output path, and you can filter by status, tool and
+Platform. **Export CSV** downloads every row matching the current search and
+filters (the same query behind `GET /api/ledger/export.csv`). The list is also
+available as JSON from `GET /api/ledger?q=&status=&tool=&platform=&limit=&offset=`,
+which returns `{"items": [...], "total": N}`.
+
+For a home-lab dashboard, `GET /api/metrics` serves Prometheus text:
+
+```
+compressatorium_jobs_total{status="completed"}   # also failed, cancelled
+compressatorium_input_bytes_total                # Source bytes, completed jobs
+compressatorium_output_bytes_total               # output bytes, completed jobs
+compressatorium_queue_depth                      # queued or running now
+```
+
+`/api/ledger/savings` is the savings summary (totals by Platform and by format).
+Both follow the API's auth rules: with `COMPRESSATORIUM_ENABLE_AUTH` on, give
+Prometheus the token as a bearer token or as the basic-auth password. The job and
+byte totals are true counters kept in their own table: they only go up, and a
+retention prune of Ledger rows does not lower them. (They start from the Ledger's
+contents when you upgrade.)
+
+| Light | Dark |
+|-------|------|
+| ![Ledger, light](docs/screenshots/ledger-light.png) | ![Ledger, dark](docs/screenshots/ledger-dark.png) |
+
 ### Verifying and deleting safely
 
 Converting never deletes anything on its own — the safe order is convert, verify,
@@ -643,6 +670,45 @@ has converted, and that memory is kept honest for you:
 
 The schedule clock and the conversion history are separate, so forgetting one
 never disturbs the other.
+
+### Folder Libraries and the Rules view
+
+You don't need RomM to automate conversions. Open any folder inside a Volume in
+the Workspace, and pick **Register as a Library** from its row menu. The folder
+becomes a Library, and the **Rules** view (in the sidebar) shows it:
+
+- **Images** are what gets converted, not files: a `.cue` or `.gdi` and the
+  tracks it lists are one Image (the sheet), and a split Wii U dump is one Image
+  (its first part). Track files are never converted on their own, and playlists
+  (`.m3u`) are not Images. A `.bin` no sheet lists is its own Image. Converted
+  outputs (`.chd`, `.rvz`) and archives (`.zip`, `.7z`) in the folder count as
+  Images too; folders (a decrypted PS3 game) do not.
+- **Platforms** come from Platform detection: an Image's own header first, then
+  its folder name (`ps2`, `gc`, `psx`, `megacd`, ... as ES-DE and Batocera lay
+  them out). Each Platform shows its name and how many Images it has.
+- **Unsorted** Images (nothing names their Platform) and **Conflicted** ones
+  (the header disagrees with the folder, such as a GameCube disc filed under
+  `ps2`) are counted but never converted by a Rule. Files that cannot be read
+  are counted on their own and skipped too.
+- **Rules** have the same settings as RomM's, one per Platform: "convert ps2 to
+  CHD nightly" is a ps2 Rule with a window of `01:00`–`05:00`. A folder Rule
+  always **skips** an Image whose output already exists, so a sweep that runs
+  twice queues nothing new. Overwrite and write-alongside are not offered for
+  folder Libraries. An Image whose conversion failed is held: it is not
+  queued again until one of its files changes (size or modified time; a
+  sheet's tracks count), and the Rule shows how many it holds with a **Retry
+  failed** button that releases them. Preview and Run count held Images too.
+- **Only Recognized / not Recognized** filters read the DAT or Hasheous match
+  already cached for each file. Listing a Library never hashes anything. A file
+  nobody has matched yet is neither: both filters skip it, so run a DAT match
+  over the folder first.
+- **Preview** shows what a sweep would queue and moves no schedule clock. **Run
+  now** queues it. **Run automatically** turns the scheduler on for that Library.
+- If the folder cannot be reached during a run (a NAS rebooting, a mount
+  dropping), that run says so and queues nothing; the next run checks again.
+- **Remove Library** forgets the Library and its Rules. It never touches a file.
+
+The RomM view's **Automation** tab is the same Rules view, opened on RomM.
 
 #### Your metadata survives conversion
 
@@ -893,6 +959,13 @@ A Rule open in the editor. A Rule that deletes its source Round-trips the new fi
 | Light | Dark |
 |-------|------|
 | ![RomM rule editor, light](docs/screenshots/romm-rule-editor-light.png) | ![RomM rule editor, dark](docs/screenshots/romm-rule-editor-dark.png) |
+#### Rules on a folder Library
+
+A folder registered as a Library, with the Platforms found in it, its Unsorted and Conflicted counts, and a PS2 Rule. See [Folder Libraries and the Rules view](#folder-libraries-and-the-rules-view).
+
+| Light | Dark |
+|-------|------|
+| ![Rules view on a folder Library, light](docs/screenshots/rules-folder-light.png) | ![Rules view on a folder Library, dark](docs/screenshots/rules-folder-dark.png) |
 
 #### DAT Library
 
