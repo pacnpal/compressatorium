@@ -2625,13 +2625,31 @@ reading file"); not for an empty file or a wrong extension, which are verdicts.
 `valid` stays False, so nothing is deleted on it, but the CLI's verify keeps a
 stored check unless the failure is conclusive.
 
-The services report a missing prerequisite (nsz without `prod.keys`) and their
-"could not run" catch-alls (a verifier that failed to launch, an unexpected
-error; romz's unreadable archive) as `inconclusive` too, through the same
-helper. The CLI also asks `registry.tool_is_ready` first and skips a tool that
-cannot run here. `subprocess_runner.stops_verify_batch(result)` (true for
-`abandoned`) and `BATCH_STOPPED_MESSAGE` are the one stop rule for a walk over
-many files: the web UI's batch verify and the CLI's `verify` both end there.
+`inconclusive` is an allowlist, never a catch-all. An exception a check raises
+is classified by one helper, `subprocess_runner.verify_exception_event`, for
+every tool (maxcso, nsz, jwud, xiso, z3ds, romz): `ToolUnavailable` (a missing
+program, library or prerequisite, e.g. zstd or py7zr), any `OSError` (a failed
+launch, an input that could not be read) and a timeout are inconclusive; a
+header or format error, a bad archive, and a `BrokenPipeError` or reset from a
+decoder that quit early on bad data are verdicts. nsz without `prod.keys` and
+z3ds without `zstd` say so the same way, and the ISO reader behind the
+makeps3iso read-back raises its I/O errors (`read_iso_file(strict=True)`, down
+through `_read_pvd` and `_list_dir`).
+
+Readiness is per operation: `ToolPlugin.verify_is_ready()` (default
+`is_ready()`), asked through `registry.tool_is_ready(tool, purpose="verify")`.
+jwud's WUX check needs no JWUDTool or Java; z3ds's needs `zstd`
+(`verify_not_ready_reason` says so). The CLI asks once per tool per run, dry
+runs included, and skips a tool that cannot check here: exit 1 when the file
+was named on the command line, a reported skip inside a folder.
+
+`subprocess_runner.stops_verify_batch(result, abandoned)` and
+`BATCH_STOPPED_MESSAGE` are the one stop rule for a walk over many files: true
+when the result says `abandoned` or when the check's `collect_abandonment()`
+sink caught something (a deadline that cancelled a check stuck on dead storage
+leaves its detached read behind without saying so in any result). The web UI's
+batch verify and the CLI's `verify` both wrap each check in the sink and end
+there.
 
 **`JobManager.drain()`** waits until every queued run has ended, cleanup
 included: a job notifies its listeners before `_process_job` removes its temp

@@ -64,7 +64,7 @@ class ToolRegistry:
     def spec(self, mode: str) -> ModeSpec:
         return self.for_mode(mode).spec(mode)
 
-    async def tool_is_ready(self, tool: ToolPlugin) -> bool:
+    async def tool_is_ready(self, tool: ToolPlugin, *, purpose: str = "convert") -> bool:
         """Can this tool run here — without hanging the caller if a mount cannot say?
 
         ``is_ready()`` is a coroutine, which makes it look safe, and it is not.
@@ -98,8 +98,10 @@ class ToolRegistry:
         ``is_ready()`` is covered by using the registry the way every other
         dispatch already does.
         """
+        # Readiness is per operation (#306): "verify" asks `verify_is_ready`.
+        probe = tool.verify_is_ready() if purpose == "verify" else tool.is_ready()
         try:
-            return bool(await asyncio.wait_for(tool.is_ready(), READY_PROBE_SECONDS))
+            return bool(await asyncio.wait_for(probe, READY_PROBE_SECONDS))
         except (asyncio.TimeoutError, OSError):
             logger.warning(
                 "readiness check for %s did not finish in %ss; treating it as "

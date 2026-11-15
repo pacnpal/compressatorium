@@ -191,12 +191,17 @@ _DC_HWID_NEEDLE = b"SEGA SEGAKATANA"
 # Low-level ISO 9660 helpers
 # ===========================================================================
 
-def _read_pvd(f) -> Optional[bytes]:
-    """Return the 2048-byte PVD sector from a seekable ISO 9660 stream, or None."""
+def _read_pvd(f, *, strict: bool = False) -> Optional[bytes]:
+    """Return the 2048-byte PVD sector from a seekable ISO 9660 stream, or None.
+
+    ``strict`` raises an I/O error instead of answering None.
+    """
     try:
         f.seek(_PVD_SECTOR * _SECTOR_SIZE)
         pvd = f.read(_SECTOR_SIZE)
     except OSError:
+        if strict:
+            raise
         return None
     if len(pvd) < 190 or pvd[:7] != _PVD_MAGIC:
         return None
@@ -211,15 +216,20 @@ def _pvd_root_dir(pvd: bytes) -> tuple[int, int]:
     return lba, size
 
 
-def _list_dir(f, lba: int, size: int) -> list[tuple[str, int, int, bool]]:
+def _list_dir(
+    f, lba: int, size: int, *, strict: bool = False,
+) -> list[tuple[str, int, int, bool]]:
     """
     Yield (name, lba, size, is_dir) for each entry in an ISO 9660 directory.
-    Skips the '.' and '..' self-referencing entries.
+    Skips the '.' and '..' self-referencing entries. ``strict`` raises an I/O
+    error instead of answering an empty listing.
     """
     try:
         f.seek(lba * _SECTOR_SIZE)
         data = f.read(size)
     except OSError:
+        if strict:
+            raise
         return []
 
     entries: list[tuple[str, int, int, bool]] = []
@@ -284,7 +294,7 @@ def read_iso_file(
     """
     try:
         with open(iso_path, "rb") as f:
-            pvd = _read_pvd(f)
+            pvd = _read_pvd(f, strict=strict)
             if not pvd:
                 return None
             root_lba, root_size = _pvd_root_dir(pvd)
@@ -304,7 +314,7 @@ def _find_file(
     """
     cur_lba, cur_size = root_lba, root_size
     for i, part in enumerate(path_parts):
-        entries = _list_dir(f, cur_lba, cur_size)
+        entries = _list_dir(f, cur_lba, cur_size, strict=strict)
         hit = next((e for e in entries if e[0] == part.upper()), None)
         if hit is None:
             return None

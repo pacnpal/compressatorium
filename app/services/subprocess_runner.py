@@ -102,6 +102,14 @@ def collect_abandonment():
         _abandon_sink.reset(token)
 
 
+class ToolUnavailable(RuntimeError):
+    """A program, library or prerequisite a check needs is not available here.
+
+    Raised where a check finds out it cannot run (zstd missing, py7zr missing),
+    so ``verify_exception_event`` reports it as no verdict on the file.
+    """
+
+
 class StorageAbandoned(RuntimeError):
     """A child for this file outlived SIGKILL and is still running.
 
@@ -853,15 +861,38 @@ BATCH_STOPPED_MESSAGE = (
 )
 
 
-def stops_verify_batch(result: dict) -> bool:
-    """Whether a verify result must end a walk over a list of files.
+def stops_verify_batch(result: dict, abandoned: Sequence[str] = ()) -> bool:
+    """Whether a verify must end a walk over a list of files.
 
-    True when the verifier outlived SIGKILL (``abandoned``): it is still
+    True when the verifier outlived SIGKILL (the result's ``abandoned``), or
+    when anything the check started was written off on the way, as reported
+    to its ``collect_abandonment()`` sink, passed as ``abandoned``: a deadline
+    that cancelled a check stuck on dead storage leaves the detached read
+    behind without saying so in any result. Either way something is still
     reading the storage the list lives on, so opening the next file would
-    strand one more unkillable verifier. The web UI's batch verify and the
-    CLI's ``verify`` both stop on it, with ``BATCH_STOPPED_MESSAGE``.
+    strand one more. The web UI's batch verify and the CLI's ``verify`` both
+    stop on it, with ``BATCH_STOPPED_MESSAGE``.
     """
-    return bool(result.get("abandoned"))
+    return bool(result.get("abandoned")) or bool(abandoned)
+
+
+def verify_exception_event(exc: BaseException, *, prefix: str = "Verification error") -> dict:
+    """The verify event for an exception a check raised, for every tool (#306).
+
+    ``inconclusive`` is an allowlist. Only "the check could not run" counts:
+    the tool, a library or a prerequisite is missing (``ToolUnavailable``), the
+    verifier could not be launched or the input could not be read (any
+    ``OSError``), or a timeout. Everything else is a verdict on the file: a
+    header or format error (``ValueError``, ``struct.error``, a bad archive),
+    and a broken pipe or reset from a decoder that quit early on bad data,
+    which is an ``OSError`` but says the data was rejected.
+    """
+    message = f"{prefix}: {exc}" if str(exc) else f"{prefix}: {type(exc).__name__}"
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+        return SubprocessRunner._verify_error(message)
+    if isinstance(exc, (ToolUnavailable, OSError, asyncio.TimeoutError)):
+        return SubprocessRunner._verify_error(message, inconclusive=True)
+    return SubprocessRunner._verify_error(message)
 
 
 def abandoned_verify_error(pid: int) -> dict:

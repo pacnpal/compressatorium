@@ -41,6 +41,7 @@ from services.subprocess_runner import (
     remove_partial_tree,
     run_detached,
     verify_preflight,
+    verify_exception_event,
 )
 from utils.junk import is_junk_path
 
@@ -625,14 +626,8 @@ class RomzService:
         except ValueError as exc:
             yield {"type": "error", "valid": False, "message": str(exc)}
             return
-        except OSError as exc:  # could not be read: no verdict (#306)
-            yield {
-                "type": "error", "valid": False, "inconclusive": True,
-                "message": f"Cannot read archive: {exc}",
-            }
-            return
-        except Exception as exc:  # corrupt archive
-            yield {"type": "error", "valid": False, "message": f"Cannot read archive: {exc}"}
+        except Exception as exc:  # corrupt (a verdict) or unreadable (none): #306
+            yield verify_exception_event(exc, prefix="Cannot read archive")
             return
 
         # `--` keeps an archive name beginning with `-` a positional filename.

@@ -99,6 +99,8 @@ class ToolPlugin(Protocol):
     # What to tell the user when ``is_ready()`` is False: why this tool cannot
     # run here. Auto shows it beside an Image it skipped for that reason.
     not_ready_reason: str
+    # The same for ``verify_is_ready()``.
+    verify_not_ready_reason: str
 
     def spec(self, mode: str) -> ModeSpec:
         """Return the ModeSpec for a mode this tool owns."""
@@ -333,6 +335,16 @@ class ToolPlugin(Protocol):
         bounds the call with ``verify_timeout(path)``.
         """
 
+    async def verify_is_ready(self) -> bool:
+        """Whether this tool can *check* a file here (#306).
+
+        Readiness is per operation: a check can need less than a conversion
+        (jwud's WUX check is pure Python and needs no JWUDTool or Java) or
+        something else (z3ds's check needs ``zstd``). Asked through
+        :meth:`ToolRegistry.tool_is_ready` with ``purpose="verify"``, so the
+        same bound applies. Defaults to ``is_ready()``.
+        """
+
     async def is_ready(self) -> bool:
         """Whether this tool's runtime prerequisites are met.
 
@@ -467,6 +479,11 @@ class BaseTool:
     # user-supplied file or an optional runtime say which one.
     not_ready_reason: str = "its program is not available on this server"
 
+    @property
+    def verify_not_ready_reason(self) -> str:
+        """Why ``verify_is_ready()`` answered False; the convert reason by default."""
+        return self.not_ready_reason
+
     def __init__(self, binary_path: str) -> None:
         self.binary_path = binary_path
 
@@ -581,6 +598,10 @@ class BaseTool:
         # Default: nothing to check. Tools gated on a user-supplied secret or
         # an optional binary override this (see nsz / prod.keys).
         return True
+
+    async def verify_is_ready(self) -> bool:
+        # Default: a check needs what a conversion needs.
+        return await self.is_ready()
 
     def expected_output_size(self, input_path: str, mode: str) -> int | None:
         # Default: unknown. Tools whose source header states the output size
