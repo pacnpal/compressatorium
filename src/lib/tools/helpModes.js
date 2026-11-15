@@ -94,9 +94,11 @@ export const MODE_BLURBS = {
     + 'an Xbox filesystem.',
   // eXoDOS
   exodos_repack:
-    'Repack an eXoDOS game zip so RomM\'s in-browser DOS player (DOSBox Pure) can '
-    + 'start it: the game moves to the root of the file and its dosbox.conf, taken '
-    + 'from EXODOS_DOS_DIR with the mount paths rewritten, goes beside it. Writes '
+    'Repack an eXoDOS game zip for RomM\'s in-browser DOS player (DOSBox Pure): '
+    + 'the game moves to the root of the file and its dosbox.conf, taken from '
+    + 'EXODOS_DOS_DIR with the mount paths rewritten, goes in as the first entry. '
+    + 'In RomM\'s config.yml set emulatorjs.settings.dosbox_pure.dosbox_pure_conf: '
+    + 'inside. Writes '
     + 'Game.dosz beside the source and never modifies or deletes the original. '
     + 'A zip that is not one game folder with a template is skipped, with the reason.',
   // PS3

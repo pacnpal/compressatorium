@@ -713,7 +713,7 @@ export const TOOLS = [
   {
     id: 'exodos',
     label: 'eXoDOS',
-    hint: 'Repack eXoDOS game zips so RomM\'s in-browser DOS player can start them.',
+    hint: 'Repack eXoDOS game zips for RomM\'s in-browser DOS player (DOSBox Pure).',
     // /api/exodos-verify: every member's CRC, the member names and limits, and
     // dosbox.conf at the root. Every repack also runs it before keeping its
     // output.

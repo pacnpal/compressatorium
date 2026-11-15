@@ -2,7 +2,7 @@
 
 > **Fork notice:** This is a fork of MarcTV's Docker CHD Converter. It adds a Web UI and more conversion tools on top of the original CLI converter. Thanks to [MarcTV](https://github.com/MarcTV) for the original.
 
-A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), and **extract-xiso** (Xbox / Xbox 360 disc image → XISO). It also repacks **eXoDOS** game zips so RomM's in-browser DOS player can start them. Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
+A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool** (Dolphin Emulator), **z3ds_compressor** (Nintendo 3DS), **nsz** (Nintendo Switch), **maxcso** (PSP/PS2 CSO/ZSO), **7z** (handheld ROM archives), **makeps3iso** (PS3 decrypted folder → ISO), **nkit2iso** (NKit-shrunk GameCube/Wii image → ISO), **JWUDTool** (Wii U WUD ↔ WUX), and **extract-xiso** (Xbox / Xbox 360 disc image → XISO). It also repacks **eXoDOS** game zips for RomM's in-browser DOS player. Pick the tool that matches your files and convert from a browser, or run it headless from the command line.
 
 ## Features
 
@@ -1585,8 +1585,9 @@ in the image at `/usr/share/doc/extract-xiso/LICENSE.TXT`.
 ## eXoDOS Support (.zip → .dosz)
 
 The eXoDOS tool repacks [eXoDOS](https://www.retro-exo.com/exodos.html) game zips
-so RomM's in-browser DOS player (EmulatorJS running DOSBox Pure) can start them on
-their own.
+into files laid out the way RomM's in-browser DOS player (EmulatorJS running
+DOSBox Pure) loads a game with its own `dosbox.conf`. Booting real games in RomM
+has not been confirmed yet; see the RomM setup below.
 
 eXoDOS ships each game as a zip holding one folder (`Abaron/`) and keeps the game's
 DOSBox setup in a separate `!dos` folder, at `!dos/Abaron/dosbox.conf`. That config
@@ -1623,8 +1624,21 @@ copied into RomM alone does not start.
   archive size limits apply, and the template must resolve inside `EXODOS_DOS_DIR`.
 - **Not from archives**: the repack needs the zip itself and the `!dos` folder.
 
-**In RomM**, set DOSBox Pure's core option `dosbox_pure_conf` to `inside` (it is off
-by default), then put the `.dosz` files in RomM's `dos` platform folder.
+**In RomM**, DOSBox Pure only reads a `dosbox.conf` when its core option
+`dosbox_pure_conf` is `inside` (it is off by default). Set it in RomM's
+`config.yml`, and leave `emulatorjs.disable_batch_bootup` at its default, `false`:
+
+```yaml
+emulatorjs:
+  settings:
+    dosbox_pure:
+      dosbox_pure_conf: inside
+```
+
+Then put the `.dosz` files in RomM's `dos` platform folder. RomM's default
+EmulatorJS (4.2.3) and its nightly build hand the game to DOSBox Pure in
+different ways; `dosbox.conf` is written as the first entry in the file so either
+one finds it.
 
 Only eXoDOS is supported. eXoWin3x and the other eXo packs use the same pattern and
 can be added later. The behaviour is modelled on

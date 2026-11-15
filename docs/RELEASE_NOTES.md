@@ -5,11 +5,14 @@
 ### Added
 
 - **eXoDOS repack for RomM** (#323). A new **eXoDOS** tool turns an eXoDOS game
-  zip into a `.dosz` that RomM's in-browser DOS player (DOSBox Pure) can start on
-  its own. The game moves to the root of the file, and its `dosbox.conf` from
+  zip into a `.dosz` laid out for RomM's in-browser DOS player (DOSBox Pure),
+  with the game's own `dosbox.conf` as the file's first entry. The game moves to the root of the file, and its `dosbox.conf` from
   eXoDOS's `!dos` folder is written there with the mount paths rewritten.
   - Set `EXODOS_DOS_DIR` to your `!dos` folder, inside a volume, to turn it on.
-    In RomM, set DOSBox Pure's core option `dosbox_pure_conf` to `inside`.
+    In RomM's `config.yml`, set
+    `emulatorjs.settings.dosbox_pure.dosbox_pure_conf: inside` and leave
+    `emulatorjs.disable_batch_bootup` at `false`. Booting real games in RomM
+    is still to be confirmed.
   - Only `mount`, `imgmount` and `boot` lines change; line endings and encoding
     are kept. A game whose config still points outside itself finishes with a
     warning.

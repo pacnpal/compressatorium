@@ -13,7 +13,8 @@ can start by itself. DOSBox Pure mounts the loaded zip as C: and, with its
 * moves every member out of the game folder (``Abaron/x`` becomes ``x``), which
   makes C:\\ hold exactly what eXoDOS's own C: held,
 * writes the template, its mount paths rewritten, as ``dosbox.conf`` at the
-  root, and
+  root and as the first entry (RomM's default EmulatorJS picks the first file
+  whose extension the core lists, and DOSBox Pure lists ``.conf``), and
 * names the product ``<name>.dosz``, the extension DOSBox Pure documents as a
   zip under another name, so it sits beside its Source and can never replace it.
 

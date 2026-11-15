@@ -2412,7 +2412,10 @@ tool: it registers with an empty binary path and reports no pids.
 - **The product.** DOSBox Pure mounts the loaded file as C: and, with the
   `dosbox_pure_conf=inside` core option, loads `C:\DOSBOX.CONF`. So the members
   are re-rooted (`<game>/x` becomes `x`) and the template is added as
-  `dosbox.conf` at the root, its `mount`/`imgmount`/`boot` lines rewritten by
+  `dosbox.conf` at the root, as the first entry (RomM's default EmulatorJS,
+  4.2.3, extracts the file and hands the core the first file with an extension
+  it lists, which for DOSBox Pure is `.conf`; the nightly loads a generated
+  `BOOTUP.BAT` and relies on `dosbox_pure_conf=inside` instead), its `mount`/`imgmount`/`boot` lines rewritten by
   `rewrite_conf` (bytes in, bytes out; CRLF and encoding kept). The product is
   `<name>.dosz` beside the Source, the extension DOSBox Pure documents as a zip,
   so it can never share its Source's path.
