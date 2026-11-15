@@ -1,10 +1,43 @@
 """Application configuration settings for the CHD converter."""
 
+import logging
 import os
 from pathlib import Path
 
 from pydantic import AliasChoices, Field, PrivateAttr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_lock_dir(data_dir: str) -> str:
+    """Where job lock files live when ``CHD_CONCURRENCY_LOCK_DIR`` is unset.
+
+    ``<data dir>/locks``, so every process that shares the ``/config`` mount
+    (the server, ``docker exec compressatorium ...``, a separate CLI container)
+    contends for the same output locks and conversion slots (#306). Nothing is
+    created here: the lock managers make the directory (owner only) on first
+    use, so a process that only plans leaves ``/config`` alone. When the data
+    dir cannot hold it (a read-only or missing ``/config`` on a dev machine)
+    the old per-host default, ``$TMPDIR/chd-locks``, is used, with a warning,
+    because the processes then stop sharing locks with any other container.
+    """
+    preferred = os.path.join(data_dir, "locks")
+    if os.path.isdir(preferred):
+        usable = os.access(preferred, os.W_OK | os.X_OK)
+    else:
+        usable = os.path.isdir(data_dir) and os.access(data_dir, os.W_OK | os.X_OK)
+    if usable:
+        return preferred
+    # Bandit B108: a fixed path is intended here, so separate processes on one
+    # host share it; lock_manager and concurrency_manager create it 0o700.
+    fallback = os.path.join(os.environ.get("TMPDIR", "/tmp"), "chd-locks")  # nosec B108
+    if os.path.isdir(data_dir):
+        # Only worth saying when there is a data dir to share: on a dev machine
+        # without /config the fallback is the normal case.
+        logging.getLogger("compressatorium.config").warning(
+            "%s is not writable by this user; job locks go to %s, so they are "
+            "not shared with other containers", preferred, fallback,
+        )
+    return fallback
 
 
 class Settings(BaseSettings):
@@ -98,8 +131,9 @@ class Settings(BaseSettings):
         default=None,
         alias="CHD_CONCURRENCY_LOCK_DIR",
         description=(
-            "Directory for job lock files "
-            "(default: ephemeral /tmp subdirectory, auto-cleaned on restart)"
+            "Directory for job lock files and conversion slots "
+            "(default: <data dir>/locks, shared by every container mounting /config; "
+            "$TMPDIR/chd-locks when the data dir is not writable)"
         ),
     )
     max_job_history: int = Field(default=500, alias="MAX_JOB_HISTORY")
@@ -544,16 +578,7 @@ class Settings(BaseSettings):
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.data_dir) / "temp")
         if self.concurrency_lock_dir is None:
-            # Use a subdirectory under /tmp for ephemeral lock storage
-            # This is secure in the container context because:
-            # 1. Container filesystem is isolated
-            # 2. Non-root user runs the application
-            # 3. Directory permissions are set restrictively (0o700) during creation
-            #    in concurrency_manager.py and lock_manager.py, mitigating Bandit_B108
-            #    concerns about predictable temporary paths
-            # 4. Locks don't persist across container restarts
-            # The fixed path is intentional to allow multiple processes to share locks
-            self.concurrency_lock_dir = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'chd-locks')
+            self.concurrency_lock_dir = _default_lock_dir(self.data_dir)
         # CHD_DEBUG=true backwards compatibility: map to LOGLEVEL=DEBUG when LOGLEVEL
         # is not explicitly set in the environment and log_level was not explicitly
         # provided to Settings (e.g. via constructor argument in tests).

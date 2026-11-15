@@ -2514,6 +2514,12 @@ an earlier run left for that path is dropped. `ConversionJob.check_passed`
 (and so the Ledger row) still says `"intact"`, because the container check did
 pass.
 
+**A reused output keeps its check.** When the re-run fast path (§3.3.6) skips a
+conversion, no check runs in that job, so `job.check_passed` stays unset. Its
+`complete` event still sends `check_passed` read from the stored record
+(`JobManager._stored_check`), so the UI keeps a Round-tripped badge rather than
+falling back to Intact.
+
 ### 3.3.13 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
 
 `detect_platform(path) -> Detection` is the one place an Image's Platform is
@@ -2678,8 +2684,8 @@ never became jobs retired).
 
 `POST /api/jobs/auto-plan` returns the plan without queueing.
 `POST /api/jobs/auto` groups the planned Images by (mode, compression). The
-batch route is split into `_prepare_batch` (validate and `plan_job` every file,
-queue nothing) and `_queue_prepared` (one atomic `create_jobs_atomic` call);
+batch route is split into `prepare_batch` (validate and `plan_job` every file,
+queue nothing) and `queue_prepared` (one atomic `create_jobs_atomic` call);
 `create_batch_jobs` is the two in sequence. Auto prepares every group first, so
 a planning error queues nothing, then checks the whole batch against
 `max_queue_depth`, then queues the groups. Each group is its own atomic call,
@@ -2959,6 +2965,200 @@ a metadata scan, a DAT match or a check run converts nothing.
 **Not yet.** #306's `claims_check` and `verify_exception_event` are not on this
 branch. Once they land, `check_tool` should read `tools_checking_path`, and the
 `inconclusive` flag those helpers set is already what `outcome` reads.
+
+### 3.3.17 The headless CLI (`app/cli.py`, #306)
+
+`compressatorium convert|verify` runs the pipeline with no web server. It is a
+caller of the same seams the routes use, not a second conversion path:
+
+| Step | Shared seam |
+| --- | --- |
+| Find Images | `routes.files.scan_tree`: the `GET /files/search` walk (subfolders, convertible folders, archive members as `archive::member`). `purpose="verify"` also lists every file some tool can check though none converts it (`.chd`), from `tools_verifying_path` |
+| `--to <format>` | `platform_detect.format_route` / `format_candidates` (below) |
+| `--auto` | `routes.convert.plan_auto_targets` (`plan_auto` plus `checked_compression`), the Auto route's planner |
+| Plan | `routes.convert.prepare_batch`: `plan_job` per file, duplicate handling, delete snapshots. `PreparedBatch.skipped` lists each file it left out with the reason (`_SKIP_HTTP` text, or "Same output as X"), which the CLI reports and the routes ignore |
+| Queue and run | `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
+| Delete | `JobManager._delete_check`, so `--delete-source` gets the Round-trip check where the mode has one and `--container-only` is the job's `container_only` |
+| Ledger | `ledger.record` as a terminal listener, as in `main.py` |
+| Verify | `ToolPlugin.verify` bounded by `verify_timeout`, then `verification_store.mark_verified`, or `clear` on a conclusive failure only |
+
+**`format_route(path, target, platform, registry)`** returns `(mode, None)` or
+`(None, reason)`. The CLI calls it after `detect_platform`: a Conflicted Image
+is skipped with the detection reason (Auto's wording), a decided Platform is
+passed in, an Unsorted Image passes None. `--any-platform` (the `CHD_MODE=cli`
+alias) passes None for every Image. `target` is a format (`chd`, `.rvz`) or a mode id. For a
+format, the candidates are the Auto-eligible modes (`ModeSpec.auto_target`)
+whose read set (`mode_reads_extensions`) matches the Image and whose
+`output_path` for it ends in the format, kind regardless (so `--to iso` reaches
+`dolphin_iso` and `nkit_restore`, `--to cue` reaches `extractcd`). A decided
+Platform keeps the modes that claim it (`platform_slugs` or
+`auto_platform_slugs`, canonicalised; a mode with none, or a Platform no mode
+claims, rules nothing out). The rest are ranked by `_best_reader`, the same
+ranking `default_mode` uses. When the winner's matched read extension is the
+target format the Image is left alone ("Already CHD"). A mode id is used as
+given once its command reads the Image (`mode_reads_extensions`, so createdvd
+never gets a `.cue`) and it serves the Platform. `target_formats` lists every
+format some mode writes, read from `output_path`, for argument checking, with
+a compound output's last extension too, so `7z` and `zip` resolve per Image to
+the romz mode for its ROM. `_can_read` asks a tool's `converts_path` only about files its own
+`input_extensions` cover, so chdman's `.chd` readers are not refused by a tool
+that leaves `.chd` out of its tool-wide inputs.
+
+**Locks beside a server.** Output locks were already `flock` files in
+`CHD_CONCURRENCY_LOCK_DIR`, and the conversion slots and FIFO tickets live
+there too, so a CLI process and the server contend for the same outputs and
+slots. The default is now `<data dir>/locks` (`config._default_lock_dir`), so a
+separate container that mounts the same `/config` shares them; it falls back to
+`$TMPDIR/chd-locks` when the data dir is not writable. Two rules keep a lock
+file meaningful across processes (`LockManager`):
+
+1. A lock file is unlinked only by a process holding its flock, while it holds
+   it, and only when the path still names the held file (`_unlink_held`).
+   Release, the stale probe (`_check_external_lock`), the stale sweep and the
+   refused-output cleanup all go through it.
+2. Every acquirer, once its flock succeeds, compares the held file with the
+   path (`_still_linked`: device and inode, ENOENT counts as a mismatch) and
+   retries on a mismatch.
+
+Unlinking after the unlock let a second process lock the doomed file and a
+third create and lock a new one at the same path. `lock_manager.still_linked`
+and `unlink_held` are module functions, shared with the concurrency manager.
+
+**Slots and tickets (`ConcurrencyManager`).** Slot files
+(`convert_slot_<i>.lock`) are a fixed set held by `flock` and are never
+unlinked. Each process creates one `holder_<id>.lock` on first use (temp name,
+flock, rename, so it is never visible unlocked) and holds its flock for its
+whole life: one open file per process, whatever it queues. A ticket is a plain
+file naming its holder, `queue_<ticket>_<seq>_<holder>_<key>.ticket`, and
+`release_ticket` removes it while the holder lock is held. Liveness is the
+holder's flock, not a PID (PIDs mean nothing across containers): a holder file
+another process can lock, or one that is gone, belongs to a process that died
+without cleanup, and `_prune_dead_tickets` removes its tickets and leftover
+temp files while holding that lock, then the holder file (`unlink_held`). It
+runs at construction and at most once a second from `_wait_for_turn`, so a CLI
+killed by SIGKILL, SIGHUP or the OOM killer stops blocking the server's queue as
+soon as the server's next job waits. Tickets and temp files from older versions
+(no holder in the name) go when they can be locked.
+
+A holder file deleted from outside while its process runs (a tmp cleaner, a
+user) would make that process look dead. `_ensure_holder`, called on every wait
+poll, checks the held handle against the path (`still_linked`); when they
+differ it makes the holder again under the same id and writes back every
+ticket the process holds. Slot files have no such repair: a cleaner that
+deletes `convert_slot_<i>.lock` on the `$TMPDIR/chd-locks` fallback lets two
+processes lock different files for one slot. Keep the lock dir out of reach of
+age-based cleaners; `/config/locks`, the default, is.
+
+A queue that cannot be listed (EMFILE, an I/O error) is never read as empty:
+`_list_tickets` raises, and `_wait_for_turn` logs it (at most every 30 s) and
+retries. The shared counter is retried before the in-process fallback, whose
+collisions `_list_tickets` breaks by `(seq, key)` identically in every process.
+The server and the CLI raise the soft open-file limit to the hard limit at
+start (`utils.process_limits.raise_open_file_limit`). The CLI still keeps at
+most twice `MAX_CONCURRENT_JOBS` of its jobs queued (never more than
+`MAX_QUEUE_DEPTH`), so a cron run does not put a whole library ahead of the web
+UI.
+
+**One output, one job.** `cli._prepare` keeps every output path the run will
+write, across groups and re-planned batches, and skips a later Image that
+writes one already taken ("Same output as X"). The planner's own collapse
+works within one batch only.
+
+**Lazy, and read-only for a dry run.** Choosing the lock dir creates nothing
+(`config._default_lock_dir`; it warns when it falls back to `$TMPDIR`). The
+module singletons `lock_manager` and `concurrency_manager` are built
+`lazy=True`: the directory, `queue_counter`, the stale sweep and the ticket
+prune happen on first use. A dry run wraps the run in `lock_manager.read_only()`,
+in which no lock is taken or probed and no lock file removed; a lock file that
+is present counts as held. A dry run queues nothing, so tickets and slots are
+never touched.
+
+**Folder locks across processes.** A directory lock (folder_to_iso packing a
+PS3 folder) protects its subtree only in the process that took it
+(`_dir_locks`). The web mutation guard (`routes/files.py::_assert_path_not_in_use`,
+behind rename and delete) therefore also asks
+`LockManager.locked_folder_above(path, volume_root)`: it probes, without
+blocking, the lock file of the path and of every folder above it up to the
+Volume root, and refuses with 409 when another process holds one. So a CLI job
+packing a folder blocks a web rename or delete inside it. The exact-path check
+(`check_file_status`) runs first, as before.
+
+**Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
+compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
+drop run unchanged, and the re-executed entrypoint hands straight back to the
+command before printing anything to stdout.
+
+**No verdict is not a failure.** The shared verify error
+(`SubprocessRunner._verify_error`) takes `inconclusive=True` next to
+`cancelled` and `abandoned`, and `collect_verify` keeps it. It is set when the
+check ended without judging the file: the runner's overall timeout and stall
+bound in `run_verify`, the one-shot timeout in `capture_verify`, z3ds's own
+timeout, and `verify_preflight`'s stat/read errors ("File not found", "Error
+reading file"); not for an empty file or a wrong extension, which are verdicts.
+`valid` stays False, so nothing is deleted on it, but the CLI's verify keeps a
+stored check unless the failure is conclusive.
+
+`inconclusive` is an allowlist, never a catch-all. An exception a check raises
+is classified by one helper, `subprocess_runner.verify_exception_event`, for
+every tool (maxcso, nsz, jwud, xiso, z3ds, romz): `ToolUnavailable` (a missing
+program, library or prerequisite, e.g. zstd or py7zr), any `OSError` (a failed
+launch, an input that could not be read) and a timeout are inconclusive; a
+header or format error, a bad archive, and a `BrokenPipeError` or reset from a
+decoder that quit early on bad data are verdicts. nsz without `prod.keys` and
+z3ds without `zstd` say so the same way, and the ISO reader behind the
+makeps3iso read-back raises its I/O errors (`read_iso_file(strict=True)`, down
+through `_read_pvd` and `_list_dir`).
+
+A verifier ended by a signal (a negative return code: SIGKILL, the OOM killer)
+is no verdict either (`killed_verify_error`), in both `run_verify` and
+`capture_verify`; a non-zero exit is.
+
+**Which tool checks a file** (`cli._verify_tool`), in this order:
+
+| Step | When | Verifier |
+| --- | --- | --- |
+| 1. Stored record | the file has a stored check | the tool of the mode in its `produced_meta` (makeps3iso for a PS3 ISO it built); without one, the tool that claims the name. No Platform narrowing. A recorded mode that cannot verify is reported "can't be checked", the record kept, not a failure |
+| 2. Detected Platform | no record, and a tool for another Platform also reads the extension (a generic `.iso`) | the claimants that serve `detect_platform`'s answer; none serves it: skipped as unsupported |
+| 3. Skip | no record, a shared extension, and no Platform (Unsorted or Conflicted) | none: skipped, "its Platform couldn't be determined" |
+
+Otherwise the most specific claimant (`tool_for_verify`) checks it. Claims come
+from `ToolPlugin.claims_check(path)` through `registry.tools_checking_path`,
+wider than `verifies_path` (the listing's Verify/Info gate, unchanged). romz
+decides by shape first (`RomzService.claims_for_verify`, the one place): an
+archive that reads and plainly is not a single-ROM one (no ROM, several files,
+a texture pack, an encrypted header) is not romz's and is skipped; one that
+cannot be read or decoded, or a single-ROM archive a safety rule rejects, is
+claimed and fails. A folder run adds the stored checks under it, and one no
+tool can check is reported, not dropped. "Shared" counts only tools that name
+another Platform, so the Platform-less chain tool does not make `.cso` shared.
+
+Readiness is per operation: `ToolPlugin.verify_is_ready()` (default
+`is_ready()`), asked through `registry.tool_is_ready(tool, purpose="verify")`.
+jwud's WUX check needs no JWUDTool or Java; z3ds's needs `zstd`
+(`verify_not_ready_reason` says so). The CLI asks once per tool per run, dry
+runs included, and skips a tool that cannot check here: exit 1 when the file
+was named on the command line, a reported skip inside a folder.
+
+`subprocess_runner.stops_verify_batch(result, abandoned)` and
+`BATCH_STOPPED_MESSAGE` are the one stop rule for a walk over many files: true
+when the result says `abandoned` or when the check's `collect_abandonment()`
+sink caught something (a deadline that cancelled a check stuck on dead storage
+leaves its detached read behind without saying so in any result). The web UI's
+batch verify and the CLI's `verify` both wrap each check in the sink and end
+there.
+
+**`JobManager.drain()`** waits until every queued run has ended, cleanup
+included: a job notifies its listeners before `_process_job` removes its temp
+dir and prunes history, so a caller that leaves on the notification alone
+cancelled that cleanup and left an archive's extracted copy in `/config/temp`.
+Inline runs are covered by the queue's `task_done`, parallel runs by
+`_job_tasks`, folder-lock requeues by `_requeue_tasks`.
+
+**`JobManager.shutdown()`** stops the dispatcher and maintenance loops, awaits
+the listener tasks still running (Ledger writes) and makes the queue, its
+semaphore and the create lock new, because asyncio binds them to the loop that
+first waits on them. `add_terminal_listener` ignores a callback already
+registered; `remove_terminal_listener` drops one.
 
 ### 3.4 `registry.py`
 

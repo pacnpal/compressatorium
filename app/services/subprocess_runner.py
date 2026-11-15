@@ -102,6 +102,14 @@ def collect_abandonment():
         _abandon_sink.reset(token)
 
 
+class ToolUnavailable(RuntimeError):
+    """A program, library or prerequisite a check needs is not available here.
+
+    Raised where a check finds out it cannot run (zstd missing, py7zr missing),
+    so ``verify_exception_event`` reports it as no verdict on the file.
+    """
+
+
 class StorageAbandoned(RuntimeError):
     """A child for this file outlived SIGKILL and is still running.
 
@@ -829,10 +837,14 @@ async def verify_preflight(
             ),
         }, 0
     except FileNotFoundError:
-        return {"type": "error", "valid": False, "message": "File not found"}, 0
+        return {
+            "type": "error", "valid": False, "message": "File not found",
+            "inconclusive": True,
+        }, 0
     except OSError as e:
         return {
             "type": "error", "valid": False, "message": f"Error reading file: {e}",
+            "inconclusive": True,
         }, 0
     if size == 0:
         return {"type": "error", "valid": False, "message": "File is empty"}, 0
@@ -842,6 +854,70 @@ async def verify_preflight(
             "type": "error", "valid": False, "message": f"Invalid extension: {ext}",
         }, size
     return None, size
+
+
+BATCH_STOPPED_MESSAGE = (
+    "Batch stopped: a verifier could not be stopped and is still holding the storage."
+)
+
+
+def killed_verify_error(returncode: int) -> dict:
+    """The verify event for a verifier ended by a signal (#306).
+
+    A negative return code is a signal (SIGKILL, the OOM killer), not the
+    verifier's judgement of the file: no verdict, so a stored pass is kept.
+    """
+    return SubprocessRunner._verify_error(
+        f"The verifier was killed by signal {-returncode} before it finished",
+        inconclusive=True,
+    )
+
+
+def verify_exit_event(returncode: int | None, failure_message: str) -> dict:
+    """The terminal event for a verifier that did not exit 0 (#306).
+
+    The one place an exit status becomes a result, for the shared runner and
+    for any service that drives its own subprocess (z3ds's zstd): a signal
+    (negative return code) is ``killed_verify_error``, no verdict; any other
+    non-zero exit is the verifier's verdict, ``failure_message``.
+    """
+    if returncode is not None and returncode < 0:
+        return killed_verify_error(returncode)
+    return SubprocessRunner._verify_error(failure_message)
+
+
+def stops_verify_batch(result: dict, abandoned: Sequence[str] = ()) -> bool:
+    """Whether a verify must end a walk over a list of files.
+
+    True when the verifier outlived SIGKILL (the result's ``abandoned``), or
+    when anything the check started was written off on the way, as reported
+    to its ``collect_abandonment()`` sink, passed as ``abandoned``: a deadline
+    that cancelled a check stuck on dead storage leaves the detached read
+    behind without saying so in any result. Either way something is still
+    reading the storage the list lives on, so opening the next file would
+    strand one more. The web UI's batch verify and the CLI's ``verify`` both
+    stop on it, with ``BATCH_STOPPED_MESSAGE``.
+    """
+    return bool(result.get("abandoned")) or bool(abandoned)
+
+
+def verify_exception_event(exc: BaseException, *, prefix: str = "Verification error") -> dict:
+    """The verify event for an exception a check raised, for every tool (#306).
+
+    ``inconclusive`` is an allowlist. Only "the check could not run" counts:
+    the tool, a library or a prerequisite is missing (``ToolUnavailable``), the
+    verifier could not be launched or the input could not be read (any
+    ``OSError``), or a timeout. Everything else is a verdict on the file: a
+    header or format error (``ValueError``, ``struct.error``, a bad archive),
+    and a broken pipe or reset from a decoder that quit early on bad data,
+    which is an ``OSError`` but says the data was rejected.
+    """
+    message = f"{prefix}: {exc}" if str(exc) else f"{prefix}: {type(exc).__name__}"
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+        return SubprocessRunner._verify_error(message)
+    if isinstance(exc, (ToolUnavailable, OSError, asyncio.TimeoutError)):
+        return SubprocessRunner._verify_error(message, inconclusive=True)
+    return SubprocessRunner._verify_error(message)
 
 
 def abandoned_verify_error(pid: int) -> dict:
@@ -895,6 +971,8 @@ async def collect_verify(
         result["cancelled"] = True
     if final.get("abandoned"):
         result["abandoned"] = True
+    if final.get("inconclusive"):
+        result["inconclusive"] = True
     return result
 
 
@@ -1244,8 +1322,15 @@ class SubprocessRunner:
     @staticmethod
     def _verify_error(
         message: str, *, cancelled: bool = False, abandoned: bool = False,
+        inconclusive: bool = False,
     ) -> dict:
         event = {"type": "error", "valid": False, "message": message}
+        if inconclusive:
+            # The check ended without a verdict on the file: its own bound
+            # expired, it stalled, or the file could not be read. "valid":
+            # False still stops a delete, but a caller holding a stored result
+            # (the CLI's verify, #306) must not drop it on this.
+            event["inconclusive"] = True
         if cancelled:
             # Distinguishes "the operator stopped this" from "this file is
             # bad": job_manager turns the flag into a CANCELLED job rather than
@@ -1316,11 +1401,13 @@ class SubprocessRunner:
             if cancel_event is not None and cancel_event.is_set():
                 yield self._verify_error("Verification cancelled", cancelled=True)
             else:
-                yield self._verify_error(f"Verification timed out after {timeout}s")
+                yield self._verify_error(
+                    f"Verification timed out after {timeout}s", inconclusive=True,
+                )
             return
         output = (stdout or b"").decode("utf-8", errors="replace").strip()
         tail = "\n".join(output.splitlines()[-5:]) if output else "verification failed"
-        yield self._verify_error(f"Integrity check failed: {tail}")
+        yield verify_exit_event(returncode, f"Integrity check failed: {tail}")
 
     async def run_verify(
         self,
@@ -1419,10 +1506,12 @@ class SubprocessRunner:
             elif overall_timeout > 0 and now - start >= overall_timeout:
                 terminal = self._verify_error(
                     f"Verification timed out after {overall_timeout}s",
+                    inconclusive=True,
                 )
             elif stall_timeout > 0 and now - last_output_at >= stall_timeout:
                 terminal = self._verify_error(
                     f"Verification stalled: no output for {stall_timeout}s",
+                    inconclusive=True,
                 )
             else:
                 return False
@@ -1508,7 +1597,7 @@ class SubprocessRunner:
                 yield {"type": "complete", "valid": True, "message": success_message}
             else:
                 output = "\n".join(output_lines[-20:]).strip()
-                yield self._verify_error(output or failure_message)
+                yield verify_exit_event(process.returncode, output or failure_message)
         finally:
             # Skipped when the ladder already exhausted itself: repeating it on a
             # child that survived SIGKILL only burns another 15s.

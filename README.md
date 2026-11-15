@@ -1735,32 +1735,79 @@ goes from 7.3 GB to 5.7 GB.
 extract-xiso is distributed under a modified BSD license; its license text ships
 in the image at `/usr/share/doc/extract-xiso/LICENSE.TXT`.
 
-## CLI Mode (Batch Processing)
+## Command line (`compressatorium`)
 
-For automated/headless conversion, use CLI mode. CLI mode runs CHDMAN only and processes
-files in the **top level** of each mounted volume (no recursive scanning, no archives). See
-`DOCKER-COMPOSE.md` for CLI behavior details.
-
-### CD Conversion (Default)
-
-```bash
-docker run --rm \
-  -e CHD_MODE=cli \
-  -v "$(pwd)/isofiles:/data/games:rw" \
-  pacnpal/compressatorium
-```
-
-### DVD Conversion (PSP, PS2)
+The image ships a `compressatorium` command for shells and cron. It drives the
+same planner, job queue, delete checks and Ledger as the web UI, for every tool,
+and recurses into subfolders and archives the way the UI's search does. Paths
+must sit inside the configured Volumes.
 
 ```bash
-docker run --rm \
-  -e CHD_MODE=cli \
-  -e CHDMAN_MODE=createdvd \
-  -v "$(pwd)/isofiles:/data/games:rw" \
-  pacnpal/compressatorium
+compressatorium convert /data/ps2 --to chd --delete-source
+compressatorium convert /data --auto --dry-run --json
+compressatorium verify /data/gamecube --since 30d
 ```
 
-### Multiple Volumes in CLI Mode
+**`convert PATH... (--to FORMAT | --auto)`**
+
+- `--to` takes an output format (`chd`, `rvz`, `wia`, `gcz`, `iso`, `cue`, `cso`,
+  `zso`, `nsz`, `z3ds`, `wux`, `7z`, `zip`, ...) or a mode id (`createdvd`,
+  `nkit_to_rvz`). A format is resolved per Image through the tool registry,
+  chains included: a PS2 `.iso` goes to `createdvd`, a PS1 `.cue` to
+  `createcd`, an NKit image to `nkit_to_rvz`, a Game Boy Advance ROM with
+  `--to 7z` to a `.gba.7z`. The Image's Platform narrows the choice, so a
+  GameCube `.iso` is never sent to chdman. A Conflicted Image (its header and
+  folder disagree) is skipped with the reason. An Unsorted Image converts only
+  with a mode whose command reads its extension. An Image already in the format
+  is reported and left alone.
+- `--auto` sends each Image to its Platform's default format. Conflicted and
+  Unsorted Images are skipped and reported.
+- `--delete-source` deletes each Source once its output passes the strongest
+  check its mode has: the Round-trip check where the tool has one, else the
+  container check. `--container-only` deletes on the container check alone.
+- `--compression CODECS` sets the compression for every Image; `--compression
+  default` uses each tool's own default. Without it, the compression saved in
+  the web UI is used.
+- `--duplicate skip|overwrite|rename` (default `skip`), `--output-dir DIR`,
+  `--no-recurse` (top level only), `--no-archives` (leave archives alone),
+  `--any-platform` (with `--to`, no Platform check).
+
+**`verify PATH... [--since AGE]`** checks each Image is Intact and stores the
+result. `--since 30d` (also `12h`, `2w`) skips Images checked within that window.
+A check that fails drops the stored result; one that times out or cannot run
+leaves it and reports the error.
+
+Both commands take `--dry-run` (print the plan, convert or check nothing) and
+`--json` (one JSON line per Image on stdout). Warnings and errors always go to
+stderr; `-v` adds INFO messages there. Exit status: `0` when everything finished
+or there was nothing to do, `1` when any Image failed, `2` on bad arguments.
+
+Each Image is planned on its own, so one bad file is reported and the others
+still convert. When `MAX_QUEUE_DEPTH` is set, jobs are fed in batches below it.
+
+**Beside a running server.** Each job holds a file lock on its output, and both
+share the conversion slots. These live in `CHD_CONCURRENCY_LOCK_DIR`, which
+defaults to `/config/locks`, so a separate container that mounts the same
+`/config` (such as `docker-compose.cli.yml`) shares them too. Run it in the
+server's container with `docker exec compressatorium compressatorium convert ...`.
+Started as root (`docker exec` without `-u`, or `--entrypoint`), the command
+first remaps and drops to the `converter` user through the image's entrypoint,
+honouring `PUID`/`PGID` the same way the server does, so the files it writes
+belong to the user the server runs as.
+
+### `CHD_MODE=cli`
+
+`CHD_MODE=cli` keeps today's behaviour: it runs
+
+```bash
+compressatorium convert <each Volume> --to $CHDMAN_MODE \
+  --no-recurse --no-archives --any-platform --compression default
+```
+
+and exits. That is the top level of each Volume, every `.cue`, `.gdi` and
+`.iso` the chdman command reads, no archives, no Platform check and chdman's own
+compression. `CHDMAN_MODE` is `createcd` (default) or `createdvd`. Outputs that
+already exist are skipped. For anything else, run `compressatorium` directly.
 
 ```bash
 docker run --rm \
@@ -1769,6 +1816,15 @@ docker run --rm \
   -v /home/user/psp:/data/psp:rw \
   -v /home/user/ps2:/data/ps2:rw \
   pacnpal/compressatorium
+```
+
+To run any other command in a one-off container:
+
+```bash
+docker run --rm -e PUID=1000 -e PGID=1000 \
+  -v /home/user/gc:/data/gc:rw -v ./config:/config \
+  --entrypoint compressatorium pacnpal/compressatorium \
+  convert /data/gc --to rvz --json
 ```
 
 ---
@@ -1978,7 +2034,7 @@ The Web UI communicates with a REST API that can also be used directly. Interact
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd-locks` | Directory for job lock files (ephemeral, auto-cleaned on container restart) |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files and conversion slots. Under the data dir so the server and a CLI container share it; falls back to `$TMPDIR/chd-locks` when the data dir is not writable |
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database for DATs, match cache, CHD metadata, verification state, and DAT-sync state |
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `chd_metadata.json.migrated.bak` |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path. Ignored at runtime; auto-migrated into the SQLite DB on first startup (custom path honored if set) and renamed to `verified_chds.json.migrated.bak` |
@@ -2075,7 +2131,7 @@ The application also uses a non-persistent directory for runtime lock files:
 
 | File / Directory | Location | Description |
 |------------------|----------|-------------|
-| `locks/` | `/tmp/chd-locks` | Job lock files (ephemeral, stored outside `/config` and automatically cleaned on container restart) |
+| `locks/` | `/config/locks` | Job lock files and conversion slots, shared by every process that mounts `/config`; stale ones are cleaned up on start |
 
 ---
 

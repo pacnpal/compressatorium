@@ -72,8 +72,13 @@
       <Badge tone={blocked ? 'error' : 'warning'}>{totalDelete}</Badge>
       file{totalDelete === 1 ? '' : 's'} will be deleted across {items.length}
       conversion{items.length === 1 ? '' : 's'}, but only after each
-      output passes its check (Round-tripped where the mode supports it,
-      otherwise Intact). This cannot be undone.
+      {#if conversion.deleteCheck === 'round_tripped'}
+        output is Round-tripped (it decodes to the same content as its source).
+      {:else}
+        output is Intact (it passes its own container check; its content is
+        not compared with the source).
+      {/if}
+      This cannot be undone.
     </p>
 
     {#if blocked}

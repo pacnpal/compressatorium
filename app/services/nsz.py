@@ -38,6 +38,7 @@ from services.subprocess_runner import (
     remove_partial_tree,
     run_detached,
     verify_preflight,
+    verify_exception_event,
 )
 from utils.junk import is_junk_entry
 
@@ -484,6 +485,8 @@ class NszService:
             yield {
                 "type": "error",
                 "valid": False,
+                # A missing prerequisite is no verdict on the file (#306).
+                "inconclusive": True,
                 "message": (
                     "nsz needs prod.keys to verify Switch content. Set "
                     "SWITCH_KEYS to a directory with prod.keys, or place it at "
@@ -514,7 +517,7 @@ class NszService:
             # re-raise that one — a child that outlived SIGKILL is still reading
             # this storage, so a batch has to stop rather than open the next file.
             logger.exception("Error during Switch verification: %s", e)
-            yield {"type": "error", "valid": False, "message": f"Verification error: {e}"}
+            yield verify_exception_event(e)
 
 
 # Global service instance

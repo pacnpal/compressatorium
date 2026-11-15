@@ -1191,3 +1191,81 @@ def init_and_migrate(
         )
 
     return eng
+
+
+def init_app_database(settings) -> str:
+    """Open the app database for a process that will write to it.
+
+    The one initialisation the web startup and the CLI share (#306): resolve
+    the path, open the engine, bring the schema to head with Alembic, then
+    import any legacy JSON stores (``verified_chds.json`` and the others),
+    honouring their ``CHD_*_STORE`` overrides. Running it from both entry
+    points means a first CLI run can never write to a database the legacy
+    import then refuses to fill. Returns the database path.
+    """
+    db_path = resolve_db_path(settings.db_path, data_dir=settings.data_dir)
+    # Initialise the engine *without* create_all, Alembic owns the
+    # schema on the production path.  apply_migrations then stamps
+    # pre-Alembic DBs or upgrades the rest.  Only after the schema is
+    # guaranteed at head do we run the JSON→SQLite importers.
+    init_engine(db_path, create_schema=False)
+    apply_migrations()
+
+    config_dir = Path(settings.data_dir)
+
+    def _resolve_legacy_json_store(env_var: str, default_filename: str) -> Path:
+        """Return the JSON migration source path, honouring any legacy env-var override."""
+        default_path = config_dir / default_filename
+        legacy_override = os.environ.get(env_var)
+        if not legacy_override:
+            return default_path
+        resolved_path = Path(legacy_override)
+        if not resolved_path.exists():
+            logger.warning(
+                "db.migrate: legacy JSON store override %s=%s does not exist; "
+                "falling back to default store %s",
+                env_var,
+                resolved_path,
+                default_path,
+            )
+            return default_path
+        if not resolved_path.is_file() or not os.access(resolved_path, os.R_OK):
+            logger.warning(
+                "db.migrate: legacy JSON store override %s=%s is not a readable file; "
+                "falling back to default store %s",
+                env_var,
+                resolved_path,
+                default_path,
+            )
+            return default_path
+        logger.info(
+            "db.migrate: using legacy JSON store override for migration %s=%s",
+            env_var,
+            resolved_path,
+        )
+        if resolved_path != default_path and default_path.exists():
+            logger.warning(
+                "db.migrate: legacy JSON store override %s=%s will be used for migration; "
+                "default store %s also exists and will not be imported in this run",
+                env_var,
+                resolved_path,
+                default_path,
+            )
+        return resolved_path
+
+    init_and_migrate(
+        db_path,
+        dat_store_json=_resolve_legacy_json_store(
+            "CHD_DAT_STORE", "dat_store.json",
+        ),
+        verification_json=_resolve_legacy_json_store(
+            "CHD_VERIFICATION_STORE", "verified_chds.json",
+        ),
+        chd_metadata_json=_resolve_legacy_json_store(
+            "CHD_METADATA_STORE", "chd_metadata.json",
+        ),
+        dat_sync_json=_resolve_legacy_json_store(
+            "CHD_DAT_SYNC_STORE", "dat_sync.json",
+        ),
+    )
+    return db_path

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import inspect
 import logging
 from logging_setup import get_logger
@@ -326,6 +327,9 @@ class JobManager:
         # only keeps a weak ref to a bare create_task(), so it can be GC'd before
         # it runs (a cancel notification or history prune silently dropped).
         self._background_tasks: Set[asyncio.Task] = set()
+        # Runs started as their own task (max_concurrent > 1), so `drain` can
+        # wait for each one to finish, its cleanup included.
+        self._job_tasks: Set[asyncio.Task] = set()
         self._delete_plans: Dict[str, Dict[str, object]] = {}
         # job id -> the canonical key its output was reserved under. Recorded
         # at queue time because the reservation's pre-flight map is built
@@ -944,8 +948,17 @@ class JobManager:
         The callback may be sync or async (a coroutine is scheduled on the
         loop). It runs after the status is final; exceptions are logged and
         swallowed, because a listener must never fail a conversion.
+
+        Registering the same callback twice keeps one registration, so a
+        caller that sets itself up on every run (the CLI) is told once per job.
         """
-        self._terminal_listeners.append(callback)
+        if callback not in self._terminal_listeners:
+            self._terminal_listeners.append(callback)
+
+    def remove_terminal_listener(self, callback: Callable[[ConversionJob], object]) -> None:
+        """Stop calling *callback*; a no-op when it is not registered."""
+        if callback in self._terminal_listeners:
+            self._terminal_listeners.remove(callback)
 
     def _notify_terminal(self, job: ConversionJob) -> None:
         """Tell every listener that *job* is finished. Never raises."""
@@ -1922,7 +1935,7 @@ class JobManager:
                 if await run_in_threadpool(os.path.isdir, temp_dir):
                     await run_in_threadpool(shutil.rmtree, temp_dir, ignore_errors=True)
             except Exception as cleanup_error:
-                print(f"Failed to cleanup temp dir {temp_dir}: {cleanup_error}")
+                logger.warning("Failed to cleanup temp dir %s: %s", temp_dir, cleanup_error)
             finally:
                 job.temp_dir = None
 
@@ -2029,6 +2042,49 @@ class JobManager:
                     debug_interval,
                 )
         await self._dispatcher_task
+
+    async def drain(self) -> None:
+        """Wait until every queued job has run to its very end.
+
+        A terminal notification fires before a run is over: `_process_job`
+        still removes the job's temp dir (an archive's extracted copy) and
+        prunes history after it. A caller that leaves the loop once its jobs
+        report finished (the CLI, #306) waits here first, or that cleanup is
+        cancelled half-way. Covers inline runs (the queue's `task_done` follows
+        them), runs started as tasks, and jobs waiting to be re-queued behind
+        a folder lock. Needs the dispatcher running.
+        """
+        while True:
+            await self._queue.join()
+            pending = [*self._job_tasks, *self._requeue_tasks]
+            if not pending:
+                return
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def shutdown(self) -> None:
+        """Stop processing and finish the work listeners started.
+
+        For a caller that owns the event loop and leaves it once its jobs are
+        done (the CLI, #306): the dispatcher and maintenance loops stop, and the
+        listener tasks still running (a Ledger write) are awaited so nothing a
+        finished job reported is lost when the loop closes. The queue, its
+        semaphore and the create lock are made new, because asyncio binds them
+        to the loop that first waits on them, so the manager can be started
+        again under another loop. Call it with no job queued or running.
+        """
+        self._running = False
+        for task in (self._dispatcher_task, self._debug_task):
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._dispatcher_task = None
+        self._debug_task = None
+        while self._background_tasks:
+            await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
+        self._queue = asyncio.PriorityQueue()
+        self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        self._create_lock = asyncio.Lock()
 
     async def _handle_background_maintenance(self, cleanup_counter: int) -> int:
         """Handle stuck state detection and periodic lock cleanup.
@@ -2344,7 +2400,9 @@ class JobManager:
                     if self.max_concurrent == 1:
                         await self._run_job(job_id)
                     else:
-                        asyncio.create_task(self._run_job(job_id))
+                        task = asyncio.create_task(self._run_job(job_id))
+                        self._job_tasks.add(task)
+                        task.add_done_callback(self._job_tasks.discard)
                 except Exception:
                     # _run_job() always releases the semaphore in its finally block.
                     # Only release here if task creation failed before _run_job started.
@@ -2533,6 +2591,17 @@ class JobManager:
         if not meta:
             return False
         return await run_in_threadpool(self._produced_meta_matches, job, meta)
+
+    @staticmethod
+    async def _stored_check(output_path: str) -> str:
+        """The check a stored output passed; "intact" when unknown."""
+        try:
+            record = await verification_store.get_record(output_path)
+        except Exception as exc:
+            logger.debug("Stored check lookup failed for %s: %s", output_path, exc)
+            return "intact"
+        check = (record or {}).get("check_passed")
+        return check if check in _CHECK_LABELS else "intact"
 
     async def _run_job(self, job_id: str):
         try:
@@ -2744,7 +2813,7 @@ class JobManager:
                     "Another job is already converting to this output file"
                 )
             elif file_exists:
-                job.error_message = "Output CHD file already exists"
+                job.error_message = "Output file already exists"
             else:
                 job.error_message = "Could not acquire lock for output file"
             job.completed_at = datetime.now(timezone.utc)
@@ -2874,7 +2943,14 @@ class JobManager:
                 )
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
-                job.message = "Output already Intact; skipped re-conversion."
+                # No check ran in this job, so job.check_passed stays unset;
+                # the event reports the check the reused output already
+                # passed, so the UI doesn't downgrade a Round-tripped badge.
+                stored_check = await self._stored_check(job.output_path)
+                job.message = (
+                    f"Output already {_CHECK_LABELS[stored_check]}; "
+                    "skipped re-conversion."
+                )
                 await self._notify_subscribers(
                     job_id,
                     {
@@ -2883,6 +2959,7 @@ class JobManager:
                         "output_path": job.output_path,
                         "output_size": job.output_size,
                         "verified": True,
+                        "check_passed": stored_check,
                         "source_deleted": False,
                     },
                 )

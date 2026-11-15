@@ -203,6 +203,8 @@ async def _silent_verifier_stalls(tmp_path: Path, monkeypatch):
 
     assert result["valid"] is False
     assert "stalled" in result["message"].lower()
+    # No verdict on the file: a caller must not record it as bad (#306).
+    assert result.get("inconclusive") is True
     assert service.active_pids() == []
 
 

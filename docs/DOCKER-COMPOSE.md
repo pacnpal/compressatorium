@@ -56,12 +56,14 @@ docker-compose -f docker-compose.cli.yml up
 ```
 
 **Behavior:**
-- Converts top-level `.gdi`, `.iso`, `.cue` files in mounted volumes
-- Exits after completion (no restart)
+- Runs `compressatorium convert <each volume> --to $CHDMAN_MODE --no-recurse --no-archives --any-platform --compression default` and exits (no restart)
+- Same scope as before: top-level `.gdi`, `.iso`, `.cue` files, no archives, chdman's own compression
+- Skips Images whose output already exists
 - No web interface
-- CHDMAN-only (no Dolphin modes in CLI)
+- Shares job locks with a web UI container through `/config/locks`, as long as both mount the same `/config`
 
-**Note:** CLI mode only processes files in the top level of each mounted volume. For files in subdirectories, use the Web UI mode which supports recursive directory browsing.
+For subfolders, archives, other tools and formats, run the `compressatorium`
+command directly (see the README's "Command line" section).
 
 **To change conversion mode:**
 Edit `CHDMAN_MODE` in the file:
@@ -210,7 +212,7 @@ Volume behavior:
 | `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Web UI: when true, `Search All` conversions return to the previous file-list view after queueing |
 | `CHD_SEARCH_AUTO_RETURN_TO_FILE_LIST` | `true` | Legacy alias for `COMPRESSATORIUM_SEARCH_AUTO_RETURN_TO_FILE_LIST` |
 | `CHD_TEMP_DIR` | `/config/temp` | Temporary working directory for archive extraction (auto-created) |
-| `CHD_CONCURRENCY_LOCK_DIR` | `/tmp/chd-locks` | Directory for job lock files (ephemeral, auto-cleaned on container restart) |
+| `CHD_CONCURRENCY_LOCK_DIR` | `/config/locks` | Directory for job lock files and conversion slots, shared by every container that mounts `/config` (falls back to `$TMPDIR/chd-locks` when `/config` is not writable) |
 | `COMPRESSATORIUM_DB_PATH` | `/config/compressatorium.db` | Unified SQLite database (DAT index, DAT-sync state, match cache, CHD metadata, verification state). On first startup, legacy JSON files are auto-migrated to this DB and renamed to `*.migrated.bak` (never deleted). Custom legacy paths set via `CHD_METADATA_STORE` / `CHD_VERIFICATION_STORE` are honored during migration. |
 | `CHD_METADATA_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |
 | `CHD_VERIFICATION_STORE` | *(deprecated)* | Legacy JSON path; auto-migrated to SQLite on first startup (custom path honored if set) |

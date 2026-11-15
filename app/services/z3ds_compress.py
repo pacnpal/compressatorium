@@ -20,6 +20,9 @@ from services.subprocess_runner import (
     resolve_verify_timeout,
     run_detached,
     verify_preflight,
+    ToolUnavailable,
+    verify_exception_event,
+    verify_exit_event,
 )
 
 # Compress inputs (raw 3DS ROMs). The upstream fork
@@ -371,11 +374,9 @@ class Z3DSCompressService:
         try:
             zstd_path = shutil.which("zstd")
             if not zstd_path:
-                yield {
-                    "type": "error",
-                    "valid": False,
-                    "message": "zstd not found; full integrity verification is unavailable",
-                }
+                yield verify_exception_event(ToolUnavailable(
+                    "zstd not found; full integrity verification is unavailable",
+                ), prefix="Verification could not run")
                 return
 
             payload_offset = await self._get_verify_payload_offset(
@@ -478,7 +479,7 @@ class Z3DSCompressService:
                                         raise RuntimeError("zstd stdin is unavailable")
                                     process.stdin.write(chunk)
                                     await process.stdin.drain()
-                                except BrokenPipeError:
+                                except (BrokenPipeError, ConnectionResetError):
                                     # zstd closed stdin early due to integrity failure.
                                     break
                         except (asyncio.CancelledError, GeneratorExit):
@@ -496,8 +497,11 @@ class Z3DSCompressService:
                                     await run_detached(f.close)
 
                         if process.stdin is not None:
-                            process.stdin.close()
-                            await process.stdin.wait_closed()
+                            # zstd that quit early on bad data closes its end
+                            # first; its exit code and stderr are the verdict.
+                            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                                process.stdin.close()
+                                await process.stdin.wait_closed()
 
                     except Exception as stream_err:
                         logger.error("Error streaming to zstd: %s", stream_err)
@@ -559,11 +563,12 @@ class Z3DSCompressService:
                             "message": "Verification cancelled",
                         }
                     else:
-                        yield {
-                            "type": "error",
-                            "valid": False,
-                            "message": f"Verification timed out after {overall_timeout}s",
-                        }
+                        # The shared shape, so the bound expiring is marked
+                        # inconclusive like every other verifier's (#306).
+                        yield SubprocessRunner._verify_error(
+                            f"Verification timed out after {overall_timeout}s",
+                            inconclusive=True,
+                        )
                     return
 
                 _stdout, stderr = feed.result()
@@ -576,12 +581,12 @@ class Z3DSCompressService:
                         "message": "File is Intact"
                     }
                 else:
+                    # zstd runs outside the shared runner; its exit status is
+                    # classified by the same helper (a signal is no verdict).
                     stderr_text = stderr.decode("utf-8", errors="replace").strip()
-                    yield {
-                        "type": "error",
-                        "valid": False,
-                        "message": f"Integrity check failed: {stderr_text}"
-                    }
+                    yield verify_exit_event(
+                        process.returncode, f"Integrity check failed: {stderr_text}",
+                    )
             finally:
                 # Bounded TERM -> KILL ladder rather than kill()+wait(): a child
                 # blocked in uninterruptible I/O never answers either, and an
@@ -602,11 +607,7 @@ class Z3DSCompressService:
             }
         except Exception as e:
             logger.exception("Error during 3DS verification: %s", e)
-            yield {
-                "type": "error",
-                "valid": False,
-                "message": f"Verification error: {str(e)}"
-            }
+            yield verify_exception_event(e)
 
 
 # Global service instance

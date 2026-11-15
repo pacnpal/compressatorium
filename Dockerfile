@@ -398,6 +398,9 @@ COPY --from=frontend-builder /build/static/ /static/
 COPY migrations/ /migrations/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+# `compressatorium convert|verify` (app/cli.py), also what CHD_MODE=cli runs.
+COPY scripts/compressatorium /usr/local/bin/compressatorium
+RUN chmod +x /usr/local/bin/compressatorium
 
 WORKDIR /app
 

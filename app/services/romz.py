@@ -41,6 +41,7 @@ from services.subprocess_runner import (
     remove_partial_tree,
     run_detached,
     verify_preflight,
+    verify_exception_event,
 )
 from utils.junk import is_junk_path
 
@@ -131,6 +132,10 @@ def _compress_flags(mode: str, compression: str | None) -> list[str]:
         return ["-t7z", "-m0=lzma2", "-mx=7", "-md=64m", "-mmt=on"]
     # "max" (and any unknown token) -> the reference best-settings profile.
     return ["-t7z", "-m0=lzma2", "-mx=9", "-md=256m", "-mfb=273", "-mmt=on"]
+
+
+class NotSingleRomArchive(ValueError):
+    """A readable archive that holds no ROM, or more than one file."""
 
 
 class RomzService:
@@ -236,6 +241,48 @@ class RomzService:
             return False
         return True
 
+    @classmethod
+    def claims_for_verify(cls, archive_path: str) -> bool:
+        """Whether a check of ``archive_path`` belongs to romz (#306).
+
+        The one place romz classifies an archive for a verify run. The shape
+        is decided first, from the raw member listing and before any safety
+        rule: an archive that reads and is plainly not a single-ROM archive
+        (no ROM, more than one file, thousands of members, a symlink or ``..``
+        beside other files, an encrypted header romz never writes) is someone
+        else's (``NotSingleRomArchive``) and is skipped as unsupported. One
+        that cannot be read or decoded (truncated, a bad zip, a CRC or LZMA
+        error) is claimed, and so is a single-ROM archive a safety rule rejects:
+        the check runs and fails it. The listing's ``is_single_rom_archive``
+        stays strict.
+        """
+        try:
+            cls._single_rom_shape(archive_path)
+        except NotSingleRomArchive:
+            return False
+        except Exception:  # noqa: BLE001 - unreadable: the check runs and fails it
+            return True
+        return True
+
+    @classmethod
+    def _single_rom_shape(cls, archive_path: str) -> None:
+        """Raise ``NotSingleRomArchive`` unless the archive looks single-ROM.
+
+        Reads the member listing only (no limits, no traversal or symlink
+        rules); a read or decode error propagates as itself.
+        """
+        try:
+            members = read_archive_members(archive_path)
+        except Exception as exc:
+            if type(exc).__name__ == "PasswordRequired":
+                # An encrypted header: romz never writes one.
+                raise NotSingleRomArchive("Archive is encrypted") from exc
+            raise
+        files = [(m.name, int(m.size or 0)) for m in members if not m.is_dir]
+        if cls._resolve_single_rom(files) is None:
+            raise NotSingleRomArchive("Archive is not a single-ROM archive")
+        return True
+
     @staticmethod
     def _reject_traversal(name: str) -> None:
         """Reject a member that could escape or collide inside the temp dir.
@@ -291,10 +338,10 @@ class RomzService:
             if not is_junk_path(name)
         )
         if not has_rom:
-            raise ValueError(
+            raise NotSingleRomArchive(
                 "Archive holds no Game Boy / GBA / DS ROM to extract",
             )
-        raise ValueError(
+        raise NotSingleRomArchive(
             "Archive holds more than one file; the extract mode only reverts "
             "single-ROM archives produced by this tool",
         )
@@ -625,8 +672,8 @@ class RomzService:
         except ValueError as exc:
             yield {"type": "error", "valid": False, "message": str(exc)}
             return
-        except Exception as exc:  # unreadable/corrupt archive
-            yield {"type": "error", "valid": False, "message": f"Cannot read archive: {exc}"}
+        except Exception as exc:  # corrupt (a verdict) or unreadable (none): #306
+            yield verify_exception_event(exc, prefix="Cannot read archive")
             return
 
         # `--` keeps an archive name beginning with `-` a positional filename.

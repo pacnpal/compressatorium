@@ -104,11 +104,15 @@ def _read_uncached(archive_path: str) -> list[ArchiveMember]:
         return _read_zip(archive_path)
     if ext == ".7z":
         if not HAS_7Z:
-            raise RuntimeError("py7zr is required to read .7z archives")
+            from services.subprocess_runner import ToolUnavailable
+
+            raise ToolUnavailable("py7zr is required to read .7z archives")
         return _read_7z(archive_path)
     if ext == ".rar":
         if not HAS_RAR:
-            raise RuntimeError("rarfile is required to read .rar archives")
+            from services.subprocess_runner import ToolUnavailable
+
+            raise ToolUnavailable("rarfile is required to read .rar archives")
         return _read_rar(archive_path)
     raise ValueError(f"Unsupported archive extension: {ext}")
 

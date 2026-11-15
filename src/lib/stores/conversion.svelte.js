@@ -9,6 +9,7 @@ import {
   STORAGE_KEYS, readBool, readString, writeBool, writeString,
 } from '$lib/util/localStorage.js';
 import { jobs } from './jobs.svelte.js';
+import { deleteCheckFor } from '$lib/util/deleteCheck.js';
 
 function loadPrimaryTool() {
   const raw = readString(STORAGE_KEYS.PRIMARY_TOOL, 'chdman') ?? 'chdman';
@@ -126,6 +127,14 @@ class ConversionStore {
 
   get supportsRoundTrip() {
     return !!this.currentSpec?.supportsRoundTrip;
+  }
+
+  /** The check a delete-source job will pass before its sources go. */
+  get deleteCheck() {
+    return deleteCheckFor({
+      supportsRoundTrip: this.supportsRoundTrip,
+      containerOnly: this.containerOnly,
+    });
   }
 
   get supportsSplit() {
