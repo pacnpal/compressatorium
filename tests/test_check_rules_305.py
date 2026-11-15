@@ -909,10 +909,15 @@ async def test_saving_one_kind_keeps_the_other(tree: Path, ready) -> None:
 
 
 def _fake_chdman(tree: Path) -> Path:
-    """chdman verify that passes an existing file and fails a missing one, as chdman does."""
+    """chdman verify that passes an existing file and fails a missing one, as chdman does.
+
+    A pass prints chdman's own success line: #300's verify only counts an exit
+    0 that said ``Raw SHA1 verification successful!``.
+    """
     fake = tree.parent / "bin" / "chdman"
     fake.parent.mkdir(exist_ok=True)
-    fake.write_text('#!/bin/sh\nif [ -f "$3" ]; then echo ok; exit 0; fi\n'
+    fake.write_text('#!/bin/sh\nif [ -f "$3" ]; then\n'
+                    '  echo "Raw SHA1 verification successful!"; exit 0\nfi\n'
                     'echo "Error opening CHD file: No such file"; exit 1\n')
     fake.chmod(0o755)
     return fake
@@ -1849,7 +1854,7 @@ async def test_a_converted_images_mode_survives_a_nightly_check(
     )
     job_manager.jobs[job.id] = job
     try:
-        await job_manager._process_job(job.id)  # pylint: disable=protected-access
+        await job_manager._process_job(job.id)
     finally:
         job_manager.jobs.pop(job.id, None)
     assert job.status == JobStatus.COMPLETED, (job.error_message, job.message)
@@ -1980,7 +1985,7 @@ async def test_a_split_iso_being_rebuilt_is_skipped_as_busy(db: Path, ready, sen
         "enabled": True, "check_budget_gb": 1,
     }}})
     builder = LockManager()
-    builder._lock_dir = lock_manager._lock_dir  # pylint: disable=protected-access
+    builder._lock_dir = lock_manager._lock_dir
     assert builder.acquire_lock(str(iso), allow_existing=True)
     try:
         await _run(lib)
@@ -2061,6 +2066,52 @@ async def test_a_failed_ps3_iso_is_checked_again_once_repaired(db: Path, ready, 
     record = await verification_store.get_record(str(iso))
     assert record["produced_meta"] == meta
     assert record["check_passed"] == "intact"
+
+
+@pytest.mark.asyncio
+async def test_a_stop_while_images_are_picked_starts_no_check(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """Integration (#307 x #305): a stop that arrives while a check Rule picks
+    its Images starts nothing new. No check job is created, nothing is checked,
+    and the Rule's run is not recorded, so the next sweep picks them again."""
+    from models import ConversionMode
+    from routes import libraries as routes
+    from services import image_checks
+    from services.job_manager import job_manager
+    from services.rules import check as checks
+    from services.rules import sweep
+    from services.rules.rules import CHECK
+
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 100})
+    stop: list[bool] = []
+    real_inspect = checks.inspect
+    inspected: list[str] = []
+
+    def inspect_then_stop(image):
+        inspected.append(str(image.key))
+        if len(inspected) == 4:
+            stop.append(True)  # SIGTERM lands while the last Image is looked at
+        return real_inspect(image)
+
+    monkeypatch.setattr(checks, "inspect", inspect_then_stop)
+    jobs_before = set(job_manager.jobs)
+
+    result = await sweep.sweep(
+        routes._library(lib),
+        ignore_schedule=True, should_stop=lambda: bool(stop),
+    )
+    await checks.drain()
+
+    assert result["stopped_reason"] == "stopped"
+    new = [job_manager.jobs[j] for j in set(job_manager.jobs) - jobs_before]
+    assert [j for j in new if j.mode == ConversionMode.CHECK] == []
+    _verdicts, calls = verifier
+    assert calls == []
+    assert image_checks.order_stamps(lib) == {}
+    state = await sweep.get_state(routes._library(lib), CHECK)
+    assert not (state.get("ps2") or {}).get("last_run_at")
+    assert not (state.get("ps2") or {}).get("last_manual_run_at")
 
 
 def test_a_numbered_file_is_a_split_part_only_beside_a_modes_output_name(db: Path) -> None:

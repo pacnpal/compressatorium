@@ -1191,8 +1191,10 @@ async def _sweep_locked(
     # delete_on_verify, both sources are deleted for one surviving file.
     claimed_destinations: set[str] = set()
 
-    # What the check Rules picked, run as one job once the pass is over.
+    # What the check Rules picked, run as one job once the pass is over, and
+    # their runs to record then. Both are dropped if a stop comes first.
     picked: list = []
+    check_runs: list = []
     if not dry_run:
         await _clear_vanished(library)
 
@@ -1240,7 +1242,8 @@ async def _sweep_locked(
         if kind == CHECK:
             if await _sweep_check(
                 library, platform_id, rule, result, active_paths,
-                picked=picked, dry_run=dry_run, manual=ignore_schedule, now=now,
+                picked=picked, check_runs=check_runs, dry_run=dry_run,
+                manual=ignore_schedule, now=now, stopping=stopping,
             ):
                 break
             continue
@@ -1661,9 +1664,16 @@ async def _sweep_locked(
         if not dry_run and not summary.get("queue_failed") and not unresponsive:
             await _record_run(library, platform_id, summary)
 
-    if picked and not dry_run:
-        # One job and, if anything fails, one notification for the sweep.
-        checks.start(library, picked, generation=_generations.get(library.id, 0))
+    if stopping():
+        # A stop starts nothing new: what the check Rules picked is dropped and
+        # their runs are not recorded, so the next sweep picks them again.
+        result["stopped_reason"] = "stopped"
+    elif not dry_run:
+        for platform_id, summary, manual, at in check_runs:
+            await _record_run(library, platform_id, summary, CHECK, manual=manual, at=at)
+        if picked:
+            # One job and, if anything fails, one notification for the sweep.
+            checks.start(library, picked, generation=_generations.get(library.id, 0))
     result.update(await library.sweep_extras())
     return result
 
@@ -1771,20 +1781,23 @@ def _sweep_ends(result: dict) -> bool:
 
 async def _sweep_check(
     library: Library, platform_id: str, rule: dict, result: dict,
-    active_paths: set[str], *, picked: list, dry_run: bool, manual: bool = False,
-    now: datetime | None = None,
+    active_paths: set[str], *, picked: list, check_runs: list, dry_run: bool,
+    manual: bool = False, now: datetime | None = None,
+    stopping: Callable[[], bool] = lambda: False,
 ) -> bool:
     """One check Rule's Platform: pick the stalest Images within its budget (#305).
 
-    Adds the Platform's summary to *result* and what it picked to *picked*.
-    Returns True when the sweep must stop (the Library stopped answering).
-    *manual* (Run now) records the run without moving the clock the schedule
-    reads, so the nightly run still comes when it is due.
+    Adds the Platform's summary to *result*, what it picked to *picked* and
+    the run to record to *check_runs*: the caller starts the job and records
+    the runs once the pass is over, and neither if a stop came first.
+    Returns True when the sweep must end (the Library stopped answering, or
+    a stop). *manual* (Run now) records the run without moving the clock the
+    schedule reads, so the nightly run still comes when it is due.
     """
     platform_ref = library.platform_value(platform_id)
-    images = await _list_images(library, platform_id, result)
+    images = await _list_images(library, platform_id, result, stopping)
     if images is None:
-        return result["stopped_reason"] == "library_unresponsive"
+        return _sweep_ends(result)
     budget = int(rule["check_budget_gb"]) * checks.GB
     last = await checks.order_stamps(library.id)
     ready: dict[str, bool] = {}
@@ -1792,6 +1805,10 @@ async def _sweep_check(
     spent = considered = uncheckable = 0
     unresponsive = not_ready = False
     for image in checks.stalest_first(images, last):
+        if stopping():
+            # Nothing of this Platform is picked or recorded.
+            result["stopped_reason"] = "stopped"
+            return True
         considered += 1
         if checks.in_flight(library.id, str(image.key)):
             result["skipped_active"] += 1
@@ -1869,7 +1886,7 @@ async def _sweep_check(
         picked.extend(chosen)
         # A Platform whose tool is missing waits for the next tick, not a day.
         if not unresponsive and not (not_ready and not chosen):
-            await _record_run(library, platform_id, summary, CHECK, manual=manual, at=now)
+            check_runs.append((platform_id, summary, manual, now))
     return False
 
 

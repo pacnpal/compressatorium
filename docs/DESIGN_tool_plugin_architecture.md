@@ -4338,7 +4338,11 @@ split part or track) must be inside the Volumes, or the Image is skipped as
 **Run.** A real sweep passes everything every check Rule picked to
 `check.start` once, after its loop, so a sweep is one run, one external job
 (`ConversionMode.CHECK`, in `_EXTERNAL_JOB_MODES`) and at most one
-notification. For each Image in order the run waits for a slot on the
+notification. Each check Rule's run is recorded then too, not as its
+Platform is picked. A stop (#307's `should_stop`, asked before each Platform,
+while a Platform lists, before each Image is inspected and once more after the
+loop) starts nothing new: the picked Images are dropped and no run is
+recorded, so the next sweep picks them again. For each Image in order the run waits for a slot on the
 `verify` workload lane, the one the Verify action uses (raced against the job's
 cancel event, so Cancel ends a queued run at once), and only then takes
 #306's shared input lock (`lock_manager.acquire_input_lock`) on the Image and
