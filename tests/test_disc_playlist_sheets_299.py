@@ -51,7 +51,7 @@ def test_a_gdi_disc_set_collapses_its_ticked_tracks(vol: Path):
     paths += _cue_disc(vol, "Game (Disc 2)")
     plan = disc_playlist.plan_playlist(paths)
     assert plan.entries == ["Game (Disc 1).gdi", "Game (Disc 2).cue"]
-    assert any("4 track files" in w for w in plan.warnings)
+    assert any("3 track files" in w for w in plan.warnings)
 
 
 def test_a_sheet_the_shared_reader_refuses_names_no_tracks(vol: Path):

@@ -18,12 +18,11 @@ import os
 import re
 import unicodedata
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 
 from services.referrers import write_new_bytes
 from services.referrers.m3u import PLAYLIST_EXT, entry_for, playlist_bytes
 from services.tools import registry
-from utils.delete_plan import _parse_cue_tracks, _parse_gdi_tracks
+from utils.sheet_text import sheet_track_list
 from utils.path_utils import is_within_configured_volumes, match_extension, same_file
 
 _DISC = r"(?:disc|disk|cd)[\s_-]*(\d+)(?:\s*of\s*\d+)?"
@@ -190,14 +189,11 @@ def _validated_files(paths: list[str]) -> tuple[str, dict[str, str]]:
 
 
 def _named_tracks(sheet: str) -> set[str]:
-    """Casefolded track file names a .cue / .gdi sheet refers to."""
-    path = Path(sheet)
-    try:
-        parse = _parse_gdi_tracks if sheet.lower().endswith(".gdi") else _parse_cue_tracks
-        tracks = parse(path)
-    except OSError:
-        return set()
-    return {re.split(r"[\\/]", t)[-1].casefold() for t in tracks}
+    """Casefolded track file names a .cue / .gdi sheet refers to, read the one way
+    the app reads sheets (``utils.sheet_text``): confined to the Volumes, and a
+    refused or ambiguous sheet is unreadable, so it names nothing."""
+    tracks = sheet_track_list(sheet)
+    return {t.name.casefold() for t in tracks} if tracks else set()
 
 
 def _split_discs_and_tracks(files: dict[str, str]) -> tuple[list[str], list[str]]:
