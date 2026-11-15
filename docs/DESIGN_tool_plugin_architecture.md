@@ -3083,10 +3083,10 @@ lock it cannot get, or an Image gone or changed, is `SKIPPED`: nothing written,
 no notification line. Then `tool.verify(path, cancel_event)`, bounded by
 `tool.verify_timeout(path)`, the same call and bound as the Verify action; the
 locks go as soon as it ends, before anything is written. While they are held,
-#306's delete step finds the Source in use: today a delete-source conversion
-that finishes then fails with "Delete path is locked by an active conversion",
-keeping its Source and its output. #306 is changing that step to wait briefly
-and keep the Source without failing the job. `check.outcome(result)` reads it:
+#306's delete step finds the Source in use: a delete-source conversion that
+finishes then waits briefly (`_hold_delete_paths_waiting`) and, if the check
+still holds it, completes with `SOURCE_KEPT_FOR_READERS` as its warning,
+keeping the Source and its output. `check.outcome(result)` reads it:
 
 | Result | Outcome | Writes |
 |---|---|---|

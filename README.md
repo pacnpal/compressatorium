@@ -714,9 +714,10 @@ much to read a night ("check 50 GB a night"), a time window and weekdays:
 - Each Image goes through its tool's own **Verify**, the same check as the
   Verify action. A run is one job in the Jobs panel, and Cancel stops it.
   While an Image's Verify runs (not while it waits its turn) it is held like a
-  file a conversion reads. A conversion that finishes then and deletes its
-  Source fails with "Delete path is locked by an active conversion", and its
-  Source and its new file both stay.
+  file a conversion reads. A conversion that finishes then and would delete
+  that Source waits briefly; if the check is still reading it, the conversion
+  completes with "Source kept: it was being read by another job", leaving the
+  Source and the new file both in place.
   An Image that is gone or changed by the time its turn comes (converted
   away, deleted, replaced) is skipped: no Finding and no check time.
 - An Image that fails becomes a **Not Intact** Finding, and the run sends one
