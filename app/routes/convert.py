@@ -29,6 +29,7 @@ from routes.preferences import CONVERSION_KEY as CONVERSION_PREFS_KEY
 from services.archive import archive_service
 from services.job_manager import (
     ROLLBACK_WAIT_CAP_SECONDS,
+    VOLUME_PROBE_TIMEOUT_SECONDS,
     DestinationUnresolvableError,
     OutputClaimedError,
     QueueBackpressureError,
@@ -37,6 +38,7 @@ from services.job_manager import (
 from services.platform_detect import plan_auto
 from services.preferences_store import preferences_store
 from services.romz import romz_service
+from services.subprocess_runner import run_detached
 from services.output_conflicts import (
     OutputPathExhausted,
     OutputPathLocked,
@@ -1070,6 +1072,46 @@ async def create_batch_jobs(request: BatchJobCreateRequest):
     return await _queue_prepared(batch)
 
 
+def _check_within_volumes(file_paths, output_dir: str | None = None) -> None:
+    """403 unless every path (and the output dir) is inside the Volumes.
+
+    Blocking (``is_within_configured_volumes`` stats and resolves); run it
+    through ``_off_loop_bounded``, never on the event loop.
+    """
+    for file_path in file_paths:
+        if not is_within_configured_volumes(file_path):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: path outside configured volumes",
+            )
+    if output_dir and not is_within_configured_volumes(
+        output_dir, treat_archives=False,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: output directory outside configured volumes",
+        )
+
+
+async def _off_loop_bounded(func, *args, **kwargs):
+    """Run blocking Volume work off the event loop, bounded; 503 past the bound.
+
+    On a disposable thread (``run_detached``), so a Volume that stops answering
+    holds neither the loop nor a shared pool worker. Past
+    ``VOLUME_PROBE_TIMEOUT_SECONDS`` the request answers 503 and the thread is
+    abandoned; it may linger until the mount answers, and its result is
+    dropped. A process-wide probe ceiling being full answers 503 the same way.
+    """
+    try:
+        return await asyncio.wait_for(
+            run_detached(func, *args, **kwargs), VOLUME_PROBE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503, detail="A Volume isn't responding. Try again later.",
+        ) from None
+
+
 async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
     """Validate and plan every file of a batch, queueing nothing.
 
@@ -1097,20 +1139,7 @@ async def _prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                     "same archive"
                 ),
             )
-    for file_path in request.file_paths:
-        if not is_within_configured_volumes(file_path):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: path outside configured volumes",
-            )
-
-    if output_dir and not is_within_configured_volumes(
-        output_dir, treat_archives=False,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: output directory outside configured volumes",
-        )
+    await _off_loop_bounded(_check_within_volumes, request.file_paths, output_dir)
 
     # Fast-fail when the queue is already at capacity, before planning any
     # candidate — planning a PS3 folder walks its whole source tree, so a
@@ -1190,20 +1219,23 @@ def _auto_compression(target) -> str | None:
     return value
 
 
+def _checked_auto_plan(file_paths: list[str], **plan_kwargs) -> list:
+    """The Volume checks, then ``plan_auto``: one blocking unit, off the loop."""
+    _check_within_volumes(file_paths)
+    return plan_auto(file_paths, **plan_kwargs)
+
+
 async def _plan_auto(request: AutoPlanRequest) -> list:
-    for file_path in request.file_paths:
-        if not is_within_configured_volumes(file_path):
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: path outside configured volumes",
-            )
     prefs = await preferences_store.get(CONVERSION_PREFS_KEY) or {}
     output_dir = normalize_output_dir(request.output_dir)
     # The shared, bounded readiness probe (a tool that cannot run here, such as
     # nsz without prod.keys, is skipped in the plan instead of queued to fail).
     ready = await registry.ready_tool_ids()
-    plan = await run_in_threadpool(
-        plan_auto, list(request.file_paths),
+    # Every filesystem touch (the Volume checks and planning's header reads)
+    # runs together off the event loop, bounded: a Volume that stops answering
+    # gets a 503, never a frozen API.
+    plan = await _off_loop_bounded(
+        _checked_auto_plan, list(request.file_paths),
         compression_prefs=prefs, output_dir=output_dir, ready_tool_ids=ready,
     )
     return [
