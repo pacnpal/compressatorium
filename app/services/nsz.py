@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 from logging_setup import get_logger
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import AsyncGenerator, Iterator, Mapping
@@ -63,12 +64,54 @@ _MAX_KEY_SEARCH_DIRS = 5000
 
 logger = get_logger("nsz")
 
+# The line ``nsz -V`` prints for the NSP it rebuilt from an NSZ.
+_NSP_SHA256_RE = re.compile(r"^\[NSP SHA256\]\s+([0-9a-fA-F]{64})\s*$", re.MULTILINE)
+# XCI cart header: "HEAD" at 0x100, and at 0x118 the last used 0x200-byte page.
+_XCI_HEAD = 0x100
+_XCI_PAGE = 0x200
+
+
+def _identity(path: str) -> tuple:
+    """A file's identity for the rebuilt-hash hand-off: changes with its bytes."""
+    st = os.stat(path)
+    return (os.path.realpath(path), st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _one_nsp_sha256(text: str) -> str | None:
+    """The one ``[NSP SHA256]`` line of an ``nsz -V`` run, or None."""
+    hashes = _NSP_SHA256_RE.findall(text)
+    return hashes[0].lower() if len(hashes) == 1 else None
+
+
+def xcz_decoded_size(path: str) -> int:
+    """About how many bytes ``nsz -D`` writes for this XCZ, for the headroom check.
+
+    An XCZ keeps the cart header of the XCI it came from, whose valid-data-end
+    page bounds the XCI, floored at twice the container size. When that cannot
+    be read, four times the container size (Switch NCAs rarely compress better
+    than that) is asked for instead.
+    """
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        fh.seek(_XCI_HEAD)
+        head = fh.read(0x20)
+    if len(head) == 0x20 and head[:4] == b"HEAD":
+        last_page = int.from_bytes(head[0x18:0x1C], "little")
+        # Never below twice the container: a header that understates the XCI
+        # would let nsz -D fill the scratch volume under other jobs.
+        return max(size * 2, (last_page + 1) * _XCI_PAGE)
+    return size * 4
+
 
 class NszService:
     """Wrapper for the nsz binary."""
 
     def __init__(self):
         self.nsz_path = settings.nsz_path
+        # The [NSP SHA256] a passing `nsz -V` container check printed, keyed by
+        # the file's identity, so the Round-trip right after it does not run
+        # nsz -V a second time (#301). Taken once; a changed file misses.
+        self._rebuilt_hashes: dict[tuple, str] = {}
         # _run_convert() delegates its streaming loop to the runner; verify_stream()
         # still spawns nsz -V directly but tracks its PID in the same set, so
         # active_pids() reflects both.
@@ -434,6 +477,88 @@ class NszService:
 
     # ----- verify -----------------------------------------------------------
 
+    # ----- Round-trip (#301) ------------------------------------------------
+
+    async def _keys_for_digest(self, cancel_event) -> str:
+        keys_file = await run_detached(self.resolved_keys_file, cancel_event=cancel_event)
+        if not keys_file:
+            raise RuntimeError("nsz needs prod.keys to decode Switch content")
+        return keys_file
+
+    async def _capture(self, cmd: list[str], keys_file: str, cancel_event) -> str:
+        """Run an nsz command with the keys HOME; its output, or why it failed."""
+        with self._keys_home(keys_file) as env:
+            rc, out, _ = await self._runner.run_capture(
+                cmd, cancel_event=cancel_event, stderr_to_stdout=True,
+                nice_via_wrapper=True, env=env,
+            )
+        text = (out or b"").decode("utf-8", errors="replace")
+        if rc is None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ReadCancelled("Read cancelled")
+            raise RuntimeError("nsz did not finish")
+        if rc != 0:
+            tail = text.strip().splitlines()[-1:] or ["no output"]
+            raise RuntimeError(f"nsz exited with {rc}: {tail[0]}")
+        return text
+
+    async def rebuilt_nsp_sha256(
+        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str:
+        """SHA256 of the NSP an NSZ decodes to, as ``nsz -V`` rebuilds it.
+
+        ``nsz -V`` decompresses every NCZ and streams the rebuilt NSP (header
+        included, laid out as the original) through SHA256 with no file
+        written, then prints ``[NSP SHA256] <hex>`` (4.6.1 and 5.0.0 alike).
+        That hash compared with the Source NSP's SHA256 is the Round-trip; nsz
+        -V on its own only checks each NCA against the output's own metadata
+        (DESIGN §3.3.12, the #301 spike).
+        """
+        identity = await run_detached(_identity, file_path, cancel_event=cancel_event)
+        cached = self._rebuilt_hashes.pop(identity, None)
+        if cached is not None:
+            return cached
+        keys_file = await self._keys_for_digest(cancel_event)
+        cmd = nice_prefix("nsz") + ioprio_prefix("nsz") + [self.nsz_path, "-V", file_path]
+        text = await self._capture(cmd, keys_file, cancel_event)
+        hashes = _one_nsp_sha256(text)
+        if hashes is None:
+            raise RuntimeError("nsz -V did not print one NSP SHA256")
+        return hashes
+
+    async def decompressed_sha256(
+        self, file_path: str, *, cancel_event: asyncio.Event | None = None,
+    ) -> str:
+        """SHA256 of the XCI an XCZ decompresses to (``nsz -D`` to scratch).
+
+        nsz -V prints no whole-image hash for an XCZ, so it is decompressed into
+        a scratch dir that passed the shared headroom check, hashed, and the
+        dir removed on every exit (``headroom_scratch_dir``).
+        """
+        from services.disk import InsufficientDiskSpace, headroom_scratch_dir
+        from services.stream_digest import hash_files
+
+        keys_file = await self._keys_for_digest(cancel_event)
+        required = await run_detached(
+            xcz_decoded_size, file_path, cancel_event=cancel_event,
+        )
+        try:
+            async with headroom_scratch_dir("cmptr-roundtrip-", required) as work:
+                cmd = self._build_command(file_path, work, "nsz_decompress")
+                await self._capture(cmd, keys_file, cancel_event)
+                produced = os.path.join(work, self._produced_name(file_path))
+                # No existence check here: a stat on the event loop would be
+                # unbounded on a hung scratch volume. The detached hash finds
+                # out instead.
+                try:
+                    return await hash_files(
+                        [produced], algorithm="sha256", cancel_event=cancel_event,
+                    )
+                except FileNotFoundError as e:
+                    raise RuntimeError("nsz -D produced no XCI") from e
+        except InsufficientDiskSpace as e:
+            raise RuntimeError(f"not enough scratch space to decompress: {e}") from e
+
     async def verify(
         self, file_path: str, *, cancel_event: asyncio.Event | None = None,
     ) -> dict:
@@ -496,6 +621,19 @@ class NszService:
             return
 
         try:
+            identity = None
+            if Path(file_path).suffix.lower() == ".nsz":
+                identity = await run_detached(
+                    _identity, file_path, cancel_event=cancel_event,
+                )
+
+            def _keep_rebuilt_hash(output: bytes) -> None:
+                # A passing check printed the hash of the NSP it rebuilt; hand
+                # it to the Round-trip that follows (rebuilt_nsp_sha256).
+                found = _one_nsp_sha256(output.decode("utf-8", errors="replace"))
+                if identity is not None and found is not None:
+                    self._rebuilt_hashes[identity] = found
+
             with self._keys_home(keys_file) as env:
                 verify_cmd = (
                     nice_prefix("nsz")
@@ -509,6 +647,7 @@ class NszService:
                     cancel_event=cancel_event,
                     nice_via_wrapper=True,
                     env=env,
+                    on_success_output=_keep_rebuilt_hash,
                 ):
                     yield update
         except Exception as e:

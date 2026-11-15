@@ -101,6 +101,52 @@ def clear_cache() -> None:
     _cache.clear()
 
 
+def read_member_crcs(archive_path: str) -> list[tuple[str, int | None, int | None, bool]]:
+    """``(name, size, crc32, is_dir)`` for every member of a ``.zip``/``.7z``.
+
+    The CRC32 each format stores per member, read from the listing without
+    decompressing anything; the Round-trip compares them with the Source (#301).
+    Not cached: it runs once per check, and the listing cache holds no CRCs.
+    ``crc32`` is ``None`` when the archive stores none for a member.
+    """
+    ext = Path(archive_path).suffix.lower()
+    if ext == ".zip":
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            return [
+                (_zip_name(i), int(i.file_size), int(i.CRC), i.is_dir())
+                for i in zf.infolist()
+            ]
+    if ext == ".7z":
+        if not HAS_7Z:
+            raise RuntimeError("py7zr is required to read .7z archives")
+        with py7zr.SevenZipFile(archive_path, "r") as zf:  # type: ignore[name-defined]
+            return [
+                (
+                    e.filename,
+                    int(e.uncompressed) if e.uncompressed is not None else None,
+                    int(e.crc32) if e.crc32 is not None else None,
+                    bool(e.is_directory),
+                )
+                for e in zf.list()
+            ]
+    raise ValueError(f"Unsupported archive extension: {ext}")
+
+
+def _zip_name(info: zipfile.ZipInfo) -> str:
+    """A zip member's name as its writer meant it.
+
+    Without the UTF-8 flag (bit 11) ``zipfile`` reads the name as cp437. p7zip
+    writes UTF-8 names without that flag, so a cp437 name that is valid UTF-8
+    once re-encoded is read as UTF-8; anything else stays as cp437 read it.
+    """
+    if info.flag_bits & 0x800:
+        return info.filename
+    try:
+        return info.filename.encode("cp437").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return info.filename
+
+
 def _read_uncached(archive_path: str) -> list[ArchiveMember]:
     ext = Path(archive_path).suffix.lower()
     if ext == ".zip":

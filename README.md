@@ -12,7 +12,7 @@ A game image converter that wraps ten tools: **CHDMAN** (MAME), **dolphin-tool**
 * **Multiple volume mounts** so you can keep separate game libraries separate.
 * **File detection** that works out which files each tool can convert.
 * **Existing-output detection** with skip, rename, or overwrite.
-* **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. For GameCube/Wii the output must be Round-tripped (it decodes to the same disc as the source); other tools need it Intact (it passes its own container check).
+* **Delete-on-verify.** Optionally remove the source once the output passes its check. Off by default. By default the output must be Round-tripped: it decodes to the same content as the source. CHDMAN Create LD offers no delete-on-verify.
 * **Progress tracking** through a live job queue.
 * **File info** for CHD, Dolphin, 3DS, Switch, CSO, handheld ROM, NKit, Wii U, and Xbox files.
 
@@ -465,9 +465,18 @@ Converting never deletes anything on its own — the safe order is convert, veri
 then delete the source. Verify reads the whole output back and checks it against
 the file's own hashes/CRC; a file that passes is **Intact**. With
 **delete-on-verify** the source is removed only after the output passes, and
-never if it fails. For Dolphin modes the bar is higher by default: the output
-must be **Round-tripped**, meaning the disc it decodes to has the same SHA1 as
-the source disc. **Container check only (faster, weaker)** in the convert panel
+never if it fails. By default the bar is higher: the output must be
+**Round-tripped**, meaning the content it decodes to matches the source. Dolphin
+and CHDMAN compare disc SHA1s; CSO/ZSO/DAX, 3DS and WUX outputs are decoded and
+hashed with no temp file; an NSZ is compared through the NSP SHA256 that
+`nsz -V` rebuilds (an XCZ is decompressed to the scratch volume); a 7z/zip ROM
+archive must hold exactly the ROM, by name, size and CRC; CSO to CHD compares
+the decoded disc with the CHD. CHDMAN Create LD offers no delete-on-verify: an
+AVI cannot be compared with a LaserDisc CHD. A CD CHD is extracted to a temp
+folder for this, and both its track data and its track table (tracks, types,
+lengths, index offsets, gaps) must match the source cue or gdi; the folder is removed
+afterwards. Without about a disc's worth of free scratch space the job keeps the
+source and fails. **Container check only (faster, weaker)** in the convert panel
 drops back to the Intact check for that job. You get a confirmation list of
 everything to be deleted first, including the `.cue`/`.gdi` track files that ride
 with a `.bin`, and the whole archive if the source came from one. **Bulk Verify**

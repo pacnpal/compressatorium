@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -49,6 +49,10 @@ class ContentDigest:
 
     kind: str
     value: str
+    # What to tell the user when this digest does not match the other side,
+    # for a tool that knows a mismatch is expected rather than a sign of
+    # damage (nsz rebuilding an XCI). Not part of the comparison.
+    mismatch_reason: str = field(default="", compare=False)
 
     def same_content(self, other: ContentDigest) -> bool:
         if self.kind != other.kind:
@@ -56,6 +60,16 @@ class ContentDigest:
                 f"cannot compare a {self.kind} digest with a {other.kind} digest",
             )
         return self.value == other.value
+
+
+# The digest kind for "SHA1 of the image's bytes", shared by every tool whose
+# Source is a plain image file and whose output decodes back to one (chdman
+# DVD, maxcso, z3ds, JWUDTool). One kind is what lets a chain compare a CSO's
+# decoded image with a CHD's data SHA1 (#301).
+IMAGE_DATA_SHA1_KIND = "image_data_sha1"
+# The same, SHA-256, for a tool whose two sides are both digests it makes
+# itself (z3ds, JWUDTool): no outside SHA-1 to match, so SHA-1 is not used.
+IMAGE_DATA_SHA256_KIND = "image_data_sha256"
 
 
 class ContentDigestUnavailable(Exception):
@@ -366,6 +380,26 @@ class ToolPlugin(Protocol):
         same bound applies. Defaults to ``is_ready()``.
         """
 
+    async def source_problem(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
+    ) -> str | None:
+        """Why the Round-trip must not trust ``path`` as a Source, or None.
+
+        Asked once, before any digest, under the same bound. A Source whose
+        format carries its own checksum (a CHD for chdman Copy) is checked
+        with it first: a Source that is not Intact would compare its damage
+        with an output that faithfully copied it. Return a reason to keep the
+        Source without comparing; ``BaseTool`` returns None.
+
+        ``within`` is the same trusted root(s) ``content_digest`` gets for the
+        Source: an override that reads a sheet, a track or an archive member
+        passes it to that read and fails closed when the read is refused.
+        """
+
     async def is_ready(self) -> bool:
         """Whether this tool's runtime prerequisites are met.
 
@@ -616,6 +650,16 @@ class BaseTool:
     ) -> list[tuple[str, str]]:
         # Default: no embedded hash; callers fall back to file-level SHA1.
         return []
+
+    async def source_problem(
+        self,
+        path: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        within: Sequence[str] | None = None,
+    ) -> str | None:
+        # Default: a Source carries no checksum of its own to check first.
+        return None
 
     async def content_digest(
         self,
