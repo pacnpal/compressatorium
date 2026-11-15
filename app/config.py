@@ -1,6 +1,5 @@
 """Application configuration settings for the CHD converter."""
 
-import logging
 import os
 from pathlib import Path
 
@@ -8,36 +7,44 @@ from pydantic import AliasChoices, Field, PrivateAttr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _default_lock_dir(data_dir: str) -> str:
+# Used only when no data dir is configured at all (a dev checkout without
+# /config). One fixed path, whatever TMPDIR says, so every process on the host
+# picks the same one. Bandit B108: a fixed path is intended here;
+# lock_manager and concurrency_manager create it 0o700.
+_UNCONFIGURED_LOCK_DIR = "/tmp/chd-locks"  # nosec B108
+
+
+def _default_lock_dir(data_dir: str, *, configured: bool) -> str:
     """Where job lock files live when ``CHD_CONCURRENCY_LOCK_DIR`` is unset.
 
-    ``<data dir>/locks``, so every process that shares the ``/config`` mount
-    (the server, ``docker exec compressatorium ...``, a separate CLI container)
-    contends for the same output locks and conversion slots (#306). Nothing is
-    created here: the lock managers make the directory (owner only) on first
-    use, so a process that only plans leaves ``/config`` alone. When the data
-    dir cannot hold it (a read-only or missing ``/config`` on a dev machine)
-    the old per-host default, ``$TMPDIR/chd-locks``, is used, with a warning,
-    because the processes then stop sharing locks with any other container.
+    A pure function of configuration, never of whether a folder exists yet
+    (#306): every process that shares the data dir (the server,
+    ``docker exec compressatorium ...``, a separate CLI container) must pick the
+    same lock dir, or none of their output, input, folder and scheduler locks
+    meet. With a data dir configured it is always ``<data dir>/locks``, created
+    here (parents included, owner only); one that can't be created stops the
+    process with a clear error rather than putting the locks where no other
+    process looks. Only with no data dir configured at all is it the one fixed
+    ``_UNCONFIGURED_LOCK_DIR``.
     """
-    preferred = os.path.join(data_dir, "locks")
-    if os.path.isdir(preferred):
-        usable = os.access(preferred, os.W_OK | os.X_OK)
-    else:
-        usable = os.path.isdir(data_dir) and os.access(data_dir, os.W_OK | os.X_OK)
-    if usable:
-        return preferred
-    # Bandit B108: a fixed path is intended here, so separate processes on one
-    # host share it; lock_manager and concurrency_manager create it 0o700.
-    fallback = os.path.join(os.environ.get("TMPDIR", "/tmp"), "chd-locks")  # nosec B108
-    if os.path.isdir(data_dir):
-        # Only worth saying when there is a data dir to share: on a dev machine
-        # without /config the fallback is the normal case.
-        logging.getLogger("compressatorium.config").warning(
-            "%s is not writable by this user; job locks go to %s, so they are "
-            "not shared with other containers", preferred, fallback,
+    if not configured:
+        return _UNCONFIGURED_LOCK_DIR
+    lock_dir = os.path.join(data_dir, "locks")
+    try:
+        os.makedirs(lock_dir, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot create the job lock directory {lock_dir}: {exc}. Make "
+            "CHD_DATA_DIR writable by this user, or set CHD_CONCURRENCY_LOCK_DIR "
+            "to a directory every process shares.",
+        ) from exc
+    if not os.access(lock_dir, os.W_OK | os.X_OK):
+        raise RuntimeError(
+            f"The job lock directory {lock_dir} is not writable by this user. Make "
+            "CHD_DATA_DIR writable, or set CHD_CONCURRENCY_LOCK_DIR to a directory "
+            "every process shares.",
         )
-    return fallback
+    return lock_dir
 
 
 class Settings(BaseSettings):
@@ -578,7 +585,11 @@ class Settings(BaseSettings):
         if self.temp_dir is None:
             self.temp_dir = str(Path(self.data_dir) / "temp")
         if self.concurrency_lock_dir is None:
-            self.concurrency_lock_dir = _default_lock_dir(self.data_dir)
+            # "Configured" means named by CHD_DATA_DIR or the constructor; the
+            # image sets CHD_DATA_DIR=/config, so a container always is.
+            self.concurrency_lock_dir = _default_lock_dir(
+                self.data_dir, configured="data_dir" in self.model_fields_set,
+            )
         # CHD_DEBUG=true backwards compatibility: map to LOGLEVEL=DEBUG when LOGLEVEL
         # is not explicitly set in the environment and log_level was not explicitly
         # provided to Settings (e.g. via constructor argument in tests).

@@ -9,11 +9,21 @@ boilerplate.
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from services import db as _db
+# Before anything imports config: a test run gets a lock dir of its own. With
+# no data dir configured the default is the one fixed /tmp/chd-locks (#306),
+# so two test runs at once (two worktrees, a reviewer's copy) would otherwise
+# share one conversion slot and queue and wait on each other.
+os.environ.setdefault(
+    "CHD_CONCURRENCY_LOCK_DIR", tempfile.mkdtemp(prefix="compressatorium-test-locks-"),
+)
+
+from services import db as _db  # noqa: E402
 
 
 @pytest.fixture
