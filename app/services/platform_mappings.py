@@ -2,13 +2,15 @@
 
 A mapping belongs to a Library and names a folder by its path relative to the
 Library root, so it is stored as ``(library_id, folder)``. Platform detection
-asks :func:`mapping_for` for the nearest mapped folder above an Image and
-treats the answer as evidence: below the header, above the folder name. A
-mapping that disagrees with a header is a conflict, never a guess.
+walks up from an Image's folder: the first folder with a mapping or a Platform
+name decides, and at the same folder the mapping wins (:func:`mapped_folders`).
+The header still beats both. A mapping that disagrees with a header is a
+conflict, never a guess.
 
 The mappings are kept in memory as an index of absolute folder paths, built
 from the database on first use and dropped on every change. Detection puts the
-mapping it used into its cache key (``platform_detect.detection_key``), so a
+deciding folder (path, source, slug) into its cache key
+(``platform_detect.detection_key``), so a
 changed mapping re-detects exactly the Images under that folder, in the shared
 cache and in a folder Library's own.
 
@@ -20,7 +22,7 @@ from __future__ import annotations
 import os
 import threading
 from datetime import datetime, timezone
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any
 
 from logging_setup import get_logger
@@ -104,20 +106,14 @@ def _loaded() -> dict[str, str]:
     return built
 
 
-def mapping_for(path: str) -> tuple[str, str] | None:
-    """``(folder name, Platform slug)`` of the nearest mapped folder above *path*.
+def mapped_folders() -> dict[str, str]:
+    """Every mapped folder: absolute path -> Platform slug. Do not modify it.
 
-    None when no folder above it is mapped. Blocking on first use (reads the
-    database); every later call is a few dictionary lookups.
+    Platform detection walks an Image's parents against it, together with the
+    Platform folder names (``platform_detect._place``). Blocking on first use
+    (reads the database); every later call returns the cached index.
     """
-    index = _loaded()
-    if not index:
-        return None
-    for parent in PurePath(os.path.normpath(path)).parents:
-        slug = index.get(str(parent))
-        if slug:
-            return parent.name or str(parent), slug
-    return None
+    return _loaded()
 
 
 def _folder_library_for(folder: Path):

@@ -7,20 +7,21 @@ choice and folder Libraries, and (later) the Inbox and the CLI. It never guesses
    through ``ToolPlugin.header_platform`` (chdman: PS1/PS2/PSP/Dreamcast/
    Saturn/Sega CD, dolphin: GameCube/Wii, xiso: Xbox/Xbox 360). The registry
    decides who is asked, so a new console is taught here by its tool.
-2. **The user's mapping.** The nearest folder above the Image that the user
-   set to a Platform ("this folder is PSP",
-   :mod:`services.platform_mappings`, #304).
-3. **Folder name.** The nearest parent folder whose name is a Platform slug a
-   tool declares, or a name RomM, ES-DE or Batocera use for one (``psx``,
-   ``gc``, ``megacd``, ...). Not consulted when a mapping answers.
+2. **The nearest folder that says.** Walking up from the Image's folder, the
+   first folder that either has the user's mapping ("this folder is PSP",
+   :mod:`services.platform_mappings`, #304) or a name that is a Platform slug
+   a tool declares, or a name RomM, ES-DE or Batocera use for one (``psx``,
+   ``gc``, ``megacd``, ...). At the same folder the mapping beats the name. A
+   mapping on ``roms/`` therefore names the Images in ``roms/misc/`` but not
+   those in ``roms/ps2/``.
 
-The header wins. A mapping or folder name is only used when no header can be
-read. A header that disagrees with the mapping or the folder, or two headers
-that disagree with each other, is a conflict and names no Platform. When
-nothing answers the Image is Unsorted.
+The header wins. The folder is only used when no header can be read. A header
+that disagrees with the deciding folder, or two headers that disagree with
+each other, is a conflict and names no Platform. When nothing answers the
+Image is Unsorted.
 
 Results are cached per path and thrown away when the file's size or mtime
-changes, or the mapping that applies to it does.
+changes, or the folder evidence that decides it does.
 """
 from __future__ import annotations
 
@@ -201,8 +202,11 @@ class Detection:
     header: str | None
     folder: str | None
     reason: str
-    # The Platform the user's mapping gave the folder, when one applies.
+    # The Platform the user's mapping gave the deciding folder, when a
+    # mapping is the folder evidence that decides.
     mapped: str | None = None
+    # Every header's answer, when two or more disagree.
+    headers: tuple[str, ...] = ()
 
     @property
     def decided(self) -> bool:
@@ -259,11 +263,31 @@ def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _mapping(disk_path: str) -> tuple[str, str] | None:
-    """``(folder name, slug)`` of the user's mapping that applies, or None."""
+def _mapped_folders() -> dict[str, str]:
+    """The user's mappings: absolute folder path -> Platform slug."""
     from services import platform_mappings
 
-    return platform_mappings.mapping_for(disk_path)
+    return platform_mappings.mapped_folders()
+
+
+def _place(
+    disk_path: str, names: dict[str, str], mapped: dict[str, str],
+) -> tuple[str, str, str, str] | None:
+    """The nearest folder above the Image that names a Platform.
+
+    ``(how, slug, folder path, folder name)``: ``how`` is ``"mapping"`` or
+    ``"folder"``. Walking up from the Image's folder, the first folder with a
+    mapping or a Platform name decides; at the same folder the mapping wins.
+    """
+    for parent in PurePath(os.path.normpath(disk_path)).parents:
+        label = parent.name or str(parent)
+        slug = mapped.get(str(parent)) if mapped else None
+        if slug:
+            return MAPPING, slug, str(parent), label
+        slug = names.get(parent.name.lower()) if parent.name else None
+        if slug:
+            return FOLDER, slug, str(parent), label
+    return None
 
 
 def _decide(path: str, tools: list) -> Detection:
@@ -272,21 +296,25 @@ def _decide(path: str, tools: list) -> Detection:
     sources: list[str] = []
     if not member:
         headers, sources = _header(disk_path, tools)
-    folder, folder_name = _folder(disk_path, _folder_names(tools))
-    mapping = _mapping(disk_path)
-    mapped = mapping[1] if mapping else None
+    names = _folder_names(tools)
+    folder, _folder_name = _folder(disk_path, names)
+    found = _place(disk_path, names, _mapped_folders())
+    place = how = where = mapped = None
+    if found:
+        how, place, _path, label = found
+        if how == MAPPING:
+            mapped = place
+            where = f"you set the {label} folder to {place}"
+        else:
+            where = f"in the {label} folder"
 
     if len(headers) > 1:
         return Detection(
             None, CONFLICT, None, folder,
             f"headers disagree ({', '.join(sorted(sources))})", mapped,
+            tuple(sorted(headers)),
         )
     header = next(iter(headers), None)
-    # The mapping outranks the folder name: the user's word on the folder.
-    if mapping:
-        place, how, where = mapped, MAPPING, f"you set the {mapping[0]} folder to {mapped}"
-    else:
-        place, how, where = folder, FOLDER, f"in the {folder_name} folder"
     if header and place and header != place:
         return Detection(
             None, CONFLICT, header, folder,
@@ -374,7 +402,11 @@ def detection_key(
     deps = () if member else _header_dependencies(disk_path, tool_list)
     if deps is None:
         return None
-    return (st.st_size, st.st_mtime_ns, deps, _mapping(disk_path))
+    # The deciding folder evidence by path and source: where a mapping sits
+    # relative to a Platform-named folder changes the answer, so a name alone
+    # would not do.
+    found = _place(disk_path, _folder_names(tool_list), _mapped_folders())
+    return (st.st_size, st.st_mtime_ns, deps, found[:3] if found else None)
 
 
 def _header_dependencies(path: str, tools: Iterable) -> tuple | None:

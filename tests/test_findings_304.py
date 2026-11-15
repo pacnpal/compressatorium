@@ -96,6 +96,81 @@ async def test_the_nearest_mapped_folder_answers(db: Path) -> None:
     assert platform_detect.detect_platform(image).platform == "psp"
 
 
+# Nearest evidence wins (fix round 1, ruling a): walking up from the Image's
+# folder, the first folder with a mapping or a Platform name decides; at the
+# same folder the mapping wins; the header still beats both.
+
+
+@pytest.mark.asyncio
+async def test_a_nearer_platform_folder_beats_a_mapping_further_up(db: Path) -> None:
+    image = _blank(db / "roms" / "ps2" / "Game.iso")
+    await _register(db / "roms")
+    _map(db / "roms", "psp")
+
+    found = platform_detect.detect_platform(image)
+
+    assert (found.platform, found.how, found.mapped) == ("ps2", "folder", None)
+
+
+@pytest.mark.asyncio
+async def test_a_header_under_a_nearer_platform_folder_is_no_conflict(db: Path) -> None:
+    image = _ps2(db / "roms" / "ps2" / "Ico.iso")
+    await _register(db / "roms")
+    _map(db / "roms", "psp")
+
+    found = platform_detect.detect_platform(image)
+
+    assert (found.platform, found.how) == ("ps2", "header")
+
+
+@pytest.mark.asyncio
+async def test_a_header_is_compared_with_the_deciding_folder(db: Path) -> None:
+    image = _gamecube(db / "roms" / "ps2" / "Melee.iso")
+    await _register(db / "roms")
+    _map(db / "roms", "psp")
+
+    found = platform_detect.detect_platform(image)
+
+    assert found.how == "conflict"
+    assert found.reason == "in the ps2 folder, but the header says ngc"
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_further_up_names_an_image_in_an_unnamed_folder(db: Path) -> None:
+    image = _blank(db / "roms" / "misc" / "Game.iso")
+    await _register(db / "roms")
+    _map(db / "roms", "psp")
+
+    assert platform_detect.detect_platform(image).platform == "psp"
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_below_a_platform_folder_wins(db: Path) -> None:
+    image = _blank(db / "roms" / "ps2" / "mine" / "Game.iso")
+    await _register(db / "roms")
+    _map(db / "roms" / "ps2" / "mine", "psp")
+
+    found = platform_detect.detect_platform(image)
+
+    assert (found.platform, found.how) == ("psp", "mapping")
+
+
+@pytest.mark.asyncio
+async def test_two_mapped_folders_of_the_same_name_key_apart(db: Path) -> None:
+    """The cache key carries the deciding folder's path, not its name."""
+    from services import platform_mappings
+
+    image = _blank(db / "roms" / "x" / "x" / "Game.iso")
+    await _register(db / "roms")
+    _map(db / "roms" / "x", "psp")
+    first = platform_detect.detection_key(image, Path(image).stat())
+    _map(db / "roms" / "x", None)
+    _map(db / "roms" / "x" / "x", "psp")
+    platform_mappings.invalidate()
+
+    assert platform_detect.detection_key(image, Path(image).stat()) != first
+
+
 @pytest.mark.asyncio
 async def test_changing_a_mapping_re_detects_a_cached_image(db: Path) -> None:
     misc = db / "roms" / "misc"
