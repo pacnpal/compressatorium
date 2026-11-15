@@ -593,3 +593,15 @@ def _encode_multipart(fields: dict) -> tuple[bytes, str]:
 
 # Module-level singleton, mirroring the other services.
 romm_client = RommClient()
+
+
+def heartbeat_version(heartbeat: dict) -> str | None:
+    """Read the version out of a RomM heartbeat payload.
+
+    RomM 5.x nests it as ``SYSTEM.VERSION``; older releases put ``VERSION`` at
+    the top level, so fall back to that.
+    """
+    system = heartbeat.get("SYSTEM")
+    if isinstance(system, dict) and system.get("VERSION"):
+        return system["VERSION"]
+    return heartbeat.get("VERSION") or heartbeat.get("version") or None
