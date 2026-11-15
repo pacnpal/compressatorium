@@ -63,6 +63,23 @@ def test_a_conversion_rule_is_not_a_check_rule() -> None:
     assert not is_check_rule(rule)
 
 
+def test_a_check_rule_keeps_no_conversion_filters() -> None:
+    """The check sweep reads none of them, so none is stored to mislead."""
+    from services.rules.rules import CHECK, default_rule, normalize_rule
+
+    rule = normalize_rule({
+        "include_pattern": "USA", "exclude_pattern": "Beta", "min_size_mb": 5,
+        "max_size_mb": 9, "order": "size_desc", "max_per_run": 3,
+        "only_matched": True, "duplicate_action": "overwrite",
+    }, kind=CHECK)
+    defaults = default_rule()
+    for field in (
+        "include_pattern", "exclude_pattern", "min_size_mb", "max_size_mb", "order",
+        "max_per_run", "only_matched", "duplicate_action",
+    ):
+        assert rule[field] == defaults[field], field
+
+
 def test_each_kind_keeps_to_its_own_shape() -> None:
     """A conversion Rule needs a target; a check Rule never has one."""
     from services.rules.rules import CHECK, CONVERT, normalize_rule
@@ -428,6 +445,25 @@ async def test_only_a_mode_that_says_so_stays_out_of_the_ledger(db: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_failed_check_run_is_no_job_you_started(db: Path, sent) -> None:
+    """The scheduler starts a check run: its failure is no "A job you started failed"."""
+    from models import ConversionMode
+    from services import notifications
+    from services.job_manager import JobManager
+
+    manager = JobManager()
+    scan = manager.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    await manager.finish_external_job(scan.id, success=False, error_message="boom")
+    check = manager.create_external_job("Check", ConversionMode.CHECK)
+    await manager.finish_external_job(check.id, success=False, error_message="boom")
+
+    await notifications.on_job_finished(scan)
+    await notifications.on_job_finished(check)
+
+    assert [e.data["job_id"] for e in sent if e.kind == "job_failed"] == [scan.id]
+
+
+@pytest.mark.asyncio
 async def test_a_preview_checks_nothing(tree: Path, ready, verifier) -> None:
     from routes import libraries as routes
     from services import image_checks
@@ -495,6 +531,36 @@ async def test_check_rules_work_on_a_romm_library(db: Path, ready, verifier, sen
     assert (finding["library_id"], finding["image_key"]) == ("romm", "2")
     (event,) = [e for e in sent if e.kind == "check_failed"]
     assert "Bolt.chd" in event.body
+
+
+@pytest.mark.asyncio
+async def test_a_rom_with_no_size_still_costs_its_file_size(db: Path, ready) -> None:
+    """RomM may leave out fs_size_bytes; the budget then reads the file."""
+    from routes import romm as romm_routes
+    from services.romm import settings as romm_settings
+
+    for name in ("Aria", "Bolt"):
+        _sparse(db / "library" / "roms" / "ps2" / f"{name}.chd", 3 * GB)
+    await romm_settings.save({"url": "http://romm:8080", "library_root": str(db / "library")})
+    roms = [
+        {
+            "id": rom_id, "name": name, "full_path": f"roms/ps2/{name}.chd",
+            "fs_name": f"{name}.chd", "platform_slug": "ps2",
+        }
+        for rom_id, name in ((1, "Aria"), (2, "Bolt"))
+    ]
+    await romm_routes.put_romm_rules({
+        "rules": {}, "check_rules": {"7": {"enabled": True, "check_budget_gb": 3}},
+    })
+
+    with patch.object(romm_routes.romm_client, "roms", return_value=roms):
+        result = await romm_routes.preview_auto_convert(
+            romm_routes.SweepRequest(platform_ids=[7]),
+        )
+
+    (summary,) = result["platforms"]
+    assert summary["candidates"] == ["Aria.chd"]
+    assert summary["check_bytes"] == 3 * GB
 
 
 # ----------------------------------------------------------------------

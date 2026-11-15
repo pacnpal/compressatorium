@@ -409,12 +409,18 @@
     return `last run ${when.toLocaleString()} · queued ${state.last_queued ?? 0}`;
   }
 
+  /**
+   * A check Rule's last run: the nightly one or a Run now, whichever is later.
+   * "picked": the count is what the sweep chose, before the checks ran.
+   */
   function lastCheckLabel(platformId) {
     const state = source.lastCheckFor(platformId);
-    if (!state?.last_run_at) return 'never run';
-    const when = new Date(state.last_run_at);
-    if (Number.isNaN(when.getTime())) return 'never run';
-    return `last run ${when.toLocaleString()} · checked ${state.last_checks ?? 0}`;
+    const stamps = [state?.last_run_at, state?.last_manual_run_at]
+      .map((s) => (s ? new Date(s) : null))
+      .filter((d) => d && !Number.isNaN(d.getTime()));
+    if (!stamps.length) return 'never run';
+    const when = new Date(Math.max(...stamps.map((d) => d.getTime())));
+    return `last run ${when.toLocaleString()} · picked ${state.last_checks ?? 0}`;
   }
 </script>
 
@@ -956,7 +962,8 @@
                     goes through its tool's own Verify. One that fails shows up in
                     <strong>Findings</strong> as not Intact, and a later pass clears
                     it. An Image no tool here can check is skipped and costs
-                    nothing. <strong>Run now</strong> checks another budget's worth
+                    nothing. Nightly runs need <strong>Run automatically</strong>
+                    on. <strong>Run now</strong> checks another budget's worth
                     straight away, on top of the nightly run.
                   </p>
 

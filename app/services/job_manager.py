@@ -95,14 +95,23 @@ class ExternalMode:
     """
 
     in_ledger: bool = True
+    # Whether a failed job of this mode is "a job you started" (#293's
+    # ``job_failed`` message). A check Rule's run is started by the scheduler.
+    started_by_hand: bool = True
 
 
 EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
     ConversionMode.METADATA_SCAN: ExternalMode(),
     ConversionMode.DAT_MATCH: ExternalMode(),
-    ConversionMode.CHECK: ExternalMode(in_ledger=False),
+    ConversionMode.CHECK: ExternalMode(in_ledger=False, started_by_hand=False),
 }
 _EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
+
+
+def started_by_hand(mode) -> bool:
+    """Whether a job of *mode* is one a person started (every conversion may be)."""
+    declared = EXTERNAL_JOB_MODES.get(mode)
+    return declared is None or declared.started_by_hand
 
 
 def in_ledger(mode) -> bool:

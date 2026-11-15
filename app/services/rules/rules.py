@@ -492,6 +492,11 @@ def normalize_rule(
     """
     if not isinstance(raw, dict):
         return None
+    if kind == CHECK:
+        # The check sweep reads none of a conversion's selection settings, so
+        # a check Rule takes none (they keep their defaults): what is saved is
+        # what runs, and a stray regex cannot pause it.
+        raw = {k: v for k, v in raw.items() if k not in _CONVERSION_ONLY_FIELDS}
     out = default_rule(defaults=defaults)
     mode = raw.get("mode") if kind == CONVERT else None
     if kind == CONVERT and not (isinstance(mode, str) and mode):
@@ -682,6 +687,14 @@ def normalize_rule(
     if out["only_matched"] and out["only_unmatched"]:
         out["only_matched"] = out["only_unmatched"] = False
     return out
+
+
+# What a check Rule never uses: its order is stalest first, its limit the budget.
+_CONVERSION_ONLY_FIELDS = (
+    "duplicate_action", "check_level", "max_per_run", "order", "min_size_mb",
+    "max_size_mb", "include_pattern", "exclude_pattern", "only_unmatched",
+    "only_matched", "invalid_pattern",
+)
 
 
 def takes_container_only(rule: Mapping[str, Any]) -> bool:

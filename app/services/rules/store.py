@@ -47,15 +47,6 @@ _KIND_KEYS = {
     "check": (CHECK_RULES_KEY, CHECK_STATE_KEY),
 }
 
-
-def rules_key(kind: str) -> str:
-    """The row a Rule *kind* is stored in."""
-    return _KIND_KEYS[kind][0]
-
-
-def state_key(kind: str) -> str:
-    """The row a Rule *kind*'s run state is stored in."""
-    return _KIND_KEYS[kind][1]
 # ``{library id: when its legacy rows were copied}``. Written last, so a crash
 # part way through the copy repeats it from the same unchanged rows.
 MIGRATED_KEY = "rules.migrated"
@@ -67,6 +58,17 @@ MIGRATED_KEY = "rules.migrated"
 CHECK_LEVEL_UPGRADE_KEY = "rules.check_level_upgrade"
 # ``{notice id: when it was dismissed}``.
 NOTICES_KEY = "rules.notices"
+
+
+def rules_key(kind: str) -> str:
+    """The row a Rule *kind* is stored in."""
+    return _KIND_KEYS[kind][0]
+
+
+def state_key(kind: str) -> str:
+    """The row a Rule *kind*'s run state is stored in."""
+    return _KIND_KEYS[kind][1]
+
 
 _SEPARATOR = ":"
 

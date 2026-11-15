@@ -700,8 +700,10 @@ folder Library or on RomM, tick **Check these Images are Intact**, and set how
 much to read a night ("check 50 GB a night"), a time window and weekdays:
 
 - A check Rule runs once a day, inside its window, on its own clock: the
-  conversion Rule on the same Platform keeps its own. **Run now** runs both,
-  so the check spends another budget's worth on top of the nightly run.
+  conversion Rule on the same Platform keeps its own. Nightly runs need **Run
+  automatically** on for the Library. **Run now** runs both, and the check
+  spends another budget's worth on top of the nightly run, which still comes
+  when it is due.
 - The Images never checked go first, then the ones checked longest ago. They
   are taken in that order until the next one does not fit the budget; a smaller
   one further down never jumps ahead. The budget counts an Image's full size,
@@ -709,13 +711,22 @@ much to read a night ("check 50 GB a night"), a time window and weekdays:
   rather than never.
 - Each Image goes through its tool's own **Verify**, the same check as the
   Verify action. A run is one job in the Jobs panel, and Cancel stops it.
+  While an Image is being checked it is held like a file a conversion reads,
+  so a conversion that deletes its Source keeps it until the check is done.
+  An Image that is gone or changed by the time its turn comes (converted
+  away, deleted, replaced) is skipped: no Finding and no check time.
 - An Image that fails becomes a **Not Intact** Finding, and the run sends one
   notification listing every failure. A later check that passes clears the
   Finding. Dismissing it hides it while the file stays the same.
-- A check that could not run (the tool is missing, it timed out, it was
-  cancelled) changes nothing: no Finding, and the Image stays as stale as it
-  was. An Image no installed tool can check on its Platform (a PS2 `.iso`) is
-  skipped and does not count against the budget.
+- A check that could not run (the tool is missing, it timed out, its
+  verifier was killed) gives no Finding and no check time. The attempt only
+  sends the Image behind the others, so one that never reaches a verdict does
+  not take every night's budget. An Image no installed tool can check on its
+  Platform (a PS2 `.iso`) is skipped and does not count against the budget.
+- A Not Intact Finding whose file is gone (its folder still there) is cleared
+  by the next listing or sweep. Pointing RomM at another instance or library
+  drops RomM's check times and Not Intact Findings, since the new instance
+  reuses ROM ids for other games.
 - **Preview** lists what tonight's run would check, and checks nothing.
 
 A check never converts, moves, renames or deletes anything.

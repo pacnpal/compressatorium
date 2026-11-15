@@ -10,8 +10,11 @@
   Once a day the Images never checked go first, then the oldest checks, until
   the next one does not fit the budget (one larger than the whole budget goes
   alone), and each goes through its tool's own Verify as one job in the queue.
-  Run now spends another budget's worth. #306's verdict rules decide: a
-  verifier killed by a signal is no verdict. An Image that fails becomes a **Not
+  Run now spends another budget's worth and leaves the nightly run when it
+  is due. #306's verdict rules decide: a verifier killed by a signal is no
+  verdict, and an Image whose check never reaches one goes behind the others.
+  An Image gone or changed by its turn is skipped, and one being checked is
+  held so a delete-source conversion keeps it. An Image that fails becomes a **Not
   Intact** Finding and the run sends one `check_failed` notification listing
   the failures; a later pass clears the Finding. A check that could not run
   changes nothing, and an Image no tool can check is skipped. Each Image's
