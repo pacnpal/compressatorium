@@ -341,6 +341,19 @@ async def test_the_first_notice_read_sees_pre_296_rules(db: Path) -> None:
 # ----------------------------------------------------------------------
 
 
+@pytest.fixture
+def no_digest_for_createhd(monkeypatch):
+    """Since #301 every delete-source mode Round-trips, so a mode without a
+    digest is simulated: createhd stands in for one."""
+    from services.tools import registry
+
+    real = registry.mode_supports_round_trip
+    monkeypatch.setattr(
+        registry, "mode_supports_round_trip",
+        lambda mode: mode != "createhd" and real(mode),
+    )
+
+
 @pytest.mark.asyncio
 async def test_the_notice_shows_after_an_upgrade_that_switched_rules(db: Path) -> None:
     from routes import rules as rules_routes
@@ -351,22 +364,26 @@ async def test_the_notice_shows_after_an_upgrade_that_switched_rules(db: Path) -
 
 
 @pytest.mark.asyncio
-async def test_the_notice_counts_only_rules_that_now_round_trip(db: Path) -> None:
+async def test_the_notice_counts_only_rules_that_now_round_trip(
+    db: Path, no_digest_for_createhd,
+) -> None:
     """A delete-source Rule on a mode with no digest keeps the container check."""
     from routes import rules as rules_routes
 
     await preferences_store.put("rules", {
-        "romm:7": DELETING, "romm:9": {**DELETING, "mode": "createcd"},
+        "romm:7": DELETING, "romm:9": {**DELETING, "mode": "createhd"},
     })
     got = await rules_routes.get_rule_notices()
     assert got == {"check_level": {"show": True, "switched": 1, "container_check": 1}}
 
 
 @pytest.mark.asyncio
-async def test_no_notice_when_no_switched_rule_can_round_trip(db: Path) -> None:
+async def test_no_notice_when_no_switched_rule_can_round_trip(
+    db: Path, no_digest_for_createhd,
+) -> None:
     from routes import rules as rules_routes
 
-    await preferences_store.put("rules", {"romm:9": {**DELETING, "mode": "createcd"}})
+    await preferences_store.put("rules", {"romm:9": {**DELETING, "mode": "createhd"}})
     got = await rules_routes.get_rule_notices()
     assert got == {"check_level": {"show": False, "switched": 0, "container_check": 1}}
 

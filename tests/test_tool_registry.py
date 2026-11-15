@@ -473,7 +473,9 @@ def _mode_output_exts(tool, mode) -> set[str]:
 # (NKIT2ISO_RECOVERY=none) and still yields a cleanly-verifying RVZ, so deleting
 # the NKit source on that evidence destroys the only file a later
 # NKIT2ISO_RECOVERY=download run could restore bit-exact.
-_DELETE_ON_VERIFY_DECLINED = {"nkit_to_rvz"}
+# createld (#301): a LaserDisc CHD verifies, but its AVI Source has no digest
+# the CHD can be compared with, so the Round-trip could never prove a delete.
+_DELETE_ON_VERIFY_DECLINED = {"nkit_to_rvz", "createld"}
 
 
 def test_delete_on_verify_requires_a_verifiable_output():

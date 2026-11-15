@@ -34,6 +34,13 @@ M3U = (
 )
 
 
+# createcd Round-trips by default since #300 (the check level, #302). These
+# tests are about the Referrer hook, not the check, and their chdman is a stub,
+# so their delete-source jobs take the named opt-out. The Round-trip with a
+# createcd job is covered in tests/test_round_trip_300.py.
+CONTAINER_ONLY = True
+
+
 def _cue(path: Path) -> None:
     """A one-track cue sheet and its .bin, so the delete plan covers both."""
     track = path.with_suffix(".bin")
@@ -86,6 +93,7 @@ async def _convert_disc_1(volume: Path):
         mode=ConversionMode.CREATECD,
         duplicate_action=DuplicateAction.SKIP,
         delete_on_verify=True,
+        container_only=CONTAINER_ONLY,
     ))
     await convert_routes.job_manager._process_job(job.id)
     return job
@@ -130,6 +138,7 @@ async def test_playlist_in_the_parent_folder_follows_a_hidden_disc(volume):
         mode=ConversionMode.CREATECD,
         duplicate_action=DuplicateAction.SKIP,
         delete_on_verify=True,
+        container_only=CONTAINER_ONLY,
     ))
     await convert_routes.job_manager._process_job(job.id)
 
@@ -416,6 +425,7 @@ async def test_cancel_frees_the_slot_while_a_playlist_read_hangs(volume, monkeyp
         mode=ConversionMode.CREATECD,
         duplicate_action=DuplicateAction.SKIP,
         delete_on_verify=True,
+        container_only=CONTAINER_ONLY,
     ))
     task = asyncio.create_task(convert_routes.job_manager._process_job(job.id))
     try:
