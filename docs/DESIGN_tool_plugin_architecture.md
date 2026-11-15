@@ -4109,13 +4109,19 @@ job keeps its Source for a reader, the sweep's terminal listener
 (`note_job_finished`) records it in that Platform's Rule state, the same
 `rules.state` row (`services/rules/store.py`) that holds the converted
 history and the failed holds: `kept_sources[image key] = {source, output,
-job_id, kept_at, attempts}`. Every later sweep, the web app's and
+job_id, kept_at, attempts, rule_identity}`. `rule_identity` is the Rule's
+`_output_identity` when the job was queued; a job that ends after its Rule
+was retargeted records nothing. Every later sweep, the web app's and
 `compressatorium run-rules`'s alike (`_retry_kept_deletes`, before any
 planning, never in a preview), calls `JobManager.retry_kept_delete(source,
 output)` for each, at most `KEPT_DELETES_PER_SWEEP` a sweep:
 
 - It takes the output's lock and every delete path's, exclusively and without
   waiting, as the job did. One still held is `reader`: try again next sweep.
+  Taking a lock stats the path, so each acquisition runs through
+  `subprocess_runner.run_detached_undoable` under `KEPT_DELETE_PROBE_SECONDS`:
+  a volume that does not answer is `kept`, and a lock the abandoned call takes
+  afterwards is let go.
 - Under those locks it establishes again, failing closed on each
   (`_kept_delete_snapshot`, bounded on a detached thread): the output has a
   passing check record naming this Source, with a full `produced_meta`; the
@@ -4126,14 +4132,37 @@ output)` for each, at most `KEPT_DELETES_PER_SWEEP` a sweep:
   `stale`: the entry is dropped and the Source kept for good. So is an
   archive member's Source, which has no `produced_meta`.
 - Then `_delete_source_set` runs, as for the job. A Referrer or path check
-  that keeps the Source is `kept`: try again.
+  that keeps the Source, or a removal the filesystem refuses part way, is
+  `kept`: try again.
 
-A Platform whose conversion Rule no longer deletes its Sources drops its
-entries. `reader` and `kept` count an attempt; at `KEPT_DELETE_MAX_ATTEMPTS`
+It may only proceed while the decision that kept the Source still stands:
+
+- A paused Rule waits: the same `_rule_paused` gate as the Platform pass (an
+  operator's pause holds unless the Platform is named, a validation pause
+  always), and its entries are neither retried nor dropped.
+- A Rule that is gone, no longer deletes its Sources, or asks for another
+  output (`rule_identity` differs) drops its entries without deleting.
+  `set_rules`' retarget path also drops them, under the same lock as
+  `forget_converted_locked`.
+- One entry's exception is that entry's `kept` attempt, logged with its
+  traceback; the sweep goes on to the other entries and Platforms.
+
+`reader` and `kept` count an attempt; at `KEPT_DELETE_MAX_ATTEMPTS`
 (10) the entry is dropped and a `source_kept` Finding (`findings.SOURCE_KEPT`)
 names the Source, cleared once the Source is gone (`findings.clear_gone`).
 The sweep's result counts `kept_sources_deleted` and `kept_sources_given_up`
 when either happened.
+
+Every path probe of the shared delete step (`build_delete_plan`, the path
+resolution, `_check_delete_paths`' per-path checks) runs on a detached thread
+under `_CANONICAL_PROBE_SECONDS` (`_bounded_delete_probe`), for the job and the
+retry alike: a volume that stops answering refuses the delete instead of
+stalling the event loop.
+
+`run_detached_undoable(func, *args, timeout, undo)` (`subprocess_runner`) is
+the shared form of a bounded call that takes something (a lock): when its
+caller gives up, whatever the abandoned call returns later is handed to
+`undo`, so nothing it took stays held.
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`

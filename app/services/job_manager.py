@@ -42,7 +42,7 @@ from services.lock_manager import LockFailed, lock_manager
 from services.mutation_guard import locked_for_mutation
 from services import referrers
 from services.round_trip import round_trip, round_trip_applies
-from services.subprocess_runner import ReadCancelled, run_detached
+from services.subprocess_runner import ReadCancelled, run_detached, run_detached_undoable
 from services.tools import ModeKind, registry
 from services.verification_store import verification_store
 from utils.delete_plan import build_delete_plan, build_delete_snapshot
@@ -93,6 +93,12 @@ class _SourceDelete:
     kept_reason: Optional[str] = None
     cancelled: bool = False  # a cancel seen at the last look, before any unlink
     referrer_records: List[dict] = field(default_factory=list)
+
+
+def _let_go(paths: Optional[Iterable[str]]) -> None:
+    """Release the exclusive locks :meth:`JobManager._take_exclusively` took."""
+    for path in paths or ():
+        lock_manager.release_lock(path)
 
 
 def _source_bytes(path: str) -> Optional[int]:
@@ -1645,13 +1651,27 @@ class JobManager:
 
     def _try_hold_for_delete(self, job_id: str, paths: Iterable[str]) -> bool:
         """Lock every delete path exclusively, or hold none and say so."""
-        held = self._delete_holds.setdefault(job_id, [])
-        for path in paths:
-            if not lock_manager.acquire_lock(path, allow_existing=True):
-                self._release_delete_holds(job_id)
-                return False
-            held.append(path)
+        taken = self._take_exclusively(paths)
+        if taken is None:
+            return False
+        self._delete_holds.setdefault(job_id, []).extend(taken)
         return True
+
+    @staticmethod
+    def _take_exclusively(paths: Iterable[str]) -> Optional[List[str]]:
+        """Every path's exclusive lock, or none: the paths taken, or None when
+        one is held elsewhere. Blocking. On an error, lets go of what it took."""
+        taken: List[str] = []
+        try:
+            for path in paths:
+                if not lock_manager.acquire_lock(path, allow_existing=True):
+                    _let_go(taken)
+                    return None
+                taken.append(path)
+        except BaseException:
+            _let_go(taken)
+            raise
+        return taken
 
     async def _hold_delete_paths_waiting(
         self, job_id: str, cancel_event: asyncio.Event | None = None,
@@ -1751,12 +1771,16 @@ class JobManager:
                         continue
         return None
 
-    def _is_path_in_use_by_other_job(self, job_id: str, path: str) -> bool:
+    def _is_path_in_use_by_other_job(
+        self, job_id: str, path: str, jobs: Optional[Iterable[ConversionJob]] = None,
+    ) -> bool:
+        """Whether an active job other than *job_id* uses *path*. *jobs* is a
+        snapshot of ``self.jobs`` for a caller off the event loop."""
         target = self._normalize_path(path)
         if target is None:
             return False
 
-        for job in self.jobs.values():
+        for job in (self.jobs.values() if jobs is None else jobs):
             if job.id == job_id:
                 continue
             if not _is_active_conversion(job):
@@ -2979,43 +3003,65 @@ class JobManager:
         no other job or process can lock that path. Any other locked path is
         refused, and so is a numbered split part whose logical owner another
         job writes (``mutation_guard``, codex 4577940381).
+
+        Every probe runs on a detached thread under ``_CANONICAL_PROBE_SECONDS``
+        (CodeRabbit 4579539704): a volume that stops answering refuses the
+        delete instead of stalling the event loop.
         """
         own_holds = set(self._delete_holds.get(job_id, ()))
-        for path in paths:
-            if path not in own_holds and await run_in_threadpool(
-                locked_for_mutation, path, ignore=own_holds,
-            ):
-                raise RuntimeError("Delete path is locked by an active conversion")
-            within_volumes = await run_in_threadpool(
-                is_within_configured_volumes, path, treat_archives=False,
+        jobs = list(self.jobs.values())
+        problem = await self._bounded_delete_probe(
+            self._delete_path_problem, job_id, paths, fingerprints, output_real,
+            own_holds, jobs,
+        )
+        if problem:
+            raise RuntimeError(problem)
+
+    @staticmethod
+    async def _bounded_delete_probe(func: Callable, *args: object) -> object:
+        """A delete-step probe on a detached thread, bounded; a timeout raises
+        RuntimeError, so the delete is refused and nothing is removed."""
+        try:
+            return await asyncio.wait_for(
+                run_detached(func, *args), timeout=_CANONICAL_PROBE_SECONDS,
             )
-            if not within_volumes:
-                raise RuntimeError(
-                    "Delete path outside configured volumes; refusing to delete"
-                )
-            if self._is_path_in_use_by_other_job(job_id, path):
-                raise RuntimeError("Delete path is still in use by another job")
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                "The Source's volume did not answer; refusing to delete"
+            ) from None
+
+    def _delete_path_problem(
+        self, job_id: str, paths: list[str], fingerprints: dict, output_real: str,
+        own_holds: Set[str], jobs: List[ConversionJob],
+    ) -> Optional[str]:
+        """Why the first unsafe path of *paths* can't be deleted, or None.
+        Blocking: :meth:`_check_delete_paths` runs it off the event loop."""
+        for path in paths:
+            if path not in own_holds and locked_for_mutation(path, ignore=own_holds):
+                return "Delete path is locked by an active conversion"
+            if not is_within_configured_volumes(path, treat_archives=False):
+                return "Delete path outside configured volumes; refusing to delete"
+            if self._is_path_in_use_by_other_job(job_id, path, jobs):
+                return "Delete path is still in use by another job"
             if os.path.islink(path):
-                raise RuntimeError("Delete path is a symlink; refusing to delete")
+                return "Delete path is a symlink; refusing to delete"
             try:
                 st = os.stat(path, follow_symlinks=False)
-            except FileNotFoundError as exc:
-                raise RuntimeError(
-                    "Delete path no longer exists; refusing to delete"
-                ) from exc
+            except FileNotFoundError:
+                return "Delete path no longer exists; refusing to delete"
             if not os.path.isfile(path):
-                raise RuntimeError("Delete path is not a file; refusing to delete")
+                return "Delete path is not a file; refusing to delete"
             if os.path.realpath(path) == output_real:
-                raise RuntimeError("Delete path matches output path; refusing to delete")
+                return "Delete path matches output path; refusing to delete"
             fp = fingerprints.get(path)
             if not fp:
-                raise RuntimeError("Delete fingerprint missing; refusing to delete")
+                return "Delete fingerprint missing; refusing to delete"
             mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
             if (
                 int(fp.get("size", -1)) != int(st.st_size)
                 or int(fp.get("mtime_ns", -1)) != mtime_ns
             ):
-                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+                return "Delete path fingerprint mismatch; refusing to delete"
             snapshot_inode = int(fp.get("inode", 0) or 0)
             snapshot_device = int(fp.get("device", 0) or 0)
             current_inode = int(getattr(st, "st_ino", 0) or 0)
@@ -3027,7 +3073,26 @@ class JobManager:
                 snapshot_device > 0 and current_device > 0
                 and snapshot_device != current_device
             ):
-                raise RuntimeError("Delete path fingerprint mismatch; refusing to delete")
+                return "Delete path fingerprint mismatch; refusing to delete"
+        return None
+
+    @staticmethod
+    def _delete_order(
+        file_path: str, output_path: str, expected_paths: List[str],
+    ) -> Tuple[str, str, List[str]]:
+        """``(output realpath, the Source to name to Referrers, removal
+        order)``: the Source's own file last. Blocking (it resolves paths)."""
+        output_real = os.path.realpath(output_path)
+        source_for_delete = (
+            strip_archive_path(file_path) if "::" in file_path else file_path
+        )
+        source_real = os.path.realpath(source_for_delete)
+        delete_order = [p for p in expected_paths if os.path.realpath(p) != source_real]
+        if source_real in set(expected_paths):
+            delete_order.append(source_real)
+        else:
+            delete_order = list(expected_paths)
+        return output_real, source_for_delete, delete_order
 
     async def _delete_source_set(
         self,
@@ -3056,7 +3121,7 @@ class JobManager:
         ``cancelled``.
         """
         expected_set = set(expected_paths)
-        current_plan = await run_in_threadpool(build_delete_plan, file_path)
+        current_plan = await self._bounded_delete_probe(build_delete_plan, file_path)
         if (
             current_plan.get("errors")
             or current_plan.get("unsafe_paths")
@@ -3066,16 +3131,9 @@ class JobManager:
         if set(current_plan.get("delete_paths", [])) != expected_set:
             raise RuntimeError("Delete plan changed; refusing to delete")
 
-        output_real = os.path.realpath(output_path)
-        source_for_delete = (
-            strip_archive_path(file_path) if "::" in file_path else file_path
+        output_real, source_for_delete, delete_order = await self._bounded_delete_probe(
+            self._delete_order, file_path, output_path, list(expected_paths),
         )
-        source_real = os.path.realpath(source_for_delete)
-        delete_order = [p for p in expected_paths if os.path.realpath(p) != source_real]
-        if source_real in expected_set:
-            delete_order.append(source_real)
-        else:
-            delete_order = list(expected_paths)
 
         await self._check_delete_paths(owner_id, expected_paths, fingerprints, output_real)
 
@@ -3185,12 +3243,18 @@ class JobManager:
         output_held = False
         deleted: List[str] = []
         try:
+            # Bounded, like every probe here: taking a lock stats the path, and
+            # a lock taken after this gave up is let go (codex 4579529051).
             try:
-                output_held = await run_in_threadpool(
+                output_held = await run_detached_undoable(
                     lock_manager.acquire_lock, output_path, allow_existing=True,
+                    timeout=KEPT_DELETE_PROBE_SECONDS,
+                    undo=lambda held: _let_go([output_path] if held else []),
                 )
             except LockFailed as exc:
                 return KeptDeleteRetry(KEPT_KEPT, str(exc))
+            except asyncio.TimeoutError:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
             if not output_held:
                 return KeptDeleteRetry(KEPT_READER, "the output is in use by another job")
             record = await verification_store.get_record(output_path)
@@ -3216,11 +3280,17 @@ class JobManager:
                 return KeptDeleteRetry(KEPT_STALE, snapshot)
             paths = list(snapshot["paths"])
             try:
-                held = await run_in_threadpool(self._try_hold_for_delete, owner_id, paths)
+                taken = await run_detached_undoable(
+                    self._take_exclusively, paths,
+                    timeout=KEPT_DELETE_PROBE_SECONDS, undo=_let_go,
+                )
             except LockFailed as exc:
                 return KeptDeleteRetry(KEPT_KEPT, str(exc))
-            if not held:
+            except asyncio.TimeoutError:
+                return KeptDeleteRetry(KEPT_KEPT, KEPT_DELETE_UNANSWERED)
+            if taken is None:
                 return KeptDeleteRetry(KEPT_READER, SOURCE_KEPT_FOR_READERS)
+            self._delete_holds[owner_id] = list(taken)
             # Once more under the holds: nothing can change the set now.
             again = await self._kept_delete_snapshot_bounded(
                 source_path, output_path, meta,
@@ -3240,7 +3310,12 @@ class JobManager:
                     cancelled=lambda: False,
                     deleted=deleted,
                 )
-            except RuntimeError as exc:
+            except (RuntimeError, OSError) as exc:
+                # A refusal, or a removal the filesystem refused part way
+                # (codex 4579529048): counted, with whatever was removed.
+                logger.warning(
+                    "Retrying the delete of %s kept it", source_path, exc_info=True,
+                )
                 return KeptDeleteRetry(KEPT_KEPT, str(exc), tuple(deleted))
             if removal.kept_reason:
                 return KeptDeleteRetry(KEPT_KEPT, removal.kept_reason)

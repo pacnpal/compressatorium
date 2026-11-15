@@ -44,8 +44,10 @@ from services import findings, image_checks, notifications, subprocess_runner
 from services.image_sets import image_fingerprint
 from services.job_manager import (
     KEPT_DELETED,
+    KEPT_KEPT,
     KEPT_STALE,
     SOURCE_KEPT_FOR_READERS,
+    KeptDeleteRetry,
     OutputClaimedError,
     QueueBackpressureError,
     job_manager,
@@ -374,6 +376,8 @@ async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict
         # computes no stale platform at all. Recoverable beats silent.
         if stale:
             await forget_converted_locked(library, stale)
+            # A pending delete was decided under the former output too.
+            await _forget_kept_sources_locked(library, stale)
         await store.write(store.RULES_KEY, library, rules)
         return rules
 
@@ -766,7 +770,9 @@ async def note_job_finished(job) -> None:
         done and getattr(job, "delete_on_verify", False)
         and getattr(job, "warning", None) == SOURCE_KEPT_FOR_READERS
     ):
-        await _remember_kept_source(library, platform_id, rom_id, job, generation)
+        await _remember_kept_source(
+            library, platform_id, rom_id, job, generation, identity,
+        )
     if (
         FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED
         and await _same_rule(library, platform_id, identity)
@@ -811,27 +817,61 @@ async def note_job_finished(job) -> None:
 
 async def _remember_kept_source(
     library: Library, platform_id: str, image_key: str, job, generation: int,
+    identity: tuple | None,
 ) -> None:
     """Note a Source the delete step kept for a reader, for a later sweep to
-    retry (#329). Any Library: it needs no converted history."""
+    retry (#329). Any Library: it needs no converted history.
+
+    Bound to the Rule that queued the job (*identity*, its
+    ``_output_identity``): a retry deletes only while the Rule still asks for
+    the same output, and a job that ends after its Rule was retargeted
+    records nothing (codex 4579529043).
+    """
+    if identity is None:
+        return  # no Rule to bind it to: never retried
     pending = {
         "source": getattr(job, "file_path", None),
         "output": getattr(job, "output_path", None),
         "job_id": getattr(job, "id", None),
         "kept_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "attempts": 0,
+        "rule_identity": list(identity),
     }
     if not pending["source"] or not pending["output"]:
         return
     async with _sweep_lock:
         if _generations.get(library.id, 0) != generation:
             return  # removed meanwhile
+        if not await _same_rule(library, platform_id, identity):
+            return  # retargeted meanwhile: the old decision no longer stands
         state = await get_state(library)
         entry = dict(state.get(platform_id) or {})
         kept = dict(entry.get(KEPT_SOURCES) or {})
         kept[str(image_key)] = pending
         entry[KEPT_SOURCES] = kept
         state[platform_id] = entry
+        await store.write(store.STATE_KEY, library, state)
+
+
+def _rule_paused(rule: dict, wanted: set[str] | None) -> bool:
+    """The `enabled` gate (see `_sweep_locked`): an operator's pause holds
+    unless the Platform is named, and a validation pause holds always."""
+    return not rule["enabled"] and (wanted is None or _validation_paused(rule))
+
+
+async def _forget_kept_sources_locked(library: Library, platform_ids: list[str]) -> None:
+    """Drop the kept Sources of *platform_ids*, whose Rules now ask for another
+    output (``set_rules``' retarget). Called with ``_sweep_lock`` held."""
+    state = await get_state(library)
+    changed = False
+    for pid in platform_ids:
+        entry = state.get(str(pid))
+        if isinstance(entry, dict) and entry.get(KEPT_SOURCES):
+            entry = dict(entry)
+            entry.pop(KEPT_SOURCES, None)
+            state[str(pid)] = entry
+            changed = True
+    if changed:
         await store.write(store.STATE_KEY, library, state)
 
 
@@ -857,20 +897,39 @@ async def _retry_kept_deletes(
         kept = entry.get(KEPT_SOURCES) if isinstance(entry, dict) else None
         if not kept or (wanted is not None and platform_id not in wanted):
             continue
-        rule = rules.get(platform_id) or {}
+        rule = rules.get(platform_id)
+        if rule and _rule_paused(rule, wanted):
+            # The same pause the Platform pass honours: its entries wait,
+            # neither retried nor dropped (codex 4579529040).
+            continue
         remaining = dict(kept)
         for image_key in sorted(kept):
             if stopping() or budget <= 0:
                 break
             pending = kept[image_key]
-            if not rule.get("delete_on_verify") or not isinstance(pending, dict):
+            if (
+                not rule or not rule.get("delete_on_verify")
+                or not isinstance(pending, dict)
+                or pending.get("rule_identity") != list(_output_identity(rule))
+            ):
+                # The Rule is gone, keeps its Sources now, or asks for another
+                # output: the decision that kept this one no longer stands.
                 remaining.pop(image_key)
                 continue
             budget -= 1
-            outcome = await job_manager.retry_kept_delete(
-                source_path=str(pending.get("source") or ""),
-                output_path=str(pending.get("output") or ""),
-            )
+            try:
+                outcome = await job_manager.retry_kept_delete(
+                    source_path=str(pending.get("source") or ""),
+                    output_path=str(pending.get("output") or ""),
+                )
+            except Exception as exc:
+                # One entry's failure (an unlink refused, an I/O error) is that
+                # entry's attempt, never the sweep's (codex 4579529048).
+                logger.warning(
+                    "rules: retrying the delete of %s failed",
+                    pending.get("source"), exc_info=True,
+                )
+                outcome = KeptDeleteRetry(KEPT_KEPT, str(exc) or type(exc).__name__)
             if outcome.status == KEPT_DELETED:
                 remaining.pop(image_key)
                 result["kept_sources_deleted"] = result.get("kept_sources_deleted", 0) + 1
@@ -1364,7 +1423,7 @@ async def _sweep_locked(
         # window becomes no window -- so running it would do more than the
         # saved rule says, unattended, possibly with delete-on-verify. Those
         # stay paused until the operator fixes what is wrong.
-        if not rule["enabled"] and (wanted is None or _validation_paused(rule)):
+        if _rule_paused(rule, wanted):
             if wanted is not None:
                 result["errors"].append(
                     {"platform_id": platform_ref, "error": "rule_invalid"},

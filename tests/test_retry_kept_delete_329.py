@@ -84,7 +84,7 @@ def test_a_kept_source_is_deleted_on_the_next_sweep(env, dolphin, capsys, kept):
     assert not kept["iso"].exists()
     assert kept["output"].read_bytes() == b"converted output"
     assert dolphin["runs"] == [(str(kept["iso"]), str(kept["output"]))]  # not re-converted
-    assert "kept_sources" not in _rule_state(env)["gc"] or not _rule_state(env)["gc"]["kept_sources"]
+    assert not _rule_state(env)["gc"].get("kept_sources")
 
 
 def test_an_output_changed_since_its_check_keeps_the_source(env, dolphin, capsys, kept):
@@ -159,3 +159,184 @@ def test_the_findings_view_names_a_kept_source_and_offers_no_set_platform():
            / "FindingsView.svelte").read_text(encoding="utf-8")
     assert "source_kept: 'Source kept'" in src
     assert "row.kind !== 'source_kept'" in src
+
+
+# --------------------------------------------------------------------------- #
+# The decision that kept it must still be in force (Codex review of #343)
+# --------------------------------------------------------------------------- #
+
+KEPT_RULE = {
+    "mode": "dolphin_rvz", "enabled": True, "delete_on_verify": True,
+    "check_level": "container_only",
+}
+
+
+def _rule(env, **changes):
+    return {"gc": {**KEPT_RULE, "output_dir": str(env["vol"] / "out"), **changes}}
+
+
+def test_a_disabled_rule_keeps_the_source_and_the_entry(env, dolphin, capsys, kept):
+    _store_rules(env, {"shelf": _rule(env, enabled=False)})
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert _rule_state(env)["gc"]["kept_sources"]["Game.iso"]["attempts"] == 0
+
+
+def test_a_validation_paused_rule_keeps_it_even_when_named(env, dolphin, capsys, kept):
+    from services.rules import sweep as rules_sweep
+
+    _store_rules(env, {"shelf": _rule(env, invalid_pattern=True)})
+
+    result = asyncio.run(rules_sweep.sweep(env["shelf"], platform_ids=["gc"]))
+
+    assert {"platform_id": "gc", "error": "rule_invalid"} in result["errors"]
+    assert kept["iso"].exists()
+    assert _rule_state(env)["gc"]["kept_sources"]["Game.iso"]["attempts"] == 0
+
+
+def test_a_retargeted_rule_drops_the_entry_without_deleting(env, dolphin, capsys, kept):
+    elsewhere = env["vol"] / "elsewhere"
+    elsewhere.mkdir()
+    _store_rules(env, {"shelf": _rule(env, output_dir=str(elsewhere))})
+
+    assert not _rule_state(env)["gc"].get("kept_sources")
+    dolphin["fail"] = True  # so the retargeted Rule's own conversion keeps it too
+    _cli(capsys, "run-rules", "--json")
+
+    assert kept["iso"].exists()
+
+
+def test_an_entry_from_a_former_rule_identity_is_dropped_at_retry(
+    env, dolphin, capsys, kept,
+):
+    from services.rules import sweep as rules_sweep
+
+    async def tamper():
+        state = await rules_sweep.get_state(env["shelf"])
+        state["gc"]["kept_sources"]["Game.iso"]["rule_identity"] = ["dolphin_wia"]
+        await rules_sweep.store.write(rules_sweep.store.STATE_KEY, env["shelf"], state)
+
+    asyncio.run(tamper())
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert kept["iso"].exists()
+    assert not _rule_state(env)["gc"].get("kept_sources")
+
+
+def test_a_failed_unlink_counts_an_attempt_and_the_sweep_goes_on(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    import os
+
+    iso = kept["iso"]
+    real_remove = os.remove
+
+    def refuse(path, *args, **kwargs):
+        if os.path.realpath(path) == os.path.realpath(iso):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", refuse)
+    other = _iso(env, "attic")
+    _store_rules(env, {
+        "shelf": _rule(env), "attic": {"gc": {"mode": "dolphin_rvz", "enabled": True}},
+    })
+
+    code, lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 0, lines
+    assert iso.exists()
+    assert other.with_suffix(".rvz").exists(), "the other Library still swept"
+    pending = _rule_state(env)["gc"]["kept_sources"]["Game.iso"]
+    assert pending["attempts"] == 1
+    assert "Permission denied" in pending["last_reason"]
+
+
+def test_a_lock_that_answers_late_is_bounded_and_released(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    import time
+
+    from services import job_manager as job_manager_module
+    from services.job_manager import KEPT_KEPT, job_manager
+    from services.lock_manager import lock_manager
+
+    real_acquire = lock_manager.acquire_lock
+    output = str(kept["output"])
+
+    def slow(path, *args, **kwargs):
+        if path == output:
+            time.sleep(1.0)
+        return real_acquire(path, *args, **kwargs)
+
+    monkeypatch.setattr(lock_manager, "acquire_lock", slow)
+    monkeypatch.setattr(job_manager_module, "KEPT_DELETE_PROBE_SECONDS", 0.2)
+
+    started = time.monotonic()
+    outcome = asyncio.run(job_manager.retry_kept_delete(
+        source_path=str(kept["iso"]), output_path=output,
+    ))
+
+    assert time.monotonic() - started < 0.9
+    assert outcome.status == KEPT_KEPT
+    time.sleep(1.5)
+    assert lock_manager.is_locked(output) is False, "the late lock was let go"
+    assert kept["iso"].exists()
+
+
+def test_a_stalled_path_resolve_in_the_delete_step_is_off_the_loop_and_bounded(
+    env, dolphin, capsys, kept, monkeypatch,
+):
+    """The shared delete step resolves and stats its paths on a detached
+    thread under a bound (CodeRabbit 4579539704), for the job and the retry
+    alike: a volume that stops answering neither stalls the event loop nor
+    hangs the step, and nothing is removed."""
+    import os
+    import time
+
+    from services import job_manager as job_manager_module
+    from services.job_manager import job_manager
+
+    monkeypatch.setattr(job_manager_module, "_CANONICAL_PROBE_SECONDS", 0.3)
+    output = str(kept["output"])
+    real_realpath = os.path.realpath
+
+    def stalled(path, *args, **kwargs):
+        if str(path) == output:
+            time.sleep(1.0)
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", stalled)
+
+    async def run():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0.05)
+
+        task = asyncio.create_task(ticker())
+        started = time.monotonic()
+        with pytest.raises(RuntimeError):
+            await job_manager._delete_source_set(
+                "stall-test", file_path=str(kept["iso"]), output_path=output,
+                expected_paths=[str(kept["iso"])], fingerprints={},
+                check_label="Intact", cancel_event=asyncio.Event(),
+                cancelled=lambda: False, deleted=[],
+            )
+        elapsed = time.monotonic() - started
+        task.cancel()
+        return ticks, elapsed
+
+    ticks, elapsed = asyncio.run(run())
+
+    assert elapsed < 0.9
+    assert ticks >= 3, "the event loop kept running"
+    assert kept["iso"].exists()

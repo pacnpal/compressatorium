@@ -742,6 +742,49 @@ async def run_detached(
             _note_abandoned("detached read")
 
 
+async def run_detached_undoable(
+    func: Callable,
+    *args: object,
+    timeout: float,
+    undo: Callable[[object], object],
+    **kwargs: object,
+) -> object:
+    """:func:`run_detached` under *timeout*, for a call that takes something
+    its caller must give back (a lock).
+
+    A caller that stops waiting (the timeout, a cancel) abandons the call on
+    its thread, as ``run_detached`` does; whatever the call returns after that
+    is handed to *undo*, so nothing an abandoned call took stays held. *undo*
+    runs on that thread when the answer comes after the caller gave up, or on
+    the caller's side when the answer came but was lost to the timeout. Raises
+    :class:`asyncio.TimeoutError` on the timeout; an exception from *func*
+    propagates (it took nothing, or let go of it itself).
+    """
+    guard = threading.Lock()
+    state: dict = {"abandoned": False, "delivered": False, "result": None}
+
+    def call() -> object:
+        result = func(*args, **kwargs)
+        with guard:
+            if not state["abandoned"]:
+                state["delivered"] = True
+                state["result"] = result
+                return result
+        undo(result)  # nobody is waiting for it any more
+        return result
+
+    try:
+        return await asyncio.wait_for(run_detached(call), timeout)
+    except BaseException:
+        with guard:
+            state["abandoned"] = True
+            delivered, result = state["delivered"], state["result"]
+        if delivered:
+            # Answered, but the answer never reached the caller.
+            undo(result)
+        raise
+
+
 def conversion_stall_bound() -> int:
     """Seconds a conversion may go without progress before it is given up on.
 
