@@ -15,51 +15,32 @@ class VerificationStore {
   progress = new SvelteMap();
   batchRun = $state(null);
   _batchAbort = null;
-  // Snapshot of statuses at the moment loadVerified() started, used
-  // to detect paths added mid-flight (a `verifyOne` resolved, a
-  // `complete` SSE arrived, etc.) so the response replay doesn't
-  // erase them. Each loadVerified call overwrites the slot.
-  _loadBaseline = null;
+  // One log per loadVerified() still in flight: every live write made while
+  // it waits (a `verifyOne` resolved, a job event, a check run's per-Image
+  // change), path -> check, or null for a removal. Replayed over that load's
+  // snapshot, which is older than all of them, so an addition, a changed
+  // check and a removal all survive it alike (#298, codex 4578598280).
+  // A Set, so overlapping loads each keep their own log.
+  _liveLogs = new Set();
 
   async loadVerified() {
-    // Snapshot the set we're about to overwrite. Anything in `statuses`
-    // that's NOT in this baseline at completion time was added during
-    // the in-flight request and must survive the replay.
-    const baseline = new Set(this.statuses);
-    // Same for check values: a `complete` event during the request can add a
-    // check or upgrade one (intact -> round_tripped) for a path we already had.
-    const checksBaseline = new Map(this.checks);
-    this._loadBaseline = baseline;
+    // A plain Map: a transient log nothing renders.
+    const live = new Map();
+    this._liveLogs.add(live);
     try {
       const data = await api.getVerifiedCHDs();
-      // Preserve mid-flight additions: paths added to `statuses` after
-      // we snapshotted `baseline` but before the response landed.
-      // Plain object map for the membership check, same reason as
-      // jobs.refresh's remoteIds (svelte/prefer-svelte-reactivity
-      // flags raw Set, and SvelteSet here would be pointless
-      // overhead for a transient local).
-      const addedSince = Object.create(null);
-      for (const p of this.statuses) {
-        if (!baseline.has(p)) addedSince[p] = true;
-      }
-      const checksSince = Object.create(null);
-      for (const [p, check] of this.checks) {
-        if (checksBaseline.get(p) !== check) checksSince[p] = check;
-      }
       this.statuses.clear();
       for (const path of data?.verified ?? []) this.statuses.add(path);
       this.checks.clear();
       for (const [path, check] of Object.entries(data?.checks ?? {})) {
         this.checks.set(path, check);
       }
-      for (const path of Object.keys(addedSince)) this.statuses.add(path);
-      for (const [path, check] of Object.entries(checksSince)) {
-        this.checks.set(path, check);
-      }
+      // What happened while the request was out is newer than its answer.
+      for (const [path, check] of live) this._write(path, check);
     } catch (_e) {
       // non-fatal, leave whatever we had
     } finally {
-      if (this._loadBaseline === baseline) this._loadBaseline = null;
+      this._liveLogs.delete(live);
     }
   }
 
@@ -80,15 +61,26 @@ class VerificationStore {
   /** Record that `path` passed `check`. A manual Verify is 'intact'. */
   markChecked(path, check = 'intact') {
     if (!path) return;
-    this.statuses.add(path);
-    this.checks.set(path, check);
+    this._write(path, check);
+    for (const log of this._liveLogs) log.set(path, check);
   }
 
   /** Drop everything known about `path` (deleted, or no longer checked). */
   forget(path) {
     if (!path) return;
-    this.statuses.delete(path);
-    this.checks.delete(path);
+    this._write(path, null);
+    for (const log of this._liveLogs) log.set(path, null);
+  }
+
+  /** Set `path`'s check, or clear it with null. Every write goes through here. */
+  _write(path, check) {
+    if (check) {
+      this.statuses.add(path);
+      this.checks.set(path, check);
+    } else {
+      this.statuses.delete(path);
+      this.checks.delete(path);
+    }
   }
 
   /**

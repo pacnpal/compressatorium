@@ -193,6 +193,36 @@ process.stdout.write(JSON.stringify({
     }
 
 
+def test_a_failure_during_a_reload_survives_the_older_snapshot(tmp_path) -> None:
+    """Codex 4578598280: a reload (page load, SSE reconnect) is in flight when
+    a check run says X is no longer Intact. The older snapshot still lists X;
+    replaying it must not bring the badge back. Additions and changes made
+    meanwhile survive the same way."""
+    data = _run_verification(tmp_path, """
+const store = new VerificationStore();
+store.markChecked('/v/x.chd');
+store.markChecked('/v/y.chd');
+const load = store.loadVerified();
+store.applyJobEvent({ type: 'progress', job: { id: 'check1' },
+  verification_changes: { '/v/x.chd': null } });
+store.markChecked('/v/z.rvz', 'round_tripped');
+store.markChecked('/v/y.chd', 'round_tripped');
+// The server's answer predates all three.
+__resolve({
+  verified: ['/v/x.chd', '/v/y.chd', '/v/w.chd'],
+  checks: { '/v/x.chd': 'intact', '/v/y.chd': 'intact', '/v/w.chd': 'intact' },
+});
+await load;
+process.stdout.write(JSON.stringify({
+  x: store.checkFor('/v/x.chd'),
+  y: store.checkFor('/v/y.chd'),
+  z: store.checkFor('/v/z.rvz'),
+  w: store.checkFor('/v/w.chd'),
+}));
+""")
+    assert data == {"x": None, "y": "round_tripped", "z": "round_tripped", "w": "intact"}
+
+
 def test_the_jobs_stream_hands_its_job_events_to_the_verification_store() -> None:
     src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "stores"
            / "jobs.svelte.js").read_text(encoding="utf-8")
