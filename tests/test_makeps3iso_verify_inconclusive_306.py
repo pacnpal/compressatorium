@@ -39,3 +39,47 @@ def test_strict_read_iso_file_raises_on_io_errors(tmp_path):
     assert read_iso_file(missing, ["PS3_GAME", "PARAM.SFO"]) is None
     with pytest.raises(OSError):
         read_iso_file(missing, ["PS3_GAME", "PARAM.SFO"], strict=True)
+
+
+def test_split_set_discovery_on_a_hung_mount_never_blocks_the_loop(tmp_path, monkeypatch):
+    """codex 4577688831: finding a split set stats the disk; on a hung mount
+    that must happen off the event loop, so the verify's bound still fires and
+    other tasks keep running."""
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def hung_discovery(cls, path):
+        release.wait(5)  # a mount that stopped answering
+        return []
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    monkeypatch.setattr(MakePs3IsoService, "split_set_of", classmethod(hung_discovery))
+    iso = tmp_path / "Game.iso"
+    iso.write_bytes(b"\0" * 4096)
+
+    async def scenario():
+        ticks = 0
+
+        async def ticker():
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        task = asyncio.create_task(ticker())
+        start = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(MakePs3IsoService().verify(str(iso)), timeout=0.3)
+        elapsed = time.monotonic() - start
+        task.cancel()
+        return elapsed, ticks
+
+    try:
+        elapsed, ticks = asyncio.run(scenario())
+    finally:
+        release.set()
+
+    assert elapsed < 2, elapsed  # the bound fired; the loop was never blocked
+    assert ticks > 5  # another task kept running meanwhile
