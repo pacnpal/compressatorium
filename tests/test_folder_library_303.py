@@ -1708,6 +1708,93 @@ async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
     assert [i.key for i in library.images("saturn")] == ["Game/game.cue"]
 
 
+async def _fail_melee_while_probing(tree: Path, monkeypatch, during) -> dict:
+    """Queue Melee.iso under RVZ, then fail it; *during* runs inside the hold's
+    fingerprint probe, before the hold is written. Returns the ngc state."""
+    from models import JobStatus
+    from routes import libraries as routes
+    from services.image_sets import image_fingerprint
+    from services.rules import sweep as rules_sweep
+
+    jobs: dict[str, str] = {}
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch(paths, mode, **kwargs):
+        made = await real_batch(paths, mode, **kwargs)
+        jobs.update({Path(j.file_path).name: j.id for j in made})
+        return made
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch)
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "ngc": {"mode": "dolphin_rvz", "enabled": True},
+    }})
+    await routes.run_library(lib["id"])
+
+    real_probe = rules_sweep._probe
+
+    async def probe(fn, *args, **kwargs):
+        if fn is image_fingerprint:
+            await during(lib)
+        return await real_probe(fn, *args, **kwargs)
+
+    monkeypatch.setattr(rules_sweep, "_probe", probe)
+    await rules_sweep.note_job_finished(SimpleNamespace(
+        id=jobs["Melee.iso"], status=JobStatus.FAILED,
+        file_path=str((tree / "gc" / "Melee.iso").resolve()),
+    ))
+    return (await routes.get_library_rules(lib["id"]))["state"].get("ngc") or {}
+
+
+@pytest.mark.asyncio
+async def test_a_rule_retargeted_during_the_hold_probe_gets_no_hold(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    """CodeRabbit 4576895547: the Rule identity is checked again under the lock.
+
+    The RVZ job fails; while its hold's fingerprint is being read the Rule is
+    retargeted to WIA. The RVZ failure must not be held under the WIA Rule.
+    """
+    from routes import libraries as routes
+
+    async def retarget(lib):
+        await routes.put_library_rules(lib["id"], {"rules": {
+            "ngc": {"mode": "dolphin_wia", "enabled": True},
+        }})
+
+    state = await _fail_melee_while_probing(tree, monkeypatch, retarget)
+    assert not state.get("failed"), state
+
+
+@pytest.mark.asyncio
+async def test_a_source_repaired_before_the_hold_probe_gets_no_hold(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    """CodeRabbit 4576895550: the hold is bound to the Source the job had.
+
+    The job fails; the operator replaces the Source before the hold's
+    fingerprint is read. The repaired file never failed, so it is not held.
+    """
+    melee = tree / "gc" / "Melee.iso"
+
+    async def repair(_lib):
+        melee.write_bytes(melee.read_bytes() + b"\0" * 4096)
+
+    state = await _fail_melee_while_probing(tree, monkeypatch, repair)
+    assert not state.get("failed"), state
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_source_is_still_held(tree: Path, ready, queue, monkeypatch) -> None:
+    """The control: nothing changes during the probe, so the failure is held."""
+    async def nothing(_lib):
+        return None
+
+    state = await _fail_melee_while_probing(tree, monkeypatch, nothing)
+    assert list(state.get("failed") or {}) == ["gc/Melee.iso"], state
+
+
 @pytest.mark.asyncio
 async def test_a_slow_walk_is_reused_from_when_it_finished(db: Path, monkeypatch) -> None:
     """CodeRabbit 4576895543: the reuse window starts when the walk is ready.
