@@ -221,6 +221,12 @@ class RommRepin(Base):
     # backfills from the source ROM; "" means RomM did not say.
     platform_id = Column(Integer, nullable=True)
     platform_slug = Column(String, nullable=True)
+    # The generation of the plan that wrote this row: a process-wide counter
+    # taken when the plan *started*, not when its write landed. `record()`
+    # refuses to supersede a pending row with a higher one, so a slow or
+    # abandoned plan cannot overwrite the snapshot of a run that began after
+    # it. NULL on rows written before it existed, which reads as the oldest.
+    plan_generation = Column(Integer, nullable=True)
     # "pending" -> "done" | "abandoned"
     state = Column(String, nullable=False, default="pending")
     detail = Column(String, nullable=True)

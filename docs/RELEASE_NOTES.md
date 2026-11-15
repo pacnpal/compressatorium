@@ -324,6 +324,12 @@
 
 ### Fixed
 
+- **RomM metadata is kept when two runs aim at one file, and Clear completed
+  keeps jobs that finish while it runs** (#337). A slow or aborted RomM
+  snapshot no longer overwrites the metadata a newer run saved for the same
+  output, so that conversion is re-identified in RomM without a manual
+  re-match. **Clear completed** removes only the jobs the server cleared: a
+  job that finishes while the request is in flight stays in the list.
 - **Folder Platforms are never guessed past a read error** (#338). If the
   saved folder Platforms can't be read, folder Libraries list nothing and
   their Rules wait until they can, instead of taking a disc's header as its

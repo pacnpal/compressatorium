@@ -152,7 +152,9 @@ _CLEARED_BEFORE_ADOPT = """
 const store = new JobsStore();
 store._applyJob({ id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'completed' });
 store._applyJob({ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'processing' });
-api.deleteCompletedJobs = async () => ({ history_generation: 'g', history_seq: 5 });
+api.deleteCompletedJobs = async () => ({
+  deleted: ['j1'], history_generation: 'g', history_seq: 5,
+});
 await store.clearCompleted();
 store.adopt([
   { id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'queued' },
@@ -164,3 +166,73 @@ process.stdout.write(JSON.stringify(Object.fromEntries(store.jobs.map((j) => [j.
 
 def test_a_cleared_job_is_not_restored_by_a_late_auto_response(tmp_path):
     assert _evaluate(tmp_path, _CLEARED_BEFORE_ADOPT) == {"j2": "processing"}
+
+
+# #337 (CodeRabbit on #320): Clear completed removed every job that was
+# terminal *locally* when its response arrived. A job that finished over SSE
+# while the request was in flight was still running when the backend cleared,
+# so the backend kept it, yet the store tombstoned and dropped it, and a late
+# Auto response could no longer adopt it. The response names what the backend
+# deleted (`deleted`); only those ids are removed and tombstoned.
+_COMPLETED_WHILE_CLEARING = """
+const store = new JobsStore();
+store._applyJob({ id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'completed' });
+store._applyJob({ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'processing' });
+api.deleteCompletedJobs = async () => {
+  // The backend skipped j2 (still running), then SSE completes it in transit.
+  store._applyJob({ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'completed' });
+  return { deleted: ['j1'], history_generation: 'g', history_seq: 5 };
+};
+await store.clearCompleted();
+const afterClear = Object.fromEntries(store.jobs.map((j) => [j.id, j.status]));
+store.adopt([{ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'queued' }]);
+process.stdout.write(JSON.stringify({
+  afterClear,
+  afterAdopt: Object.fromEntries(store.jobs.map((j) => [j.id, j.status])),
+  tombstoned: Object.keys(store._evictedIds).sort(),
+}));
+"""
+
+
+def test_clear_completed_removes_only_what_the_backend_deleted(tmp_path):
+    data = _evaluate(tmp_path, _COMPLETED_WHILE_CLEARING)
+
+    assert data == {
+        "afterClear": {"j2": "completed"},
+        "afterAdopt": {"j2": "completed"},
+        "tombstoned": ["j1"],
+    }, data
+
+
+# One ordering rule for every way a job reaches the store: an id the backend
+# has deleted (cleared or evicted) never comes back, whichever path delivers a
+# copy built before the deletion. A late SSE frame and a late REST snapshot are
+# held to the same tombstone `adopt()` already honours.
+_LATE_COPY_AFTER_CLEAR = """
+const store = new JobsStore();
+store._applyJob({ id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'processing' });
+store._applyJob({ id: 'j2', file_path: '/v/b.iso', mode: 'createdvd', status: 'processing' });
+// j1 finished on the backend and the clear deleted it before its SSE frame
+// reached this tab.
+api.deleteCompletedJobs = async () => ({
+  deleted: ['j1'], history_generation: 'g', history_seq: 5,
+});
+await store.clearCompleted();
+const late = { id: 'j1', file_path: '/v/a.iso', mode: 'createdvd', status: 'completed' };
+const path = %(path)r;
+if (path === 'sse') {
+  store._applyJob(late);
+} else if (path === 'refresh') {
+  api.getJobs = async () => [late, store._byId.get('j2')];   // built before the clear
+  api.getJobHistoryOverflow = async () => ({});
+  await store.refresh();
+} else {
+  store.adopt([late]);
+}
+process.stdout.write(JSON.stringify(store.jobs.map((j) => j.id)));
+"""
+
+
+@pytest.mark.parametrize("path", ["sse", "refresh", "adopt"])
+def test_a_job_the_clear_deleted_never_comes_back(tmp_path, path):
+    assert _evaluate(tmp_path, _LATE_COPY_AFTER_CLEAR % {"path": path}) == ["j2"]

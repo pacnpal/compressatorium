@@ -762,24 +762,42 @@ class ConversionStore {
 
   /**
    * Record RomM metadata for each (mode -> sources) group. Results merge into
-   * one `{ recorded, pending, recorded_paths, recorded_ids }`, the shape one
-   * `planRommRepin` call returns. `misdirected` re-records sources the queue
-   * wrote somewhere other than planned.
+   * one `{ recorded, pending, recorded_paths, recorded_ids, generation }`, the
+   * shape one `planRommRepin` call returns. `misdirected` re-records sources
+   * the queue wrote somewhere other than planned.
+   *
+   * Ordering never rests on timing. The server orders snapshots by the
+   * generation a plan was given when it started, and will not let an older
+   * one supersede a newer run's row. Every group after the first carries the
+   * generation the first was given, so the whole run stays as old as it is,
+   * however late a group is sent. And once `signal` aborts no further group
+   * is sent: the request already in flight finishes on its own, and the
+   * caller retires what it recorded.
    */
-  async #planRepin(groups, { duplicateAction, rommPlatformId, outputDir }, misdirected, merged) {
+  async #planRepin(
+    groups, { duplicateAction, rommPlatformId, outputDir }, misdirected, merged, signal = null,
+  ) {
     // `merged` belongs to the caller and is filled one group at a time, so the
     // rows earlier groups saved are still there when a later group's request
     // throws: they are real records on the server, and the caller has to
     // reconcile or retire them like any other.
     for (const [mode, paths] of Object.entries(groups)) {
+      if (signal?.aborted) return;
       if (!paths.length) continue;
       const args = [paths, mode, outputDir, duplicateAction, rommPlatformId];
-      if (misdirected) {
-        args.push(Object.fromEntries(paths.map((p) => [p, misdirected[p]])));
-      }
+      const outputPaths = misdirected
+        ? Object.fromEntries(paths.map((p) => [p, misdirected[p]]))
+        : null;
+      // Trailing arguments only when set, so a run's first request is the
+      // plain five-argument call.
+      if (outputPaths || merged.generation != null) args.push(outputPaths);
+      if (merged.generation != null) args.push(merged.generation);
       const planned = await api.planRommRepin(...args);
       merged.recorded += planned?.recorded ?? 0;
       if (typeof planned?.pending === 'number') merged.pending = planned.pending;
+      if (merged.generation == null && typeof planned?.generation === 'number') {
+        merged.generation = planned.generation;
+      }
       Object.assign(merged.recorded_paths, planned?.recorded_paths ?? {});
       Object.assign(merged.recorded_ids, planned?.recorded_ids ?? {});
     }
@@ -841,7 +859,7 @@ class ConversionStore {
           // the caller aborts. The snapshot keeps going on its own; whatever
           // it records is retired when it returns, apart from this run's
           // state, so a late answer never touches a newer run.
-          const planning = this.#planRepin(groups, target, null, planned);
+          const planning = this.#planRepin(groups, target, null, planned, opts.signal);
           const outcome = await untilAborted(planning, opts.signal);
           if (outcome?.aborted) {
             retireLateSnapshot(planning, planned);
@@ -1080,9 +1098,13 @@ class ConversionStore {
   }
 }
 
-/** An empty accumulator in the shape one `planRommRepin` call returns. */
+/**
+ * An empty accumulator in the shape one `planRommRepin` call returns. A new
+ * one per snapshot: a fresh `generation`, so a redirected source's re-record
+ * is planned as of now rather than as of the run's start.
+ */
 function emptyRepinPlan() {
-  return { recorded: 0, pending: null, recorded_paths: {}, recorded_ids: {} };
+  return { recorded: 0, pending: null, recorded_paths: {}, recorded_ids: {}, generation: null };
 }
 
 /** Sources grouped by their target mode: `{ mode: [path, ...] }`. */
