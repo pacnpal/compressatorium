@@ -479,12 +479,13 @@ timeout so a stalled one doesn't block the queue.
 `.m3u` that names it is rewritten to the new file, so disc swapping keeps
 working. The app looks in the disc's own folder and every folder above it up to
 the volume root, so a `psx/Game.m3u` pointing into a hidden `.discs/` folder is
-covered. Only the entries for replaced files change; other lines, line endings
-and encoding are left as they were, and the first rewrite keeps a copy of the
-original as `<name>.m3u.bak`. The delete confirmation lists each playlist edit.
-If a playlist can't be written (read-only, say), or it has a line that names
-the source in a form the app can't follow (a `path|label` entry, an absolute
-path as the emulator sees it), the source is kept, the output stays beside it,
+covered. Only the entries for replaced files change (a RetroArch `path|label`
+entry keeps its label); other lines, line endings and encoding are left as
+they were, and the first rewrite keeps a copy of the original as
+`<name>.m3u.bak`. The delete confirmation lists each playlist edit. If a
+playlist can't be written (read-only, say), or it has a line that names the
+source in a form the app can't follow (an absolute path as the emulator sees
+it, say), the source is kept, the output stays beside it,
 and the job ends as `converted, source kept: couldn't update <playlist>
 (<reason>)`. The Ledger row records each playlist updated, or the one that
 kept the source and why.

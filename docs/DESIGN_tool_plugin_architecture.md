@@ -2479,29 +2479,34 @@ free one if it was taken since, never picking a different name on its own.
   no recursive walk, so the cost is one `scandir` per level. This covers a
   playlist beside the discs and the Batocera / ES-DE layout (`psx/Game.m3u`
   naming `.discs/Game (Disc 1).cue`). `detect` looks at the same folders.
-- *What it rewrites.* Only entries that resolve exactly to a replaced file,
-  matched by `(st_dev, st_ino)` so any spelling that reaches the file counts
-  (relative, absolute, `./`, other case on a case-insensitive volume).
-  Everything else is kept byte for byte: `#` lines, other entries, blank
-  lines, line endings and a UTF-8 BOM. A playlist that isn't valid UTF-8
-  (Windows-1252, Latin-1) is never rewritten: it is read as cp1252 only to
-  look for a replaced file's name, and if any entry could name one the Source
-  is kept ("playlist isn't UTF-8 and may name this disc"); otherwise it is
-  left alone.
+- *What it rewrites.* Only entries whose path (as the reader below reads it)
+  resolves exactly to a replaced file, matched by `(st_dev, st_ino)` so any
+  spelling that reaches the file counts (relative, absolute, `./`, other case
+  on a case-insensitive volume). A `path|label` entry and a quoted path are
+  rewritten with their label and quotes kept. Everything else is kept byte
+  for byte: `#` lines, other entries, blank lines, line endings and a UTF-8
+  BOM.
+- *Not valid UTF-8* (Windows-1252, Latin-1). The file is read as cp1252 only
+  to look for a replaced file's name; if any entry could name one the Source
+  is kept ("playlist isn't UTF-8 and may name this disc"). Otherwise it goes
+  through the normal rewrite, and `surrogateescape` decoding keeps its other
+  bytes as they were.
 - *Fail safe.* An entry that does not resolve but whose file name matches a
-  replaced file's name (after dropping a `|label` suffix and quotes, splitting
-  on `/` or `\`, ignoring case, both sides in Unicode NFC) is not guessed at: `plan` raises
-  `ReferrerError` naming the playlist and line (`line 2 names game.cue but
-  doesn't point at it`), so the Source is kept. That catches RetroArch
-  `path|label` entries, absolute paths in the emulator's own path space, mixed
-  separators, quoted names and case differences on case-sensitive volumes.
-  An unresolved entry for some other file does not block anything. A playlist
-  that isn't 8-bit text (a UTF-16 BOM, or NUL bytes) is never rewritten. It is
-  decoded as UTF-16 for checking only: the BOM names the byte order, or without
-  one the NULs of ASCII text do (odd offsets little-endian, even offsets
-  big-endian). If the decoded text contains a replaced file's name, or the
-  file can't be decoded reliably, the Source is kept; otherwise it is left
-  alone.
+  replaced file's name (splitting on `/` or `\`, ignoring case, both sides in
+  Unicode NFC; the names are also compared trimmed of ASCII whitespace) is not
+  guessed at: `plan` raises `ReferrerError` naming the playlist and line
+  (`line 2 names game.cue but doesn't point at it`), so the Source is kept.
+  That catches absolute paths in the emulator's own path space, mixed
+  separators and case differences on case-sensitive volumes. An unresolved
+  entry for some other file does not block anything.
+- *UTF-16 and NUL bytes.* Such a playlist is never rewritten. It is UTF-16
+  only with a BOM, or when NULs fill most of the odd (little-endian) or even
+  (big-endian) byte positions, and then it is decoded strictly. Any other
+  file with a NUL (a C-string terminator in an 8-bit file, say), or UTF-16
+  that doesn't decode, is undecodable and is read every way that could name
+  the Source (UTF-16 with replacements, and NUL-stripped as UTF-8 and as
+  cp1252). If any reading contains a replaced file's name the Source is kept;
+  otherwise the playlist is left alone.
 - *Entry style.* The new entry is the entry's own folder part plus the path
   from the replaced file's resolved folder to the resolved output, so both
   sides use the same path form (a symlinked folder does not turn `Game.cue`
@@ -2509,20 +2514,27 @@ free one if it was taken since, never picking a different name on its own.
   backslash entry stays backslashed. When the output is in another folder the
   normalised form is tried first, then the literal one (`link/../out/G.chd`
   still resolves through a symlinked `link`).
-- *One reader.* `_read_line(raw_line, first)` is the only parser: it drops a
-  UTF-8 BOM on the file's first line, trims, skips blank and `#` lines, and
-  reads a slash-free entry with backslashes as backslash-separated.
-  Planning, rewriting, `entries(data)` and every read-back check call it.
+- *One reader.* `_read_line(raw_line, first)` is the only parser, modelled on
+  C byte readers (RetroArch): lines split on CR/LF bytes only; a UTF-8 BOM
+  dropped on the file's first line; only ASCII space, tab, CR and LF trimmed
+  (NBSP, U+3000, U+2028 and the like stay part of the name); blank and `#`
+  lines skipped; a `path|label` split at the first `|`; quotes around the
+  path dropped; a slash-free entry with backslashes read as
+  backslash-separated. It returns the path plus the text before and after it,
+  so a rewrite keeps the label, quotes and spacing. Planning, rewriting,
+  `entries(data)` and every read-back check call it.
 - *Choosing what to write* (`_choose_entry`). Each candidate is tried as
   written in the entry's style, then with a `./` prefix, then (for a
   backslash entry) in forward slashes. A form holding a control character (CR,
   LF, NUL, VT, any Unicode `Cc`) is skipped. Each remaining form is rendered
-  into its full line (BOM prefix, leading and trailing whitespace) and read
-  back with `_read_line`, and a RetroArch label is split off the way readers
-  do (`_strip_label`, shared with `_named_file`, so a `|` in the path can't be
-  written; the Source is kept). The first whose entry, read from the playlist's
-  folder, reaches the output (same `(st_dev, st_ino)`, or the same resolved
-  path while the delete confirmation plans before the output exists) is used.
+  into its full line (BOM prefix, the entry's own text before and after the
+  path: whitespace, quotes, label) and read back with `_read_line`, so a `|`
+  or a quote in the path reads back wrong and can't be written (the Source is
+  kept). The first whose path, read from the playlist's folder, reaches the
+  output is used: same `(st_dev, st_ino)`. Only the delete confirmation, which
+  plans before the output exists, falls back to comparing resolved paths;
+  `apply` requires the output to exist, so a late, abandoned apply can't point
+  a playlist at an output removed meanwhile.
   So `./` protects a leading `#`, whitespace, a U+FEFF that a reader would
   take for a BOM, and a literal backslash in a Linux file name. If no form
   works (a trailing space, a line break), `plan` raises and the Source is

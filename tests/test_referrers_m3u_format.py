@@ -34,6 +34,10 @@ def _disc(folder: Path, name: str) -> Path:
 
 
 async def _replace(folder: Path, old: str, new: str):
+    """The hook as the job calls it: the output already exists."""
+    output = folder / new
+    if not output.exists():
+        output.write_bytes(b"output")
     return await referrers.update_before_source_removal(
         str(folder / old), {str(folder / old): str(folder / new)},
     )
@@ -72,8 +76,10 @@ async def test_a_non_utf8_playlist_naming_the_source_is_not_rewritten(tmp_path):
 @pytest.mark.asyncio
 async def test_absolute_and_backslash_entries_keep_their_style(tmp_path):
     _disc(tmp_path, "A.cue")
+    _disc(tmp_path, "A.chd")
     (tmp_path / "sub").mkdir()
     _disc(tmp_path / "sub", "B.cue")
+    _disc(tmp_path / "sub", "B.chd")
     playlist = tmp_path / "Game.m3u"
     playlist.write_text(f"{tmp_path / 'A.cue'}\nsub\\B.cue\n")
 
@@ -130,12 +136,36 @@ async def test_playlists_above_the_volume_root_are_not_read(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("entry", "rewritten"), [
+    ("Game.cue|Disc 1", "Game.chd|Disc 1"),            # RetroArch path|label
+    ("Game.cue | Disc 1", "Game.chd | Disc 1"),
+    ('"Game.cue"', '"Game.chd"'),                      # quoted
+    ("'Game.cue'|Disc 1", "'Game.chd'|Disc 1"),
+])
+async def test_a_labelled_or_quoted_entry_is_rewritten_keeping_its_form(
+    tmp_path, entry, rewritten,
+):
+    """One reader: the label and quotes are read the way a reader reads them,
+    so such an entry resolves to the Source and keeps its label and quotes."""
+    _disc(tmp_path, "Game.cue")
+    out = _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text(f"#EXTM3U\n{entry}\n")
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok, outcome.reason
+    assert playlist.read_text() == f"#EXTM3U\n{rewritten}\n"
+    [read] = _reader_entries(playlist.read_bytes())
+    assert os.path.samefile(tmp_path / read, out)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("entry", [
-    "Game.cue|Disc 1",                 # RetroArch path|label
     "/userdata/roms/psx/Game.cue",     # the emulator's own path space
     "sub\\dir/Game.cue",               # mixed separators
-    '"Game.cue"',                      # quoted
     "OTHER/GAME.CUE",                  # different case, different folder
+    "/userdata/roms/psx/Game.cue|Disc 1",
 ])
 async def test_an_entry_that_names_the_source_but_does_not_resolve_keeps_it(
     tmp_path, entry,
@@ -199,6 +229,7 @@ async def test_symlinked_folder_gives_a_plain_entry(tmp_path):
     real.mkdir()
     (tmp_path / "link").symlink_to(real)
     _disc(real, "Game.cue")
+    _disc(real, "Game.chd")
     playlist = real / "Game.m3u"
     playlist.write_text("Game.cue\n./Game.cue\n")
 
@@ -231,6 +262,7 @@ async def test_backup_is_written_once(tmp_path):
 def test_an_edit_made_after_planning_is_kept(tmp_path):
     """apply re-reads the playlist under its lock and rewrites what is there now."""
     _disc(tmp_path, "A.cue")
+    _disc(tmp_path, "A.chd")
     playlist = tmp_path / "Game.m3u"
     playlist.write_text("A.cue\n")
     m3u = M3uReferrer()
@@ -249,7 +281,7 @@ async def test_no_playlist_means_nothing_to_do(tmp_path):
     outcome = await _replace(tmp_path, "A.cue", "A.chd")
 
     assert outcome.ok and outcome.updated == []
-    assert list(tmp_path.iterdir()) == [tmp_path / "A.cue"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["A.chd", "A.cue"]
 
 
 def test_a_second_registration_of_an_id_is_refused():
@@ -330,6 +362,7 @@ async def test_a_playlist_beside_a_track_in_a_subfolder_is_updated(tmp_path):
     _disc(tmp_path, "Game.cue")
     (tmp_path / "tracks").mkdir()
     _disc(tmp_path / "tracks", "Game.bin")
+    _disc(tmp_path, "Game.chd")
     playlist = tmp_path / "tracks" / "Game.m3u"
     playlist.write_text("Game.bin\n")
 
@@ -423,22 +456,56 @@ AWKWARD_NAMES = [
 
 def _reader_entries(data: bytes) -> list[str]:
     """What an emulator reads from a playlist, written out independently of
-    the code under test: a leading UTF-8 BOM dropped, lines split, each
-    trimmed, blank and # lines skipped, a RetroArch ``path|label`` reduced to
-    its path, and an entry with backslashes but no slash read as
-    backslash-separated."""
-    text = data.decode("utf-8")
-    text = text.removeprefix("﻿")
+    the code under test and modelled on a C byte reader (RetroArch): a leading
+    UTF-8 BOM dropped, lines split on CR/LF bytes only, each trimmed of ASCII
+    space, tab, CR and LF only (never Unicode spaces), blank and # lines
+    skipped, a ``path|label`` reduced to its path, surrounding quotes removed,
+    and an entry with backslashes but no slash read as backslash-separated."""
+    data = data.removeprefix(b"\xef\xbb\xbf")
     entries = []
-    for line in text.splitlines():
-        entry = line.strip()
+    for raw in data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n"):
+        entry = raw.decode("utf-8").strip(" \t\r\n")
         if not entry or entry.startswith("#"):
             continue
-        entry = entry.split("|", 1)[0].strip()
+        entry = entry.split("|", 1)[0].strip(" \t\r\n")
+        if len(entry) >= 2 and entry[0] == entry[-1] and entry[0] in "\"'":
+            entry = entry[1:-1]
         if "\\" in entry and "/" not in entry:
             entry = entry.replace("\\", "/")
         entries.append(entry)
     return entries
+
+
+AWKWARD_SOURCE_NAMES = [
+    "　Game.cue", "\xa0Game.cue", " Game.cue", " Game.cue",
+    "\x1cGame.cue", "Game.cue\xa0", "Game　.cue",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", AWKWARD_SOURCE_NAMES, ids=repr)
+async def test_awkward_source_names_round_trip_or_keep_the_source(tmp_path, source):
+    """A Source whose name starts or ends with a Unicode space a byte reader
+    keeps: the entry is either rewritten to read back to the output, or the
+    Source is kept. Never left pointing at a deleted Source."""
+    try:
+        _disc(tmp_path, source)
+    except OSError:
+        pytest.skip("the filesystem refuses this name")
+    out = _disc(tmp_path, "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    original = f"{source}\nOther.cue\n".encode()
+    playlist.write_bytes(original)
+    assert os.path.samefile(tmp_path / _reader_entries(original)[0], tmp_path / source)
+
+    outcome = await _replace(tmp_path, source, "Game.chd")
+
+    if not outcome.ok:
+        assert playlist.read_bytes() == original
+        return
+    entries = _reader_entries(playlist.read_bytes())
+    assert os.path.samefile(tmp_path / entries[0], out)
+    assert entries[1] == "Other.cue"
 
 
 @pytest.mark.asyncio
@@ -720,6 +787,53 @@ async def test_a_group_that_cannot_be_kept_keeps_the_source(tmp_path, monkeypatc
     monkeypatch.undo()
     assert not outcome.ok
     assert "group" in outcome.reason
+    assert playlist.read_text() == "A.cue\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", [
+    b"Game (Disc 1).cue\nGame (Disc 2).cue\x00",      # C-string terminator, even length
+    b"Game (Disc 1).cue\nGame (Disc 2).cue\n\x00",    # odd length
+    b"Game (Disc 1).cue\nX\x00\n",
+], ids=["even", "odd", "mid"])
+async def test_a_stray_nul_in_an_8_bit_playlist_keeps_the_source(tmp_path, data):
+    """One NUL doesn't make a file UTF-16. A file with a NUL that isn't
+    UTF-16 is undecodable; if any decoding names the Source it is kept."""
+    _disc(tmp_path, "Game (Disc 1).cue")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game (Disc 1).cue", "Game (Disc 1).chd")
+
+    assert not outcome.ok
+    assert playlist.read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_a_stray_nul_in_an_unrelated_playlist_does_not_block(tmp_path):
+    _disc(tmp_path, "Game.cue")
+    other = tmp_path / "Other.m3u"
+    other.write_bytes(b"Other.cue\n\x00")
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok
+    assert other.read_bytes() == b"Other.cue\n\x00"
+
+
+def test_apply_refuses_when_the_output_is_gone(tmp_path):
+    """A late (abandoned) apply must not point a playlist at a removed output."""
+    _disc(tmp_path, "A.cue")
+    out = _disc(tmp_path, "A.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("A.cue\n")
+    m3u = M3uReferrer()
+    [change] = m3u.plan({str(tmp_path / "A.cue"): str(out)})
+
+    out.unlink()
+
+    with pytest.raises(referrers.ReferrerError):
+        m3u.apply(change)
     assert playlist.read_text() == "A.cue\n"
 
 

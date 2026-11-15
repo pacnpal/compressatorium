@@ -447,7 +447,7 @@ def test_a_symlinked_folder_that_resolves_to_the_source_folder_is_allowed(vol: P
 
 @pytest.mark.parametrize(
     "awkward",
-    ["a\\b (Disc 1).cue", "#a (Disc 1).cue", "\ufeffa (Disc 1).cue",
+    ["a\\b (Disc 1).cue", "#a (Disc 1).cue", "\ufeffa (Disc 1).cue", "\u3000a (Disc 1).cue", "\u00a0a (Disc 1).cue",
      " a (Disc 1).cue", "a (Disc 1) .cue", "\u00e9 (Disc 1).cue"],
 )
 def test_awkward_names_read_back_to_the_selected_files(vol: Path, awkward):
