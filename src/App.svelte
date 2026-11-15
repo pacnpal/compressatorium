@@ -9,6 +9,7 @@
   import WorkArea from '$lib/components/views/WorkArea.svelte';
   import RommView from '$lib/components/views/RommView.svelte';
   import RulesView from '$lib/components/views/RulesView.svelte';
+  import FindingsView from '$lib/components/views/FindingsView.svelte';
   import DATView from '$lib/components/views/DATView.svelte';
   import HelpView from '$lib/components/views/HelpView.svelte';
   import EmptyState from '$lib/components/ui/EmptyState.svelte';
@@ -30,6 +31,7 @@
   import FileInfoModal from '$lib/components/modals/FileInfoModal.svelte';
   import CancelAllJobsModal from '$lib/components/modals/CancelAllJobsModal.svelte';
   import ClearDoneModal from '$lib/components/modals/ClearDoneModal.svelte';
+  import MappingModal from '$lib/components/modals/MappingModal.svelte';
 
   let mainEl;
 
@@ -170,6 +172,7 @@
 <FileInfoModal />
 <CancelAllJobsModal />
 <ClearDoneModal />
+<MappingModal />
 
 <a class="skip-link" href="#main-content" onclick={handleSkip}>Skip to main content</a>
 
@@ -184,6 +187,7 @@
         {:else if ui.activeView === 'workspace'}<WorkArea />
         {:else if ui.activeView === 'romm'}<RommView />
         {:else if ui.activeView === 'rules'}<RulesView />
+        {:else if ui.activeView === 'findings'}<FindingsView />
         {:else if ui.activeView === 'dat'}<DATView />
         {:else if ui.activeView === 'help'}<HelpView />
         {/if}

@@ -268,6 +268,22 @@ class FileBrowserStore {
     }
   }
 
+  /**
+   * Show the folder at *path* from another view (the Findings view's "Open
+   * folder"). Picks the Volume that holds it first: a Volume list loaded
+   * later would otherwise select the first Volume over this path.
+   */
+  async openFolder(path) {
+    if (!path) return;
+    if (this.volumes.length === 0) await this.loadVolumes();
+    const holder = this.volumes
+      .filter((v) => v?.path && (path === v.path || path.startsWith(`${v.path.replace(/\/+$/, '')}/`)))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    if (holder) this.selectedVolume = holder;
+    ui.navigate('workspace');
+    await this.navigate(path);
+  }
+
   async selectVolume(volume) {
     if (!volume) return;
     this.exitSearch();

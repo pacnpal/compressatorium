@@ -1,0 +1,87 @@
+// Findings (#304): what needs a person's decision, and the folder Platform
+// mappings that settle most of them.
+//
+// The backend keeps one open Finding per kind and Image (Platform conflict,
+// Unsorted), written by each folder Library's walk. Dismissing one hides it
+// until its cause changes. Nothing here moves or deletes a file: each Finding
+// links to the action that fixes it (open its folder, set the folder's
+// Platform).
+
+import { api } from '$lib/api/endpoints.js';
+
+class FindingsStore {
+  list = $state([]);
+  // How many Findings a dismiss is hiding right now.
+  dismissed = $state(0);
+  showDismissed = $state(false);
+  loading = $state(false);
+  error = $state(null);
+  checking = $state(false);
+  platforms = $state([]);
+  // The folder the mapping dialog is open on: `{ path, name }`, or null.
+  mappingTarget = $state(null);
+
+  async load() {
+    this.loading = true;
+    this.error = null;
+    try {
+      const data = await api.listFindings(this.showDismissed);
+      this.list = Array.isArray(data?.findings) ? data.findings : [];
+      this.dismissed = data?.dismissed ?? 0;
+    } catch (e) {
+      this.error = e?.message ?? 'Failed to list the Findings';
+    } finally {
+      this.loading = false;
+    }
+    return this.list;
+  }
+
+  /** Hide one Finding until its cause changes. */
+  async dismiss(id) {
+    await api.dismissFinding(id);
+    if (this.showDismissed) {
+      this.list = this.list.map((f) => (f.id === id ? { ...f, dismissed: true } : f));
+    } else {
+      this.list = this.list.filter((f) => f.id !== id);
+    }
+    this.dismissed += 1;
+  }
+
+  /** Walk every folder Library now, then list what it found. */
+  async check() {
+    this.checking = true;
+    try {
+      const result = await api.checkFindings();
+      await this.load();
+      return result;
+    } finally {
+      this.checking = false;
+    }
+  }
+
+  async loadPlatforms() {
+    if (this.platforms.length) return this.platforms;
+    const data = await api.listPlatforms();
+    this.platforms = Array.isArray(data) ? data : [];
+    return this.platforms;
+  }
+
+  /** Open the mapping dialog on a folder. */
+  openMapping(path, name = null) {
+    if (!path) return;
+    this.mappingTarget = { path, name: name ?? path.split(/[/\\]/).filter(Boolean).pop() ?? path };
+  }
+
+  closeMapping() {
+    this.mappingTarget = null;
+  }
+
+  /** Set (or with `platform` null, clear) a folder's Platform, then refresh the list. */
+  async setMapping(path, platform) {
+    const saved = await api.setPlatformMapping(path, platform);
+    await this.load();
+    return saved;
+  }
+}
+
+export const findings = new FindingsStore();

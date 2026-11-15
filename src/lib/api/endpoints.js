@@ -695,6 +695,38 @@ export const api = {
   runLibrary: (id, body = {}) =>
     jsonPost(`${API_BASE}/libraries/${encodeURIComponent(id)}/run`, body, {}, 'Run failed'),
 
+  // ── Findings and folder Platform mappings (#304) ───────────────────────
+  listFindings: (includeDismissed = false) =>
+    fetchJson(
+      `${API_BASE}/findings${includeDismissed ? '?include_dismissed=true' : ''}`,
+      undefined,
+      'Failed to list the Findings',
+    ),
+
+  dismissFinding: (id) =>
+    jsonPost(
+      `${API_BASE}/findings/${encodeURIComponent(id)}/dismiss`, {}, {},
+      'Failed to dismiss the Finding',
+    ),
+
+  checkFindings: () =>
+    jsonPost(`${API_BASE}/findings/check`, {}, {}, 'Failed to check the Libraries'),
+
+  listPlatforms: () =>
+    fetchJson(`${API_BASE}/platforms`, undefined, 'Failed to list the Platforms'),
+
+  // `platform: null` clears the folder's mapping.
+  setPlatformMapping: (path, platform) =>
+    fetchJson(
+      `${API_BASE}/platform-mappings`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, platform }),
+      },
+      'Failed to set the Platform',
+    ),
+
   // Records the metadata to carry across a conversion. MUST be called before
   // the batch is submitted: the provider ids are read from the RomM record for
   // the source file, which goes stale once that file is converted.
