@@ -2370,23 +2370,24 @@ never see a transport:
 - `on_job_finished(job)` is a `JobManager.add_terminal_listener` callback
   (registered in `main.py`). A failed job that no sweep owns becomes one
   `job_failed` message.
-- `sweep_expect(paths)`, `sweep_jobs_queued(jobs)`, `sweep_release(paths)` and
-  `sweep_finished(result, dry_run=, library_id=)` are the sweep's hooks (one line
-  each in `rules/sweep.py::_sweep_locked`; `sweep_finished` is called from `sweep()`
-  in a `finally`, so the post-lock return point named in the Rule engine section is
-  not where a sweep ends for notifications). A sweep
-  queues jobs and returns, so its message waits until the last of those jobs is
-  terminal, then sends one `sweep_finished` message: counts, bytes saved (the
-  Ledger's definition, via `ledger.job_saved_bytes`), and the failures listed
-  inside it. The queue call enqueues and then awaits, so a job can end before it
-  returns: `sweep_expect` claims the batch's Source paths first, and the terminal
-  listener counts a claimed job for the sweep instead of sending a lone
-  `job_failed`; `sweep_release` drops the claims when the queue call returns or
-  refuses the batch (a refusal is usually a manual job holding the Source, and its
-  failure is its own news). The claim is by Source path because job ids do not
-  exist until the call returns; once `sweep_jobs_queued` has the jobs, each job is
-  the sweep's by id whatever its status, so a late listener sends nothing alone and
-  the sweep message goes out once. A job already terminal when `sweep_jobs_queued` runs is counted
+- `sweep_owner()`, `sweep_jobs_queued(jobs)` and `sweep_finished(result, dry_run=,
+  library_id=)` are the sweep's hooks (one line each in
+  `rules/sweep.py::_sweep_locked`; `sweep_finished` is called from `sweep()` in a
+  `finally`, so the post-lock return point named in the Rule engine section is not
+  where a sweep ends for notifications). A sweep queues jobs and returns, so its
+  message waits until the last of those jobs is terminal, then sends one
+  `sweep_finished` message: counts, bytes saved (the Ledger's definition, via
+  `ledger.job_saved_bytes`), and the failures listed inside it. The queue call
+  enqueues and then awaits, so a job can end before it returns. Ownership is
+  therefore set at creation: `sweep_owner()` returns a token, the sweep passes it as
+  `owner=` through `create_batch_jobs` and `create_jobs_atomic`, and
+  `JobManager._queue_job_locked` sets `ConversionJob.owner` before the job is
+  enqueued (the field is never serialized; callers that pass nothing behave as
+  before). The terminal listener decides by `job.owner` alone: an owned job is never
+  sent as a lone `job_failed`, and a manual job on the same Source is never
+  absorbed. Once `sweep_jobs_queued` has the jobs, each is the sweep's by id
+  whatever its status, so a late listener sends nothing alone and the message goes
+  out once. A job already terminal when `sweep_jobs_queued` runs is counted
   but not waited on. `sweep()` calls `sweep_finished` from a `finally`, with a
   default `sweep_failed` error, so a sweep that raises after queueing still
   closes; a cancel (shutdown) reports nothing as a failure. A sweep that queued

@@ -37,8 +37,8 @@ def _env(tmp_path: Path):
 
 
 class _Job:
-    def __init__(self, path: str, job_id: str) -> None:
-        self.file_path, self.id = path, job_id
+    def __init__(self, path: str, job_id: str, owner: str | None = None) -> None:
+        self.file_path, self.id, self.owner = path, job_id, owner
         self.filename = Path(path).name
         self.status = JobStatus.PROCESSING
         self.mode = "dolphin_rvz"
@@ -81,7 +81,7 @@ async def test_a_sweep_sends_one_message_once_its_jobs_end(tmp_path, sent):
     made: list[_Job] = []
 
     async def _batch(paths, mode, **kwargs):
-        made.extend(_Job(p, f"job-{i}") for i, p in enumerate(paths))
+        made.extend(_Job(p, f"job-{i}", kwargs.get("owner")) for i, p in enumerate(paths))
         return list(made)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
@@ -142,7 +142,7 @@ async def test_a_sweep_that_fails_after_queueing_still_closes_and_reports(tmp_pa
     made: list[_Job] = []
 
     async def _batch(paths, mode, **kwargs):
-        made.extend(_Job(p, f"job-{i}") for i, p in enumerate(paths))
+        made.extend(_Job(p, f"job-{i}", kwargs.get("owner")) for i, p in enumerate(paths))
         return list(made)
 
     with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
@@ -206,9 +206,10 @@ async def test_a_sweep_job_that_fails_during_batch_creation_is_not_sent_twice(
         await asyncio.sleep(0.05)  # the listener task runs before the call returns
 
     monkeypatch.setattr(manager, "_prune_jobs", failing_prune)
-    notifications.sweep_expect([str(src)])
+    owner = notifications.sweep_owner()
     jobs = await manager.create_batch_jobs(
         [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},
+        owner=owner,
     )
     try:
         notifications.sweep_jobs_queued(jobs)
@@ -262,9 +263,10 @@ async def test_a_sweep_job_whose_listener_runs_after_the_batch_returns_is_not_se
             loop.call_later(0.1, manager._notify_terminal, job)  # after the call returns
 
     monkeypatch.setattr(manager, "_prune_jobs", late_listener_prune)
-    notifications.sweep_expect([str(src)])
+    owner = notifications.sweep_owner()
     jobs = await manager.create_batch_jobs(
         [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},
+        owner=owner,
     )
     try:
         assert jobs[0].status == JobStatus.FAILED  # already finished when we see it
@@ -280,14 +282,14 @@ async def test_a_sweep_job_whose_listener_runs_after_the_batch_returns_is_not_se
 
 @pytest.mark.asyncio
 async def test_the_real_sweep_claims_its_batch_before_the_queue_call(tmp_path, sent):
-    """Fails if the sweep stops calling sweep_expect: a job that fails inside
+    """Fails if the sweep stops passing its owner token to the queue: a job that fails inside
     the queue call would then be sent alone as well as in the sweep message."""
     from services.romm import auto as romm_auto
 
     roms = await _setup(tmp_path)
 
     async def _batch(paths, mode, **kwargs):
-        jobs = [_Job(p, f"job-{i}") for i, p in enumerate(paths)]
+        jobs = [_Job(p, f"job-{i}", kwargs.get("owner")) for i, p in enumerate(paths)]
         for job in jobs:  # ends, and its listener runs, before the call returns
             job.status = JobStatus.FAILED
             job.error_message = "no disc"
@@ -305,41 +307,53 @@ async def test_the_real_sweep_claims_its_batch_before_the_queue_call(tmp_path, s
 
 
 @pytest.mark.asyncio
-async def test_a_refused_batch_releases_its_claims_for_the_rest_of_the_sweep(
-    tmp_path, sent,
+async def test_a_manual_job_that_fails_during_preflight_is_not_absorbed_into_the_sweep(
+    tmp_path, sent, monkeypatch,
 ):
-    """OutputClaimedError usually means a manual job holds the same Source; its
-    failure later in the sweep must not be absorbed into the sweep message."""
+    """A manual failure on the same Source while create_jobs_atomic awaits its
+    reservation keys: one job_failed, and the sweep counts only its own job."""
+    import asyncio
     from datetime import datetime, timezone
 
     from models import ConversionJob, ConversionMode
-    from services.job_manager import OutputClaimedError
-    from services.romm import auto as romm_auto
-    from services.romm.library import romm_library
+    from services import job_manager as jm
+    from services.preferences_store import preferences_store
 
-    roms = await _setup(tmp_path)
-    source = roms[0]["full_path"]
-    real_extras = romm_library.sweep_extras
+    src = tmp_path / "Game.iso"
+    src.write_bytes(b"x")
+    manager = jm.JobManager(max_concurrent=1, max_job_history=5)
+    manager.add_terminal_listener(notifications.on_job_finished)
+    await preferences_store.put(notifications.PREF_KEY, {"destinations": [
+        {"id": "d1", "kind": "webhook", "url": "https://hooks.example/t", "label": ""}]})
+    real_keys = manager._reservation_keys
+    now = datetime.now(timezone.utc)
+    manual = ConversionJob(
+        id="manual", file_path=str(src), filename="Game.iso", mode=ConversionMode.CREATECD,
+        status=JobStatus.FAILED, created_at=now, completed_at=now, error_message="boom",
+    )
 
-    async def _refuse(paths, mode, **kwargs):
-        raise OutputClaimedError("taken")
+    async def keys_after_a_manual_failure(*args, **kwargs):
+        await notifications.on_job_finished(manual)  # ends while the sweep preflights
+        await asyncio.sleep(0)
+        return await real_keys(*args, **kwargs)
 
-    async def extras_after_the_refusal():
-        assert not notifications._expected  # the claim did not outlive the refusal
-        now = datetime.now(timezone.utc)
-        manual = ConversionJob(
-            id="manual", file_path=str(tmp_path / "library" / source),
-            filename="Game.iso", mode=ConversionMode.CREATEDVD, status=JobStatus.FAILED,
-            created_at=now, completed_at=now, error_message="boom",
-        )
-        await notifications.on_job_finished(manual)
-        return await real_extras()
-
-    with patch.object(romm_routes.romm_client, "roms", return_value=roms), \
-            patch.object(job_manager, "create_batch_jobs", _refuse), \
-            patch.object(job_manager, "get_active_job_candidates", return_value=[]), \
-            patch.object(romm_library, "sweep_extras", extras_after_the_refusal), \
-            patch.object(rules_sweep, "is_within_configured_volumes", return_value=True):
-        await romm_auto.sweep(ignore_schedule=True)
-    await notifications.drain()
-    assert "job_failed" in [e.kind for e in sent]
+    monkeypatch.setattr(manager, "_reservation_keys", keys_after_a_manual_failure)
+    owner = notifications.sweep_owner()
+    jobs = await manager.create_batch_jobs(
+        [str(src)], ConversionMode.CREATECD, output_paths={str(src): str(tmp_path / "g.chd")},
+        owner=owner,
+    )
+    try:
+        assert [j.owner for j in jobs] == [owner]
+        notifications.sweep_jobs_queued(jobs)
+        notifications.sweep_finished({"queued": 1, "errors": [], "platforms": []})
+        jobs[0].status = JobStatus.COMPLETED
+        await notifications.on_job_finished(jobs[0])
+        await notifications.drain()
+    finally:
+        for job in jobs:
+            jm.concurrency_manager.release(job.id)
+    kinds = sorted(e.kind for e in sent)
+    assert kinds == ["job_failed", "sweep_finished"]
+    summary = next(e for e in sent if e.kind == "sweep_finished")
+    assert summary.data["queued"] == 1 and summary.data["completed"] == 1

@@ -1164,7 +1164,7 @@ async def _sweep_locked(
                         result["platforms"].append(summary)
                         continue
 
-                notifications.sweep_expect(batch)
+                owner = notifications.sweep_owner()
                 jobs = await job_manager.create_batch_jobs(
                     batch,
                     ConversionMode(rule["mode"]),
@@ -1185,6 +1185,7 @@ async def _sweep_locked(
                     # second, possibly different one.
                     output_paths=destinations,
                     allow_overwrite=rule["duplicate_action"] == "overwrite",
+                    owner=owner,
                 )
                 summary["queued"] = len(jobs)
                 result["queued"] += len(jobs)
@@ -1286,8 +1287,6 @@ async def _sweep_locked(
                     {"platform_id": platform_ref, "error": "queue_failed"},
                 )
                 summary["queue_failed"] = True
-            finally:
-                notifications.sweep_release(batch)  # a refused batch keeps no claim
         elif batch:
             summary["queued"] = len(batch)
             result["queued"] += len(batch)

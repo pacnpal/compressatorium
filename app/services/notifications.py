@@ -6,7 +6,7 @@ public surface at the bottom of this module and never touch a transport:
 * ``notify(event)``: fire and forget; sends run off the caller's path.
 * ``on_job_finished(job)``: the ``JobManager`` terminal listener. A failed job
   started by hand becomes one ``job_failed`` message.
-* ``sweep_expect(paths)`` / ``sweep_jobs_queued(jobs)`` / ``sweep_finished(result)``:
+* ``sweep_owner()`` / ``sweep_jobs_queued(jobs)`` / ``sweep_finished(result)``:
   the sweep's three hooks. A sweep queues jobs and returns; the message goes out
   once the last of its jobs is terminal, so its counts and bytes saved are real.
   Failures inside a sweep are listed in that one message, never sent one by one.
@@ -572,6 +572,7 @@ class _Sweep:
         # False when every error was already reported by an earlier sweep.
         self.has_new_errors = False
         self.sent = False
+        self.token: str | None = None
         # Jobs that ended before `sweep_jobs_queued` saw them.
         self.early: dict[str, ConversionJob] = {}
 
@@ -611,32 +612,26 @@ class _Sweep:
 
 
 _open_sweep: _Sweep | None = None
-# Source path -> the sweep that is about to queue it. Opened before the queue
-# call, because that call enqueues and then awaits: a job can end (and its
-# terminal listener run) before the call returns and `sweep_jobs_queued` runs.
-_expected: dict[str, _Sweep] = {}
+# Owner token -> the sweep that passes it to the queue. The queue call enqueues
+# and then awaits, so a job can end (and its terminal listener run) before the
+# call returns and `sweep_jobs_queued` runs. The token is set on each job as it
+# is created, so the listener knows whose it is from the first moment.
+_owners: dict[str, _Sweep] = {}
 _reported_errors: set[tuple] = set()
 _TERMINAL = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
 _job_sweeps: dict[str, _Sweep] = {}
 
 
-def sweep_expect(paths: list[str]) -> None:
-    """Sweep hook 0: these Sources are about to be queued by the running sweep.
-    Call just before the queue call, so no job of the batch is ever mistaken for
-    a manual one."""
+def sweep_owner() -> str:
+    """Sweep hook 0: the owner token to pass to the queue call (``owner=``).
+    Every job created with it is the sweep's, however fast it ends."""
     global _open_sweep
     if _open_sweep is None:
         _open_sweep = _Sweep()
-    for path in paths:
-        _expected[str(path)] = _open_sweep
-
-
-def sweep_release(paths: list[str]) -> None:
-    """Sweep hook 0b: the queue call for these Sources is over (accepted or
-    refused). A refused batch must not keep claiming them: the job that took the
-    destination is usually a manual one, and its failure is its own news."""
-    for path in paths:
-        _expected.pop(str(path), None)
+    if _open_sweep.token is None:
+        _open_sweep.token = uuid.uuid4().hex
+        _owners[_open_sweep.token] = _open_sweep
+    return _open_sweep.token
 
 
 def sweep_jobs_queued(jobs: list[ConversionJob]) -> None:
@@ -646,7 +641,6 @@ def sweep_jobs_queued(jobs: list[ConversionJob]) -> None:
     if _open_sweep is None:
         _open_sweep = _Sweep()
     for job in jobs:
-        _expected.pop(job.file_path, None)
         if job.id in _open_sweep.early:  # already counted by the listener
             continue
         _open_sweep.jobs.append(job)
@@ -667,8 +661,8 @@ def sweep_finished(
     if dry_run:
         return
     sweep = sweep or _Sweep()
-    for path in [p for p, owner in _expected.items() if owner is sweep]:
-        del _expected[path]  # a batch that never came back leaves no claim
+    if sweep.token is not None:
+        _owners.pop(sweep.token, None)
     sweep.closed = True
     sweep.errors = [e for e in result.get("errors") or [] if isinstance(e, dict)]
     # A failing platform is due again every scheduler tick and records the same
@@ -715,13 +709,15 @@ async def on_job_finished(job: ConversionJob) -> None:
     if job.status not in _TERMINAL:
         return
     sweep = _job_sweeps.pop(job.id, None)
-    if sweep is None:
-        claimed = _expected.get(job.file_path)
+    if sweep is None and getattr(job, "owner", None):
+        # A sweep's job (decided by its owner token alone, never by its Source):
+        # it ended inside the queue call, before the sweep got the job back, or
+        # it is announced again. Never a standalone message.
+        claimed = _owners.get(job.owner)
         if claimed is not None and job.id not in claimed.early:
-            # Ended inside the queue call, before the sweep got the job back.
             claimed.early[job.id] = job
             claimed.jobs.append(job)
-            return
+        return
     if sweep is not None:
         sweep.pending.discard(job.id)
         _maybe_send(sweep)
@@ -736,7 +732,7 @@ def _reset_for_tests() -> None:
     _dispatcher = None
     _inbox.clear()
     _job_sweeps.clear()
-    _expected.clear()
+    _owners.clear()
     _queues.clear()
     _workers.clear()
     _in_flight.clear()

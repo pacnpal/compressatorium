@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class InputKind(str, Enum):
@@ -186,6 +186,10 @@ class ConversionJob(BaseModel):
     # no check ran.
     check_passed: str | None = None
     deleted_paths: list[str] = []
+    # Who queued the job when it is not a person (a sweep passes its token), so a
+    # terminal listener can tell the two apart from the first moment the job
+    # exists. Never serialized.
+    owner: str | None = Field(default=None, exclude=True)
 
 
 class JobCreateRequest(BaseModel):
