@@ -443,3 +443,26 @@ def test_a_symlinked_folder_that_resolves_to_the_source_folder_is_allowed(vol: P
     os.symlink(real, vol / "psx" / "view")
     paths = [str(vol / "psx" / "view" / n) for n in ("Game (Disc 1).cue", "Game (Disc 2).cue")]
     assert disc_playlist.plan_playlist(paths).directory == str(vol / "psx" / "view")
+
+
+@pytest.mark.parametrize(
+    "awkward",
+    ["a\\b (Disc 1).cue", "#a (Disc 1).cue", "\ufeffa (Disc 1).cue",
+     " a (Disc 1).cue", "a (Disc 1) .cue", "\u00e9 (Disc 1).cue"],
+)
+def test_awkward_names_read_back_to_the_selected_files(vol: Path, awkward):
+    from app.services.referrers.m3u import entries
+
+    other = awkward.replace("(Disc 1)", "(Disc 2)")
+    paths = _discs(vol, awkward, other)
+    disc_playlist.create_playlist(paths, "Out.m3u")
+    read = entries((vol / "Out.m3u").read_bytes())
+    assert len(read) == 2
+    selected = {os.path.realpath(p) for p in paths}
+    assert {os.path.realpath(vol / e) for e in read} == selected
+
+
+def test_a_name_with_a_pipe_is_refused_because_readers_split_it_as_a_label(vol: Path):
+    paths = _discs(vol, "a|b (Disc 1).cue", "a|b (Disc 2).cue")
+    with pytest.raises(disc_playlist.PlaylistError, match="can't be written"):
+        disc_playlist.plan_playlist(paths)
