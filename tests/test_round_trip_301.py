@@ -455,24 +455,6 @@ async def test_real_zstd_decodes_a_multi_frame_payload(tmp_path):
     assert digest.value == _sha1(rom)
 
 
-_Z3DS_BIN = _binary("Z3DS_COMPRESSOR_PATH", "/usr/local/bin/z3ds_compressor", "z3ds_compressor")
-
-
-@pytest.mark.skipif(_Z3DS_BIN is None or _ZSTD is None, reason="z3ds_compressor is not installed")
-@pytest.mark.asyncio
-async def test_real_z3ds_compressor_output_decodes_to_the_rom(tmp_path):
-    import subprocess
-
-    rom = tmp_path / "Game.3ds"
-    rom.write_bytes(os.urandom(1 << 20) + b"\0" * (1 << 20))
-    out = tmp_path / "Game.z3ds"
-    subprocess.run([_Z3DS_BIN, "-c", str(rom), str(out)], check=True, capture_output=True)
-
-    digest = await _z3ds().content_digest(str(out))
-
-    assert digest.value == _sha1(rom.read_bytes())
-
-
 # ---------------------------------------------------------------------------
 # JWUDTool: the WUX sector table decoded in Python to a hashing stream
 # ---------------------------------------------------------------------------
@@ -578,29 +560,6 @@ async def test_jwud_job_whose_wux_holds_another_image_keeps_the_wud(e2e, small_w
     e2e["writer"] = lambda src, out: write_wux(out, image[:-1] + b"?")
 
     _assert_kept(await _run(e2e, wud, "jwud_compress"), wud)
-
-
-_JWUD = _binary("JWUDTOOL_PATH", "/usr/local/bin/jwudtool", "jwudtool")
-
-
-@pytest.mark.skipif(
-    _JWUD is None or not os.environ.get("JWUD_TEST_WUD"),
-    reason="needs JWUDTool and a real Wii U image in JWUD_TEST_WUD",
-)
-@pytest.mark.asyncio
-async def test_real_jwudtool_output_decodes_to_the_wud(tmp_path):
-    """Opt-in: a WUX JWUDTool wrote decodes to the image it was made from.
-    Needs a real 25 GB .wud (JNUSLib refuses any other size)."""
-    import subprocess
-
-    wud = os.environ["JWUD_TEST_WUD"]
-    subprocess.run(
-        [_JWUD, "-in", wud, "-out", str(tmp_path), "-compress", "-noVerify"],
-        check=True, capture_output=True,
-    )
-    source = await _jwud().content_digest(wud)
-    output = await _jwud().content_digest(str(tmp_path / "game.wux"))
-    assert source == output
 
 
 # ---------------------------------------------------------------------------
@@ -833,27 +792,6 @@ async def test_nsz_job_on_an_xci_compares_the_decompressed_xci(e2e, nsz_fake):
     _assert_round_tripped(await _run(e2e, xci, "nsz_compress"), xci)
 
 
-_NSZ_BIN = _binary("NSZ_PATH", "/usr/local/bin/nsz", "nsz")
-
-
-@pytest.mark.skipif(
-    _NSZ_BIN is None or not os.environ.get("NSZ_TEST_NSP"),
-    reason="needs nsz, prod.keys and a real NSP in NSZ_TEST_NSP",
-)
-@pytest.mark.asyncio
-async def test_real_nsz_output_rebuilds_the_nsp(tmp_path):
-    """Opt-in: a real NSP compressed by the real nsz (with prod.keys set up
-    as the app finds them) round-trips to the same SHA256."""
-    import subprocess
-
-    nsp = os.environ["NSZ_TEST_NSP"]
-    subprocess.run(
-        [_NSZ_BIN, "-C", "-K", "-o", str(tmp_path), nsp], check=True, capture_output=True,
-    )
-    out = tmp_path / (Path(nsp).stem + ".nsz")
-    assert await _nsz().content_digest(nsp) == await _nsz().content_digest(str(out))
-
-
 # ---------------------------------------------------------------------------
 # romz (7z / zip): each member's CRC and size against the Source file
 # ---------------------------------------------------------------------------
@@ -963,27 +901,6 @@ async def test_romz_job_whose_archive_has_an_extra_member_keeps_the_rom(e2e):
     )
 
     _assert_kept(await _run(e2e, rom, "romz_zip"), rom)
-
-
-_SEVENZIP = _binary("SEVENZIP_PATH", "/usr/bin/7z", "7z")
-
-
-@pytest.mark.skipif(_SEVENZIP is None, reason="7z is not installed")
-@pytest.mark.asyncio
-@pytest.mark.parametrize("fmt", ["7z", "zip"])
-async def test_real_7z_archive_has_the_rom_digest(tmp_path, fmt):
-    import subprocess
-
-    rom = tmp_path / "Game.gba"
-    rom.write_bytes(os.urandom(100_000))
-    archive = tmp_path / f"Game.gba.{fmt}"
-    subprocess.run(
-        [_SEVENZIP, "a", f"-t{fmt}", "--", str(archive), "./Game.gba"],
-        check=True, capture_output=True, cwd=tmp_path,
-    )
-    assert await _romz().content_digest(str(rom)) == await _romz().content_digest(
-        str(archive),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1214,24 +1131,5 @@ async def test_chdman_copy_compares_the_data_sha1_of_both_chds(
         _assert_kept(job, source)
 
 
-_MAXCSO = _binary("MAXCSO_PATH", "/usr/local/bin/maxcso", "maxcso")
-
-
-@pytest.mark.skipif(_MAXCSO is None, reason="maxcso is not installed")
-@pytest.mark.asyncio
-@pytest.mark.parametrize("fmt", ["cso1", "cso2", "zso", "dax"])
-async def test_real_maxcso_output_decodes_to_the_iso(tmp_path, fmt):
-    """Opt-in: runs the real maxcso, so the Python decoder is checked against
-    what maxcso writes, not only against this file's fixtures."""
-    import subprocess
-
-    iso = tmp_path / "Game.iso"
-    iso.write_bytes(os.urandom(64 * 2048) + b"\0" * (64 * 2048) + _image(32 * 2048))
-    ext = {"zso": ".zso", "dax": ".dax"}.get(fmt, ".cso")
-    out = tmp_path / f"Game{ext}"
-    subprocess.run(
-        [_MAXCSO, f"--format={fmt}", str(iso), "-o", str(out)],
-        check=True, capture_output=True,
-    )
-    digest = await _cso().content_digest(str(out))
-    assert digest.value == _sha1(iso.read_bytes())
+# The real-binary tests, run through each service's production convert, are
+# in tests/test_round_trip_301_real.py.
