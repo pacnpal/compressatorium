@@ -1409,3 +1409,21 @@ def test_an_iso_whose_platform_is_unknown_is_skipped_not_failed(volume, dolphin,
     assert code == 0
     assert lines[0]["status"] == "skipped"
     assert "Platform" in lines[0]["reason"] and "determined" in lines[0]["reason"]
+
+
+def test_refreshing_a_check_keeps_the_recorded_mode(volume, dolphin, capsys, monkeypatch):
+    """codex 4576728584: a passing re-check wrote produced_meta=None, so the
+    next run lost the recorded mode and sent the PS3 ISO to Dolphin."""
+    from services import ps3
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    iso = volume / "misc" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso, produced_meta={"mode": "folder_to_iso"})
+
+    for _ in range(2):
+        code, lines = _cli(capsys, "verify", str(iso), "--json")
+        assert code == 0, lines
+        assert (lines[0]["tool"], lines[0]["status"]) == ("makeps3iso", "intact")
+    assert _stored(iso)["produced_meta"] == {"mode": "folder_to_iso"}

@@ -79,15 +79,17 @@ class VerificationStore:
             produced_meta=produced_meta,
             check_passed=check,
         )
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["chd_path"],
-            set_={
-                "source_path": stmt.excluded.source_path,
-                "verified_at": stmt.excluded.verified_at,
-                "produced_meta": stmt.excluded.produced_meta,
-                "check_passed": stmt.excluded.check_passed,
-            },
-        )
+        updates = {
+            "source_path": stmt.excluded.source_path,
+            "verified_at": stmt.excluded.verified_at,
+            "check_passed": stmt.excluded.check_passed,
+        }
+        # Refreshing a check never erases provenance (#306): a call with no
+        # produced_meta (a plain Verify) leaves the stored one, the mode that
+        # made the file, which the CLI routes the next check by.
+        if produced_meta is not None:
+            updates["produced_meta"] = stmt.excluded.produced_meta
+        stmt = stmt.on_conflict_do_update(index_elements=["chd_path"], set_=updates)
         with self._session() as session:
             session.execute(stmt)
             session.commit()
@@ -104,7 +106,8 @@ class VerificationStore:
 
         ``check`` names which one (#298): ``"intact"``, its tool's container
         check (every manual Verify), or ``"round_tripped"``, its content digest
-        equalled its Source's at conversion time.
+        equalled its Source's at conversion time. ``produced_meta=None`` keeps
+        a stored one: refreshing a check never erases what made the file.
         """
         await run_in_threadpool(
             self._mark_sync, chd_path, source_path, produced_meta, check,
