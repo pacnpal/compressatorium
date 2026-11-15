@@ -948,11 +948,17 @@ def _hold_for_check(path: str) -> list[str] | None:
     from services.tools import registry
 
     held: list[str] = []
-    for each in dict.fromkeys([path, *registry.source_companions(path)]):
-        if not lock_manager.acquire_input_lock(each):
-            _let_go_of(held)
-            return None
-        held.append(each)
+    try:
+        for each in dict.fromkeys([path, *registry.source_companions(path)]):
+            if not lock_manager.acquire_input_lock(each):
+                _let_go_of(held)
+                return None
+            held.append(each)
+    except BaseException:
+        # Taking one raised part way (an OSError on the lock dir, say): let go
+        # of the ones already held before the error goes on.
+        _let_go_of(held)
+        raise
     return held
 
 

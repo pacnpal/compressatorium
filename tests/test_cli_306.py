@@ -2025,3 +2025,32 @@ def test_verify_reports_an_unreadable_folder_too(volume, dolphin, capsys):
     by_name = {Path(x["path"]).name: x for x in lines}
     assert by_name["Game.rvz"]["status"] == "intact"
     assert by_name["locked"]["status"] == "skipped"
+
+
+def test_a_check_lock_that_raises_part_way_leaves_nothing_held(volume, monkeypatch):
+    """If taking the second file's lock raises (an OSError on the lock dir),
+    the first file's lock is released before the error goes on."""
+    import cli
+    from services.lock_manager import lock_manager
+
+    first = volume / "gc" / "game_part1.wud"
+    first.parent.mkdir()
+    first.write_bytes(b"1")
+    second = volume / "gc" / "game_part2.wud"
+    second.write_bytes(b"2")
+    monkeypatch.setattr(registry, "source_companions", lambda path: [str(second)])
+    original = lock_manager.acquire_input_lock
+
+    def failing_on_the_second(path):
+        if path == str(second):
+            raise OSError("lock dir unavailable")
+        return original(path)
+
+    monkeypatch.setattr(lock_manager, "acquire_input_lock", failing_on_the_second)
+
+    with pytest.raises(OSError):
+        cli._hold_for_check(str(first))
+
+    other = _other_process()
+    assert other.acquire_lock(str(first), allow_existing=True)
+    other.release_lock(str(first))
