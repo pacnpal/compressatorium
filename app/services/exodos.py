@@ -55,18 +55,22 @@ _PROGRESS_INTERVAL = 0.5
 _CHECK_CHUNK = 1024 * 1024
 
 
+def _never_cancelled() -> bool:
+    return False
+
+
 @dataclass(frozen=True)
 class CollectionProfile:
     """What differs between the eXo packs: where templates live, what paths say.
 
     Only eXoDOS ships. eXoWin3x and the other packs follow the same pattern with
-    a different template folder and path token, so adding one is a new profile,
+    a different template folder and pack folder name, so adding one is a new profile,
     not new logic.
     """
 
     name: str                 # "eXoDOS"
     template_dir: str         # the per-game template tree's folder name, "!dos"
-    path_token: str           # the pack folder mount paths start with, "eXoDOS"
+    pack_dir: str             # the pack folder mount paths start with, "eXoDOS"
     conf_name: str = "dosbox.conf"
     platform_slug: str = "dos"
     # ``.\<token>\`` lowercased, the literal every rewrite looks for.
@@ -74,11 +78,11 @@ class CollectionProfile:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "needle", b".\\" + self.path_token.lower().encode("ascii") + b"\\",
+            self, "needle", b".\\" + self.pack_dir.lower().encode("ascii") + b"\\",
         )
 
 
-EXODOS = CollectionProfile(name="eXoDOS", template_dir="!dos", path_token="eXoDOS")
+EXODOS = CollectionProfile(name="eXoDOS", template_dir="!dos", pack_dir="eXoDOS")
 
 
 @dataclass(frozen=True)
@@ -415,7 +419,7 @@ class ExodosService:
         try:
             await run_detached(
                 self._check_product, path,
-                (lambda: cancel_event.is_set()) if cancel_event else (lambda: False),
+                cancel_event.is_set if cancel_event else _never_cancelled,
                 cancel_event=cancel_event,
             )
         except ReadCancelled:
@@ -438,7 +442,7 @@ class ExodosService:
             ) from exc
 
     def _check_product(
-        self, path: str, is_cancelled: Callable[[], bool] = lambda: False,
+        self, path: str, is_cancelled: Callable[[], bool] = _never_cancelled,
     ) -> None:
         """CRCs, member names and limits, and the root conf, or ``ValueError``.
 

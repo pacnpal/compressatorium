@@ -2434,7 +2434,7 @@ tool: it registers with an empty binary path and reports no pids.
   `supports_delete_on_verify` (listed in the registry test's declined set): the
   product differs from its Source by design, and the Source is the operator's
   eXoDOS install.
-- **Extending.** The pack-specific facts (template folder, path token, conf
+- **Extending.** The pack-specific facts (template folder, pack folder name, conf
   name, Platform slug) live in a `CollectionProfile`. eXoWin3x and the other eXo
   packs are a new profile, not new logic. Only eXoDOS ships.
 

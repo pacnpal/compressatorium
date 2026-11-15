@@ -762,6 +762,11 @@ const byMode = new Map(
   TOOLS.flatMap((t) => t.modes.map((m) => [m.mode, { tool: t, spec: m }])),
 );
 
+/** Whether a tool can answer Info (its `getInfo` binding is set). */
+function hasInfoBinding(tool) {
+  return typeof tool?.getInfo === 'function';
+}
+
 function endsWithAny(path, exts) {
   return matchedExtLength(path, exts) > 0;
 }
@@ -874,11 +879,10 @@ export const registry = {
    * sources, and archive Info belongs to the backend-gated verify owner.
    */
   infoToolForRow: (path, verifiableBy, isArchive) => {
-    const hasInfo = (t) => typeof t?.getInfo === 'function';
     const owner = registry.verifyToolForPath(path, verifiableBy);
-    if (owner) return hasInfo(owner) ? owner : null;
+    if (owner) return hasInfoBinding(owner) ? owner : null;
     if (isArchive || !path || typeof path !== 'string') return null;
-    return sourceToolsBySpecificity(path).find(hasInfo) ?? null;
+    return sourceToolsBySpecificity(path).find(hasInfoBinding) ?? null;
   },
 
   /** Tools whose source extensions match the given path (convertible sources),
