@@ -259,3 +259,63 @@ def test_a_fresh_probe_that_times_out_refuses(tmp_path, monkeypatch):
 
     assert not ok                                   # fail closed, never the cache
     assert time.monotonic() - started < 1.5
+
+
+@pytest.mark.parametrize("order", ["outer-first", "inner-first"])
+def test_nested_symlinked_volumes_give_the_most_specific_root(tmp_path, monkeypatch, order):
+    # CodeRabbit 4577311057: /outer -> /data/PS2 and /inner -> /data/PS2/library;
+    # a path spelled through the targets belongs to the deepest Volume.
+    from config import settings
+
+    data = tmp_path / "data" / "PS2"
+    (data / "library").mkdir(parents=True)
+    (data / "library" / "game.iso").write_bytes(b"x")
+    outer, inner = tmp_path / "outer", tmp_path / "inner"
+    outer.symlink_to(data, target_is_directory=True)
+    inner.symlink_to(data / "library", target_is_directory=True)
+    volumes = [outer, inner] if order == "outer-first" else [inner, outer]
+    monkeypatch.setattr(settings, "chd_volumes", ",".join(map(str, volumes)))
+
+    root = path_utils.containing_volume_root(str(data / "library" / "game.iso"))
+
+    assert root == (data / "library").resolve()
+
+
+def test_refreshes_over_a_blocked_root_keep_one_live_probe(tmp_path, monkeypatch):
+    # CodeRabbit 4577311054: each refresh used to start its own probe thread,
+    # so a mount that stays blocked accumulated one stuck thread per refresh.
+    import threading
+
+    from config import settings
+
+    root = tmp_path / "blocked"
+    root.mkdir()
+    monkeypatch.setattr(settings, "chd_volumes", str(root))
+    wake = threading.Event()
+    real_realpath = os.path.realpath
+
+    def blocking_root(path, *args, **kwargs):
+        if os.fspath(path) == str(root):
+            wake.wait(10)
+        return real_realpath(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", blocking_root)
+    monkeypatch.setattr(path_utils, "ROOT_PROBE_SECONDS", 0.05)
+
+    def live_probes() -> int:
+        # Named per root by the registry; an unnamed probe thread (one started
+        # outside it) shows up as "Thread-N (_resolve_root_into)".
+        return sum(
+            1 for t in threading.enumerate()
+            if t.is_alive() and (
+                t.name == f"volume-root-probe:{root}" or "_resolve_root_into" in t.name
+            )
+        )
+
+    try:
+        for _ in range(5):
+            path_utils.refresh_volume_roots(timeout=0.05)
+        path_utils.is_within_configured_volumes(str(root / "game.iso"))   # _fresh_root too
+        assert live_probes() == 1
+    finally:
+        wake.set()

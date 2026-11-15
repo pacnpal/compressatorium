@@ -111,8 +111,9 @@ def test_the_probe_and_the_cache_list_agree_on_tracks(layout):
     cue = layout["folder"] / "game.cue"
     cue.write_text('FILE "../../outside/x.bin" BINARY\n  TRACK 01 MODE1/2352\n')
 
-    # Refused for the probe, and not a cache dependency either.
-    assert registry.get("chdman").header_reads(str(cue)) == []
+    # Refused for the probe; the cache's dependency list is unknown (None), so
+    # the answer is not cached (CodeRabbit 4577311048).
+    assert registry.get("chdman").header_reads(str(cue)) is None
 
 
 def test_a_track_inside_is_still_followed(layout):

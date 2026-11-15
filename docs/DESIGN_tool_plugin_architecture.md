@@ -2820,7 +2820,9 @@ in `onDestroy`, so leaving the view mid-plan aborts the plan request, never
 opens the modal afterwards, resolves a pending confirmation as cancelled, and
 clears `autoInFlight` (the store stops waiting at the abort even when a request
 ignores the signal); `jobs.adopt` applies the same freshness rule as `refresh()`
-(`snapshotIsNewer`). The rollback (`_cancel_queued`) asks every queued job to
+(`snapshotIsNewer`) and never adopts an unknown job the store saw evicted
+from history (bounded eviction tombstones), so a response built before a job
+finished and was pruned cannot put it back in the queue. The rollback (`_cancel_queued`) asks every queued job to
 cancel, then waits for them to settle with `JobManager.wait_until_terminal`,
 for at most `CHD_PROGRESS_TIMEOUT` or `ROLLBACK_WAIT_CAP_SECONDS` (30 s),
 whichever is shorter; the cap holds when the timeout is 0, since the wait runs

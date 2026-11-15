@@ -27,8 +27,7 @@ from services.disc_id import (
     read_embedded_game_id,
 )
 from services.lock_manager import lock_manager
-from utils.delete_plan import sheet_track_paths
-from utils.sheet_text import sheet_is_readable, sheet_track_list
+from utils.sheet_text import sheet_track_list
 
 from .base import BaseTool
 from .spec import ModeKind, ModeSpec
@@ -194,11 +193,15 @@ class ChdmanTool(BaseTool):
         return disc_platform(path)
 
     def header_reads(self, path: str) -> list[str] | None:
-        # A .cue/.gdi is answered from the tracks it names; None when the
-        # sheet is unreadable (oversized), so the answer is not cached.
-        if Path(path).suffix.lower() in _SHEET_EXTS and not sheet_is_readable(path):
-            return None
-        return sheet_track_paths(path)
+        # A .cue/.gdi is answered from the tracks it names. None (unknown
+        # dependencies, so the answer is not cached) when the sheet is
+        # unreadable or any track is refused (sheet_track_list keeps that None
+        # apart from "no tracks"): a refused FIFO track later replaced by a
+        # real one must be detected afresh.
+        if Path(path).suffix.lower() not in _SHEET_EXTS:
+            return []
+        tracks = sheet_track_list(path)
+        return None if tracks is None else [str(track) for track in tracks]
 
     # chdman's extract/copy modes take .chd input, but a .chd is not a
     # "convertible-from" source in the file listing, only the create sources
