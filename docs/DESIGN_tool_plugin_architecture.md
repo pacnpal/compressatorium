@@ -3481,7 +3481,16 @@ free one if it was taken since, never picking a different name on its own.
   its quotes kept (RetroArch's `rm3u.c`). If either reaches or names a
   replaced file (a Source literally named `A|B.cue` or `"Game.cue"`) the
   Source is kept.
-- *UTF-16 and NUL bytes.* Such a playlist is never rewritten. It is UTF-16
+- *UTF-16 with a BOM* (#334). `FF FE` or `FE FF` names the byte order. The
+  text after it is decoded strictly, rewritten and read back exactly like a
+  UTF-8 playlist (`_rewrite_utf16` transcodes to UTF-8, runs `_rewrite`, and
+  encodes the result back), then written with the same BOM and byte order.
+  Line endings are part of the text, so they survive too. If the NUL-stripped
+  readings name a replaced file that the UTF-16 text doesn't (an 8-bit line
+  appended to the file), or a new entry can't be encoded in UTF-16, the Source
+  is kept. Text that doesn't decode strictly falls to the rule below.
+- *UTF-16 without a BOM, and NUL bytes.* Such a playlist is never rewritten:
+  without a BOM the encoding can't be known safely. It is UTF-16
   only with a BOM, or when NULs fill most of the odd (little-endian) or even
   (big-endian) byte positions, and then it is decoded strictly (or with
   replacements if that fails). The NUL-stripped UTF-8 and cp1252 readings are

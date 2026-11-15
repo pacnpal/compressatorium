@@ -4,6 +4,12 @@
 
 ### Added
 
+- **UTF-16 `.m3u` playlists follow a converted disc** (#334). A playlist saved
+  as UTF-16 with a BOM (Windows Notepad's "Unicode") that names the Source is
+  now rewritten like a UTF-8 one, keeping its encoding, BOM and line endings.
+  Before, the Source was kept and the playlist had to be fixed by hand. UTF-16
+  without a BOM still keeps the Source, since its encoding can't be told
+  safely.
 - **eXoDOS repack for RomM** (#323). A new **eXoDOS** tool turns an eXoDOS game
   zip into a `.dosz` laid out for RomM's in-browser DOS player (DOSBox Pure),
   with the game's own `dosbox.conf` as the file's first entry. The game moves

@@ -529,8 +529,9 @@ def test_an_entry_that_cannot_reach_the_output_keeps_the_source(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le"])
-async def test_a_utf16_playlist_naming_the_source_keeps_it(tmp_path, encoding):
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+async def test_a_bomless_utf16_playlist_naming_the_source_keeps_it(tmp_path, encoding):
+    """UTF-16 with no BOM can't be detected safely: the fail-safe stays."""
     _disc(tmp_path, "Game.cue")
     playlist = tmp_path / "Game.m3u"
     data = "Game.cue\n".encode(encoding)
@@ -541,6 +542,53 @@ async def test_a_utf16_playlist_naming_the_source_keeps_it(tmp_path, encoding):
     assert not outcome.ok
     assert outcome.failed == str(playlist)
     assert playlist.read_bytes() == data
+
+
+_UTF16_WITH_BOM = {"utf-16-le": b"\xff\xfe", "utf-16-be": b"\xfe\xff"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
+@pytest.mark.parametrize("newline", ["\r\n", "\n"], ids=["crlf", "lf"])
+@pytest.mark.parametrize("disc", ["Game (Disc 1)", "Pokémon (Disc 1)"], ids=["ascii", "accent"])
+async def test_a_utf16_playlist_with_a_bom_is_rewritten_in_its_own_encoding(
+    tmp_path, codec, newline, disc,
+):
+    """#334: a UTF-16 playlist with a BOM is rewritten like a UTF-8 one, and
+    its encoding, BOM and line endings come back byte for byte."""
+    _disc(tmp_path, f"{disc}.cue")
+    _disc(tmp_path, "Game (Disc 2).cue")
+    playlist = tmp_path / "Game.m3u"
+
+    def render(first: str) -> bytes:
+        text = newline.join(["#EXTM3U", first, "Game (Disc 2).cue", ""])
+        return _UTF16_WITH_BOM[codec] + text.encode(codec)
+
+    playlist.write_bytes(render(f"{disc}.cue"))
+
+    outcome = await _replace(tmp_path, f"{disc}.cue", f"{disc}.chd")
+
+    assert outcome.ok, outcome.reason
+    assert playlist.read_bytes() == render(f"{disc}.chd")
+    assert (tmp_path / "Game.m3u.bak").read_bytes() == render(f"{disc}.cue")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codec", list(_UTF16_WITH_BOM))
+async def test_a_utf16_playlist_with_a_bom_not_naming_the_source_is_untouched(
+    tmp_path, codec,
+):
+    _disc(tmp_path, "Game.cue")
+    other = tmp_path / "Other.m3u"
+    data = _UTF16_WITH_BOM[codec] + "Other.cue\r\n".encode(codec)
+    other.write_bytes(data)
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert outcome.ok
+    assert outcome.updated == []
+    assert other.read_bytes() == data
+    assert not (tmp_path / "Other.m3u.bak").exists()
 
 
 @pytest.mark.asyncio

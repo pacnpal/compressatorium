@@ -399,9 +399,61 @@ def _raw_names_a_source(entry: str, playlist_dir: str, renames: _Renames) -> boo
     return identity is None and _named_file(entry) in renames.names
 
 
+# A BOM is the only safe way to know a playlist is UTF-16 (#334).
+_UTF16_BOMS = ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"))
+
+
+def _rewrite_utf16(
+    playlist: str, data: bytes, bom: bytes, codec: str, playlist_dir: str,
+    renames: _Renames, *, strict: bool,
+) -> tuple[bytes, list[tuple[str, str]]] | None:
+    """Rewrite a UTF-16 playlist with a BOM the way a UTF-8 one is rewritten.
+
+    The text after the BOM is decoded strictly, run through the same rewrite
+    and read-back as a UTF-8 playlist, and encoded back with the same BOM and
+    byte order; its line endings are part of the text, so they come back too.
+    None when the text doesn't decode strictly (the caller's fail-safe for
+    undecodable playlists then applies).
+
+    A line reader that ignores the BOM could see a different line (an 8-bit
+    line appended to the file): if the NUL-stripped readings name a replaced
+    file that the UTF-16 text doesn't, the Source is kept.
+    """
+    try:
+        text = data[len(bom):].decode(codec)
+    except UnicodeDecodeError:
+        return None
+    folded = _fold(text)
+    stripped = data.replace(b"\x00", b"")
+    for other in (stripped.decode("utf-8", errors="replace"),
+                  stripped.decode("cp1252", errors="replace")):
+        other_folded = _fold(other)
+        for name in sorted(renames.names):
+            if name and name in other_folded and name not in folded:
+                raise ReferrerError(
+                    playlist, f"isn't plain UTF-16 and may name {name} on another line",
+                )
+    updated, edits = _rewrite(
+        playlist, text.encode("utf-8"), playlist_dir, renames, strict=strict,
+    )
+    if not edits:
+        return data, []
+    try:
+        return bom + updated.decode(*_ENC).encode(codec), edits
+    except UnicodeEncodeError as exc:
+        raise ReferrerError(playlist, "the new entry can't be written in UTF-16") from exc
+
+
 def _rewrite(
     playlist: str, data: bytes, playlist_dir: str, renames: _Renames, *, strict: bool,
 ) -> tuple[bytes, list[tuple[str, str]]]:
+    for bom, codec in _UTF16_BOMS:
+        if data.startswith(bom):
+            done = _rewrite_utf16(
+                playlist, data, bom, codec, playlist_dir, renames, strict=strict,
+            )
+            if done is not None:
+                return done
     if _wide_text_check(playlist, data, renames):
         return data, []
     _legacy_text_check(playlist, data, renames)
