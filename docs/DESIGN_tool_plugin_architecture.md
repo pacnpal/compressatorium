@@ -2383,7 +2383,7 @@ never see a transport:
   `owner=` through `create_batch_jobs` and `create_jobs_atomic`, and
   `JobManager._queue_job_locked` sets `ConversionJob._sweep_owner` before the job is
   enqueued (`_sweep_owner` is a private attribute, in no schema or serialized form; callers that pass nothing behave as
-  before). The terminal listener decides by `job.owner` alone: an owned job is never
+  before). The terminal listener decides by `_sweep_owner` alone: an owned job is never
   sent as a lone `job_failed`, and a manual job on the same Source is never
   absorbed. Once `sweep_jobs_queued` has the jobs, each is the sweep's by id
   whatever its status, so a late listener sends nothing alone and the message goes
