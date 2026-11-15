@@ -84,7 +84,7 @@ class LockManager:
         # symlinked folder locks, records and probes as the file it names, so
         # a probe on the real path sees it. Each caller path maps to the
         # identity it was locked under, kept unchanged through release.
-        self._lock_keys: dict[str, str] = {}
+        self._lock_keys: dict[str, list[str]] = {}
         if not lazy:
             self._ensure_ready()
 
@@ -447,12 +447,41 @@ class LockManager:
             return False
         return True
 
+    def _output_keys(self, output_path: str) -> list[str]:
+        """The identities an output lock takes: both places a write can land.
+
+        The destination the converter creates, ``realpath(dirname)`` joined
+        with the basename, which does not follow a symlink at the final
+        component, so once an overwrite sweep has unlinked that symlink the new
+        file's path is still the one locked; and, when the output is a symlink
+        today, its current real target, so nobody rewrites the old target
+        mid-job (codex 4577612344). One key when the output is no symlink.
+        """
+        absolute = os.path.abspath(output_path)
+        destination = os.path.join(
+            self._resolve(os.path.dirname(absolute)), os.path.basename(absolute),
+        )
+        target = self._resolve(output_path)
+        return [destination] if target == destination else [destination, target]
+
     def _take_lock(self, output_path: str, *, allow_existing: bool) -> bool:
+        """Every identity of ``_output_keys``, or none of them."""
+        taken: list[str] = []
+        for key in self._output_keys(output_path):
+            if not self._take_key(key, allow_existing=allow_existing):
+                for held in taken:
+                    self._release_key(held)
+                return False
+            taken.append(key)
+        with self._lock_mutex:
+            self._lock_keys[os.path.normpath(output_path)] = taken
+        return True
+
+    def _take_key(self, normalized_path: str, *, allow_existing: bool) -> bool:
+        """One exclusive output lock on an identity from ``_output_keys``."""
         if self.is_read_only:
             return False
         self._ensure_ready()
-        # The real path is the identity (see ``_lock_keys``).
-        normalized_path = self._resolve(output_path)
 
         with self._lock_mutex:
             # Check if already locked by another job
@@ -475,8 +504,6 @@ class LockManager:
                     normalized_path, lock_file_path, allow_existing,
                 )
                 if outcome is not None:
-                    if outcome:
-                        self._lock_keys[os.path.normpath(output_path)] = normalized_path
                     return outcome
             return False
 
@@ -560,11 +587,15 @@ class LockManager:
             return False
 
     def release_lock(self, output_path: str):
-        """Release the lock for an output file path."""
+        """Release the lock for an output file path: every identity it was
+        taken under (``_lock_keys``), even if a symlink changed since."""
         with self._lock_mutex:
-            normalized_path = self._lock_keys.pop(
-                os.path.normpath(output_path), None,
-            ) or self._resolve(output_path)
+            keys = self._lock_keys.pop(os.path.normpath(output_path), None)
+        for key in keys if keys is not None else self._output_keys(output_path):
+            self._release_key(key)
+
+    def _release_key(self, normalized_path: str) -> None:
+        with self._lock_mutex:
             if normalized_path in self._locks:
                 self._locks.remove(normalized_path)
 
