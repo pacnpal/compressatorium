@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy } from 'svelte';
   import { conversion } from '$lib/stores/conversion.svelte.js';
   import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
   import { romm } from '$lib/stores/romm.svelte.js';
@@ -98,19 +99,37 @@
     }
   }
 
+  // The running Auto flow's abort handle. Leaving the view unmounts this
+  // panel while the plan request or its modal may still be pending; aborting
+  // here ends the flow (no modal opens after it, a pending one counts as
+  // cancelled) so the store's autoInFlight clears and Start works on return.
+  let autoAbort = null;
+  onDestroy(() => {
+    autoAbort?.abort();
+    autoAbort = null;
+  });
+
   async function handleAutoSubmit() {
     // The store runs the flow: it refuses a second Start while one is in
     // flight, and plans and queues the selection and RomM context taken here,
     // before anything is awaited.
-    const result = await conversion.runAuto({
-      paths: selectedPaths,
-      rommPlatformId: fileBrowser.rommPlatformId,
-      confirm: () => new Promise((resolve) => {
-        autoPlanPrompt = resolve;
-      }),
-      onRepinPending: (count) => romm.setPendingRepins(count),
-    });
-    if (result) fileBrowser.clearSelection();
+    const controller = new AbortController();
+    autoAbort = controller;
+    let result;
+    try {
+      result = await conversion.runAuto({
+        paths: selectedPaths,
+        rommPlatformId: fileBrowser.rommPlatformId,
+        confirm: () => new Promise((resolve) => {
+          autoPlanPrompt = resolve;
+        }),
+        onRepinPending: (count) => romm.setPendingRepins(count),
+        signal: controller.signal,
+      });
+    } finally {
+      if (autoAbort === controller) autoAbort = null;
+    }
+    if (result && !controller.signal.aborted) fileBrowser.clearSelection();
   }
 
   async function handleSubmit() {

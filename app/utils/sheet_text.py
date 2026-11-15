@@ -79,8 +79,10 @@ def resolve_track(
     The one track resolver: the Platform probe, the detection cache's track
     list, the delete plan and the job gate all use it. Refused, so nothing
     opens them: an empty name, an absolute name (``/x``, ``C:\\x``, ``\\\\host``,
-    ``~``), a name with any ``..`` segment, and a name whose real path (through
-    a symlink) lies outside the trusted roots. Returns the path beside the
+    ``~``), a name with any ``..`` segment, a name whose real path (through
+    a symlink) lies outside the trusted roots, and a track that exists and is
+    not a regular file or folder (``path_utils.is_special_file``: a FIFO would
+    block the open). A missing track is not refused. Returns the path beside the
     sheet, not its real path, so callers see what the sheet named.
 
     ``within`` names the trusted roots. None (the default, used by the probe
@@ -89,8 +91,9 @@ def resolve_track(
     passes that root. An empty sequence is refused: it would trust nothing
     and is always a caller bug.
     """
-    from utils.path_utils import (
-        is_within_configured_volumes,  # local: no cycle at import
+    from utils.path_utils import (  # local: no cycle at import
+        is_special_file,
+        is_within_configured_volumes,
     )
 
     if within is not None and not list(within):
@@ -113,6 +116,9 @@ def resolve_track(
         inside = _under_any(real, within)
     if not inside:
         raise ValueError(f"Track reference resolves outside the volumes: {raw}")
+    if is_special_file(candidate):
+        # A FIFO track would block the probe that opens it, as a FIFO input would.
+        raise ValueError(f"Track reference is not a regular file: {raw}")
     return candidate
 
 

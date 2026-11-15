@@ -18,6 +18,23 @@ def strip_archive_path(path: str) -> str:
     return path.split("::", 1)[0] if "::" in path else path
 
 
+def is_special_file(path: str | os.PathLike) -> bool:
+    """Whether ``path`` exists and is neither a regular file nor a directory.
+
+    A FIFO, socket or device. Opening a FIFO with no writer blocks forever, so
+    a reader that must not hang (a header probe) asks this first. ``lstat``
+    first; a symlink is judged by its target. False for a missing path or a
+    dangling link: nothing there can block an open.
+    """
+    try:
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode):
+            st = os.stat(path)
+    except OSError:
+        return False
+    return not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode))
+
+
 # errnos meaning "this filesystem has no hard links" (FAT/exFAT, some network
 # shares), as opposed to a real failure of the link itself.
 _NO_HARDLINK_ERRNOS = frozenset({

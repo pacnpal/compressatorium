@@ -49,6 +49,26 @@ function defaultLevelFor(toolId) {
 const PREF_SAVE_DEBOUNCE_MS = 500;
 const isBrowser = typeof window !== 'undefined';
 
+// Settles with `promise`, or with `{ aborted: true }` as soon as `signal`
+// aborts, whichever comes first. A late settle of `promise` is swallowed: the
+// caller has already moved on, and a rejection must not go unhandled.
+function untilAborted(promise, signal) {
+  if (!signal) return promise;
+  const aborted = { aborted: true };
+  if (signal.aborted) {
+    promise.catch(() => {});
+    return Promise.resolve(aborted);
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve(aborted);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (err) => { signal.removeEventListener('abort', onAbort); reject(err); },
+    );
+  });
+}
+
 const INITIAL_TOOL = loadPrimaryTool();
 
 class ConversionStore {
@@ -354,13 +374,20 @@ class ConversionStore {
     }, PREF_SAVE_DEBOUNCE_MS);
   }
 
-  /** Ask the backend where each Image would go. Sets and returns `autoPlan`. */
-  async fetchAutoPlan(filePaths) {
+  /**
+   * Ask the backend where each Image would go. Sets and returns `autoPlan`.
+   * With a `signal` that aborts, the request is aborted and its answer, if it
+   * still lands, is dropped without a toast.
+   */
+  async fetchAutoPlan(filePaths, { signal } = {}) {
     if (!filePaths?.length) return null;
     try {
-      this.autoPlan = await api.getAutoPlan(filePaths, this.outputDir || null);
+      const plan = await api.getAutoPlan(filePaths, this.outputDir || null, { signal });
+      if (signal?.aborted) return null;
+      this.autoPlan = plan;
       return this.autoPlan;
     } catch (e) {
+      if (signal?.aborted) return null;
       toast.error(e?.message ?? 'Failed to plan Auto conversion');
       this.autoPlan = null;
       throw e;
@@ -388,21 +415,33 @@ class ConversionStore {
    * queue. `onRepinPending(count)` runs after queueing for a RomM listing,
    * on failure too (a failed batch can still have kept jobs whose metadata
    * was reconciled). Returns `submitAuto`'s result, or null when nothing was
-   * queued (refused, cancelled, or failed).
+   * queued (refused, cancelled, aborted, or failed).
+   *
+   * `signal` is the caller's AbortSignal (the panel aborts it when it
+   * unmounts). An aborted run stops waiting at once, even on a request that
+   * ignores the signal: it never calls `confirm()` after the abort, a pending
+   * `confirm()` counts as cancelled, nothing is queued, and `autoInFlight`
+   * clears, so Start works again.
    */
-  async runAuto({ paths, rommPlatformId = null, confirm, onRepinPending } = {}) {
-    if (this.#autoInFlight || !paths?.length) return null;
+  async runAuto({ paths, rommPlatformId = null, confirm, onRepinPending, signal } = {}) {
+    if (this.#autoInFlight || !paths?.length || signal?.aborted) return null;
     this.#autoInFlight = true;
     const snapshot = [...paths];
     const platformId = rommPlatformId;
     const fromRomm = platformId !== null && platformId !== undefined;
     try {
       try {
-        await this.fetchAutoPlan(snapshot);
+        await untilAborted(this.fetchAutoPlan(snapshot, { signal }), signal);
       } catch (_e) {
         return null; // toast already raised
       }
-      const proceed = await confirm();
+      if (signal?.aborted) {
+        this.clearAutoPlan();
+        return null; // the panel is gone: never open its modal
+      }
+      const answer = await untilAborted(confirm(), signal);
+      // An abort resolves the confirmation as cancelled.
+      const proceed = !signal?.aborted && !answer?.aborted && Boolean(answer);
       const plan = this.autoPlan ?? [];
       this.clearAutoPlan();
       if (!proceed) return null;
