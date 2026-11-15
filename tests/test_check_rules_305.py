@@ -1815,3 +1815,57 @@ def test_a_conversion_rule_with_an_equal_window_stays_refused_on_every_save() ->
             "window_end": "03:00", "invalid_window": sent_flag,
         }, kind=CONVERT)
         assert (rule["invalid_window"], rule["enabled"]) == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_a_converted_images_mode_survives_a_nightly_check(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """#306 ff939d5: every passing conversion check records the mode and tool that
+    made the file. A nightly check refreshes that record and keeps both, so the
+    next manual check still goes to the tool that made it. Nothing is seeded by
+    hand: a real createcd job with verify_after writes the record."""
+    from models import ConversionJob, ConversionMode, JobStatus
+    from services import image_checks
+    from services.job_manager import job_manager
+    from services.verification_store import verification_store
+
+    _verdicts, calls = verifier
+    cue = tree / "ps2" / "Echo.cue"
+    cue.write_text('FILE "Echo.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n')
+    (tree / "ps2" / "Echo.bin").write_bytes(b"\0" * 2352)
+    chd = tree / "ps2" / "Echo.chd"
+
+    async def fake_convert(*_args, **_kwargs):
+        chd.write_bytes(b"\0" * 4096)
+        yield {"progress": 100, "message": "done"}
+
+    monkeypatch.setitem(vars(registry.for_mode("createcd")), "convert", fake_convert)
+    job = ConversionJob(
+        id="echoverifyafter", file_path=str(cue), filename=cue.name,
+        mode=ConversionMode.CREATECD, status=JobStatus.QUEUED,
+        created_at=datetime.now(timezone.utc), output_path=str(chd),
+        verify_after=True,
+    )
+    job_manager.jobs[job.id] = job
+    try:
+        await job_manager._process_job(job.id)  # pylint: disable=protected-access
+    finally:
+        job_manager.jobs.pop(job.id, None)
+    assert job.status == JobStatus.COMPLETED, (job.error_message, job.message)
+    made = await verification_store.get_record(str(chd))
+    assert made["produced_meta"]["mode"] == "createcd"
+    assert made["produced_meta"]["tool"] == "chdman"
+
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 3})
+    _seed(lib, {"ps2/Aria.chd": 1, "ps2/Bolt.chd": 1, "ps2/Cove.chd": 1, "ps2/Dune.chd": 1})
+    calls.clear()
+
+    await _run(lib)
+
+    assert calls == ["Echo.chd"]
+    assert "ps2/Echo.chd" in image_checks.last_checked(lib)
+    after = await verification_store.get_record(str(chd))
+    assert after["produced_meta"] == made["produced_meta"]
+    assert after["source_path"] == made["source_path"]
+    assert after["check_passed"] == "intact"
