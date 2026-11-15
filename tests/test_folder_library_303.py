@@ -959,8 +959,13 @@ async def test_repeated_sweeps_on_a_hung_mount_strand_one_thread(
     from routes import libraries as routes
     from services.rules import sweep as rules_sweep
 
+    from services import notifications
+
     lib = await _library_with_rules(tree)
     monkeypatch.setattr(rules_sweep, "_LISTING_SECONDS", 0.2)
+    # The sweep's error notification reads its destinations on a pooled worker,
+    # which can start one more idle pool thread; not a stranded one.
+    monkeypatch.setattr(notifications, "notify", lambda event: None)
     before = threading.active_count()
 
     for _ in range(6):
@@ -1822,8 +1827,8 @@ def test_the_folder_libraries_migration_stacks_on_the_ledger_totals_one(tmp_path
     engine = _db.make_engine(str(tmp_path / "chain.db"))
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    # #304's 0013 stacks on this 0012, so the one head is 0013.
-    assert script.get_heads() == ["0013"]
+    # #304's 0013 stacks on this 0012 and #305's 0014 on that: one head, 0014.
+    assert script.get_heads() == ["0014"]
     assert script.get_revision("0012").down_revision == "0011"
     assert script.get_revision("0011").down_revision == "0010"
 

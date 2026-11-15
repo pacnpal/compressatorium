@@ -912,8 +912,17 @@ async def on_job_finished(job: ConversionJob) -> None:
     if sweep is not None:
         sweep.pending.discard(job.id)
         _maybe_send(sweep)
-    elif job.status == JobStatus.FAILED:
+    elif job.status == JobStatus.FAILED and _started_by_hand(job):
         notify(job_failed_event(job))
+
+
+def _started_by_hand(job: ConversionJob) -> bool:
+    """Whether *job*'s mode is one a person starts. A check Rule's run (#305) is
+    started by the scheduler, so its failure is not "a job you started"; the
+    mode declares it (``job_manager.EXTERNAL_JOB_MODES``)."""
+    from services.job_manager import started_by_hand
+
+    return started_by_hand(job.mode)
 
 
 def _reset_for_tests() -> None:

@@ -297,9 +297,15 @@ class FolderLibrary(LibraryDefaults):
         for current, dirs, names in os.walk(root, followlinks=False, onerror=on_error):
             dirs.sort()
             for name in sorted(names):
-                if match_extension(name, extensions) is None:
-                    continue
                 path = os.path.join(current, name)
+                # A split output's numbered parts (`Game.iso.0`, `.1`) carry no
+                # Image extension; they are listed, and `image_members` folds
+                # them into one Image on the first part.
+                if (
+                    match_extension(name, extensions) is None
+                    and registry.split_owner(path) is None
+                ):
+                    continue
                 try:
                     st = os.lstat(path)
                 except OSError:
@@ -473,6 +479,9 @@ class FolderLibrary(LibraryDefaults):
                 keep_under=[self._key(path) for path in scan.unwalked],
                 current=current,
             )
+            # A check Rule's "not Intact" (#305) for an Image that is gone
+            # (converted away, deleted): no walk or check would see it again.
+            findings.clear_gone(self.id, findings.NOT_INTACT, current=current)
         except Exception:
             # The walk is still good for Rules; the Findings view is behind
             # until the next walk. Logged, not swallowed.

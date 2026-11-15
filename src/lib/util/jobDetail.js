@@ -4,7 +4,8 @@
 // A completed job shows its output path, then its warning if it has one: the
 // backend keeps a tool's caveat on `job.warning` (an eXoDOS conf that points
 // outside its game, a Source kept for a reader), so a finished job that did
-// less than asked does not read as a plain success.
+// less than asked does not read as a plain success. One with neither (a check
+// Rule's run writes no output) shows its closing message instead.
 //
 // A delete-on-verify job that finished without deleting anything kept its
 // Source, and its message says why (#295). Every such ending now also sets
@@ -28,6 +29,8 @@ export function jobDetailLines(job) {
     if (job?.output_path) lines.push({ kind: 'output', text: `→ ${job.output_path}` });
     if (job?.warning) lines.push({ kind: 'warning', text: job.warning });
     else if (sourceKept(job)) lines.push({ kind: 'kept', text: job.message });
+    // A job that writes nothing (a check Rule's run, #305) shows its result.
+    if (!lines.length && job?.message) lines.push({ kind: 'message', text: job.message });
     return lines;
   }
   return [];

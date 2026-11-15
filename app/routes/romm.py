@@ -64,6 +64,7 @@ from services.romm import (
 )
 from services.romm.library import romm_library
 from services.rules import editor as rules_editor
+from services.rules import sweep as rules_sweep
 from services.subprocess_runner import (
     SIZE_RATIOS,
     bounded_path_check,
@@ -1627,7 +1628,9 @@ async def _run_identity_cleanup() -> int:
     """Drop everything the previous RomM instance or library owned.
 
     Two records, one reason: both name things that only mean something against
-    the instance and root they were written for.
+    the instance and root they were written for. The check times and "not
+    Intact" Findings (#305) go too: they are keyed by ROM id, which the new
+    instance reuses for other games.
 
     The pending re-pin rows are the sharper case -- each holds provider ids
     read from the *old* instance and a destination under the *old* library
@@ -1643,6 +1646,9 @@ async def _run_identity_cleanup() -> int:
     The caller must hold `_settle_lock` and the sweep pause.
     """
     cleared = await romm_auto.forget_converted_locked()
+    # The new instance reuses ROM ids, so the check times and "not Intact"
+    # Findings keyed by them (#305) describe other files now.
+    await run_in_threadpool(rules_sweep.forget_checks_locked, romm_library)
     retired = await run_in_threadpool(
         romm_repin.retire_all_pending,
         "The RomM instance or library path changed before this could "

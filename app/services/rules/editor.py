@@ -12,10 +12,15 @@ from typing import Any
 from services.rules import rules as schema
 from services.rules import sweep as rules_sweep
 from services.rules.library import Library, duplicate_actions
+from services.rules.rules import CHECK
 
 
 async def editor_payload(library: Library) -> dict[str, Any]:
     """*library*'s Rules and run state, with the schema the editor renders from.
+
+    ``rules`` / ``state`` are the conversion Rules, ``check_rules`` /
+    ``check_state`` the check Rules (#305), each keyed by Platform id: a
+    Platform can have one of each.
 
     ``defaults`` and ``options`` ship with the Rules so the UI never carries a
     second copy of what a valid Rule looks like. ``options.duplicate_actions``
@@ -24,6 +29,8 @@ async def editor_payload(library: Library) -> dict[str, Any]:
     return {
         "rules": await rules_sweep.get_rules(library),
         "state": await rules_sweep.get_state(library),
+        "check_rules": await rules_sweep.get_rules(library, CHECK),
+        "check_state": await rules_sweep.get_state(library, CHECK),
         "defaults": schema.default_rule(defaults=library.rule_defaults()),
         "options": {
             "orders": list(schema.ORDERS),
@@ -38,9 +45,24 @@ async def save_rules(library: Library, payload: Any) -> dict[str, Any]:
 
     Strict: a Rule asking for a policy the Library cannot honour raises
     :class:`~services.rules.library.UnsupportedPolicy` and nothing is saved.
+    ``check_rules`` replaces the check Rules when the submission has it; a
+    submission without it (an older editor, a bare map) leaves them as they are,
+    and one with only ``check_rules`` leaves the conversion Rules.
     """
-    raw = payload.get("rules", payload) if isinstance(payload, dict) else payload
-    return {"rules": await rules_sweep.set_rules(library, raw, strict=True)}
+    as_dict = isinstance(payload, dict)
+    has_checks = as_dict and "check_rules" in payload
+    only_checks = has_checks and "rules" not in payload
+    out: dict[str, Any] = {}
+    if only_checks:
+        out["rules"] = await rules_sweep.get_rules(library)
+    else:
+        raw = payload.get("rules", payload) if as_dict else payload
+        out["rules"] = await rules_sweep.set_rules(library, raw, strict=True)
+    if has_checks:
+        out["check_rules"] = await rules_sweep.set_check_rules(library, payload["check_rules"])
+    else:
+        out["check_rules"] = await rules_sweep.get_rules(library, CHECK)
+    return out
 
 
 async def forget_converted(library: Library, platform_ids: list | None) -> dict[str, Any]:

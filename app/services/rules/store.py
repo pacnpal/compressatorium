@@ -5,9 +5,11 @@ configuration) and ``rules.state`` (schedule stamps and converted history).
 They stay separate on purpose: mixing "when did this last run" into the rule
 blob means every sweep rewrites the operator's configuration.
 
-Inside each row a Rule's key is ``f"{library.id}:{platform_id}"``, so a Rule
-belongs to one (Library, Platform) pair. Callers never see the prefix: they
-read and write one Library's view, keyed by bare Platform id.
+Inside each row a Rule's key is ``f"{library.id}:{platform_id}"``. Check Rules
+(#305) have rows of their own, ``rules.check`` and ``rules.check.state``, so a
+Rule's identity is (Library, Platform, kind) and a Platform can have a
+conversion Rule and a check Rule. Callers never see the prefix: they read and
+write one Library's view of one row, keyed by bare Platform id.
 
 Before #296 RomM kept its Rules unprefixed under ``romm.rules`` and
 ``romm.auto_state``. A Library names such rows in ``legacy_preference_keys``.
@@ -34,6 +36,17 @@ if TYPE_CHECKING:
 
 RULES_KEY = "rules"
 STATE_KEY = "rules.state"
+# The check Rules and their run state (#305). Kept apart from the conversion
+# rows, which an earlier release reads and the legacy copy and the check-level
+# upgrade walk.
+CHECK_RULES_KEY = "rules.check"
+CHECK_STATE_KEY = "rules.check.state"
+# Rules row, state row, by Rule kind.
+_KIND_KEYS = {
+    "convert": (RULES_KEY, STATE_KEY),
+    "check": (CHECK_RULES_KEY, CHECK_STATE_KEY),
+}
+
 # ``{library id: when its legacy rows were copied}``. Written last, so a crash
 # part way through the copy repeats it from the same unchanged rows.
 MIGRATED_KEY = "rules.migrated"
@@ -45,6 +58,17 @@ MIGRATED_KEY = "rules.migrated"
 CHECK_LEVEL_UPGRADE_KEY = "rules.check_level_upgrade"
 # ``{notice id: when it was dismissed}``.
 NOTICES_KEY = "rules.notices"
+
+
+def rules_key(kind: str) -> str:
+    """The row a Rule *kind* is stored in."""
+    return _KIND_KEYS[kind][0]
+
+
+def state_key(kind: str) -> str:
+    """The row a Rule *kind*'s run state is stored in."""
+    return _KIND_KEYS[kind][1]
+
 
 _SEPARATOR = ":"
 

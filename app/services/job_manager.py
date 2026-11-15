@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -95,10 +96,44 @@ def _source_bytes(path: str) -> Optional[int]:
 # must NOT count against max_queue_depth backpressure, stuck-detection,
 # or the cancel-all / queued-count surfaces that only apply to the
 # chdman/dolphin/z3ds conversion pipeline.
-_EXTERNAL_JOB_MODES = frozenset({
-    ConversionMode.METADATA_SCAN,
-    ConversionMode.DAT_MATCH,
-})
+@dataclass(frozen=True)
+class ExternalMode:
+    """What an externally-managed job mode declares about itself.
+
+    ``in_ledger``: whether its finished jobs get a Ledger row. A check Rule's
+    run (#305) verifies and converts nothing, so it says no; a metadata scan
+    and a DAT match keep the rows they have always written.
+    """
+
+    in_ledger: bool = True
+    # Whether a failed job of this mode is "a job you started" (#293's
+    # ``job_failed`` message). A check Rule's run is started by the scheduler.
+    started_by_hand: bool = True
+
+
+EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
+    ConversionMode.METADATA_SCAN: ExternalMode(),
+    ConversionMode.DAT_MATCH: ExternalMode(),
+    ConversionMode.CHECK: ExternalMode(in_ledger=False, started_by_hand=False),
+}
+_EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
+
+
+def started_by_hand(mode) -> bool:
+    """Whether a job of *mode* is one a person started (every conversion may be)."""
+    declared = EXTERNAL_JOB_MODES.get(mode)
+    return declared is None or declared.started_by_hand
+
+
+def in_ledger(mode) -> bool:
+    """Whether a finished job of *mode* gets a Ledger row (every conversion does)."""
+    declared = EXTERNAL_JOB_MODES.get(mode)
+    return declared is None or declared.in_ledger
+
+
+def is_external_mode(mode) -> bool:
+    """Whether *mode* names an externally-managed job, never a conversion."""
+    return mode in _EXTERNAL_JOB_MODES
 
 
 def _is_conversion_job(job) -> bool:
@@ -1145,9 +1180,16 @@ class JobManager:
         *,
         progress: Optional[int] = None,
         message: Optional[str] = None,
+        event_extra: dict[str, object] | None = None,
     ) -> None:
         """Update the progress/message of an externally-managed job and
-        notify SSE subscribers."""
+        notify SSE subscribers.
+
+        *event_extra* rides on that ``progress`` event, which the jobs stream
+        forwards: a check run's ``verification_changes`` for the Image it just
+        settled (#305), which the browser's verification store applies in the
+        order they arrive.
+        """
         job = self.jobs.get(job_id)
         if job is None:
             return
@@ -1158,6 +1200,7 @@ class JobManager:
         await self._notify_subscribers(
             job_id,
             {
+                **(event_extra or {}),
                 "type": "progress",
                 "job_id": job_id,
                 "status": job.status.value,
@@ -1172,9 +1215,15 @@ class JobManager:
         *,
         success: bool,
         error_message: Optional[str] = None,
+        event_extra: dict[str, object] | None = None,
     ) -> None:
         """Mark an externally-managed job as complete or failed, notify
-        subscribers, and archive it."""
+        subscribers, and archive it.
+
+        *event_extra* rides on that terminal event: a check run's
+        ``verification_paths`` (#305), the files whose check state it changed,
+        which an open page re-reads in case it missed their progress events.
+        """
         job = self.jobs.get(job_id)
         if job is None:
             return
@@ -1193,6 +1242,7 @@ class JobManager:
         await self._notify_subscribers(
             job_id,
             {
+                **(event_extra or {}),
                 "type": event_type,
                 "job_id": job_id,
                 "status": job.status.value,
@@ -1213,11 +1263,13 @@ class JobManager:
         job_id: str,
         *,
         message: Optional[str] = None,
+        event_extra: dict[str, object] | None = None,
     ) -> None:
         """Finalize an externally-managed job that was cancelled mid-run.
 
         Parallels :meth:`finish_external_job` but sets status to CANCELLED
         and emits a ``cancelled`` SSE event so the UI transitions cleanly.
+        *event_extra* rides on that event, as in :meth:`finish_external_job`.
         """
         job = self.jobs.get(job_id)
         if job is None:
@@ -1232,6 +1284,7 @@ class JobManager:
         await self._notify_subscribers(
             job_id,
             {
+                **(event_extra or {}),
                 "type": "cancelled",
                 "job_id": job_id,
                 "status": job.status.value,

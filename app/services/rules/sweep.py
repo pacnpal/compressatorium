@@ -40,8 +40,7 @@ from typing import Any
 
 from logging_setup import get_logger
 from models import ConversionMode, JobStatus
-from services import notifications
-from services import subprocess_runner
+from services import findings, image_checks, notifications, subprocess_runner
 from services.image_sets import image_fingerprint
 from services.job_manager import (
     OutputClaimedError,
@@ -54,6 +53,7 @@ from services.output_conflicts import (
     SKIP_LOCKED,
     resolve_destination,
 )
+from services.rules import check as checks
 from services.rules import store
 from services.rules.library import (
     CONVERTED_HISTORY,
@@ -66,6 +66,9 @@ from services.rules.library import (
     refuse_unsupported_policies,
 )
 from services.rules.rules import (
+    CHECK,
+    CONVERT,
+    RULE_KINDS,
     _output_identity,
     _validation_paused,
     effective_check_level,
@@ -160,14 +163,22 @@ _generations: dict[str, int] = {}
 # this logs the change of state, once each way, instead of every tick.
 _unreadable: dict[tuple[str, str], str] = {}
 
+# (library id, platform id) of each check Rule whose scheduled run is still
+# checking (#305). Its run is recorded only when that run finishes, so until
+# then the Rule would read as due and the next tick would pick another budget's
+# worth; while it is here the scheduler picks nothing more for it. Cleared as
+# the run ends, recorded or not. In memory: one scheduler runs per data
+# directory (#307's scheduler lock), and a restart ends every run.
+_active_check_runs: set[tuple[str, str]] = set()
+
 # job id -> outcome, for a job that ended before its record was written. Drained
 # by `_mark_converted`; see there. Bounded by the same thing that bounds
 # `_job_owners`: one entry per queued conversion, removed when it is applied.
 _late_verdicts: dict[str, bool] = {}
 
 
-async def get_rules(library: Library) -> dict[str, dict]:
-    """*library*'s stored rules, normalized without touching the filesystem.
+async def get_rules(library: Library, kind: str = CONVERT) -> dict[str, dict]:
+    """*library*'s stored Rules of *kind*, normalized without touching the filesystem.
 
     `check_volumes=False`: the output directory was validated when it was
     saved, and re-validating on every read would put a resolve plus a stat of
@@ -176,14 +187,15 @@ async def get_rules(library: Library) -> dict[str, dict]:
     destination off the loop before it queues anything, which is what covers a
     blob edited straight in the database.
     """
-    stored = await store.read(store.RULES_KEY, library)
-    return _normalize(library, stored, check_volumes=False)
+    stored = await store.read(store.rules_key(kind), library)
+    return _normalize(library, stored, kind=kind, check_volumes=False)
 
 
-def _normalize(library: Library, raw: Any, **kwargs) -> dict[str, dict]:
+def _normalize(library: Library, raw: Any, *, kind: str = CONVERT, **kwargs) -> dict[str, dict]:
     """`normalize_rules` with *library*'s Platform ids and defaults."""
     return normalize_rules(
         raw,
+        kind=kind,
         platform_id=library.canonical_platform_id,
         defaults=library.rule_defaults(),
         duplicate_actions=duplicate_actions(library),
@@ -268,7 +280,9 @@ async def _within_volumes_bounded(path: str) -> bool:
         return False
 
 
-async def normalize_rules_bounded(library: Library, raw: Any) -> dict[str, dict]:
+async def normalize_rules_bounded(
+    library: Library, raw: Any, kind: str = CONVERT,
+) -> dict[str, dict]:
     """`normalize_rules` with its volume checks off the event loop, bounded.
 
     Validating an output directory resolves the candidate and stats every
@@ -283,7 +297,7 @@ async def normalize_rules_bounded(library: Library, raw: Any) -> dict[str, dict]
     """
     try:
         return await asyncio.wait_for(
-            run_detached(functools.partial(_normalize, library, raw)),
+            run_detached(functools.partial(_normalize, library, raw, kind=kind)),
             _VOLUME_PROBE_SECONDS,
         )
     except (asyncio.TimeoutError, OSError):
@@ -292,11 +306,23 @@ async def normalize_rules_bounded(library: Library, raw: Any) -> dict[str, dict]
             "in %ss; pausing the rules that name one (a volume is not answering)",
             _VOLUME_PROBE_SECONDS,
         )
-        return _normalize(library, raw, volumes_unreachable=True)
+        return _normalize(library, raw, kind=kind, volumes_unreachable=True)
+
+
+async def set_check_rules(library: Library, raw: Any) -> dict[str, dict]:
+    """Replace *library*'s check Rules (#305). Its conversion Rules are untouched.
+
+    Under the sweep lock, as :func:`set_rules`. A check Rule writes nothing,
+    so it has no output folder to validate and no converted history to forget.
+    """
+    async with _sweep_lock:
+        rules = _normalize(library, raw, kind=CHECK, check_volumes=False)
+        await store.write(store.CHECK_RULES_KEY, library, rules)
+        return rules
 
 
 async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict[str, dict]:
-    """Replace *library*'s rule set, forgetting provenance the new rules invalidate.
+    """Replace *library*'s conversion rule set, forgetting provenance the new rules invalidate.
 
     *strict* is for a submission: a Rule asking for a duplicate policy the
     Library cannot honour raises :class:`UnsupportedPolicy` and nothing is
@@ -404,16 +430,21 @@ async def forget_library(library: Library) -> None:
                 _job_owners.pop(job_id, None)
         for key in [k for k in _unreadable if k[0] == library.id]:
             _unreadable.pop(key, None)
-        await store.write(store.RULES_KEY, library, {})
-        await store.write(store.STATE_KEY, library, {})
+        for kind in RULE_KINDS:
+            await store.write(store.rules_key(kind), library, {})
+            await store.write(store.state_key(kind), library, {})
 
 
-async def get_state(library: Library) -> dict[str, dict]:
-    """*library*'s run state: schedule stamps and converted history, by Platform."""
-    return await store.read(store.STATE_KEY, library)
+async def get_state(library: Library, kind: str = CONVERT) -> dict[str, dict]:
+    """*library*'s run state for its Rules of *kind*: schedule stamps and, for
+    conversions, converted history, by Platform."""
+    return await store.read(store.state_key(kind), library)
 
 
-async def _record_run(library: Library, platform_id: str, summary: dict) -> None:
+async def _record_run(
+    library: Library, platform_id: str, summary: dict, kind: str = CONVERT,
+    *, manual: bool = False, at: datetime | None = None,
+) -> None:
     """Stamp the schedule clock, merging into whatever else the entry holds.
 
     The per-platform entry is shared with ``converted_ids``: replacing it
@@ -421,15 +452,23 @@ async def _record_run(library: Library, platform_id: str, summary: dict) -> None
     already converted -- and that set is the only thing stopping an
     ``overwrite`` rule from reconverting the library forever.
     """
-    state = await get_state(library)
+    state = await get_state(library, kind)
     entry = dict(state.get(str(platform_id)) or {})
+    # A manual run of a check Rule (Run now) stamps its own field: `_is_due`
+    # reads only `last_run_at`, so the nightly run is not pushed back a day.
+    clock = "last_manual_run_at" if manual else "last_run_at"
+    # *at* is the moment the sweep found the Rule due, so a pick that runs past
+    # midnight still counts for the window that selected it.
+    stamp = at or datetime.now(timezone.utc)
     entry.update({
-        "last_run_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        clock: stamp.isoformat().replace("+00:00", "Z"),
         "last_queued": summary.get("queued", 0),
         "last_considered": summary.get("considered", 0),
     })
+    if summary.get("check"):
+        entry["last_checks"] = summary.get("checks", 0)
     state[str(platform_id)] = entry
-    await store.write(store.STATE_KEY, library, state)
+    await store.write(store.state_key(kind), library, state)
 
 
 # ----------------------------------------------------------------------
@@ -1086,8 +1125,10 @@ async def _sweep_locked(
     def stopping() -> bool:
         return should_stop is not None and should_stop()
 
-    rules = await get_rules(library)
-    state = await get_state(library)
+    # Every Rule of every kind, with its own run state: a Platform's conversion
+    # Rule and check Rule run on their own clocks.
+    rules = {kind: await get_rules(library, kind) for kind in RULE_KINDS}
+    states = {kind: await get_state(library, kind) for kind in RULE_KINDS}
     now = datetime.now(timezone.utc)
 
     result: dict = {
@@ -1107,7 +1148,7 @@ async def _sweep_locked(
     holds_failures = FAILED_HOLD in library.capabilities
     if holds_failures:
         result["skipped_failed"] = 0
-    if not rules:
+    if not any(rules.values()):
         result["stopped_reason"] = "no_rules"
         return result
     if not library.configured():
@@ -1132,10 +1173,15 @@ async def _sweep_locked(
     # way, so the operator could not even see it coming.
     wanted = {str(p) for p in platform_ids} if platform_ids is not None else None
 
-    # Priority first (lower runs earlier), then id, so the order is total and
-    # a capped sweep resumes where the last one stopped.
+    # Priority first (lower runs earlier), then id, then kind (conversion
+    # first), so the order is total and a capped sweep resumes where the last
+    # one stopped.
     ordered = sorted(
-        rules, key=lambda pid: (rules[pid]["priority"], library.platform_value(pid)),
+        ((kind, pid) for kind in RULE_KINDS for pid in rules[kind]),
+        key=lambda item: (
+            rules[item[0]][item[1]]["priority"], library.platform_value(item[1]),
+            RULE_KINDS.index(item[0]),
+        ),
     )
     # Bounded: this resolves every queued job's source, and one of them on a
     # dead mount would hang the sweep with `_sweep_lock` held. An unreadable
@@ -1153,14 +1199,23 @@ async def _sweep_locked(
     # delete_on_verify, both sources are deleted for one surviving file.
     claimed_destinations: set[str] = set()
 
-    for platform_id in ordered:
+    # What the check Rules picked, run as one job once the pass is over, and
+    # their runs to record then. Both are dropped if a stop comes first.
+    picked: list = []
+    check_runs: list = []
+    if not dry_run:
+        await _clear_vanished(library)
+
+    for kind, platform_id in ordered:
         if stopping():
             result["stopped_reason"] = "stopped"
             break
-        if result["queued"] >= cap:
+        rule = rules[kind][platform_id]
+        # The cap counts conversions. A check Rule queues none, so one ordered
+        # after a capped conversion Rule still runs.
+        if result["queued"] >= cap and kind == CONVERT:
             result["stopped_reason"] = "limit"
-            break
-        rule = rules[platform_id]
+            continue
         if wanted is not None and platform_id not in wanted:
             continue
         # How errors and summaries name this Platform (RomM: the integer id).
@@ -1187,7 +1242,24 @@ async def _sweep_locked(
                 )
             continue
         # ignore_schedule bypasses only the clock (interval, window, weekday).
-        if not ignore_schedule and not _is_due(rule, state.get(platform_id, {}), now):
+        if not ignore_schedule and not _is_due(
+            rule, states[kind].get(platform_id, {}), now,
+        ):
+            continue
+        if (
+            kind == CHECK and not ignore_schedule
+            and (library.id, str(platform_id)) in _active_check_runs
+        ):
+            # Its scheduled run is still checking: one budget per window.
+            continue
+
+        if kind == CHECK:
+            if await _sweep_check(
+                library, platform_id, rule, result, active_paths,
+                picked=picked, check_runs=check_runs, dry_run=dry_run,
+                manual=ignore_schedule, now=now, stopping=stopping,
+            ):
+                break
             continue
 
         try:
@@ -1225,53 +1297,11 @@ async def _sweep_locked(
             )
             continue
 
-        try:
-            # Off the loop and bounded: the sweep holds `_sweep_lock` for the
-            # whole call, and a Library on a mount that stops answering must
-            # fail this sweep, not hold the lock until a restart. On a detached
-            # daemon thread (process-wide cap), never the shared pool: an
-            # abandoned listing would otherwise keep a pooled worker that
-            # conversions need. Not `run_in_threadpool` either: anyio waits for
-            # the thread when its caller is cancelled. Called through the
-            # module so it is not the candidate probes' `run_detached`.
-            # And stop-aware: a listing can take the whole bound, and a stop
-            # (run-rules on SIGTERM) must not wait for it.
-            images = await _wait_unless_stopped(
-                subprocess_runner.run_detached(library.images, platform_id),
-                _LISTING_SECONDS, stopping,
-            )
-        except _SweepStopped:
-            result["stopped_reason"] = "stopped"
-            break
-        except LibraryUnreadable as exc:
-            if _unreadable.get((library.id, platform_id)) != exc.code:
-                logger.warning(
-                    "romm_auto: platform %s of %s unreadable: %s",
-                    platform_id, library.id, exc,
-                )
-            _unreadable[(library.id, platform_id)] = exc.code
-            # The Library's reason, so the summary can say "still running" or
-            # "the folder is not reachable" rather than one generic failure.
-            result["errors"].append(
-                {"platform_id": platform_ref, "error": exc.code},
-            )
+        images = await _list_images(library, platform_id, result, stopping)
+        if images is None:
+            if _sweep_ends(result):
+                break
             continue
-        except asyncio.TimeoutError:
-            _unreadable[(library.id, platform_id)] = "library_unresponsive"
-            logger.warning(
-                "romm_auto: listing platform %s did not finish in %ss; stopping "
-                "the sweep (the Library is not answering)", platform_id,
-                _LISTING_SECONDS,
-            )
-            result["errors"].append(
-                {"platform_id": platform_ref, "error": "library_unresponsive"},
-            )
-            result["stopped_reason"] = "library_unresponsive"
-            break
-        if _unreadable.pop((library.id, platform_id), None) is not None:
-            logger.info(
-                "romm_auto: platform %s of %s is readable again", platform_id, library.id,
-            )
 
         # The editor narrows the target list, but a rule can outlive the tool
         # set it was written against (or be hand-edited), and `converts_path` is
@@ -1648,8 +1678,281 @@ async def _sweep_locked(
         if not dry_run and not summary.get("queue_failed") and not unresponsive:
             await _record_run(library, platform_id, summary)
 
+    if stopping():
+        # A stop starts nothing new: what the check Rules picked is dropped and
+        # their runs are not recorded, so the next sweep picks them again.
+        result["stopped_reason"] = "stopped"
+    elif not dry_run:
+        async def record_check_runs(attempted: frozenset[str] | None = None) -> None:
+            # Stamped with the moment the sweep found each Rule due, not when
+            # the run finished: a night's run that ends past midnight still
+            # counts for the window that picked it, so the next one keeps its
+            # own run (4577171597). The reservation covers the time between.
+            # With *attempted*, only a Rule whose picked Images the run all
+            # reached is recorded: one it never got to (a stop on an abandoned
+            # verifier, a cancel) stays due (4578054443).
+            for platform_id, summary, manual, at, keys in check_runs:
+                if attempted is not None and not keys <= attempted:
+                    continue
+                await _record_run(library, platform_id, summary, CHECK, manual=manual, at=at)
+
+        # The scheduled runs this job carries hold their windows until it ends.
+        reserved = {
+            (library.id, str(platform_id))
+            for platform_id, _summary, manual, _at, _keys in check_runs if not manual
+        }
+
+        async def check_run_ended(attempted: frozenset[str]) -> None:
+            try:
+                # From the check run, after this sweep let go of the lock:
+                # taken again so the write cannot interleave with another
+                # sweep's.
+                async with _sweep_lock:
+                    await record_check_runs(attempted)
+            finally:
+                # Recorded or not: a Rule the run did not finish stays due.
+                _active_check_runs.difference_update(reserved)
+
+        if picked:
+            # One job and, if anything fails, one notification for the sweep.
+            # The check Rules' runs are recorded once it has checked them all,
+            # so a check cut short (a stop, a restart) leaves its Rule due.
+            _active_check_runs.update(reserved)
+            checks.start(
+                library, picked, generation=_generations.get(library.id, 0),
+                on_finished=check_run_ended,
+            )
+        else:
+            await record_check_runs()
     result.update(await library.sweep_extras())
     return result
+
+
+async def _clear_vanished(library: Library) -> None:
+    """Clear *library*'s "not Intact" Findings whose file is gone (#305).
+
+    A converted or deleted Image is never listed or checked again, so nothing
+    else would. Bounded and detached: it stats each such Finding's path.
+    """
+    generation = _generations.get(library.id, 0)
+    try:
+        await asyncio.wait_for(
+            run_detached(
+                findings.clear_gone, library.id, findings.NOT_INTACT,
+                current=lambda: _generations.get(library.id, 0) == generation,
+            ),
+            _CANDIDATE_PROBE_SECONDS,
+        )
+    except (asyncio.TimeoutError, OSError):
+        logger.warning(
+            "romm_auto: checking %s's not-Intact Findings did not finish; "
+            "the next sweep tries again", library.id,
+        )
+
+
+def forget_checks_locked(library: Library) -> None:
+    """Drop *library*'s check times and "not Intact" Findings. Blocking.
+
+    For a Library whose Image keys now name other Images (RomM pointed at
+    another instance reuses ROM ids). The caller holds :func:`paused`; the
+    Library's generation moves first, so a check run in flight writes nothing
+    more.
+    """
+    _generations[library.id] = _generations.get(library.id, 0) + 1
+    findings.forget_kind(library.id, findings.NOT_INTACT)
+    image_checks.forget_library(library.id)
+
+
+async def _list_images(
+    library: Library, platform_id: str, result: dict,
+    stopping: Callable[[], bool] = lambda: False,
+) -> list[Image] | None:
+    """One Platform's Images, or None with the reason added to *result*.
+
+    A Library that stops answering sets ``stopped_reason`` to
+    ``library_unresponsive``, and a stop that arrives while it lists sets it
+    to ``stopped``: either way the caller stops the sweep there
+    (:func:`_sweep_ends`).
+    """
+    platform_ref = library.platform_value(platform_id)
+    try:
+        # Off the loop and bounded: the sweep holds `_sweep_lock` for the
+        # whole call, and a Library on a mount that stops answering must
+        # fail this sweep, not hold the lock until a restart. On a detached
+        # daemon thread (process-wide cap), never the shared pool: an
+        # abandoned listing would otherwise keep a pooled worker that
+        # conversions need. Not `run_in_threadpool` either: anyio waits for
+        # the thread when its caller is cancelled. Called through the
+        # module so it is not the candidate probes' `run_detached`.
+        # And stop-aware: a listing can take the whole bound, and a stop
+        # (run-rules on SIGTERM) must not wait for it.
+        images = await _wait_unless_stopped(
+            subprocess_runner.run_detached(library.images, platform_id),
+            _LISTING_SECONDS, stopping,
+        )
+    except _SweepStopped:
+        result["stopped_reason"] = "stopped"
+        return None
+    except LibraryUnreadable as exc:
+        if _unreadable.get((library.id, platform_id)) != exc.code:
+            logger.warning(
+                "romm_auto: platform %s of %s unreadable: %s",
+                platform_id, library.id, exc,
+            )
+        _unreadable[(library.id, platform_id)] = exc.code
+        # The Library's reason, so the summary can say "still running" or
+        # "the folder is not reachable" rather than one generic failure.
+        result["errors"].append({"platform_id": platform_ref, "error": exc.code})
+        return None
+    except asyncio.TimeoutError:
+        _unreadable[(library.id, platform_id)] = "library_unresponsive"
+        logger.warning(
+            "romm_auto: listing platform %s did not finish in %ss; stopping "
+            "the sweep (the Library is not answering)", platform_id,
+            _LISTING_SECONDS,
+        )
+        result["errors"].append(
+            {"platform_id": platform_ref, "error": "library_unresponsive"},
+        )
+        result["stopped_reason"] = "library_unresponsive"
+        return None
+    if _unreadable.pop((library.id, platform_id), None) is not None:
+        logger.info(
+            "romm_auto: platform %s of %s is readable again", platform_id, library.id,
+        )
+    return images
+
+
+def _sweep_ends(result: dict) -> bool:
+    """Whether a failed listing ends the whole sweep: the Library stopped
+    answering, or the caller asked to stop."""
+    return result["stopped_reason"] in ("library_unresponsive", "stopped")
+
+
+async def _sweep_check(
+    library: Library, platform_id: str, rule: dict, result: dict,
+    active_paths: set[str], *, picked: list, check_runs: list, dry_run: bool,
+    manual: bool = False, now: datetime | None = None,
+    stopping: Callable[[], bool] = lambda: False,
+) -> bool:
+    """One check Rule's Platform: pick the stalest Images within its budget (#305).
+
+    Adds the Platform's summary to *result*, what it picked to *picked* and
+    the run to record to *check_runs*: the caller starts the job and records
+    the runs once the pass is over, and neither if a stop came first.
+    Returns True when the sweep must end (the Library stopped answering, or
+    a stop). *manual* (Run now) records the run without moving the clock the
+    schedule reads, so the nightly run still comes when it is due.
+    """
+    platform_ref = library.platform_value(platform_id)
+    images = await _list_images(library, platform_id, result, stopping)
+    if images is None:
+        return _sweep_ends(result)
+    budget = int(rule["check_budget_gb"]) * checks.GB
+    last = await checks.order_stamps(library.id)
+    ready: dict[str, bool] = {}
+    chosen: list[checks.Check] = []
+    spent = considered = uncheckable = held_elsewhere = 0
+    unresponsive = not_ready = False
+    for image in checks.stalest_first(images, last):
+        if stopping():
+            # Nothing of this Platform is picked or recorded.
+            result["stopped_reason"] = "stopped"
+            return True
+        considered += 1
+        if checks.in_flight(library.id, str(image.key)):
+            # Held elsewhere: another check run (Run now) has it.
+            result["skipped_active"] += 1
+            held_elsewhere += 1
+            continue
+        try:
+            # Detached and bounded, as a conversion candidate's probes are.
+            decision = await asyncio.wait_for(
+                run_detached(checks.inspect, image), _CANDIDATE_PROBE_SECONDS,
+            )
+        except (asyncio.TimeoutError, OSError):
+            logger.warning(
+                "romm_auto: platform %s library stopped responding, "
+                "stopping this platform", platform_id,
+            )
+            result["errors"].append(
+                {"platform_id": platform_ref, "error": "library_unresponsive"},
+            )
+            unresponsive = True
+            break
+        if "skip" in decision:
+            if decision["skip"] == "missing":
+                result["skipped_missing"] += 1
+            elif decision["skip"] == "uncheckable":
+                uncheckable += 1
+            elif decision["skip"] == "busy":
+                # Held elsewhere: a job (maybe in another process) writes it.
+                result["skipped_active"] += 1
+                held_elsewhere += 1
+            continue
+        if decision["resolved"] in active_paths:
+            # Held elsewhere: queued or being converted; a later run checks it.
+            result["skipped_active"] += 1
+            held_elsewhere += 1
+            continue
+        item: checks.Check = decision["check"]
+        if item.tool_id not in ready:
+            # Whether its verifier can run here, which is not the same as
+            # converting: jwud verifies in pure Python without JWUDTool, and
+            # z3ds needs zstd to verify whatever converting needs (#306).
+            ready[item.tool_id] = await registry.tool_is_ready(
+                registry.get(item.tool_id), purpose="verify",
+            )
+        if not ready[item.tool_id]:
+            # No verdict can come from a tool that is not installed: skipped,
+            # never a "not Intact" Finding.
+            not_ready = True
+            uncheckable += 1
+            continue
+        # Stalest first, and never past the budget, except that one Image
+        # larger than the whole budget is still checked rather than never.
+        if chosen and spent + item.size > budget:
+            break
+        chosen.append(item)
+        spent += item.size
+
+    if not_ready:
+        result["errors"].append({"platform_id": platform_ref, "error": "tool_not_ready"})
+    result["considered"] += considered
+    # Images a check Rule picked. Not conversions, so never in `queued` and
+    # never against the per-sweep cap. Present only once a check Rule ran,
+    # so a sweep of conversion Rules keeps its shape.
+    result["checks"] = result.get("checks", 0) + len(chosen)
+    summary = {
+        "platform_id": platform_ref,
+        "mode": "",
+        "check": True,
+        "queued": 0,
+        **library.summary_fields(),
+        "considered": considered,
+        "checks": len(chosen),
+        "check_bytes": spent,
+        "budget_bytes": budget,
+        "skipped_uncheckable": uncheckable,
+        "candidates": [c.name for c in chosen[:25]],
+    }
+    if unresponsive:
+        summary["library_unresponsive"] = True
+    result["platforms"].append(summary)
+    if not dry_run:
+        picked.extend(chosen)
+        # A Platform whose tool is missing waits for the next tick, not a day.
+        # Nor is a pick that came up empty only because its Images are held
+        # elsewhere for now (another check run, a conversion queued or running,
+        # a writer's lock) the night's run (4578116078, 4578154650): once they
+        # are free, the Rule must still be due.
+        if not unresponsive and not (
+            not chosen and (not_ready or held_elsewhere)
+        ):
+            check_runs.append(
+                (platform_id, summary, manual, now, frozenset(c.key for c in chosen)),
+            )
+    return False
 
 
 async def run_forever(libraries: Callable[[], Iterable[Library]]) -> None:
