@@ -1684,9 +1684,11 @@ async def test_a_walk_builds_each_folders_listing_marker_once(db: Path, monkeypa
 async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
     """Codex 4576790199: grouping and detection read ``tracks\\game.bin`` alike.
 
-    No folder above the sheet names a Platform, so only the header can: the
-    Saturn track under ``tracks/`` must be found by detection (the probe) and
-    owned by the sheet (grouping), giving one Saturn Image and nothing else.
+    As chdman does on POSIX (#294's 2b246fe), the backslash is part of the
+    name: the sheet names the file ``tracks\\game.bin`` beside it. No folder
+    above the sheet names a Platform, so only the header can: that Saturn
+    track must be found by detection (the probe) and owned by the sheet
+    (grouping), giving one Saturn Image and nothing else.
     """
     from services import libraries
 
@@ -1698,7 +1700,7 @@ async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
     (game / "game.cue").write_text(
         'FILE "tracks\\game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n',
     )
-    _sector0(game / "tracks" / "game.bin", b"SEGA SEGASATURN ", raw=True)
+    _sector0(game / "tracks\\game.bin", b"SEGA SEGASATURN ", raw=True)
     lib = await _register(root)
     library = libraries.get(lib["id"])
 
