@@ -303,7 +303,12 @@ def _header_dependencies(path: str, tools: Iterable) -> tuple | None:
         if match_extension(path, tool.input_extensions) is None:
             continue
         reads = getattr(tool, "header_reads", None)
-        for dep in (reads(path) if reads else []):
+        listed = reads(path) if reads else []
+        if listed is None:
+            # The tool cannot tell what its probe reads (an unreadable sheet):
+            # answer, but cache nothing.
+            return None
+        for dep in listed:
             if dep in seen:
                 continue
             seen.add(dep)

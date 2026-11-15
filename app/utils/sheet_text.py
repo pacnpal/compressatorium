@@ -22,12 +22,21 @@ def sheet_readings(path: str | Path) -> list[str]:
 
     First the sheet as UTF-8 with a BOM stripped, or as cp1252 when it is not
     valid UTF-8; then Latin-1, which decodes any bytes and is the reading the
-    disc-ID probe always used. Empty when the sheet cannot be read.
+    disc-ID probe always used.
+
+    Empty when the sheet cannot be read, and when it is larger than
+    ``MAX_SHEET_BYTES``: never a partial parse. A sheet cut at the cap would
+    hide every track after it (a delete plan that orphans them, or a
+    ``FILE "/etc/..."`` behind a megabyte of ``REM`` lines that the tool
+    reading the whole sheet still opens), so an oversized sheet is unreadable
+    and every reader built on this treats it as unknown or unsafe.
     """
     try:
         with open(path, "rb") as fh:
-            raw = fh.read(MAX_SHEET_BYTES)
+            raw = fh.read(MAX_SHEET_BYTES + 1)
     except OSError:
+        return []
+    if len(raw) > MAX_SHEET_BYTES:
         return []
     raw = raw.removeprefix(_UTF8_BOM)
     try:

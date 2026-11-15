@@ -188,8 +188,9 @@ class ChdmanTool(BaseTool):
         # through their sector-0 system ids.
         return disc_platform(path)
 
-    def header_reads(self, path: str) -> list[str]:
-        # A .cue/.gdi is answered from the tracks it names.
+    def header_reads(self, path: str) -> list[str] | None:
+        # A .cue/.gdi is answered from the tracks it names; None when the
+        # sheet is unreadable, so the answer is not cached.
         return sheet_track_paths(path)
 
     # chdman's extract/copy modes take .chd input, but a .chd is not a
