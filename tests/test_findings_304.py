@@ -19,15 +19,17 @@ from pathlib import Path
 import pytest
 from services import platform_detect
 
-from .test_folder_library_303 import (  # noqa: F401
-    _IS_ROOT,
-    _db_fixture,
-    _queue,
-    _ready,
-    _register,
-    _tree,
-)
+from . import test_folder_library_303 as folder_library_303
+from .test_folder_library_303 import _IS_ROOT, _register
 from .test_platform_detect import _blank, _gamecube, _ps2
+
+# #303's folder Library fixtures (`db`, `tree`, `ready`, `queue`), shared here.
+# pytest finds a fixture by scanning this module's attributes and registers it
+# under its own name, so binding them is enough.
+_db_fixture = folder_library_303._db_fixture
+_tree = folder_library_303._tree
+_ready = folder_library_303._ready
+_queue = folder_library_303._queue
 
 
 def _map(path: Path, platform: str | None):
@@ -1063,28 +1065,20 @@ def test_a_cause_that_changed_while_the_image_was_away_drops_the_old_dismissal(
 
 
 def test_dismissing_twice_is_one_dismissal(db: Path) -> None:
-    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
     from services import db as _db
     from services import findings
 
     findings.reconcile("folder:1", [_conflict("ps2/a.iso")])
     finding_id = _open()[0]["id"]
-    errors = []
 
-    def click() -> None:
-        try:
-            assert findings.dismiss(finding_id) is True
-        except Exception as exc:  # noqa: BLE001 - the test reports any failure
-            errors.append(exc)
+    # Eight clicks at once. result() re-raises whatever a click raised (the
+    # IntegrityError a racing duplicate insert gave before the fix).
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        clicks = [pool.submit(findings.dismiss, finding_id) for _ in range(8)]
+        assert [click.result() for click in clicks] == [True] * 8
 
-    clicks = [threading.Thread(target=click) for _ in range(8)]
-    for thread in clicks:
-        thread.start()
-    for thread in clicks:
-        thread.join()
-
-    assert errors == []
     with _db.SessionLocal() as session:
         assert session.query(_db.FindingDismissalRecord).count() == 1
 
