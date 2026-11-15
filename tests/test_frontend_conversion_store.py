@@ -75,7 +75,9 @@ let autoAnswer = () => ({ plan: [], jobs: [] });
 const api = {
   async planRommRepin(...args) {
     calls.plan.push(args);
-    return planAnswer(...args);
+    const answer = planAnswer(...args);   // may throw, like a failed request
+    events.push(`plan:${args[1]}`);
+    return answer;
   },
   async cancelRommRepin(ids) {
     calls.cancel.push(ids);
@@ -83,9 +85,18 @@ const api = {
   },
   async createAutoJobs(...args) {
     calls.auto.push(args);
+    events.push('queue');
     return autoAnswer(...args);
   },
+  async getAutoPlan(paths) {
+    calls.autoPlan.push([...paths]);
+    return autoPlanAnswer(paths);
+  },
 };
+// One ordered log of the calls whose order matters.
+const events = [];
+calls.autoPlan = [];
+let autoPlanAnswer = (paths) => paths.map((p) => ({ file_path: p, mode: 'createdvd' }));
 const adopted = [];
 const jobs = {
   adopt: (list) => adopted.push(...list),
@@ -141,7 +152,7 @@ process.stdout.write(JSON.stringify({
   plans: calls.plan.map(([paths, mode, outDir, dup, platform]) => ({
     paths, mode, outDir, dup, platform,
   })),
-  planBeforeQueue: calls.plan.length > 0 && calls.auto.length === 1,
+  events,
   cancelled: calls.cancel.flat(),
   recorded: store.lastRepinRecorded,
   adopted: adopted.map((j) => j.id),
@@ -158,7 +169,8 @@ def test_auto_records_romm_metadata_per_target_and_reconciles(tmp_path):
         {"paths": ["/v/gc/b.iso"], "mode": "dolphin_rvz", "outDir": None,
          "dup": "skip", "platform": 7},
     ], data
-    assert data["planBeforeQueue"] is True, data
+    # Metadata for every target is recorded before anything is queued.
+    assert data["events"] == ["plan:createdvd", "plan:dolphin_rvz", "queue"], data
     # b.iso never became a job, so its row is retired; a.iso's is kept.
     assert data["cancelled"] == [22], data
     assert data["recorded"] == 1, data
@@ -391,3 +403,67 @@ def test_auto_offers_a_folder_only_a_folder_mode_can_convert(tmp_path):
         "fileToolFolder": False,
         "archive": False,
     }, data
+
+
+_RUN_AUTO_GUARD = """
+const store = new ConversionStore();
+let release;
+const confirm = () => new Promise((resolve) => { release = resolve; });
+const selection = ['/v/a.iso'];
+const first = store.runAuto({ paths: selection, rommPlatformId: null, confirm });
+// A second Start while the first is still planning / waiting for confirmation.
+const second = await store.runAuto({ paths: ['/v/b.iso'], rommPlatformId: null, confirm });
+const inFlight = store.autoInFlight;
+// The user changes the selection while the plan modal is open.
+selection.push('/v/c.iso');
+await new Promise((resolve) => setTimeout(resolve, 0));   // the modal is up
+release(true);
+await first;
+process.stdout.write(JSON.stringify({
+  second,
+  inFlight,
+  after: store.autoInFlight,
+  planned: calls.autoPlan,
+  queued: calls.auto.map((args) => args[0]),
+}));
+"""
+
+
+def test_run_auto_blocks_a_second_start_and_submits_the_planned_selection(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_GUARD)
+
+    assert data["second"] is None, data           # refused, not queued twice
+    assert data["inFlight"] is True, data
+    assert data["after"] is False, data            # released in finally
+    assert data["planned"] == [["/v/a.iso"]], data
+    assert data["queued"] == [["/v/a.iso"]], data  # the snapshot, not the live selection
+
+
+_RUN_AUTO_BADGE_ON_FAILURE = """
+planAnswer = (paths) => ({
+  recorded: 1, pending: 4,
+  recorded_paths: { '/v/a.iso': '/v/a.chd' }, recorded_ids: { '/v/a.iso': 11 },
+});
+autoAnswer = () => {
+  const err = new Error('later group refused. Already finished and kept: a.iso.');
+  err.detail = { message: err.message, jobs: [
+    { id: 'j1', file_path: '/v/a.iso', output_path: '/v/a.chd' },
+  ] };
+  throw err;
+};
+const badge = [];
+const store = new ConversionStore();
+await store.runAuto({
+  paths: ['/v/a.iso'], rommPlatformId: 7,
+  confirm: async () => true,
+  onRepinPending: (n) => badge.push(n),
+});
+process.stdout.write(JSON.stringify({ badge, after: store.autoInFlight }));
+"""
+
+
+def test_run_auto_updates_the_repin_badge_even_when_queueing_fails(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_BADGE_ON_FAILURE)
+
+    assert data["badge"] == [4], data
+    assert data["after"] is False, data

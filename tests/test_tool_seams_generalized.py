@@ -522,9 +522,12 @@ def test_active_split_job_protects_its_other_parts(tmp_path):
     assert job_manager._track_candidate_paths(str(plain)) == []
 
 
-def test_cue_track_protection_is_unchanged(tmp_path):
+def test_cue_track_protection_is_unchanged(tmp_path, monkeypatch):
     """The .cue/.gdi path still parses tracks out of the file's contents."""
     from app.services.job_manager import job_manager
+    from config import settings
+
+    monkeypatch.setattr(settings, "chd_volumes", str(tmp_path))  # tracks resolve in a Volume
 
     (tmp_path / "game.bin").write_bytes(b"track")
     cue = tmp_path / "game.cue"

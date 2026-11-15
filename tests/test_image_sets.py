@@ -11,7 +11,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from services.image_sets import group_images, image_members
+
+from config import settings as app_settings
+
+
+@pytest.fixture(autouse=True)
+def _volume(tmp_path: Path, monkeypatch) -> None:
+    # Tracks resolve only inside a Volume (utils.sheet_text.resolve_track), and
+    # a folder Library is always inside one, so tmp_path is the Volume here.
+    monkeypatch.setattr(app_settings, "chd_volumes", str(tmp_path))
 
 
 def _write(path: Path, data: bytes | str = b"\0" * 16) -> str:

@@ -164,6 +164,7 @@ def walk_image(
     *,
     max_table: int = _MAX_DIR_TABLE,
     max_total: int | None = None,
+    root_only: bool = False,
 ) -> dict:
     """Walk the XDVDFS directory tree of ``path`` without extracting anything.
 
@@ -175,9 +176,11 @@ def walk_image(
     structural inconsistency.
 
     ``max_table`` caps one directory table and ``max_total`` the bytes of all
-    tables read in this walk; a table past either is a structural error. The
-    conversion and info paths use the defaults; the detection probe passes
-    small ones (``detect_console``).
+    tables read in this walk; a table past either is a structural error.
+    ``root_only`` reads the root table and none of its children (the counts
+    then cover the root only). The conversion and info paths use the
+    defaults; the detection probe passes small limits and ``root_only``
+    (``detect_console``), since the boot executable sits in the root.
     """
     offset, layout, console = detect_layout(path)
     file_size = os.path.getsize(path)
@@ -279,6 +282,8 @@ def walk_image(
                 if at_root and name.lower() in {"default.xex", "default.xbe"}:
                     stats["root_executable"] = name
             del table
+            if root_only:
+                return
             for child_sector, child_size in children:
                 walk_dir(child_sector, child_size, depth + 1, at_root=False)
 
@@ -306,6 +311,7 @@ def detect_console(path: str) -> str | None:
             return console
         return walk_image(
             path, max_table=_PROBE_MAX_DIR_TABLE, max_total=_PROBE_MAX_TABLE_BYTES,
+            root_only=True,
         )["console"]
     except (XisoImageError, OSError):
         return None

@@ -536,3 +536,17 @@ def test_a_plain_folder_is_not_a_ps3_image(tmp_path):
     [entry] = plan_auto([str(folder)])
 
     assert entry.mode is None
+
+
+def test_a_folder_is_re_probed_when_its_layout_changes(tmp_path):
+    folder = tmp_path / "downloads" / "Some Game"
+    (folder / "PS3_GAME").mkdir(parents=True)
+
+    assert platform_detect.detect_platform(str(folder)).platform is None
+
+    # The folder's own entries don't change, only a nested file appears.
+    from .ps3_helpers import make_sfo
+
+    (folder / "PS3_GAME" / "PARAM.SFO").write_bytes(make_sfo([("TITLE_ID", "BLES01807")]))
+
+    assert platform_detect.detect_platform(str(folder)).platform == "ps3"

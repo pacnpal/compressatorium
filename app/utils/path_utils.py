@@ -6,7 +6,7 @@ import functools
 import os
 import stat
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Optional
 
@@ -359,7 +359,7 @@ def _strip_trailing_dot_and_seps(path: str) -> str:
 
 
 def source_companions_are_safe(
-    file_path: str, mode: str, *, within: str | None = None,
+    file_path: str, mode: str, *, within: Sequence[str] | None = None,
 ) -> bool:
     """Whether every sibling input this mode's tool also consumes stays in-volume.
 
@@ -388,19 +388,18 @@ def source_companions_are_safe(
     the volumes rejects the job (``delete_plan.sheet_reference_problems``). An
     empty companion list is never taken to mean safe.
 
-    ``within`` swaps the Volumes for an explicit containment root: the worker
-    passes the job's own extraction folder when the source came out of an
-    archive, since that folder is not a Volume. Companions and track
-    references must then resolve inside it. Omitted, the Volumes apply.
+    ``within`` swaps the Volumes for explicit trusted roots, as in
+    ``utils.sheet_text.resolve_track``: the worker passes ``[the job's own
+    extraction folder]`` when the source came out of an archive, since that
+    folder is not a Volume. Companions and track references must then resolve
+    inside it. Omitted, the Volumes apply; an empty list is refused.
 
     Blocking I/O (an ``lstat`` and a ``realpath`` per companion); call it off
     the event loop.
     """
     from services.tools import registry  # local: avoids an import cycle
-    from utils.delete_plan import (  # local: cycle
-        sheet_reference_problems,
-        source_input_is_contained,
-    )
+    from utils.delete_plan import sheet_reference_problems  # local: cycle
+    from utils.sheet_text import resolve_track  # local: cycle
 
     if sheet_reference_problems(file_path, within=within):
         return False
@@ -412,7 +411,12 @@ def source_companions_are_safe(
     for companion in tool.source_companions(file_path):
         if os.path.islink(companion):
             return False
-        if not source_input_is_contained(companion, within):
+        # The one confined resolver, as for a sheet's tracks: the companion's
+        # real path must sit under the trusted roots.
+        folder, name = os.path.split(companion)
+        try:
+            resolve_track(folder, name, within=within)
+        except ValueError:
             return False
     return True
 

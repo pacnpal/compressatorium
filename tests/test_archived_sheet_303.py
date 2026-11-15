@@ -116,5 +116,16 @@ def test_an_extraction_root_confines_tracks_to_itself(tmp_path: Path) -> None:
     (root / "Link.bin").symlink_to(tmp_path / "secret.bin")
     (root / "Link.cue").write_text('FILE "Link.bin" BINARY\n')
 
-    assert sheet_reference_problems(str(root / "Game.cue"), within=str(root)) == []
-    assert sheet_reference_problems(str(root / "Link.cue"), within=str(root)) != []
+    assert sheet_reference_problems(str(root / "Game.cue"), within=[str(root)]) == []
+    assert sheet_reference_problems(str(root / "Link.cue"), within=[str(root)]) != []
+
+
+def test_an_empty_root_list_trusts_nothing(env) -> None:
+    """``within=[]`` is a caller bug, refused by the shared resolver."""
+    from utils.path_utils import source_companions_are_safe
+
+    volume = env["volume"]
+    (volume / "Inside.bin").write_bytes(b"\0" * 64)
+    (volume / "Good.cue").write_text('FILE "Inside.bin" BINARY\n')
+
+    assert source_companions_are_safe(str(volume / "Good.cue"), "createcd", within=[]) is False
