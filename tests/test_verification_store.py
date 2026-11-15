@@ -207,3 +207,24 @@ async def test_a_new_conversion_replaces_stale_provenance(db_path, reset_db_engi
         assert record["produced_meta"] == {"mode": "dolphin_iso"}
     finally:
         reset_db_engine()
+
+
+@pytest.mark.asyncio
+async def test_all_provenance_includes_failed_rows(db_path, reset_db_engine):
+    """all_provenance lists every row, failed ones too; all_records doesn't."""
+    from services import db as _db
+    from services.verification_store import verification_store
+
+    _db.init_engine(db_path)
+    try:
+        await verification_store.mark_verified(
+            "/data/ps3/Game.iso", produced_meta={"mode": "folder_to_iso"},
+        )
+        await verification_store.mark_failed("/data/ps3/Game.iso")
+        provenance = await verification_store.all_provenance()
+        assert [(r["chd_path"], r["produced_meta"]) for r in provenance] == [
+            (os.path.realpath("/data/ps3/Game.iso"), {"mode": "folder_to_iso"}),
+        ]
+        assert await verification_store.all_records() == []
+    finally:
+        reset_db_engine()
