@@ -13,7 +13,6 @@
   the failures; a later pass clears the Finding. A check that could not run
   changes nothing, and an Image no tool can check is skipped. Each Image's
   last check time is kept in a new `image_checks` table (migration 0013).
-  Metadata scans, DAT matches and check runs no longer write Ledger rows.
 - **Findings view and folder Platforms** (#304). A new **Findings** view lists
   the Images in your folder Libraries that need a decision: a Platform
   conflict (the header disagrees with the folder) or an Unsorted Image. Each

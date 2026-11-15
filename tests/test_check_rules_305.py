@@ -397,6 +397,25 @@ async def test_a_run_is_one_job_in_the_queue_and_no_ledger_row(
 
 
 @pytest.mark.asyncio
+async def test_only_a_mode_that_says_so_stays_out_of_the_ledger(db: Path) -> None:
+    """The check mode declares it; a metadata scan still writes its row."""
+    from models import ConversionMode
+    from services import ledger
+    from services.job_manager import JobManager
+
+    manager = JobManager()
+    scan = manager.create_external_job("Scan", ConversionMode.METADATA_SCAN)
+    await manager.finish_external_job(scan.id, success=True)
+    check = manager.create_external_job("Check", ConversionMode.CHECK)
+    await manager.finish_external_job(check.id, success=True)
+
+    await ledger.record(scan)
+    await ledger.record(check)
+
+    assert [row["job_id"] for row in await ledger.recent(10)] == [scan.id]
+
+
+@pytest.mark.asyncio
 async def test_a_preview_checks_nothing(tree: Path, ready, verifier) -> None:
     from routes import libraries as routes
     from services import image_checks

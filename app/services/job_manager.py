@@ -11,6 +11,7 @@ import tempfile
 import time
 import uuid
 from collections import OrderedDict, deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
@@ -83,11 +84,30 @@ def _source_bytes(path: str) -> Optional[int]:
 # must NOT count against max_queue_depth backpressure, stuck-detection,
 # or the cancel-all / queued-count surfaces that only apply to the
 # chdman/dolphin/z3ds conversion pipeline.
-_EXTERNAL_JOB_MODES = frozenset({
-    ConversionMode.METADATA_SCAN,
-    ConversionMode.DAT_MATCH,
-    ConversionMode.CHECK,
-})
+@dataclass(frozen=True)
+class ExternalMode:
+    """What an externally-managed job mode declares about itself.
+
+    ``in_ledger``: whether its finished jobs get a Ledger row. A check Rule's
+    run (#305) verifies and converts nothing, so it says no; a metadata scan
+    and a DAT match keep the rows they have always written.
+    """
+
+    in_ledger: bool = True
+
+
+EXTERNAL_JOB_MODES: Dict[ConversionMode, ExternalMode] = {
+    ConversionMode.METADATA_SCAN: ExternalMode(),
+    ConversionMode.DAT_MATCH: ExternalMode(),
+    ConversionMode.CHECK: ExternalMode(in_ledger=False),
+}
+_EXTERNAL_JOB_MODES = frozenset(EXTERNAL_JOB_MODES)
+
+
+def in_ledger(mode) -> bool:
+    """Whether a finished job of *mode* gets a Ledger row (every conversion does)."""
+    declared = EXTERNAL_JOB_MODES.get(mode)
+    return declared is None or declared.in_ledger
 
 
 def is_external_mode(mode) -> bool:

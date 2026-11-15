@@ -2988,8 +2988,11 @@ up to `MAX_LISTED_FAILURES` of them, with `data = {library_id, failed: [{image,
 path, error}]}`, through `notifications.notify`. The run's job is external, so
 the sweep's own `sweep_finished` message does not count it.
 
-**Ledger.** `ledger.record` skips external jobs (`job_manager.is_external_mode`):
-a metadata scan, a DAT match or a check run converts nothing.
+**Ledger.** Each external job mode declares itself in
+`job_manager.EXTERNAL_JOB_MODES` (`ExternalMode`). `CHECK` sets
+`in_ledger=False`, since a check run converts nothing, and `ledger.record`
+skips a job only when `job_manager.in_ledger(mode)` says so. Metadata scans and
+DAT matches keep their rows.
 
 
 ### 3.3.17 The headless CLI (`app/cli.py`, #306)
