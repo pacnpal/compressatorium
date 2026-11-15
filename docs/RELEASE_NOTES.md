@@ -12,7 +12,8 @@
   `--container-only` to opt out), `--dry-run` and `--json`. `verify PATH --since
   30d` checks Images not checked in that window. Exit 0 when done or nothing to
   do, 1 on a failure, 2 on bad arguments. Safe beside a running server: both
-  take the same output locks. Started as root, it drops to the `converter` user
+  take the same output locks, and an `.m3u` both update is rewritten by one at a
+  time, so neither edit is lost. Started as root, it drops to the `converter` user
   (`PUID`/`PGID`) the way the server does. `CHD_MODE=cli` keeps today's scope
   and defaults; it now runs through this command. Two differences: with
   `CHDMAN_MODE=createdvd` it no longer hands top-level `.cue`/`.gdi` files to
