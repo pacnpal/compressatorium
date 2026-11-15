@@ -19,7 +19,6 @@ Three operations, all synchronous (the job hook runs them off the event loop):
 from __future__ import annotations
 
 import os
-import tempfile
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
@@ -32,6 +31,7 @@ from utils.path_utils import (
     file_identity,
     place_without_clobbering,
     same_identity,
+    short_temp_file,
 )
 
 
@@ -153,7 +153,7 @@ def _temp_file(directory: str) -> tuple[int, str]:
     """A new hidden temp file in *directory*. Its name is short and fixed-length
     (``.tmp-`` plus random characters), never built from the target's name, so a
     target near the 255-byte file name limit can still be written."""
-    return tempfile.mkstemp(dir=directory, prefix=".tmp-")
+    return short_temp_file(directory, prefix=".tmp-")
 
 
 def atomic_write_bytes(

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- **eXoDOS repack: leftovers and repeat lookups** (#331).
+  - A repack killed hard (SIGKILL, power loss) no longer leaves its hidden
+    `.partial-*.tmp` file behind for good. It is removed at the next start,
+    or before the next repack into that folder, once nothing holds it.
+  - The temp file's name is now short and fixed-length, so a game whose name
+    is near the 255-byte file name limit can be repacked.
+  - A zip that is not an eXoDOS game is no longer reopened on every listing:
+    the answer is remembered until the zip or the template tree changes.
+
 ### Added
 
 - **eXoDOS repack for RomM** (#323). A new **eXoDOS** tool turns an eXoDOS game

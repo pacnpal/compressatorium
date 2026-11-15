@@ -10,8 +10,8 @@ eXoDOS repack today, the Patch bench later). The Source is only ever read.
   the compressed bytes may differ from the Source's.
 * **Nothing that looks finished appears early.** The archive is written under
   a hidden temporary name in the destination directory
-  (``.<name>.partial-*.tmp``, which library scanners such as RomM's skip by
-  default), fsynced, optionally checked by the caller, given the Source's
+  (``.partial-XXXXXXXX.tmp``, which library scanners such as RomM's skip by
+  default; ``services/partial_writes.py`` sweeps the ones a hard kill leaves), fsynced, optionally checked by the caller, given the Source's
   permission bits (``mkstemp`` makes it ``0600``), and only
   then moved into place with :func:`utils.path_utils.place_without_clobbering`,
   an atomic no-replace move. A crash, a cancel or an error leaves no product,
@@ -19,14 +19,15 @@ eXoDOS repack today, the Patch bench later). The Source is only ever read.
 """
 from __future__ import annotations
 
+import fcntl
 import os
 import stat
-import tempfile
 import zipfile
 from collections.abc import Callable, Mapping
 
+from services import partial_writes
 from services.subprocess_runner import ConversionCancelled
-from utils.path_utils import place_without_clobbering
+from utils.path_utils import place_without_clobbering, short_temp_file
 
 _CHUNK = 1024 * 1024
 # The zip epoch: the default stamp for added members, so a product does not
@@ -161,11 +162,21 @@ def rewrite_zip(
     if os.path.lexists(dst):
         raise FileExistsError(dst)
     directory = os.path.dirname(os.path.abspath(dst))
+    # What an earlier, hard-killed rewrite into this folder left behind (#331).
+    partial_writes.sweep_folder(directory)
     # Hidden and ending in ``.tmp``: library scanners (RomM's skips ``tmp`` by
     # default) must not list it as a game while it is written or after a crash.
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{os.path.basename(dst)}.partial-", suffix=".tmp", dir=directory,
+    # Short and fixed-length, never built from the target's name, so a target
+    # near the 255-byte name limit can still be written.
+    fd, tmp = short_temp_file(
+        directory, prefix=partial_writes.TEMP_PREFIX, suffix=partial_writes.TEMP_SUFFIX,
     )
+    # Held until the temp file is placed or removed, so a sweep (this process
+    # or another) never takes a live write for a leftover; and journaled, so a
+    # restart after a hard kill finds it without walking the Volumes.
+    lock_fd = os.dup(fd)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    marker = partial_writes.record(tmp)
     try:
         with zipfile.ZipFile(src) as source:
             plan = _plan(source.infolist(), rename, add)
@@ -209,6 +220,9 @@ def rewrite_zip(
         except FileNotFoundError:
             pass
         raise
+    finally:
+        os.close(lock_fd)
+        partial_writes.forget(marker)
 
 
 __all__ = ["rewrite_zip"]

@@ -749,3 +749,46 @@ def test_a_stalled_pre_rewrite_read_fails_the_job_and_keeps_the_source(
     assert time.monotonic() - started < 5
     assert Path(source).read_bytes() == before
     assert sorted(os.listdir(tree["games"])) == ["!dos", "Abaron (1995).zip"]
+
+
+# --- non-eXoDOS misses are cached too (#331) ---------------------------------
+
+
+def _count_inspections(monkeypatch):
+    calls = []
+    real = ExodosService._inspect
+
+    def counted(self, path, root):
+        calls.append(path)
+        return real(self, path, root)
+
+    monkeypatch.setattr(ExodosService, "_inspect", counted)
+    return calls
+
+
+def test_a_miss_is_cached(tree, monkeypatch):
+    calls = _count_inspections(monkeypatch)
+    service = ExodosService()
+    path = _game_zip(tree, ["README.TXT"], name="NotAGame.zip")
+
+    assert service.is_repackable(path) is False
+    assert service.is_repackable(path) is False
+
+    assert calls == [path]
+
+
+def test_a_template_added_to_an_existing_game_folder_ends_a_cached_miss(tree, monkeypatch):
+    calls = _count_inspections(monkeypatch)
+    service = ExodosService()
+    (tree["dos"] / "Zork").mkdir()
+    path = _game_zip(tree, ["Zork/ZORK.EXE"], name="Zork.zip")
+    assert service.is_repackable(path) is False
+
+    conf = tree["dos"] / "Zork" / "dosbox.conf"
+    conf.write_bytes(b"[autoexec]\r\n")
+    folder = tree["dos"] / "Zork"
+    later = os.stat(folder).st_mtime + 5
+    os.utime(folder, (later, later))
+
+    assert service.is_repackable(path) is True
+    assert len(calls) == 2

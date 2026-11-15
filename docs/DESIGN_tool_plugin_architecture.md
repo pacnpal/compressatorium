@@ -4587,8 +4587,10 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   any copied member that would have taken it. Two copied members renamed onto
   one name raise `ValueError`.
 - **Nothing that looks finished appears early.** The archive is written to a
-  `mkstemp` file named `.<dst name>.partial-*.tmp` in the destination
-  directory (hidden, and ending in `.tmp`, which RomM's scanner skips by
+  temp file named `.partial-XXXXXXXX.tmp` in the destination directory
+  (`utils.path_utils.short_temp_file`, the helper the Referrers' atomic writes
+  use too: short and fixed-length, so a target near the 255-byte name limit
+  still writes; hidden, and ending in `.tmp`, which RomM's scanner skips by
   default, so a partial file is never listed as a game), fsynced, passed to
   the caller's optional `check(temp_path)`, given the Source's permission
   bits without setuid, setgid or sticky (`mkstemp` makes it `0600`, which a
@@ -4599,6 +4601,19 @@ way to produce an edited copy of a zip. The first user is the eXoDOS repack
   `ConversionCancelled` from `is_cancelled`, unlinks the temporary file. An
   existing file at `dst` raises `FileExistsError` and is never replaced; the job
   pipeline's authorized-overwrite sweep clears it first.
+- **What a hard kill leaves is swept (#331, `services/partial_writes.py`).**
+  The temp file is `flock`ed exclusively from creation until it is placed or
+  removed, and journaled (one small file per temp file under
+  `<data dir>/partial-writes/`). A sweep removes a file only when its name is
+  exactly that pattern (or the `.<target>.partial-XXXXXXXX.tmp` spelling used
+  before #331), its folder is inside a configured Volume
+  (`is_within_configured_volumes`, so "can't tell" keeps it), it opens with
+  `O_NOFOLLOW` as a regular file, it is over a minute old (the instant before
+  a new write locks it), the sweep can take its lock, and the path still
+  names the locked inode. `rewrite_zip` sweeps its destination folder before
+  every write; at startup `main.startup_volume_work` sweeps the journaled
+  files once the Volume roots are resolved, so a crash is cleaned up without
+  walking the Volumes.
 
 `archive_service.member_segments(name)` is the public face of the extract path's
 member-name rules (no backslashes, absolute paths, `..`, empty segments or drive
@@ -4617,7 +4632,10 @@ tool: it registers with an empty binary path and reports no pids.
   `member_segments` and `enforce_archive_limits`, every member sits in one game
   folder (a loose root file refuses it), and `<tree>/<game>/dosbox.conf`
   is read through `read_beneath` (no symlink on any component, a regular
-  file, one descriptor). The answer is cached per (path, size, mtime), and
+  file, one descriptor). The answer, a yes or a no, is cached per (path,
+  size, mtime) of the zip and kept only while the tree's root and the game's
+  folder keep their mtimes (#331), so adding or removing a template is seen
+  at once while an unrelated zip is not reopened on every pass, and
   `convert` reads the template again the same way rather than trusting the
   earlier check, so a template swapped for a link in between is refused and
   the job fails with the Source untouched. `_NOT_CONVERTIBLE_REASON["exodos"]` names the plan-time reason. The

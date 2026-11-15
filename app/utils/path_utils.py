@@ -6,6 +6,7 @@ import functools
 import os
 import stat
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Iterable, Sequence
@@ -968,6 +969,18 @@ def read_beneath(root: str, relative: str, *, max_bytes: int) -> bytes:
         return b"".join(chunks)
     finally:
         os.close(fd)
+
+
+def short_temp_file(directory: str, *, prefix: str = ".tmp-", suffix: str = "") -> tuple[int, str]:
+    """A new hidden temp file in *directory*: ``(fd, path)``, as ``mkstemp``.
+
+    The name is short and fixed-length, ``prefix`` plus eight random
+    characters plus ``suffix``, never built from the target's name, so a
+    target near the 255-byte file name limit can still be written beside it.
+    Shared by every writer that places a finished file next to its target
+    (the Referrers' atomic writes, ``archive_edit.rewrite_zip``).
+    """
+    return tempfile.mkstemp(dir=directory, prefix=prefix, suffix=suffix)
 
 
 def safe_join(base_dir: str, *parts: str) -> Path:
