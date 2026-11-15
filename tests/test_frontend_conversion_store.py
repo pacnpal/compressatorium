@@ -424,7 +424,7 @@ process.stdout.write(JSON.stringify({
   inFlight,
   after: store.autoInFlight,
   planned: calls.autoPlan,
-  queued: calls.auto.map((args) => args[0]),
+  queued: calls.auto.map((args) => args[0].map((item) => item.file_path)),
 }));
 """
 
@@ -499,7 +499,7 @@ const again = await store.runAuto({ paths: ['/v/b.iso'], confirm: () => Promise.
 process.stdout.write(JSON.stringify({
   during, result, afterAbort, confirmCalls,
   planAfter: store.autoPlan,
-  queued: calls.auto.map((args) => args[0]),
+  queued: calls.auto.map((args) => args[0].map((item) => item.file_path)),
   againQueued: again !== null,
   errors: toasts.filter(([kind]) => kind === 'error'),
 }));
@@ -640,4 +640,95 @@ def test_run_auto_uses_the_output_folder_it_previewed(tmp_path):
 
     assert data == {
         "planDirs": ["/out/old"], "repinDirs": ["/out/old"], "queueDirs": ["/out/old"],
+    }, data
+
+
+# --- The server enforces the confirmed plan (Codex 4576967499) ----------------
+# Only the confirmed plan's actionable rows are sent, each with the target the
+# user saw; an Image the preview skipped is never sent. When the server's
+# replan differs it answers 409 with the new plan, and the flow shows that plan
+# and asks again.
+
+_RUN_AUTO_SENDS_CONFIRMED_ITEMS = """
+const store = new ConversionStore();
+autoPlanAnswer = () => [
+  { file_path: '/v/a.iso', mode: 'createdvd' },
+  { file_path: '/v/x.iso', mode: null, how: 'unsorted', skip_reason: 'Unsorted' },
+];
+await store.runAuto({ paths: ['/v/a.iso', '/v/x.iso'], confirm: () => Promise.resolve(true) });
+process.stdout.write(JSON.stringify({ sent: calls.auto.map((args) => args[0]) }));
+"""
+
+
+def test_run_auto_sends_only_the_confirmed_actionable_items(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_SENDS_CONFIRMED_ITEMS)
+
+    assert data["sent"] == [[{"file_path": "/v/a.iso", "mode": "createdvd"}]], data
+
+
+_RUN_AUTO_REASKS_ON_A_CHANGED_PLAN = """
+const store = new ConversionStore();
+autoPlanAnswer = () => [{ file_path: '/v/a.iso', mode: 'createdvd' }];
+const newPlan = [{ file_path: '/v/a.iso', mode: 'dolphin_rvz' }];
+let attempts = 0;
+autoAnswer = (items) => {
+  attempts += 1;
+  if (attempts === 1) {
+    const err = new Error('The plan changed since you confirmed it.');
+    err.status = 409;
+    err.detail = { message: err.message, plan: newPlan };
+    throw err;
+  }
+  return { plan: newPlan, jobs: [{ id: 'j1', file_path: items[0].file_path }] };
+};
+const shown = [];
+const confirm = () => { shown.push(store.autoPlan); return Promise.resolve(true); };
+const result = await store.runAuto({ paths: ['/v/a.iso'], confirm });
+process.stdout.write(JSON.stringify({
+  shown,
+  sent: calls.auto.map((args) => args[0]),
+  queued: result !== null,
+  inFlight: store.autoInFlight,
+}));
+"""
+
+
+def test_a_changed_plan_reopens_confirmation_with_the_new_plan(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_REASKS_ON_A_CHANGED_PLAN)
+
+    assert data["shown"] == [
+        [{"file_path": "/v/a.iso", "mode": "createdvd"}],
+        [{"file_path": "/v/a.iso", "mode": "dolphin_rvz"}],    # the new plan, asked again
+    ], data
+    assert data["sent"] == [
+        [{"file_path": "/v/a.iso", "mode": "createdvd"}],
+        [{"file_path": "/v/a.iso", "mode": "dolphin_rvz"}],
+    ], data
+    assert data["queued"] is True, data
+    assert data["inFlight"] is False, data
+
+
+_RUN_AUTO_DECLINES_THE_CHANGED_PLAN = """
+const store = new ConversionStore();
+autoPlanAnswer = () => [{ file_path: '/v/a.iso', mode: 'createdvd' }];
+autoAnswer = () => {
+  const err = new Error('The plan changed since you confirmed it.');
+  err.status = 409;
+  err.detail = { message: err.message, plan: [{ file_path: '/v/a.iso', mode: null }] };
+  throw err;
+};
+let asked = 0;
+const confirm = () => { asked += 1; return Promise.resolve(asked === 1); };
+const result = await store.runAuto({ paths: ['/v/a.iso'], confirm });
+process.stdout.write(JSON.stringify({
+  asked, result, sent: calls.auto.length, inFlight: store.autoInFlight, plan: store.autoPlan,
+}));
+"""
+
+
+def test_declining_the_changed_plan_queues_nothing(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_DECLINES_THE_CHANGED_PLAN)
+
+    assert data == {
+        "asked": 2, "result": None, "sent": 1, "inFlight": False, "plan": None,
     }, data
