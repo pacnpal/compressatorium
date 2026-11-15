@@ -1678,3 +1678,31 @@ async def test_a_walk_builds_each_folders_listing_marker_once(db: Path, monkeypa
 
     for key, _value in library._members.values():
         assert all(not isinstance(part, (set, frozenset)) for part in key)
+
+
+@pytest.mark.asyncio
+async def test_a_backslash_track_path_is_one_detected_image(db: Path) -> None:
+    """Codex 4576790199: grouping and detection read ``tracks\\game.bin`` alike.
+
+    No folder above the sheet names a Platform, so only the header can: the
+    Saturn track under ``tracks/`` must be found by detection (the probe) and
+    owned by the sheet (grouping), giving one Saturn Image and nothing else.
+    """
+    from services import libraries
+
+    from .test_platform_detect import _sector0
+
+    root = db / "collection"
+    game = root / "Game"
+    game.mkdir(parents=True)
+    (game / "game.cue").write_text(
+        'FILE "tracks\\game.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n',
+    )
+    _sector0(game / "tracks" / "game.bin", b"SEGA SEGASATURN ", raw=True)
+    lib = await _register(root)
+    library = libraries.get(lib["id"])
+
+    scan = library.scan(refresh=True)
+    assert [e.key for e in scan.entries] == ["Game/game.cue"]
+    assert scan.entries[0].detection.platform == "saturn"
+    assert [i.key for i in library.images("saturn")] == ["Game/game.cue"]
