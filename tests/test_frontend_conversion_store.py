@@ -467,3 +467,177 @@ def test_run_auto_updates_the_repin_badge_even_when_queueing_fails(tmp_path):
 
     assert data["badge"] == [4], data
     assert data["after"] is False, data
+
+
+# --- An aborted Auto run (Codex 4576827983) ----------------------------------
+# The panel passes an AbortSignal and aborts it when it unmounts. An aborted
+# run never opens the confirmation, resolves a pending one as cancelled, and
+# clears autoInFlight, so Start works again when the panel comes back. The
+# stubbed getAutoPlan ignores the signal, so the store must not rely on the
+# request itself rejecting.
+
+_RUN_AUTO_ABORT_MID_PLAN = """
+const store = new ConversionStore();
+let answerPlan;
+autoPlanAnswer = (paths) => new Promise((resolve) => {
+  answerPlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
+});
+let confirmCalls = 0;
+const confirm = () => { confirmCalls += 1; return Promise.resolve(true); };
+const controller = new AbortController();
+const run = store.runAuto({ paths: ['/v/a.iso'], confirm, signal: controller.signal });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
+const during = store.autoInFlight;
+controller.abort();                                       // the panel unmounts
+const result = await run;
+const afterAbort = store.autoInFlight;
+answerPlan();                                             // the plan lands late
+await new Promise((resolve) => setTimeout(resolve, 0));
+// Back on the workspace: Start runs a fresh flow.
+autoPlanAnswer = (paths) => paths.map((p) => ({ file_path: p, mode: 'createdvd' }));
+const again = await store.runAuto({ paths: ['/v/b.iso'], confirm: () => Promise.resolve(true) });
+process.stdout.write(JSON.stringify({
+  during, result, afterAbort, confirmCalls,
+  planAfter: store.autoPlan,
+  queued: calls.auto.map((args) => args[0]),
+  againQueued: again !== null,
+  errors: toasts.filter(([kind]) => kind === 'error'),
+}));
+"""
+
+
+def test_an_aborted_auto_run_mid_plan_never_confirms_and_frees_start(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ABORT_MID_PLAN)
+
+    assert data["during"] is True, data
+    assert data["result"] is None, data
+    assert data["afterAbort"] is False, data       # Start is enabled again
+    assert data["confirmCalls"] == 0, data         # the modal never opened
+    assert data["planAfter"] is None, data         # the late plan was dropped
+    assert data["queued"] == [["/v/b.iso"]], data  # only the fresh run queued
+    assert data["againQueued"] is True, data
+    assert data["errors"] == [], data
+
+
+_RUN_AUTO_ABORT_IN_CONFIRM = """
+const store = new ConversionStore();
+let opened = false;
+const confirm = () => { opened = true; return new Promise(() => {}); };  // never answered
+const controller = new AbortController();
+const run = store.runAuto({ paths: ['/v/a.iso'], confirm, signal: controller.signal });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the modal is up
+controller.abort();
+const result = await run;
+process.stdout.write(JSON.stringify({
+  opened, result, after: store.autoInFlight,
+  planAfter: store.autoPlan,
+  queued: calls.auto.length,
+}));
+"""
+
+
+def test_an_aborted_auto_run_resolves_a_pending_confirm_as_cancelled(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_ABORT_IN_CONFIRM)
+
+    assert data == {
+        "opened": True, "result": None, "after": False, "planAfter": None, "queued": 0,
+    }, data
+
+
+# --- The target is captured before the first await (CodeRabbit 4576895563/5) --
+# The user can change the mode, its options or the output folder while the
+# RomM snapshot or the Auto plan request is pending. What is queued must be
+# what was planned: everything target-dependent is read once, up front.
+
+_SUBMIT_CAPTURES_TARGET = """
+registry.specFor = () => ({
+  supportsCompression: true, supportsDeleteOnVerify: true,
+  supportsSplit: true, supportsRoundTrip: true,
+});
+const store = new ConversionStore();
+store.mode = 'createcd';
+store.outputDir = '/out/old';
+store.deleteOnVerify = true;
+store.split = false;
+store.containerOnly = false;
+let release;
+planAnswer = (paths) => new Promise((resolve) => {
+  release = () => resolve({
+    recorded: 1, pending: 1,
+    recorded_paths: { [paths[0]]: '/out/old/a.chd' },
+    recorded_ids: { [paths[0]]: 7 },
+  });
+});
+const batches = [];
+jobs.createBatch = async (paths, mode, opts) => {
+  batches.push({ paths, mode, ...opts });
+  return [{ id: 'j1', file_path: paths[0], output_path: '/out/old/a.chd' }];
+};
+const run = store.submit(['/v/a.iso'], { rommRepin: true, rommPlatformId: 3 });
+await new Promise((resolve) => setTimeout(resolve, 0));   // the snapshot is pending
+// The user switches target, options and folder meanwhile.
+store.mode = 'createdvd';
+store.outputDir = '/out/new';
+store.deleteOnVerify = false;
+store.split = true;
+store.containerOnly = true;
+release();
+await run;
+process.stdout.write(JSON.stringify({
+  planned: calls.plan.map((args) => [args[1], args[2]]),
+  batch: batches[0],
+}));
+"""
+
+
+def test_submit_queues_the_target_it_planned(tmp_path):
+    data = _run(tmp_path, _SUBMIT_CAPTURES_TARGET)
+
+    assert data["planned"] == [["createcd", "/out/old"]], data
+    batch = data["batch"]
+    assert batch["mode"] == "createcd", data
+    assert batch["outputDir"] == "/out/old", data
+    assert batch["deleteOnVerify"] is True, data
+    assert batch["split"] is False, data
+    assert batch["containerOnly"] is False, data
+
+
+_RUN_AUTO_CAPTURES_OUTPUT_DIR = """
+const store = new ConversionStore();
+store.outputDir = '/out/old';
+let releasePlan;
+const planDirs = [];
+api.getAutoPlan = (paths, outputDir) => {
+  planDirs.push(outputDir);
+  return new Promise((resolve) => {
+    releasePlan = () => resolve(paths.map((p) => ({ file_path: p, mode: 'createdvd' })));
+  });
+};
+planAnswer = (paths) => ({
+  recorded: 1, pending: 1,
+  recorded_paths: { [paths[0]]: '/out/old/a.chd' }, recorded_ids: { [paths[0]]: 9 },
+});
+autoAnswer = (paths) => ({
+  plan: [], jobs: [{ id: 'j1', file_path: paths[0], output_path: '/out/old/a.chd' }],
+});
+const run = store.runAuto({
+  paths: ['/v/a.iso'], rommPlatformId: 3, confirm: () => Promise.resolve(true),
+});
+await new Promise((resolve) => setTimeout(resolve, 0));   // the plan is loading
+store.outputDir = '/out/new';                             // edited meanwhile
+releasePlan();
+await run;
+process.stdout.write(JSON.stringify({
+  planDirs,
+  repinDirs: calls.plan.map((args) => args[2]),
+  queueDirs: calls.auto.map((args) => args[1]),
+}));
+"""
+
+
+def test_run_auto_uses_the_output_folder_it_previewed(tmp_path):
+    data = _run(tmp_path, _RUN_AUTO_CAPTURES_OUTPUT_DIR)
+
+    assert data == {
+        "planDirs": ["/out/old"], "repinDirs": ["/out/old"], "queueDirs": ["/out/old"],
+    }, data

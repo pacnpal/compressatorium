@@ -227,11 +227,12 @@ export const api = {
   },
 
   // Auto: the backend works out each Image's Platform and default target.
-  getAutoPlan(filePaths, outputDir = null) {
+  // `signal` aborts the request (the convert panel unmounting mid-plan).
+  getAutoPlan(filePaths, outputDir = null, { signal } = {}) {
     return jsonPost(
       `${API_BASE}/jobs/auto-plan`,
       { file_paths: filePaths, output_dir: outputDir },
-      {},
+      signal ? { signal } : {},
       'Failed to plan Auto conversion',
     );
   },
