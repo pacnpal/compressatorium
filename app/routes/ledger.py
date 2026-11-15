@@ -1,5 +1,6 @@
 """Ledger routes (#292): recent rows, savings summary, retention setting."""
 
+import anyio
 from fastapi import APIRouter, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -8,6 +9,24 @@ from services.job_manager import job_manager
 from services.preferences_store import preferences_store
 
 router = APIRouter()
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    """A StreamingResponse that always closes its body iterator.
+
+    Starlette leaves the iterator suspended at its last ``yield`` when a send
+    fails (client disconnect). The CSV export holds a read snapshot across
+    yields, so close it here instead of waiting for garbage collection.
+    """
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            aclose = getattr(self.body_iterator, "aclose", None)
+            if aclose is not None:
+                with anyio.CancelScope(shield=True):
+                    await aclose()
 
 
 class LedgerSettings(BaseModel):
@@ -40,7 +59,7 @@ async def ledger_export(
 ) -> StreamingResponse:
     """Every row matching the same filter the list takes, as CSV."""
     flt = ledger.LedgerFilter(q=q, status=status, tool=tool, platform=platform)
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         ledger.export_csv(flt),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="ledger.csv"'},
