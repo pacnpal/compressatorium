@@ -154,37 +154,50 @@ process.stdout.write(JSON.stringify({{ edited, call: __log[1] }}));
     assert "invalid_window" not in data["call"][3]["ps2"]
 
 
-def test_a_check_runs_terminal_event_updates_the_badges(tmp_path) -> None:
-    """Codex 4578116084: the run's terminal event carries each checked Image's
-    new state. One that failed loses its Intact badge; one that passed keeps
-    or gains it. A conversion's own flags still apply as before."""
+def test_a_check_runs_events_update_the_badges_in_order(tmp_path) -> None:
+    """Codex 4578116084, 4578154653: each Image's new state arrives as it
+    settles. One that failed loses its Intact badge; a newer pass that lands
+    after it (a repair and re-verify) is not undone by the run's later events,
+    and a conversion's own flags still apply as before."""
     data = _run_verification(tmp_path, """
 const store = new VerificationStore();
 store.markChecked('/v/bolt.chd', 'round_tripped');
 store.markChecked('/v/dune.chd');
-store.applyJobEnd({
-  type: 'cancelled',
-  job: { id: 'check1', mode: 'check' },
-  verification_changes: { '/v/bolt.chd': null, '/v/cove.chd': 'intact' },
-});
-store.applyJobEnd({
+const run = { id: 'check1', mode: 'check' };
+// The run fails Bolt...
+store.applyJobEvent({ type: 'progress', job: run,
+  verification_changes: { '/v/bolt.chd': null } });
+const afterFail = store.checkFor('/v/bolt.chd');
+// ...Bolt is repaired and re-verified (a manual Verify)...
+store.markChecked('/v/bolt.chd');
+// ...then the run's later events land: Cove passes, and the run ends.
+store.applyJobEvent({ type: 'progress', job: run,
+  verification_changes: { '/v/cove.chd': 'intact' } });
+store.applyJobEvent({ type: 'complete', job: run });
+// A conversion's complete still applies its own flags.
+store.applyJobEvent({
   type: 'complete', verified: true, check_passed: 'round_tripped',
   job: { output_path: '/v/new.rvz', file_path: '/v/new.iso' },
 });
 process.stdout.write(JSON.stringify({
+  afterFail,
   bolt: store.checkFor('/v/bolt.chd'),
   cove: store.checkFor('/v/cove.chd'),
   dune: store.checkFor('/v/dune.chd'),
   fresh: store.checkFor('/v/new.rvz'),
 }));
 """)
-    assert data == {"bolt": None, "cove": "intact", "dune": "intact", "fresh": "round_tripped"}
+    assert data == {
+        "afterFail": None, "bolt": "intact", "cove": "intact", "dune": "intact",
+        "fresh": "round_tripped",
+    }
 
 
-def test_the_jobs_stream_hands_every_terminal_event_to_the_verification_store() -> None:
+def test_the_jobs_stream_hands_its_job_events_to_the_verification_store() -> None:
     src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "stores"
            / "jobs.svelte.js").read_text(encoding="utf-8")
-    assert src.count("verification.applyJobEnd(data)") == 2  # complete; error/cancelled
+    # progress (a check run's per-Image changes); complete; error/cancelled.
+    assert src.count("verification.applyJobEvent(data)") == 3
 
 
 def test_the_endpoints_send_the_check_rules() -> None:

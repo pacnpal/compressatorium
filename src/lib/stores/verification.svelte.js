@@ -92,15 +92,17 @@ class VerificationStore {
   }
 
   /**
-   * Apply what a job's terminal event (the jobs stream) says about checks.
+   * Apply what a job's event on the jobs stream says about checks.
    *
    * A conversion's `complete` carries `verified` / `check_passed` for its
-   * output and `source_deleted` for its Source. A check Rule's run (#305), on
-   * `complete`, `error` or `cancelled` alike, carries `verification_changes`:
-   * each Image it settled, by the path `/api/verified` lists it under, with
-   * its check now, or null once it is no longer Intact.
+   * output and `source_deleted` for its Source. A check Rule's run (#305)
+   * sends one `progress` event per Image as it settles, carrying
+   * `verification_changes`: that Image, by the path `/api/verified` lists it
+   * under, with its check now, or null once it is no longer Intact. Applied in
+   * the order they arrive, so a newer pass (a repair and a re-verify) is never
+   * undone by the run's later events.
    */
-  applyJobEnd(data) {
+  applyJobEvent(data) {
     const job = data?.job;
     if (data?.verified && job?.output_path) {
       this.markChecked(job.output_path, data.check_passed ?? 'intact');

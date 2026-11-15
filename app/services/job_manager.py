@@ -1180,9 +1180,16 @@ class JobManager:
         *,
         progress: Optional[int] = None,
         message: Optional[str] = None,
+        event_extra: dict[str, object] | None = None,
     ) -> None:
         """Update the progress/message of an externally-managed job and
-        notify SSE subscribers."""
+        notify SSE subscribers.
+
+        *event_extra* rides on that ``progress`` event, which the jobs stream
+        forwards: a check run's ``verification_changes`` for the Image it just
+        settled (#305), which the browser's verification store applies in the
+        order they arrive.
+        """
         job = self.jobs.get(job_id)
         if job is None:
             return
@@ -1193,6 +1200,7 @@ class JobManager:
         await self._notify_subscribers(
             job_id,
             {
+                **(event_extra or {}),
                 "type": "progress",
                 "job_id": job_id,
                 "status": job.status.value,
@@ -1207,16 +1215,9 @@ class JobManager:
         *,
         success: bool,
         error_message: Optional[str] = None,
-        event_extra: dict[str, object] | None = None,
     ) -> None:
         """Mark an externally-managed job as complete or failed, notify
-        subscribers, and archive it.
-
-        *event_extra* rides on the terminal event the jobs stream forwards,
-        beside the fields a conversion's ``complete`` carries: a check run's
-        ``verification_changes`` (#305), which the browser's verification
-        store applies.
-        """
+        subscribers, and archive it."""
         job = self.jobs.get(job_id)
         if job is None:
             return
@@ -1235,7 +1236,6 @@ class JobManager:
         await self._notify_subscribers(
             job_id,
             {
-                **(event_extra or {}),
                 "type": event_type,
                 "job_id": job_id,
                 "status": job.status.value,
@@ -1256,13 +1256,11 @@ class JobManager:
         job_id: str,
         *,
         message: Optional[str] = None,
-        event_extra: dict[str, object] | None = None,
     ) -> None:
         """Finalize an externally-managed job that was cancelled mid-run.
 
         Parallels :meth:`finish_external_job` but sets status to CANCELLED
         and emits a ``cancelled`` SSE event so the UI transitions cleanly.
-        *event_extra* rides on that event, as in :meth:`finish_external_job`.
         """
         job = self.jobs.get(job_id)
         if job is None:
@@ -1277,7 +1275,6 @@ class JobManager:
         await self._notify_subscribers(
             job_id,
             {
-                **(event_extra or {}),
                 "type": "cancelled",
                 "job_id": job_id,
                 "status": job.status.value,

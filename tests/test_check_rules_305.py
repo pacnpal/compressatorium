@@ -2229,7 +2229,7 @@ async def test_a_tick_that_finds_its_image_held_by_a_conversion_stays_due(
     assert not ((await sweep.get_state(library, CHECK)).get("ps2") or {}).get("last_run_at")
 
     if held_by == "conversion":
-        monkeypatch.setattr(job_manager, "get_active_job_candidates", lambda: [])
+        monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
     else:
         writer.release_lock(cove)
     again = await sweep.sweep(library)
@@ -2240,12 +2240,13 @@ async def test_a_tick_that_finds_its_image_held_by_a_conversion_stays_due(
 
 
 @pytest.mark.asyncio
-async def test_a_check_runs_verdicts_ride_its_terminal_event(
+async def test_each_checked_images_verdict_is_published_as_it_settles(
     tree: Path, ready, verifier, sent, monkeypatch,
 ) -> None:
-    """Codex 4578116084: an open browser hears each Image's new check state on
-    the run's terminal event (the one the jobs stream already forwards), so
-    an Intact badge a failed check took away goes away there too."""
+    """Codex 4578116084, 4578154653: an open browser hears each Image's new
+    check state on the jobs stream as that Image settles, in order, so an
+    Intact badge a failed check took away goes away there too, and nothing
+    is replayed in a batch at the end that could overwrite a newer pass."""
     import os
 
     from services.job_manager import job_manager
@@ -2269,12 +2270,17 @@ async def test_a_check_runs_verdicts_ride_its_terminal_event(
 
     await _run(lib)
 
+    changes = [e["verification_changes"] for e in events if "verification_changes" in e]
+    # Stalest first: Cove (never checked), then Bolt. One event each.
+    assert changes == [
+        {os.path.realpath(cove): "intact"},
+        {os.path.realpath(bolt): None},  # no longer Intact
+    ]
+    assert all(
+        e["type"] == "progress" for e in events if "verification_changes" in e
+    )
     (end,) = [e for e in events if e["type"] in ("complete", "error", "cancelled")]
-    assert end["type"] == "complete"
-    assert end["verification_changes"] == {
-        os.path.realpath(cove): "intact",
-        os.path.realpath(bolt): None,  # no longer Intact
-    }
+    assert "verification_changes" not in end
 
 
 @pytest.mark.asyncio

@@ -4367,15 +4367,20 @@ moment the sweep found the Rule due, so a night's run that ends past midnight
 counts for the window that picked it. Until the run ends, its scheduled Rules
 are held in `sweep._active_check_runs` (by Library and Platform), and the
 scheduler picks nothing more for them, so the budget applies once per window.
-A scheduled pick that comes up empty only because another check run (Run now)
-holds the Platform's Images (`check.in_flight`) records nothing, so the Rule is
-still due if that run is cancelled; one that is empty because nothing is
-eligible records as before. The run's terminal event (`complete`, `error` or
-`cancelled`, through `finish_external_job(..., event_extra=...)` on the jobs
-stream) carries `verification_changes`: each settled Image's Verify record
-path with its check now, or null once it is no longer Intact. The browser's
-`verification.applyJobEnd` applies it beside a conversion's `verified` /
-`source_deleted` flags, so an open page drops an Intact badge a check took away.
+A scheduled pick that comes up empty only because its Images are held
+elsewhere for now records nothing, so the Rule is still due once they are
+free. Held elsewhere is one count for every such reason: another check run
+(Run now, `check.in_flight`), a conversion queued or running (the sweep's
+active paths), or a writer's lock on any of the Image's files, which
+`check.inspect` reports as `busy`. A pick that is empty because nothing is
+eligible records as before. Each Image's new state goes to an open page as it
+settles: `check._publish` sends `verification_changes` (the Verify record path
+with its check now, or null once it is no longer Intact) on the run's own
+`progress` event (`update_external_job(..., event_extra=...)`), which the jobs
+stream forwards in order. The browser's `verification.applyJobEvent` applies it
+beside a conversion's `verified` / `source_deleted` flags. Nothing is replayed
+at the end, so a newer pass on a file (a repair and a re-verify) is never
+overwritten by the run's older verdict.
 `on_finished(attempted)` is called exactly once as the run ends, with the keys
 of the picked Images the run reached and settled (a verdict either way, no
 verdict, or skipped as gone, changed or in use); a crash, a cancelled task or a
