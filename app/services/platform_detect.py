@@ -271,6 +271,10 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         st = os.stat(disk_path)
     except OSError:
         return Detection(None, UNSORTED, None, None, "file could not be read")
+    if not _member and os.path.isdir(disk_path):
+        # A folder Image (a PS3 disc folder) is judged by files below it, which
+        # its own size and mtime do not track. Probe it fresh every time.
+        return _decide(path, tool_list)
     deps = () if _member else _header_dependencies(disk_path, tool_list)
     if deps is None:
         # A file the header probe needs is missing or unreadable (a .bin still
