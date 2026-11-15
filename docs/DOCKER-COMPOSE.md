@@ -56,13 +56,14 @@ docker-compose -f docker-compose.cli.yml up
 ```
 
 **Behavior:**
-- Runs `compressatorium convert <each volume> --to $CHDMAN_MODE` and exits (no restart)
-- Searches subfolders and archives, like the Web UI's search
+- Runs `compressatorium convert <each volume> --to $CHDMAN_MODE --no-recurse --no-archives --any-platform --compression default` and exits (no restart)
+- Same scope as before: top-level `.gdi`, `.iso`, `.cue` files, no archives, chdman's own compression
 - Skips Images whose output already exists
 - No web interface
+- Shares job locks with a web UI container through `/config/locks`, as long as both mount the same `/config`
 
-For other tools and formats, run the `compressatorium` command directly (see the
-README's "Command line" section).
+For subfolders, archives, other tools and formats, run the `compressatorium`
+command directly (see the README's "Command line" section).
 
 **To change conversion mode:**
 Edit `CHDMAN_MODE` in the file:

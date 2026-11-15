@@ -2514,13 +2514,16 @@ caller of the same seams the routes use, not a second conversion path:
 | `--to <format>` | `platform_detect.format_route` / `format_candidates` (below) |
 | `--auto` | `routes.convert.plan_auto_targets` (`plan_auto` plus `checked_compression`), the Auto route's planner |
 | Plan | `routes.convert.prepare_batch`: `plan_job` per file, duplicate handling, delete snapshots. `PreparedBatch.skipped` lists each file it left out with the reason (`_SKIP_HTTP` text, or "Same output as X"), which the CLI reports and the routes ignore |
-| Queue and run | `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()` and stopped with `JobManager.shutdown()` |
+| Queue and run | `routes.convert.queue_prepared` into the `job_manager` singleton, started with `process_queue()`, emptied with `JobManager.drain()` and stopped with `JobManager.shutdown()`. Fed in chunks below `max_queue_depth` when it is set. A group the planner refuses is re-planned one Image at a time, so only the Image at fault fails |
 | Delete | `JobManager._delete_check`, so `--delete-source` gets the Round-trip check where the mode has one and `--container-only` is the job's `container_only` |
 | Ledger | `ledger.record` as a terminal listener, as in `main.py` |
 | Verify | `ToolPlugin.verify` bounded by `verify_timeout`, then `verification_store.mark_verified` (or `clear` on a failure) |
 
 **`format_route(path, target, platform, registry)`** returns `(mode, None)` or
-`(None, reason)`. `target` is a format (`chd`, `.rvz`) or a mode id. For a
+`(None, reason)`. The CLI calls it after `detect_platform`: a Conflicted Image
+is skipped with the detection reason (Auto's wording), a decided Platform is
+passed in, an Unsorted Image passes None. `--any-platform` (the `CHD_MODE=cli`
+alias) passes None for every Image. `target` is a format (`chd`, `.rvz`) or a mode id. For a
 format, the candidates are the Auto-eligible modes (`ModeSpec.auto_target`)
 whose read set (`mode_reads_extensions`) matches the Image and whose
 `output_path` for it ends in the format, kind regardless (so `--to iso` reaches
@@ -2530,21 +2533,45 @@ Platform keeps the modes that claim it (`platform_slugs` or
 claims, rules nothing out). The rest are ranked by `_best_reader`, the same
 ranking `default_mode` uses. When the winner's matched read extension is the
 target format the Image is left alone ("Already CHD"). A mode id is used as
-given once it accepts the Image and serves its Platform. `target_formats`
-lists every format some mode writes, read from `output_path`, for argument
-checking. `_can_read` asks a tool's `converts_path` only about files its own
+given once its command reads the Image (`mode_reads_extensions`, so createdvd
+never gets a `.cue`) and it serves the Platform. `target_formats` lists every
+format some mode writes, read from `output_path`, for argument checking, with
+a compound output's last extension too, so `7z` and `zip` resolve per Image to
+the romz mode for its ROM. `_can_read` asks a tool's `converts_path` only about files its own
 `input_extensions` cover, so chdman's `.chd` readers are not refused by a tool
 that leaves `.chd` out of its tool-wide inputs.
 
 **Locks beside a server.** Output locks were already `flock` files in
 `CHD_CONCURRENCY_LOCK_DIR`, and the conversion slots and FIFO tickets live
 there too, so a CLI process and the server contend for the same outputs and
-slots. `LockManager._still_linked` closes the one gap: `release_lock` unlinks
-the lock file, so a process could lock a file the holder had just unlinked and
-a third process would then lock a new file at the same path. After every
-`flock` the held inode is compared with the path's, and a stale handle is
-dropped (file locks retry, directory locks defer). A separate container shares
-the locks only when both mount the same lock directory.
+slots. The default is now `<data dir>/locks` (`config._default_lock_dir`), so a
+separate container that mounts the same `/config` shares them; it falls back to
+`$TMPDIR/chd-locks` when the data dir is not writable. Two rules keep a lock
+file meaningful across processes (`LockManager`):
+
+1. A lock file is unlinked only by a process holding its flock, while it holds
+   it, and only when the path still names the held file (`_unlink_held`).
+   Release, the stale probe (`_check_external_lock`), the stale sweep and the
+   refused-output cleanup all go through it.
+2. Every acquirer, once its flock succeeds, compares the held file with the
+   path (`_still_linked`: device and inode, ENOENT counts as a mismatch) and
+   retries on a mismatch.
+
+Unlinking after the unlock let a second process lock the doomed file and a
+third create and lock a new one at the same path. The concurrency manager's
+slot and ticket files still unlink after unlocking; see the follow-ups.
+
+**Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
+compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
+drop run unchanged, and the re-executed entrypoint hands straight back to the
+command before printing anything to stdout.
+
+**`JobManager.drain()`** waits until every queued run has ended, cleanup
+included: a job notifies its listeners before `_process_job` removes its temp
+dir and prunes history, so a caller that leaves on the notification alone
+cancelled that cleanup and left an archive's extracted copy in `/config/temp`.
+Inline runs are covered by the queue's `task_done`, parallel runs by
+`_job_tasks`, folder-lock requeues by `_requeue_tasks`.
 
 **`JobManager.shutdown()`** stops the dispatcher and maintenance loops, awaits
 the listener tasks still running (Ledger writes) and makes the queue, its

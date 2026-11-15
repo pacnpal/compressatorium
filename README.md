@@ -1601,36 +1601,60 @@ compressatorium verify /data/gamecube --since 30d
   `zso`, `nsz`, `z3ds`, `wux`, `7z`, `zip`, ...) or a mode id (`createdvd`,
   `nkit_to_rvz`). A format is resolved per Image through the tool registry,
   chains included: a PS2 `.iso` goes to `createdvd`, a PS1 `.cue` to
-  `createcd`, an NKit image to `nkit_to_rvz`. The Image's Platform narrows the
-  choice, so a GameCube `.iso` is never sent to chdman. An Image already in the
-  format is reported and left alone.
+  `createcd`, an NKit image to `nkit_to_rvz`, a Game Boy Advance ROM with
+  `--to 7z` to a `.gba.7z`. The Image's Platform narrows the choice, so a
+  GameCube `.iso` is never sent to chdman. A Conflicted Image (its header and
+  folder disagree) is skipped with the reason. An Unsorted Image converts only
+  with a mode whose command reads its extension. An Image already in the format
+  is reported and left alone.
 - `--auto` sends each Image to its Platform's default format. Conflicted and
   Unsorted Images are skipped and reported.
 - `--delete-source` deletes each Source once its output passes the strongest
   check its mode has: the Round-trip check where the tool has one, else the
   container check. `--container-only` deletes on the container check alone.
-- `--duplicate skip|overwrite|rename` (default `skip`), `--output-dir DIR`.
+- `--compression CODECS` sets the compression for every Image; `--compression
+  default` uses each tool's own default. Without it, the compression saved in
+  the web UI is used.
+- `--duplicate skip|overwrite|rename` (default `skip`), `--output-dir DIR`,
+  `--no-recurse` (top level only), `--no-archives` (leave archives alone),
+  `--any-platform` (with `--to`, no Platform check).
 
 **`verify PATH... [--since AGE]`** checks each Image is Intact and stores the
 result. `--since 30d` (also `12h`, `2w`) skips Images checked within that window.
+A check that fails drops the stored result; one that times out or cannot run
+leaves it and reports the error.
 
-Both commands take `--dry-run` (print the plan, change nothing on disk or in
-the database) and `--json` (one JSON line per Image on stdout; logs go to stderr
-with `-v`). Exit status: `0` when everything finished or there was nothing to
-do, `1` when any Image failed, `2` on bad arguments.
+Both commands take `--dry-run` (print the plan, convert or check nothing) and
+`--json` (one JSON line per Image on stdout). Warnings and errors always go to
+stderr; `-v` adds INFO messages there. Exit status: `0` when everything finished
+or there was nothing to do, `1` when any Image failed, `2` on bad arguments.
 
-It is safe beside a running server: each job holds a file lock on its output in
-`CHD_CONCURRENCY_LOCK_DIR` (default `$TMPDIR/chd-locks`), and both share the
-conversion slots there. Run it inside the server's container
-(`docker exec compressatorium compressatorium convert ...`); a separate
-container needs the same lock directory mounted at the same path.
+Each Image is planned on its own, so one bad file is reported and the others
+still convert. When `MAX_QUEUE_DEPTH` is set, jobs are fed in batches below it.
+
+**Beside a running server.** Each job holds a file lock on its output, and both
+share the conversion slots. These live in `CHD_CONCURRENCY_LOCK_DIR`, which
+defaults to `/config/locks`, so a separate container that mounts the same
+`/config` (such as `docker-compose.cli.yml`) shares them too. Run it in the
+server's container with `docker exec compressatorium compressatorium convert ...`.
+Started as root (`docker exec` without `-u`, or `--entrypoint`), the command
+first remaps and drops to the `converter` user through the image's entrypoint,
+honouring `PUID`/`PGID` the same way the server does, so the files it writes
+belong to the user the server runs as.
 
 ### `CHD_MODE=cli`
 
-`CHD_MODE=cli` runs `compressatorium convert <each Volume> --to $CHDMAN_MODE`
-and exits. `CHDMAN_MODE` is `createcd` (default) or `createdvd`. Outputs that
-already exist are skipped, as before; subfolders and archives are now searched
-too.
+`CHD_MODE=cli` keeps today's behaviour: it runs
+
+```bash
+compressatorium convert <each Volume> --to $CHDMAN_MODE \
+  --no-recurse --no-archives --any-platform --compression default
+```
+
+and exits. That is the top level of each Volume, every `.cue`, `.gdi` and
+`.iso` the chdman command reads, no archives, no Platform check and chdman's own
+compression. `CHDMAN_MODE` is `createcd` (default) or `createdvd`. Outputs that
+already exist are skipped. For anything else, run `compressatorium` directly.
 
 ```bash
 docker run --rm \
@@ -1644,7 +1668,8 @@ docker run --rm \
 To run any other command in a one-off container:
 
 ```bash
-docker run --rm -v /home/user/gc:/data/gc:rw -v ./config:/config \
+docker run --rm -e PUID=1000 -e PGID=1000 \
+  -v /home/user/gc:/data/gc:rw -v ./config:/config \
   --entrypoint compressatorium pacnpal/compressatorium \
   convert /data/gc --to rvz --json
 ```

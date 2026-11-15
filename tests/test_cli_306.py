@@ -196,7 +196,7 @@ def test_dry_run_plans_and_changes_nothing(volume, dolphin, capsys):
         "path": str(iso), "status": "planned", "platform": "ngc",
         "mode": "dolphin_rvz", "output": str(iso.with_suffix(".rvz")),
         "check": None, "source_deleted": False, "reason": None,
-        "delete_source": True,
+        "delete_source": True, "detection": "folder", "compression": None,
     }]
     assert dolphin["runs"] == []
     assert sorted(p.name for p in iso.parent.iterdir()) == ["Game.iso"]
@@ -288,6 +288,8 @@ def test_an_output_another_process_is_writing_is_left_alone(volume, dolphin, cap
     ("convert", "{vol}", "--to", "rvz", "--container-only"),
     ("convert", "{vol}/missing.iso", "--to", "rvz"),
     ("convert", "/", "--to", "rvz"),
+    ("convert", "{vol}", "--to", "rvz", "--output-dir", "/"),
+    ("convert", "{vol}", "--to", "rvz", "--compression", "not a codec!"),
     ("verify", "{vol}", "--since", "soon"),
     ("frobnicate",),
 ])
@@ -300,11 +302,173 @@ def test_bad_arguments_exit_2(volume, dolphin, capsys, argv):
     assert capsys.readouterr().out == ""
 
 
-def test_chd_mode_cli_alias_runs_the_convert_command():
+ALIAS_FLAGS = (
+    "--no-recurse", "--no-archives", "--any-platform", "--compression", "default",
+)
+
+
+def _entrypoint_cli_branch() -> str:
     entrypoint = (Path(__file__).resolve().parents[1] / "entrypoint.sh").read_text()
-    cli_branch = entrypoint.split('if [[ "$MODE" == "cli" ]]; then', 1)[1].split("\nelse\n", 1)[0]
-    assert 'compressatorium convert "${existing[@]}" --to "$CHDMAN_MODE"' in cli_branch
-    assert "chdman createcd" not in cli_branch
+    return entrypoint.split('if [[ "$MODE" == "cli" ]]; then', 1)[1].split("\nelse\n", 1)[0]
+
+
+def test_chd_mode_cli_alias_runs_the_convert_command_with_todays_scope():
+    branch = _entrypoint_cli_branch()
+    assert (
+        'compressatorium convert "${existing[@]}" --to "$CHDMAN_MODE" '
+        + " ".join(ALIAS_FLAGS)
+    ) in branch
+    assert "chdman createcd" not in branch
+
+
+GC_HEADER = b"\0" * 0x1C + bytes.fromhex("C2339F3D") + b"\0" * 64
+
+
+def _alias_tree(volume):
+    for rel in ("A.cue", "A.bin", "B.iso", "C.gdi", "sub/D.cue", "gc/F.iso", "Done.rvz"):
+        path = volume / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 64)
+    (volume / "G.iso").write_bytes(GC_HEADER)  # a GameCube disc at the top level
+    with zipfile.ZipFile(volume / "pack.zip", "w") as zf:
+        zf.writestr("E.cue", b"x")
+
+
+@pytest.mark.parametrize("mode", ["createcd", "createdvd"])
+def test_chd_mode_cli_alias_keeps_todays_scope(volume, dolphin, capsys, mode):
+    """Today's loop: the top level of each Volume, *.gdi *.iso *.cue, every one
+    to chdman $CHDMAN_MODE, no archives, no Platform check, chdman's own
+    compression. Files the command cannot read at all (createdvd and a .cue)
+    are left alone rather than failed."""
+    _alias_tree(volume)
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", mode, *ALIAS_FLAGS, "--dry-run", "--json",
+    )
+
+    assert code == 0, lines
+    planned = sorted(Path(line["path"]).name for line in lines if line["status"] == "planned")
+    expected = ["A.cue", "B.iso", "C.gdi", "G.iso"] if mode == "createcd" else ["B.iso", "G.iso"]
+    assert planned == expected
+    assert {line["mode"] for line in lines if line["status"] == "planned"} == {mode}
+    assert all(line["compression"] is None for line in lines)
+    assert [line for line in lines if line["status"] != "planned"] == []
+
+
+def test_compression_default_ignores_the_saved_choice(volume, dolphin, capsys):
+    import asyncio
+
+    from routes.preferences import CONVERSION_KEY
+    from services.preferences_store import preferences_store
+
+    (volume / "empty").mkdir()
+    _cli(capsys, "convert", str(volume / "empty"), "--to", "chd")  # creates the DB
+    asyncio.run(preferences_store.put(CONVERSION_KEY, {"chdman": "zstd"}))
+    (volume / "ps2").mkdir()
+    (volume / "ps2" / "Game.iso").write_bytes(b"x" * 64)
+
+    _, saved = _cli(capsys, "convert", str(volume), "--to", "chd", "--dry-run", "--json")
+    _, plain = _cli(
+        capsys, "convert", str(volume), "--to", "chd", "--compression", "default",
+        "--dry-run", "--json",
+    )
+
+    assert saved[0]["compression"] == "zstd"
+    assert plain[0]["compression"] is None
+
+
+def test_to_skips_a_conflicted_image_with_its_reason(volume, dolphin, capsys):
+    disc = volume / "ps2" / "Game.iso"
+    disc.parent.mkdir()
+    disc.write_bytes(GC_HEADER)
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "chd", "--json")
+
+    assert code == 0
+    assert lines[0]["status"] == "skipped"
+    assert lines[0]["detection"] == "conflict"
+    assert lines[0]["platform"] is None
+    assert lines[0]["reason"] == (
+        "Platform conflict: in the ps2 folder, but the header says ngc"
+    )
+
+
+def test_to_reports_the_platform_it_worked_out(volume, dolphin, capsys):
+    disc = volume / "misc" / "Game.iso"
+    disc.parent.mkdir()
+    disc.write_bytes(GC_HEADER)
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+
+    assert code == 0
+    assert (lines[0]["platform"], lines[0]["detection"]) == ("ngc", "header")
+
+
+def test_to_7z_compresses_roms_per_platform(volume, dolphin, capsys):
+    for rel in ("gba/A.gba", "snes/B.sfc"):
+        path = volume / rel
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"rom")
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "7z", "--dry-run", "--json")
+
+    assert code == 0
+    assert sorted((Path(line["path"]).name, line["mode"]) for line in lines) == [
+        ("A.gba", "romz_7z"), ("B.sfc", "romz_7z"),
+    ]
+
+
+def test_one_bad_image_does_not_sink_the_others(volume, dolphin, capsys, monkeypatch):
+    from routes import convert as convert_routes
+
+    good, bad = _iso(volume, "gc/Good.iso"), _iso(volume, "gc/Bad.iso")
+    dolphin["digest"] = hashlib.sha1(b"the disc" * 512).hexdigest()
+    real = convert_routes.build_delete_snapshot
+
+    def snapshot(path):
+        if path == str(bad):
+            raise ValueError("a companion file is a symlink")
+        return real(path)
+
+    monkeypatch.setattr(convert_routes, "build_delete_snapshot", snapshot)
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source", "--json",
+    )
+
+    by_path = {line["path"]: line for line in lines}
+    assert code == 1
+    assert by_path[str(bad)]["status"] == "failed"
+    assert "symlink" in by_path[str(bad)]["reason"]
+    assert by_path[str(good)]["status"] == "completed"
+    assert not good.exists() and bad.exists()
+
+
+def test_jobs_are_fed_below_the_queue_cap(volume, dolphin, capsys, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "max_queue_depth", 1)
+    isos = [_iso(volume, f"gc/G{i}.iso") for i in range(3)]
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+
+    assert code == 0, lines
+    assert [line["status"] for line in lines] == ["completed"] * 3
+    assert all(iso.with_suffix(".rvz").exists() for iso in isos)
+
+
+def test_the_wrapper_drops_root_through_the_entrypoint():
+    root = Path(__file__).resolve().parents[1]
+    wrapper = (root / "scripts" / "compressatorium").read_text()
+    entrypoint = (root / "entrypoint.sh").read_text()
+
+    assert 'exec /entrypoint.sh compressatorium "$@"' in wrapper
+    # The entrypoint runs the command right after its PUID/PGID remap and
+    # privilege drop, before anything that prints to stdout.
+    drop = entrypoint.index('exec /usr/sbin/gosu converter "$0" "$@"')
+    dispatch = entrypoint.index('exec /usr/local/bin/compressatorium "$@"')
+    banner = entrypoint.index("WHOOPS")
+    assert drop < dispatch < banner
 
 
 # --------------------------------------------------------------------------- #
@@ -405,3 +569,26 @@ def test_a_tool_that_cannot_run_here_is_skipped_with_its_reason(
     assert lines[0]["status"] == "skipped"
     assert lines[0]["reason"].startswith(f"{tool.display_name} isn't ready")
     assert dolphin["runs"] == []
+
+
+def test_a_check_that_errors_keeps_the_stored_result(volume, dolphin, capsys, monkeypatch):
+    import asyncio
+
+    from services.verification_store import verification_store
+
+    rvz = _rvz(volume)
+    _cli(capsys, "verify", str(volume), "--json")
+    service = registry.get("dolphin")._service
+
+    async def broken(cmd, *, path, **kwargs):
+        raise OSError("dolphin-tool: No such file or directory")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(service._runner, "run_verify", broken)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1
+    assert lines[0]["status"] == "failed"
+    assert "No such file" in lines[0]["reason"]
+    assert asyncio.run(verification_store.get_record(str(rvz))) is not None

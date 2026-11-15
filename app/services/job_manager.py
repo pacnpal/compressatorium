@@ -1923,7 +1923,7 @@ class JobManager:
                 if await run_in_threadpool(os.path.isdir, temp_dir):
                     await run_in_threadpool(shutil.rmtree, temp_dir, ignore_errors=True)
             except Exception as cleanup_error:
-                print(f"Failed to cleanup temp dir {temp_dir}: {cleanup_error}")
+                logger.warning("Failed to cleanup temp dir %s: %s", temp_dir, cleanup_error)
             finally:
                 job.temp_dir = None
 

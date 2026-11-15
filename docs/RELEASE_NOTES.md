@@ -7,13 +7,14 @@
 - **`compressatorium convert` and `compressatorium verify`** (#306). A command
   line for shells and cron that covers every tool, recurses into subfolders and
   archives, and uses the web UI's planner, delete checks and Ledger.
-  `convert PATH --to chd` (any format or mode id) or `--auto`, with
-  `--delete-source` (Round-trip where the mode has it, `--container-only` to opt
-  out), `--dry-run` and `--json`. `verify PATH --since 30d` checks Images not
-  checked in that window. Exit 0 when done or nothing to do, 1 on a failure, 2
-  on bad arguments. Safe beside a running server: both take the same output
-  locks. `CHD_MODE=cli` now runs `convert <each Volume> --to $CHDMAN_MODE`, so
-  it also finds Images in subfolders and archives.
+  `convert PATH --to chd` (any format, `7z`/`zip` included, or a mode id) or
+  `--auto`, with `--delete-source` (Round-trip where the mode has it,
+  `--container-only` to opt out), `--dry-run` and `--json`. `verify PATH --since
+  30d` checks Images not checked in that window. Exit 0 when done or nothing to
+  do, 1 on a failure, 2 on bad arguments. Safe beside a running server: both
+  take the same output locks. Started as root, it drops to the `converter` user
+  (`PUID`/`PGID`) the way the server does. `CHD_MODE=cli` keeps today's scope
+  and defaults; it now runs through this command.
 - **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
   panel, select a mix of files, and each Image goes to its Platform's default
   format with your saved compression. The Platform comes from the Image's own
@@ -74,6 +75,16 @@
 
 ### Changed
 
+- **Job locks live in `/config/locks`** (#306). With `CHD_CONCURRENCY_LOCK_DIR`
+  unset, output locks and conversion slots move from `/tmp/chd-locks` to
+  `<data dir>/locks`, so a CLI container that mounts the same `/config` as the
+  web UI shares its locks. When `/config` is not writable the old `/tmp`
+  location is used.
+- **Auto converts a PS3 disc folder to an ISO** (#306). The Auto choice now
+  sends a PS3 disc folder to `folder_to_iso`; it used to leave it alone.
+- A single convert request for an output another job is writing now says
+  "Output file is currently being converted" (still 409) instead of "Output
+  file already exists".
 - **RomM Rules run on a shared Rule engine** (#296). Nothing changes in the
   app or the API. Stored Rules and their state are copied to new keys prefixed
   with the Library id (`romm:7`) the first time they are read. The old

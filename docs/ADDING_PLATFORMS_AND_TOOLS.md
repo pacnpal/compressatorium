@@ -315,7 +315,7 @@ the non-obvious rows is in §8 to §14.
 | 3 | `requirements.txt` | Add any new **Python** runtime dependency the service imports. | If service needs a new pip dep |
 | 4 | `requirements-dev.txt` | Add test-only Python deps. | Rare |
 | 5 | `.local-bin/` + `.env.local` | Local-dev copy of a from-source binary. Only `z3ds_compressor` is committed here today. Dropping a binary in `.local-bin/` is **not** enough: `run_dev.sh` doesn't add it to `PATH`, and from-source tools default to an absolute `/usr/local/bin/...` path, so you must set `<TOOL>_PATH` in `.env.local` (which `run_dev.sh` sources). See §8. | New from-source tool |
-| 6 | `entrypoint.sh` | Add the binary path env passthrough; extend the **CLI batch mode** loop if the tool should run headless (see §9). | New tool, CLI support optional |
+| 6 | `entrypoint.sh` | Add the binary path env passthrough. Headless use needs nothing: `compressatorium` reaches every registered tool (see §9). | New tool |
 
 ### 3.2 Backend code
 
@@ -1316,7 +1316,7 @@ PERIPHERAL (don't forget)
 [ ] .dockerignore: confirm nothing new is excluded
 [ ] requirements.txt: new pip deps (if any)
 [ ] .local-bin/<binary>: local-dev copy (from-source tools)
-[ ] entrypoint.sh: CLI-mode loop (only if headless batch support wanted)
+[ ] headless: check `compressatorium convert <dir> --to <format> --dry-run --json` picks your mode
 [ ] disc_id.py: serial/title parser (only for new disc platforms w/ tagging)
 [ ] migrations/: new Alembic rev (only if persisting new columns/tables)
 [ ] docker-compose*.yml + docs/DEPLOYMENT.md + docs/DOCKER-COMPOSE.md: env/volume docs
@@ -1520,12 +1520,14 @@ tool with `compressatorium convert <dir> --to <your format> --dry-run --json`.
 See DESIGN §3.3.14.
 
 `CHD_MODE=cli` in `entrypoint.sh` is an alias for
-`compressatorium convert <each Volume> --to $CHDMAN_MODE`; its `case` statement
+`compressatorium convert <each Volume> --to $CHDMAN_MODE` with flags that keep
+its old scope (top level, no archives, no Platform check); its `case` statement
 still only accepts `createcd`/`createdvd`, which is today's contract for that
 variable. Nothing to change there for a new tool.
 
 The same file handles **PUID/PGID remap** and the privilege drop to `converter`
-(`exec gosu converter`). No changes needed there.
+(`exec gosu converter`); the `compressatorium` wrapper reuses it when started
+as root. No changes needed there.
 
 ---
 

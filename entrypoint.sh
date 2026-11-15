@@ -59,6 +59,15 @@ elif [ -n "${PUID:-}" ] || [ -n "${PGID:-}" ]; then
     echo "Warning: PUID/PGID remap requires container startup as root; current UID is $(/usr/bin/id -u). Ignoring PUID/PGID." >&2
 fi
 
+# `/entrypoint.sh compressatorium ...`: what the `compressatorium` command runs
+# when it starts as root (`docker exec`, `--entrypoint compressatorium`). The
+# block above has remapped PUID/PGID and dropped to converter; run the command
+# now, before anything below prints to stdout (its --json output).
+if [ "${1:-}" = "compressatorium" ]; then
+    shift
+    exec /usr/local/bin/compressatorium "$@"
+fi
+
 # Check if /config is mounted
 if ! mountpoint -q /config 2>/dev/null; then
     echo ""
@@ -148,7 +157,7 @@ if [[ "$MODE" == "cli" ]]; then
 
     # Alias for `compressatorium convert <each Volume> --to $CHDMAN_MODE`: the
     # same planner, job queue, locks and Ledger as the web UI. Existing outputs
-    # are skipped, as before; folders and archives are now searched too.
+    # are skipped, as before.
     IFS=',' read -r -a volume_list <<< "$VOLUMES_EFFECTIVE"
     existing=()
     for volume in "${volume_list[@]}"; do
@@ -167,7 +176,9 @@ if [[ "$MODE" == "cli" ]]; then
         echo "No volumes to convert."
         exit 0
     fi
-    exec compressatorium convert "${existing[@]}" --to "$CHDMAN_MODE"
+    # Today's scope and defaults: the top level of each Volume, no archives,
+    # no Platform check, chdman's own compression.
+    exec compressatorium convert "${existing[@]}" --to "$CHDMAN_MODE" --no-recurse --no-archives --any-platform --compression default
 else
     # Web UI mode (default)
     echo "Starting CHD Converter Web UI..."

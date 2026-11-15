@@ -1,7 +1,8 @@
 """``compressatorium``: convert and verify Images from a shell or cron (#306).
 
 Run as ``python -m cli`` with ``app/`` on ``PYTHONPATH``; the Docker image
-installs a ``compressatorium`` wrapper that does exactly that.
+installs a ``compressatorium`` wrapper that does exactly that (and, started as
+root, drops to the ``converter`` user through the image's entrypoint first).
 
 The CLI starts no web server, but it is not a second conversion path. It
 drives the same pieces the web UI does, in-process:
@@ -15,7 +16,8 @@ drives the same pieces the web UI does, in-process:
   jobs (``_delete_check`` decides every delete; ``ledger.record`` writes every
   Ledger row);
 * locking: the job manager's output locks are ``flock`` files in the shared lock
-  directory, so a running server and this process never write one output twice.
+  directory (``<data dir>/locks``), so a running server and this process never
+  write one output twice.
 
 Exit status: 0 when everything finished or there was nothing to do, 1 when any
 Image failed (or was cancelled), 2 on bad arguments.
@@ -25,6 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -41,11 +44,22 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 
+# `--compression default`: the tool's own default, not the saved web UI choice.
+TOOL_DEFAULT = "default"
+
 logger = get_logger("cli")
 
 
 class UsageError(Exception):
     """A bad argument: printed to stderr, exit 2."""
+
+
+@dataclass
+class RunState:
+    """What a SIGINT/SIGTERM should do at this point of the run."""
+
+    jobs_started: bool = False
+    stopping: bool = False
 
 
 @dataclass
@@ -55,6 +69,7 @@ class Item:
     path: str
     explicit: bool = False
     platform: str | None = None
+    detection: str | None = None
     mode: str | None = None
     compression: str | None = None
     status: str | None = None
@@ -75,6 +90,8 @@ class Item:
             "source_deleted": self.source_deleted,
             "reason": self.reason,
             "delete_source": self.delete_source,
+            "detection": self.detection,
+            "compression": self.compression,
         }
 
 
@@ -97,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     target = convert.add_mutually_exclusive_group(required=True)
     target.add_argument(
         "--to", metavar="FORMAT",
-        help="output format (chd, rvz, cso, nsz, ...) or a mode id (createdvd)",
+        help="output format (chd, rvz, cso, nsz, 7z, ...) or a mode id (createdvd)",
     )
     target.add_argument(
         "--auto", action="store_true",
@@ -118,6 +135,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--duplicate", choices=("skip", "overwrite", "rename"), default="skip",
         help="when the output already exists (default: skip)",
     )
+    convert.add_argument(
+        "--compression", metavar="CODECS",
+        help="compression for every Image (as in the web UI), or 'default' for "
+             "each tool's own default; without it, the saved web UI choice",
+    )
+    convert.add_argument(
+        "--no-recurse", action="store_true",
+        help="only the top level of each folder",
+    )
+    convert.add_argument(
+        "--no-archives", action="store_true",
+        help="leave archives alone (no members, no archive Images)",
+    )
+    convert.add_argument(
+        "--any-platform", action="store_true",
+        help="with --to: do not narrow by Platform or skip Conflicted Images",
+    )
     _common(convert)
 
     verify = sub.add_parser("verify", help="check Images are Intact")
@@ -133,10 +167,13 @@ def build_parser() -> argparse.ArgumentParser:
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="print what would happen; change nothing on disk or in the database",
+        help="print what would happen; change nothing in the Volumes or the database",
     )
     parser.add_argument("--json", action="store_true", help="one JSON line per Image")
-    parser.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="also log INFO messages to stderr (warnings always are)",
+    )
 
 
 _AGE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
@@ -157,10 +194,18 @@ def _absolute(path: str) -> str:
     return os.path.abspath(path)
 
 
+def _outside_volumes(raw: str) -> UsageError:
+    from config import settings
+
+    volumes = ", ".join(settings.volumes) or "none"
+    return UsageError(
+        f"{raw} is outside the configured Volumes ({volumes}); "
+        "set COMPRESSATORIUM_VOLUMES to include it"
+    )
+
+
 def _check_paths(paths: list[str]) -> list[str]:
     from utils.path_utils import is_within_configured_volumes
-
-    from config import settings
 
     checked = []
     for raw in paths:
@@ -168,11 +213,7 @@ def _check_paths(paths: list[str]) -> list[str]:
         if not os.path.exists(path.split("::", 1)[0]):
             raise UsageError(f"{raw}: no such file or directory")
         if not is_within_configured_volumes(path):
-            volumes = ", ".join(settings.volumes) or "none"
-            raise UsageError(
-                f"{raw} is outside the configured Volumes ({volumes}); "
-                "set COMPRESSATORIUM_VOLUMES to include it"
-            )
+            raise _outside_volumes(raw)
         checked.append(path)
     return checked
 
@@ -182,12 +223,16 @@ def _check_paths(paths: list[str]) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 
-def _discover(paths: list[str], *, for_verify: bool = False) -> list[Item]:
+def _discover(
+    paths: list[str], *, for_verify: bool = False, recurse: bool = True,
+    archives: bool = True,
+) -> list[Item]:
     """Every Image under ``paths``, named ones first-class, in walk order.
 
-    A folder is walked with the web UI's recursive search (``scan_tree``); a
-    folder that is itself an Image (a PS3 disc folder) is taken whole. An
-    archive named on the command line brings its convertible members along.
+    A folder is walked with the web UI's search (``scan_tree``); a folder that
+    is itself an Image (a PS3 disc folder) is taken whole. An archive named on
+    the command line brings its convertible members along. An archive whose
+    member listing hit the per-archive cap gets a line saying so.
     """
     from routes.files import scan_tree
     from services.archive import archive_service
@@ -195,16 +240,24 @@ def _discover(paths: list[str], *, for_verify: bool = False) -> list[Item]:
 
     found: dict[str, Item] = {}
 
-    def add(path: str, explicit: bool) -> None:
+    def add(path: str, explicit: bool) -> Item:
         if path not in found:
             found[path] = Item(path=path, explicit=explicit)
+        return found[path]
+
+    def truncated(archive: str) -> None:
+        logger.warning("Archive %s lists more members than the cap; the rest were skipped",
+                       archive)
+        item = add(f"{archive}::*", False)
+        item.status = "skipped"
+        item.reason = "The archive holds more members than the listing cap; the rest were not read"
 
     for path in paths:
         if "::" not in path and os.path.isdir(path):
             if not for_verify and registry.tools_for_directory(path):
                 add(path, True)
                 continue
-            files, members, _ = scan_tree(path, True, True)
+            files, members, cut = scan_tree(path, recurse, archives)
             for entry in files:
                 if for_verify and not entry.get("verifiable_by"):
                     continue
@@ -212,14 +265,26 @@ def _discover(paths: list[str], *, for_verify: bool = False) -> list[Item]:
             if not for_verify:  # a check reads files, never archive members
                 for entry in members:
                     add(entry["path"], False)
+                for archive in cut:
+                    truncated(archive)
             continue
         add(path, True)
-        if not for_verify and "::" not in path and archive_service.is_archive(path):
+        if (
+            not for_verify and archives and "::" not in path
+            and archive_service.is_archive(path)
+        ):
             listing = archive_service.list_archive_contents(
                 path, include_meta=True, convertible_only=True,
             )
             for entry in listing["entries"]:
                 add(f"{path}::{entry['internal_path']}", False)
+            if listing.get("truncated"):
+                truncated(path)
+    if not archives:
+        return [
+            i for i in found.values()
+            if i.explicit or not archive_service.is_archive(i.path.split("::", 1)[0])
+        ]
     return list(found.values())
 
 
@@ -293,11 +358,27 @@ async def _saved_compression(has_db: bool) -> dict:
 
 
 def _validate_convert(args) -> None:
+    from fastapi import HTTPException
+    from routes.convert import normalize_compression
     from services.platform_detect import target_formats
     from services.tools import registry
+    from utils.path_utils import is_within_configured_volumes
 
     if args.container_only and not args.delete_source:
         raise UsageError("--container-only only applies with --delete-source")
+    if args.any_platform and args.auto:
+        raise UsageError("--any-platform only applies with --to")
+    if args.output_dir is not None:
+        if not args.output_dir.strip():
+            raise UsageError("--output-dir cannot be empty")
+        args.output_dir = os.path.abspath(args.output_dir)
+        if not is_within_configured_volumes(args.output_dir, treat_archives=False):
+            raise _outside_volumes(args.output_dir)
+    if args.compression is not None and args.compression.strip().lower() != TOOL_DEFAULT:
+        try:
+            args.compression = normalize_compression(args.compression)
+        except HTTPException as exc:
+            raise UsageError(f"--compression: {exc.detail}") from None
     if args.to is None:
         return
     key = args.to.strip().lower()
@@ -312,69 +393,109 @@ def _validate_convert(args) -> None:
         raise UsageError(f"--to {args.to}: not a format or mode. Formats: {names}")
 
 
-def _route_to(
-    items: list[Item], target: str, prefs: dict, ready: list[str],
-) -> list[Item]:
+def _compression_for(mode: str, args, prefs: dict) -> tuple[str | None, str | None]:
+    """``(compression, error)`` for one Image's mode.
+
+    ``--compression default`` is the tool's own default; a value given on the
+    command line must fit the mode; without the flag, the saved web UI choice
+    is used when the mode takes it, as Auto does.
+    """
+    from fastapi import HTTPException
+    from routes.convert import _validate_request_compression, checked_compression
+    from services.tools import registry
+
+    spec = registry.spec(mode)
+    takes = spec.supports_compression or spec.supports_compression_level
+    if args.compression is None:
+        saved = prefs.get(spec.tool_id) if takes else None
+        return checked_compression(mode, saved or None), None
+    if args.compression.lower() == TOOL_DEFAULT or not takes:
+        return None, None
+    try:
+        _validate_request_compression(spec, mode, args.compression)
+    except HTTPException as exc:
+        return None, f"--compression {args.compression}: {exc.detail}"
+    return args.compression, None
+
+
+def _route_to(items: list[Item], args, prefs: dict, ready: list[str]) -> list[Item]:
     """Pick each Image's mode for ``--to``; drop discovered Images out of scope.
 
-    A mode whose tool cannot run here (``ready``) is skipped with the same
-    reason Auto gives.
+    A Conflicted Image is skipped with its detection reason, as Auto does; a
+    known Platform narrows the modes; an Unsorted Image goes ahead only to a
+    mode whose command reads its extension (``format_candidates``).
+    ``--any-platform`` (the ``CHD_MODE=cli`` alias) turns both Platform tests
+    off. A mode whose tool cannot run here is skipped with Auto's reason.
     """
-    from routes.convert import checked_compression
     from services.platform_detect import (
+        CONFLICT,
         detect_platform,
         format_candidates,
         format_route,
     )
     from services.tools import registry
 
+    target = args.to
     kept = []
     for item in items:
+        if item.status:  # a line already decided in discovery
+            kept.append(item)
+            continue
         if not item.explicit and not format_candidates(item.path, target, registry):
             continue
-        item.platform = detect_platform(item.path).platform
-        item.mode, item.reason = format_route(item.path, target, item.platform, registry)
+        if args.any_platform:
+            platform = None
+        else:
+            detection = detect_platform(item.path)
+            item.platform, item.detection = detection.platform, detection.how
+            if detection.how == CONFLICT:
+                item.status = "skipped"
+                item.reason = f"Platform conflict: {detection.reason}"
+                kept.append(item)
+                continue
+            platform = detection.platform
+        item.mode, item.reason = format_route(item.path, target, platform, registry)
+        if not item.mode and not item.explicit and item.reason and (
+            item.reason.startswith("No ") or "does not convert" in item.reason
+        ):
+            continue  # another Platform's Image: not in scope for this target
         tool = registry.for_mode(item.mode) if item.mode else None
         if tool is not None and tool.id not in ready:
             item.mode = None
             item.reason = f"{tool.display_name} isn't ready: {tool.not_ready_reason}"
         if item.mode:
-            item.compression = checked_compression(
-                item.mode, _pref_for(item.mode, prefs),
-            )
+            item.compression, error = _compression_for(item.mode, args, prefs)
+            if error:
+                item.status, item.reason = "failed", error
         else:
             item.status = "skipped"
         kept.append(item)
     return kept
 
 
-def _pref_for(mode: str, prefs: dict) -> str | None:
-    from services.tools import registry
-
-    spec = registry.spec(mode)
-    if not (spec.supports_compression or spec.supports_compression_level):
-        return None
-    return prefs.get(spec.tool_id) or None
-
-
-async def _route_auto(
-    items: list[Item], output_dir: str | None, prefs: dict, ready: list[str],
-) -> list[Item]:
+async def _route_auto(items: list[Item], args, prefs: dict, ready: list[str]) -> list[Item]:
     from routes.convert import plan_auto_targets
     from services.platform_detect import auto_reads
     from services.tools import registry
 
-    kept = [i for i in items if i.explicit or auto_reads(i.path, registry)]
+    decided = [i for i in items if i.status]
+    kept = [i for i in items if not i.status and (i.explicit or auto_reads(i.path, registry))]
     targets = await plan_auto_targets(
-        [i.path for i in kept], output_dir, prefs, ready_tool_ids=ready,
+        [i.path for i in kept], args.output_dir, prefs, ready_tool_ids=ready,
     )
     for item, target in zip(kept, targets, strict=True):
         item.platform = target.detection.platform
+        item.detection = target.detection.how
         item.mode = target.mode
-        item.compression = target.compression
         if not target.mode:
             item.status, item.reason = "skipped", target.skip_reason
-    return kept
+        elif args.compression is not None:
+            item.compression, error = _compression_for(target.mode, args, prefs)
+            if error:
+                item.status, item.reason = "failed", error
+        else:
+            item.compression = target.compression
+    return decided + kept
 
 
 def _decide_deletes(items: list[Item], args) -> None:
@@ -383,7 +504,7 @@ def _decide_deletes(items: list[Item], args) -> None:
 
     if not args.delete_source:
         return
-    routed = [i for i in items if i.mode]
+    routed = [i for i in items if i.mode and not i.status]
     shared = get_disallowed_archive_paths([i.path for i in routed])
     for item in routed:
         if not registry.spec(item.mode).supports_delete_on_verify:
@@ -394,16 +515,40 @@ def _decide_deletes(items: list[Item], args) -> None:
             item.delete_source = True
 
 
+async def _prepare_group(request, group: list[Item]):
+    """``prepare_batch`` for one group; on a refusal, retry Image by Image.
+
+    The planner refuses a whole batch for one file (a delete snapshot that
+    cannot be built, a compression the mode refuses). Retried one at a time,
+    only the Image at fault fails and the rest are planned. Returns the
+    prepared batches.
+    """
+    from fastapi import HTTPException
+    from routes.convert import prepare_batch
+
+    try:
+        return [await prepare_batch(request)]
+    except HTTPException as exc:
+        if len(group) == 1:
+            group[0].status, group[0].reason = "failed", str(exc.detail)
+            return []
+    batches = []
+    for item in group:
+        batches += await _prepare_group(
+            request.model_copy(update={"file_paths": [item.path]}), [item],
+        )
+    return batches
+
+
 async def _prepare(items: list[Item], args) -> list[tuple]:
     """Plan every routed Image through the batch route's planner, by group.
 
     Returns ``[(PreparedBatch, {planned file path: Item}), ...]``. Images the
-    planner leaves out are marked skipped with its reason; a group it refuses
-    outright is marked failed.
+    planner leaves out are marked skipped with its reason (a file collapsed
+    into another's output is dropped when it was only discovered, like a
+    ``.bin`` beside its ``.cue``).
     """
-    from fastapi import HTTPException
     from models import BatchJobCreateRequest, ConversionMode, DuplicateAction
-    from routes.convert import prepare_batch
 
     groups: dict[tuple, list[Item]] = {}
     for item in items:
@@ -423,36 +568,56 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
             delete_on_verify=delete,
             container_only=bool(args.container_only and delete),
         )
-        try:
-            batch = await prepare_batch(request)
-        except HTTPException as exc:
-            for item in group:
-                item.status, item.reason = "failed", str(exc.detail)
-            continue
         by_path: dict[str, Item] = {}
         for item in group:
             by_path[item.path] = item
             by_path.setdefault(os.path.realpath(item.path), item)
-        for path, reason in batch.skipped:
-            item = by_path.get(path)
-            if item is not None:
-                item.status, item.reason = "skipped", reason
-        planned = {}
-        for plan in batch.plans:
-            item = by_path.get(plan.file_path)
-            if item is not None:
-                item.output = plan.output_path
-                planned[plan.file_path] = item
-        prepared.append((batch, planned))
+        for batch in await _prepare_group(request, group):
+            for path, reason in batch.skipped:
+                item = by_path.get(path)
+                if item is None:
+                    continue
+                if not item.explicit and reason.startswith("Same output as"):
+                    item.status = "dropped"
+                else:
+                    item.status, item.reason = "skipped", reason
+            planned = {}
+            for plan in batch.plans:
+                item = by_path.get(plan.file_path)
+                if item is not None:
+                    item.output = plan.output_path
+                    planned[plan.file_path] = item
+            prepared.append((batch, planned))
     return prepared
 
 
-async def _run_jobs(prepared: list[tuple], printer: Printer) -> None:
-    """Queue every prepared batch, then report each job as it ends."""
+def _chunks(prepared: list[tuple], size: int) -> list[tuple]:
+    """Split prepared batches so none queues more than ``size`` jobs at once."""
+    if size <= 0:
+        return prepared
+    out = []
+    for batch, planned in prepared:
+        for start in range(0, len(batch.plans), size):
+            out.append((
+                dataclasses.replace(batch, plans=batch.plans[start:start + size]),
+                planned,
+            ))
+    return out
+
+
+async def _run_jobs(prepared: list[tuple], printer: Printer, state: RunState) -> None:
+    """Queue the prepared batches, below the queue cap, and report each job.
+
+    Leaves only once every job has run to its end, cleanup included
+    (``JobManager.drain``): a job reports itself finished before it removes
+    its temp dir.
+    """
     from fastapi import HTTPException
     from routes.convert import queue_prepared
     from services import ledger
     from services.job_manager import job_manager
+
+    from config import settings
 
     ended: dict = {}
     changed = asyncio.Event()
@@ -464,40 +629,58 @@ async def _run_jobs(prepared: list[tuple], printer: Printer) -> None:
     job_manager.add_terminal_listener(ledger.record)
     job_manager.add_terminal_listener(on_terminal)
     runner = asyncio.create_task(job_manager.process_queue())
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
-            loop.add_signal_handler(
-                sig, lambda: asyncio.ensure_future(job_manager.cancel_all_jobs()),
-            )
+    state.jobs_started = True
     watching: dict[str, Item] = {}
+    pending: set[str] = set()
+
+    def report() -> None:
+        for job_id in [j for j in pending if j in ended]:
+            pending.discard(job_id)
+            _finish(watching[job_id], ended[job_id])
+            printer.line(watching[job_id].convert_line())
+
+    async def wait_for_an_end() -> None:
+        changed.clear()
+        report()
+        if pending:
+            await changed.wait()
+        report()
+
+    max_depth = max(0, int(getattr(settings, "max_queue_depth", 0) or 0))
     try:
-        for batch, planned in prepared:
+        for batch, planned in _chunks(prepared, max_depth):
+            # The queue cap protects a server's memory; here it paces the feed.
+            while (
+                max_depth and not state.stopping
+                and job_manager.get_queue_depth() + len(batch.plans) > max_depth
+            ):
+                await wait_for_an_end()
+            if state.stopping:
+                for plan in batch.plans:
+                    item = planned.get(plan.file_path)
+                    if item is not None:
+                        item.status, item.reason = "cancelled", "Stopped before it was queued"
+                        printer.line(item.convert_line())
+                continue
             try:
                 jobs = await queue_prepared(batch)
             except HTTPException as exc:
-                for item in planned.values():
-                    item.status, item.reason = "failed", str(exc.detail)
-                    printer.line(item.convert_line())
+                for plan in batch.plans:
+                    item = planned.get(plan.file_path)
+                    if item is not None:
+                        item.status, item.reason = "failed", str(exc.detail)
+                        printer.line(item.convert_line())
                 continue
             for job in jobs:
                 item = planned.get(job.file_path)
                 if item is not None:
                     watching[job.id] = item
-        pending = set(watching)
+                    pending.add(job.id)
+            report()
         while pending:
-            for job_id in [j for j in pending if j in ended]:
-                pending.discard(job_id)
-                _finish(watching[job_id], ended[job_id])
-                printer.line(watching[job_id].convert_line())
-            if pending:
-                changed.clear()
-                if not any(j in ended for j in pending):
-                    await changed.wait()
+            await wait_for_an_end()
+        await job_manager.drain()
     finally:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
-                loop.remove_signal_handler(sig)
         job_manager.remove_terminal_listener(on_terminal)
         # Cancelled before shutdown: a runner that has not started yet would
         # otherwise start the dispatcher after shutdown and wait forever.
@@ -516,27 +699,28 @@ def _finish(item: Item, job) -> None:
         item.reason = job.error_message
 
 
-async def convert(args, printer: Printer) -> int:
+async def convert(args, printer: Printer, state: RunState) -> int:
     _validate_convert(args)
     paths = _check_paths(args.paths)
     from fastapi.concurrency import run_in_threadpool
+    from services.tools import registry
 
     has_db = _open_db(args.dry_run)
     prefs = await _saved_compression(has_db)
-    items = await run_in_threadpool(_discover, paths)
-    from services.tools import registry
-
+    items = await run_in_threadpool(
+        lambda: _discover(paths, recurse=not args.no_recurse, archives=not args.no_archives),
+    )
     # The shared, bounded readiness probe the Auto route uses.
     ready = await registry.ready_tool_ids()
     if args.auto:
-        items = await _route_auto(items, args.output_dir, prefs, ready)
+        items = await _route_auto(items, args, prefs, ready)
     else:
-        items = await run_in_threadpool(_route_to, items, args.to, prefs, ready)
+        items = await run_in_threadpool(_route_to, items, args, prefs, ready)
     _decide_deletes(items, args)
     prepared = await _prepare(items, args)
 
     for item in items:
-        if item.status:
+        if item.status and item.status != "dropped":
             printer.line(item.convert_line())
     if args.dry_run:
         for _batch, planned in prepared:
@@ -544,7 +728,7 @@ async def convert(args, printer: Printer) -> int:
                 item.status = "planned"
                 printer.line(item.convert_line())
     else:
-        await _run_jobs(prepared, printer)
+        await _run_jobs(prepared, printer, state)
     failed = any(i.status in ("failed", "cancelled") for i in items)
     return EXIT_FAILED if failed else EXIT_OK
 
@@ -594,30 +778,37 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
     try:
         result = await asyncio.wait_for(tool.verify(path), timeout=bound or None)
     except asyncio.TimeoutError:
-        result = {"valid": False, "message": f"Verification timed out after {bound}s"}
+        result = {"error": f"Verification timed out after {bound}s"}
     except Exception as exc:  # noqa: BLE001 - one bad file must not stop the rest
-        result = {"valid": False, "message": str(exc)}
-    line["reason"] = result.get("message")
+        result = {"error": f"Verification could not run: {exc}"}
     if result.get("valid"):
-        line["status"] = "intact"
+        line["status"], line["reason"] = "intact", result.get("message")
         await verification_store.mark_verified(path)
-    else:
-        line["status"] = "failed"
-        # It is not Intact any more: a stored pass would be a false badge, and
-        # `--since` would skip it next time.
-        await verification_store.clear(path)
+        return line
+    line["status"] = "failed"
+    if "error" in result or result.get("cancelled") or result.get("abandoned"):
+        # No verdict: a timeout, a tool that would not run, a check cut short.
+        # The file is not known bad, so what was stored stays.
+        line["reason"] = result.get("error") or result.get("message")
+        return line
+    line["reason"] = result.get("message")
+    # A real verdict: it is not Intact any more. A stored pass would be a false
+    # badge, and `--since` would skip it next time.
+    await verification_store.clear(path)
     return line
 
 
-async def verify(args, printer: Printer) -> int:
+async def verify(args, printer: Printer, state: RunState) -> int:
     since = parse_age(args.since) if args.since else None
     paths = _check_paths(args.paths)
     from fastapi.concurrency import run_in_threadpool
 
     has_db = _open_db(args.dry_run)
-    items = await run_in_threadpool(_discover, paths, for_verify=True)
+    items = await run_in_threadpool(lambda: _discover(paths, for_verify=True))
     failed = False
     for item in items:
+        if state.stopping:
+            break
         tool = await run_in_threadpool(_verify_tool, item.path)
         if tool is None:
             if item.explicit:
@@ -627,7 +818,7 @@ async def verify(args, printer: Printer) -> int:
         line = await _verify_one(item.path, tool, has_db, since, args.dry_run)
         failed = failed or line["status"] == "failed"
         printer.line(line)
-    return EXIT_FAILED if failed else EXIT_OK
+    return EXIT_FAILED if failed or state.stopping else EXIT_OK
 
 
 # --------------------------------------------------------------------------- #
@@ -653,11 +844,46 @@ def _logging(verbose: bool):
         root.propagate = saved[1]
 
 
+@contextlib.contextmanager
+def _signals(state: RunState):
+    """SIGINT/SIGTERM for the whole run (the CLI is PID 1 under CHD_MODE=cli).
+
+    Before any job starts the run is cancelled at once; once jobs run they are
+    cancelled through the job manager, nothing more is queued, and the run
+    ends when they have.
+    """
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+
+    def on_signal() -> None:
+        state.stopping = True
+        if not state.jobs_started:
+            task.cancel()
+            return
+        from services.job_manager import job_manager
+
+        asyncio.ensure_future(job_manager.cancel_all_jobs())
+
+    installed = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+            loop.add_signal_handler(sig, on_signal)
+            installed.append(sig)
+    try:
+        yield
+    finally:
+        for sig in installed:
+            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                loop.remove_signal_handler(sig)
+
+
 async def _run(args) -> int:
     printer = Printer(args.json)
-    if args.command == "convert":
-        return await convert(args, printer)
-    return await verify(args, printer)
+    state = RunState()
+    with _signals(state):
+        if args.command == "convert":
+            return await convert(args, printer, state)
+        return await verify(args, printer, state)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -672,6 +898,9 @@ def main(argv: list[str] | None = None) -> int:
         except UsageError as exc:
             print(f"compressatorium: error: {exc}", file=sys.stderr)
             return EXIT_USAGE
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            print("compressatorium: stopped", file=sys.stderr)
+            return EXIT_FAILED
 
 
 if __name__ == "__main__":
