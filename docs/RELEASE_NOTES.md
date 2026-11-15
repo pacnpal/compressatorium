@@ -139,6 +139,27 @@
   process's conversions; its tickets are cleared by the next job that waits.
   The server and the CLI raise their open-file limit to the system maximum at
   start.
+- **A file a job is reading can't be renamed or deleted from the web UI**
+  (#306), whichever process runs the job. Every job holds a shared lock on its
+  Source and the Source's companions until it ends, so the web answers 409
+  while a CLI run converts that file. Two jobs reading one file don't block each
+  other. Renaming or deleting a folder is refused the same way while a job in
+  any process reads or writes something inside it.
+  - A CLI container and the web UI that share `/config` must mount each Volume
+    at the same path; locks name container paths.
+- **Delete-source keeps an archive that holds another Image** (#306).
+  Deleting an archive member's Source deletes the whole archive, so the archive
+  now goes only when that member is the only Image in it. The count covers
+  every Image in the archive, including ones the run skipped or left out. The
+  web UI refuses such a request with the names of the other Images; the CLI
+  converts the member, keeps the archive, says so on that line and exits 1.
+  Junk such as `__MACOSX/` and a disc's own `.bin` tracks don't count.
+- **An archive the safety rules refuse is skipped by `verify`, not failed**
+  (#306). A single-ROM archive with a symlink, an absolute or `..` path, an
+  encrypted member, or over a `CHD_ARCHIVE_MAX_*` limit you set is reported as
+  "can't be checked (refused by the archive safety rules: ...)". Its stored
+  check is kept and the exit code is unaffected. 7z is never left waiting for a
+  password: it reads no terminal input, and an encrypted archive fails at once.
 - **Auto converts a PS3 disc folder to an ISO** (#306). The Auto choice now
   sends a PS3 disc folder to `folder_to_iso`; it used to leave it alone.
 - A single convert request for an output another job is writing now says

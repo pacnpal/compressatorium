@@ -272,18 +272,35 @@ async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
 
     # A folder another process is packing (a CLI folder_to_iso job): its
     # subtree lock lives in that process, so probe the lock file of the path
-    # and of each folder above it, up to the Volume root (#306).
-    volume_root = containing_volume_root(path)
-    locked = await run_in_threadpool(
-        lock_manager.locked_folder_above, path,
-        str(volume_root) if volume_root is not None else None,
-    )
-    if locked is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Path is inside {os.path.basename(locked)}, which another "
-                   "process is converting",
+    # and of each folder above it, up to the Volume root (#306). Off the event
+    # loop: resolving the Volume roots touches the disk.
+    def _locked_folder_above() -> str | None:
+        volume_root = containing_volume_root(path)
+        return lock_manager.locked_folder_above(
+            path, str(volume_root) if volume_root is not None else None,
         )
+
+    locked = await run_in_threadpool(_locked_folder_above)
+    if locked is not None:
+        if os.path.realpath(path) == locked:
+            detail = "Path is being converted by another process"
+        else:
+            detail = (
+                f"Path is inside {os.path.basename(locked)}, which another "
+                "process is converting"
+            )
+        raise HTTPException(status_code=409, detail=detail)
+
+    # A folder holding anything a job in any process writes or reads: every
+    # lock records its path, so look below the folder too (#306).
+    if is_dir:
+        below = await run_in_threadpool(lock_manager.locked_path_below, path)
+        if below is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Folder holds {os.path.relpath(below, os.path.realpath(path))}, "
+                       "which a conversion is using",
+            )
 
     candidates = job_manager.get_active_job_candidates()
 

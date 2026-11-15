@@ -899,7 +899,7 @@ def test_verify_probes_readiness_once_per_run(volume, dolphin, capsys, monkeypat
         _rvz(volume, f"gc/{name}.rvz")
     _not_ready(monkeypatch, registry.get("dolphin"), calls)
 
-    code, lines = _cli(capsys, "verify", str(volume), "--json")
+    _code, lines = _cli(capsys, "verify", str(volume), "--json")
 
     assert [line["status"] for line in lines] == ["skipped"] * 3
     assert calls.count("dolphin") == 1
@@ -1178,8 +1178,9 @@ def test_a_cli_run_imports_the_legacy_verification_store_first(
     import asyncio
     import json as json_module
 
-    from config import settings
     from services.verification_store import verification_store
+
+    from config import settings
 
     legacy_path = str((volume / "old" / "Game.chd").resolve())
     legacy = Path(settings.data_dir) / "verified_chds.json"
@@ -1283,22 +1284,139 @@ def test_a_7z_with_an_encrypted_header_is_not_a_rom_archive(
     assert (code, lines) == (0, [])
 
 
-def test_a_single_rom_archive_with_an_unsafe_junk_member_is_claimed_and_fails(
+def _assert_refused(lines, code, archive, calls, rule):
+    """review r8 I1: a safety rule refused it, so it can't be checked here:
+    skipped, no failure, the stored pass kept, and 7z never run."""
+    assert code == 0, lines
+    assert [(Path(line["path"]).name, line["status"]) for line in lines] == [
+        (archive.name, "skipped"),
+    ]
+    reason = lines[0]["reason"]
+    assert "can't be checked" in reason and "archive safety rules" in reason
+    assert rule in reason
+    assert calls == []
+    assert _stored(archive) is not None
+
+
+def test_a_single_rom_archive_with_an_unsafe_junk_member_is_skipped(
     volume, dolphin, capsys, monkeypatch,
 ):
-    _stub_7z_passes(monkeypatch)
+    calls = _stub_7z_passes(monkeypatch)
     archive = volume / "gba" / "Game.gba.zip"
     archive.parent.mkdir(parents=True)
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("Game.gba", b"rom" * 64)
         zf.writestr("__MACOSX/../../victim.gba", b"x")
+    _store(archive)
 
     code, lines = _cli(capsys, "verify", str(volume), "--json")
 
-    assert code == 1
-    assert [(Path(line["path"]).name, line["status"]) for line in lines] == [
-        ("Game.gba.zip", "failed"),
-    ]
+    _assert_refused(lines, code, archive, calls, "..")
+
+
+def test_a_healthy_rom_archive_over_a_size_cap_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    """review r8 Q2: an operator's size cap is not damage."""
+    from config import settings
+
+    calls = _stub_7z_passes(monkeypatch)
+    archive = volume / "nds" / "Game.nds.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("Game.nds", b"rom" * 4096)
+    _store(archive)
+    monkeypatch.setattr(settings, "archive_max_member_size", 1024)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "CHD_ARCHIVE_MAX_MEMBER_SIZE")
+
+
+def _encrypt_zip_members(path):
+    """Set the encryption bit on every member, as an encrypting zip tool does."""
+    data = bytearray(path.read_bytes())
+    for signature, flag_at in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        start = 0
+        while (at := data.find(signature, start)) != -1:
+            data[at + flag_at] |= 0x01
+            start = at + 4
+    path.write_bytes(bytes(data))
+
+
+def test_a_rom_archive_with_an_encrypted_member_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    calls = _stub_7z_passes(monkeypatch)
+    archive = _romz_zip(volume / "gba" / "Game.gba.zip")
+    _encrypt_zip_members(archive)
+    _store(archive)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "encrypted")
+
+
+def test_a_7z_rom_archive_with_encrypted_content_is_skipped(
+    volume, dolphin, capsys, monkeypatch,
+):
+    py7zr = pytest.importorskip("py7zr")
+    calls = _stub_7z_passes(monkeypatch)
+    rom = volume / "Game.gba"
+    rom.write_bytes(b"rom" * 64)
+    archive = volume / "gba" / "Game.gba.7z"
+    archive.parent.mkdir()
+    with py7zr.SevenZipFile(archive, "w", password="pw") as z:
+        z.write(rom, "Game.gba")
+    rom.unlink()
+    _store(archive)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    _assert_refused(lines, code, archive, calls, "encrypted")
+
+
+def test_7z_never_waits_for_a_password(monkeypatch):
+    """review r8: every 7z command that reads an archive names a password, so
+    an encrypted one fails at once instead of prompting. Compressing names
+    none: there the switch would encrypt the new archive."""
+    from services.romz import ROMZ_EXTRACT_MODE, romz_service
+
+    def password_switches(cmd):
+        return [a for a in cmd[: cmd.index("--")] if a.startswith("-p")]
+
+    for cmd in (
+        romz_service._build_command("/i/Game.gba.7z", "/o", ROMZ_EXTRACT_MODE, None),
+        romz_service._test_command("/i/Game.gba.7z"),
+    ):
+        assert [len(a) > 2 for a in password_switches(cmd)] == [True], cmd
+    compress = romz_service._build_command("Game.gba", "/o/Game.gba.7z", "romz_7z", None)
+    assert password_switches(compress) == []
+
+
+def test_the_7z_password_switch_is_random_per_call():
+    """Codacy B105: no password literal. Each read command gets a fresh
+    throwaway value, which only exists so 7z never prompts."""
+    from services.romz import romz_service
+
+    def switch(cmd):
+        return next(a for a in cmd[: cmd.index("--")] if a.startswith("-p"))
+
+    first = switch(romz_service._test_command("/i/Game.gba.7z"))
+    second = switch(romz_service._test_command("/i/Game.gba.7z"))
+    assert first != second
+    assert len(first) > 2 + 8
+
+
+@pytest.mark.parametrize("compression", [None, "fast", "default", "max"])
+def test_7z_a_never_gets_a_password_switch(compression):
+    """On `a` the switch would encrypt the archive being written."""
+    from services.romz import ROMZ_COMPRESS_MODES, romz_service
+
+    for mode in sorted(ROMZ_COMPRESS_MODES):
+        cmd = romz_service._build_command("Game.gba", "/o/Game.gba.out", mode, compression)
+        assert cmd[cmd.index(romz_service.sevenzip_path) + 1] == "a", cmd
+        assert not any(a.startswith("-p") for a in cmd[: cmd.index("--")]), cmd
 
 
 def _store(path, **meta):
@@ -1409,3 +1527,115 @@ def test_an_iso_whose_platform_is_unknown_is_skipped_not_failed(volume, dolphin,
     assert code == 0
     assert lines[0]["status"] == "skipped"
     assert "Platform" in lines[0]["reason"] and "determined" in lines[0]["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# Codex on 618b0aa
+# --------------------------------------------------------------------------- #
+
+
+def test_an_archive_holding_another_image_is_kept(volume, dolphin, capsys):
+    """codex 4576728587: converting only Game.iso out of pack.zip must not
+    delete pack.zip, which also holds Other.nsp."""
+    pack = volume / "gc" / "pack.zip"
+    pack.parent.mkdir()
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 512)
+        zf.writestr("Other.nsp", b"switch" * 64)
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert pack.exists()
+    with zipfile.ZipFile(pack) as zf:
+        assert "Other.nsp" in zf.namelist()
+    line = next(x for x in lines if x["path"].endswith("::Game.iso"))
+    assert line["status"] == "completed"
+    assert line["source_deleted"] is False
+    assert "Other.nsp" in line["reason"]
+    assert code == 1  # a Source that was asked to go was kept
+
+
+def test_a_single_image_archive_is_still_deleted(volume, dolphin, capsys):
+    pack = volume / "gc" / "pack.zip"
+    pack.parent.mkdir()
+    with zipfile.ZipFile(pack, "w") as zf:
+        zf.writestr("Game.iso", b"the disc" * 512)
+        zf.writestr("readme.txt", b"notes")
+
+    code, lines = _cli(
+        capsys, "convert", str(volume), "--to", "rvz", "--delete-source",
+        "--container-only", "--json",
+    )
+
+    assert code == 0, lines
+    assert not pack.exists()
+
+
+def test_refreshing_a_check_keeps_the_recorded_mode(volume, dolphin, capsys, monkeypatch):
+    """codex 4576728584: a passing re-check wrote produced_meta=None, so the
+    next run lost the recorded mode and sent the PS3 ISO to Dolphin."""
+    from services import ps3
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    iso = volume / "misc" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso, produced_meta={"mode": "folder_to_iso"})
+
+    for _ in range(2):
+        code, lines = _cli(capsys, "verify", str(iso), "--json")
+        assert code == 0, lines
+        assert (lines[0]["tool"], lines[0]["status"]) == ("makeps3iso", "intact")
+    assert _stored(iso)["produced_meta"] == {"mode": "folder_to_iso"}
+
+
+def test_a_ps3_iso_goes_to_makeps3iso_on_every_run(volume, dolphin, capsys, monkeypatch):
+    """review r8 C1 / Q1: a PS3 ISO makeps3iso built, verified twice over the
+    whole volume, with Dolphin failing anything it is handed. Both runs go to
+    makeps3iso and pass, and the record keeps its mode."""
+    from services import ps3
+
+    monkeypatch.setattr(ps3, "ps3_iso_title_id", lambda path, **kw: "BLES00000")
+    dolphin["valid"] = False
+    iso = volume / "ps3" / "Game.iso"
+    iso.parent.mkdir()
+    iso.write_bytes(b"\0" * 4096)
+    _store(iso, produced_meta={"mode": "folder_to_iso"})
+
+    for _ in range(2):
+        code, lines = _cli(capsys, "verify", str(volume), "--json")
+        assert code == 0, lines
+        assert [(x["tool"], x["status"]) for x in lines] == [("makeps3iso", "intact")]
+    assert _stored(iso)["produced_meta"] == {"mode": "folder_to_iso"}
+
+
+def test_a_cli_job_holds_its_input_for_other_processes(volume, dolphin, capsys, monkeypatch):
+    """codex 4576728590: while a job reads Game.wia, another process sees the
+    input as taken (the web guard's exact-path probe refuses with 409)."""
+    from services.lock_manager import LockManager, lock_manager
+
+    wia = volume / "gc" / "Game.wia"
+    wia.parent.mkdir()
+    wia.write_bytes(b"wia" * 64)
+    server = LockManager()
+    server._lock_dir = lock_manager._lock_dir
+    seen = []
+    service = registry.get("dolphin")._service
+    original = service._runner.run
+
+    async def watching_run(cmd, *, input_path, output_path, **kwargs):
+        seen.append(server.check_file_status(input_path)[1])
+        async for update in original(cmd, input_path=input_path,
+                                     output_path=output_path, **kwargs):
+            yield update
+
+    monkeypatch.setattr(service._runner, "run", watching_run)
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+
+    assert code == 0, lines
+    assert seen == [True]
+    assert server.check_file_status(str(wia))[1] is False

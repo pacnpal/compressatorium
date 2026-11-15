@@ -2553,7 +2553,8 @@ Precedence is fixed and never guesses:
    header. The other probes read fixed-size windows, cap the sheet at 1 MiB
    (`utils.sheet_text`). The XDVDFS walk takes its limits as parameters:
    conversion and info keep `_MAX_DIR_TABLE` (64 MiB per table), while the
-   probe (`detect_console`) passes 1 MiB per table and 4 MiB per walk.
+   probe (`detect_console`) passes 1 MiB per table, 4 MiB per walk and
+   `root_only=True`, since the boot executable sits in the root.
    `tests/test_header_probe_bounds.py` probes images whose sizes are hostile.
 
    A folder is probed by the tools that take it as their input unit
@@ -2586,7 +2587,23 @@ disc-ID probe (`disc_id._cue_track_paths`), the header-dependency list
 (`delete_plan.sheet_track_paths`) and the delete plan all use it, so
 `Jeu (Édition).bin` resolves, and is cached, from either encoding. There is one
 CUE FILE-line parser (`sheet_text.cue_tracks`: quoted, unquoted, names with
-spaces) and one GDI line parser (`sheet_text.gdi_tracks`).
+spaces) and one GDI line parser (`sheet_text.gdi_tracks`, numeric fields only
+when ASCII decimal).
+
+There is also one track resolver, `sheet_text.resolve_track`, and
+`sheet_tracks` built on it, used by the Platform probe, the detection cache's
+track list (`header_reads`), the delete plan and the job gate. It refuses an
+empty name, an absolute name, any `..` segment, and a name whose real path
+lies outside the trusted roots: the configured Volumes by default, or the
+roots a caller passes as `within` (the job worker's extraction dir for an
+archived set; an empty `within` is refused). When any track of a sheet is
+refused, or the sheet is unreadable (missing, or over `MAX_SHEET_BYTES`, read
+as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
+the probe says nothing, so a planted sheet cannot make the probe read a file
+outside the Volumes. `header_reads` returns None for an unreadable sheet and
+a failing `header_reads` is treated the same way, so neither is cached. A
+folder Image (a PS3 disc folder) is never cached: its answer depends on files
+below it.
 
 Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
 and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
@@ -2694,7 +2711,15 @@ a destination, 503 when a volume stops answering), and earlier jobs may have
 started by then. On any failure the route withdraws the jobs this request
 queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
-returns it. The error detail is then structured, `{"message": "... Already
+returns it, for an HTTP error from the queue and for an unexpected exception
+alike (the latter logged with its traceback and returned as a 500; a
+cancellation still propagates). An Image that preparation skipped (its output
+appeared after planning) is marked skipped in the returned plan with
+preparation's reason. In the browser, `conversion.runAuto` runs the flow once
+at a time (an in-flight guard), on the selection and RomM context captured
+before its first await, and updates the re-pin badge whether queueing
+succeeded or not; `jobs.adopt` applies the same freshness rule as `refresh()`
+(`snapshotIsNewer`). The error detail is then structured, `{"message": "... Already
 finished and kept: ...", "jobs": [...]}`, with `jobs` in the shape a success
 returns. `client.fetchJson` keeps a structured detail on `err.detail`, the store
 adopts those jobs and reconciles its re-pin snapshots against them before it
@@ -3084,6 +3109,52 @@ Volume root, and refuses with 409 when another process holds one. So a CLI job
 packing a folder blocks a web rename or delete inside it. The exact-path check
 (`check_file_status`) runs first, as before.
 
+**Input locks.** Every file-input job, whichever entry point queued it, holds a
+*shared* flock on each file it reads (`JobManager._hold_inputs`: the Source, or
+the archive for a member, plus `_track_candidate_paths`' cue/gdi tracks and
+split parts) from the moment it takes its output lock until it ends
+(`LockManager.acquire_input_lock` / `release_input_lock`). A folder job
+already holds its subtree lock and takes none. The lock file is the one an
+output lock on that path would use, so:
+
+- readers share it, and two jobs reading one Source never block each other;
+- anything wanting the path exclusively is refused while a reader holds it:
+  the stale probe behind `check_file_status` (so the web guard's exact-path
+  check answers 409 to a rename or delete of a file a job in *any* process is
+  reading) and an output lock on that path (a job that would overwrite it);
+- the last reader lets go by upgrading to `LOCK_EX|LOCK_NB` and unlinking while
+  it holds that (rule 1); a reader that fails the upgrade leaves the file to the
+  remaining reader. An acquirer retries briefly when the stale probe holds the
+  file for a moment, and checks `_still_linked` (rule 2).
+
+**Locks below a folder.** Lock files are named by a hash, so each one records
+the path it locks as its first line when it is taken (`_record_path`; readers
+sharing a file may each write it, the first line counts). For a folder, the web
+guard also asks `LockManager.locked_path_below(folder)`: it reads the lock dir,
+and for each lock file naming a path at or inside the folder (normalized or
+resolved) probes it without blocking, as `check_file_status` does. Held by any
+handle means a job in some process writes or reads something inside, and a
+rename or delete of the folder answers 409. So a recursive delete of `vol/ps3`
+is refused while another process packs `vol/ps3/GAME`, converts
+`vol/ps3/Game.wia`, or writes an output there.
+
+**Limits of the lock dir.**
+
+- Keys are container-local paths. Containers that share `/config` (the web UI
+  and a CLI container) must mount each Volume at the same path, or they don't
+  see each other's locks. Two containers mounting different folders at one path
+  get false 409s, which fail safe.
+- A probe that can't run (a lock file another uid owns, `ENOLCK` on a lock dir
+  over NFS) counts as not held, here and in `check_file_status`. That holds
+  while every process runs as the same uid, which the entrypoint's and the
+  wrapper's `gosu converter` drop ensure.
+
+A job that cannot take its input locks (another job holds the path for
+writing) is deferred and re-queued, like a folder-lock block. Before the
+delete-on-verify step checks its delete paths with `check_file_status`, the job
+lets go of its own input locks, so it does not find its Source held by itself;
+another job still reading it does hold it, and the delete is refused.
+
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
 drop run unchanged, and the re-executed entrypoint hands straight back to the
@@ -3111,8 +3182,29 @@ makeps3iso read-back raises its I/O errors (`read_iso_file(strict=True)`, down
 through `_read_pvd` and `_list_dir`).
 
 A verifier ended by a signal (a negative return code: SIGKILL, the OOM killer)
-is no verdict either (`killed_verify_error`), in both `run_verify` and
-`capture_verify`; a non-zero exit is.
+is no verdict either; a non-zero exit is. One helper decides it from the return
+code, `subprocess_runner.verify_exit_event(returncode, message)` (through
+`killed_verify_error` for a negative one), used by `run_verify`,
+`capture_verify` and z3ds's own zstd pipeline.
+
+**Can't be checked here.** `_verify_error(..., uncheckable=True)`, kept by
+`collect_verify`, says the tool refuses to check this file at all, and nothing
+will change that on a retry. romz sets it when an archive safety rule refuses
+the archive (`services.archive.ArchiveSafetyRefused`, a `ValueError` carrying
+`rule`): a symlink member, an absolute or `..` member path, an encrypted member,
+or `CHD_ARCHIVE_MAX_ENTRIES` / `_MAX_MEMBER_SIZE` / `_MAX_TOTAL_SIZE`. The
+message is "This archive can't be checked (refused by the archive safety rules:
+<rule>)". The CLI reports it as skipped: exit code unaffected, a stored pass
+kept. Only an archive whose bytes cannot be read or decoded fails. Encryption
+comes from the listing (`ArchiveMember.is_encrypted`: zip flag bit 0, py7zr's
+`needs_password()`, rarfile's), so it is known before `7z t` runs.
+
+**Nothing waits on a terminal.** Every child the shared runner starts (`run`,
+`run_capture`, `run_verify`) gets `/dev/null` for stdin, and every 7z command
+that reads an archive (`x`, `t`) names a throwaway random password, built per
+call (`romz._no_prompt_switch()`; no password literal), so an encrypted archive
+fails at once instead of prompting. `7z a` names none:
+there the switch would encrypt the archive being written.
 
 **Which tool checks a file** (`cli._verify_tool`), in this order:
 
@@ -3128,8 +3220,8 @@ wider than `verifies_path` (the listing's Verify/Info gate, unchanged). romz
 decides by shape first (`RomzService.claims_for_verify`, the one place): an
 archive that reads and plainly is not a single-ROM one (no ROM, several files,
 a texture pack, an encrypted header) is not romz's and is skipped; one that
-cannot be read or decoded, or a single-ROM archive a safety rule rejects, is
-claimed and fails. A folder run adds the stored checks under it, and one no
+cannot be read or decoded is claimed and fails; a single-ROM archive a safety
+rule rejects is claimed and reported "can't be checked" (above). A folder run adds the stored checks under it, and one no
 tool can check is reported, not dropped. "Shared" counts only tools that name
 another Platform, so the Platform-less chain tool does not make `.cso` shared.
 

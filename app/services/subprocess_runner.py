@@ -973,6 +973,8 @@ async def collect_verify(
         result["abandoned"] = True
     if final.get("inconclusive"):
         result["inconclusive"] = True
+    if final.get("uncheckable"):
+        result["uncheckable"] = True
     return result
 
 
@@ -1260,6 +1262,9 @@ class SubprocessRunner:
 
         process = await asyncio.create_subprocess_exec(  # nosemgrep
             cmd[0], *cmd[1:],
+            # Never the caller's terminal: a tool that asks for input (7z
+            # wanting a password) fails at once instead of waiting (#306).
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=(
                 asyncio.subprocess.STDOUT
@@ -1322,9 +1327,14 @@ class SubprocessRunner:
     @staticmethod
     def _verify_error(
         message: str, *, cancelled: bool = False, abandoned: bool = False,
-        inconclusive: bool = False,
+        inconclusive: bool = False, uncheckable: bool = False,
     ) -> dict:
         event = {"type": "error", "valid": False, "message": message}
+        if uncheckable:
+            # The tool won't check this file here (an archive safety rule
+            # refused it): no verdict, and unlike ``inconclusive`` nothing to
+            # retry. The CLI reports it as skipped, never failed (#306).
+            event["uncheckable"] = True
         if inconclusive:
             # The check ended without a verdict on the file: its own bound
             # expired, it stalled, or the file could not be read. "valid":
@@ -1472,6 +1482,9 @@ class SubprocessRunner:
 
         process = await asyncio.create_subprocess_exec(  # nosemgrep
             cmd[0], *cmd[1:],
+            # Never the caller's terminal: a tool that asks for input (7z
+            # wanting a password) fails at once instead of waiting (#306).
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -1707,6 +1720,9 @@ class SubprocessRunner:
         # because the line is new in this extracted module.
         process = await asyncio.create_subprocess_exec(  # nosemgrep
             cmd[0], *cmd[1:],
+            # Never the caller's terminal: a tool that asks for input (7z
+            # wanting a password) fails at once instead of waiting (#306).
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             preexec_fn=_preexec if use_preexec else None,

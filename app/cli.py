@@ -77,6 +77,8 @@ class Item:
     check: str | None = None
     source_deleted: bool = False
     delete_source: bool = False
+    # --delete-source was asked for and this Source is kept: the run reports it.
+    kept_source: bool = False
     reason: str | None = None
 
     def convert_line(self) -> dict:
@@ -508,6 +510,8 @@ def _decide_deletes(items: list[Item], args) -> None:
 
     if not args.delete_source:
         return
+    from utils.delete_plan import other_images_in_archive
+
     routed = [i for i in items if i.mode and not i.status]
     shared = get_disallowed_archive_paths([i.path for i in routed])
     for item in routed:
@@ -515,8 +519,16 @@ def _decide_deletes(items: list[Item], args) -> None:
             item.reason = f"Source kept: {item.mode} cannot delete its Source"
         elif "::" in item.path and item.path.split("::", 1)[0] in shared:
             item.reason = "Source kept: several Images come from this archive"
+        elif others := other_images_in_archive(item.path):
+            # The archive's whole membership, whatever routing kept: an archive
+            # goes only when this is the only Image in it (the delete plan's
+            # own rule, which the web submit hits too).
+            archive = os.path.basename(item.path.split("::", 1)[0])
+            item.reason = f"Source kept: {archive} also holds {', '.join(others[:3])}"
         else:
             item.delete_source = True
+            continue
+        item.kept_source = True
 
 
 async def _prepare_group(request, group: list[Item]):
@@ -584,7 +596,7 @@ async def _prepare(items: list[Item], args) -> list[tuple]:
             by_path[item.path] = item
             by_path.setdefault(os.path.realpath(item.path), item)
         for batch in await _prepare_group(request, group):
-            for path, reason in batch.skipped:
+            for path, reason in batch.skipped.items():
                 item = by_path.get(path)
                 if item is None:
                     continue
@@ -770,7 +782,7 @@ async def convert(args, printer: Printer, state: RunState) -> int:
                 printer.line(item.convert_line())
     else:
         await _run_jobs(prepared, printer, state)
-    failed = any(i.status in ("failed", "cancelled") for i in items)
+    failed = any(i.status in ("failed", "cancelled") or i.kept_source for i in items)
     return EXIT_FAILED if failed else EXIT_OK
 
 
@@ -935,6 +947,11 @@ async def _verify_one(path: str, tool, has_db: bool, since, dry_run: bool) -> di
     if result.get("valid"):
         line["status"], line["reason"] = "intact", result.get("message")
         await verification_store.mark_verified(path)
+        return line
+    if result.get("uncheckable"):
+        # The tool won't check it here (an archive safety rule refused it):
+        # not a failure, and what was stored stays.
+        line["status"], line["reason"] = "skipped", result.get("message")
         return line
     line["status"] = "failed"
     no_verdict = ("cancelled", "abandoned", "inconclusive")

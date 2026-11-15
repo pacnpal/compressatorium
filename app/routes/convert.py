@@ -1006,10 +1006,11 @@ class PreparedBatch:
     request: BatchJobCreateRequest
     compression: str | None
     plans: list[JobPlan]
-    # (file path, why it was left out): a ``plan_job`` skip, or a file whose
-    # output another file of the batch writes. The routes drop these as they
-    # always have; the CLI reports each one (#306).
-    skipped: list[tuple[str, str]] = field(default_factory=list)
+    # file path -> why it was left out: a ``plan_job`` skip (the same words a
+    # single-job request would get), or a file whose output another file of
+    # the batch writes. Auto says so in its plan; the CLI reports each one
+    # (#294, #306).
+    skipped: dict[str, str] = field(default_factory=dict)
 
     @property
     def job_specs(self) -> list[dict]:
@@ -1131,7 +1132,7 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
             detail=f"Conversion queue full ({max_depth} jobs). Retry later.",
         )
 
-    skipped = []
+    skipped: dict[str, str] = {}
     candidates: list[JobPlan] = []
 
     for file_path in request.file_paths:
@@ -1145,7 +1146,7 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
                 delete_on_verify=request.delete_on_verify,
             )
         except SkipFile as skip:
-            skipped.append((file_path, _SKIP_HTTP[skip.reason][1]))
+            skipped[file_path] = _SKIP_HTTP.get(skip.reason, (0, skip.reason.value))[1]
             continue
         except DeleteSnapshotError as exc:
             raise HTTPException(
@@ -1171,10 +1172,9 @@ async def prepare_batch(request: BatchJobCreateRequest) -> PreparedBatch:
             selected[key] = plan
         else:
             loser = plan
-        skipped.append((
-            loser.file_path,
-            f"Same output as {os.path.basename(selected[key].file_path)}",
-        ))
+        skipped[loser.file_path] = (
+            f"Same output as {os.path.basename(selected[key].file_path)}"
+        )
 
     return PreparedBatch(
         request=request,
@@ -1302,6 +1302,16 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
         for (mode, compression), paths in groups.items()
     ]
     _check_queue_room(sum(len(batch.plans) for batch in prepared))
+    # An Image preparation skipped (its output appeared after planning, say)
+    # is reported in the plan, not shown as headed for a target it never got.
+    skipped_now = {
+        path: reason for batch in prepared for path, reason in batch.skipped.items()
+    }
+    plan = [
+        replace(t, mode=None, tool_id=None, compression=None, skip_reason=skipped_now[t.file_path])
+        if t.mode and t.file_path in skipped_now else t
+        for t in plan
+    ]
 
     jobs: list[ConversionJob] = []
     for batch in prepared:
@@ -1319,9 +1329,27 @@ async def create_auto_jobs(request: AutoJobCreateRequest):
                     "jobs": [job.model_dump(mode="json") for job in kept],
                 }
             raise
+        except Exception as exc:
+            # An unexpected failure: withdraw, log the original error with its
+            # traceback, and still hand back any job that finished, in the
+            # same shape as above, so the client keeps its re-pin records.
+            kept = await _cancel_queued(jobs)
+            logger.error(
+                "Auto batch failed after %d job(s) were queued", len(jobs), exc_info=exc,
+            )
+            if not kept:
+                raise
+            names = ", ".join(job.filename or job.id for job in kept)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": f"Auto batch failed. Already finished and kept: {names}.",
+                    "jobs": [job.model_dump(mode="json") for job in kept],
+                },
+            ) from exc
         except BaseException:
-            # Anything else, a client disconnect's CancelledError included:
-            # still withdraw what this request queued, then let it propagate.
+            # A client disconnect's CancelledError and the like: still withdraw
+            # what this request queued, then let it propagate.
             await _cancel_queued(jobs)
             raise
     return AutoBatchResponse(plan=[_plan_item(t) for t in plan], jobs=jobs)

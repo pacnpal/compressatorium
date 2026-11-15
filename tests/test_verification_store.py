@@ -154,3 +154,48 @@ async def test_concurrent_writers_under_wal(
     # Every write was distinct → exactly 2*n rows.
     all_records = await verification_store.all_records()
     assert len(all_records) == 2 * n
+
+
+
+@pytest.mark.asyncio
+async def test_refreshing_a_check_without_meta_keeps_the_stored_meta(db_path, reset_db_engine):
+    """codex 4576728584: refreshing a check never erases provenance."""
+    from services import db as _db
+    from services.verification_store import verification_store
+
+    _db.init_engine(db_path)
+    try:
+        await verification_store.mark_verified("/data/ps3/Game.iso",
+                                               produced_meta={"mode": "folder_to_iso"})
+        await verification_store.mark_verified("/data/ps3/Game.iso")
+        record = await verification_store.get_record("/data/ps3/Game.iso")
+        assert record["produced_meta"] == {"mode": "folder_to_iso"}
+        await verification_store.mark_verified("/data/ps3/Game.iso",
+                                               produced_meta={"mode": "other"})
+        record = await verification_store.get_record("/data/ps3/Game.iso")
+        assert record["produced_meta"] == {"mode": "other"}
+    finally:
+        reset_db_engine()
+
+
+@pytest.mark.asyncio
+async def test_refreshing_a_check_without_a_source_keeps_the_stored_source(
+    db_path, reset_db_engine,
+):
+    """review r8 C1: the same overwrite dropped source_path, which the re-run
+    fast path reads."""
+    from services import db as _db
+    from services.verification_store import verification_store
+
+    _db.init_engine(db_path)
+    try:
+        await verification_store.mark_verified(
+            "/data/gc/Game.rvz", source_path="/data/gc/Game.iso",
+            produced_meta={"mode": "rvz"},
+        )
+        await verification_store.mark_verified("/data/gc/Game.rvz")
+        record = await verification_store.get_record("/data/gc/Game.rvz")
+        assert record["source_path"] == os.path.realpath("/data/gc/Game.iso")
+        assert record["produced_meta"] == {"mode": "rvz"}
+    finally:
+        reset_db_engine()
