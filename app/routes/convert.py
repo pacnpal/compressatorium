@@ -1,4 +1,5 @@
 import asyncio
+import functools
 from logging_setup import get_logger
 import os
 import re
@@ -656,7 +657,7 @@ async def plan_job(
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
             elif duplicate_action == DuplicateAction.RENAME:
-                output_path = get_unique_output_path(output_path, mode)
+                output_path = _renamed_output(mode, output_path, duplicate_action)
 
     if "::" not in file_path and not os.path.isfile(file_path):
         raise SkipFile(SkipReason.FILE_NOT_FOUND)
@@ -750,7 +751,7 @@ async def plan_job(
                 if is_locked:
                     raise SkipFile(SkipReason.OUTPUT_LOCKED)
             elif duplicate_action == DuplicateAction.RENAME:
-                output_path = get_unique_output_path(output_path, mode)
+                output_path = _renamed_output(mode, output_path, duplicate_action)
 
     if (
         spec.kind != ModeKind.COPY
@@ -838,19 +839,36 @@ async def check_duplicates(request: CheckDuplicatesRequest):
     return results
 
 
+def _renamed_output(mode: str, output_path: str, duplicate_action: DuplicateAction) -> str:
+    """The path a RENAME job writes when *output_path* is taken (or locked).
+
+    Shared by ``plan_job`` and the delete-plan preview, so the confirmation
+    names the same numbered output the job will write.
+    """
+    if duplicate_action != DuplicateAction.RENAME:
+        return output_path
+    exists, locked = check_output_conflicts(mode, output_path)
+    return get_unique_output_path(output_path, mode) if exists or locked else output_path
+
+
 async def _add_referrer_changes(
     item: dict, mode: str, file_path: str, output_dir: str | None,
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP,
 ) -> None:
     """List each Referrer's planned change on a delete-plan *item* (#295).
 
     The same renames the job hands the Referrer hook: every file the delete
-    removes, mapped to the planned output.
+    removes, mapped to the output the job will write (a RENAME's numbered
+    path included).
     """
     item["referrer_changes"] = []
     delete_paths = item.get("delete_paths") or []
     if not delete_paths:
         return
-    output_path = await _planned_output_path(mode, file_path, output_dir)
+    output_path = await run_in_threadpool(
+        _renamed_output, mode,
+        await _planned_output_path(mode, file_path, output_dir), duplicate_action,
+    )
     image_path = strip_archive_path(file_path) if "::" in file_path else file_path
     try:
         changes = await run_in_threadpool(
@@ -906,8 +924,12 @@ async def delete_plan(request: DeletePlanRequest) -> dict:
                 "errors": [],
             }
         else:
-            item = await run_in_threadpool(build_delete_plan, file_path)
-            await _add_referrer_changes(item, mode, file_path, output_dir)
+            item = await run_in_threadpool(
+                functools.partial(build_delete_plan, file_path, confine_to_volumes=True),
+            )
+            await _add_referrer_changes(
+                item, mode, file_path, output_dir, request.duplicate_action,
+            )
 
         if "::" in file_path:
             archive_path = file_path.split("::", 1)[0]

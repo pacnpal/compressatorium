@@ -178,9 +178,9 @@ async def test_two_discs_updating_one_playlist_at_once_keep_both_edits(
     playlist.write_text("D1.cue\nD2.cue\n")
     real_write = m3u_module.atomic_write_bytes
 
-    def slow_write(path, data):
+    def slow_write(path, data, **kw):
         time.sleep(0.2)
-        real_write(path, data)
+        real_write(path, data, **kw)
 
     monkeypatch.setattr(m3u_module, "atomic_write_bytes", slow_write)
 
@@ -417,15 +417,16 @@ AWKWARD_NAMES = [
     " CHD", "CHD ", "#CHD", ";CHD", "\tCHD", "CHD\t", "a#b", "Pokémon",
     unicodedata.normalize("NFD", "Pokémon"), "CHD\nextra", "CHD\rextra",
     "CHD\x0bextra", "CHD\x1fextra", " ", "#",
-    "﻿CHD", "a\\b", "\\CHD", "CHD\\",
+    "﻿CHD", "a\\b", "\\CHD", "CHD\\", "CHD|converted", "|CHD",
 ]
 
 
 def _reader_entries(data: bytes) -> list[str]:
     """What an emulator reads from a playlist, written out independently of
     the code under test: a leading UTF-8 BOM dropped, lines split, each
-    trimmed, blank and # lines skipped, and an entry with backslashes but no
-    slash read as backslash-separated."""
+    trimmed, blank and # lines skipped, a RetroArch ``path|label`` reduced to
+    its path, and an entry with backslashes but no slash read as
+    backslash-separated."""
     text = data.decode("utf-8")
     text = text.removeprefix("﻿")
     entries = []
@@ -433,6 +434,7 @@ def _reader_entries(data: bytes) -> list[str]:
         entry = line.strip()
         if not entry or entry.startswith("#"):
             continue
+        entry = entry.split("|", 1)[0].strip()
         if "\\" in entry and "/" not in entry:
             entry = entry.replace("\\", "/")
         entries.append(entry)
@@ -515,6 +517,23 @@ async def test_a_non_utf8_playlist_naming_other_files_does_not_block(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_an_output_path_with_a_label_delimiter_keeps_the_source(tmp_path):
+    """Readers split "path|label", and no spelling escapes the "|"."""
+    _disc(tmp_path, "Game.cue")
+    (tmp_path / "CHD|converted").mkdir()
+    out = _disc(tmp_path / "CHD|converted", "Game.chd")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("Game.cue\n")
+
+    outcome = await referrers.update_before_source_removal(
+        str(tmp_path / "Game.cue"), {str(tmp_path / "Game.cue"): str(out)},
+    )
+
+    assert not outcome.ok
+    assert playlist.read_text() == "Game.cue\n"
+
+
+@pytest.mark.asyncio
 async def test_a_first_entry_starting_with_a_bom_character_is_protected(tmp_path):
     """U+FEFF at the start of the file reads as a BOM, so it needs ./"""
     _disc(tmp_path, "Game.cue")
@@ -570,6 +589,69 @@ def test_entry_for_new_playlists_uses_the_same_reader(tmp_path, name, first_line
         data = (entry + "\n").encode() if first_line else ("#EXTM3U\n" + entry + "\n").encode()
         [read] = _reader_entries(data)
         assert os.path.samefile(tmp_path / read, tmp_path / name)
+
+
+@pytest.mark.asyncio
+async def test_a_symlinked_playlist_is_never_read_and_keeps_the_source(
+    tmp_path, tmp_path_factory, monkeypatch,
+):
+    outside = tmp_path_factory.mktemp("outside")
+    secret = outside / "secret.m3u"
+    secret.write_text("Game.cue\n")
+    _disc(tmp_path, "Game.cue")
+    (tmp_path / "Game.m3u").symlink_to(secret)
+    reads = []
+    real_read = m3u_module._read
+    monkeypatch.setattr(m3u_module, "_read", lambda p: reads.append(p) or real_read(p))
+
+    outcome = await _replace(tmp_path, "Game.cue", "Game.chd")
+
+    assert not outcome.ok
+    assert "symlink" in outcome.reason
+    assert reads == []
+    assert secret.read_text() == "Game.cue\n"
+
+
+@pytest.mark.asyncio
+async def test_the_backup_keeps_the_playlists_mode(tmp_path):
+    _disc(tmp_path, "A.cue")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("A.cue\n")
+    playlist.chmod(0o600)
+
+    outcome = await _replace(tmp_path, "A.cue", "A.chd")
+
+    assert outcome.ok
+    assert stat.S_IMODE((tmp_path / "Game.m3u.bak").stat().st_mode) == 0o600
+
+
+def test_a_backup_whose_model_vanished_is_not_written(tmp_path):
+    """If the playlist the backup copies its mode from is gone, the write
+    fails (and the Source is kept) instead of falling back to 0644."""
+    backup = tmp_path / "Game.m3u.bak"
+
+    with pytest.raises(FileNotFoundError):
+        atomic_write_bytes(str(backup), b"A.cue\n", like=str(tmp_path / "Game.m3u"))
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_the_backup_keeps_the_playlists_group(tmp_path):
+    _disc(tmp_path, "A.cue")
+    playlist = tmp_path / "Game.m3u"
+    playlist.write_text("A.cue\n")
+    group = _other_group(tmp_path)
+    if group is None:
+        pytest.skip("needs a second group")
+    try:
+        os.chown(playlist, -1, group)
+    except PermissionError:
+        pytest.skip("can't change group here")
+
+    outcome = await _replace(tmp_path, "A.cue", "A.chd")
+
+    assert outcome.ok
+    assert (tmp_path / "Game.m3u.bak").stat().st_gid == group
 
 
 def _other_group(path: Path) -> int | None:

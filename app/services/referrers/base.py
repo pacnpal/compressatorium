@@ -95,12 +95,13 @@ def _keep_owner(tmp: str, original: os.stat_result) -> None:
         ) from exc
 
 
-def atomic_write_bytes(path: str, data: bytes) -> None:
+def atomic_write_bytes(path: str, data: bytes, *, like: str | None = None) -> None:
     """Replace *path* with *data* so a crash leaves the old file or the new one.
 
     Writes a temp file in the same directory, fsyncs it and renames it over
-    *path*. An existing file's permission bits and group are kept (its owner
-    too when running as root); a group that can't be kept aborts the write.
+    *path*. The permission bits and group (and owner, when running as root)
+    come from *like* when given, else from the file being replaced; a group
+    that can't be kept aborts the write. A new file with neither gets 0644.
     """
     directory = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(
@@ -112,8 +113,12 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
             f.flush()
             os.fsync(f.fileno())
         try:
-            original = os.stat(path)
+            original = os.stat(like or path)
         except FileNotFoundError:
+            if like is not None:
+                # The file whose mode and group this copy must take is gone:
+                # don't fall back to 0644 for something meant to be private.
+                raise
             original = None
         if original is not None:
             _keep_owner(tmp, original)
