@@ -6,6 +6,10 @@ result, when to run, how much to queue at once, and which Images to consider.
 Platforms are independent, because a Library is not homogeneous and one global
 setting cannot describe it.
 
+A Rule with no target format is a check Rule (#305): once a night, inside its
+window and on its weekdays, it checks the stalest Images of its Platform until
+``check_budget_gb`` is used (see :mod:`services.rules.check`).
+
 Pure apart from one thing: an output directory is checked against the
 configured Volumes when a Rule is saved. Nothing here knows which Library a
 Rule belongs to. The few defaults a Library sets come in as ``defaults``.
@@ -49,7 +53,13 @@ _BOUNDS = {
     "min_size_mb": (0, 1024 * 1024),
     "max_size_mb": (0, 1024 * 1024),
     "compression_level": (0, 22),
+    "check_budget_gb": (1, 1024 * 1024),
 }
+
+# A check Rule (no target format) runs at most once a day: its budget is a
+# nightly one, so its interval is fixed rather than editable.
+CHECK_INTERVAL_MINUTES = 24 * 60
+DEFAULT_CHECK_BUDGET_GB = 50
 
 # Cap on a user-supplied filter pattern. A pathological regex is the operator's
 # own doing, but length is a cheap first guard against the obvious ones.
@@ -440,18 +450,26 @@ def default_rule(
         # editor can say why the rule is paused instead of silently widening it.
         "invalid_pattern": False,
         "invalid_window": False,
+        # A check Rule's nightly byte budget, in GB. Read only when the Rule
+        # has no target format (`is_check_rule`).
+        "check_budget_gb": DEFAULT_CHECK_BUDGET_GB,
     }
 
 
+def is_check_rule(rule: Mapping[str, Any]) -> bool:
+    """Whether *rule* checks Images rather than converting them: it has no target."""
+    return not rule.get("mode")
+
+
 def normalize_rule(
-    raw: Any, *, mode_required: bool = True, check_volumes: bool = True,
+    raw: Any, *, check_volumes: bool = True,
     volumes_unreachable: bool = False, defaults: Mapping[str, Any] | None = None,
     duplicate_actions: Iterable[str] = DUPLICATE_ACTIONS,
 ) -> dict[str, Any] | None:
     """Coerce one submitted/stored rule into the full schema.
 
-    Returns None when the rule cannot be honoured at all (no mode, or a mode no
-    registered tool provides). Tolerant elsewhere: a rule naming a stale option
+    Returns None when the rule cannot be honoured at all (a mode no registered
+    tool provides). A rule with no mode is a check Rule (`is_check_rule`). Tolerant elsewhere: a rule naming a stale option
     falls back to that field's default rather than failing the whole sweep,
     because these blobs outlive the tools that were installed when they were
     written. *defaults* is the Library's ``rule_defaults()``.
@@ -478,8 +496,6 @@ def normalize_rule(
             )
             return None
         out["mode"] = mode
-    elif mode_required:
-        return None
 
     spec = registry.spec(out["mode"]) if out["mode"] else None
 
@@ -501,7 +517,8 @@ def normalize_rule(
         and raw.get("compression_level") is not None
     ):
         out["compression_level"] = _clamp("compression_level", raw["compression_level"], 0)
-    if raw.get("output_dir") and not check_volumes:
+    # A check Rule writes nothing, so its output folder is never read.
+    if out["mode"] and raw.get("output_dir") and not check_volumes:
         # Reading back what was already validated when it was saved. The check
         # below resolves the candidate and stats every configured volume, and
         # `get_rules()` is awaited by the rules API and by every sweep while it
@@ -513,7 +530,7 @@ def normalize_rule(
         if raw.get("invalid_output_dir"):
             out["invalid_output_dir"] = raw["invalid_output_dir"]
             out["enabled"] = False
-    elif raw.get("output_dir"):
+    elif out["mode"] and raw.get("output_dir"):
         candidate = str(raw["output_dir"])
         within = False if volumes_unreachable else is_within_configured_volumes(candidate)
         # The sweep queues through the job manager directly, so it does not get
@@ -634,6 +651,13 @@ def normalize_rule(
         if raw.get(flag):
             out[flag] = True
             out["enabled"] = False
+
+    out["check_budget_gb"] = _clamp(
+        "check_budget_gb", raw.get("check_budget_gb"), DEFAULT_CHECK_BUDGET_GB,
+    )
+    if is_check_rule(out):
+        # The budget is nightly, so the interval is a day.
+        out["interval_minutes"] = CHECK_INTERVAL_MINUTES
 
     out["only_unmatched"] = bool(raw.get("only_unmatched", False))
     out["only_matched"] = bool(raw.get("only_matched", False))
