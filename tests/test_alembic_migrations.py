@@ -163,12 +163,13 @@ def test_no_model_drift_after_upgrade(fresh_db_path: str):
     assert relevant == [], f"ORM drift detected: {relevant}"
 
 
-def test_0013_stacks_on_0012_and_walks_up_from_an_empty_database(fresh_db_path: str):
-    """#304's migration is 0013, on #303's 0012, on #297's 0011: one head.
+def test_0014_stacks_on_0013_and_walks_up_from_an_empty_database(fresh_db_path: str):
+    """#305's migration is 0014, on #304's 0013, on #303's 0012, on #297's
+    0011: one head.
 
     Forward-only (every ``downgrade`` raises), so the chain is walked upward:
-    an empty database taken to 0011, then 0012, then 0013, each revision
-    bringing its own tables.
+    an empty database taken to 0011, then 0012, then 0013, then 0014, each
+    revision bringing its own tables.
     """
     from alembic import command
     from alembic.script import ScriptDirectory
@@ -176,7 +177,8 @@ def test_0013_stacks_on_0012_and_walks_up_from_an_empty_database(fresh_db_path: 
     engine = _db.make_engine(fresh_db_path)
     cfg = _db._alembic_config(engine)
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["0013"]
+    assert script.get_heads() == ["0014"]
+    assert script.get_revision("0014").down_revision == "0013"
     assert script.get_revision("0013").down_revision == "0012"
     assert script.get_revision("0012").down_revision == "0011"
 
@@ -192,6 +194,7 @@ def test_0013_stacks_on_0012_and_walks_up_from_an_empty_database(fresh_db_path: 
     assert not added & tables()
     command.upgrade(cfg, "0013")
     assert added <= tables()
+    assert "image_checks" not in tables()
     assert _current_rev(engine) == "0013"
     # Ids of cleared Findings are never handed out again (PR #322).
     with engine.connect() as conn:
@@ -199,25 +202,9 @@ def test_0013_stacks_on_0012_and_walks_up_from_an_empty_database(fresh_db_path: 
             "SELECT sql FROM sqlite_master WHERE name = 'findings'",
         ).scalar()
     assert "AUTOINCREMENT" in sql
-
-
-def test_0013_upgrades_and_downgrades(fresh_db_path: str):
-    """#305's migration: the check-time table comes and goes."""
-    from alembic import command
-
-    engine = _db.init_engine(fresh_db_path, create_schema=False)
-    _db.apply_migrations()
-    assert "image_checks" in inspect(engine).get_table_names()
-
-    cfg = _db._alembic_config(engine)
-    command.downgrade(cfg, "0012")
-
-    assert _current_rev(engine) == "0012"
-    assert "image_checks" not in inspect(engine).get_table_names()
-    assert "findings" in inspect(engine).get_table_names()
-
-    command.upgrade(cfg, "head")
-    assert "image_checks" in inspect(engine).get_table_names()
+    command.upgrade(cfg, "0014")
+    assert "image_checks" in tables()
+    assert _current_rev(engine) == "0014"
 
 
 # ---------------------------------------------------------------------------

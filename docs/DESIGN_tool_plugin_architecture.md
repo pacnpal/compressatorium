@@ -3076,8 +3076,8 @@ the window it started in. Its output folder is never read. Each kind has its own
 (`store.rules_key(kind)`, `store.state_key(kind)`: `rules` / `rules.state` and
 `rules.check` / `rules.check.state`), each keyed `"<library id>:<platform id>"`,
 so the two kinds never overwrite each other and run on their own clocks. No
-table change: Rules live in preferences, and migration 0013 holds only the
-check times. `sweep.get_rules` / `get_state` take the kind;
+table change: Rules live in preferences, and migration 0014 (on #304's 0013)
+holds only the check times. `sweep.get_rules` / `get_state` take the kind;
 `sweep.set_check_rules` replaces the check Rules. The editor payload carries
 `check_rules` and `check_state` beside `rules` and `state`, and a save replaces
 `check_rules` only when the submission has it.
