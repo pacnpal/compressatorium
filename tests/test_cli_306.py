@@ -1832,4 +1832,6 @@ def test_a_reader_past_the_bound_keeps_the_source_and_the_job_completes(
     assert "Source kept: it was being read by another job" in lines[0]["reason"]
     assert iso.exists()
     assert (volume / "gc" / "Game.rvz").exists()
-    assert code == 1  # a Source asked to go was kept
+    # Transient, and the conversion succeeded: a warning, not a failure (the
+    # same rule as #307's run rules). Safety refusals still exit 1.
+    assert code == 0

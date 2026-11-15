@@ -750,9 +750,10 @@ def _finish(item: Item, job) -> None:
     item.source_deleted = bool(job.deleted_paths)
     if getattr(job, "warning", None):
         # Completed, but did less than asked: a Source kept because another
-        # job was reading it. Reported like any kept Source (exit 1).
+        # job was reading it. Transient, and the conversion succeeded, so it
+        # is a warning on the line, not a failure (exit 0, as #307's run
+        # rules do). Safety refusals (``kept_source``) still exit 1.
         item.reason = job.warning
-        item.kept_source = item.kept_source or item.delete_source
     if job.error_message:
         item.reason = job.error_message
 
