@@ -57,6 +57,45 @@ def sheet_track_paths(sheet_path: str) -> list[str]:
     return [str(track) for track in tracks] if tracks else []
 
 
+# The shared sheet parsers (`utils.sheet_text`): the only FILE-line / GDI-line readers.
+_SHEET_TEXT_PARSERS = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}
+
+
+def sheet_reference_problems(
+    sheet_path: str, *, within: Sequence[str] | None = None,
+) -> list[str]:
+    """Why a ``.cue`` / ``.gdi`` sheet is unsafe to hand to a converter, or ``[]``.
+
+    The converter opens the files a sheet names itself, so each reference has
+    to stay inside the trusted roots or the job would pack a file from
+    elsewhere into its output. Each reference goes through the one confined
+    resolver, ``utils.sheet_text.resolve_track``: unsafe is a reference that
+    is absolute, leaves the sheet's folder (``..``), or resolves (through a
+    symlink) outside the roots. ``within`` names those roots and is passed
+    straight through: the configured Volumes by default, or the job's own
+    extraction folder for a sheet taken out of an archive. Every decoding of
+    the sheet is checked, so a name cannot hide in one spelling. A sheet that
+    exists but cannot be read (or is over the size cap) is unsafe too: nothing
+    was checked. Empty for any other file. Blocking (reads the sheet, resolves
+    each track).
+    """
+    sheet = Path(sheet_path)
+    parse = _SHEET_TEXT_PARSERS.get(sheet.suffix.lower())
+    if parse is None:
+        return []
+    readings = sheet_readings(sheet)
+    if not readings:
+        return ["the track sheet could not be read"] if os.path.exists(sheet) else []
+    problems: list[str] = []
+    for text in readings:
+        for ref in parse(text):
+            try:
+                resolve_track(sheet.parent, ref, within=within)
+            except ValueError as exc:
+                problems.append(str(exc))
+    return list(dict.fromkeys(problems))
+
+
 def _unsafe_member_reason(entry) -> str | None:
     """Why an archive member's name or kind is unsafe, or None.
 
@@ -259,45 +298,6 @@ def _archive_verdict(source_path: str) -> tuple[str, List[str]] | None:
             continue
         extras.append(name)
     return ("extra", extras) if extras else None
-
-
-# The shared sheet parsers (`utils.sheet_text`): the only FILE-line / GDI-line readers.
-_SHEET_TEXT_PARSERS = {".cue": cue_tracks, ".gdi": _gdi_tracks_from_text}
-
-
-def sheet_reference_problems(
-    sheet_path: str, *, within: Sequence[str] | None = None,
-) -> list[str]:
-    """Why a ``.cue`` / ``.gdi`` sheet is unsafe to hand to a converter, or ``[]``.
-
-    The converter opens the files a sheet names itself, so each reference has
-    to stay inside the trusted roots or the job would pack a file from
-    elsewhere into its output. Each reference goes through the one confined
-    resolver, ``utils.sheet_text.resolve_track``: unsafe is a reference that
-    is absolute, leaves the sheet's folder (``..``), or resolves (through a
-    symlink) outside the roots. ``within`` names those roots and is passed
-    straight through: the configured Volumes by default, or the job's own
-    extraction folder for a sheet taken out of an archive. Every decoding of
-    the sheet is checked, so a name cannot hide in one spelling. A sheet that
-    exists but cannot be read (or is over the size cap) is unsafe too: nothing
-    was checked. Empty for any other file. Blocking (reads the sheet, resolves
-    each track).
-    """
-    sheet = Path(sheet_path)
-    parse = _SHEET_TEXT_PARSERS.get(sheet.suffix.lower())
-    if parse is None:
-        return []
-    readings = sheet_readings(sheet)
-    if not readings:
-        return ["the track sheet could not be read"] if os.path.exists(sheet) else []
-    problems: list[str] = []
-    for text in readings:
-        for ref in parse(text):
-            try:
-                resolve_track(sheet.parent, ref, within=within)
-            except ValueError as exc:
-                problems.append(str(exc))
-    return list(dict.fromkeys(problems))
 
 
 def build_delete_plan(
