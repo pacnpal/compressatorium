@@ -15,22 +15,28 @@ as Libraries are the second (:mod:`services.libraries.folder`).
 
 from .library import (
     CONVERTED_HISTORY,
+    FAILED_HOLD,
     RECOGNIZED_FILTER,
     Image,
     Library,
     LibraryUnreadable,
     Platform,
     QueuedImage,
+    UnsupportedPolicy,
     duplicate_actions,
+    refuse_unsupported_policies,
 )
 
 __all__ = [
     "CONVERTED_HISTORY",
+    "FAILED_HOLD",
     "RECOGNIZED_FILTER",
     "Image",
     "Library",
     "LibraryUnreadable",
     "Platform",
     "QueuedImage",
+    "UnsupportedPolicy",
     "duplicate_actions",
+    "refuse_unsupported_policies",
 ]

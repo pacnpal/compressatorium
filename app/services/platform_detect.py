@@ -38,14 +38,15 @@ FOLDER = "folder"
 CONFLICT = "conflict"
 UNSORTED = "unsorted"
 
-# Platform slug (RomM's, which is IGDB's) -> every other name for the same
+# Platform slug (RomM's own, `UniversalPlatformSlug` in RomM's
+# backend/utils/platform_slugs.py) -> every other name for the same
 # console: the tools' and the disc-ID parser's own vocabulary, and the folder
 # names ES-DE (es_systems.xml) and Batocera use. Detection always answers with
 # the key. Every slug a tool declares must appear here, as a key or an alias;
 # tests/test_platform_detect.py fails when a new tool brings one that is not.
 _ALIASES: dict[str, tuple[str, ...]] = {
     # Sony
-    "ps": ("psx", "ps1", "playstation", "sony-playstation"),
+    "psx": ("ps", "ps1", "playstation", "sony-playstation"),
     "ps2": ("playstation2", "playstation-2"),
     "psp": ("playstation-portable",),
     "ps3": ("playstation3", "playstation-3"),
@@ -68,8 +69,9 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "dc": ("dreamcast", "sega-dreamcast"),
     "saturn": ("segasaturn", "sega-saturn", "saturnjp"),
     "segacd": ("sega-cd", "megacd", "mega-cd", "megacdjp"),
-    "genesis-slash-megadrive": (
-        "genesis", "megadrive", "mega-drive", "megadrivejp", "segamd", "md",
+    "genesis": (
+        "genesis-slash-megadrive", "megadrive", "mega-drive", "megadrivejp", "segamd",
+        "md",
     ),
     "sms": ("mastersystem", "master-system", "sega-master-system"),
     "gamegear": ("gg", "game-gear"),
@@ -93,6 +95,50 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "xbox": ("microsoft-xbox",),
     "xbox360": ("xbox-360",),
 }
+# What each Platform is called on screen.
+_NAMES: dict[str, str] = {
+    "psx": "PlayStation",
+    "ps2": "PlayStation 2",
+    "psp": "PlayStation Portable",
+    "ps3": "PlayStation 3",
+    "ngc": "GameCube",
+    "wii": "Wii",
+    "wiiu": "Wii U",
+    "switch": "Nintendo Switch",
+    "3ds": "Nintendo 3DS",
+    "new-nintendo-3ds": "New Nintendo 3DS",
+    "nds": "Nintendo DS",
+    "gb": "Game Boy",
+    "gbc": "Game Boy Color",
+    "gba": "Game Boy Advance",
+    "nes": "NES",
+    "snes": "SNES",
+    "n64": "Nintendo 64",
+    "virtualboy": "Virtual Boy",
+    "dc": "Dreamcast",
+    "saturn": "Saturn",
+    "segacd": "Sega CD",
+    "genesis": "Genesis / Mega Drive",
+    "sms": "Master System",
+    "gamegear": "Game Gear",
+    "turbografx-cd": "TurboGrafx-CD",
+    "pc-fx": "PC-FX",
+    "neo-geo-cd": "Neo Geo CD",
+    "neo-geo-pocket": "Neo Geo Pocket",
+    "neo-geo-pocket-color": "Neo Geo Pocket Color",
+    "wonderswan": "WonderSwan",
+    "wonderswan-color": "WonderSwan Color",
+    "lynx": "Lynx",
+    "atari2600": "Atari 2600",
+    "atari7800": "Atari 7800",
+    "c64": "Commodore 64",
+    "philips-cd-i": "CD-i",
+    "3do": "3DO",
+    "laseractive": "LaserActive",
+    "arcade": "Arcade",
+    "xbox": "Xbox",
+    "xbox360": "Xbox 360",
+}
 _CANONICAL: dict[str, str] = {
     alias: slug for slug, aliases in _ALIASES.items() for alias in (slug, *aliases)
 }
@@ -104,6 +150,13 @@ def canonical_slug(name: str | None) -> str | None:
         return None
     key = name.strip().lower()
     return _CANONICAL.get(key, key) or None
+
+
+def platform_name(slug: str | None) -> str | None:
+    """A Platform's display name, or the slug itself when the table has none."""
+    if not slug:
+        return None
+    return _NAMES.get(slug, slug)
 
 
 def known_slug(name: str | None) -> str | None:
@@ -232,6 +285,15 @@ _cache_lock = threading.Lock()
 def clear_cache() -> None:
     with _cache_lock:
         _cache.clear()
+
+
+def detect_uncached(path: str, *, tools: Iterable | None = None) -> Detection:
+    """:func:`detect_platform` without the shared cache, for a caller that keeps its own.
+
+    A folder Library keys its own cache on (path, size, mtime) for every file
+    it holds, which the bounded LRU below cannot do for a large Library.
+    """
+    return _decide(path, list(tools) if tools is not None else _default_tools())
 
 
 def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:

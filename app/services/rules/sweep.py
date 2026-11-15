@@ -38,7 +38,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi.concurrency import run_in_threadpool
 from logging_setup import get_logger
 from models import ConversionMode, JobStatus
 from services.job_manager import (
@@ -54,11 +53,14 @@ from services.output_conflicts import (
 )
 from services.rules import store
 from services.rules.library import (
+    CONVERTED_HISTORY,
+    FAILED_HOLD,
     Image,
     Library,
     LibraryUnreadable,
     QueuedImage,
     duplicate_actions,
+    refuse_unsupported_policies,
 )
 from services.rules.rules import (
     _output_identity,
@@ -88,6 +90,12 @@ _CANDIDATE_PROBE_SECONDS = 30
 # resolves each candidate and stats every configured volume, and a healthy
 # local mount answers instantly. See `normalize_rules_bounded`.
 _VOLUME_PROBE_SECONDS = 20
+# How long listing one Platform's Images may take (a Library's catalog call, or
+# a folder Library's walk). Generous, since a cold walk of a large folder over
+# SMB reads a header per file; bounded, because the sweep holds `_sweep_lock`
+# for the whole call and a mount that stops answering would otherwise hold it
+# until a restart.
+_LISTING_SECONDS = 600
 
 # One sweep at a time, process-wide. The active-source snapshot is taken before
 # anything is queued, so the minute scheduler and a manual "Run now" could each
@@ -238,8 +246,12 @@ async def normalize_rules_bounded(library: Library, raw: Any) -> dict[str, dict]
         return _normalize(library, raw, volumes_unreachable=True)
 
 
-async def set_rules(library: Library, raw: Any) -> dict[str, dict]:
+async def set_rules(library: Library, raw: Any, *, strict: bool = False) -> dict[str, dict]:
     """Replace *library*'s rule set, forgetting provenance the new rules invalidate.
+
+    *strict* is for a submission: a Rule asking for a duplicate policy the
+    Library cannot honour raises :class:`UnsupportedPolicy` and nothing is
+    saved. Without it the policy falls back to ``skip``, as a stored blob does.
 
     Switching a platform from RVZ to GCZ, or pointing it at a new output
     directory, asks for a different file than the one already produced. Left
@@ -253,6 +265,8 @@ async def set_rules(library: Library, raw: Any) -> dict[str, dict]:
     # the history alongside it would let the old sweep's write land after the
     # clear, so the retargeted rule would skip ROMs it never produced its new
     # format for -- and inherit the old run's clock as well.
+    if strict:
+        refuse_unsupported_policies(library, raw)
     async with _sweep_lock:
         previous = await get_rules(library)
         # Off the loop and bounded: this stats every configured volume, and the
@@ -301,11 +315,14 @@ async def forget_converted_locked(
     for pid in targets:
         entry = state.get(pid)
         if isinstance(entry, dict) and (
-            entry.get("converted") or entry.get("converted_ids")
+            entry.get("converted") or entry.get("converted_ids") or entry.get("failed")
         ):
             entry = dict(entry)
             entry.pop("converted", None)
             entry.pop("converted_ids", None)
+            # The failed hold too: "forget" is how an operator retries an
+            # Image without changing its file.
+            entry.pop("failed", None)
             state[pid] = entry
             cleared += 1
     if cleared:
@@ -388,12 +405,13 @@ def _passes_filters(image: Image, rule: dict) -> bool:
     if rule["exclude_pattern"] and re.search(rule["exclude_pattern"], name, re.IGNORECASE):
         return False
     # The Library's own identification (`Image.recognized`; for RomM, its
-    # "identified" status). One that cannot say counts as unmatched, which is
-    # what RomM's own answer reduces to when it has none.
-    identified = bool(image.recognized)
-    if rule["only_matched"] and not identified:
+    # "identified" status, always True or False). Unknown (None) passes
+    # neither filter: a Library that cannot say, because nothing matched the
+    # Image yet or its match cache could not be read, must not have an
+    # only_unmatched Rule convert everything (fail closed).
+    if rule["only_matched"] and image.recognized is not True:
         return False
-    return not (rule["only_unmatched"] and identified)
+    return not (rule["only_unmatched"] and image.recognized is not False)
 
 
 def _resolve_source(path: str) -> str | None:
@@ -628,6 +646,11 @@ async def note_job_finished(job) -> None:
         return
     library, platform_id, rom_id = owner
     done = status == JobStatus.COMPLETED
+    if FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED:
+        await _note_failure(library, platform_id, rom_id, job, failed=not done)
+    if CONVERTED_HISTORY not in library.capabilities:
+        # No converted history to write the verdict into (skip-only Rules).
+        return
     async with _sweep_lock:
         # Under the same lock as every other write to this blob: a sweep
         # rewrites the whole thing, so an unsynchronised update here would be
@@ -654,6 +677,39 @@ async def note_job_finished(job) -> None:
         record = dict(record)
         record["done"] = done
         state[platform_id]["converted"][rom_id] = record
+        await store.write(store.STATE_KEY, library, state)
+
+
+async def _note_failure(
+    library: Library, platform_id: str, image_key: str, job, *, failed: bool,
+) -> None:
+    """Hold a failed Image until its file changes, or release a converted one.
+
+    Only for a Library with :data:`FAILED_HOLD`. The hold is the Source's
+    fingerprint (size and mtime) when the job failed; the sweep compares it
+    with the file's now. A cancelled job is neither: it says nothing about
+    the Image.
+    """
+    fingerprint = None
+    if failed:
+        source = getattr(job, "file_path", None)
+        if not source:
+            return
+        fingerprint = await _probe(path_fingerprint, source, default="")
+        if not fingerprint:
+            return
+    async with _sweep_lock:
+        state = await get_state(library)
+        entry = dict(state.get(platform_id) or {})
+        held = dict(entry.get("failed") or {})
+        if failed:
+            held[image_key] = {"fingerprint": fingerprint, "job_id": getattr(job, "id", None)}
+        elif image_key in held:
+            held.pop(image_key)
+        else:
+            return
+        entry["failed"] = held
+        state[platform_id] = entry
         await store.write(store.STATE_KEY, library, state)
 
 
@@ -712,7 +768,10 @@ async def _mark_converted(library: Library, platform_id: str, entries: dict) -> 
     await store.write(store.STATE_KEY, library, state)
 
 
-def _inspect_candidate(image: Image, rule: dict, tool, spec, remembered: dict | None) -> dict:
+def _inspect_candidate(
+    image: Image, rule: dict, tool, spec, remembered: dict | None,
+    failed: dict | None = None,
+) -> dict:
     """Every disk-touching question about one candidate, answered in one hop.
 
     Mapping the Image onto a local path (for RomM, the catalog record onto the
@@ -774,6 +833,10 @@ def _inspect_candidate(image: Image, rule: dict, tool, spec, remembered: dict | 
         # read to understand why.
         reason = "missing" if not os.path.exists(resolved) else "unconvertible"
         return {**miss, "skip": reason, "path": path}
+    # Its last conversion failed, and the file is the same one: queueing it
+    # again would fail the same way. A changed size or mtime releases it.
+    if failed and failed.get("fingerprint") == path_fingerprint(path):
+        return {**miss, "skip": "held_failed", "path": path}
     destination, decision = resolve_destination(
         tool, path, rule["mode"], rule["output_dir"], rule["duplicate_action"],
     )
@@ -876,6 +939,9 @@ async def _sweep_locked(
         "stopped_reason": None,
         "dry_run": dry_run,
     }
+    holds_failures = FAILED_HOLD in library.capabilities
+    if holds_failures:
+        result["skipped_failed"] = 0
     if not rules:
         result["stopped_reason"] = "no_rules"
         return result
@@ -992,13 +1058,35 @@ async def _sweep_locked(
             continue
 
         try:
-            images = await run_in_threadpool(library.images, platform_id)
+            # Off the loop and bounded: the sweep holds `_sweep_lock` for the
+            # whole call, and a Library on a mount that stops answering must
+            # fail this sweep, not hold the lock until a restart. An executor
+            # future, not `run_in_threadpool`: anyio waits for the thread when
+            # its caller is cancelled, so the timeout would only fire once the
+            # hung listing returned. This one is abandoned on the timeout.
+            images = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    None, library.images, platform_id,
+                ),
+                _LISTING_SECONDS,
+            )
         except LibraryUnreadable as exc:
             logger.warning("romm_auto: platform %s unreadable: %s", platform_id, exc)
             result["errors"].append(
                 {"platform_id": platform_ref, "error": "unreadable"},
             )
             continue
+        except asyncio.TimeoutError:
+            logger.warning(
+                "romm_auto: listing platform %s did not finish in %ss; stopping "
+                "the sweep (the Library is not answering)", platform_id,
+                _LISTING_SECONDS,
+            )
+            result["errors"].append(
+                {"platform_id": platform_ref, "error": "library_unresponsive"},
+            )
+            result["stopped_reason"] = "library_unresponsive"
+            break
 
         # The editor narrows the target list, but a rule can outlive the tool
         # set it was written against (or be hand-edited), and `converts_path` is
@@ -1035,6 +1123,10 @@ async def _sweep_locked(
         # miss: a job that finished before the sweep wrote its record, or an
         # outcome announced while this process was not the one running.
         converted = await _persist_known_outcomes(library, platform_id, converted)
+        held = (
+            ((await get_state(library)).get(platform_id) or {}).get("failed") or {}
+            if holds_failures else {}
+        )
         batch: list[str] = []
         unresponsive = False
         image_by_path: dict[str, Image] = {}
@@ -1062,7 +1154,7 @@ async def _sweep_locked(
                 decision = await asyncio.wait_for(
                     run_detached(
                         _inspect_candidate, image, rule, tool, spec,
-                        converted.get(str(image.key)),
+                        converted.get(str(image.key)), held.get(str(image.key)),
                     ),
                     _CANDIDATE_PROBE_SECONDS,
                 )
@@ -1093,6 +1185,9 @@ async def _sweep_locked(
                 continue
             if decision["skip"] == "outside_volumes":
                 result["skipped_unconvertible"] += 1
+                continue
+            if decision["skip"] == "held_failed":
+                result["skipped_failed"] += 1
                 continue
             if decision["resolved"] in active_paths:
                 result["skipped_active"] += 1

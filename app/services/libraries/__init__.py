@@ -8,9 +8,11 @@ without a restart.
 
 Registering checks the folder with the same path-safety rules the file browser
 uses (inside a configured Volume, resolved, a real folder) and refuses a folder
-that is, contains or sits inside one already registered: the same Image under
-two Libraries would have two Rules. Removing a Library drops its Rules and run
-state and never touches a file.
+that is, contains or sits inside another Library's root (a registered folder,
+or RomM's library folder): the same Image under two Libraries would have two
+Rules. The check and the insert happen under one lock, and the database's
+unique root is the backstop. Removing a Library drops its Rules and run state
+and never touches a file.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from typing import Any
 from services import db as _db
 from services.libraries.folder import ID_PREFIX, FolderLibrary
 from services.rules.library import Library, duplicate_actions
+from sqlalchemy.exc import IntegrityError
 from utils.path_utils import ensure_path_within_volumes
 
 __all__ = [
@@ -132,25 +135,50 @@ def register(path: str, name: str | None = None) -> FolderLibrary:
         raise LibraryPathError(403, "Access denied: path outside configured volumes") from None
     if not root.is_dir():
         raise LibraryPathError(404, "Folder not found")
-    for existing in folder_libraries():
-        if root == Path(existing.root):
-            raise LibraryPathError(409, f"Already the Library {existing.name!r}")
-        if _overlaps(root, Path(existing.root)):
-            raise LibraryPathError(
-                409, f"Overlaps the Library {existing.name!r} at {existing.root}",
-            )
     label = (name or "").strip() or root.name or str(root)
-    with _lock, _session() as session:
-        row = _db.FolderLibraryRecord(
-            root=str(root), name=label, schedule_enabled=False, max_per_sweep=25,
-            created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        )
-        session.add(row)
-        session.commit()
-        library = _from_row(row)
+    _loaded()
+    # Check and insert as one step, so two registrations of nested folders
+    # cannot both pass the check.
+    with _lock:
+        for other_name, other_root in _other_roots_locked():
+            if root == other_root:
+                raise LibraryPathError(409, f"Already the Library {other_name!r}")
+            if _overlaps(root, other_root):
+                raise LibraryPathError(
+                    409, f"Overlaps the Library {other_name!r} at {other_root}",
+                )
+        with _session() as session:
+            row = _db.FolderLibraryRecord(
+                root=str(root), name=label, schedule_enabled=False, max_per_sweep=25,
+                created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+            session.add(row)
+            try:
+                session.commit()
+            except IntegrityError:
+                # Another process registered the same root first.
+                session.rollback()
+                raise LibraryPathError(409, "Already a Library") from None
+            library = _from_row(row)
         if _cache is not None:
             _cache[library.record_id] = library
     return library
+
+
+def _other_roots_locked() -> list[tuple[str, Path]]:
+    """``(name, resolved root)`` of every Library a new folder must not overlap.
+
+    For a caller holding ``_lock``: reads the cache directly.
+    """
+    from services.romm.library import romm_library
+
+    roots = [(lib.name, Path(lib.root)) for lib in (_cache or {}).values()]
+    if romm_library.root:
+        try:
+            roots.append((romm_library.name, Path(romm_library.root).resolve()))
+        except (OSError, RuntimeError):
+            roots.append((romm_library.name, Path(romm_library.root)))
+    return roots
 
 
 def update(
@@ -175,6 +203,9 @@ def update(
         session.commit()
         library = _from_row(row)
         if _cache is not None:
+            previous = _cache.get(record_id)
+            if previous is not None:
+                library.adopt_cache(previous)
             _cache[record_id] = library
     return library
 

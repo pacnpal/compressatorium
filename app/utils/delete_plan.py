@@ -90,6 +90,33 @@ def _parse_gdi_tracks(gdi_path: Path) -> List[str]:
     return tracks
 
 
+_SHEET_PARSERS = {".cue": _parse_cue_tracks, ".gdi": _parse_gdi_tracks}
+
+
+def sheet_tracks(sheet_path: str) -> List[str]:
+    """The track files a ``.cue`` / ``.gdi`` sheet references, as paths.
+
+    The same parsing and the same containment rule the delete plan uses: a
+    reference that is absolute or leaves the sheet's folder is dropped, not
+    followed. Empty for any other file, or a sheet that cannot be read.
+    """
+    parse = _SHEET_PARSERS.get(Path(sheet_path).suffix.lower())
+    if parse is None:
+        return []
+    try:
+        refs = parse(Path(sheet_path))
+    except OSError:
+        return []
+    out: List[str] = []
+    base_dir = Path(sheet_path).parent
+    for ref in refs:
+        try:
+            out.append(str(_resolve_track_path(base_dir, ref)))
+        except ValueError:
+            continue
+    return out
+
+
 def build_delete_plan(source_path: str) -> Dict[str, object]:
     original_source = source_path
     is_archive_member = "::" in source_path

@@ -28,6 +28,7 @@ from logging_setup import get_logger
 from config import settings
 from models import DirectoryListing, FileEntry, RommDiagnostics
 from pydantic import BaseModel, Field
+from routes import rules as shared_rule_routes
 from routes.files import (
     detect_directory_outputs,
     detect_file_outputs,
@@ -59,6 +60,8 @@ from services.romm import (
 from services.romm import (
     settings as romm_settings,
 )
+from services.romm.library import romm_library
+from services.rules import editor as rules_editor
 from services.subprocess_runner import (
     SIZE_RATIOS,
     bounded_path_check,
@@ -1835,25 +1838,13 @@ async def get_romm_rules() -> dict:
     ``defaults`` and ``options`` ship with the rules so the UI never carries a
     second copy of what a valid rule looks like.
     """
-    rules = await romm_auto.get_rules()
-    state = await romm_auto.get_state()
-    return {
-        "rules": rules,
-        "state": state,
-        "defaults": romm_auto.default_rule(),
-        "options": {
-            "orders": list(romm_auto.ORDERS),
-            "duplicate_actions": list(romm_auto.DUPLICATE_ACTIONS),
-            "days": list(romm_auto.ALL_DAYS),
-        },
-    }
+    return await rules_editor.editor_payload(romm_library)
 
 
 @router.put("/romm/rules")
 async def put_romm_rules(payload: dict) -> dict:
     """Replace the rule set. Rules naming an unknown mode are dropped."""
-    rules = await romm_auto.set_rules(payload.get("rules", payload))
-    return {"rules": rules}
+    return await shared_rule_routes.save_rules(romm_library, payload)
 
 
 @router.post("/romm/rules/forget-converted")
@@ -1866,15 +1857,8 @@ async def forget_romm_converted(payload: dict | None = None) -> dict:
     the only thing standing between the operator and a rerun -- so it is
     clearable, per platform or wholesale.
     """
-    payload = payload or {}
-    ids = payload.get("platform_ids")
-    # `is not None` for the same reason the sweep uses it: an explicit empty
-    # list selects no platforms, and reading it as "no filter" cleared the
-    # conversion history for *every* one of them. This is the escape hatch
-    # after a restore -- wiping it wholesale on an empty selection makes the
-    # next sweep reconvert the entire library.
     cleared = await romm_auto.forget_converted(
-        [str(p) for p in ids] if ids is not None else None,
+        shared_rule_routes.requested_platform_ids(payload),
     )
     return {"cleared": cleared, "state": await romm_auto.get_state()}
 
@@ -1902,11 +1886,9 @@ async def preview_auto_convert(payload: SweepRequest | None = None) -> dict:
     """
     _require_configured()
     payload = payload or SweepRequest()
-    return await romm_auto.sweep(
-        platform_ids=payload.platform_ids,
-        ignore_schedule=True,
+    return await rules_editor.sweep_now(
+        romm_library, platform_ids=payload.platform_ids, limit=payload.limit,
         dry_run=True,
-        overall_limit=payload.limit,
     )
 
 
@@ -1919,9 +1901,7 @@ async def run_auto_convert(payload: SweepRequest | None = None) -> dict:
     """
     _require_configured()
     payload = payload or SweepRequest()
-    return await romm_auto.sweep(
-        platform_ids=payload.platform_ids,
-        ignore_schedule=True,
+    return await rules_editor.sweep_now(
+        romm_library, platform_ids=payload.platform_ids, limit=payload.limit,
         dry_run=False,
-        overall_limit=payload.limit,
     )

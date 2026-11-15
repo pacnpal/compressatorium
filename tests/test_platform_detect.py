@@ -81,7 +81,7 @@ def _sector0(path: Path, magic: bytes, *, raw: bool = False) -> str:
         (_gamecube, "game.iso", "ngc"),
         (_wii, "game.iso", "wii"),
         (_ps2, "game.iso", "ps2"),
-        (_ps1, "game.iso", "ps"),
+        (_ps1, "game.iso", "psx"),
         (_psp, "game.iso", "psp"),
         (lambda p: _sector0(p, b"SEGA SEGASATURN "), "game.iso", "saturn"),
         (lambda p: _sector0(p, b"SEGA SEGASATURN ", raw=True), "game.bin", "saturn"),
@@ -142,7 +142,7 @@ def test_dreamcast_gdi_reads_its_first_track(tmp_path):
         ("ps2", "ps2"), ("psp", "psp"), ("ngc", "ngc"), ("wii", "wii"),
         ("xbox", "xbox"), ("dc", "dc"), ("saturn", "saturn"), ("segacd", "segacd"),
         # ES-DE / Batocera names for the same consoles.
-        ("psx", "ps"), ("gc", "ngc"), ("gamecube", "ngc"), ("dreamcast", "dc"),
+        ("psx", "psx"), ("gc", "ngc"), ("gamecube", "ngc"), ("dreamcast", "dc"),
         ("megacd", "segacd"), ("PS2", "ps2"),
     ],
 )
@@ -161,8 +161,8 @@ def test_folder_name_names_the_platform_when_there_is_no_header(
 FRONTEND_FOLDERS = [
     ("pcenginecd", "turbografx-cd"), ("tg-cd", "turbografx-cd"),
     ("cdi", "philips-cd-i"), ("cdimono1", "philips-cd-i"),
-    ("megadrive", "genesis-slash-megadrive"), ("genesis", "genesis-slash-megadrive"),
-    ("segamd", "genesis-slash-megadrive"),
+    ("megadrive", "genesis"), ("genesis", "genesis"),
+    ("segamd", "genesis"),
     ("mastersystem", "sms"), ("gg", "gamegear"), ("game-gear", "gamegear"),
     ("atarilynx", "lynx"), ("ngp", "neo-geo-pocket"), ("ngpc", "neo-geo-pocket-color"),
     ("wonderswancolor", "wonderswan-color"), ("n3ds", "3ds"),
@@ -238,7 +238,7 @@ def test_archive_member_uses_the_archive_folder(tmp_path):
 
     result = detect_platform(f"{archive}::disc.cue")
 
-    assert (result.platform, result.how) == ("ps", "folder")
+    assert (result.platform, result.how) == ("psx", "folder")
 
 
 def test_missing_file_is_unsorted(tmp_path):

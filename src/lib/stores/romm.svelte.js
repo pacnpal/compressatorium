@@ -12,6 +12,7 @@ import { fileBrowser } from '$lib/stores/fileBrowser.svelte.js';
 import { conversion } from '$lib/stores/conversion.svelte.js';
 import { ui } from '$lib/stores/ui.svelte.js';
 import { registry } from '$lib/tools/registry.js';
+import { RulesSource } from '$lib/rules/rulesSource.svelte.js';
 
 /** Weekday labels for the schedule editor; index === Date.getDay() - 1 (Mon=0). */
 export const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -24,7 +25,20 @@ export const ORDER_LABELS = {
   newest: 'Newest added',
 };
 
-class RommStore {
+// The RomM Library's Rules come from RulesSource, shared with folder Libraries;
+// what is here is RomM's own: connection, settings, platforms, re-pin.
+class RommStore extends RulesSource {
+  constructor() {
+    super({
+      getRules: () => api.getRommRules(),
+      saveRules: (rules) => api.saveRommRules(rules),
+      forgetConverted: (platformIds) => api.forgetRommConverted(platformIds),
+      preview: (body) => api.previewRommAutoConvert(body),
+      run: (body) => api.runRommAutoConvert(body),
+      loadError: 'Failed to load automation rules',
+    });
+  }
+
   // Connection / configuration
   status = $state(null);
   statusLoading = $state(false);
@@ -41,9 +55,6 @@ class RommStore {
   // Monotonic ticket for `loadPlatforms`; see there. Not $state -- nothing
   // renders it, and it changes on every load.
   #platformsTicket = 0;
-  // Bumped by every rule edit; see `saveRules`. Not $state -- nothing renders
-  // it, and it changes on every keystroke in the editor.
-  #rulesRevision = 0;
   // One ticket per read that a settings save re-issues. Every one of these can
   // still be waiting on the OLD instance -- a slow or unreachable URL is
   // exactly why the operator is changing it -- and a late answer overwriting
@@ -54,23 +65,6 @@ class RommStore {
   #settingsTicket = 0;
   platformsError = $state(null);
   selectedPlatformId = $state(null);
-
-  // Automation
-  rules = $state({});
-  ruleDefaults = $state(null);
-  ruleOptions = $state({ orders: [], duplicate_actions: [], days: [] });
-  ruleState = $state({});
-  rulesLoading = $state(false);
-  rulesSaving = $state(false);
-  rulesError = $state(null);
-  // Unsaved edits live here, next to the rules they describe, not in the
-  // editor component: the automation tab unmounts every time the operator
-  // looks at the library, and a component-local flag came back false while
-  // `rules` still held the edits — so the save bar vanished and Preview / Run
-  // now silently reported on the *server's* rules while showing the new ones.
-  rulesDirty = $state(false);
-  sweepResult = $state(null);
-  sweeping = $state(false);
 
   // Re-pin queue
   repinning = $state(false);
@@ -132,7 +126,7 @@ class RommStore {
 
   // ─── the rules-source contract the Rules view reads (libraries.svelte.js) ──
 
-  imageNoun = 'ROMs';
+  imageNouns = ['ROM', 'ROMs'];
   emptyTitle = 'No platforms yet';
   emptyHint = 'Connect RomM in Settings, then your platforms appear here.';
   matchedLabel = 'Only ROMs RomM has identified';
@@ -149,6 +143,21 @@ class RommStore {
 
   async setScheduleEnabled(enabled) {
     await this.saveSettings({ auto_convert: enabled });
+  }
+
+  /** Which modes may run unattended, from /api/romm/status (null: no opinion). */
+  get automatableModes() {
+    return this.status?.automatableModes ?? null;
+  }
+
+  /**
+   * A run that queued formats RomM cannot hash-match has just written pending
+   * re-pin rows. Without this the header badge keeps its old count and the
+   * Re-match action stays hidden until the page is reloaded, which hides the
+   * follow-up step from exactly the run that created the need.
+   */
+  afterRun(result) {
+    this.setPendingRepins(result?.pending_repins);
   }
 
   platformName(platformId) {
@@ -406,154 +415,6 @@ class RommStore {
       const tool = registry.forTool(conversion.primaryTool);
       const fallback = (tool?.modes ?? []).find((m) => allowedModes.includes(m.mode));
       if (fallback) conversion.setMode(fallback.mode);
-    }
-  }
-
-  // ─── automation rules ─────────────────────────────────────────────────
-
-  async loadRules() {
-    this.rulesLoading = true;
-    this.rulesError = null;
-    try {
-      const data = await api.getRommRules();
-      // Server truth, unless the editor is holding edits nobody has saved: a
-      // reload can be triggered by something else entirely (a settings save on
-      // the next tab, a sweep finishing), and overwriting there would discard
-      // what the operator typed with no way back.
-      if (!this.rulesDirty) this.rules = data?.rules ?? {};
-      this.ruleDefaults = data?.defaults ?? null;
-      this.ruleOptions = data?.options ?? this.ruleOptions;
-      this.ruleState = data?.state ?? {};
-    } catch (e) {
-      // Surfaced, not swallowed: without this the editor renders an empty rule
-      // set that looks like "nothing is configured" when the request failed.
-      this.rulesError = e?.message ?? 'Failed to load automation rules';
-      throw e;
-    } finally {
-      this.rulesLoading = false;
-    }
-    return this.rules;
-  }
-
-  /** A rule for *platformId*, falling back to the backend-supplied defaults. */
-  ruleFor(platformId) {
-    const key = String(platformId);
-    if (this.rules[key]) return { ...this.rules[key] };
-    return { ...(this.ruleDefaults ?? {}) };
-  }
-
-  lastRunFor(platformId) {
-    return this.ruleState[String(platformId)] ?? null;
-  }
-
-  setRule(platformId, rule) {
-    this.rules = { ...this.rules, [String(platformId)]: rule };
-    this.rulesDirty = true;
-    this.#rulesRevision += 1;
-  }
-
-  removeRule(platformId) {
-    const next = { ...this.rules };
-    delete next[String(platformId)];
-    this.rules = next;
-    this.rulesDirty = true;
-    this.#rulesRevision += 1;
-  }
-
-  async saveRules() {
-    this.rulesSaving = true;
-    // The editor stays live while this is in flight, so anything typed after
-    // this point is NOT in what we just submitted.
-    const revision = this.#rulesRevision;
-    try {
-      const data = await api.saveRommRules(this.rules);
-      if (revision !== this.#rulesRevision) {
-        // Edited mid-save. Adopting the server's copy would replace those
-        // edits with the snapshot that was submitted before them — silently,
-        // and then clear the dirty flag so the Save bar stopped asking. The
-        // newer edits stay, still dirty, for the next save to normalize.
-        return this.rules;
-      }
-      // Take the server's normalized copy: it clamps numbers and drops rules
-      // whose mode no longer exists, so the editor shows what will actually run.
-      this.rules = data?.rules ?? this.rules;
-      this.rulesDirty = false;
-      return this.rules;
-    } finally {
-      this.rulesSaving = false;
-    }
-  }
-
-  /**
-   * May this mode run unattended?
-   *
-   * The backend derives it (a mode that turns its own product into a
-   * differently named file never terminates -- CHDMAN `copy` writes
-   * `Game_copy.chd`, then `Game_copy_copy.chd`, once per sweep until the
-   * volume fills) and serves the list, because the derivation needs the tool's
-   * own `output_path`. Absent -- an older server -- everything is offered, as
-   * it was before: the caller's own `kind === 'extract'` exclusion still
-   * applies either way.
-   */
-  modeIsAutomatable(mode) {
-    const allowed = this.status?.automatableModes;
-    return Array.isArray(allowed) ? allowed.includes(mode) : true;
-  }
-
-  /** How many sources this rule remembers having produced an output for. */
-  convertedCountFor(platformId) {
-    const entry = this.ruleState[String(platformId)] ?? {};
-    if (entry.converted && typeof entry.converted === 'object') {
-      return Object.keys(entry.converted).length;
-    }
-    // The earlier shape, kept readable so an upgraded install still shows a
-    // count (and a Forget history button) for what it recorded before.
-    return Array.isArray(entry.converted_ids) ? entry.converted_ids.length : 0;
-  }
-
-  /**
-   * Forget the "already converted" history for one platform, or all of them.
-   *
-   * Overwrite and rename rules cannot tell "already done" from the
-   * destination alone, so they remember what they produced. Restore a library
-   * from a backup, or move outputs aside by hand, and that memory is the only
-   * thing standing between the operator and a rerun.
-   */
-  async forgetConverted(platformIds = null) {
-    const data = await api.forgetRommConverted(platformIds);
-    this.ruleState = data?.state ?? this.ruleState;
-    return data?.cleared ?? 0;
-  }
-
-  async previewSweep(platformIds = null) {
-    this.sweeping = true;
-    try {
-      this.sweepResult = await api.previewRommAutoConvert(
-        platformIds ? { platform_ids: platformIds } : {},
-      );
-      return this.sweepResult;
-    } finally {
-      this.sweeping = false;
-    }
-  }
-
-  async runSweep(platformIds = null) {
-    this.sweeping = true;
-    try {
-      this.sweepResult = await api.runRommAutoConvert(
-        platformIds ? { platform_ids: platformIds } : {},
-      );
-      // A sweep that queued formats RomM cannot hash-match has just written
-      // pending rows. Without this the header badge keeps its old count and
-      // the Re-match action stays hidden until the page is reloaded, which
-      // hides the follow-up step from exactly the run that created the need.
-      this.setPendingRepins(this.sweepResult?.pending_repins);
-      // The sweep already succeeded; a failing state refresh must not be
-      // reported as a failed run. `rulesError` carries that failure instead.
-      await this.loadRules().catch(() => {});
-      return this.sweepResult;
-    } finally {
-      this.sweeping = false;
     }
   }
 

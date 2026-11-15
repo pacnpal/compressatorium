@@ -20,6 +20,8 @@ import pytest
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _STORE = _SRC / "lib" / "stores" / "libraries.svelte.js"
+_RULES_SOURCE = _SRC / "lib" / "rules" / "rulesSource.svelte.js"
+_ROMM_STORE = _SRC / "lib" / "stores" / "romm.svelte.js"
 _VIEWS = _SRC / "lib" / "components" / "views"
 _EDITOR = _VIEWS / "RuleEditor.svelte"
 _RULES_VIEW = _VIEWS / "RulesView.svelte"
@@ -38,7 +40,8 @@ def _find_node() -> str | None:
 
 
 def _plain_js() -> str:
-    src = _STORE.read_text(encoding="utf-8")
+    # FolderRulesSource extends the shared RulesSource, which has no imports.
+    src = _RULES_SOURCE.read_text(encoding="utf-8") + "\n" + _STORE.read_text(encoding="utf-8")
     kept = [
         line for line in src.splitlines()
         if not (line.strip().startswith("import ") and line.strip().endswith(";"))
@@ -171,6 +174,25 @@ process.stdout.write(JSON.stringify({{
     assert data["rommSource"] is True, data
     assert data["afterRemove"] == "romm", data
     assert data["left"] == ["romm"], data
+
+
+def test_counts_say_one_image_and_two_images(tmp_path):
+    data = _run(tmp_path, f"""
+const source = new FolderRulesSource({_FOLDER});
+process.stdout.write(JSON.stringify([source.countLabel(1), source.countLabel(2)]));
+""")
+    assert data == ["1 Image", "2 Images"]
+
+
+def test_both_libraries_share_one_rules_source():
+    """The Rule bookkeeping exists once (fix round 1, I1)."""
+    folder = _STORE.read_text(encoding="utf-8")
+    romm = _ROMM_STORE.read_text(encoding="utf-8")
+    assert "class FolderRulesSource extends RulesSource" in folder
+    assert "class RommStore extends RulesSource" in romm
+    for store in (folder, romm):
+        for method in ("async saveRules(", "async loadRules(", "async runSweep(", "setRule("):
+            assert method not in store, f"{method} is copied into a store again"
 
 
 def test_opening_rules_on_a_library_navigates_there(tmp_path):

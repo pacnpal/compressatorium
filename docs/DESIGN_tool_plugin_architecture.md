@@ -2209,14 +2209,43 @@ API and the Rules view; the engine never reads those three), and:
   `services/romm`.
 - `sweep_extras()` adds keys when a sweep ends (RomM: `pending_repins`).
 
-Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`) say what a Library
-supports. `CONVERTED_HISTORY` is enforced: `duplicate_actions(library)` is
-every policy with it and `("skip",)` without, `normalize_rule` falls a stored
-policy outside that set back to `skip`, and `PUT /api/libraries/{id}/rules`
-refuses one with 422 (`duplicate_action_unsupported`). The Rules endpoints
-return the same set in `options.duplicate_actions`, so the editor never offers
-a policy the Library cannot honour. Nothing in `rules/` asks what kind of
-Library it has.
+Capabilities (`RECOGNIZED_FILTER`, `CONVERTED_HISTORY`, `FAILED_HOLD`) say
+what a Library supports. Nothing in `rules/` asks what kind of Library it has.
+
+- `CONVERTED_HISTORY`: `duplicate_actions(library)` is every policy with it
+  and `("skip",)` without. A submission (`set_rules(..., strict=True)`, which
+  both Rule APIs use through `rules.editor.save_rules`) raises
+  `UnsupportedPolicy`, which the routes answer with 422
+  (`duplicate_action_unsupported`); a stored blob falls back to `skip` in
+  `normalize_rule`. `options.duplicate_actions` carries the same set, so the
+  editor never offers a policy the Library cannot honour.
+- `FAILED_HOLD`: when a job from this Library's sweep fails,
+  `note_job_finished` stores the Source's fingerprint (size and mtime) under
+  `rules.state[...]["failed"][image key]`; the candidate probe skips the Image
+  (`skipped_failed`) while the file still has that fingerprint, and a later
+  success drops the hold. **Forget history** clears holds too. RomM does not
+  declare it, so a failed ROM is re-queued every sweep, as it always was;
+  turning it on for RomM is adding the capability.
+
+**Recognized filters.** `only_matched` takes Images whose `recognized` is
+True, `only_unmatched` those whose `recognized` is False. Unknown (None)
+passes neither, so a Library that cannot say (nothing matched yet, or its
+match cache could not be read) never has an `only_unmatched` Rule convert
+everything. RomM always answers True or False, so its filters are unchanged.
+
+**Bounded listing.** The sweep calls `library.images` in the threadpool under
+`asyncio.wait_for(..., _LISTING_SECONDS)` (600 s). A timeout reports
+`library_unresponsive` for that Platform and stops the sweep, so a hung mount
+fails the sweep and releases `_sweep_lock`. `configured()` is called on the
+event loop and must not touch the disk.
+
+**Editor helpers** (`rules/editor.py`): `editor_payload(library)` (Rules,
+state, defaults, options), `save_rules` (strict), `forget_converted`,
+`sweep_now`. RomM's `/api/romm/rules` and `/api/romm/auto-convert/*` and the
+Library routes are thin wrappers over them; `routes/rules.py` holds the shared
+route pieces (422 mapping, the `platform_ids` reading where an empty list means
+none). RomM's forget route still calls `romm_auto.forget_converted`, which is
+the same engine call.
 
 **What `recognized` means.** It is the Library's own identification of the
 Image, and it is what the Rule filters `only_matched` / `only_unmatched` read.
@@ -2298,27 +2327,47 @@ sweep on each tick. `main.py` passes `services.libraries.all_libraries` (through
 `services.libraries.run_forever`), so RomM and every folder Library whose
 `schedule_enabled` is on are swept.
 
-**The folder Library** (`services/libraries/folder.py`). A walk of the root
-(`os.walk`, symlinks not followed, symlinked files skipped) lists every regular
-file whose extension a tool reads or writes (`registry.convertible_extensions`
-plus `output_extensions`). Each goes through `platform_detect.detect_platform`
-(cached by size and mtime). An Image with a Platform belongs to it; a Conflicted
-or Unsorted one belongs to none, so no Rule sees it. A file the process cannot
-read, or a folder it cannot list, is counted as `unreadable` and skipped. A
-Platform id is the canonical slug (`platform_detect.known_slug` refuses one no
-Platform has), an Image key is the posix path relative to the root, `added_at`
-is the mtime. `summary()` gives the Rules view its counts. The Library declares
-`RECOGNIZED_FILTER` and not `CONVERTED_HISTORY`, so its Rules are skip-only.
-Each `images(platform_id)` walks the root again; detection is cached, so a
-repeat walk costs a stat per file.
+**Images from files** (`services/image_sets.py`). `group_images(paths)`
+returns the Images among a set of files: a sheet owns the tracks it references
+(`utils.delete_plan.sheet_tracks`, the delete plan's own `.cue`/`.gdi` parsers
+and containment rule), a tool's `source_companions` are owned by their primary
+(jwud's split parts), and playlists (`.m3u`) are dropped. An owned file is never
+an Image; a `.bin` no sheet references stays one. `image_members(path)` is the
+per-file question, and `group_images` takes a `members` callable so a caller
+can cache it.
+
+**The folder Library** (`services/libraries/folder.py`). One walk of the root
+(`os.walk`, symlinks not followed, symlinked files skipped) collects every
+regular, readable file whose extension a tool reads or writes
+(`registry.convertible_extensions` plus `output_extensions`), groups them with
+`group_images`, and detects each Image's Platform with
+`platform_detect.detect_uncached`. Detections and sheet members are cached on
+the Library per path, checked against size and mtime, and pruned to what the
+last walk saw, so the cache is as large as the Library and a repeat walk reads
+no headers (tested at 10,000 files). The walk is kept for `SCAN_TTL_SECONDS`
+(30 s): a sweep over several Platforms, and the listing before it, share one
+walk; the platforms endpoint asks for a fresh one. An Image with a Platform
+belongs to it; a Conflicted or Unsorted one belongs to none, so no Rule sees it.
+A file the process cannot read, or a folder it cannot list, is counted as
+`unreadable` and skipped. A Platform id is the canonical slug
+(`platform_detect.known_slug` refuses one no Platform has) and its name is
+`platform_name`; an Image key is the posix path relative to the root,
+`added_at` is the mtime. `summary()` gives the Rules view its counts.
+`configured()` answers from memory (the root was checked at registration); a
+missing root is found by the walk and reported as `unreadable`. The Library
+declares `RECOGNIZED_FILTER` and `FAILED_HOLD`, not `CONVERTED_HISTORY`, so its
+Rules are skip-only. `_recognized` returns None for every path when the match
+cache cannot be read.
 
 **The catalogue** (`services/libraries/__init__.py`). Folder Libraries are rows
 of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
 migration 0011), read once and cached; `register`, `update` and `remove`
 replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
 browser's check), requires a folder, and refuses the same root or one that
-contains or sits inside a registered one (409), since two Libraries would give
-one Image two Rules. `remove` calls `sweep.forget_library`, which under the
+contains or sits inside another Library's root, a registered folder or RomM's
+library folder (409), since two Libraries would give one Image two Rules. The
+check and the insert run under one lock, and a unique-root `IntegrityError` is
+a 409 too. `remove` calls `sweep.forget_library`, which under the
 sweep lock drops the Library's Rules and state rows and its entries in the
 job-owner index, then deletes the row. No file is touched.
 
@@ -2332,9 +2381,12 @@ and `automatable_modes`, as RomM's platform list carries),
 
 **The Rules view** (`src/lib/components/views/RulesView.svelte`). A Library
 picker over `RuleEditor.svelte` (the former `RommAutomation.svelte`). The editor
-reads one *rules source*: the RomM store for RomM, a `FolderRulesSource`
-(`src/lib/stores/libraries.svelte.js`) for a folder Library; the members both
-carry are listed at the top of that file. The RomM view's Automation tab renders
+reads one `RulesSource` (`src/lib/rules/rulesSource.svelte.js`), which owns the
+Rule bookkeeping once (load, edit, save with the save-race guard, forget,
+preview, run) over endpoints passed to its constructor. `RommStore` and
+`FolderRulesSource` (`src/lib/stores/libraries.svelte.js`) both extend it and
+add only their Platforms and settings; RomM's `afterRun` updates its re-pin
+badge. The RomM view's Automation tab renders
 the same view opened on RomM. Folders get **Register as a Library** in the row
 menu (`RowActionsMenu.svelte`).
 
@@ -2368,10 +2420,13 @@ Precedence is fixed and never guesses:
    header and use the archive's folder.
 
 Every answer goes through `canonical_slug`, which maps aliases and the tools'
-own vocabulary (`ps1`, `gamecube`, `neogeocd`, `genesis`) onto RomM's slugs
-(`ps`, `ngc`, `neo-geo-cd`, `genesis-slash-megadrive`). A test fails when a
-tool declares a slug the table does not cover, so a new Platform brings its
-folder names with it. A header that disagrees with the folder, or two headers that disagree,
+own vocabulary (`ps1`, `gamecube`, `neogeocd`, `genesis-slash-megadrive`) onto
+RomM's slugs (`psx`, `ngc`, `neo-geo-cd`, `genesis`; RomM's
+`UniversalPlatformSlug`, not IGDB's). A test fails when a tool declares a slug
+the table does not cover, so a new Platform brings its folder names with it.
+`platform_name(slug)` gives the display name from `_NAMES` (a test fails when a
+slug has none). `detect_uncached` is the same decision without the shared LRU,
+for a caller (the folder Library) that keeps its own per-file cache. A header that disagrees with the folder, or two headers that disagree,
 is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
 cached per path in a bounded LRU and dropped when the file's size or mtime
 changes; `clear_cache()` exists for tests.

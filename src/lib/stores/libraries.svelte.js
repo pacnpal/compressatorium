@@ -1,38 +1,26 @@
 // Libraries (#303): RomM, and every folder registered as one.
 //
-// The Rules view edits one Library's Rules at a time through a *rules source*.
-// The RomM store is the RomM Library's source; `FolderRulesSource` below is a
-// folder Library's. Both carry the same members, which is all the editor
-// (`RuleEditor.svelte`) reads:
-//
-//   platforms, imageNoun, imageCount(platform), platformName(id),
-//   emptyTitle, emptyHint, matchedLabel, unmatchedLabel,
-//   rules, ruleDefaults, ruleOptions, ruleState,
-//   rulesLoading, rulesSaving, rulesError, rulesDirty,
-//   loadRules(), ruleFor(id), lastRunFor(id), setRule(id, rule),
-//   removeRule(id), saveRules(),
-//   modeIsAutomatable(mode), losesDatMatch(spec),
-//   convertedCountFor(id), forgetConverted(ids),
-//   sweeping, sweepResult, previewSweep(), runSweep(),
-//   scheduleEnabled, setScheduleEnabled(enabled).
+// The Rules view edits one Library's Rules at a time through a RulesSource
+// (`$lib/rules/rulesSource.svelte.js`): the RomM store for RomM, and a
+// FolderRulesSource below for a folder Library. The Rule bookkeeping (load,
+// edit, save with the save-race guard, preview, run) lives once, in
+// RulesSource; this file adds only what a folder Library has of its own.
 //
 // What a Library allows comes from the backend: a folder Library's options
 // list only the `skip` duplicate policy, so the editor never offers the others.
 
 import { api } from '$lib/api/endpoints.js';
+import { RulesSource } from '$lib/rules/rulesSource.svelte.js';
 import { romm } from '$lib/stores/romm.svelte.js';
 import { ui } from '$lib/stores/ui.svelte.js';
 
 export const ROMM_LIBRARY_ID = 'romm';
 
-/** One folder Library's Rules, platforms and sweeps. */
-export class FolderRulesSource {
-  imageNoun = 'Images';
+/** One folder Library: its Platforms, counts and schedule switch, plus its Rules. */
+export class FolderRulesSource extends RulesSource {
   emptyTitle = 'No Platforms found';
   emptyHint = 'No Image in this folder has a Platform yet. Images in a folder named after '
     + 'a Platform (ps2, gc, psx, ...) or with a readable header are picked up.';
-  matchedLabel = 'Only Recognized Images (a DAT or Hasheous match)';
-  unmatchedLabel = 'Only Images not Recognized';
 
   library = $state(null);
   platforms = $state([]);
@@ -41,21 +29,16 @@ export class FolderRulesSource {
   platformsLoading = $state(false);
   platformsError = $state(null);
 
-  rules = $state({});
-  ruleDefaults = $state(null);
-  ruleOptions = $state({ orders: [], duplicate_actions: ['skip'], days: [] });
-  ruleState = $state({});
-  rulesLoading = $state(false);
-  rulesSaving = $state(false);
-  rulesError = $state(null);
-  rulesDirty = $state(false);
-  sweepResult = $state(null);
-  sweeping = $state(false);
-  // Bumped by every edit, so a save that an edit overtook does not adopt the
-  // older server copy (the same guard the RomM store has).
-  #revision = 0;
-
   constructor(library) {
+    const id = () => library?.id;
+    super({
+      getRules: () => api.getLibraryRules(id()),
+      saveRules: (rules) => api.saveLibraryRules(id(), rules),
+      forgetConverted: (platformIds) => api.forgetLibraryConverted(id(), platformIds),
+      preview: (body) => api.previewLibrary(id(), body),
+      run: (body) => api.runLibrary(id(), body),
+      loadError: 'Failed to load the Rules',
+    });
     this.library = library;
   }
 
@@ -99,109 +82,6 @@ export class FolderRulesSource {
       this.platforms = [];
     } finally {
       this.platformsLoading = false;
-    }
-  }
-
-  async loadRules() {
-    this.rulesLoading = true;
-    this.rulesError = null;
-    try {
-      const data = await api.getLibraryRules(this.id);
-      if (!this.rulesDirty) this.rules = data?.rules ?? {};
-      this.ruleDefaults = data?.defaults ?? null;
-      this.ruleOptions = data?.options ?? this.ruleOptions;
-      this.ruleState = data?.state ?? {};
-    } catch (e) {
-      this.rulesError = e?.message ?? 'Failed to load the Rules';
-      throw e;
-    } finally {
-      this.rulesLoading = false;
-    }
-    return this.rules;
-  }
-
-  ruleFor(platformId) {
-    const key = String(platformId);
-    if (this.rules[key]) return { ...this.rules[key] };
-    return { ...(this.ruleDefaults ?? {}) };
-  }
-
-  lastRunFor(platformId) {
-    return this.ruleState[String(platformId)] ?? null;
-  }
-
-  setRule(platformId, rule) {
-    this.rules = { ...this.rules, [String(platformId)]: rule };
-    this.rulesDirty = true;
-    this.#revision += 1;
-  }
-
-  removeRule(platformId) {
-    const next = { ...this.rules };
-    delete next[String(platformId)];
-    this.rules = next;
-    this.rulesDirty = true;
-    this.#revision += 1;
-  }
-
-  async saveRules() {
-    this.rulesSaving = true;
-    const revision = this.#revision;
-    try {
-      const data = await api.saveLibraryRules(this.id, this.rules);
-      if (revision !== this.#revision) return this.rules;
-      this.rules = data?.rules ?? this.rules;
-      this.rulesDirty = false;
-      return this.rules;
-    } finally {
-      this.rulesSaving = false;
-    }
-  }
-
-  modeIsAutomatable(mode) {
-    return Array.isArray(this.automatableModes) ? this.automatableModes.includes(mode) : true;
-  }
-
-  /** RomM's metadata warning; a folder has no RomM metadata to lose. */
-  losesDatMatch() {
-    return false;
-  }
-
-  convertedCountFor(platformId) {
-    const entry = this.ruleState[String(platformId)] ?? {};
-    return entry.converted && typeof entry.converted === 'object'
-      ? Object.keys(entry.converted).length
-      : 0;
-  }
-
-  async forgetConverted(platformIds = null) {
-    const data = await api.forgetLibraryConverted(this.id, platformIds);
-    this.ruleState = data?.state ?? this.ruleState;
-    return data?.cleared ?? 0;
-  }
-
-  async previewSweep(platformIds = null) {
-    this.sweeping = true;
-    try {
-      this.sweepResult = await api.previewLibrary(
-        this.id, platformIds ? { platform_ids: platformIds } : {},
-      );
-      return this.sweepResult;
-    } finally {
-      this.sweeping = false;
-    }
-  }
-
-  async runSweep(platformIds = null) {
-    this.sweeping = true;
-    try {
-      this.sweepResult = await api.runLibrary(
-        this.id, platformIds ? { platform_ids: platformIds } : {},
-      );
-      await this.loadRules().catch(() => {});
-      return this.sweepResult;
-    } finally {
-      this.sweeping = false;
     }
   }
 }

@@ -11,6 +11,7 @@ stubbed, as the other sweep tests do.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -420,8 +421,9 @@ async def test_running_a_sweep_twice_queues_nothing_new(
     monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
     third = await routes.run_library(lib["id"])
     assert third["queued"] == 0
-    # The three Sources, plus the two RVZ outputs, which are ngc Images too.
-    assert third["skipped_existing"] == 5
+    # The three Sources. (The new RVZ outputs are Images too, but this sweep
+    # reuses the walk the first one took, from before they existed.)
+    assert third["skipped_existing"] == 3
     assert len(queue) == 3
 
 
@@ -508,7 +510,316 @@ async def test_a_library_whose_folder_is_gone_reports_it(
 
     result = await routes.run_library(lib["id"])
     assert result["queued"] == 0
-    assert result["stopped_reason"] == "not_configured"
+    # `configured()` touches no disk (fix round 1, I3), so a missing root is
+    # found by the listing, off the event loop, and reported per Platform.
+    assert {e["error"] for e in result["errors"]} == {"unreadable"}
     with pytest.raises(HTTPException) as exc:
         await routes.library_platforms(lib["id"])
     assert exc.value.status_code == 409
+
+
+# ----------------------------------------------------------------------
+# fix round 1
+# ----------------------------------------------------------------------
+
+
+def _psx_tree(roms: Path) -> None:
+    psx = roms / "psx"
+    (psx / "Single").mkdir(parents=True)
+    (psx / "Single" / "Game.cue").write_text(
+        'FILE "Game.bin" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n',
+    )
+    (psx / "Single" / "Game.bin").write_bytes(b"\0" * 4096)
+    (psx / "Multi").mkdir()
+    (psx / "Multi" / "Multi.cue").write_text(
+        'FILE "Multi (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n'
+        'FILE "Multi (Track 2).bin" BINARY\n  TRACK 02 AUDIO\n',
+    )
+    (psx / "Multi" / "Multi (Track 1).bin").write_bytes(b"\0" * 4096)
+    (psx / "Multi" / "Multi (Track 2).bin").write_bytes(b"\0" * 4096)
+    (psx / "Multi.m3u").write_text("Multi/Multi.cue\n")
+
+
+@pytest.fixture(name="psx")
+def _psx(db: Path) -> Path:
+    """The reviewer's tree: a single-track and a multi-track cue/bin set, and a playlist."""
+    roms = db / "roms"
+    _psx_tree(roms)
+    return roms
+
+
+@pytest.mark.asyncio
+async def test_a_cue_bin_set_is_one_image(psx: Path) -> None:
+    from routes import libraries as routes
+
+    lib = await _register(psx)
+    summary = await routes.library_platforms(lib["id"])
+
+    assert {p["id"]: p["images"] for p in summary["platforms"]} == {"psx": 2}
+    from services import libraries
+
+    keys = sorted(i.key for i in libraries.get(lib["id"]).images("psx"))
+    assert keys == ["psx/Multi/Multi.cue", "psx/Single/Game.cue"]
+
+
+@pytest.mark.asyncio
+async def test_a_psx_rule_queues_the_sheet_not_its_tracks(psx: Path, ready, queue) -> None:
+    from routes import libraries as routes
+
+    lib = await _register(psx)
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "psx": {"mode": "createcd", "enabled": True},
+    }})
+
+    result = await routes.run_library(lib["id"])
+
+    assert sorted(Path(p).name for p in queue) == ["Game.cue", "Multi.cue"], result
+    assert result["skipped_active"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_failed_image_waits_until_its_file_changes(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    from models import JobStatus
+    from routes import libraries as routes
+    from services.rules import sweep as rules_sweep
+
+    jobs: dict[str, str] = {}
+    real_batch = job_manager.create_batch_jobs
+
+    async def batch(paths, mode, **kwargs):
+        made = await real_batch(paths, mode, **kwargs)
+        jobs.update({Path(j.file_path).name: j.id for j in made})
+        return made
+
+    monkeypatch.setattr(job_manager, "create_batch_jobs", batch)
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _register(tree)
+    await routes.put_library_rules(lib["id"], {"rules": {"ps2": _RULES["ps2"]}})
+
+    await routes.run_library(lib["id"])
+    ico = tree / "ps2" / "Ico.iso"
+    await rules_sweep.note_job_finished(SimpleNamespace(
+        id=jobs["Ico.iso"], status=JobStatus.FAILED, file_path=str(ico.resolve()),
+    ))
+    monkeypatch.setattr(job_manager, "get_active_job_candidates", list)
+
+    held = await routes.run_library(lib["id"])
+    assert held["queued"] == 0, held
+    assert held["skipped_failed"] == 1
+
+    # The file changes: it is tried again.
+    with ico.open("ab") as fh:
+        fh.write(b"\0" * 2048)
+    retried = await routes.run_library(lib["id"])
+    assert retried["queued"] == 1, retried
+
+
+@pytest.mark.asyncio
+async def test_romm_does_not_hold_failed_images(db: Path) -> None:
+    """RomM's sweep re-queues a failed ROM, as it always has."""
+    from services.romm.library import romm_library
+    from services.rules import library as rules_library
+
+    assert rules_library.FAILED_HOLD not in romm_library.capabilities
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_match_cache_leaves_recognized_unknown(
+    tree: Path, monkeypatch,
+) -> None:
+    from services import libraries
+    from services.dat_store import dat_store
+
+    def broken(_paths):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(dat_store, "get_matches_batch", broken)
+    lib = await _register(tree)
+
+    images = libraries.get(lib["id"]).images("ps2")
+    assert {i.recognized for i in images} == {None}
+
+
+@pytest.mark.asyncio
+async def test_only_unmatched_skips_images_nobody_matched(
+    tree: Path, ready, queue,
+) -> None:
+    """Fail closed: unknown is not "not Recognized"."""
+    from routes import libraries as routes
+    from services.dat_store import DATStore
+
+    (tree / "gc" / "Locked.iso").unlink()
+    lib = await _register(tree)
+    await DATStore().set_match(str((tree / "gc" / "Melee.iso").resolve()), {"matched": False})
+    await routes.put_library_rules(lib["id"], {"rules": {
+        "ngc": {"mode": "dolphin_rvz", "enabled": True, "only_unmatched": True},
+    }})
+
+    result = await routes.run_library(lib["id"])
+
+    assert [Path(p).name for p in queue] == ["Melee.iso"], result
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_walks_the_root_once(tree: Path, ready, queue, monkeypatch) -> None:
+    from routes import libraries as routes
+    from services.libraries.folder import FolderLibrary
+
+    lib = await _library_with_rules(tree)
+    walks = {"n": 0}
+    real_walk = FolderLibrary._walk
+
+    def counting(self):
+        walks["n"] += 1
+        return real_walk(self)
+
+    monkeypatch.setattr(FolderLibrary, "_walk", counting)
+
+    await routes.run_library(lib["id"])
+    assert walks["n"] == 1
+
+
+def test_a_second_listing_reads_no_headers(db: Path, monkeypatch) -> None:
+    """10,000 Images: the second walk reuses every detection (keyed by size and mtime)."""
+    from services.libraries.folder import FolderLibrary
+
+    roms = db / "roms" / "ps2"
+    roms.mkdir(parents=True)
+    for i in range(10_000):
+        (roms / f"g{i:05d}.iso").write_bytes(b"\0" * 64)
+    library = FolderLibrary(record_id=1, root=str((db / "roms").resolve()), name="r")
+    decisions = {"n": 0}
+    real = platform_detect._decide
+
+    def counting(*args, **kwargs):
+        decisions["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(platform_detect, "_decide", counting)
+
+    first = library.summary(refresh=True)
+    assert decisions["n"] == 10_000
+    decisions["n"] = 0
+    second = library.summary(refresh=True)
+    assert decisions["n"] == 0
+    assert first["platforms"] == second["platforms"]
+    assert second["platforms"][0]["images"] == 10_000
+
+
+def test_configured_touches_no_disk(db: Path, monkeypatch) -> None:
+    from services.libraries.folder import FolderLibrary
+
+    library = FolderLibrary(record_id=1, root=str(db / "roms"), name="r")
+    touched: list[str] = []
+    real_stat, real_isdir = os.stat, os.path.isdir
+
+    def stat(*args, **kwargs):
+        touched.append("stat")
+        return real_stat(*args, **kwargs)
+
+    def isdir(*args, **kwargs):
+        touched.append("isdir")
+        return real_isdir(*args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "stat", stat)
+        patched.setattr(os.path, "isdir", isdir)
+        configured = library.configured()
+    assert configured is True
+    assert touched == []
+
+
+@pytest.mark.asyncio
+async def test_a_hung_listing_fails_the_sweep_and_frees_the_lock(
+    tree: Path, ready, queue, monkeypatch,
+) -> None:
+    import threading
+
+    from routes import libraries as routes
+    from services.libraries.folder import FolderLibrary
+    from services.rules import sweep as rules_sweep
+
+    lib = await _library_with_rules(tree)
+    release = threading.Event()
+
+    def hung(self, platform_id):
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(FolderLibrary, "images", hung)
+    monkeypatch.setattr(rules_sweep, "_LISTING_SECONDS", 0.2)
+    try:
+        started = time.monotonic()
+        result = await routes.run_library(lib["id"])
+        # Returned on the bound, not when the hung listing gave up (5 s).
+        assert time.monotonic() - started < 2, "the sweep waited for the hung thread"
+        assert result["stopped_reason"] == "library_unresponsive", result
+        assert not rules_sweep._sweep_lock.locked()
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_platforms_have_display_names(psx: Path) -> None:
+    from routes import libraries as routes
+
+    lib = await _register(psx)
+    summary = await routes.library_platforms(lib["id"])
+
+    assert [(p["id"], p["name"]) for p in summary["platforms"]] == [("psx", "PlayStation")]
+
+
+def test_every_platform_has_a_display_name() -> None:
+    names = {slug: platform_detect.platform_name(slug) for slug in platform_detect._ALIASES}
+    assert all(name and name != slug for slug, name in names.items()), names
+
+
+@pytest.mark.asyncio
+async def test_a_folder_inside_romms_library_is_refused(db: Path) -> None:
+    from services.romm import settings as romm_settings
+
+    library = db / "library"
+    (library / "roms" / "gc").mkdir(parents=True)
+    await romm_settings.save({"url": "http://romm:8080", "library_root": str(library)})
+
+    with pytest.raises(HTTPException) as exc:
+        await _register(library / "roms" / "gc")
+    assert exc.value.status_code == 409
+    with pytest.raises(HTTPException) as around:
+        await _register(db)
+    assert around.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_concurrent_nested_registrations_let_one_through(tree: Path) -> None:
+    import asyncio
+
+    outcomes = await asyncio.gather(
+        # Every pair overlaps: the root, a folder in it, and that folder again.
+        _register(tree), _register(tree / "gc"), _register(tree / "gc"),
+        return_exceptions=True,
+    )
+    ok = [o for o in outcomes if isinstance(o, dict)]
+    refused = [o for o in outcomes if isinstance(o, HTTPException)]
+    assert len(ok) == 1, outcomes
+    assert {e.status_code for e in refused} == {409}
+
+
+@pytest.mark.asyncio
+async def test_the_engine_refuses_an_unsupported_policy_on_submission(tree: Path) -> None:
+    """The refusal lives in rules/, so a caller other than the API gets it too."""
+    from services import libraries
+    from services.rules import UnsupportedPolicy
+    from services.rules import sweep as rules_sweep
+
+    lib = await _register(tree)
+    library = libraries.get(lib["id"])
+    with pytest.raises(UnsupportedPolicy) as exc:
+        await rules_sweep.set_rules(
+            library, {"ngc": {"mode": "dolphin_rvz", "duplicate_action": "rename"}},
+            strict=True,
+        )
+    assert exc.value.allowed == ("skip",)
+    assert await rules_sweep.get_rules(library) == {}

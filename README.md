@@ -635,9 +635,15 @@ You don't need RomM to automate conversions. Open any folder inside a Volume in
 the Workspace, and pick **Register as a Library** from its row menu. The folder
 becomes a Library, and the **Rules** view (in the sidebar) shows it:
 
+- **Images** are what gets converted, not files: a `.cue` or `.gdi` and the
+  tracks it lists are one Image (the sheet), and a split Wii U dump is one Image
+  (its first part). Track files are never converted on their own, and playlists
+  (`.m3u`) are not Images. A `.bin` no sheet lists is its own Image. Converted
+  outputs (`.chd`, `.rvz`) and archives (`.zip`, `.7z`) in the folder count as
+  Images too; folders (a decrypted PS3 game) do not.
 - **Platforms** come from Platform detection: an Image's own header first, then
   its folder name (`ps2`, `gc`, `psx`, `megacd`, ... as ES-DE and Batocera lay
-  them out). Each Platform shows how many Images it has.
+  them out). Each Platform shows its name and how many Images it has.
 - **Unsorted** Images (nothing names their Platform) and **Conflicted** ones
   (the header disagrees with the folder, such as a GameCube disc filed under
   `ps2`) are counted but never converted by a Rule. Files that cannot be read
@@ -646,10 +652,13 @@ becomes a Library, and the **Rules** view (in the sidebar) shows it:
   CHD nightly" is a ps2 Rule with a window of `01:00`–`05:00`. A folder Rule
   always **skips** an Image whose output already exists, so a sweep that runs
   twice queues nothing new. Overwrite and write-alongside are not offered for
-  folder Libraries.
+  folder Libraries. An Image whose conversion failed is not queued again until
+  its file changes (size or modified time), or until you press **Forget
+  history**.
 - **Only Recognized / not Recognized** filters read the DAT or Hasheous match
-  already cached for each file. Listing a Library never hashes anything; a file
-  you have not matched yet counts as not Recognized.
+  already cached for each file. Listing a Library never hashes anything. A file
+  nobody has matched yet is neither: both filters skip it, so run a DAT match
+  over the folder first.
 - **Preview** shows what a sweep would queue and moves no schedule clock. **Run
   now** queues it. **Run automatically** turns the scheduler on for that Library.
 - **Remove Library** forgets the Library and its Rules. It never touches a file.

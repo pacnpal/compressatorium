@@ -13,15 +13,13 @@ folder Library has no converted history, so a Rule asking for ``overwrite`` or
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
+from routes import rules as shared_rule_routes
 from services import libraries
-from services.rules import duplicate_actions
-from services.rules import rules as rules_schema
-from services.rules import sweep as rules_sweep
+from services.rules import editor as rules_editor
 from services.rules.library import Library, LibraryUnreadable
 from services.subprocess_runner import run_detached
 from services.tools import registry
@@ -31,7 +29,7 @@ router = APIRouter()
 # How long a folder Library's walk may take before the request gives up. A
 # healthy mount answers in seconds; a dead one would otherwise hold a request
 # open forever.
-_SCAN_SECONDS = 120
+_SCAN_SECONDS = 300
 
 
 class RegisterLibraryRequest(BaseModel):
@@ -118,7 +116,12 @@ async def library_platforms(library_id: str) -> dict:
     if summarize is None:
         raise HTTPException(status_code=400, detail="Use /api/romm/platforms for RomM")
     try:
-        summary = await asyncio.wait_for(run_detached(summarize), _SCAN_SECONDS)
+        # A fresh walk: this is what the operator is looking at. Detection is
+        # cached per file, so it costs a stat per file, and the sweep that
+        # follows reuses it.
+        summary = await asyncio.wait_for(
+            run_detached(lambda: summarize(refresh=True)), _SCAN_SECONDS,
+        )
     except LibraryUnreadable as exc:
         raise HTTPException(status_code=409, detail=f"Library unreadable: {exc}") from None
     except (asyncio.TimeoutError, OSError):
@@ -144,72 +147,36 @@ async def library_platforms(library_id: str) -> dict:
 @router.get("/libraries/{library_id}/rules")
 async def get_library_rules(library_id: str) -> dict:
     """The Library's Rules and run state, with the schema the editor renders from."""
-    library = _library(library_id)
-    return {
-        "rules": await rules_sweep.get_rules(library),
-        "state": await rules_sweep.get_state(library),
-        "defaults": rules_schema.default_rule(defaults=library.rule_defaults()),
-        "options": {
-            "orders": list(rules_schema.ORDERS),
-            "duplicate_actions": list(duplicate_actions(library)),
-            "days": list(rules_schema.ALL_DAYS),
-        },
-    }
-
-
-def _refuse_unsupported_policies(library: Library, raw: Any) -> None:
-    allowed = duplicate_actions(library)
-    if not isinstance(raw, dict):
-        return
-    for platform_id, rule in raw.items():
-        if not isinstance(rule, dict):
-            continue
-        policy = rule.get("duplicate_action")
-        if policy is not None and policy not in allowed:
-            raise HTTPException(status_code=422, detail={
-                "error": "duplicate_action_unsupported",
-                "platform_id": platform_id,
-                "duplicate_action": policy,
-                "allowed": list(allowed),
-            })
+    return await rules_editor.editor_payload(_library(library_id))
 
 
 @router.put("/libraries/{library_id}/rules")
 async def put_library_rules(library_id: str, payload: dict) -> dict:
-    """Replace the Library's Rules. Rules naming an unknown mode or Platform are dropped."""
-    library = _library(library_id)
-    raw = payload.get("rules", payload)
-    _refuse_unsupported_policies(library, raw)
-    return {"rules": await rules_sweep.set_rules(library, raw)}
+    """Replace the Library's Rules. 422 for a policy the Library cannot honour."""
+    return await shared_rule_routes.save_rules(_library(library_id), payload)
 
 
 @router.post("/libraries/{library_id}/rules/forget-converted")
 async def forget_library_converted(library_id: str, payload: dict | None = None) -> dict:
-    library = _library(library_id)
-    ids = (payload or {}).get("platform_ids")
-    cleared = await rules_sweep.forget_converted(
-        library, [str(p) for p in ids] if ids is not None else None,
-    )
-    return {"cleared": cleared, "state": await rules_sweep.get_state(library)}
+    """Clear the converted history and failed holds, per Platform or all."""
+    return await shared_rule_routes.forget_converted(_library(library_id), payload)
 
 
 @router.post("/libraries/{library_id}/preview")
 async def preview_library(library_id: str, payload: SweepRequest | None = None) -> dict:
     """What a sweep would queue now. Ignores the schedule and moves no clock."""
-    library = _library(library_id)
     payload = payload or SweepRequest()
-    return await rules_sweep.sweep(
-        library, platform_ids=payload.platform_ids, ignore_schedule=True,
-        dry_run=True, overall_limit=payload.limit,
+    return await rules_editor.sweep_now(
+        _library(library_id), platform_ids=payload.platform_ids, limit=payload.limit,
+        dry_run=True,
     )
 
 
 @router.post("/libraries/{library_id}/run")
 async def run_library(library_id: str, payload: SweepRequest | None = None) -> dict:
     """Sweep now, queueing real jobs. Ignores the schedule, honours everything else."""
-    library = _library(library_id)
     payload = payload or SweepRequest()
-    return await rules_sweep.sweep(
-        library, platform_ids=payload.platform_ids, ignore_schedule=True,
-        dry_run=False, overall_limit=payload.limit,
+    return await rules_editor.sweep_now(
+        _library(library_id), platform_ids=payload.platform_ids, limit=payload.limit,
+        dry_run=False,
     )

@@ -480,7 +480,7 @@
               <ChevronDown size={16} class={open ? 'chev open' : 'chev'} />
               <span class="pname">{platform.name}</span>
               {#if source.imageCount(platform)}
-                <span class="muted">{source.imageCount(platform)} {source.imageNoun}</span>
+                <span class="muted">{source.countLabel(source.imageCount(platform))}</span>
               {/if}
             </button>
             <div class="row-summary">
