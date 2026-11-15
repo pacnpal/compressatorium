@@ -298,6 +298,12 @@
 - **The RomM version shows again** (#335). RomM 5.x nests it under
   `SYSTEM.VERSION` in its heartbeat; the flat key older releases send is still
   read.
+- **A split PS3 ISO keeps its check** (#305). A PS3 ISO built past 4 GB is
+  written as `Game.iso.0`, `.1` and so on, and its check is stored under
+  `Game.iso`. Opening the web UI used to delete that record, because no
+  `Game.iso` file exists, so the ISO lost its Intact badge and the mode that
+  made it. A stored check is now kept while its split parts are on disk, and
+  removed once they are gone.
 
 ### Security
 

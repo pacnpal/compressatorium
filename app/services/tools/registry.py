@@ -491,6 +491,30 @@ class ToolRegistry:
                 return base, spec.mode
         return None
 
+    def output_exists(self, path: str) -> bool:
+        """Whether the output stored under *path* is still on disk. May do disk I/O.
+
+        True for a file or folder at *path*, and for the logical name of a
+        split output whose first numbered part is there: a split makeps3iso
+        build writes ``Game.iso.0``, ``.1`` and never ``Game.iso``, but its
+        check is recorded under ``Game.iso``. The same rule as
+        :meth:`split_owner`, read the other way: the part must be one a mode
+        whose output is named like *path* lists, and own *path* back. Anything
+        that drops stored records because their output is gone asks this.
+        """
+        if os.path.exists(path):
+            return True
+        for spec in self.mode_specs():
+            if not spec.output_ext or match_extension(path, {spec.output_ext}) is None:
+                continue
+            parts = self._companions(spec.mode, path)
+            if (
+                parts and os.path.isfile(parts[0])
+                and self.split_owner(parts[0]) == (path, spec.mode)
+            ):
+                return True
+        return False
+
     def split_members(self, path: str) -> list[str]:
         """The later parts of the split output whose *first* part is *path*.
 

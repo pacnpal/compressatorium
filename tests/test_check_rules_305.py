@@ -2405,6 +2405,43 @@ async def test_a_run_stopped_by_an_abandoned_verifier_leaves_its_rule_due(
     assert ((await sweep.get_state(library, CHECK)).get("ps2") or {}).get("last_run_at")
 
 
+@pytest.mark.asyncio
+async def test_listing_checks_keeps_a_split_isos_record(db: Path, monkeypatch) -> None:
+    """A split PS3 ISO's check is stored under the logical GAME.iso, which never
+    exists on disk. Loading /api/verified prunes records whose output is gone;
+    it must keep this one, and the producing mode check Rules route by, while
+    its parts are there, and drop it once they are gone. A plain missing file
+    is still pruned."""
+    from routes import info
+    from services.tools import registry
+    from services.verification_store import verification_store
+
+    from config import settings
+
+    from .test_cli_306 import _real_split_iso
+
+    roms = db / "roms"
+    monkeypatch.setattr(settings, "chd_volumes", str(roms))
+    iso = _real_split_iso(roms / "ps3")
+    meta = {"mode": "folder_to_iso", "tool": "makeps3iso"}
+    await verification_store.mark_verified(str(iso), produced_meta=meta)
+    gone = roms / "ps2" / "Gone.chd"
+    await verification_store.mark_verified(str(gone))
+
+    assert registry.output_exists(str(iso))
+    assert not registry.output_exists(str(gone))
+    listed = await info.list_verified()
+
+    assert str(iso) in listed["verified"]
+    assert (await verification_store.get_record(str(iso)))["produced_meta"] == meta
+    assert await verification_store.get_record(str(gone)) is None
+
+    for part in (roms / "ps3").glob("GAME.iso.*"):
+        part.unlink()
+    await info.list_verified()
+    assert await verification_store.get_record(str(iso)) is None
+
+
 def test_a_numbered_file_is_a_split_part_only_beside_a_modes_output_name(db: Path) -> None:
     """#306 ab2d818: ``save.0`` is no split part, so a folder Library never lists
     it; ``Game.iso.0`` with its ``.1`` is."""

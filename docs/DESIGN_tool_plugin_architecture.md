@@ -4349,7 +4349,12 @@ folds them into one Image on `Game.iso.0`, so the budget pays the parts'
 summed size and the lock and fingerprint cover every part. The check is
 handed `Game.iso.0`, and makeps3iso's verify checks the whole set (#306). The
 record lives under `Game.iso` (`Check.record_path`), so a pass refreshes it
-there and a failure marks it failed there. `_hold` also takes the shared lock on
+there and a failure marks it failed there. `ToolRegistry.output_exists(path)`
+is the presence rule for a stored record: the path is on disk, or it is the
+logical name of a split output whose first part is (the same rule as
+`split_owner`, read the other way). `verification_store.prune_missing`, run
+by `/api/verified`, drops only records it answers False for, so a split ISO's
+record and its producing mode survive a page load. `_hold` also takes the shared lock on
 that logical path, with the first part and every later part, from the verify
 slot through the recorded verdict: a directory-input rebuild locks only
 `Game.iso`, so while one runs the Image is skipped as busy. Every file a check reads (each member,
