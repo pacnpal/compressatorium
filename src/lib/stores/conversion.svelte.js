@@ -161,9 +161,17 @@ class ConversionStore {
    */
   allowsInputEntry(entry) {
     if (!entry) return false;
-    // Auto decides per file on the backend; any file can be offered, and the
-    // plan reports the ones it leaves alone.
-    if (this.auto) return entry.type !== 'directory' && entry.type !== 'archive';
+    // Auto decides per Image on the backend; any file can be offered, and the
+    // plan reports the ones it leaves alone. A folder qualifies when the
+    // backend marked it convertible by a tool that has a folder-input mode
+    // (`inputKinds: ['directory']`, e.g. a PS3 disc folder for folder_to_iso).
+    if (this.auto) {
+      if (entry.type === 'archive') return false;
+      if (entry.type !== 'directory') return true;
+      return Array.isArray(entry.convertible_by)
+        && entry.convertible_by.some((id) => (registry.forTool(id)?.modes ?? [])
+          .some((m) => Array.isArray(m.inputKinds) && m.inputKinds.includes('directory')));
+    }
     if (this.isDirectoryMode) {
       return (
         entry.type === 'directory'

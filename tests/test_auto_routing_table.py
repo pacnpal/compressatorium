@@ -17,8 +17,9 @@ Rows worth knowing about:
   format is the input's, so converting would only re-encode it. That is the
   only row of this kind today; no other default target writes an extension it
   also reads.
-- ``laseractive`` and ``ps3`` have no rows: ``createld`` is never an Auto
-  default, and ``folder_to_iso`` takes a folder, not a file.
+- ``laseractive`` and ``ps3`` have no rows here: ``createld`` is never an Auto
+  default, and ``folder_to_iso`` takes a folder, not a file. A PS3 disc
+  folder goes to ``folder_to_iso`` (``test_auto_convert``).
 """
 from __future__ import annotations
 

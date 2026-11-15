@@ -2389,9 +2389,17 @@ Precedence is fixed and never guesses:
    above `_MAX_ISO_READ` (1 MiB) or past the end of the image (a raw `.bin`
    reports its user-data size as `logical_size`), and a refused read is no
    header. The other probes read fixed-size windows, cap the sheet at 1 MiB
-   (`utils.sheet_text`), or are bounded already (the XDVDFS walk:
-   `_MAX_DIR_TABLE` and the image size). `tests/test_header_probe_bounds.py`
-   probes images whose sizes claim 0xffffffff.
+   (`utils.sheet_text`). The XDVDFS walk takes its limits as parameters:
+   conversion and info keep `_MAX_DIR_TABLE` (64 MiB per table), while the
+   probe (`detect_console`) passes 1 MiB per table and 4 MiB per walk.
+   `tests/test_header_probe_bounds.py` probes images whose sizes are hostile.
+
+   A folder is probed by the tools that take it as their input unit
+   (`accepts_directory`): makeps3iso answers `ps3` for a PS3 disc folder, and
+   `default_mode` sends a folder to the Platform's first folder-input mode
+   (`InputKind.DIRECTORY`) whose tool accepts it, so a PS3 folder goes to
+   `folder_to_iso`. The web UI offers a folder under Auto when the listing
+   marks it convertible by a tool with a folder-input mode.
 2. **Folder name.** The nearest parent folder whose name is a key or alias in
    `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
    name for it (the tools' own spellings and the folder names ES-DE and
