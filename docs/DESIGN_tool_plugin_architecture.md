@@ -2753,7 +2753,14 @@ queued (`job_manager.cancel_job`) and returns the error. A job that had already
 finished cannot be withdrawn: its output stays, it is logged, and the error
 returns it, for an HTTP error from the queue and for an unexpected exception
 alike (the latter logged with its traceback and returned as a 500; a
-cancellation still propagates). Nothing in either Auto endpoint, or in the
+cancellation still propagates). `/jobs/auto` queues only the plan the user
+confirmed: the client sends the confirmed plan's actionable rows as
+`items: [{file_path, mode}]` (an Image the preview skipped is never sent), the
+route replans those paths, and if any target differs (another tool, or now
+skipped) it answers 409 with `detail = {"message", "plan"}` before queueing
+anything. `conversion.runAuto` then shows the new plan and asks again.
+Queueing an Image the user never saw would also skip its RomM metadata
+snapshot. Nothing in either Auto endpoint, or in the
 batch preparation they share, touches a Volume on the event loop: the per-path
 Volume checks run together with planning (`_checked_auto_plan`) or on their
 own (`_check_within_volumes`) through `_off_loop_bounded`, a `run_detached`
