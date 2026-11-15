@@ -1043,6 +1043,12 @@ async def _z3ds_feeder_cancel_abandons_handle(tmp_path: Path, monkeypatch):
             # can assert the cancelled path never gets here.
             closed.append("closed")
 
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self.close()
+
     monkeypatch.setattr(z3ds_module, "open", lambda *_a, **_k: _StuckHandle(), raising=False)
     # The feeder is the shared subprocess_runner.feed_stdin_from_file (#301),
     # which opens the file in its own module.

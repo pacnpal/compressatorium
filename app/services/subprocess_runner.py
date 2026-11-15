@@ -756,12 +756,15 @@ async def feed_stdin_from_file(
     code says why.
     """
     def _open():
-        handle = open(path, "rb")  # noqa: SIM115
+        # The handle outlives this call (it is read chunk by chunk and may be
+        # abandoned), so an ExitStack owns it rather than a with block.
+        owner = contextlib.ExitStack()
+        handle = owner.enter_context(open(path, "rb"))
         if offset:
             handle.seek(offset)
-        return handle
+        return owner, handle
 
-    handle = await run_detached(_open, cancel_event=cancel_event)
+    owner, handle = await run_detached(_open, cancel_event=cancel_event)
     abandon = False
     try:
         while not (cancel_event is not None and cancel_event.is_set()):
@@ -788,7 +791,7 @@ async def feed_stdin_from_file(
             process.stdin.close()
         if not abandon:
             with contextlib.suppress(Exception):
-                await run_detached(handle.close)
+                await run_detached(owner.close)
 
 
 async def run_detached_within_stall_bound(
@@ -1321,7 +1324,7 @@ class SubprocessRunner:
         # Command wrappers, never a preexec_fn: see run_verify.
         if not nice_via_wrapper:
             cmd = nice_prefix(self._owner) + ioprio_prefix(self._owner) + cmd
-        process = await asyncio.create_subprocess_exec(  # nosemgrep
+        process = await asyncio.create_subprocess_exec(
             cmd[0], *cmd[1:],
             stdin=(
                 asyncio.subprocess.PIPE

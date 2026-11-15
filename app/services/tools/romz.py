@@ -35,8 +35,10 @@ ROM_MEMBERS_KIND = "rom_members_crc32"
 
 
 def _member_set_digest(members: list[tuple[str, int | None, int | None]]) -> str:
-    """SHA1 of the sorted ``name, size, crc`` lines: equal only for the same
-    members with the same sizes and CRCs, whatever order they are stored in."""
+    """SHA-256 of the sorted ``name, size, crc`` lines: equal only for the same
+    members with the same sizes and CRCs, whatever order they are stored in.
+    Only ever compared with another value this function made, so it needs no
+    outside algorithm."""
     # NFC: the same name may be stored decomposed (macOS) on one side and
     # composed on the other.
     lines = sorted(
@@ -44,9 +46,7 @@ def _member_set_digest(members: list[tuple[str, int | None, int | None]]) -> str
         f"\t{'' if crc is None else f'{crc:08x}'}"
         for name, size, crc in members
     )
-    return hashlib.sha1(  # nosec # nosemgrep: insecure-hash-algorithm-sha1
-        "\n".join(lines).encode("utf-8"), usedforsecurity=False,
-    ).hexdigest()
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 # The compress-direction badge prefers .7z (the default product), then .zip.
 _PRIMARY_OUTPUT_EXT = ".7z"
