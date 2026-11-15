@@ -83,7 +83,11 @@
   `<data dir>/locks`, so a CLI container that mounts the same `/config` as the
   web UI shares its locks. The image now sets `CHD_DATA_DIR=/config`, and
   `<data dir>/locks` is created at start; when it can't be, the process stops
-  with an error naming the folder instead of quietly using `/tmp`. Only
+  with an error naming the folder instead of quietly using `/tmp`. A
+  deployment whose `/config` the `converter` user can't write (one that moved
+  the database and `CHD_TEMP_DIR` elsewhere) used to run with its locks in
+  `/tmp`; it now stops at start and says why. Make `/config` writable or set
+  `CHD_CONCURRENCY_LOCK_DIR`. Only
   without any data dir configured (a source checkout) is `/tmp/chd-locks`
   used. Each process holds one lock file for its
   lifetime and its queue tickets name it, so a process killed without cleanup
