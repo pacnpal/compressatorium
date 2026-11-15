@@ -2745,9 +2745,10 @@ stopped for `library_unresponsive` or `not_configured` (a Library that has
 Rules but cannot be swept), or when a job failed or was cancelled. The same
 applies to `--dry-run`.
 
-Stopping. `sweep()` takes `should_stop`, asked before each Platform and again
-right before a batch is queued; once true the sweep queues nothing more and
-ends with `stopped_reason == "stopped"`. The server passes nothing. On SIGTERM,
+Stopping. `sweep()` takes `should_stop`, asked before each Platform, before
+each Image is inspected, and again right before a batch is queued; once true
+the sweep queues nothing more, does not stamp that Platform's clock, and ends
+with `stopped_reason == "stopped"`. The server passes nothing. On SIGTERM,
 SIGINT or SIGHUP `run-rules` sets `state.stopping` (which `should_stop`
 reads) and cancels the queued and running jobs; after the sweep returns it
 cancels again, for a batch let in between, and only then drains. A Library's

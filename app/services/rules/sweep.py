@@ -802,9 +802,10 @@ async def sweep(
     Returns a summary rather than raising on a partial failure: one unreachable
     platform must not abort the sweep for the others.
 
-    *should_stop* is asked before each Platform and again just before a batch
-    is queued; once it is true the sweep queues nothing more and ends with
-    ``stopped_reason == "stopped"`` (``run-rules`` on SIGTERM, #307).
+    *should_stop* is asked before each Platform, before each Image is
+    inspected, and again just before a batch is queued; once it is true the
+    sweep queues nothing more and ends with ``stopped_reason == "stopped"``
+    (``run-rules`` on SIGTERM, #307).
 
     Serialised process-wide, so a scheduled tick and a manual run cannot both
     plan against the same "nothing is in flight" snapshot. A preview is a real
@@ -1036,6 +1037,10 @@ async def _sweep_locked(
         for image in sorted(images, key=_image_sort_key(rule)):
             if len(batch) >= per_platform_cap:
                 break
+            # Per Image too: a Platform whose outputs all exist fills no batch,
+            # and every candidate costs its own disk probes.
+            if stopping():
+                break
             considered += 1
             # One hop to a worker thread for every disk-touching check on this
             # candidate — the local-path mapping and volume check included,
@@ -1120,9 +1125,10 @@ async def _sweep_locked(
             # with no digest deletes on Intact). Absent when nothing is deleted.
             summary["check_level"] = effective_check_level(rule)
 
-        if batch and not dry_run and stopping():
+        if stopping():
             # Asked again here: listing and inspecting a Platform can take
-            # minutes, and a stop that arrived meanwhile must queue nothing.
+            # minutes, and a stop that arrived meanwhile must queue nothing,
+            # nor stamp this Platform's clock for a pass cut short.
             result["stopped_reason"] = "stopped"
             break
         if batch and not dry_run:

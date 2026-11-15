@@ -96,9 +96,7 @@ class _Shelf:
 @pytest.fixture(name="env")
 def _env(tmp_path, monkeypatch, reset_db_engine):
     from services import library_catalog
-    from services.concurrency_manager import concurrency_manager
     from services.job_manager import job_manager
-    from services.lock_manager import lock_manager
     from services.romm import settings as romm_settings
 
     from config import settings
@@ -115,14 +113,11 @@ def _env(tmp_path, monkeypatch, reset_db_engine):
     monkeypatch.setattr(settings, "temp_dir", str(tmp_path / "temp"))
     monkeypatch.setattr(settings, "max_queue_depth", 0)
     monkeypatch.setattr(settings, "concurrency_lock_dir", str(locks))
-    monkeypatch.setattr(lock_manager, "_lock_dir", str(locks))
-    monkeypatch.setattr(lock_manager, "_ready", False)
-    monkeypatch.setattr(concurrency_manager, "lock_dir", str(locks))
-    monkeypatch.setattr(
-        concurrency_manager, "_slot_paths", [str(locks / "convert_slot_0.lock")],
-    )
-    monkeypatch.setattr(concurrency_manager, "_ticket_counter_path", str(locks / "queue_counter"))
-    monkeypatch.setattr(concurrency_manager, "_ready", False)
+    # #306's helper: every file the lock managers keep, the queue's holder
+    # file included, goes under the test's lock dir.
+    from .test_cli_306 import _point_locks_at
+
+    _point_locks_at(monkeypatch, locks)
     # A CLI process starts with an empty queue.
     monkeypatch.setattr(job_manager, "jobs", OrderedDict())
     monkeypatch.setattr(job_manager, "_queue", asyncio.PriorityQueue())
@@ -808,6 +803,50 @@ def _healthcheck_script() -> str:
     command = block.replace("\\\n", "\n").strip()
     assert command.startswith("CMD ")
     return command[len("CMD "):]
+
+
+def test_a_stop_while_images_are_inspected_ends_the_inspection(
+    env, dolphin, capsys, monkeypatch,
+):
+    """A large Platform whose outputs all exist queues nothing, so only a
+    check inside the candidate loop ends it before the catalog does."""
+    import os
+    import signal
+
+    from services.rules import sweep as rules_sweep
+
+    for n in range(5):
+        iso = _iso(env, name=f"Game{n}.iso")
+        iso.with_suffix(".rvz").write_bytes(b"done before")
+    _store_rules(env, {"shelf": RVZ_RULE})
+    inspected = []
+    real = rules_sweep._inspect_candidate
+
+    def inspect_and_stop(image, *args):
+        inspected.append(image.name)
+        if len(inspected) == 1:
+            os.kill(os.getpid(), signal.SIGTERM)
+            import time
+
+            time.sleep(0.3)  # the signal handler runs on the loop meanwhile
+        return real(image, *args)
+
+    monkeypatch.setattr(rules_sweep, "_inspect_candidate", inspect_and_stop)
+
+    code, _lines, _err = _cli(capsys, "run-rules", "--json")
+
+    assert code == 1
+    assert inspected == ["Game0.iso"]
+    assert "last_run_at" not in _rule_state(env).get("gc", {}), "a cut-short pass is not a run"
+
+
+def test_the_fixture_keeps_every_lock_file_in_the_test_lock_dir(env):
+    """Otherwise the queue's holder file points at the real lock dir, which
+    does not exist on a clean machine, and the first job never starts."""
+    from services.concurrency_manager import concurrency_manager
+
+    assert concurrency_manager._holder_path.startswith(str(env["locks"]))
+    assert concurrency_manager._holder_handle is None
 
 
 @pytest.mark.parametrize("waiting", [True, False])
