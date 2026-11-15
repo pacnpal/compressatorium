@@ -6,17 +6,26 @@ directly in those folders, no recursive walk). That covers a playlist beside
 the discs and the Batocera / ES-DE layout with ``Game.m3u`` in the system
 folder and the discs in a (hidden) subfolder.
 
-An entry is rewritten only when it resolves exactly to a replaced file,
-matched by ``(st_dev, st_ino)`` so any spelling that reaches the file counts.
-Everything else is left byte for byte: comment and directive lines, other
-entries, blank lines, line endings and a UTF-8 BOM. A playlist that isn't
-valid UTF-8 is never rewritten; if it may name a replaced file the Source is
-kept (``_legacy_text_check``).
+One reader (``_read_line``) reads every line the way a C byte reader does:
+first-line BOM dropped, ASCII whitespace trimmed (Unicode spaces are part of
+the name), ``#`` lines skipped, a RetroArch ``path|label`` split at the first
+``|``, quotes around the path dropped, and a slash-free entry with
+backslashes read as backslash-separated.
 
-Fail safe: an entry that does not resolve but whose file name (after
-stripping a ``|label`` suffix and quotes, splitting on either separator,
-ignoring case) is a replaced file's name is not guessed at. Planning raises
-``ReferrerError`` naming the playlist and line, so the Source is kept.
+An entry is rewritten only when its path resolves exactly to a replaced file,
+matched by ``(st_dev, st_ino)`` so any spelling that reaches the file counts.
+Its label, quotes and surrounding whitespace are kept. Everything else is left
+byte for byte: comment and directive lines, other entries, blank lines, line
+endings and a UTF-8 BOM. A playlist that is UTF-16 or holds a NUL byte is never
+rewritten, and keeps the Source if any reading of it may name a replaced file.
+A playlist that isn't valid UTF-8 keeps the Source if a cp1252 reading may name
+one (``_legacy_text_check``); otherwise it is rewritten like any other, its
+other bytes kept as they were.
+
+Fail safe: an entry that does not resolve but whose file name (splitting on
+either separator, ignoring case and Unicode form) is a replaced file's name is
+not guessed at. Planning raises ``ReferrerError`` naming the playlist and
+line, so the Source is kept.
 
 A rewritten entry keeps its own prefix and separator style: the path from the
 old file's folder to the output is appended to the entry's own folder part,
@@ -110,15 +119,9 @@ def _fold(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
-def _strip_label(entry: str) -> str:
-    """The path part of a RetroArch ``path|label`` entry, as readers split it."""
-    return entry.split("|", 1)[0].strip()
-
-
-def _named_file(entry: str) -> str:
-    """The file name an entry means, however it is written: no label, quotes or folders."""
-    name = _strip_label(entry).strip("\"'").strip()
-    return _fold(re.split(r"[\\/]", name)[-1])
+def _named_file(path: str) -> str:
+    """The file name a (label- and quote-free) entry path names, for comparing."""
+    return _fold(re.split(r"[\\/]", path)[-1])
 
 
 def _new_entry(posix_entry: str, target: _Target) -> list[str]:
@@ -132,15 +135,46 @@ def _new_entry(posix_entry: str, target: _Target) -> list[str]:
     return [literal] if "/" not in step else [os.path.normpath(literal), literal]
 
 
-def _parse_line(text: str) -> tuple[str, str, bool] | None:
-    """How a reader (and _rewrite) reads one decoded line, BOM already
-    removed: None for a blank or "#" line, else ``(entry, posix_entry,
-    backslashed)``."""
-    entry = text.strip()
+# C byte readers (RetroArch and the rest) trim only these; Unicode spaces
+# (NBSP, U+3000, U+2028, ...) stay part of the name.
+_WS = " \t\r\n"
+
+
+@dataclass(frozen=True)
+class _Line:
+    """One entry line as a reader reads it."""
+
+    entry: str        # the trimmed entry as written (for messages and edits)
+    path: str         # the path: label and surrounding quotes removed
+    posix: str        # the path with backslashes read as separators
+    backslashed: bool
+    before: str       # the line's text before the path
+    after: str        # the line's text after the path (quote, label, spaces)
+
+
+def _parse_line(text: str) -> _Line | None:
+    """How a reader reads one decoded line, BOM already removed: None for a
+    blank or "#" line. Trims ASCII whitespace only, splits a RetroArch
+    ``path|label`` at the first "|", and drops quotes around the path."""
+    start = len(text) - len(text.lstrip(_WS))
+    end = len(text.rstrip(_WS))
+    entry = text[start:end]
     if not entry or entry.startswith("#"):
         return None
-    backslashed = "\\" in entry and "/" not in entry
-    return entry, (entry.replace("\\", "/") if backslashed else entry), backslashed
+    head, bar, _ = entry.partition("|")
+    core = head.rstrip(_WS) if bar else head
+    quote = ""
+    if len(core) >= 2 and core[0] == core[-1] and core[0] in "\"'":
+        quote, core = core[0], core[1:-1]
+    backslashed = "\\" in core and "/" not in core
+    return _Line(
+        entry=entry,
+        path=core,
+        posix=core.replace("\\", "/") if backslashed else core,
+        backslashed=backslashed,
+        before=text[:start] + quote,
+        after=quote + entry[len(core) + 2 * len(quote):] + text[end:],
+    )
 
 
 def _split_bom(line: bytes, first: bool) -> tuple[bytes, bytes]:
@@ -150,19 +184,24 @@ def _split_bom(line: bytes, first: bool) -> tuple[bytes, bytes]:
     return b"", line
 
 
-def _read_line(line: bytes, first: bool) -> tuple[str, str, bool] | None:
+def _read_line(line: bytes, first: bool) -> _Line | None:
     """How a reader reads one raw line (no line ending): the single parser
     used for planning, rewriting and every read-back check."""
     return _parse_line(_split_bom(line, first)[1].decode(*_ENC))
 
 
+def _lines(data: bytes) -> list[bytes]:
+    """Split like a byte reader: on CR and LF only (never U+2028 and friends)."""
+    return data.splitlines()
+
+
 def entries(data: bytes) -> list[str]:
     """The entries a reader sees in playlist *data*, as posix paths, in order."""
     found = []
-    for index, line in enumerate(data.splitlines()):
+    for index, line in enumerate(_lines(data)):
         parsed = _read_line(line, first=index == 0)
         if parsed is not None:
-            found.append(parsed[1])
+            found.append(parsed.posix)
     return found
 
 
@@ -180,7 +219,7 @@ def _variants(candidate: str, backslashed: bool) -> list[str]:
 
 def _choose_entry(
     candidates: list[str], backslashed: bool, playlist_dir: str, target: _Target,
-    render: Callable[[str], bytes], first: bool,
+    render: Callable[[str], bytes], first: bool, strict: bool,
 ) -> str | None:
     """The first way of writing a candidate that a reader reads back, from its
     rendered line, as an entry reaching *target*; None if there is none."""
@@ -190,9 +229,8 @@ def _choose_entry(
             if any(unicodedata.category(ch) == "Cc" for ch in written):
                 continue
             parsed = _read_line(render(written), first)
-            # As a reader takes it: label split off ("path|label"), then resolved.
             if parsed is not None and _points_at(
-                playlist_dir, _strip_label(parsed[1]), target,
+                playlist_dir, parsed.posix, target, strict=strict,
             ):
                 return written
     return None
@@ -207,64 +245,88 @@ def entry_for(playlist_dir: str, path: str, *, first_line: bool) -> str | None:
     step = os.path.relpath(target.new, real_dir)
     return _choose_entry(
         [step], False, real_dir, target, lambda e: e.encode(*_ENC), first_line,
+        strict=False,
     )
 
 
-def _points_at(playlist_dir: str, entry: str, target: _Target) -> bool:
-    """Whether *entry*, read from *playlist_dir*, reaches the output."""
+def _points_at(playlist_dir: str, entry: str, target: _Target, *, strict: bool) -> bool:
+    """Whether *entry*, read from *playlist_dir*, reaches the output.
+
+    *strict* (applying a change) requires the output to exist, so a late,
+    abandoned apply can't point a playlist at an output removed meanwhile.
+    Otherwise (the delete confirmation, planning before the output exists) the
+    resolved paths are compared.
+    """
     path = os.path.join(playlist_dir, entry)
     output_key = _file_key(target.new)
     if output_key is not None:
         return _file_key(path) == output_key
-    # The delete confirmation plans before the output exists.
+    if strict:
+        return False
     return os.path.realpath(path) == target.new
 
 
-def _decode_wide(data: bytes) -> str | None:
-    """Decode a playlist with NUL bytes as UTF-16, or None if that isn't reliable.
+def _utf16_encoding(data: bytes) -> str | None:
+    """The UTF-16 flavour *data* is in, or None if it isn't UTF-16.
 
-    A BOM names the byte order. Without one, the NULs of ASCII text fall on odd
-    offsets in little-endian and even offsets in big-endian.
+    A BOM names it. Without one, only text whose NULs fill most of one byte
+    parity counts (ASCII in UTF-16 has a NUL in every other byte: odd offsets
+    little-endian, even offsets big-endian). One stray NUL in an 8-bit file
+    (a C-string terminator) is not UTF-16.
     """
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
-        encoding = "utf-16"
-    else:
-        even, odd = data[0::2].count(0), data[1::2].count(0)
-        if odd == even:
-            return None
-        encoding = "utf-16-le" if odd > even else "utf-16-be"
-    try:
-        return data.decode(encoding)
-    except UnicodeDecodeError:
-        return None
+        return "utf-16"
+    even, odd = data[0::2], data[1::2]
+    if odd and odd.count(0) * 2 > len(odd):
+        return "utf-16-le"
+    if even and even.count(0) * 2 > len(even):
+        return "utf-16-be"
+    return None
 
 
 def _wide_text_check(playlist: str, data: bytes, renames: _Renames) -> bool:
-    """For a playlist that isn't 8-bit text (UTF-16, NUL bytes): raise if its
-    text names a replaced file or can't be decoded, so the Source is kept, and
-    return True (leave it alone) if it is unrelated. False for a normal playlist.
+    """For a playlist that isn't plain 8-bit text (UTF-16, or any NUL byte):
+    it is never rewritten. Raise if any reading of it could name a replaced
+    file, so the Source is kept; return True (leave it alone) otherwise.
+    False for a normal playlist.
+
+    UTF-16 is decoded strictly. Anything else with a NUL (or UTF-16 that
+    doesn't decode) is undecodable, so it is read every way that could name
+    the Source: UTF-16 with replacements, and with NULs dropped as UTF-8 and
+    as cp1252.
     """
-    if not data.startswith((b"\xff\xfe", b"\xfe\xff")) and b"\x00" not in data:
+    encoding = _utf16_encoding(data)
+    if encoding is None and b"\x00" not in data:
         return False
-    text = _decode_wide(data)
-    if text is None:
-        raise ReferrerError(
-            playlist, "isn't plain text (NUL bytes) and can't be decoded to check it",
-        )
-    folded = _fold(text)
-    mention = next((name for name in sorted(renames.names) if name in folded), None)
-    if mention:
-        raise ReferrerError(
-            playlist, f"isn't plain text (UTF-16) and may name {mention}",
-        )
+    texts: list[str] = []
+    if encoding is not None:
+        try:
+            texts = [data.decode(encoding)]
+        except UnicodeDecodeError:
+            texts = [data.decode(encoding, errors="replace")]
+    if len(texts) != 1 or encoding is None or "�" in texts[0]:
+        stripped = data.replace(b"\x00", b"")
+        texts += [
+            stripped.decode("utf-8", errors="replace"),
+            stripped.decode("cp1252", errors="replace"),
+        ]
+    for text in texts:
+        folded = _fold(text)
+        mention = next((n for n in sorted(renames.names) if n and n in folded), None)
+        if mention:
+            kind = "UTF-16" if encoding else "NUL bytes"
+            raise ReferrerError(
+                playlist, f"isn't plain text ({kind}) and may name {mention}",
+            )
     return True
 
 
 def _legacy_text_check(playlist: str, data: bytes, renames: _Renames) -> None:
     """A playlist that isn't valid UTF-8 (Windows-1252, Latin-1) can't be
-    matched reliably byte for byte. Read it as cp1252 only to look for a
-    replaced file's name; if any entry could name one, keep the Source rather
-    than rewrite it."""
+    matched reliably by name. Read it as cp1252 only to look for a replaced
+    file's name; if any entry could name one, keep the Source rather than
+    rewrite it. Otherwise it goes through the normal rewrite, whose
+    ``surrogateescape`` decoding leaves its other bytes as they were."""
     try:
         data.decode("utf-8")
         return
@@ -273,15 +335,15 @@ def _legacy_text_check(playlist: str, data: bytes, renames: _Renames) -> None:
     text = data.removeprefix(_BOM).decode("cp1252", errors="replace")
     for line in text.splitlines():
         parsed = _parse_line(line)
-        if parsed is not None and _named_file(parsed[0]) in renames.names:
+        if parsed is not None and _named_file(parsed.path) in renames.names:
             raise ReferrerError(
                 playlist,
-                f"playlist isn't UTF-8 and may name this disc ({_named_file(parsed[0])})",
+                f"playlist isn't UTF-8 and may name this disc ({_named_file(parsed.path)})",
             )
 
 
 def _rewrite(
-    playlist: str, data: bytes, playlist_dir: str, renames: _Renames,
+    playlist: str, data: bytes, playlist_dir: str, renames: _Renames, *, strict: bool,
 ) -> tuple[bytes, list[tuple[str, str]]]:
     if _wide_text_check(playlist, data, renames):
         return data, []
@@ -295,51 +357,49 @@ def _rewrite(
         prefix, line = _split_bom(line, first)
         body = line.rstrip(b"\r\n")
         ending = line[len(body):]
-        text = body.decode(*_ENC)
         parsed = _read_line(prefix + body, first)
         if parsed is None:
             out.append(prefix + line)
             continue
-        entry, posix_entry, backslashed = parsed
         position += 1
-        key = _file_key(os.path.join(playlist_dir, posix_entry))
+        key = _file_key(os.path.join(playlist_dir, parsed.posix))
         target = renames.by_key.get(key) if key else None
         if target is None:
-            if key is None and _named_file(entry) in renames.names:
+            if key is None and _named_file(parsed.path) in renames.names:
                 raise ReferrerError(
                     playlist,
-                    f"line {number} names {_named_file(entry)} but doesn't point at it",
+                    f"line {number} names {_named_file(parsed.path)} but doesn't point at it",
                 )
             out.append(prefix + line)
             continue
-        lead = text[: len(text) - len(text.lstrip())]
-        trail = text[len(text.rstrip()):]
         new_entry = _choose_entry(
-            _new_entry(posix_entry, target), backslashed, playlist_dir, target,
-            lambda e, p=prefix, a=lead, z=trail: p + (a + e + z).encode(*_ENC), first,
+            _new_entry(parsed.posix, target), parsed.backslashed, playlist_dir, target,
+            lambda e, p=prefix, a=parsed.before, z=parsed.after: p + (a + e + z).encode(*_ENC),
+            first, strict,
         )
         if new_entry is None:
             raise ReferrerError(
                 playlist, f"line {number}: can't write a path that reaches the output",
             )
-        out.append(prefix + (lead + new_entry + trail).encode(*_ENC) + ending)
-        edits.append((entry, new_entry))
+        new_line = parsed.before + new_entry + parsed.after
+        out.append(prefix + new_line.encode(*_ENC) + ending)
+        edits.append((parsed.entry, new_line.strip(_WS)))
         rewritten[position] = target
     result = b"".join(out)
-    _check_read_back(playlist, playlist_dir, data, result, rewritten)
+    _check_read_back(playlist, playlist_dir, data, result, rewritten, strict)
     return result, edits
 
 
 def _check_read_back(
     playlist: str, playlist_dir: str, before: bytes, after: bytes,
-    rewritten: dict[int, _Target],
+    rewritten: dict[int, _Target], strict: bool,
 ) -> None:
     """Parse the bytes about to be written the way _rewrite reads them: the
     same number of entries, every untouched one unchanged, and every rewritten
     one, at its position, reaching the output. Anything else keeps the Source."""
     old, new = entries(before), entries(after)
     ok = len(old) == len(new) and all(
-        _points_at(playlist_dir, _strip_label(new[i]), rewritten[i]) if i in rewritten
+        _points_at(playlist_dir, new[i], rewritten[i], strict=strict) if i in rewritten
         else new[i] == old[i]
         for i in range(len(new))
     )
@@ -374,7 +434,14 @@ class M3uReferrer(Referrer):
             for d in _search_dirs(old):
                 if d not in dirs:
                     dirs.append(d)
-        targets = _Renames(by_key, frozenset(_fold(os.path.basename(o)) for o in renames))
+        # Names as written and as a reader trims them, so a leading ASCII
+        # space doesn't hide a mention.
+        targets = _Renames(by_key, frozenset(
+            _fold(name)
+            for old in renames
+            for name in (os.path.basename(old), os.path.basename(old).strip(_WS))
+            if name
+        ))
         changes = []
         for directory in dirs:
             for playlist in _playlists(directory):
@@ -383,7 +450,9 @@ class M3uReferrer(Referrer):
                 if os.path.islink(playlist):
                     raise ReferrerError(playlist, "is a symlink")
                 with _playlist_lock(playlist):
-                    _, edits = _rewrite(playlist, _read(playlist), directory, targets)
+                    _, edits = _rewrite(
+                        playlist, _read(playlist), directory, targets, strict=False,
+                    )
                 if edits:
                     changes.append(ReferrerChange(
                         referrer=self.id, target=playlist, edits=tuple(edits),
@@ -400,7 +469,8 @@ class M3uReferrer(Referrer):
             raise ReferrerError(path, "is read-only")
         with _playlist_lock(path):
             original = _read(path)
-            updated, edits = _rewrite(path, original, directory, targets)
+            # strict: the output must exist now, however late this runs.
+            updated, edits = _rewrite(path, original, directory, targets, strict=True)
             if not edits:
                 return
             try:

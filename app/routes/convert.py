@@ -865,10 +865,17 @@ async def _add_referrer_changes(
     delete_paths = item.get("delete_paths") or []
     if not delete_paths:
         return
-    output_path = await run_in_threadpool(
-        _renamed_output, mode,
-        await _planned_output_path(mode, file_path, output_dir), duplicate_action,
-    )
+    try:
+        output_path = await run_in_threadpool(
+            _renamed_output, mode,
+            await _planned_output_path(mode, file_path, output_dir), duplicate_action,
+        )
+    except SkipFile as skip:
+        # The job would skip this file the same way (no free numbered name, or
+        # the folder is locked): block the item with the reason, not a 500.
+        detail = _SKIP_HTTP.get(skip.reason, (409, skip.reason.value))[1]
+        item.setdefault("errors", []).append(detail)
+        return
     image_path = strip_archive_path(file_path) if "::" in file_path else file_path
     try:
         changes = await run_in_threadpool(

@@ -247,6 +247,27 @@ async def test_delete_confirmation_names_the_numbered_output_a_rename_writes(vol
 
 
 @pytest.mark.asyncio
+async def test_a_locked_rename_target_is_a_plan_error_not_a_500(volume, monkeypatch):
+    """When RENAME can't find a free name (or the folder is locked), the
+    preview says so on the item instead of failing the whole request."""
+    def refuse(*_a, **_kw):
+        raise convert_routes.SkipFile(convert_routes.SkipReason.OUTPUT_LOCKED)
+
+    monkeypatch.setattr(convert_routes, "_renamed_output", refuse)
+
+    plan = await convert_routes.delete_plan(DeletePlanRequest(
+        file_paths=[str(volume / "Game (Disc 1).cue")],
+        mode=ConversionMode.CREATECD,
+        duplicate_action=DuplicateAction.RENAME,
+    ))
+
+    [item] = plan["items"]
+    assert plan["blocked"] is True
+    assert item["errors"]
+    assert item["referrer_changes"] == []
+
+
+@pytest.mark.asyncio
 async def test_a_track_outside_the_volumes_is_blocked_and_never_scanned(
     volume, tmp_path_factory,
 ):
