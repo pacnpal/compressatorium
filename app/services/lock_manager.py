@@ -11,6 +11,7 @@ import logging
 from logging_setup import get_logger
 import os
 import threading
+import time
 from pathlib import Path
 
 from config import settings
@@ -76,6 +77,9 @@ class LockManager:
         self._lock_mutex = threading.Lock()
         self._lock_handles = {}
         self._dir_lock_handles = {}
+        # Shared (read) locks on the files running jobs read, one handle per
+        # acquisition, so two jobs here reading one Source each hold their own.
+        self._input_handles: dict[str, list] = {}
         if not lazy:
             self._ensure_ready()
 
@@ -536,6 +540,87 @@ class LockManager:
             handle = self._dir_lock_handles.pop(normalized, None)
             if handle is not None:
                 self._unlink_then_close(handle, self._lock_file_path(normalized), normalized)
+
+    # Input locks (#306). A job holds a *shared* flock on each file it reads
+    # (its Source and the Source's companions) for as long as it runs. Readers
+    # share it, so two jobs reading one Source never block each other; anything
+    # that wants the path exclusively (an output lock, the stale-lock probe
+    # behind ``check_file_status``) is refused while one is held. That probe is
+    # what the web guard runs on a path before a rename or delete, so a file a
+    # job in *another* process is reading answers 409 there. The lock file is
+    # the same one an output lock on that path uses, and both rules above
+    # hold: the last reader to let go upgrades to exclusive and unlinks while
+    # holding it; an acquirer checks the file is still linked.
+
+    def acquire_input_lock(self, path: str) -> bool:
+        """Take a shared lock on a file a job reads. False when it can't be had:
+        someone holds it exclusively (a job writing that path)."""
+        if self.is_read_only:
+            return False
+        self._ensure_ready()
+        normalized = os.path.normpath(path)
+        lock_file_path = self._lock_file_path(normalized)
+        os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
+        handle = self._shared_lock(lock_file_path)
+        if handle is None:
+            return False
+        with self._lock_mutex:
+            self._input_handles.setdefault(normalized, []).append(handle)
+        return True
+
+    def release_input_lock(self, path: str) -> None:
+        """Let go of one shared lock :meth:`acquire_input_lock` took on ``path``."""
+        normalized = os.path.normpath(path)
+        with self._lock_mutex:
+            handles = self._input_handles.get(normalized)
+            if not handles:
+                return
+            handle = handles.pop()
+            if not handles:
+                del self._input_handles[normalized]
+        lock_file_path = self._lock_file_path(normalized)
+        try:
+            # The last reader removes the file. Upgrading fails while another
+            # reader holds it, and that reader removes it in turn.
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            pass
+        else:
+            with contextlib.suppress(OSError):
+                self._unlink_held(handle, lock_file_path)
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+
+    def _shared_lock(self, lock_file_path: str, attempts: int = 50):
+        """An open handle holding a shared flock on ``lock_file_path``, or None.
+
+        The stale-lock probe holds a lock file exclusively for a moment, so a
+        refusal is retried briefly before it counts as a writer holding it.
+        """
+        for _attempt in range(attempts):
+            try:
+                # Binary mode: flock-only handle, no text is read or written.
+                handle = open(lock_file_path, "ab")  # noqa: SIM115 - held past this call
+            except OSError:
+                logger.error("Failed to open input lock %s", lock_file_path, exc_info=True)
+                return None
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                time.sleep(0.01)
+                continue
+            except OSError:
+                handle.close()
+                logger.error("Failed to take input lock %s", lock_file_path, exc_info=True)
+                return None
+            if self._still_linked(handle, lock_file_path):
+                return handle
+            # Unlinked by its last holder under us: open the file there now.
+            handle.close()
+        return None
 
     def _unlink_then_close(self, lock_handle, lock_file_path: str, label: str) -> None:
         """Release a held lock: unlink its file while holding it, then let go."""

@@ -88,6 +88,11 @@
   process's conversions; its tickets are cleared by the next job that waits.
   The server and the CLI raise their open-file limit to the system maximum at
   start.
+- **A file a job is reading can't be renamed or deleted from the web UI**
+  (#306), whichever process runs the job. Every job holds a shared lock on its
+  Source and the Source's companions until it ends, so the web answers 409
+  while a CLI run converts that file. Two jobs reading one file don't block each
+  other.
 - **Delete-source keeps an archive that holds another Image** (#306).
   Deleting an archive member's Source deletes the whole archive, so the archive
   now goes only when that member is the only Image in it. The count covers

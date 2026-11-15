@@ -1472,3 +1472,32 @@ def test_refreshing_a_check_keeps_the_recorded_mode(volume, dolphin, capsys, mon
         assert code == 0, lines
         assert (lines[0]["tool"], lines[0]["status"]) == ("makeps3iso", "intact")
     assert _stored(iso)["produced_meta"] == {"mode": "folder_to_iso"}
+
+
+def test_a_cli_job_holds_its_input_for_other_processes(volume, dolphin, capsys, monkeypatch):
+    """codex 4576728590: while a job reads Game.wia, another process sees the
+    input as taken (the web guard's exact-path probe refuses with 409)."""
+    from services.lock_manager import LockManager, lock_manager
+
+    wia = volume / "gc" / "Game.wia"
+    wia.parent.mkdir()
+    wia.write_bytes(b"wia" * 64)
+    server = LockManager()
+    server._lock_dir = lock_manager._lock_dir
+    seen = []
+    service = registry.get("dolphin")._service
+    original = service._runner.run
+
+    async def watching_run(cmd, *, input_path, output_path, **kwargs):
+        seen.append(server.check_file_status(input_path)[1])
+        async for update in original(cmd, input_path=input_path,
+                                     output_path=output_path, **kwargs):
+            yield update
+
+    monkeypatch.setattr(service._runner, "run", watching_run)
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+
+    assert code == 0, lines
+    assert seen == [True]
+    assert server.check_file_status(str(wia))[1] is False

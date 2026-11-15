@@ -2662,6 +2662,30 @@ Volume root, and refuses with 409 when another process holds one. So a CLI job
 packing a folder blocks a web rename or delete inside it. The exact-path check
 (`check_file_status`) runs first, as before.
 
+**Input locks.** Every file-input job, whichever entry point queued it, holds a
+*shared* flock on each file it reads (`JobManager._hold_inputs`: the Source, or
+the archive for a member, plus `_track_candidate_paths`' cue/gdi tracks and
+split parts) from the moment it takes its output lock until it ends
+(`LockManager.acquire_input_lock` / `release_input_lock`). A folder job
+already holds its subtree lock and takes none. The lock file is the one an
+output lock on that path would use, so:
+
+- readers share it, and two jobs reading one Source never block each other;
+- anything wanting the path exclusively is refused while a reader holds it:
+  the stale probe behind `check_file_status` (so the web guard's exact-path
+  check answers 409 to a rename or delete of a file a job in *any* process is
+  reading) and an output lock on that path (a job that would overwrite it);
+- the last reader lets go by upgrading to `LOCK_EX|LOCK_NB` and unlinking while
+  it holds that (rule 1); a reader that fails the upgrade leaves the file to the
+  remaining reader. An acquirer retries briefly when the stale probe holds the
+  file for a moment, and checks `_still_linked` (rule 2).
+
+A job that cannot take its input locks (another job holds the path for
+writing) is deferred and re-queued, like a folder-lock block. Before the
+delete-on-verify step checks its delete paths with `check_file_status`, the job
+lets go of its own input locks, so it does not find its Source held by itself;
+another job still reading it does hold it, and the delete is refused.
+
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
 drop run unchanged, and the re-executed entrypoint hands straight back to the

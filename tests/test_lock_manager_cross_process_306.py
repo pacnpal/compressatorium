@@ -221,3 +221,57 @@ async def test_the_exact_path_check_still_refuses_a_locked_output(guarded_volume
         assert exc.value.status_code == 409
     finally:
         g.cli.release_lock(str(output))
+
+
+# --------------------------------------------------------------------------- #
+# Input locks: a job's Source is visible to other processes (codex 4576728590)
+# --------------------------------------------------------------------------- #
+
+
+def test_readers_share_an_input_lock(tmp_path):
+    first, second = _manager(tmp_path), _manager(tmp_path)
+    source = str(tmp_path / "Game.wia")
+
+    assert first.acquire_input_lock(source)
+    assert second.acquire_input_lock(source)  # another job reading it is fine
+    assert _manager(tmp_path).check_file_status(source)[1] is True
+    first.release_input_lock(source)
+    assert _manager(tmp_path).check_file_status(source)[1] is True
+    second.release_input_lock(source)
+    assert _manager(tmp_path).check_file_status(source)[1] is False
+
+
+@pytest.mark.asyncio
+async def test_the_server_refuses_to_touch_an_input_another_process_reads(
+    guarded_volume, db_path, reset_db_engine,
+):
+    from fastapi import HTTPException
+    from services import db as _db
+
+    g = guarded_volume
+    _db.init_engine(db_path)  # a rename moves the file's stored records
+    wia = g.folder.parent / "Game.wia"
+    wia.write_bytes(b"wia")
+    assert g.cli.acquire_input_lock(str(wia))
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.delete_file(g.request("delete-file"), path=str(wia), recursive=False)
+        assert exc.value.status_code == 409
+        with pytest.raises(HTTPException) as exc:
+            await g.routes.rename_file(g.request("rename-file"), path=str(wia), new_name="B.wia")
+        assert exc.value.status_code == 409
+        assert wia.exists()
+    finally:
+        g.cli.release_input_lock(str(wia))
+
+    try:
+        result = await g.routes.rename_file(
+            g.request("rename-file"), path=str(wia), new_name="B.wia",
+        )
+        assert result["success"] is True
+        result = await g.routes.delete_file(
+            g.request("delete-file"), path=str(wia.parent / "B.wia"), recursive=False,
+        )
+        assert result["success"] is True
+    finally:
+        reset_db_engine()
