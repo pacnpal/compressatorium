@@ -2179,3 +2179,42 @@ def test_a_symlink_out_of_the_volumes_is_skipped_never_read(
     assert "outside the configured Volumes" in by_name["Escape.chd"]["reason"]
     assert by_name["Inside.chd"]["status"] == "planned", lines
     assert code == 0, lines
+
+
+def test_a_checked_file_replaced_by_an_escaping_symlink_is_skipped_once(
+    volume, dolphin, capsys, tmp_path,
+):
+    """codex 4577304458: a verified CHD later replaced by a symlink to a file
+    outside the Volumes is listed once, as skipped outside, and no record is
+    written for it or for the outside target."""
+    chd = volume / "ps2" / "Game.chd"
+    chd.parent.mkdir()
+    chd.write_bytes(b"MComprHD" + b"\0" * 120)
+    _store(chd)
+    before = _all_records()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "Other.chd"
+    target.write_bytes(b"MComprHD" + b"\0" * 120)
+    chd.unlink()
+    chd.symlink_to(target)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    named = [x for x in lines if Path(x["path"]).name == "Game.chd"]
+    assert len(named) == 1, lines
+    assert named[0]["status"] == "skipped"
+    assert "outside the configured Volumes" in named[0]["reason"]
+    assert _stored(target) is None
+    assert _all_records() == before  # the old record is left exactly as it was
+    assert code == 0, lines
+
+
+def _all_records():
+    import asyncio
+
+    from services.verification_store import verification_store
+
+    return sorted(
+        (r["chd_path"], r["verified_at"]) for r in asyncio.run(verification_store.all_records())
+    )

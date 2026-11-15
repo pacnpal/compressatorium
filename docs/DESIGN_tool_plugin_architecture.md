@@ -3288,10 +3288,23 @@ it, and with `scan_tree(unreadable=[...])` the CLI reports it as a skipped line
 symlinks, so every discovered file, folder and archive (for a member) goes
 through the shared containment check the web's verify guard uses
 (`is_within_configured_volumes`, which resolves the path) before any tool is
-chosen (`cli._skip_outside_volumes`). One that resolves outside every Volume
+chosen (`cli._skip_outside_volumes`), run once on the final input set: for a
+verify, after the stored checks under the folder are added
+(`_with_stored_checks`, which dedupes the two sources on the real path, so a
+checked file since replaced by a symlink is listed once). One that resolves
+outside every Volume
 is skipped ("It resolves outside the configured Volumes") and never read,
 checked, converted or recorded, in both `convert` and `verify`. Paths named on
 the command line are checked up front (`_check_paths`).
+
+**One database initialisation at a time.** The web startup and every
+non-dry-run CLI open the database through `services.db.init_app_database`
+(Alembic to head, then the legacy JSON import). It runs under an exclusive,
+cross-process `init.lock` flock in the shared lock dir (`db._init_lock`,
+blocking up to `INIT_LOCK_WAIT_SECONDS`, 300 s, then an error), so several
+processes started on a fresh database don't all run Alembic at once; one
+that waited finds the schema at head, since `apply_migrations` reads the
+current revision once it has the lock.
 
 **Stopping during planning.** The CLI's planning runs blocking filesystem work
 on `run_in_threadpool`, which can't be cancelled: SIGINT, SIGTERM or SIGHUP
