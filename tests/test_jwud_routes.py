@@ -80,7 +80,7 @@ def mock_jwud_service(monkeypatch):
 @pytest.fixture
 def mock_verification_store(monkeypatch):
     mock_store = Mock()
-    mock_store.mark_verified = AsyncMock()
+    mock_store.refresh_check = AsyncMock()
     monkeypatch.setattr(info_routes, "verification_store", mock_store)
     return mock_store
 
@@ -94,7 +94,7 @@ async def test_jwud_verify_happy_path(
 
     assert result["valid"] is True
     assert "verified" in result["message"].lower()
-    mock_verification_store.mark_verified.assert_called_once_with(
+    mock_verification_store.refresh_check.assert_called_once_with(
         jwud_test_env["compressed_path"],
     )
 
@@ -121,7 +121,7 @@ async def test_jwud_verify_stream_happy_path(
     assert len(events) >= 2
     assert any(e.get("event") == "verify_progress" for e in events if isinstance(e, dict))
     assert any(e.get("event") == "verify_complete" for e in events if isinstance(e, dict))
-    mock_verification_store.mark_verified.assert_called_once_with(
+    mock_verification_store.refresh_check.assert_called_once_with(
         jwud_test_env["compressed_path"],
     )
 

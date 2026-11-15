@@ -66,7 +66,7 @@ def mock_dolphin_service(monkeypatch):
 def mock_verification_store(monkeypatch):
     """Mock the verification_store for testing."""
     mock_store = Mock()
-    mock_store.mark_verified = AsyncMock()
+    mock_store.refresh_check = AsyncMock()
     monkeypatch.setattr(info_routes, "verification_store", mock_store)
     return mock_store
 
@@ -139,8 +139,8 @@ async def test_dolphin_verify_happy_path(
     assert result["valid"] is True
     assert "successfully" in result["message"]
 
-    # Verify that mark_verified was called
-    mock_verification_store.mark_verified.assert_called_once_with(
+    # Verify that refresh_check was called
+    mock_verification_store.refresh_check.assert_called_once_with(
         dolphin_test_env["iso_path"]
     )
 

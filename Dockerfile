@@ -398,6 +398,9 @@ COPY --from=frontend-builder /build/static/ /static/
 COPY migrations/ /migrations/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+# `compressatorium convert|verify` (app/cli.py), also what CHD_MODE=cli runs.
+COPY scripts/compressatorium /usr/local/bin/compressatorium
+RUN chmod +x /usr/local/bin/compressatorium
 
 WORKDIR /app
 
@@ -407,6 +410,10 @@ ENV APP_VERSION=${APP_VERSION}
 
 # Configuration
 ENV COMPRESSATORIUM_MOUNT_ROOT="/data"
+# Named, not left to the default, so the job lock dir is /config/locks in every
+# container that mounts /config (the web UI, a CLI container): see
+# config._default_lock_dir.
+ENV CHD_DATA_DIR="/config"
 ENV CHD_MODE="webui"
 ENV CHDMAN_MODE="createcd"
 ENV MAX_CONCURRENT_JOBS=1
@@ -423,9 +430,15 @@ VOLUME ["/data/games"]
 # Expose web port
 EXPOSE 8080
 
-# Health check (only applies in webui mode)
+# Health check (only applies in webui mode). A server waiting for the Rule
+# scheduler lock (a `run-rules` pass holds it, #307) has not opened its port
+# yet; while it waits it keeps <lock dir>/scheduler.waiting.<hostname>, which
+# counts as healthy.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD if [ "${CHD_MODE:-webui}" = "cli" ]; then \
+            exit 0; \
+        fi; \
+        if [ -e "${CHD_CONCURRENCY_LOCK_DIR:-${CHD_DATA_DIR:-/config}/locks}/scheduler.waiting.$(hostname)" ]; then \
             exit 0; \
         fi; \
         if [ "$(/usr/bin/id -u)" = "0" ]; then \

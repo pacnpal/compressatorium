@@ -32,9 +32,10 @@ A rewritten entry keeps its own prefix and separator style: the path from the
 old file's folder to the output is appended to the entry's own folder part,
 with both sides taken as resolved paths.
 
-Each playlist has a lock. ``apply`` re-reads the playlist under it and
-rewrites what is there now, so two jobs updating one playlist at once both
-land.
+Each playlist has a lock, in-process and cross-process
+(``lock_manager.referrer_lock``). ``apply`` re-reads the playlist under both
+and rewrites what is there now, so two jobs updating one playlist at once
+both land, in one process or two (a CLI run beside the server).
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from services.lock_manager import LockWaitTimeout, lock_manager
 from utils.path_utils import FileIdentity, file_identity, same_identity, volume_root_for
 
 from .base import (
@@ -58,6 +60,10 @@ from .base import (
 )
 
 PLAYLIST_EXT = ".m3u"
+# How long ``apply`` waits for another process to finish rewriting the same
+# playlist. Inside the hook the wait also ends as soon as the job stops waiting
+# (``check_write``), so it never outlasts the hook's own deadline.
+PLAYLIST_LOCK_WAIT_SECONDS = 30.0
 BACKUP_SUFFIX = ".bak"
 _BOM = b"\xef\xbb\xbf"
 _ENC = ("utf-8", "surrogateescape")
@@ -503,20 +509,35 @@ class M3uReferrer(Referrer):
             raise ReferrerError(path, "is a symlink")
         if not os.access(path, os.W_OK):
             raise ReferrerError(path, "is read-only")
+        # Threads here take the in-process lock; other processes (a CLI run
+        # beside the server, #306) the cross-process Referrer lock, held over
+        # the whole read, rewrite and replace so no update is lost.
         with _playlist_lock(path):
-            original = _read(path)
-            # strict: the output must exist now, however late this runs.
-            updated, edits = _rewrite(path, original, directory, targets, strict=True)
-            if not edits:
-                return
             try:
-                backup = path + BACKUP_SUFFIX
-                # The guard runs right before each file is published, after
-                # its temp copy is synced: a write that stalled while the job
-                # gave up (or the output changed) never lands.
-                publish_ok = functools.partial(check_write, path)
-                if not os.path.lexists(backup):
-                    atomic_write_bytes(backup, original, like=path, guard=publish_ok)
-                atomic_write_bytes(path, updated, guard=publish_ok)
-            except OSError as exc:
-                raise ReferrerError(path, exc.strerror or str(exc)) from exc
+                with lock_manager.referrer_lock(
+                    path, wait=PLAYLIST_LOCK_WAIT_SECONDS,
+                    keep_waiting=lambda: check_write(path),
+                ):
+                    self._apply_locked(path, directory, targets)
+            except LockWaitTimeout as exc:
+                raise ReferrerError(path, "is being updated by another job") from exc
+
+    @staticmethod
+    def _apply_locked(path: str, directory: str, targets: _Renames) -> None:
+        """Read, rewrite and replace, under both playlist locks."""
+        original = _read(path)
+        # strict: the output must exist now, however late this runs.
+        updated, edits = _rewrite(path, original, directory, targets, strict=True)
+        if not edits:
+            return
+        try:
+            backup = path + BACKUP_SUFFIX
+            # The guard runs right before each file is published, after
+            # its temp copy is synced: a write that stalled while the job
+            # gave up (or the output changed) never lands.
+            publish_ok = functools.partial(check_write, path)
+            if not os.path.lexists(backup):
+                atomic_write_bytes(backup, original, like=path, guard=publish_ok)
+            atomic_write_bytes(path, updated, guard=publish_ok)
+        except OSError as exc:
+            raise ReferrerError(path, exc.strerror or str(exc)) from exc

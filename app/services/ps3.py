@@ -61,9 +61,11 @@ def ps3_iso_title_id(iso_path: str) -> str | None:
     image to ``PS3_GAME/PARAM.SFO`` and read its ``TITLE_ID`` (reusing the
     shared ISO reader + SFO parser), so the makeps3iso service can confirm the
     packed ISO carries the same title id as the source folder. Returns ``None``
-    when the image isn't a readable PS3 ISO.
+    when the image isn't a PS3 ISO, and raises ``OSError`` when it could not
+    be read, so the verify can tell "no TITLE_ID" (a verdict) from "no answer"
+    (#306); the build's advisory readback catches it.
     """
-    data = read_iso_file(iso_path, ["PS3_GAME", "PARAM.SFO"])
+    data = read_iso_file(iso_path, ["PS3_GAME", "PARAM.SFO"], strict=True)
     if not data:
         return None
     return parse_sfo_keys(data).get("TITLE_ID") or None

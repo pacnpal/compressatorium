@@ -23,10 +23,12 @@ Design notes
 
 from __future__ import annotations
 
+import contextlib
 import json
 from logging_setup import get_logger
 import os
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -296,6 +298,44 @@ class LedgerEntry(Base):
         Index("ix_ledger_finished_at", "finished_at"),
         Index("ux_ledger_job_finished", "job_id", "finished_at", unique=True),
     )
+
+
+class FolderLibraryRecord(Base):
+    """A folder registered as a Library (#303).
+
+    ``root`` is the resolved folder, inside a Volume. The Library's id in the
+    Rule engine is ``"folder:<id>"``; its Rules and run state live in the
+    ``rules`` / ``rules.state`` preference rows under that prefix, and are
+    removed with the row. Removing a row never touches files.
+    """
+
+    __tablename__ = "folder_libraries"
+    # AUTOINCREMENT: a removed Library's id is never handed to a new one, so
+    # state keyed "folder:<id>" can never reach a different folder.
+    __table_args__ = {"sqlite_autoincrement": True}
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    root = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=False)
+    # The scheduler's master switch for this Library, like RomM's auto_convert.
+    schedule_enabled = Column(Boolean, nullable=False, default=False)
+    # The most one sweep of this Library may queue, over all its Platforms.
+    max_per_sweep = Column(Integer, nullable=False, default=25)
+    created_at = Column(String, nullable=False)
+
+
+class LedgerTotal(Base):
+    """Running per-status totals behind the Prometheus counters (#297).
+
+    Incremented when a Ledger row is written and never decremented, so a
+    retention prune of ``ledger`` rows cannot make a counter go down.
+    Byte sums only accumulate for completed jobs.
+    """
+
+    __tablename__ = "ledger_totals"
+    status = Column(String, primary_key=True)
+    jobs = Column(Integer, nullable=False, default=0)
+    input_bytes = Column(Integer, nullable=False, default=0)
+    output_bytes = Column(Integer, nullable=False, default=0)
 
 
 class Preference(Base):
@@ -1070,3 +1110,129 @@ def init_and_migrate(
         )
 
     return eng
+
+
+# How long a process waits for another to finish initialising the database
+# (Alembic, the legacy import) before it gives up with an error. Generous: a
+# first run imports the legacy JSON stores (#306).
+INIT_LOCK_WAIT_SECONDS = 300.0
+
+
+@contextlib.contextmanager
+def _init_lock(lock_dir: str | None):
+    """Exclusive, cross-process: one process initialises the database at a
+    time (``init.lock`` in the shared lock dir, a blocking flock with a bound).
+
+    Several CLI processes, or a CLI beside the web, started on a fresh
+    database would otherwise all run Alembic at once and all but one fail
+    ("table already exists", "database is locked"). A process that waited
+    finds the schema at head when it gets the lock: ``apply_migrations``
+    reads the current revision then.
+    """
+    import fcntl
+
+    if not lock_dir:
+        yield
+        return
+    os.makedirs(lock_dir, mode=0o700, exist_ok=True)
+    deadline = time.monotonic() + INIT_LOCK_WAIT_SECONDS
+    with open(os.path.join(lock_dir, "init.lock"), "ab") as handle:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Another process is still initialising the database "
+                        f"(waited {INIT_LOCK_WAIT_SECONDS:.0f}s for {lock_dir}/init.lock)",
+                    ) from None
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def init_app_database(settings) -> str:
+    """Open the app database for a process that will write to it.
+
+    The one initialisation the web startup and the CLI share (#306): resolve
+    the path, open the engine, bring the schema to head with Alembic, then
+    import any legacy JSON stores (``verified_chds.json`` and the others),
+    honouring their ``CHD_*_STORE`` overrides. Running it from both entry
+    points means a first CLI run can never write to a database the legacy
+    import then refuses to fill. Returns the database path.
+    """
+    db_path = resolve_db_path(settings.db_path, data_dir=settings.data_dir)
+    with _init_lock(getattr(settings, "concurrency_lock_dir", None)):
+        return _init_app_database_locked(settings, db_path)
+
+
+def _init_app_database_locked(settings, db_path: str) -> str:
+    """``init_app_database`` under its cross-process lock."""
+    # Initialise the engine *without* create_all, Alembic owns the
+    # schema on the production path.  apply_migrations then stamps
+    # pre-Alembic DBs or upgrades the rest.  Only after the schema is
+    # guaranteed at head do we run the JSON→SQLite importers.
+    init_engine(db_path, create_schema=False)
+    apply_migrations()
+
+    config_dir = Path(settings.data_dir)
+
+    def _resolve_legacy_json_store(env_var: str, default_filename: str) -> Path:
+        """Return the JSON migration source path, honouring any legacy env-var override."""
+        default_path = config_dir / default_filename
+        legacy_override = os.environ.get(env_var)
+        if not legacy_override:
+            return default_path
+        resolved_path = Path(legacy_override)
+        if not resolved_path.exists():
+            logger.warning(
+                "db.migrate: legacy JSON store override %s=%s does not exist; "
+                "falling back to default store %s",
+                env_var,
+                resolved_path,
+                default_path,
+            )
+            return default_path
+        if not resolved_path.is_file() or not os.access(resolved_path, os.R_OK):
+            logger.warning(
+                "db.migrate: legacy JSON store override %s=%s is not a readable file; "
+                "falling back to default store %s",
+                env_var,
+                resolved_path,
+                default_path,
+            )
+            return default_path
+        logger.info(
+            "db.migrate: using legacy JSON store override for migration %s=%s",
+            env_var,
+            resolved_path,
+        )
+        if resolved_path != default_path and default_path.exists():
+            logger.warning(
+                "db.migrate: legacy JSON store override %s=%s will be used for migration; "
+                "default store %s also exists and will not be imported in this run",
+                env_var,
+                resolved_path,
+                default_path,
+            )
+        return resolved_path
+
+    init_and_migrate(
+        db_path,
+        dat_store_json=_resolve_legacy_json_store(
+            "CHD_DAT_STORE", "dat_store.json",
+        ),
+        verification_json=_resolve_legacy_json_store(
+            "CHD_VERIFICATION_STORE", "verified_chds.json",
+        ),
+        chd_metadata_json=_resolve_legacy_json_store(
+            "CHD_METADATA_STORE", "chd_metadata.json",
+        ),
+        dat_sync_json=_resolve_legacy_json_store(
+            "CHD_DAT_SYNC_STORE", "dat_sync.json",
+        ),
+    )
+    return db_path
