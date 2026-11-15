@@ -91,3 +91,33 @@ def test_an_honest_iso_still_names_its_platform(tmp_path):
     path.write_bytes(_make_iso({"SYSTEM.CNF": b"BOOT2 = cdrom0:\\SLUS_203.12;1\n"}))
 
     assert detect_platform(str(path)).platform == "ps2"
+
+
+def test_a_hostile_xiso_directory_probes_within_the_probe_budget(tmp_path):
+    from .test_xiso_service import MAGIC, build_image
+
+    # A trimmed XISO (no layout names the console, so the probe walks its
+    # directory) whose root table claims 48 MiB, inside a sparse 64 MiB file:
+    # within the conversion walker's 64 MiB table limit and the file size.
+    path = tmp_path / "downloads" / "halo.iso"
+    path.parent.mkdir(parents=True)
+    build_image(path, layout="XISO", exe="default.xbe")
+    with open(path, "r+b") as fh:
+        fh.seek(0x10000 + len(MAGIC) + 4)
+        fh.write(struct.pack("<I", 48 * 1024 * 1024))
+        fh.truncate(_SPARSE_SIZE)
+
+    result, peak = _probe(str(path))
+
+    assert peak < _PEAK_LIMIT, f"probe allocated {peak} bytes"
+    assert (result.platform, result.how) == (None, "unsorted")
+
+
+def test_an_honest_xiso_still_names_its_console(tmp_path):
+    from .test_xiso_service import build_image
+
+    path = tmp_path / "downloads" / "halo.iso"
+    path.parent.mkdir(parents=True)
+    build_image(path, layout="XISO", exe="default.xbe")
+
+    assert detect_platform(str(path)).platform == "xbox"

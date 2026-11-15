@@ -58,7 +58,13 @@ const readBool = (_k, fallback) => fallback;
 const writeBool = () => {};
 const DEFAULT_COMPRESSION_LEVEL_RANGE = { min: 1, max: 22, default: 19 };
 const registry = {
-  forTool: (id) => ({ id, compressionStyle: 'multi', defaultCompression: ['zlib'] }),
+  forTool: (id) => ({
+    id, compressionStyle: 'multi', defaultCompression: ['zlib'],
+    // makeps3iso's folder_to_iso is the registry's folder-input mode.
+    modes: id === 'makeps3iso'
+      ? [{ mode: 'folder_to_iso', inputKinds: ['directory'] }]
+      : [{ mode: 'createcd' }],
+  }),
   defaultMode: () => 'createcd',
   specFor: () => ({ supportsCompression: true }),
   maxCodecsFor: () => 4,
@@ -358,3 +364,30 @@ def test_every_target_selector_goes_through_choose_target():
         text = (src / rel).read_text(encoding="utf-8")
         assert "conversion.chooseTarget(" in text, rel
         assert "conversion.setMode(" not in text, rel
+
+
+_AUTO_SELECTION = """
+const store = new ConversionStore();
+store.auto = true;
+const gate = (entry) => store.allowsInputEntry(entry);
+process.stdout.write(JSON.stringify({
+  file: gate({ type: 'file', path: '/v/a.iso' }),
+  ps3Folder: gate({ type: 'directory', path: '/v/Game', convertible_by: ['makeps3iso'] }),
+  plainFolder: gate({ type: 'directory', path: '/v/stuff', convertible_by: [] }),
+  fileToolFolder: gate({ type: 'directory', path: '/v/x', convertible_by: ['chdman'] }),
+  archive: gate({ type: 'archive', path: '/v/a.zip' }),
+}));
+"""
+
+
+def test_auto_offers_a_folder_only_a_folder_mode_can_convert(tmp_path):
+    data = _run(tmp_path, _AUTO_SELECTION)
+
+    assert data == {
+        "file": True,
+        # The backend marked it convertible by a tool with a folder-input mode.
+        "ps3Folder": True,
+        "plainFolder": False,
+        "fileToolFolder": False,
+        "archive": False,
+    }, data

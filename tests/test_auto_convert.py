@@ -514,3 +514,25 @@ async def test_auto_rejects_paths_outside_the_volumes(route_env, tmp_path_factor
         await convert_routes.create_auto_jobs(AutoJobCreateRequest(file_paths=[outside]))
 
     assert exc.value.status_code == 403
+
+
+def test_a_ps3_disc_folder_goes_to_folder_to_iso(tmp_path):
+    from .ps3_helpers import make_ps3_folder
+
+    # Anywhere, not only under a `ps3` folder: the folder's own layout is the
+    # header (the tool that accepts the directory names its Platform).
+    folder = make_ps3_folder(tmp_path / "downloads" / "Some Game")
+
+    [entry] = plan_auto([str(folder)])
+
+    assert (entry.detection.platform, entry.detection.how) == ("ps3", "header")
+    assert entry.mode == "folder_to_iso"
+
+
+def test_a_plain_folder_is_not_a_ps3_image(tmp_path):
+    folder = tmp_path / "ps3" / "not a game"
+    folder.mkdir(parents=True)
+
+    [entry] = plan_auto([str(folder)])
+
+    assert entry.mode is None
