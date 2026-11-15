@@ -2192,6 +2192,44 @@ async def test_a_scheduled_check_run_holds_its_window_until_it_ends(
 
 
 @pytest.mark.asyncio
+async def test_a_check_runs_verdicts_ride_its_terminal_event(
+    tree: Path, ready, verifier, sent, monkeypatch,
+) -> None:
+    """Codex 4578116084: an open browser hears each Image's new check state on
+    the run's terminal event (the one the jobs stream already forwards), so
+    an Intact badge a failed check took away goes away there too."""
+    import os
+
+    from services.job_manager import job_manager
+    from services.verification_store import verification_store
+
+    verdicts, _calls = verifier
+    verdicts["Bolt.chd"] = {"valid": False, "message": "CHD hunk 12 CRC mismatch"}
+    bolt = str(tree / "ps2" / "Bolt.chd")
+    cove = str(tree / "ps2" / "Cove.chd")
+    await verification_store.mark_verified(bolt)
+    events: list[dict] = []
+    real = job_manager._notify_subscribers
+
+    async def capture(job_id, data):
+        events.append(data)
+        await real(job_id, data)
+
+    monkeypatch.setitem(vars(job_manager), "_notify_subscribers", capture)
+    lib = await _folder_library(tree, {"enabled": True, "check_budget_gb": 6})
+    _seed(lib, {"ps2/Aria.chd": 2, "ps2/Bolt.chd": 10, "ps2/Dune.chd": 1})
+
+    await _run(lib)
+
+    (end,) = [e for e in events if e["type"] in ("complete", "error", "cancelled")]
+    assert end["type"] == "complete"
+    assert end["verification_changes"] == {
+        os.path.realpath(cove): "intact",
+        os.path.realpath(bolt): None,  # no longer Intact
+    }
+
+
+@pytest.mark.asyncio
 async def test_a_tick_that_finds_every_image_held_by_run_now_stays_due(
     tree: Path, ready, sent, monkeypatch,
 ) -> None:

@@ -15,6 +15,7 @@ import pytest
 
 from .test_frontend_rules_view import _FOLDER, _find_node
 from .test_frontend_rules_view import _run as _run_store
+from .test_frontend_verification_store_298 import _run as _run_verification
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _HELPER = _SRC / "lib" / "rules" / "checkRule.js"
@@ -151,6 +152,39 @@ process.stdout.write(JSON.stringify({{ edited, call: __log[1] }}));
 """)
     assert data["edited"]["invalid_window"] is True
     assert "invalid_window" not in data["call"][3]["ps2"]
+
+
+def test_a_check_runs_terminal_event_updates_the_badges(tmp_path) -> None:
+    """Codex 4578116084: the run's terminal event carries each checked Image's
+    new state. One that failed loses its Intact badge; one that passed keeps
+    or gains it. A conversion's own flags still apply as before."""
+    data = _run_verification(tmp_path, """
+const store = new VerificationStore();
+store.markChecked('/v/bolt.chd', 'round_tripped');
+store.markChecked('/v/dune.chd');
+store.applyJobEnd({
+  type: 'cancelled',
+  job: { id: 'check1', mode: 'check' },
+  verification_changes: { '/v/bolt.chd': null, '/v/cove.chd': 'intact' },
+});
+store.applyJobEnd({
+  type: 'complete', verified: true, check_passed: 'round_tripped',
+  job: { output_path: '/v/new.rvz', file_path: '/v/new.iso' },
+});
+process.stdout.write(JSON.stringify({
+  bolt: store.checkFor('/v/bolt.chd'),
+  cove: store.checkFor('/v/cove.chd'),
+  dune: store.checkFor('/v/dune.chd'),
+  fresh: store.checkFor('/v/new.rvz'),
+}));
+""")
+    assert data == {"bolt": None, "cove": "intact", "dune": "intact", "fresh": "round_tripped"}
+
+
+def test_the_jobs_stream_hands_every_terminal_event_to_the_verification_store() -> None:
+    src = (Path(__file__).resolve().parents[1] / "src" / "lib" / "stores"
+           / "jobs.svelte.js").read_text(encoding="utf-8")
+    assert src.count("verification.applyJobEnd(data)") == 2  # complete; error/cancelled
 
 
 def test_the_endpoints_send_the_check_rules() -> None:

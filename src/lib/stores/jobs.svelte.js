@@ -656,24 +656,22 @@ class JobsStore {
           case 'snapshot':
           // falls through
           case 'progress':
+            if (data?.job) this._applyJob(data.job);
+            break;
           case 'cancelled':
           case 'error':
             if (data?.job) this._applyJob(data.job);
+            // A check Rule's run that stopped or failed still settled some
+            // Images: their new check state rides on this event too.
+            verification.applyJobEnd(data);
             break;
           case 'complete':
             if (data?.job) this._applyJob(data.job);
             // Job completion carries verified / source_deleted alongside
-            // the job payload (job_manager._notify_subscribers). When the
-            // new output passed verification, add it to the verified set;
-            // when delete-on-verify removed the source, drop it.
-            if (data?.verified && data?.job?.output_path) {
-              verification.markChecked(
-                data.job.output_path, data.check_passed ?? 'intact',
-              );
-            }
-            if (data?.source_deleted && data?.job?.file_path) {
-              verification.forget(data.job.file_path);
-            }
+            // the job payload (job_manager._notify_subscribers), and a check
+            // Rule's run carries each Image's new state: the verification
+            // store applies them all.
+            verification.applyJobEnd(data);
             break;
           case 'status':
             // Status pulses don't carry a job payload in some emit paths.

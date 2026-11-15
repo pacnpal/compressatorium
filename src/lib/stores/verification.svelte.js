@@ -91,6 +91,27 @@ class VerificationStore {
     this.checks.delete(path);
   }
 
+  /**
+   * Apply what a job's terminal event (the jobs stream) says about checks.
+   *
+   * A conversion's `complete` carries `verified` / `check_passed` for its
+   * output and `source_deleted` for its Source. A check Rule's run (#305), on
+   * `complete`, `error` or `cancelled` alike, carries `verification_changes`:
+   * each Image it settled, by the path `/api/verified` lists it under, with
+   * its check now, or null once it is no longer Intact.
+   */
+  applyJobEnd(data) {
+    const job = data?.job;
+    if (data?.verified && job?.output_path) {
+      this.markChecked(job.output_path, data.check_passed ?? 'intact');
+    }
+    if (data?.source_deleted && job?.file_path) this.forget(job.file_path);
+    for (const [path, check] of Object.entries(data?.verification_changes ?? {})) {
+      if (check) this.markChecked(path, check);
+      else this.forget(path);
+    }
+  }
+
   /** Follow a rename. `keep` carries the check over (same-format rename). */
   move(oldPath, newPath, { keep }) {
     const had = this.isVerified(oldPath);

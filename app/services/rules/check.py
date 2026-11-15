@@ -485,6 +485,10 @@ async def _run_checks(
     failed: list[tuple[Check, str]] = []
     # The picked Images the run reached and settled, in any way.
     attempted: set[str] = set()
+    # Each settled Image's Verify record (the path the browser's verification
+    # store keys it by) -> its check now, or None once it is no longer Intact.
+    # Sent on the run's terminal event, so an open page updates its badges.
+    changes: dict[str, str | None] = {}
     cancelled = False
     try:
         for index, check in enumerate(picked):
@@ -506,10 +510,12 @@ async def _run_checks(
                     # file (its Source and producing mode): only a conversion
                     # replaces it.
                     await verification_store.refresh_check(check.record)
+                    changes[os.path.realpath(check.record)] = INTACT
                 elif verdict == NOT_INTACT:
                     # The Intact badge no longer holds, but what made the file
                     # stays, so the next check still reaches its tool.
                     await verification_store.mark_failed(check.record)
+                    changes[os.path.realpath(check.record)] = None
                 return True
 
             try:
@@ -543,6 +549,7 @@ async def _run_checks(
         _outcomes[job_id] = {"counts": dict(counts), "cancelled": False, "crashed": True}
         await job_manager.finish_external_job(
             job_id, success=False, error_message="The check run stopped on an error",
+            event_extra={"verification_changes": changes},
         )
         return
     finally:
@@ -559,14 +566,19 @@ async def _run_checks(
     if cancelled:
         # Only the Rules whose Images were all reached count as run.
         await report(frozenset(attempted) if current() else frozenset())
-        await job_manager.finish_external_job_cancelled(job_id, message=f"Stopped: {summary}")
+        await job_manager.finish_external_job_cancelled(
+            job_id, message=f"Stopped: {summary}",
+            event_extra={"verification_changes": changes},
+        )
         return
     # The check Rules' runs, recorded for the Images their checks reached.
     await report(frozenset(attempted) if current() else frozenset())
     job = job_manager.get_job(job_id)
     if job is not None:
         job.message = summary
-    await job_manager.finish_external_job(job_id, success=True)
+    await job_manager.finish_external_job(
+        job_id, success=True, event_extra={"verification_changes": changes},
+    )
 
 
 async def _acquire_slot(cancel_event: asyncio.Event | None) -> Any:
