@@ -2143,8 +2143,9 @@ ended. The job carries what the row needs and the in-memory history would lose:
   `source_deleted` is derived from it.
 
 `tool` comes from `registry.for_mode`; `platform` is filled only when the mode
-serves exactly one Platform slug until detection lands (#294). `library_id`,
-`image_key` and `referrers_updated` are written empty for later tickets to fill.
+serves exactly one Platform slug until detection lands (#294). `referrers_updated`
+comes from `ConversionJob.referrers_updated` (see 3.3.15). `library_id` and
+`image_key` are written empty for later tickets to fill.
 Savings count only completed rows whose Source was deleted, and can be
 negative (an RVZ replaced by its larger ISO). A job announced terminal twice
 (a queued cancel) writes one row: `(job_id, finished_at)` is unique and the
@@ -2206,7 +2207,7 @@ second: one root folder inside a Volume.
   the metadata snapshot for re-pin here, so the re-pin bookkeeping stays in
   `services/romm`.
 - `sweep_extras()` adds keys when a sweep ends (RomM: `pending_repins`).
-- `before_pass(*, dry_run)` is not called by the sweep: `run-rules` (§3.3.14)
+- `before_pass(*, dry_run)` is not called by the sweep: `run-rules` (§3.3.17)
   calls it before it sweeps the Library, for the upkeep the server does at
   startup or in its background loops. RomM loads its settings and, on a real
   pass, runs `routes.romm.replay_identity_cleanup()` and one
@@ -2291,7 +2292,7 @@ RomM routes and `main.py` call (`get_rules()`, `set_rules(raw)`, `sweep(...)`,
 not change. `run_forever(libraries)` takes a callable returning the Libraries to
 sweep on each tick. `romm_auto.run_forever()` passes
 `services.library_catalog.all_libraries`, the one list of Libraries; `run-rules`
-(§3.3.14) sweeps the same list, so a new Library is added there once.
+(§3.3.17) sweeps the same list, so a new Library is added there once.
 
 ### 3.3.12 The Round-trip check (`ToolPlugin.content_digest`, `services/round_trip.py`)
 
@@ -2311,12 +2312,20 @@ class ContentDigest:
     value: str   # lowercase hex
     def same_content(self, other) -> bool: ...   # ValueError on a kind mismatch
 
-async def content_digest(self, path, *, cancel_event=None) -> ContentDigest | None
+async def content_digest(self, path, *, cancel_event=None, within=None) -> ContentDigest | None
 ```
 
 - `content_digest(path)` hashes what `path` decodes to. `None` means the tool
   has no digest for this kind of file; `ContentDigestUnavailable` means it
   should have one and could not get it. `BaseTool` returns `None`.
+- `within` (a sequence of folders, or `None`) is where a sheet's track
+  references may resolve, with the same meaning as `post_convert`'s: `None`
+  confines them to the configured Volumes. `round_trip(..., within=)` passes
+  the job's value to the Source side only: `[job.temp_dir]` for an
+  archive-member Source, else `None`. The output always lives in a Volume, so
+  its side gets `None`. A tool that extracts an output into its own scratch
+  folder before hashing it passes that folder to its own sheet reads. A tool
+  that reads no sheet, like Dolphin, accepts the argument and ignores it.
 - `kind` keeps digests of different shapes apart. `same_content` raises
   `ValueError` rather than answer "different" for, say, a CD track hash against
   a disc-image hash, and the check treats that as "not proven".
@@ -2376,7 +2385,7 @@ conversion, no check runs in that job, so `job.check_passed` stays unset. Its
 (`JobManager._stored_check`), so the UI keeps a Round-tripped badge rather than
 falling back to Intact.
 
-### 3.3.13 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
+### 3.3.14 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
 
 `detect_platform(path) -> Detection` is the one place an Image's Platform is
 worked out without a library manager. The convert panel's Auto choice uses it
@@ -2672,7 +2681,215 @@ The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
 under the `primary_tool_preference` key that now names the selected tool tab;
 its values were tool ids, so a value left from it still loads as a tab.
 
-### 3.3.14 The headless CLI (`app/cli.py`, #306, #307)
+### 3.3.15 Referrers (`services/referrers/`)
+
+A Referrer is anything that points at an Image by its path: an `.m3u`
+playlist today, `gamelist.xml` and the RomM in-place swap later. When
+delete-on-verify replaces a Source, every Referrer is moved to the output
+**before** the Source is removed. What is guaranteed: every reference a
+registered Referrer finds is either rewritten to the output before the Source
+goes, or the Source is kept. A reference no Referrer looks at is not covered;
+for `.m3u` that is a playlist outside the replaced file's folder and its
+ancestors up to the Volume root (a sibling folder's `../other/Game.cue`, or
+another Volume). Referrers are plugins on one contract, registered like tools,
+and the job pipeline never branches on which ones exist.
+
+```python
+class Referrer(ABC):                          # services/referrers/base.py
+    id: str                                   # stable; lands in the Ledger
+    label: str
+    def detect(self, image_path) -> bool      # could it point at this Image?
+    def plan(self, renames) -> list[ReferrerChange]   # writes nothing
+    def apply(self, change) -> None           # atomic, one-time backup; raises ReferrerError
+
+@dataclass(frozen=True)
+class ReferrerChange:
+    referrer: str                             # Referrer id
+    target: str                               # the file/record rewritten
+    edits: tuple[tuple[str, str], ...]        # (old, new) as shown to the user
+    payload: Any                              # Referrer-private, never serialized
+```
+
+`renames` is `{old_path: new_path}`: every file the delete will remove, mapped
+to the output that replaces it (a `.cue` and its `.bin` tracks all map to the
+`.chd`; an archive maps to the output extracted from it).
+
+The package exposes the registry and two entry points:
+
+- `plan_changes(image_path, renames)` runs `detect` + `plan` on every
+  registered Referrer. Both entry points ask `detect` about the Image *and*
+  every path in `renames`, so a companion that is deleted too (a cue's track
+  in a subfolder) gates planning as well. `POST /api/jobs/delete-plan` calls it
+  per item and returns `referrer_changes: [{referrer, target, edits: [{old,
+  new}]}]`, which `DeletePlanModal.svelte` lists under each source. The request
+  carries `output_dir` and `duplicate_action`; the planned output goes through
+  `_renamed_output`, the same helper `plan_job` uses, so a RENAME preview names
+  the numbered path the job writes. The route builds its plan with
+  `build_delete_plan(..., confine_to_volumes=True)`: a track that resolves
+  outside every Volume (through a symlinked folder) goes to `unsafe_paths`,
+  blocks the item, and never reaches `delete_paths` or the Referrer scan. The
+  preview plans through `plan_changes_bounded`, under the same detached,
+  no-progress bound as the hook, so a playlist on a mount that stopped
+  answering can't hang the confirmation. A plan that can't be made (or times
+  out) becomes a warning on the item ("the source will be kept").
+- `update_before_source_removal(image_path, renames)` is the **one hook** in
+  `_process_job`. It runs after `_delete_check` (§3.3.12) has passed and after
+  the delete plan's safety checks, immediately before the `os.remove` loop. Off the event
+  loop it plans every Referrer first, then applies each change; the first
+  failure stops it, and it never raises. It returns a `ReferrerOutcome` whose
+  `records` hold one entry per target, `{referrer, target, status}` with
+  `status` `updated`, `failed` or `skipped` (not attempted after a failure) and
+  a `reason` for the last two. The records are copied to
+  `ConversionJob.referrers_updated` and the Ledger's `referrers_updated` JSON
+  column, so a row says which Referrer kept the Source and why. On a failure
+  the job skips the delete, keeps the Source and the output, ends `completed`
+  with the message `converted, source kept: couldn't update <file> (<reason>)`,
+  and `deleted_paths` stays empty. `JobRow.svelte` shows that message on a
+  completed delete-on-verify job that deleted nothing. Changes already applied
+  before the failure stay: they point at the output, which exists.
+  The hook runs on a detached thread (`run_detached_within_stall_bound`, the
+  conversion's no-progress bound) and takes the job's `cancel_event`, so a
+  playlist on a mount that stopped answering can't hold the job slot and its
+  locks: on a timeout or a Cancel the thread is abandoned and the outcome keeps
+  the Source with the reason, recording one `failed` entry per Referrer (target
+  the Image) so the Ledger row says why. An abandoned thread can't write late:
+  `_update_sync` runs under a `base.WriteGuard` holding an `abandoned` event
+  (set by the hook on a timeout or Cancel) and each output's identity
+  (`st_dev`, `st_ino`, size, `mtime_ns`) captured when the hook started.
+  `apply` calls `base.check_write` under the playlist's lock right before every
+  write (backup and playlist), so once the job has let go, or another
+  conversion has replaced the output, nothing more is written.
+  Because the hook awaits a worker thread, the job re-asks two things after
+  it and before `os.remove`: a Cancel pressed meanwhile keeps the Source
+  ("Delete skipped (cancelled)"), and `JobManager._check_delete_paths` (lock,
+  Volume, other job, symlink, type, not-the-output, snapshot size / mtime /
+  inode / device) runs a second time; it ran once before the hook. A failure
+  the second time keeps the Source with `converted, source kept: <reason>`,
+  and since that check awaits as well, cancel is asked once more after it,
+  immediately before the removal loop.
+
+`atomic_write_bytes(path, data)` (in `base.py`) is the shared writer for file
+Referrers and anything else that writes a playlist: a temp file in the same
+directory, fsync, `os.replace`, keeping the old file's permission bits and
+group (and its owner when running as root). Readers that reach a shared
+playlist through its group would otherwise lose access, so a group that can't
+be set on the temp file aborts the write (`PermissionError` "can't keep its
+group"), which keeps the Source. A crash leaves the old file or the new one,
+never half of one.
+
+**The `.m3u` Referrer** (`m3u.py`) is always on.
+
+- *Where it looks.* The replaced file's resolved folder and each folder above
+  it up to and including its Volume root (`utils.path_utils.volume_root_for`,
+  with nested Volumes the outermost one wins, so `/roms/All.m3u` is found for
+  a disc under a `/roms/psx` Volume). Only the `*.m3u` files directly in those folders,
+  no recursive walk, so the cost is one `scandir` per level. This covers a
+  playlist beside the discs and the Batocera / ES-DE layout (`psx/Game.m3u`
+  naming `.discs/Game (Disc 1).cue`). `detect` looks at the same folders.
+- *What it rewrites.* Only entries whose path (as the reader below reads it)
+  resolves exactly to a replaced file, matched by `(st_dev, st_ino)` so any
+  spelling that reaches the file counts (relative, absolute, `./`, other case
+  on a case-insensitive volume). Every file comparison in the Referrer (entry
+  to replaced file, entry to output, the write guard's output check) goes
+  through `utils.path_utils.same_identity`: the same size and `mtime_ns`
+  always (so a file rewritten in place, same inode with new bytes, is not
+  the file that was checked), and then the same `(st_dev, st_ino)` or the
+  same resolved path. FUSE/SMB mounts such as Unraid's shfs user shares can
+  report a new `st_ino` for the same file on each stat, and can reuse
+  inodes, so the inode alone never decides. A `path|label` entry and a quoted path are
+  rewritten with their label and quotes kept. Everything else is kept byte
+  for byte: `#` lines, other entries, blank lines, line endings and a UTF-8
+  BOM.
+- *Not valid UTF-8* (Windows-1252, Latin-1). The file is read as cp1252 only
+  to look for a replaced file's name; if any entry could name one the Source
+  is kept ("playlist isn't UTF-8 and may name this disc"). Otherwise it goes
+  through the normal rewrite, and `surrogateescape` decoding keeps its other
+  bytes as they were.
+- *Fail safe.* An entry that does not resolve but whose file name matches a
+  replaced file's name (splitting on `/` or `\`, ignoring case, both sides in
+  Unicode NFC; the names are also compared trimmed of C-locale spaces) is not
+  guessed at: `plan` raises `ReferrerError` naming the playlist and line
+  (`line 2 names game.cue but doesn't point at it`), so the Source is kept.
+  That catches absolute paths in the emulator's own path space, mixed
+  separators and case differences on case-sensitive volumes. An unresolved
+  entry for some other file does not block anything. For a labelled or quoted
+  line, two other readings are also checked: the whole trimmed entry (a plain
+  line reader with no label split or unquoting) and the label-split path with
+  its quotes kept (RetroArch's `rm3u.c`). If either reaches or names a
+  replaced file (a Source literally named `A|B.cue` or `"Game.cue"`) the
+  Source is kept.
+- *UTF-16 and NUL bytes.* Such a playlist is never rewritten. It is UTF-16
+  only with a BOM, or when NULs fill most of the odd (little-endian) or even
+  (big-endian) byte positions, and then it is decoded strictly (or with
+  replacements if that fails). The NUL-stripped UTF-8 and cp1252 readings are
+  always checked too, BOM or not: the parity guess can be wrong (an 8-bit
+  file with a zero-filled tail), a file can mix content (an 8-bit line
+  appended to a UTF-16 one), and they are what a line reader sees. Both
+  UTF-16 byte orders are read too (with replacements), since long non-ASCII
+  names have too few NULs for the parity guess. If any
+  reading contains a replaced file's name the Source is kept, and the reason
+  names the reading that matched (`UTF-16` or `NUL bytes`); otherwise the
+  playlist is left alone.
+- *Entry style.* The new entry is the entry's own folder part plus the path
+  from the replaced file's resolved folder to the resolved output, so both
+  sides use the same path form (a symlinked folder does not turn `Game.cue`
+  into `../link/Game.chd`), `./` and absolute prefixes are kept, and a
+  backslash entry stays backslashed. When the output is in another folder the
+  normalised form is tried first, then the literal one (`link/../out/G.chd`
+  still resolves through a symlinked `link`).
+- *One reader.* `_read_line(raw_line, first)` is the only parser, modelled on
+  C byte readers (dropping quotes is what some readers do; RetroArch keeps
+  them, which the fail-safe readings above cover): lines split on CR/LF bytes only; a UTF-8 BOM
+  dropped on the file's first line; only the C-locale spaces (space, tab, CR,
+  LF, VT, FF, as libretro's `ISSPACE`) trimmed
+  (NBSP, U+3000, U+2028 and the like stay part of the name); blank and `#`
+  lines skipped; a `path|label` split at the first `|`; quotes around the
+  path dropped; a slash-free entry with backslashes read as
+  backslash-separated. It returns the path plus the text before and after it,
+  so a rewrite keeps the label, quotes and spacing. Planning, rewriting,
+  `entries(data)` and every read-back check call it.
+- *Choosing what to write* (`_choose_entry`). Each candidate is tried as
+  written in the entry's style, then with a `./` prefix, then (for a
+  backslash entry) in forward slashes. A form holding a control character (CR,
+  LF, NUL, VT, any Unicode `Cc`) is skipped. Each remaining form is rendered
+  into its full line (BOM prefix, the entry's own text before and after the
+  path: whitespace, quotes, label) and read back with `_read_line`, so a `|`
+  or a quote in the path reads back wrong and can't be written (the Source is
+  kept). The first whose path, read from the playlist's folder, reaches the
+  output is used: same `(st_dev, st_ino)`. Only the delete confirmation, which
+  plans before the output exists, falls back to comparing resolved paths;
+  `apply` requires the output to exist, so a late, abandoned apply can't point
+  a playlist at an output removed meanwhile.
+  So `./` protects a leading `#`, whitespace, a U+FEFF that a reader would
+  take for a BOM, and a literal backslash in a Linux file name. If no form
+  works (a trailing space, a line break), `plan` raises and the Source is
+  kept.
+- *Read-back of the whole file.* After rendering, the bytes about to be
+  written go through `entries()`: the entry count must be unchanged, every
+  untouched entry must read back as it was, and every rewritten entry, at its
+  position, must reach the output. Anything else raises and keeps the Source.
+- *For new playlists.* `entry_for(playlist_dir, path, first_line=...)` uses
+  the same `_choose_entry` and reader, so code that creates a playlist
+  (#299) encodes entries exactly as the Referrer reads them, or gets `None`
+  for a path that can't be one entry.
+- *Concurrency.* Each playlist (by resolved path) has a `threading.Lock`.
+  `apply` holds it while it re-reads the playlist, re-runs the rewrite on what
+  is there now and writes, so two jobs updating one playlist both land, and an
+  edit made after planning is kept.
+- *Writing.* `plan` refuses a symlinked playlist before reading it (it may
+  lead out of the Volumes), which keeps the Source; `apply` refuses a
+  read-only or symlinked one. It writes `<name>.m3u.bak` once, only if no
+  backup exists, with the playlist's own mode and group
+  (`atomic_write_bytes(..., like=playlist)`; if the playlist vanished
+  meanwhile the write fails rather than fall back to 0644, and the Source is
+  kept), then the new playlist.
+
+To add a Referrer: subclass `Referrer` in `services/referrers/`, give it a new
+`id`, and `registry.register(...)` it in `services/referrers/__init__.py`.
+Nothing in the job pipeline, the delete-plan route or the modal changes. The
+existing RomM re-pin (3.3.9) is not a Referrer yet.
+
+### 3.3.17 The headless CLI (`app/cli.py`, #306, #307)
 
 `compressatorium convert|verify|run-rules` runs the pipeline with no web server. It is a
 caller of the same seams the routes use, not a second conversion path:
@@ -3024,6 +3241,17 @@ job ends COMPLETED with `job.warning` set to "Source kept: it was being read by
 another job": the conversion succeeded, so it never fails for this. The CLI
 prints the warning on that line and exits 0 (transient, as #307's run rules
 treat it); a safety refusal, such as an archive with extra members, exits 1.
+
+The hold spans the Referrer hook (§3.3.15). `_check_delete_paths`, run before
+and after the hook, skips the lock probe for a path in this job's own
+`_delete_holds` (that exclusive lock is the job's, and while it is held no
+other job or process can lock the path) and still refuses any other locked
+path. Every kept-Source ending after the hold (a Referrer that couldn't be
+updated, a failed second check, a Cancel during the hook) completes the job
+with that reason in both `job.message` and `job.warning`, so the CLI line
+says why the Source stayed and exits 0; the job row shows it once
+(`jobDetailLines` in `src/lib/util/jobDetail.js`). A Cancel seen at the last
+look just before the unlinks ends the job CANCELLED instead.
 
 **Root.** `scripts/compressatorium` started as root execs `/entrypoint.sh
 compressatorium ...`: the entrypoint's PUID/PGID remap and `gosu converter`
