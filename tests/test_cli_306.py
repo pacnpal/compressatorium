@@ -2598,3 +2598,52 @@ def test_a_playlist_that_blocks_the_delete_is_reported(volume, dolphin, capsys):
     assert lines[0]["reason"] == "converted, source kept: couldn't update Game.m3u (is read-only)"
     assert iso.exists()
     assert playlist.read_bytes() == b"Game.iso\n"
+
+
+@pytest.mark.parametrize("marker", ["Game_rvz", "Game_iso"])
+def test_a_lock_that_cannot_be_made_fails_the_line_with_the_reason(
+    volume, dolphin, capsys, monkeypatch, marker,
+):
+    """A lock file that can't be made (EACCES here; a 184-byte track name
+    once gave ENAMETOOLONG) is an error, not contention: the job fails with
+    the reason at once instead of being requeued forever (codex 4577893015).
+    ``Game_rvz`` is the output lock, ``Game_iso`` the Source's input lock."""
+    import errno
+
+    from services import lock_manager as lock_module
+
+    real = lock_module.open_lock_handle
+
+    def refuse(path):
+        if marker in os.path.basename(path):
+            raise OSError(errno.EACCES, os.strerror(errno.EACCES), path)
+        return real(path)
+
+    monkeypatch.setattr(lock_module, "open_lock_handle", refuse)
+    iso = _iso(volume)
+
+    code, lines = _cli(capsys, "convert", str(volume), "--to", "rvz", "--json")
+
+    assert code == 1
+    assert lines[0]["status"] == "failed"
+    assert os.strerror(errno.EACCES) in lines[0]["reason"]
+    assert dolphin["runs"] == []
+    assert iso.exists()
+
+
+def test_verify_reports_a_lock_that_cannot_be_made(volume, dolphin, capsys, monkeypatch):
+    import errno
+
+    from services import lock_manager as lock_module
+
+    def refuse(path):
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), path)
+
+    monkeypatch.setattr(lock_module, "open_lock_handle", refuse)
+    _rvz(volume)
+
+    code, lines = _cli(capsys, "verify", str(volume), "--json")
+
+    assert code == 1
+    assert lines[0]["status"] == "failed"
+    assert os.strerror(errno.EACCES) in lines[0]["reason"]

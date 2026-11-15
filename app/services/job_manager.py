@@ -37,7 +37,7 @@ from services.chd_metadata_store import chd_metadata_store
 from services.chdman import ConversionCancelled, chdman_service
 from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
-from services.lock_manager import lock_manager
+from services.lock_manager import LockFailed, lock_manager
 from services import referrers
 from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import ReadCancelled, run_detached
@@ -1381,18 +1381,26 @@ class JobManager:
         if not lock_manager.acquire_lock(job.output_path, allow_existing=job.allow_overwrite):
             return False
         held: List[str] = []
+
+        def let_go() -> None:
+            for taken in held:
+                lock_manager.release_lock(taken)
+            lock_manager.release_lock(job.output_path)
+
         if job.input_kind != InputKind.DIRECTORY:
             # Directory modes' split parts are found on disk later and are
             # already guarded by their own prefix match.
-            for path in registry.for_mode(job.mode.value).companion_outputs(
-                job.output_path, job.mode.value,
-            ):
-                if not lock_manager.acquire_lock(path, allow_existing=job.allow_overwrite):
-                    for taken in held:
-                        lock_manager.release_lock(taken)
-                    lock_manager.release_lock(job.output_path)
-                    return False
-                held.append(path)
+            try:
+                for path in registry.for_mode(job.mode.value).companion_outputs(
+                    job.output_path, job.mode.value,
+                ):
+                    if not lock_manager.acquire_lock(path, allow_existing=job.allow_overwrite):
+                        let_go()
+                        return False
+                    held.append(path)
+            except LockFailed:
+                let_go()
+                raise
         self._companion_locks[job.id] = held
         return True
 
@@ -3163,18 +3171,26 @@ class JobManager:
             return
 
         # Try to acquire lock for the output file (prevents race conditions)
-        lock_acquired = await run_in_threadpool(self._take_output_locks, job)
+        lock_error = None
+        try:
+            lock_acquired = await run_in_threadpool(self._take_output_locks, job)
+        except LockFailed as exc:
+            # Not contention: the lock file can't be made. Fail with the
+            # reason now, never requeue (codex 4577893015).
+            lock_acquired, lock_error = False, str(exc)
         if not lock_acquired:
             # A transient block by a folder->iso subtree lock (racing the
             # precheck) waits & re-queues rather than failing.
-            if await run_in_threadpool(self._blocked_by_dir_lock, job):
+            if lock_error is None and await run_in_threadpool(self._blocked_by_dir_lock, job):
                 await self._defer_blocked_job(job_id, output_lock_held=False)
                 return
             # Could not acquire lock - either file exists or is being converted
             # Check current status to provide better error message
             file_exists, is_locked = lock_manager.check_file_status(job.output_path)
             job.status = JobStatus.FAILED
-            if is_locked:
+            if lock_error is not None:
+                job.error_message = lock_error
+            elif is_locked:
                 job.error_message = (
                     "Another job is already converting to this output file"
                 )
@@ -3243,9 +3259,13 @@ class JobManager:
         # already operating inside the folder; fail like an output collision.
         dir_lock_acquired = False
         if job.input_kind == InputKind.DIRECTORY:
-            dir_lock_acquired = await run_in_threadpool(
-                lock_manager.acquire_dir_lock, job.file_path,
-            )
+            try:
+                dir_lock_acquired = await run_in_threadpool(
+                    lock_manager.acquire_dir_lock, job.file_path,
+                )
+            except LockFailed as exc:
+                await self._fail_before_start(job_id, job, str(exc), dir_lock_held=False)
+                return
             if not dir_lock_acquired:
                 # Another job is operating inside this folder; wait in the queue
                 # and retry rather than failing (releases the output lock taken
