@@ -308,3 +308,16 @@ def test_check_now_names_libraries_and_counts_them_right():
     assert "could not be checked" in view
     assert "Libraries could not be checked" in view
 
+
+
+def test_the_header_row_lines_up_with_the_rows():
+    """Each row is its own grid: every track must be sized the same in every row.
+
+    An `auto` track sizes to that row's content, and a visually hidden
+    (absolutely positioned) header cell takes no track at all, so the header
+    drifted left of the rows in the first screenshots.
+    """
+    view = _VIEW.read_text(encoding="utf-8")
+    columns = re.search(r"\.row \{[^}]*grid-template-columns:([^;]+);", view, re.S).group(1)
+    assert "auto" not in columns, columns
+    assert 'role="columnheader" class="sr-only"' not in view

@@ -139,7 +139,8 @@
         <span role="columnheader">Kind</span>
         <span role="columnheader">First seen</span>
         <span role="columnheader">Last seen</span>
-        <span role="columnheader" class="sr-only">Actions</span>
+        <!-- Hidden text inside a cell that still takes its track. -->
+        <span role="columnheader"><span class="sr-only">Actions</span></span>
       </div>
       {#each findings.list as row (row.id)}
         <div class="row" class:dismissed={row.dismissed} role="row">
@@ -251,7 +252,9 @@
   }
   .row {
     display: grid;
-    grid-template-columns: minmax(90px, 0.8fr) minmax(200px, 2.4fr) minmax(120px, 0.9fr) 1fr 1fr auto;
+    /* Every row is its own grid, so every track has a size that does not
+       depend on the row's content: the header lines up with the rows. */
+    grid-template-columns: 7rem minmax(12rem, 1fr) 9.5rem 7.5rem 7.5rem 15rem;
     gap: var(--space-3, 12px);
     align-items: center;
     padding: 10px 14px;
@@ -281,7 +284,8 @@
     clip: rect(0 0 0 0);
     white-space: nowrap;
   }
-  @media (max-width: 900px) {
+  /* Below this the fixed tracks (about 936px) do not fit beside the sidebar. */
+  @media (max-width: 1180px) {
     .findings-view { padding: var(--space-4, 16px); }
     .row { grid-template-columns: 1fr; gap: 4px; }
     .row.header { display: none; }
