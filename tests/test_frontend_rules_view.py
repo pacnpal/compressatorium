@@ -114,6 +114,37 @@ process.stdout.write(JSON.stringify({{
     assert data["call"][0:2] == ["saveLibraryRules", "folder:3"], data
 
 
+def test_a_listing_answered_after_removal_does_not_bring_the_library_back(tmp_path):
+    """Codex 4576901574: a late response for a removed Library is ignored.
+
+    Start a Platform listing, remove the Library, then the listing answers
+    with its Library row: the picker stays empty and the source is dropped.
+    """
+    data = _run(tmp_path, f"""
+const loadOnce = libraries.load();
+await tick();
+__calls[0].resolve([{_FOLDER}]);
+await loadOnce;
+const source = libraries.sourceFor('folder:3');
+const listing = source.loadPlatforms();
+await tick();
+const removing = libraries.remove('folder:3');
+await tick();
+__calls[2].resolve({{}});
+await removing;
+__calls[1].resolve({{ platforms: [], library: {{ ...{_FOLDER}, schedule_enabled: true }} }});
+await listing;
+libraries.adopt({{ ...{_FOLDER}, name: 'late update' }});
+process.stdout.write(JSON.stringify({{
+  list: libraries.list, source: libraries.sourceFor('folder:3'),
+  scheduled: source.scheduleEnabled,
+}}));
+""")
+    assert data["list"] == [], data
+    assert data["source"] is None, data
+    assert data["scheduled"] is False, data
+
+
 def test_a_read_that_started_before_a_save_is_dropped(tmp_path):
     """CodeRabbit 4576895559: a stale loadRules() response cannot undo a save.
 
