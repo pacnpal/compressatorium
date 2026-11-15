@@ -379,6 +379,9 @@ class FolderLibrary:
             out.append(findings.Observed(
                 kind=findings.UNSORTED, image_key=self._key(path), path=path,
                 reason="the file could not be read", cause={"how": "unreadable"},
+                # A file that was readable before (and may have a dismissed
+                # Finding) keeps what it has: not read is not changed.
+                only_if_new=True,
             ))
         return out
 

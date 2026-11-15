@@ -47,6 +47,10 @@ class Observed:
     reason: str
     # What the Finding is about, structured. Its digest is the fingerprint.
     cause: dict[str, Any] = field(default_factory=dict)
+    # The producer could not look at the Image this time (a file it could not
+    # read). Stored only when the Image has no Finding yet; one it already has
+    # is kept as it is, as for a folder in `keep_under`.
+    only_if_new: bool = False
 
     @property
     def fingerprint(self) -> str:
@@ -78,7 +82,8 @@ def reconcile(
 
     *keep_under* names the Image-key folders the producer could not look in
     this time (a subfolder that did not list). Rows under them are left as
-    they are, dismissal included: not seen is not gone.
+    they are, dismissal included: not seen is not gone. An ``only_if_new``
+    item does the same for one Image that already has a row.
 
     *current* is asked under the store's write lock, just before writing:
     False (the producer's Library was removed while it worked) writes nothing.
@@ -101,8 +106,16 @@ def reconcile(
             _db.FindingRecord.kind.in_(kinds),
         ).all()
         stored = {(row.image_key, row.kind): row for row in rows}
+        # Images the producer could not look at this time that already have a
+        # row: every row of theirs stays as it is, and nothing new is added.
+        held = {row.image_key for row in rows} & {
+            item.image_key for item in seen.values() if item.only_if_new
+        }
+        seen = {k: v for k, v in seen.items() if k[0] not in held}
         for key, row in stored.items():
             item = seen.get(key)
+            if row.image_key in held:
+                continue
             if item is None and _under(row.image_key, unseen):
                 continue
             if item is None:

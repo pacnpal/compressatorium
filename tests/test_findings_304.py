@@ -864,3 +864,101 @@ async def test_a_sheet_whose_track_is_outside_the_library_shows_no_outside_path(
         for leak in ("beside", "neighbour", "beyond", "secret", str(db.parent)):
             assert leak not in text, (leak, row)
 
+
+# ----------------------------------------------------------------------
+# a dismissal outlives a walk that did not see its Image (review r2, F3)
+# ----------------------------------------------------------------------
+
+
+def _all() -> dict[str, dict]:
+    return {r["image_key"]: r for r in _open(include_dismissed=True)}
+
+
+@pytest.mark.skipif(_IS_ROOT, reason="root reads a file whatever its mode")
+@pytest.mark.asyncio
+async def test_a_dismissed_conflict_unreadable_for_one_walk_stays_dismissed(
+    tree: Path,
+) -> None:
+    from services import findings, libraries
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+    first = _all()["ps2/Misfiled.iso"]
+    findings.dismiss(first["id"])
+    misfiled = tree / "ps2" / "Misfiled.iso"
+
+    misfiled.chmod(0)
+    try:
+        library.summary(refresh=True)
+        # Not read is not changed: the row is kept as it was.
+        mid = _all()["ps2/Misfiled.iso"]
+        assert (mid["id"], mid["kind"], mid["dismissed"]) == (
+            first["id"], "platform_conflict", True,
+        )
+    finally:
+        misfiled.chmod(0o644)
+
+    library.summary(refresh=True)
+    after = _all()["ps2/Misfiled.iso"]
+    assert (after["kind"], after["dismissed"]) == ("platform_conflict", True)
+
+
+@pytest.mark.asyncio
+async def test_a_dismissed_conflict_under_an_empty_mount_point_comes_back_dismissed(
+    tree: Path,
+) -> None:
+    import shutil
+
+    from services import findings, libraries
+
+    _gamecube(tree / "usb" / "ps2" / "Wrong.iso")
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+    findings.dismiss(_all()["usb/ps2/Wrong.iso"]["id"])
+    usb = tree / "usb"
+    stash = tree.parent / "stash"
+
+    # An unmounted mount point is an empty folder: it lists without error.
+    shutil.move(str(usb), str(stash))
+    usb.mkdir()
+    library.summary(refresh=True)
+    # The row goes (rule 3), and the dismissal does not.
+    assert "usb/ps2/Wrong.iso" not in _all()
+    usb.rmdir()
+    shutil.move(str(stash), str(usb))
+    library.summary(refresh=True)
+
+    after = _all()["usb/ps2/Wrong.iso"]
+    assert (after["kind"], after["dismissed"]) == ("platform_conflict", True)
+
+
+@pytest.mark.skipif(_IS_ROOT, reason="root reads a file whatever its mode")
+@pytest.mark.asyncio
+async def test_a_dismissed_unsorted_image_unreadable_for_one_walk_stays_dismissed(
+    tree: Path,
+) -> None:
+    from services import findings, libraries
+
+    await _register(tree)
+    library = libraries.folder_libraries()[0]
+    library.summary(refresh=True)
+    first = _all()["Mystery.iso"]
+    findings.dismiss(first["id"])
+    mystery = tree / "Mystery.iso"
+
+    mystery.chmod(0)
+    try:
+        library.summary(refresh=True)
+        mid = _all()["Mystery.iso"]
+        assert (mid["id"], mid["reason"], mid["dismissed"]) == (
+            first["id"], first["reason"], True,
+        )
+    finally:
+        mystery.chmod(0o644)
+
+    library.summary(refresh=True)
+    after = _all()["Mystery.iso"]
+    assert (after["id"], after["dismissed"]) == (first["id"], True)
+
