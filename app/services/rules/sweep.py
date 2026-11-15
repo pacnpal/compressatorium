@@ -113,6 +113,11 @@ _sweep_lock = asyncio.Lock()
 # to outlive.
 _job_owners: dict[str, tuple[Library, str, str]] = {}
 
+# (library id, platform id) -> the reason it last could not be listed. A
+# Platform that stays unreadable (a folder that is gone) is retried every tick;
+# this logs the change of state, once each way, instead of every tick.
+_unreadable: dict[tuple[str, str], str] = {}
+
 # job id -> outcome, for a job that ended before its record was written. Drained
 # by `_mark_converted`; see there. Bounded by the same thing that bounds
 # `_job_owners`: one entry per queued conversion, removed when it is applied.
@@ -344,6 +349,8 @@ async def forget_library(library: Library) -> None:
         for job_id, owner in list(_job_owners.items()):
             if owner[0].id == library.id:
                 _job_owners.pop(job_id, None)
+        for key in [k for k in _unreadable if k[0] == library.id]:
+            _unreadable.pop(key, None)
         await store.write(store.RULES_KEY, library, {})
         await store.write(store.STATE_KEY, library, {})
 
@@ -1090,7 +1097,12 @@ async def _sweep_locked(
                 _LISTING_SECONDS,
             )
         except LibraryUnreadable as exc:
-            logger.warning("romm_auto: platform %s unreadable: %s", platform_id, exc)
+            if _unreadable.get((library.id, platform_id)) != exc.code:
+                logger.warning(
+                    "romm_auto: platform %s of %s unreadable: %s",
+                    platform_id, library.id, exc,
+                )
+            _unreadable[(library.id, platform_id)] = exc.code
             # The Library's reason, so the summary can say "still running" or
             # "the folder is not reachable" rather than one generic failure.
             result["errors"].append(
@@ -1098,6 +1110,7 @@ async def _sweep_locked(
             )
             continue
         except asyncio.TimeoutError:
+            _unreadable[(library.id, platform_id)] = "library_unresponsive"
             logger.warning(
                 "romm_auto: listing platform %s did not finish in %ss; stopping "
                 "the sweep (the Library is not answering)", platform_id,
@@ -1108,6 +1121,10 @@ async def _sweep_locked(
             )
             result["stopped_reason"] = "library_unresponsive"
             break
+        if _unreadable.pop((library.id, platform_id), None) is not None:
+            logger.info(
+                "romm_auto: platform %s of %s is readable again", platform_id, library.id,
+            )
 
         # The editor narrows the target list, but a rule can outlive the tool
         # set it was written against (or be hand-edited), and `converts_path` is

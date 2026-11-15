@@ -1286,3 +1286,68 @@ async def test_a_listing_still_running_is_its_own_409(tree: Path, hung_walk) -> 
         await routes.library_platforms(lib["id"])
     assert exc.value.status_code == 409
     assert exc.value.detail == routes.LISTING_IN_PROGRESS
+
+
+# ----------------------------------------------------------------------
+# before the PR (review round 4 minors)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_gone_folder_is_logged_once_and_its_recovery_once(
+    db: Path, ready, queue, monkeypatch, caplog,
+) -> None:
+    """M2: one warning when it becomes unreadable, one line when it recovers."""
+    import logging
+
+    from routes import libraries as routes
+    from services.libraries import folder
+
+    monkeypatch.setattr(folder, "SCAN_TTL_SECONDS", 0)
+    (db / "roms" / "ps2").mkdir(parents=True)
+    (db / "roms" / "ps2" / "a.iso").write_bytes(b"\0" * 64)
+    lib = await _register(db / "roms")
+    await routes.put_library_rules(lib["id"], {"rules": {"ps2": _RULES["ps2"]}})
+    await routes.preview_library(lib["id"])
+    caplog.set_level(logging.INFO)
+
+    away = db.parent / "vol_away"
+    os.rename(db, away)
+    try:
+        for _ in range(3):
+            await routes.preview_library(lib["id"])
+    finally:
+        os.rename(away, db)
+    warnings = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING and "unreadable" in r.getMessage()
+    ]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+    for _ in range(3):
+        await routes.preview_library(lib["id"])
+    recovered = [r for r in caplog.records if "readable again" in r.getMessage()]
+    assert len(recovered) == 1
+
+
+@pytest.mark.asyncio
+async def test_registering_a_folder_twice_says_the_first_registration_finished(
+    tree: Path,
+) -> None:
+    """M1: after a 504 the first registration may still have finished; a retry says so."""
+    await _register(tree)
+
+    with pytest.raises(HTTPException) as exc:
+        await _register(tree)
+    assert exc.value.status_code == 409
+    assert "earlier registration of this folder has finished" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_a_library_no_longer_reports_a_constant_configured(tree: Path) -> None:
+    """M3: `configured` was always True, so the API no longer carries it."""
+    from routes import libraries as routes
+
+    lib = await _register(tree)
+    assert "configured" not in lib
+    assert all("configured" not in entry for entry in await routes.list_libraries())
