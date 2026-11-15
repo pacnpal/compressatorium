@@ -461,15 +461,19 @@ class ToolRegistry:
         output (``Game.iso.0``), else None. May do disk I/O.
 
         Registry-driven: the candidate is the name without its last suffix, and
-        it counts only when a mode's own ``companion_outputs`` for that output
-        (the lookup the delete and overwrite paths use) lists *path*. A suffix
-        that isn't a number is never one, and costs no disk I/O.
+        it counts only when it carries a mode's declared output extension
+        (``.iso`` for folder_to_iso, so ``save.0`` never qualifies) and that
+        mode's own ``companion_outputs`` for it (the lookup the delete and
+        overwrite paths use) lists *path*. A suffix that isn't a number is
+        never one, and costs no disk I/O. Same rule as ``cli._split_owner``.
         """
         base, suffix = os.path.splitext(path)
         if not suffix[1:].isdigit():
             return None
         real = os.path.realpath(path)
         for spec in self.mode_specs():
+            if not spec.output_ext or match_extension(base, {spec.output_ext}) is None:
+                continue  # this mode never writes a file named like the base
             if real in {os.path.realpath(p) for p in self._companions(spec.mode, base)}:
                 return base, spec.mode
         return None

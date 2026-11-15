@@ -1917,3 +1917,51 @@ async def test_a_split_ps3_iso_is_one_image_and_a_short_later_part_fails_it(
     assert finding["image_key"] == "ps3/GAME.iso.0"
     assert "short" in finding["reason"], finding
     assert await verification_store.get_record(str(iso)) is None
+
+
+def test_a_numbered_file_is_a_split_part_only_beside_a_modes_output_name(db: Path) -> None:
+    """#306 ab2d818: ``save.0`` is no split part, so a folder Library never lists
+    it; ``Game.iso.0`` with its ``.1`` is."""
+    from .test_cli_306 import _real_split_iso
+
+    roms = db / "roms" / "ps3"
+    iso = _real_split_iso(roms)
+    (roms / "save.0").write_bytes(b"\0" * 4096)
+    (roms / "save.1").write_bytes(b"\0" * 4096)
+
+    assert registry.split_owner(str(roms / "save.0")) is None
+    assert registry.split_members(str(roms / "save.0")) == []
+    assert registry.split_owner(str(roms / "GAME.iso.1")) == (str(iso), "folder_to_iso")
+
+
+@pytest.mark.asyncio
+async def test_a_split_part_outside_the_volumes_skips_the_whole_image(
+    db: Path, ready, sent, tmp_path_factory,
+) -> None:
+    """#306 ab2d818: every file a check reads is inside the Volumes, or the Image
+    is not checked. A ``.1`` symlinked outside skips GAME.iso.0."""
+    from routes import libraries as routes
+    from services.verification_store import verification_store
+
+    from .test_cli_306 import _real_split_iso
+
+    roms = db / "roms"
+    iso = _real_split_iso(roms / "ps3")
+    await verification_store.mark_verified(
+        str(iso), produced_meta={"mode": "folder_to_iso", "tool": "makeps3iso"},
+    )
+    outside = tmp_path_factory.mktemp("elsewhere") / "GAME.iso.1"
+    part1 = roms / "ps3" / "GAME.iso.1"
+    outside.write_bytes(part1.read_bytes())
+    part1.unlink()
+    part1.symlink_to(outside)
+    created = await routes.register_library(routes.RegisterLibraryRequest(path=str(roms)))
+    await routes.put_library_rules(created["id"], {"check_rules": {"ps3": {
+        "enabled": True, "check_budget_gb": 1,
+    }}})
+
+    preview = await routes.preview_library(created["id"])
+
+    (summary,) = preview["platforms"]
+    assert summary["candidates"] == []
+    assert summary["checks"] == 0

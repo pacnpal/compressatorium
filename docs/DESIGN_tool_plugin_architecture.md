@@ -3109,6 +3109,26 @@ to open is still claimed and fails) left after `narrow_to_platform(slug)`. A
 PS2 `.iso` is not given to dolphin-tool for sharing GameCube's extension; with
 nothing left the Image is uncheckable. No per-tool branching: a new tool's
 `verify_extensions`, `claims_check` and `platform_slugs` are all a check needs.
+A stored check comes first, as in the CLI (#306): `check.inspect` reads the
+Image's Verify record and passes its producing mode as
+`check_tool(..., recorded_mode=...)`, and when that mode can verify its tool
+checks the Image with no Platform narrowing (makeps3iso for a PS3 ISO it
+built, though it claims no extension).
+
+**A split output is one Image.** A split makeps3iso build writes
+`Game.iso.0`, `.1`, ... and no `Game.iso`. `ToolRegistry.split_owner(path)`
+maps a numbered part to `(Game.iso, mode)` when the name without its last
+suffix carries a mode's declared output extension (so `save.0` never
+qualifies) and that mode's `companion_outputs` lists the part, the same rule
+as `cli._split_owner`; `split_members(path)` gives the later parts for the
+first one. The folder Library's walk lists such parts and `image_members`
+folds them into one Image on `Game.iso.0`, so the budget pays the parts'
+summed size and the lock and fingerprint cover every part. The check is
+handed `Game.iso.0`, and makeps3iso's verify checks the whole set (#306). The
+record lives under `Game.iso` (`Check.record_path`), so a pass refreshes it
+there and a failure clears it there. Every file a check reads (each member,
+split part or track) must be inside the Volumes, or the Image is skipped as
+`unresolvable`.
 
 **Run.** A real sweep passes everything every check Rule picked to
 `check.start` once, after its loop, so a sweep is one run, one external job

@@ -141,6 +141,11 @@ def inspect(image: Image) -> dict[str, Any]:
     )
     if tool is None:
         return {"skip": "uncheckable"}
+    members = image_members(path)
+    # Every file the check reads, not only the one the Library names: a
+    # split part or track symlinked outside the Volumes skips the whole Image.
+    if not all(is_within_configured_volumes(member) for member in members):
+        return {"skip": "unresolvable"}
     return {
         "resolved": resolved,
         "check": Check(
@@ -149,7 +154,7 @@ def inspect(image: Image) -> dict[str, Any]:
             # fs_size_bytes) still pays for the Image against the budget.
             size=int(image.size or os.path.getsize(resolved)), tool_id=tool.id,
             fingerprint=image_fingerprint(path) or "",
-            members=tuple(image_members(path)),
+            members=tuple(members),
             record_path=record_path if owner else "",
         ),
     }
