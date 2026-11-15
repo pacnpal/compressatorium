@@ -305,6 +305,14 @@ def _candidate_folders(path: str) -> list[str]:
     return [p.name for p in _candidate_paths(path)]
 
 
+def _folder_context(path: str) -> tuple[str, str | None]:
+    """What ``_candidate_folders`` depends on beyond the path: the resolved
+    parent folder and the containing Volume root."""
+    root = containing_volume_root(path)
+    parent = str(Path(os.path.realpath(path)).parent)
+    return parent, None if root is None else str(root)
+
+
 def _folder(path: str, names: dict[str, str]) -> tuple[str | None, str | None]:
     for part in _candidate_folders(path):
         slug = names.get(part.lower())
@@ -433,6 +441,14 @@ def detect_platform(path: str, *, tools: Iterable | None = None) -> Detection:
         # A file the header probe needs is missing or unreadable (a .bin still
         # copying in). Answer now, but remember nothing: the next call re-reads.
         return _decide(path, tool_list)
+    # `detection_key` already carries the probe set. The shared cache adds the
+    # folder walk's context, which the file's own stat does not track: the
+    # resolved parent folder (a retargeted folder symlink) and the Volume root
+    # the walk stops at. A folder Library's cache keys on `detection_key`
+    # alone: it walks a resolved root without following symlinks, so a path's
+    # folder context cannot change under it, and resolving it per Image per
+    # walk would cost a Volume resolution for every file.
+    key = (*key, _folder_context(path))
     with _cache_lock:
         hit = _cache.get(path)
         if hit is not None and hit[0] == key:
