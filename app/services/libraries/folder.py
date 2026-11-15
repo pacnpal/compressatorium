@@ -352,7 +352,7 @@ class FolderLibrary:
         # an Image of its own, so it gets no Finding (CONTEXT.md).
         owned = {
             os.path.normpath(member)
-            for _size, _mtime, listed in members_cache.values() for member in listed
+            for _key, listed in members_cache.values() for member in listed
         }
         scan.unreadable_files = [
             p for p in scan.unreadable_files if os.path.normpath(p) not in owned
