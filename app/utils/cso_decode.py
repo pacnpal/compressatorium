@@ -47,7 +47,15 @@ DAX_FRAME_SIZE = 0x2000
 # it derives the block shift.
 SECTOR_SIZE = 0x800
 MAX_BLOCK_SIZE = 0x40000
-_MAX_SHIFT = 31
+# The index shift aligns each stored block to 2**shift bytes. maxcso's reader
+# takes any value, but its writer only shifts as far as offsets need to fit in
+# 31 bits: a few steps for the largest disc. Up to 16 (64 KiB alignment) is far
+# past that and keeps the padding a block may carry bounded.
+_MAX_SHIFT = 16
+# Slack on top of the block size for a stored block: a compressed block is
+# kept only when smaller than the block, so this covers codec framing with
+# room to spare. A larger stored span is a corrupt index, never a real block.
+_STORED_SLACK = 1024
 # Bounds the index a header can make this read: a PSP UMD or PS2 DVD is under
 # 9 GiB, so 64 GiB is generous. At 2 KiB blocks that is 32 Mi index entries,
 # 128 MiB as an array('I'); the table must also fit in the file.
@@ -163,24 +171,33 @@ def _iter_ciso(fh, stop) -> Iterator[bytes]:
         raise ValueError("unsupported platform")
     if struct.pack("<I", 1) != struct.pack("=I", 1):  # pragma: no cover - big endian
         index.byteswap()
+    # The most bytes one stored block may span: the block itself (stored as is)
+    # plus alignment padding below 2**shift, plus codec slack. Every block is
+    # checked against it before its batch is read, so a corrupt or crafted
+    # index (two entries far apart in a sparse file) is refused as damaged
+    # instead of allocating the gap.
+    max_stored = block + (1 << shift) + _STORED_SLACK
     batch = max(1, _SPAN // block)
     for first in range(0, nblocks, batch):
         if stop is not None and stop.is_set():
             return
         last = min(first + batch, nblocks)
+        for i in range(first, last):
+            start = (index[i] & _LOW) << shift
+            end = (index[i + 1] & _LOW) << shift
+            if end < start:
+                raise ValueError("block index is not increasing")
+            if end - start > max_stored:
+                raise ValueError(f"stored block {i} spans {end - start} bytes, more than a block can")
         lo = (index[first] & _LOW) << shift
         hi = (index[last] & _LOW) << shift
-        if hi < lo:
-            raise ValueError("block index is not increasing")
         if hi > file_size:
             raise ValueError("container is truncated")
-        span = _read_exact(fh, lo, hi - lo)
+        span = _read_exact(fh, lo, hi - lo)  # at most batch * max_stored bytes
         out = bytearray()
         for i in range(first, last):
             start = ((index[i] & _LOW) << shift) - lo
             end = ((index[i + 1] & _LOW) << shift) - lo
-            if end < start:
-                raise ValueError("block index is not increasing")
             data = span[start:end]
             want = min(block, total - i * block)
             flag = index[i] & _HIGH

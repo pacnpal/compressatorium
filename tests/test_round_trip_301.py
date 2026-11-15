@@ -163,6 +163,55 @@ async def test_cso_headers_maxcso_would_refuse_are_unavailable(tmp_path, field, 
         await _cso().content_digest(str(out))
 
 
+def _sparse_ciso_with_a_gap(out: Path, magic: bytes, shift: int, *, gap: int) -> None:
+    """One 2 KiB block whose two index entries are ``gap`` bytes apart."""
+    start = 64 >> shift << shift
+    header = struct.pack("<4sIQIBBH", magic, 24, 2048, 2048, 1, shift, 0)
+    index = struct.pack("<2I", start >> shift, (start + gap) >> shift)
+    with open(out, "wb") as fh:
+        fh.write(header + index)
+        fh.truncate(start + gap)  # sparse: no disk used
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("magic", [b"CISO", b"ZISO"])
+@pytest.mark.parametrize("shift", [0, 4])
+async def test_a_far_index_gap_is_refused_without_a_large_read(
+    tmp_path, monkeypatch, magic, shift,
+):
+    """One 2 KiB block whose two index entries are 1 GiB apart in a sparse
+    file: the decoder must refuse it as damaged without asking for the gap."""
+    from utils import cso_decode
+
+    out = tmp_path / "Game.cso"
+    _sparse_ciso_with_a_gap(out, magic, shift, gap=1 << 30)
+
+    sizes: list[int] = []
+    real = cso_decode._read_exact
+
+    def recording(fh, offset, length):
+        sizes.append(length)
+        return real(fh, offset, length)
+
+    monkeypatch.setattr(cso_decode, "_read_exact", recording)
+    with pytest.raises(ContentDigestUnavailable, match="stored block"):
+        await _cso().content_digest(str(out))
+    assert max(sizes) < 1 << 20
+
+
+@pytest.mark.asyncio
+async def test_a_huge_index_shift_is_refused(tmp_path):
+    """Padding alignment of 2**shift bytes per block: past 64 KiB no maxcso
+    output exists, and the span it allows could not be bounded."""
+    out = tmp_path / "Game.cso"
+    write_ciso(out, _image())
+    data = bytearray(out.read_bytes())
+    data[21] = 20
+    out.write_bytes(bytes(data))
+    with pytest.raises(ContentDigestUnavailable):
+        await _cso().content_digest(str(out))
+
+
 @pytest.mark.parametrize("mode", [
     "cso_compress", "cso2_compress", "zso_compress", "dax_compress",
 ])

@@ -2553,7 +2553,13 @@ decoder can only make a good container hash differently from its Source,
 which keeps the Source; it cannot produce the Source's bytes from a container
 that does not hold them. `utils.cso_decode` refuses the headers maxcso's
 reader refuses (block 2 KiB to 256 KiB and a power of two, a sector-aligned
-image size, index shift up to 31), but is otherwise more lenient than maxcso:
+image size), and two things maxcso's writer never produces: an index shift
+past 16, and a stored block longer than the block size plus its alignment
+padding and 1 KiB of codec slack. Every block's span is checked before its
+batch is read, so a corrupt or crafted index (two entries far apart in a
+sparse file) is refused as damaged rather than allocated; a read is at most
+4 MiB of blocks. DAX needs no such check: its lengths are 16-bit. Otherwise
+the decoder is more lenient than maxcso:
 it does not check a deflate stream's end marker, the header-size field or
 trailing data. maxcso's own `--crc` container check runs first and reads the
 container with maxcso's reader, so a container that only this decoder accepts
