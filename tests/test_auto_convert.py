@@ -554,6 +554,21 @@ def test_a_ps3_folder_named_like_an_iso_is_not_already_an_iso(tmp_path):
     assert entry.skip_reason is None
 
 
+def test_a_file_mode_never_reads_a_folder_named_like_its_input(tmp_path):
+    # 5eef3f3's rule, kept inside _best_reader's matching after #306's refactor:
+    # a folder named Game.iso is a folder, so no file reader (createcd,
+    # createdvd, ...) is offered it, by Auto or by an explicit format target.
+    from services.tools import registry
+
+    folder = tmp_path / "ps2" / "Game.iso"
+    folder.mkdir(parents=True)
+    (folder / "inside.bin").write_bytes(b"\0" * 2048)
+
+    assert platform_detect.default_mode(str(folder), "ps2", registry) is None
+    mode, reason = platform_detect.format_route(str(folder), "chd", "ps2", registry)
+    assert mode is None and reason, (mode, reason)
+
+
 def test_an_iso_file_under_folder_to_iso_is_still_already_an_iso(tmp_path, monkeypatch):
     from services.tools import registry
 
