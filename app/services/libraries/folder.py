@@ -245,6 +245,7 @@ class FolderLibrary:
         """Walk the root once, group the files into Images and detect each Platform."""
         files, unreadable = self._files()
         stats = dict(files)
+        known = {os.path.normpath(p): st for p, st in files}
         members_cache: dict[str, tuple[int, int, list[str]]] = {}
         detections: dict[str, tuple[tuple, Detection]] = {}
 
@@ -275,7 +276,11 @@ class FolderLibrary:
                 detections[path] = (key, detection)
             scan.entries.append(Entry(
                 key=Path(os.path.relpath(path, root)).as_posix(),
-                path=path, size=st.st_size, mtime=st.st_mtime, detection=detection,
+                path=path,
+                # The whole Image (a sheet and its tracks), so size filters
+                # and the size orders judge the set, not a 67-byte .cue.
+                size=image_sets.image_size(path, members=members, known=known),
+                mtime=st.st_mtime, detection=detection,
             ))
         # Only what this walk saw, so the caches are as large as the Library.
         self._members = members_cache

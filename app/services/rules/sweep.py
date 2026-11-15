@@ -113,6 +113,12 @@ _sweep_lock = asyncio.Lock()
 # to outlive.
 _job_owners: dict[str, tuple[Library, str, str]] = {}
 
+# library id -> its generation, bumped when the Library is removed. A job-finish
+# callback captures it before its first await and writes state only if it is
+# unchanged, checked under `_sweep_lock`: a Library removed while the callback
+# was probing must not have its state written back.
+_generations: dict[str, int] = {}
+
 # (library id, platform id) -> the reason it last could not be listed. A
 # Platform that stays unreadable (a folder that is gone) is retried every tick;
 # this logs the change of state, once each way, instead of every tick.
@@ -346,6 +352,7 @@ async def forget_library(library: Library) -> None:
     written back either.
     """
     async with _sweep_lock:
+        _generations[library.id] = _generations.get(library.id, 0) + 1
         for job_id, owner in list(_job_owners.items()):
             if owner[0].id == library.id:
                 _job_owners.pop(job_id, None)
@@ -655,12 +662,18 @@ async def note_job_finished(job) -> None:
         return
     library, platform_id, rom_id = owner
     done = status == JobStatus.COMPLETED
+    # Captured before any await; see `_generations`.
+    generation = _generations.get(library.id, 0)
     if FAILED_HOLD in library.capabilities and status != JobStatus.CANCELLED:
-        await _note_failure(library, platform_id, rom_id, job, failed=not done)
+        await _note_failure(
+            library, platform_id, rom_id, job, failed=not done, generation=generation,
+        )
     if CONVERTED_HISTORY not in library.capabilities:
         # No converted history to write the verdict into (skip-only Rules).
         return
     async with _sweep_lock:
+        if _generations.get(library.id, 0) != generation:
+            return  # removed meanwhile
         # Under the same lock as every other write to this blob: a sweep
         # rewrites the whole thing, so an unsynchronised update here would be
         # lost, or would lose the sweep's.
@@ -707,6 +720,7 @@ async def _prune_holds(
 
 async def _note_failure(
     library: Library, platform_id: str, image_key: str, job, *, failed: bool,
+    generation: int,
 ) -> None:
     """Hold a failed Image until its file changes, or release a converted one.
 
@@ -724,6 +738,9 @@ async def _note_failure(
         if not fingerprint:
             return
     async with _sweep_lock:
+        if _generations.get(library.id, 0) != generation:
+            # The Library was removed while the fingerprint was being read.
+            return
         state = await get_state(library)
         entry = dict(state.get(platform_id) or {})
         held = dict(entry.get("failed") or {})

@@ -261,6 +261,28 @@ def test_the_sweep_summary_names_every_reason_a_library_gives():
     assert "r.stopped_reason === 'not_configured'" in src
 
 
+def test_the_deferred_romm_load_stops_once_the_view_is_gone():
+    """Codex 4576551537: the RomM view's lifecycle guard, after every await."""
+    src = _RULES_VIEW.read_text(encoding="utf-8")
+    body = re.search(r"async function loadRomm\(\) \{(.*?)\n  \}", src, re.DOTALL)
+    assert body, "loadRomm moved"
+    load = body.group(1)
+    first_await = load.index("await ")
+    guard = load.find("if (!alive) return;", first_await)
+    enters = load.index("enteredRomm = true;")
+    platforms = load.index("romm.loadPlatforms()")
+    # Checked after the first await and before anything enters RomM mode.
+    assert first_await < guard < enters < platforms, load
+    assert "alive = false;" in src, "the view never marks itself gone"
+
+
+def test_folder_endpoints_read_the_librarys_own_id():
+    """Codacy: no constructor-scoped closure; the endpoints read the reactive library."""
+    src = _STORE.read_text(encoding="utf-8")
+    assert "const id = () =>" not in src
+    assert "api.getLibraryRules(this.id)" in src
+
+
 def test_both_libraries_share_one_rules_source():
     """The Rule bookkeeping exists once (fix round 1, I1)."""
     folder = _STORE.read_text(encoding="utf-8")

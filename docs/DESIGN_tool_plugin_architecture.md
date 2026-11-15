@@ -2225,7 +2225,10 @@ what a Library supports. Nothing in `rules/` asks what kind of Library it has.
   so a replaced track counts) under `rules.state[...]["failed"][image key]`;
   the candidate probe skips the Image (`skipped_failed`, in the result and in
   each Platform's summary) while the fingerprint is unchanged, and a later
-  success drops the hold. A real run drops holds for Images the Library no
+  success drops the hold. Removing a Library bumps its generation
+(`sweep._generations`); a job-finish callback captures it before its first
+await and writes nothing if it changed, checked under `_sweep_lock`, so a
+removal mid-callback cannot recreate the Library's state. A real run drops holds for Images the Library no
   longer lists. **Forget history** clears holds too; the editor shows the held
   count with **Retry failed** whatever the policy. RomM does not
   declare it, so a failed ROM is re-queued every sweep, as it always was;
@@ -2360,7 +2363,9 @@ A file the process cannot read, or a folder it cannot list, is counted as
 `unreadable` and skipped. A Platform id is the canonical slug
 (`platform_detect.known_slug` refuses one no Platform has) and its name is
 `platform_name`; an Image key is the posix path relative to the root,
-`added_at` is the mtime. `summary()` gives the Rules view its counts.
+`added_at` is the mtime, and `size` is every file of the Image
+(`image_sets.image_size`: a sheet and its tracks), so size filters and orders
+judge the set. `summary()` gives the Rules view its counts.
 `configured()` is true: the engine calls it on the event loop, so it touches no
 disk, and it must not latch one bad answer. Every walk checks the root against
 the configured Volumes itself, on its worker thread, and raises
@@ -2379,7 +2384,8 @@ cache cannot be read.
 
 **The catalogue** (`services/libraries/__init__.py`). Folder Libraries are rows
 of `folder_libraries` (root unique, name, `schedule_enabled`, `max_per_sweep`,
-migration 0011), read once and cached; `register`, `update` and `remove`
+migration 0011, `AUTOINCREMENT` so a removed Library's id is never reused and
+state keyed by it cannot reach another folder), read once and cached; `register`, `update` and `remove`
 replace the cached copy. `register` uses `ensure_path_within_volumes` (the file
 browser's check), requires a folder, and refuses the same root or one that
 contains or sits inside another Library's root, a registered folder or RomM's

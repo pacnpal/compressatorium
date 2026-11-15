@@ -44,8 +44,15 @@
   // the file browser in RomM mode; leaving undoes it, as the RomM view does.
   let enteredRomm = false;
 
+  // False once the view is gone. Checked after the first await in
+  // `loadRomm`, as RommView.svelte does: the tail of a load that outlives the
+  // view would otherwise select a Platform and put the Workspace's file
+  // browser into RomM mode after the operator has left.
+  let alive = true;
+
   async function loadRomm() {
     await Promise.all([romm.loadStatus(), romm.loadSettings()]);
+    if (!alive) return;
     if (!romm.usable) return;
     enteredRomm = true;
     await Promise.allSettled([romm.loadPlatforms(), romm.loadRules()]);
@@ -57,6 +64,7 @@
     else if (ui.rulesTarget) libraries.select(ui.rulesTarget);
     libraries.load();
     return () => {
+      alive = false;
       if (!enteredRomm) return;
       romm.cancelPlatformLoad();
       fileBrowser.exitRomm();

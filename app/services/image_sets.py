@@ -16,7 +16,7 @@ with it are decided by the same code.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 from services.tools import registry
@@ -76,6 +76,35 @@ def group_images(
         return other is not None and _same_file(other, key)
 
     return [p for p in files if not is_owned(p)]
+
+
+def image_files(
+    path: str, *, members: Callable[[str], list[str]] = image_members,
+) -> list[str]:
+    """Every file of the Image at *path*: the file itself, then its members."""
+    return [path, *members(path)]
+
+
+def image_size(
+    path: str, *, members: Callable[[str], list[str]] = image_members,
+    known: Mapping[str, os.stat_result] | None = None,
+) -> int:
+    """Bytes of every file of the Image at *path*: a sheet and all its tracks.
+
+    *known* maps normalised paths to stat results the caller already has (a
+    walk's), so only a member it did not list is stat'ed. A member that is
+    missing counts as nothing. Blocking.
+    """
+    total = 0
+    for name in image_files(path, members=members):
+        st = (known or {}).get(os.path.normpath(name))
+        if st is None:
+            try:
+                st = os.lstat(name)
+            except OSError:
+                continue
+        total += st.st_size
+    return total
 
 
 def image_fingerprint(path: str) -> str:
