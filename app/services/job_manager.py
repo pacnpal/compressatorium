@@ -38,6 +38,7 @@ from services.chdman import ConversionCancelled, chdman_service
 from services.disc_id import DiscIdStorageAbandoned
 from services.concurrency_manager import concurrency_manager
 from services.lock_manager import LockFailed, lock_manager
+from services.mutation_guard import locked_for_mutation
 from services import referrers
 from services.round_trip import round_trip, round_trip_applies
 from services.subprocess_runner import ReadCancelled, run_detached
@@ -2930,14 +2931,15 @@ class JobManager:
         A path in this job's own delete hold (``_delete_holds``, #306) skips
         the lock probe: its exclusive lock is this job's, and while it is held
         no other job or process can lock that path. Any other locked path is
-        refused.
+        refused, and so is a numbered split part whose logical owner another
+        job writes (``mutation_guard``, codex 4577940381).
         """
         own_holds = set(self._delete_holds.get(job_id, ()))
         for path in paths:
-            if path not in own_holds:
-                _, is_locked = lock_manager.check_file_status(path)
-                if is_locked:
-                    raise RuntimeError("Delete path is locked by an active conversion")
+            if path not in own_holds and await run_in_threadpool(
+                locked_for_mutation, path, ignore=own_holds,
+            ):
+                raise RuntimeError("Delete path is locked by an active conversion")
             within_volumes = await run_in_threadpool(
                 is_within_configured_volumes, path, treat_archives=False,
             )

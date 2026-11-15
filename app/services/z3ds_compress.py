@@ -472,12 +472,16 @@ class Z3DSCompressService:
                         # The shared feeder: detached reads, and a read still in
                         # flight on a cancel is abandoned with its handle rather
                         # than closed (closing would wait on that read's lock).
+                        # It closes stdin when it is done.
                         await feed_stdin_from_file(
                             process, file_path, offset=payload_offset,
                             cancel_event=cancel_event, chunk_size=chunk_size,
                         )
                         if process.stdin is not None:
-                            await process.stdin.wait_closed()
+                            # zstd that quit early on bad data closed its end
+                            # first; its exit code and stderr are the verdict.
+                            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                                await process.stdin.wait_closed()
 
                     except Exception as stream_err:
                         logger.error("Error streaming to zstd: %s", stream_err)

@@ -20,6 +20,7 @@ from services.archive import ARCHIVE_EXTENSIONS, archive_service
 from services.chd_metadata_store import chd_metadata_store
 from services.job_manager import job_manager
 from services.lock_manager import lock_manager
+from services.mutation_guard import locked_for_mutation
 from services.tools import registry
 from services.verification_store import verification_store
 from utils.junk import is_junk_entry
@@ -266,8 +267,10 @@ def _summarize_archive(item_path: str) -> dict:
 
 
 async def _assert_path_not_in_use(path: str, *, is_dir: bool = False) -> None:
-    _, is_locked = await run_in_threadpool(lock_manager.check_file_status, path)
-    if is_locked:
+    # The path's own lock, or for a numbered split part (Game.iso.0) the lock
+    # on its logical owner, which a split build in another process holds while
+    # it writes parts that have no lock of their own (codex 4577940381).
+    if await run_in_threadpool(locked_for_mutation, path) is not None:
         raise HTTPException(
             status_code=409, detail="Path is locked by an active conversion",
         )
