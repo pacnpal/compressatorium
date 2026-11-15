@@ -227,6 +227,19 @@ async def _resolve_paths_bounded(paths: Iterable[str]) -> Dict[str, str]:
 
 # The statuses a job never leaves. Anything else is still in flight.
 _TERMINAL_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
+# How often `wait_until_terminal` re-reads job states.
+_SETTLE_POLL_SECONDS = 0.05
+# The longest a caller inside an HTTP request (the Auto rollback) waits in
+# `wait_until_terminal`, whatever the job progress timeout says (0 there means
+# no bound). A job still running at this cap is reported as kept, so a short
+# cap loses nothing and a stuck job cannot hang the request.
+ROLLBACK_WAIT_CAP_SECONDS = 30.0
+# The longest a route waits for its per-path Volume checks (and Auto's
+# planning) to come back from a disposable thread before it answers 503. A
+# Volume that stops answering would otherwise hold the request, or, checked on
+# the event loop, every request. The abandoned thread may linger until the
+# mount answers; it holds no shared pool worker (`run_detached`).
+VOLUME_PROBE_TIMEOUT_SECONDS = 30.0
 
 
 class DestinationUnresolvableError(RuntimeError):
@@ -511,6 +524,10 @@ class JobManager:
             "output_dir": output_dir,
             "output_path": output_path,
         }]
+        # History first: no await may follow a job's registration, or a
+        # cancellation there leaves it queued but never returned (see
+        # `create_jobs_atomic`).
+        await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(specs, mode)
         async with self._create_lock:
@@ -533,7 +550,6 @@ class JobManager:
                 delete_snapshot=delete_snapshot,
                 reservation=reservation,
             )
-        await self._prune_jobs()
         return job
 
     async def create_jobs_atomic(
@@ -551,6 +567,12 @@ class JobManager:
             return []
 
         jobs: List[ConversionJob] = []
+        # History first, before anything is registered. The prune awaits
+        # (`delete_job` cleans temp dirs); after registration, a cancellation
+        # there would end this call with jobs queued that the caller never got
+        # back and so could not withdraw. It removes finished jobs only, so the
+        # claim check below answers the same either way.
+        await self._prune_jobs()
         # Outside the lock, and off the event loop: see `_reservation_keys`.
         reservation = await self._reservation_keys(job_specs, mode)
         async with self._create_lock:
@@ -582,7 +604,6 @@ class JobManager:
                         reservation=reservation,
                     )
                 )
-        await self._prune_jobs()
         return jobs
 
     async def create_batch_jobs(
@@ -917,6 +938,31 @@ class JobManager:
     def get_job(self, job_id: str) -> Optional[ConversionJob]:
         """Get a job by ID."""
         return self.jobs.get(job_id)
+
+    async def wait_until_terminal(
+        self, job_ids: Iterable[str], timeout: float | None,
+    ) -> None:
+        """Wait until every job in *job_ids* is terminal, at most *timeout* s.
+
+        ``cancel_job()`` returning True for a processing job means only that
+        its cancel event is set; a worker past its last check still finishes
+        the job. A caller that must know how a cancelled job really ended
+        waits here, then reads ``get_job()``. A job the queue no longer knows
+        counts as settled. None means no bound. Returns at the bound with any
+        job still running; the caller decides what that means.
+        """
+        ids = list(job_ids)
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            running = [
+                job_id for job_id in ids
+                if (job := self.jobs.get(job_id)) is not None
+                and job.status not in _TERMINAL_STATUSES
+            ]
+            if not running or (deadline is not None and loop.time() >= deadline):
+                return
+            await asyncio.sleep(_SETTLE_POLL_SECONDS)
 
     def add_terminal_listener(self, callback: Callable[[ConversionJob], object]) -> None:
         """Call *callback* once each job reaches a terminal status.
@@ -2877,6 +2923,11 @@ class JobManager:
                 return
 
             input_path = job.file_path
+            # The trusted root(s) an extracted source's track sheet may name
+            # files under (utils.sheet_text.resolve_track's ``within``). None
+            # for a source in a Volume; the extraction dir for an archive
+            # member. Built once here and handed to every consumer.
+            within: list[str] | None = None
             if "::" in job.file_path:
                 extract_start = time.monotonic()
                 archive_path, internal_path = job.file_path.split("::", 1)
@@ -2904,6 +2955,7 @@ class JobManager:
                 except asyncio.CancelledError:
                     pass
                 job.temp_dir = temp_dir
+                within = [temp_dir]
                 await run_in_threadpool(
                     archive_service.extract_related_files,
                     archive_path,
@@ -3050,7 +3102,7 @@ class JobManager:
                 # is requested (deletion happens after verify).
                 try:
                     await registry.for_mode(job.mode.value).post_convert(
-                        input_path, job.output_path, job.mode.value,
+                        input_path, job.output_path, job.mode.value, within=within,
                     )
                 except DiscIdStorageAbandoned:
                     # Deliberately not swallowed with the rest. Everything below

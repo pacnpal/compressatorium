@@ -221,6 +221,55 @@ class BatchJobCreateRequest(BaseModel):
     split: bool = False  # makeps3iso folder->iso: split output into 4 GB parts
 
 
+class AutoPlanRequest(BaseModel):
+    """Images to send to their Platform's default target (the Auto choice)."""
+
+    file_paths: list[str]
+    output_dir: str | None = None
+
+
+class AutoJobItem(BaseModel):
+    """One Image of a confirmed Auto plan and the target the user saw for it."""
+
+    file_path: str
+    mode: str
+
+
+class AutoJobCreateRequest(BaseModel):
+    """Queue the Auto plan the user confirmed.
+
+    ``items`` are the plan's actionable rows only (an Image the preview
+    skipped is never sent). The route replans them and refuses with 409 when
+    any target changed, so what is queued is what was confirmed.
+    """
+
+    items: list[AutoJobItem]
+    output_dir: str | None = None
+    duplicate_action: DuplicateAction = DuplicateAction.SKIP
+
+
+class AutoPlanItem(BaseModel):
+    """One row of an Auto plan: the Image's Platform and where it goes.
+
+    ``how`` is ``header``, ``folder``, ``conflict`` or ``unsorted``. ``mode``
+    is None when the Image is skipped, and ``skip_reason`` then says why.
+    """
+
+    file_path: str
+    platform: str | None = None
+    how: str
+    reason: str
+    mode: str | None = None
+    tool_id: str | None = None
+    compression: str | None = None
+    skip_reason: str | None = None
+
+
+class AutoBatchResponse(BaseModel):
+    plan: list[AutoPlanItem]
+    jobs: list[ConversionJob]
+
+
 class CheckDuplicatesRequest(BaseModel):
     file_paths: list[str]
     output_dir: str | None = None

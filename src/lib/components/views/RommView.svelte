@@ -74,7 +74,7 @@
       conversion.setPrimaryTool(tool.id);
       ui.workspaceTool = tool.id;
     }
-    conversion.setMode(mode);
+    conversion.chooseTarget(mode);
   }
 
   const selectedPlatformName = $derived(

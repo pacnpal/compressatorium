@@ -25,6 +25,15 @@
     that `dosbox.conf` is at the root before keeping its output, and Verify on
     a `.dosz` runs the same check.
   - Behaviour modelled on eXo2romm (Unlicense); no code is shared.
+- **Auto convert and Platform detection** (#294). Tick **Auto** in the convert
+  panel, select a mix of files, and each Image goes to its Platform's default
+  format with your saved compression. The Platform comes from the Image's own
+  header (GameCube/Wii, PS1/PS2, PSP, Dreamcast, Saturn, Sega CD, Xbox), or from
+  its folder name when there is no readable header. A header that disagrees with
+  its folder, or an Image nothing identifies, is skipped and shown with its
+  reason in the plan you confirm first. API: `POST /api/jobs/auto-plan` and
+  `POST /api/jobs/auto`. The old "ISO handling" toggle is gone for good; a
+  value left from it is ignored.
 - **Ledger: a permanent record of every finished job** (#292). Each job that
   completes, fails or is cancelled writes one row (finish time, tool, mode,
   Source and output paths, input and output bytes, duration, status, the check

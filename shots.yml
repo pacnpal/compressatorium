@@ -84,6 +84,55 @@
       await new Promise(r => setTimeout(r, 400));
     })()
 
+# --- Workspace: Auto plan (Auto ticked, all files selected, plan open) -----
+# Auto is read from localStorage only at boot, so the shot ticks the convert
+# panel's Auto box instead. "Start conversion" then opens the plan preview,
+# which only reads the files (POST /api/jobs/auto-plan queues nothing).
+- url: http://127.0.0.1:8099/?s=workspace-auto-plan-light#/workspace/chdman
+  output: docs/screenshots/workspace-auto-plan-light.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      localStorage.setItem('theme-preference', 'light');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'light' }));
+      await new Promise(r => setTimeout(r, 400));
+      const autoBox = [...document.querySelectorAll('label.checkbox')]
+        .find(l => l.textContent.includes('Auto:'))?.querySelector('input');
+      if (autoBox && !autoBox.checked) autoBox.click();
+      await new Promise(r => setTimeout(r, 300));
+      const all = document.querySelector('thead input[type="checkbox"]');
+      if (all && !all.checked) all.click();
+      await new Promise(r => setTimeout(r, 300));
+      const start = [...document.querySelectorAll('button')]
+        .find(b => b.textContent.trim() === 'Start conversion');
+      if (start) start.click();
+      await new Promise(r => setTimeout(r, 900));
+    })()
+- url: http://127.0.0.1:8099/?s=workspace-auto-plan-dark#/workspace/chdman
+  output: docs/screenshots/workspace-auto-plan-dark.png
+  width: 1280
+  height: 900
+  wait: 1800
+  javascript: |
+    (async () => {
+      localStorage.setItem('theme-preference', 'dark');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'theme-preference', newValue: 'dark' }));
+      await new Promise(r => setTimeout(r, 400));
+      const autoBox = [...document.querySelectorAll('label.checkbox')]
+        .find(l => l.textContent.includes('Auto:'))?.querySelector('input');
+      if (autoBox && !autoBox.checked) autoBox.click();
+      await new Promise(r => setTimeout(r, 300));
+      const all = document.querySelector('thead input[type="checkbox"]');
+      if (all && !all.checked) all.click();
+      await new Promise(r => setTimeout(r, 300));
+      const start = [...document.querySelectorAll('button')]
+        .find(b => b.textContent.trim() === 'Start conversion');
+      if (start) start.click();
+      await new Promise(r => setTimeout(r, 900));
+    })()
+
 # --- Workspace: Dolphin (GameCube volume selected) -------------------------
 - url: http://127.0.0.1:8099/?s=workspace-dolphin-light#/workspace/dolphin
   output: docs/screenshots/workspace-dolphin-light.png

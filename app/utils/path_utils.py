@@ -6,7 +6,9 @@ import functools
 import os
 import stat
 import sys
-from collections.abc import Iterable
+import threading
+import time
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +18,23 @@ from config import settings
 def strip_archive_path(path: str) -> str:
     """Return the filesystem portion of an archive path (archive::internal)."""
     return path.split("::", 1)[0] if "::" in path else path
+
+
+def is_special_file(path: str | os.PathLike) -> bool:
+    """Whether ``path`` exists and is neither a regular file nor a directory.
+
+    A FIFO, socket or device. Opening a FIFO with no writer blocks forever, so
+    a reader that must not hang (a header probe) asks this first. ``lstat``
+    first; a symlink is judged by its target. False for a missing path or a
+    dangling link: nothing there can block an open.
+    """
+    try:
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode):
+            st = os.stat(path)
+    except OSError:
+        return False
+    return not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode))
 
 
 # errnos meaning "this filesystem has no hard links" (FAT/exFAT, some network
@@ -196,7 +215,10 @@ def match_extension(name: str, extensions: Iterable[str]) -> Optional[str]:
 
 
 def _resolve_path(raw_path: str, *, strict: bool = False) -> Optional[Path]:
-    """Safely resolve a user-supplied path without following non-existent segments.
+    """Resolve a path that ``_confined_real_path`` already confined.
+
+    Only the gate calls this with a request-supplied value; it is not a
+    containment check on its own.
 
     Explicitly rejects symlink loops: prior to Python 3.13, ``Path.resolve()``
     raised :class:`RuntimeError` for an infinite-loop symlink, which this
@@ -234,27 +256,319 @@ def _resolve_volume(volume_path: str) -> Optional[Path]:
         return None
 
 
-def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
-    """Check whether the given path lies inside one of the configured CHD volumes."""
-    base_path = strip_archive_path(path) if treat_archives else path
-    real_path = _resolve_path(base_path, strict=False)
+def _configured_root(volume: str) -> str:
+    """A Volume root as configured, made absolute; no filesystem call."""
+    return os.path.normpath(os.path.abspath(os.path.expanduser(volume)))
+
+
+# --- Resolved spellings of the configured Volume roots ------------------------
+# The roots come from the deployment, never from a request, so their resolved
+# spellings can be cached: a request then never waits on another Volume's
+# stalled mount to match an alias (a root configured through a symlink, the
+# path spelled through its target) or to accept a symlink from one Volume
+# into another. Each root is resolved on its own daemon thread with its own
+# bound; one that does not answer keeps its last good spelling, or none. The
+# cache is rebuilt (bounded) when the configured Volumes change and refreshed
+# in the background when it is older than `ROOT_REFRESH_SECONDS`. Request
+# paths are never cached: the final check always resolves the path itself.
+ROOT_PROBE_SECONDS = 2.0
+ROOT_REFRESH_SECONDS = 60.0
+_root_lock = threading.Lock()
+_root_spellings: dict[str, str] = {}        # configured root -> resolved root
+_root_spellings_for: tuple[str, ...] | None = None
+_root_spellings_at = 0.0
+_root_refreshing = False
+
+
+def _resolve_root_into(configured: str, box: dict) -> None:
+    try:
+        box["real"] = str(Path(configured).resolve(strict=True))
+    except (OSError, RuntimeError, ValueError):
+        box["failed"] = True
+
+
+_probe_lock = threading.Lock()
+_probes_in_flight: dict[str, tuple[threading.Thread, dict, float]] = {}
+
+
+def _root_probe(configured: str) -> tuple[threading.Thread, dict, float]:
+    """The live probe resolving ``configured``, started if none is running.
+
+    Returns ``(thread, box, started_at)``, ``started_at`` on the monotonic
+    clock, so a caller can tell a probe that began before it from one that
+    began after. One registry for every resolution of a root (cache
+    refreshes and ``_fresh_root``): there is never more than one live probe
+    per root, so a mount that stays blocked strands one thread, however many
+    refreshes and requests ask. A finished probe is never reused; its answer
+    may be stale.
+    """
+    with _probe_lock:
+        entry = _probes_in_flight.get(configured)
+        if entry is None or not entry[0].is_alive():
+            box: dict = {}
+            thread = threading.Thread(
+                target=_resolve_root_into, args=(configured, box), daemon=True,
+                name=f"volume-root-probe:{configured}",
+            )
+            entry = (thread, box, time.monotonic())
+            _probes_in_flight[configured] = entry
+            thread.start()
+        return entry
+
+
+def refresh_volume_roots(*, timeout: float | None = None) -> None:
+    """Re-resolve every configured root, each bounded on its own thread.
+
+    All roots start together, and each gets ``timeout`` (default
+    ``ROOT_PROBE_SECONDS``) from that start: a stalled root holds up neither
+    the others nor the caller past the bound. A root that times out keeps its
+    last good spelling; one that fails to resolve has none.
+    """
+    global _root_spellings, _root_spellings_for, _root_spellings_at
+    bound = ROOT_PROBE_SECONDS if timeout is None else timeout
+    volumes = tuple(settings.volumes)
+    probes = []
+    for volume in volumes:
+        configured = _configured_root(volume)
+        # A probe already running may have started before this refresh; the
+        # cache only selects roots, so its answer is good enough here.
+        thread, box, _started = _root_probe(configured)
+        probes.append((configured, thread, box))
+    deadline = time.monotonic() + bound
+    for _configured, thread, _box in probes:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    with _root_lock:
+        previous = _root_spellings
+        fresh: dict[str, str] = {}
+        for configured, _thread, box in probes:
+            if "real" in box:
+                fresh[configured] = box["real"]
+            elif "failed" not in box and configured in previous:
+                fresh[configured] = previous[configured]   # timed out: last good
+        _root_spellings = fresh
+        _root_spellings_for = volumes
+        _root_spellings_at = time.monotonic()
+
+
+def _refresh_in_background() -> None:
+    global _root_refreshing
+    try:
+        refresh_volume_roots()
+    finally:
+        with _root_lock:
+            _root_refreshing = False
+
+
+def _resolved_root_spellings() -> dict[str, str]:
+    """The cached resolved spelling of each configured root.
+
+    Rebuilt, bounded, when the configured Volumes changed since the last
+    build; refreshed in the background when merely old.
+    """
+    global _root_refreshing
+    volumes = tuple(settings.volumes)
+    with _root_lock:
+        current = _root_spellings_for == volumes
+        stale = time.monotonic() - _root_spellings_at > ROOT_REFRESH_SECONDS
+        spawn = current and stale and not _root_refreshing
+        if spawn:
+            _root_refreshing = True
+    if not current:
+        refresh_volume_roots()
+    elif spawn:
+        threading.Thread(target=_refresh_in_background, daemon=True).start()
+    with _root_lock:
+        return dict(_root_spellings)
+
+
+def _lexically_under(candidate: str, root: str) -> bool:
+    return candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _matching_volumes(candidate: str) -> list[str]:
+    """The Volumes whose root spells a prefix of ``candidate``, laziest first.
+
+    The configured spellings first, with no filesystem call, so a path on a
+    healthy Volume never waits on another Volume's stalled mount. Only when
+    none matches are the roots' cached resolved spellings consulted (a root
+    configured through a symlink, with the path spelled through its target;
+    ``_resolved_root_spellings``). Both spellings are trusted (they come from
+    the deployment, not a request); the resolved check afterwards is what
+    decides.
+    """
+    volumes = list(settings.volumes)
+    matching = [v for v in volumes if _lexically_under(candidate, _configured_root(v))]
+    if matching:
+        return matching
+    # Every matching alias, not the first: nested Volumes configured through
+    # symlinks (/outer -> /data/PS2, /inner -> /data/PS2/library) both match,
+    # and a caller choosing the most specific root needs them all.
+    resolved_roots = _resolved_root_spellings()
+    return [
+        volume for volume in volumes
+        if (real := resolved_roots.get(_configured_root(volume))) is not None
+        and real != _configured_root(volume)
+        and _lexically_under(candidate, real)
+    ]
+
+
+def _has_parent_segment(raw_path: str) -> bool:
+    """Whether ``raw_path`` has a ``..`` segment (split on ``os.sep`` and ``/``)."""
+    return ".." in raw_path.replace(os.sep, "/").split("/")
+
+
+def _contains(real_volume: Path | None, real_path: Path) -> bool:
+    return real_volume is not None and (
+        real_path == real_volume or real_volume in real_path.parents
+    )
+
+
+def _real_inside_volumes(
+    path: str, *, roots: Sequence[str], strict: bool,
+) -> Path | None:
+    """``path`` resolved on disk (symlinks followed), if that is inside a Volume.
+
+    Granting needs a fresh resolution: see ``_holding_roots``.
+    """
+    real_path = _resolve_path(path, strict=strict)
     if real_path is None:
-        return False
+        return None
+    return real_path if _holding_roots(real_path, roots) else None
 
-    for volume in settings.volumes:
-        real_volume = _resolve_volume(volume)
-        if real_volume is None:
+
+def _holding_roots(real_path: Path, matched: Sequence[str]) -> list[Path]:
+    """The freshly resolved Volume roots that hold ``real_path``.
+
+    The cached spellings (``_resolved_root_spellings``) only *select* a root;
+    access is granted against a fresh, bounded resolution of exactly that root
+    (``_fresh_root``), so a Volume whose symlink was repointed stops covering
+    its old target at once, and a probe that times out refuses. ``matched``
+    are the Volumes the gate matched the path under; they are resolved first.
+    A real path outside them (a symlink from one Volume into another, as
+    Unraid shares do) selects, by cached spelling, the Volume that may hold
+    it, and only that one is resolved. No unrelated root is ever resolved, so
+    a stalled one is never waited on.
+    """
+    matched_roots = [_configured_root(volume) for volume in matched]
+    holders = [
+        root for root in map(_fresh_root, matched_roots) if _contains(root, real_path)
+    ]
+    if holders:
+        return holders
+    for configured, cached in _resolved_root_spellings().items():
+        if configured in matched_roots or not _contains(Path(cached), real_path):
             continue
+        fresh = _fresh_root(configured)
+        if _contains(fresh, real_path):
+            holders.append(fresh)
+    return holders
 
-        try:
-            real_path.relative_to(real_volume)
-            return True
-        except ValueError:
-            if real_path == real_volume:
-                return True
+
+def _fresh_root(configured: str) -> Path | None:
+    """``configured`` resolved now, within ``ROOT_PROBE_SECONDS``; None otherwise.
+
+    Fails closed: a probe that times out or fails gives None, never the
+    cached spelling. Only a resolution that *started* at or after this check
+    began authorises: a probe already running may have resolved the root
+    before it was repointed. Through the per-root registry (``_root_probe``),
+    so one live probe per root still holds: a check that finds an older probe
+    running waits for it to finish, then starts its own, all within one
+    ``ROOT_PROBE_SECONDS`` budget. The older probe's answer is never used.
+    """
+    check_started = time.monotonic()
+    deadline = check_started + ROOT_PROBE_SECONDS
+    thread, box, probe_started = _root_probe(configured)
+    if probe_started < check_started:
+        thread.join(max(0.0, deadline - time.monotonic()))
+        if thread.is_alive():
+            return None              # the older probe is stuck: fail closed
+        # The older probe is done, so the next one began after this check did.
+        thread, box, probe_started = _root_probe(configured)
+        if probe_started < check_started:
+            return None
+    thread.join(max(0.0, deadline - time.monotonic()))
+    if thread.is_alive() or "real" not in box:
+        return None
+    return Path(box["real"])
+
+
+def _confined_real_path(raw_path: str, *, strict: bool = False) -> Path | None:
+    """The one gate every resolver of a request-supplied path goes through.
+
+    Fails closed, in order:
+
+    1. Any ``..`` segment is refused outright. Nothing in the app needs one,
+       and folding it lexically is wrong when it follows a symlink:
+       ``/vol/link/../x`` normalises to ``/vol/x`` while the OS opens the
+       link target's parent.
+    2. The path, made absolute and normalised, must equal a Volume root or
+       start with ``root + os.sep``, checked inline right before the path is
+       resolved. The configured spellings come first, with no filesystem
+       call; when none matches, the cached resolved spellings of the roots
+       (a Volume configured through a symlink, the path spelled through its
+       target; ``_resolved_root_spellings``), so an alias never waits on an
+       unrelated stalled mount. A path outside every Volume never reaches the
+       filesystem.
+    3. The path is resolved on disk and the real path must lie inside the
+       matched root, resolved, or inside any Volume's cached resolved root (a
+       symlink across Volumes). This catches a symlink inside a Volume
+       pointing out of every Volume. With ``..`` refused, normalising only
+       drops ``.`` segments and repeated separators, so this resolves exactly
+       the path the OS would open for ``raw_path``.
+
+    Returns the resolved path, or None.
+    """
+    if _has_parent_segment(raw_path):
+        return None
+    candidate = os.path.normpath(os.path.abspath(os.path.expanduser(raw_path)))
+    volumes = list(settings.volumes)
+    for volume in volumes:
+        root = _configured_root(volume)
+        # Two arms, kept apart: the root itself is resolved as the trusted
+        # spelling, and a path below it only after the prefix check.
+        if candidate == root:
+            return _real_inside_volumes(root, roots=[volume], strict=strict)
+        if candidate.startswith(root.rstrip(os.sep) + os.sep):
+            return _real_inside_volumes(candidate, roots=[volume], strict=strict)
+    resolved_roots = _resolved_root_spellings()
+    for volume in volumes:
+        configured = _configured_root(volume)
+        root = resolved_roots.get(configured)
+        if root is None or root == configured:
             continue
+        if candidate == root:
+            return _real_inside_volumes(root, roots=[volume], strict=strict)
+        if candidate.startswith(root.rstrip(os.sep) + os.sep):
+            return _real_inside_volumes(candidate, roots=[volume], strict=strict)
+    return None
 
-    return False
+
+def containing_volume_root(path: str) -> Path | None:
+    """The resolved root of the configured Volume that holds ``path``, or None.
+
+    The most specific one when Volumes nest. ``path`` may be an archive member
+    (``a.zip::disc.iso``); the archive's own location decides.
+    """
+    disk_path = strip_archive_path(path)
+    real_path = _confined_real_path(disk_path)
+    if real_path is None:
+        return None
+    # Only the Volumes the path is spelled under are resolved, freshly and
+    # bounded (no stalled mount elsewhere is waited on). A symlink into another
+    # Volume is held by that one, selected by cached spelling (`_holding_roots`).
+    candidate = os.path.normpath(os.path.abspath(os.path.expanduser(disk_path)))
+    holders = _holding_roots(real_path, _matching_volumes(candidate))
+    return max(holders, key=lambda root: len(root.parts), default=None)
+
+
+def is_within_configured_volumes(path: str, *, treat_archives: bool = True) -> bool:
+    """Check whether the given path lies inside one of the configured CHD volumes.
+
+    Through the one gate, ``_confined_real_path``: no ``..``, confined
+    lexically before the filesystem sees it, then resolved and checked again.
+    """
+    base_path = strip_archive_path(path) if treat_archives else path
+    return _confined_real_path(base_path) is not None
 
 
 def _strip_trailing_dot_and_seps(path: str) -> str:
@@ -349,7 +663,7 @@ def is_safe_directory_tree(path: str) -> bool:
     if stat.S_ISLNK(raw_lstat.st_mode):
         return False
 
-    root = _resolve_path(path, strict=True)
+    root = _confined_real_path(path, strict=True)
     if root is None or not root.is_dir():
         return False
 
@@ -394,7 +708,7 @@ def is_safe_directory_tree(path: str) -> bool:
 def is_configured_volume_root(path: str, *, treat_archives: bool = True) -> bool:
     """Check whether the given path is exactly one of the configured volume roots."""
     base_path = strip_archive_path(path) if treat_archives else path
-    real_path = _resolve_path(base_path, strict=False)
+    real_path = _confined_real_path(base_path)
     if real_path is None:
         return False
 
@@ -408,20 +722,18 @@ def is_configured_volume_root(path: str, *, treat_archives: bool = True) -> bool
 
 def ensure_path_within_volumes(path: str, *, treat_archives: bool = True) -> Path:
     """Return the resolved path if it is within configured volumes, else raise ValueError."""
-    if not is_within_configured_volumes(path, treat_archives=treat_archives):
-        raise ValueError("Path outside configured volumes")
-    resolved = _resolve_path(
-        strip_archive_path(path) if treat_archives else path, strict=False
+    resolved = _confined_real_path(
+        strip_archive_path(path) if treat_archives else path,
     )
     if resolved is None:
-        raise ValueError("Path could not be resolved")
+        raise ValueError("Path outside configured volumes")
     return resolved
 
 
 def get_volume_name_for_path(path: str) -> Optional[str]:
     """Return the configured volume name that contains the given path, if any."""
     base_path = strip_archive_path(path)
-    real_path = _resolve_path(base_path, strict=False)
+    real_path = _confined_real_path(base_path)
     if real_path is None:
         return None
 
@@ -442,8 +754,12 @@ def get_volume_name_for_path(path: str) -> Optional[str]:
 
 
 def safe_join(base_dir: str, *parts: str) -> Path:
-    """Join parts to a base directory while ensuring the result stays inside the base."""
-    resolved_base = _resolve_path(base_dir, strict=True)
+    """Join parts to a base directory while ensuring the result stays inside the base.
+
+    The base goes through the same gate as every request path, so it must be
+    an existing directory inside a Volume.
+    """
+    resolved_base = _confined_real_path(base_dir, strict=True)
     if resolved_base is None:
         raise ValueError("Base directory does not exist")
 

@@ -2361,7 +2361,303 @@ an earlier run left for that path is dropped. `ConversionJob.check_passed`
 (and so the Ledger row) still says `"intact"`, because the container check did
 pass.
 
-### 3.3.13 Editing a zip (`services/archive_edit.py`) and the eXoDOS repack
+### 3.3.14 Platform detection (`services/platform_detect.py`, `ToolPlugin.header_platform`)
+
+`detect_platform(path) -> Detection` is the one place an Image's Platform is
+worked out without a library manager. The convert panel's Auto choice uses it
+today; folder Libraries (#303), the Inbox and the CLI (#306) are meant to call
+the same function. `Detection` is a frozen dataclass: `platform` (a slug, or
+None), `how` (`"header"`, `"folder"`, `"conflict"`, `"unsorted"`), what each
+source said (`header`, `folder`) and a one-line `reason` for the UI.
+
+Precedence is fixed and never guesses:
+
+1. **Header.** Every registered tool whose `input_extensions` match the file is
+   asked `header_platform(path)`. The default answers None; a tool that can tell
+   its consoles apart from the bytes overrides it. chdman answers through
+   `disc_id.disc_platform` (PS1/PS2 from `SYSTEM.CNF`, PSP from `PARAM.SFO`,
+   Dreamcast from a `.gdi`'s `IP.BIN`, all the existing disc-ID parser, plus the
+   Saturn / Sega CD / Dreamcast system id at the start of sector 0). dolphin
+   answers through `disc_id.nintendo_disc_platform` (the GameCube magic at 0x1C,
+   Wii at 0x18). xiso answers through `extract_xiso.detect_console` (the XDVDFS
+   layout, or a trimmed image's boot executable). A probe that raises is
+   treated as no answer. A new console is taught to detection by its tool's
+   override, not by an edit here. Probes run on any file Auto is pointed at,
+   including through an unauthenticated `/api/jobs/auto-plan`, so a probe
+   must never let a size read from the image drive a read. The ISO 9660
+   helpers in `disc_id` (`_bounded_read`) refuse any directory or file extent
+   above `_MAX_ISO_READ` (1 MiB) or past the end of the image (a raw `.bin`
+   reports its user-data size as `logical_size`), and a refused read is no
+   header. The other probes read fixed-size windows, cap the sheet at 1 MiB
+   (`utils.sheet_text`). The XDVDFS walk takes its limits as parameters:
+   conversion and info keep `_MAX_DIR_TABLE` (64 MiB per table), while the
+   probe (`detect_console`) passes 1 MiB per table, 4 MiB per walk and
+   `root_only=True`, since the boot executable sits in the root.
+   `tests/test_header_probe_bounds.py` probes images whose sizes are hostile.
+
+   A folder is probed by the tools that take it as their input unit
+   (`accepts_directory`): makeps3iso answers `ps3` for a PS3 disc folder, and
+   `default_mode` sends a folder to the Platform's first folder-input mode
+   (`InputKind.DIRECTORY`) whose tool accepts it, so a PS3 folder goes to
+   `folder_to_iso`. The web UI offers a folder under Auto when the listing
+   marks it convertible by a tool with a folder-input mode.
+2. **Folder name.** The nearest parent folder whose name is a key or alias in
+   `_ALIASES`: RomM's slug for each Platform a tool declares, with every other
+   name for it (the tools' own spellings and the folder names ES-DE and
+   Batocera use: `ps1`, `gc`, `megacd`, `pcenginecd`, `cdi`, `megadrive`,
+   `mastersystem`, `n3ds`, ...). Archive members (`a.zip::disc.iso`) skip the
+   header and use the archive's folder. The walk runs from the Image's own
+   folder up to the root of the Volume that holds it, root included, and never
+   above (`utils.path_utils.containing_volume_root`), so a Volume mounted under
+   `/mnt/md/...` does not make every Image in it a Genesis Image. A path in no
+   configured Volume uses only its own folder.
+
+Track sheets are read one way everywhere, through `utils.sheet_text`: as UTF-8
+(a BOM stripped), as cp1252 when they are not valid UTF-8, and as Latin-1 last,
+and the first spelling of a track name that exists beside the sheet wins. The
+disc-ID probe (`disc_id._cue_track_paths`), the header-dependency list
+(`delete_plan.sheet_track_paths`) and the delete plan all use it, so
+`Jeu (Édition).bin` resolves, and is cached, from either encoding. There is one
+CUE FILE-line parser (`sheet_text.cue_tracks`: quoted, unquoted, names with
+spaces) and one GDI line parser (`sheet_text.gdi_tracks`, numeric fields only
+when ASCII decimal).
+
+There is also one track resolver, `sheet_text.resolve_track`, and
+`sheet_tracks` built on it, used by the Platform probe, the detection cache's
+track list (`header_reads`), the delete plan and the job gate. It refuses an
+empty name, an absolute name, any `..` segment, and a name whose real path
+lies outside the trusted roots: the configured Volumes by default, or the
+roots a caller passes as `within` (the job worker's extraction dir for an
+archived set; an empty `within` is refused). When any track of a sheet is
+refused, or the sheet is unreadable (missing, or over `MAX_SHEET_BYTES`, read
+as cap + 1 bytes and never parsed partially), `sheet_tracks` returns None and
+the probe says nothing, so a planted sheet cannot make the probe read a file
+outside the Volumes.
+
+Sheets are read exactly the way chdman 0.285 reads them
+(`src/lib/util/cdrom.cpp` at mame0285), because chdman opens the tracks
+itself and any difference lets a name pass `resolve_track` while chdman opens
+another. `fgets(buf, 511)` reads at most 510 bytes per line (`CHD_READ_BYTES`),
+so a sheet with a longer line (a `REM` padded to hide a `FILE`) or a NUL byte
+is unreadable. `chd_tokens` is chdman's `tokenize`: C-locale whitespace,
+`"` and `'` each toggle a quoted run and are dropped, no comment syntax (a GDI
+`#name` is a name). A CUE track is the token after an exact `FILE`; a GDI
+track is a line's fifth token. `resolve_track` checks the name verbatim (no
+trimming, `\` a filename character on POSIX), and every spelling of every
+track is checked, including the raw-byte one (`os.fsdecode`) chdman opens for
+a sheet that is not UTF-8: one refused spelling refuses the sheet. The delete
+plan takes its targets from that native spelling (`sheet_native_text`), never
+from a decoded reading, and a sheet whose decoded and native spellings name
+two different existing files is ambiguous (`sheet_ambiguity`): unreadable for
+every reader, so the job gate and the delete plan refuse it. So is a sheet
+with a line whose quote never closes: chdman keeps the newline inside the
+quote (`'pipe` opens `pipe\n`). A CUE `REM` line is exempt, since chdman reads
+no file name from one.
+
+The containment gate (`path_utils._confined_real_path`) checks a path's
+lexical root inline, right before it resolves the path: first against the
+configured root spellings (no filesystem call), then against the cached
+resolved spellings of the roots (a Volume configured through a symlink). The
+roots come from the deployment, so their resolved spellings are cached:
+built at startup (`refresh_volume_roots`) and whenever the configured Volumes
+change, refreshed in the background once older than `ROOT_REFRESH_SECONDS`,
+each root resolved on its own thread with its own `ROOT_PROBE_SECONDS` bound.
+A root that times out keeps its last good spelling. A cached spelling only
+selects a root; granting access needs a fresh resolution of exactly that root
+(`_fresh_root`, bounded by `ROOT_PROBE_SECONDS`, one probe in flight per
+root), so a Volume symlink that was repointed stops covering its old target at
+once, and a probe that times out refuses. The final check resolves the
+submitted path itself and accepts a real path inside the freshly resolved
+matched root, or inside another Volume that its cached spelling selects and a
+fresh probe confirms, so a symlink from one Volume into another (Unraid
+shares) is accepted and an unrelated stalled Volume is never waited on.
+
+Special files are never opened. Opening a FIFO with no writer blocks forever,
+which would strand the threadpool worker an Auto request runs detection on.
+`path_utils.is_special_file` (`lstat`, a symlink judged by its target) is
+asked at the top of `detect_platform`, before any header probe or open, so a
+FIFO, socket or device input gets no Platform ("not a regular file or
+folder"). `resolve_track` refuses a track that exists and is one of these, so
+a sheet cannot point the probe at one either; a missing track is still not
+refused.
+
+Disc-ID tagging reads the same sheets after a conversion. `_process_job`
+builds `within` once: None for a source in a Volume, `[temp_dir]` (the
+`mkdtemp` root it extracted into) for an archive member, never the input
+file's parent. It passes that one value to the job gate and to
+`post_convert(input_path, output_path, mode, *, within=None)`, which every
+plugin accepts. CHDMAN's hook hands it to `disc_id.extract_from_source`, whose
+cue/gdi readers resolve tracks through `sheet_tracks(..., within=within)`.
+When a refused or unreadable track stops tagging, the hook logs a warning
+naming the sheet (`sheet_text.sheet_track_list` tells that case apart from a
+disc with no ID); it never skips silently, and a refused track is never
+opened. `header_reads` returns None for an unreadable sheet and
+a failing `header_reads` is treated the same way, so neither is cached. A
+folder Image (a PS3 disc folder) is never cached: its answer depends on files
+below it.
+
+Every answer goes through `canonical_slug`, which maps aliases, IGDB's slugs
+and the tools' own vocabulary (`ps`, `ps1`, `gamecube`, `neogeocd`,
+`genesis-slash-megadrive`) onto RomM's own slugs (`psx`, `ngc`, `neo-geo-cd`,
+`genesis`). RomM's slug is its `UniversalPlatformSlug` value, which differs
+from IGDB's for PlayStation and Genesis; `test_every_canonical_key_is_a_romm_slug`
+pins every key to RomM's list. A test also fails when a tool declares a slug
+the table does not cover, so a new Platform brings its folder names with it. A header that disagrees with the folder, or two headers that disagree,
+is a `conflict` with no Platform. Nothing at all is `unsorted`. Results are
+cached per path in a bounded LRU and dropped when the file's size or mtime
+changes; `clear_cache()` exists for tests. A header probe that reads other
+files declares them through `ToolPlugin.header_reads(path)` (default empty;
+chdman returns a `.cue`/`.gdi` sheet's tracks via the delete plan's own parser,
+`utils.delete_plan.sheet_track_paths`). Their path, size and mtime join the
+cache key, and while one of them is missing or unreadable (a `.bin` still
+copying in) the answer is not cached at all.
+
+**Auto targets** (`plan_auto`, `default_mode`). The candidates for an Image with
+a Platform are the create-direction modes (`ModeKind.CREATE` / `COMPRESS`) that
+claim the Platform (`registry.mode_platform_slugs`, or the mode's
+`auto_platform_slugs`), may be an Auto default (`ModeSpec.auto_target`), and
+whose command can read the file (`registry.mode_reads_extensions` plus the
+tool's `converts_path`). Among them:
+
+1. the most specific extension match wins (`.nkit.iso` over `.iso`, the
+   `tool_for_verify` rule);
+2. then the smallest read set, the most specific reader (a PS2 `.iso` goes to
+   `createdvd`, which reads only `.iso`, not `createcd`, which also reads track
+   sheets);
+3. then registration order (`createdvd` before the CSO modes, which also read
+   only `.iso`).
+
+So a PS2 `.iso` gets `createdvd`, a PS2 or PS1 `.cue` `createcd`, a GameCube
+`.iso` `dolphin_rvz`, a `.nkit.iso` `nkit_to_rvz`, a CD image in an `arcade`
+folder `createcd`. `tests/test_auto_routing_table.py` holds the whole table, one
+row per (Platform, readable extension), and fails when a tool or mode changes
+the set of pairs.
+
+`auto_route` wraps `default_mode` and leaves an Image alone when it is already
+in its target's format: when the chosen mode's `output_ext` matches the input
+name, the Image is skipped as "Already <FORMAT>" rather than re-encoded. It is
+read off the spec, so it holds for any tool. Today the only such row is a
+GameCube/Wii `.rvz` under `dolphin_rvz` ("Already RVZ"); a `.wia` or `.gcz`
+still converts to RVZ.
+
+`ModeSpec.reads_extensions` is the mode's real input domain when it is
+narrower than `input_extensions`; empty means "every input extension". It must
+be a subset of `input_extensions`, which keeps gating manual selection and
+`plan_job` exactly as before. chdman uses it because its five create modes all
+accept `.iso/.cue/.bin/.gdi` by hand while the commands differ: `createcd`
+reads a track sheet or a single-track `.iso`, `createdvd` a flat 2048-byte
+`.iso`. A bare `.bin` is read by neither (chdman needs the table of contents),
+so its `.cue` is the Image. `ModeSpec.auto_target` is false for chdman's
+`createraw`, `createhd` and `createld`: they claim the arcade Platforms, but
+are never the right default for an Image.
+
+`ModeSpec.auto_platform_slugs` lets a mode be a Platform's Auto target without
+being offered for it by hand. `createcd` declares `ps2`, because PS2 CD-ROM
+titles are plain Mode 2 CDs kept as cue/bin. Adding `ps2` to its
+`platform_slugs` would have made `createcd`, the first chdman create mode, the
+default of every platform-narrowed PS2 panel and rule, which
+`test_chdman_media_commands_are_narrowed_per_platform` forbids.
+
+Two Images whose targets would write the same output (`game.iso` and
+`game.nkit.iso` both to `game.rvz`, or two `game.iso` into one output
+directory) cannot both convert. `plan_auto` keeps the one the batch path would
+keep (`output_conflicts.input_priority`: `.cue`/`.gdi` over `.iso` over `.bin`,
+then the earlier in the selection) and skips the other with a reason naming the
+output. The compression is the saved per-tool value (the `conversion`
+preference) when the mode takes one, else the tool default; a saved value the
+mode would refuse also falls back to the tool default. Conflicted and Unsorted
+Images get a `skip_reason`, and so does an Image with a Platform but no target:
+"No tool converts <platform> Images" when no mode serves the Platform at all
+(Neo Geo Pocket Color, WonderSwan Color), "No <platform> target reads <ext>
+files" when the file is the problem.
+
+A target whose tool cannot run here is skipped too. The route awaits the
+shared, bounded `registry.ready_tool_ids()` and passes it to `plan_auto`
+(`ready_tool_ids=`), which skips the Image with
+"<display_name> isn't ready: <not_ready_reason>". `ToolPlugin.not_ready_reason`
+says why in the user's words; the default names a missing program, nsz names
+`prod.keys`, jwud the JWUDTool launcher and Java. Both Auto routes plan through
+this, so the plan the user confirms and the jobs queued agree.
+
+From a RomM platform listing, Auto records RomM metadata for re-pinning exactly
+as a manual submit does. Both go through one store path,
+`conversion.#queueWithRepin`, which calls `planRommRepin` once per target mode
+before queueing, then reconciles the records against the jobs actually created
+(redirected outputs re-recorded under their own mode, rows for sources that
+never became jobs retired).
+
+`POST /api/jobs/auto-plan` returns the plan without queueing.
+`POST /api/jobs/auto` groups the planned Images by (mode, compression). The
+batch route is split into `_prepare_batch` (validate and `plan_job` every file,
+queue nothing) and `_queue_prepared` (one atomic `create_jobs_atomic` call);
+`create_batch_jobs` is the two in sequence. Auto prepares every group first, so
+a planning error queues nothing, then checks the whole batch against
+`max_queue_depth`, then queues the groups. Each group is its own atomic call,
+so a later group can still be refused at queue time (409 when another job took
+a destination, 503 when a volume stops answering), and earlier jobs may have
+started by then. On any failure the route withdraws the jobs this request
+queued (`job_manager.cancel_job`) and returns the error. A job that had already
+finished cannot be withdrawn: its output stays, it is logged, and the error
+returns it, for an HTTP error from the queue and for an unexpected exception
+alike (the latter logged with its traceback and returned as a 500; a
+cancellation still propagates). `/jobs/auto` queues only the plan the user
+confirmed: the client sends the confirmed plan's actionable rows as
+`items: [{file_path, mode}]` (an Image the preview skipped is never sent), the
+route replans those paths, and if any target differs (another tool, or now
+skipped) it answers 409 with `detail = {"message", "plan"}` before queueing
+anything. `conversion.runAuto` then shows the new plan and asks again.
+Queueing an Image the user never saw would also skip its RomM metadata
+snapshot. Nothing in either Auto endpoint, or in the
+batch preparation they share, touches a Volume on the event loop: the per-path
+Volume checks run together with planning (`_checked_auto_plan`) or on their
+own (`_check_within_volumes`) through `_off_loop_bounded`, a `run_detached`
+call bounded by `VOLUME_PROBE_TIMEOUT_SECONDS` (30 s, beside
+`ROLLBACK_WAIT_CAP_SECONDS` in `job_manager`). Past the bound the request
+answers 503 "A Volume isn't responding"; the abandoned thread may linger until
+the mount answers, holding no shared pool worker, and its result is dropped.
+An Image that preparation skipped (its output
+appeared after planning) is marked skipped in the returned plan with
+preparation's reason. In the browser, `conversion.runAuto` runs the flow once
+at a time (an in-flight guard), on the selection and RomM context captured
+before its first await, and updates the re-pin badge whether queueing
+succeeded or not. It takes the caller's AbortSignal: `ConvertPanel` aborts it
+in `onDestroy`, so leaving the view mid-plan aborts the plan request, never
+opens the modal afterwards, resolves a pending confirmation as cancelled, and
+clears `autoInFlight` (the store stops waiting at the abort even when a request
+ignores the signal); `jobs.adopt` applies the same freshness rule as `refresh()`
+(`snapshotIsNewer`) and never adopts an unknown job the store saw evicted
+from history (bounded eviction tombstones), so a response built before a job
+finished and was pruned cannot put it back in the queue. That holds only while
+the job's tombstone is kept: the store keeps the newest 2000, so a response
+delayed past that many evictions can still restore the job. `refresh()` infers
+an eviction (and tombstones it) only for jobs it knew before it sent the
+request; a job SSE created during the request is newer than the snapshot and
+is kept. The rollback (`_cancel_queued`) asks every queued job to
+cancel, then waits for them to settle with `JobManager.wait_until_terminal`,
+for at most `CHD_PROGRESS_TIMEOUT` or `ROLLBACK_WAIT_CAP_SECONDS` (30 s),
+whichever is shorter; the cap holds when the timeout is 0, since the wait runs
+inside the HTTP request. `cancel_job()` returning True for a
+processing job means only that its cancel event is set, and a worker past its
+last check (in `post_convert`) still completes, so the retained list is built
+from the real final states: completed with an output, or still running at the
+bound. The error detail is then structured, `{"message": "... Kept (finished
+or still running): ...", "jobs": [...]}`, with `jobs` in the shape a success
+returns. `client.fetchJson` keeps a structured detail on `err.detail`, the store
+adopts those jobs and reconciles its re-pin snapshots against them before it
+retires the rest, so a kept output keeps its record. Auto never deletes a
+Source (no delete-on-verify), so nothing is lost either way.
+
+An explicit target choice wins over Auto. Every mode selector (the convert
+panel's dropdown, RomM's "Convert to") calls `conversion.chooseTarget(mode)`,
+which sets the mode and, if Auto was on, turns it off with an "Auto is off"
+notice. `setMode` stays the programmatic path (platform adoption, tool
+switches) and leaves Auto alone.
+
+The legacy UI's "ISO handling" toggle is gone. It lived only in the browser,
+under the `primary_tool_preference` key that now names the selected tool tab;
+its values were tool ids, so a value left from it still loads as a tab.
+
+### 3.3.19 Editing a zip (`services/archive_edit.py`) and the eXoDOS repack
 
 `rewrite_zip(src, dst, *, rename, add, is_cancelled, on_progress)` is the shared
 way to produce an edited copy of a zip. The first user is the eXoDOS repack
